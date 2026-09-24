@@ -1,0 +1,21 @@
+{
+  "name": "@lares/compose-contract",
+  "version": "0.1.0",
+  "description": "Shared prompt-composition contract (One Brain W2) and EN/NO language detection, used by every outbound compose site across agent-runtime and eve-saga \u2014 mirror the counterpart's language, never claim an untaken action, label every context block by kind, ground every statement or stay silent. Pure string helpers, zero I/O.",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "AGPL-3.0-only"
+}

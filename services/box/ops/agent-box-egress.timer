@@ -1,0 +1,11 @@
+# services/box/ops/agent-box-egress.timer
+[Unit]
+Description=Periodically refresh the agent-box egress allowlist
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

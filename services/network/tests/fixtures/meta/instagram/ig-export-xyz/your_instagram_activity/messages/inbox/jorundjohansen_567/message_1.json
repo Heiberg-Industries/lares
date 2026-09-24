@@ -1,0 +1,10 @@
+{
+  "participants": [{ "name": "JÃ¸rund Johansen" }, { "name": "Bendik Heiberg" }],
+  "messages": [
+    { "sender_name": "JÃ¸rund Johansen", "timestamp_ms": 1756495692000, "content": "Hei Bendik!" },
+    { "sender_name": "Bendik Heiberg", "timestamp_ms": 1756495700000, "content": "Hei JÃ¸rund" },
+    { "sender_name": "JÃ¸rund Johansen", "timestamp_ms": 1756495800000, "photos": [{ "uri": "x.jpg" }] }
+  ],
+  "title": "JÃ¸rund Johansen",
+  "thread_path": "inbox/jorundjohansen_567"
+}

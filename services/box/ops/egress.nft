@@ -1,0 +1,47 @@
+# services/box/ops/egress.nft
+# Default-deny OUTBOUND egress for lares-agent-1. Blast-radius limiter: if a
+# contained agent is ever prompt-injected, it can only reach the allow-set.
+# Inbound is governed elsewhere (no published ports; tailnet/SSH only).
+#
+# The `egress_allow` set is populated by refresh-egress-allowlist.sh (resolves
+# the LLM gateway, Slack, and Twenty hostnames). Tailnet is allowed wholesale.
+#
+# Apply: see ops/PHASE-C-DEPLOY.md (use a rollback timer — do NOT apply blind).
+
+table inet egress {
+    set egress_allow {
+        type ipv4_addr
+        flags interval
+        comment "resolved IPs for gw.owner.example, api.slack.com, crm.owner.example"
+    }
+
+    set egress_allow6 {
+        type ipv6_addr
+        flags interval
+        comment "resolved IPv6 for the same allow-hosts"
+    }
+
+    chain output {
+        type filter hook output priority 0; policy drop;
+
+        # Loopback and already-established flows.
+        oifname "lo" accept
+        ct state established,related accept
+
+        # DNS (so the resolver script and the runtime can resolve names).
+        udp dport 53 accept
+        tcp dport 53 accept
+
+        # Tailnet: our own services (gateway/CRM/replica dispatch) ride this.
+        oifname "tailscale0" accept
+        ip daddr 100.64.0.0/10 accept
+        ip6 daddr fd7a:115c:a1e0::/48 accept
+
+        # Allow-set: HTTPS + Slack WSS to resolved allow-host IPs only.
+        ip daddr @egress_allow tcp dport { 443 } accept
+        ip6 daddr @egress_allow6 tcp dport { 443 } accept
+
+        # Everything else outbound is dropped by policy. Log a sample for audit.
+        limit rate 5/minute log prefix "egress-drop: " level info drop
+    }
+}

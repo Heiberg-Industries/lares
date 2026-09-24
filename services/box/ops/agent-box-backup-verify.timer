@@ -1,0 +1,12 @@
+[Unit]
+Description=Check daily that a fresh nightly backup snapshot exists
+
+[Timer]
+# Two hours after agent-box-backup.timer (03:00 UTC). With backup-verify.sh's 24h
+# window, a backup that failed last night is caught THIS morning — the newest
+# snapshot is ~26h old by now — instead of after a second missed night.
+OnCalendar=*-*-* 05:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

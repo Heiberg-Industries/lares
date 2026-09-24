@@ -1,0 +1,198 @@
+[
+  {
+    "id": "erik-dahl-rate",
+    "kind": "direct",
+    "question": "What's Erik Dahl's day rate?",
+    "query": "erik dahl day rate",
+    "expect": ["wiki/people/erik-dahl.md"]
+  },
+  {
+    "id": "deposit-policy",
+    "kind": "direct",
+    "question": "What's our deposit policy for new clients?",
+    "query": "deposit policy new clients",
+    "expect": ["wiki/decisions/deposit-policy.md"]
+  },
+  {
+    "id": "runde-contact",
+    "kind": "direct",
+    "question": "Who's our contact at Runde Coworking?",
+    "query": "runde coworking contact",
+    "expect": ["wiki/companies/runde-coworking.md"]
+  },
+  {
+    "id": "havnelager-status",
+    "kind": "direct",
+    "question": "What's the status of the Havnelager conversion?",
+    "query": "havnelager conversion status",
+    "expect": ["wiki/projects/havnelager-conversion.md"]
+  },
+  {
+    "id": "job-tracking-tool",
+    "kind": "direct",
+    "question": "Which tool did we adopt for job tracking?",
+    "query": "byggflyt tracking tool",
+    "expect": ["wiki/decisions/project-tool.md"]
+  },
+  {
+    "id": "renovation-fees",
+    "kind": "paraphrase",
+    "question": "What are our fees for a renovation job?",
+    "query": "renovation fees",
+    "expect": ["wiki/decisions/2026-time-and-materials.md"]
+  },
+  {
+    "id": "deposit-upfront",
+    "kind": "paraphrase",
+    "question": "How much do new clients pay before we start their project?",
+    "query": "new client payment before start",
+    "expect": ["wiki/decisions/deposit-policy.md"]
+  },
+  {
+    "id": "lumber-contact",
+    "kind": "paraphrase",
+    "question": "Who do we call about lumber deliveries?",
+    "query": "lumber delivery contact",
+    "expect": ["wiki/companies/lindqvist-sagbruk.md"]
+  },
+  {
+    "id": "coworking-finished",
+    "kind": "paraphrase",
+    "question": "Is the coworking job finished yet?",
+    "query": "coworking job finished",
+    "expect": ["wiki/projects/runde-coworking-fitout.md"]
+  },
+  {
+    "id": "job-tracking-software",
+    "kind": "paraphrase",
+    "question": "Where do we track schedules and budgets for each job now?",
+    "query": "schedule budget job tracking",
+    "expect": ["wiki/decisions/project-tool.md"]
+  },
+  {
+    "id": "nordkyst-delay-reason",
+    "kind": "buried",
+    "question": "Why did the Nordkyst spa wing start slip from January to March?",
+    "query": "nordkyst spa wing slipped reason",
+    "expect": ["journal/2026-03-06.md"]
+  },
+  {
+    "id": "havnelager-south-wall-reason",
+    "kind": "buried",
+    "question": "Why does the Havnelager south wall actually need new steel?",
+    "query": "havnelager south wall chimney flue",
+    "expect": ["journal/2026-06-11.md"]
+  },
+  {
+    "id": "vestbrygga-hold-reason",
+    "kind": "buried",
+    "question": "Why is the Vestbrygga job actually on hold?",
+    "query": "vestbrygga financing pulled back",
+    "expect": ["journal/2026-06-19.md"]
+  },
+  {
+    "id": "lien-bakeri-scaffolding-early",
+    "kind": "buried",
+    "question": "Why is the Lien Bakeri scaffolding going up a day early?",
+    "query": "lien bakeri scaffolding early saturday",
+    "expect": ["journal/2026-03-06.md"]
+  },
+  {
+    "id": "pricing-model-current",
+    "kind": "superseded",
+    "question": "What's our current pricing model for renovation jobs?",
+    "query": "renovation pricing model",
+    "expect": ["wiki/decisions/2026-time-and-materials.md"]
+  },
+  {
+    "id": "fixed-price-or-time-materials",
+    "kind": "superseded",
+    "question": "Do we do fixed-price quotes or time-and-materials now?",
+    "query": "fixed price time materials",
+    "expect": ["wiki/decisions/2026-time-and-materials.md"]
+  },
+  {
+    "id": "time-materials-renovation-policy",
+    "kind": "superseded",
+    "question": "What's the policy on pricing renovation work these days?",
+    "query": "time and materials renovation",
+    "expect": ["wiki/decisions/2026-time-and-materials.md"]
+  },
+  {
+    "id": "erik-dahl-phone",
+    "kind": "ambiguous-name",
+    "question": "How should I reach Erik Dahl — call or text?",
+    "query": "erik dahl phone text",
+    "expect": ["wiki/people/erik-dahl.md"]
+  },
+  {
+    "id": "erik-solheim-email",
+    "kind": "ambiguous-name",
+    "question": "What's Erik Solheim's email at the hotel?",
+    "query": "erik solheim email hotel",
+    "expect": ["wiki/people/erik-solheim.md"]
+  },
+  {
+    "id": "erik-hotel-signoff",
+    "kind": "ambiguous-name",
+    "question": "Which Erik signs off on change orders at the hotel?",
+    "query": "erik hotel change order sign off",
+    "expect": ["wiki/people/erik-solheim.md"]
+  },
+  {
+    "id": "erik-contractor-day-rate",
+    "kind": "ambiguous-name",
+    "question": "What's Erik's day rate as a contractor?",
+    "query": "erik contractor structural day rate",
+    "expect": ["wiki/people/erik-dahl.md"]
+  },
+  {
+    "id": "oskar-delivery-summer",
+    "kind": "multilingual",
+    "question": "Hva sier Oskar om leveringstid i høysesongen?",
+    "query": "leveringstid høysesong sommer",
+    "expect": ["wiki/people/oskar-lindqvist.md"]
+  },
+  {
+    "id": "lindqvist-lead-time-english",
+    "kind": "multilingual",
+    "question": "What's Lindqvist Sagbruk's lead time like in high season?",
+    "query": "leveringstid sagbruk høysesong",
+    "expect": ["wiki/people/oskar-lindqvist.md"]
+  },
+  {
+    "id": "bakery-almost-lost-may",
+    "kind": "multilingual",
+    "question": "What happened in May that nearly cost us the Lien Bakeri job?",
+    "query": "bakeri nesten mistet pris mai",
+    "expect": ["journal/2026-05-14.md"]
+  },
+  {
+    "id": "timber-supplier-norwegian-query",
+    "kind": "multilingual",
+    "question": "Hvem er vår faste leverandør av trelast?",
+    "query": "fast leverandør trelast",
+    "expect": ["wiki/decisions/timber-supplier.md"]
+  },
+  {
+    "id": "spa-wing-budget-leak-check",
+    "kind": "excluded",
+    "question": "What budget did we quote for the Nordkyst spa wing after the sauna change order?",
+    "query": "nordkyst spa wing budget sauna change",
+    "expect": []
+  },
+  {
+    "id": "timber-delivery-quote-leak-check",
+    "kind": "excluded",
+    "question": "What did Oskar quote for the next timber delivery to Havnelager?",
+    "query": "oskar timber delivery quote havnelager",
+    "expect": []
+  },
+  {
+    "id": "chat-erik-dahl-rate-leak-check",
+    "kind": "excluded",
+    "question": "What did I tell the assistant about Erik Dahl's rate last week?",
+    "query": "assistant conversation erik dahl rate",
+    "expect": []
+  }
+]

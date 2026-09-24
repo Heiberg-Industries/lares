@@ -1,0 +1,17 @@
+{
+  "id": "microsoft-365",
+  "name": "Microsoft 365",
+  "provenance": "private",
+  "concept": ["mailbox", "calendar"],
+  "capability": [],
+  "region": "global",
+  "data_path": "non_eu_cloud",
+  "outbound_hosts": ["graph.microsoft.com", "login.microsoftonline.com"],
+  "secrets": [],
+  "credential_type": "oauth2_owner_client",
+  "owner_supplies_client": true,
+  "sdk": { "package": "@microsoft/microsoft-graph-client", "licence": "MIT" },
+  "live_probe": null,
+  "quality": "integrations/microsoft-365/quality.yaml",
+  "codeowner": "lares-core"
+}

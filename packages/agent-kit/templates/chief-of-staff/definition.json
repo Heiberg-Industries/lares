@@ -1,0 +1,193 @@
+{
+  "name": "chief-of-staff",
+  "model": "installation-brain",
+  "persona": "agent/persona.md",
+  "scope": "personal",
+  "channels": [],
+  "egress": {
+    "sealed": true
+  },
+  "grants": [
+    {
+      "capability": "network",
+      "scope": "read"
+    },
+    {
+      "capability": "vault",
+      "scope": "write-with-confirm",
+      "areas": [
+        "private",
+        "shared",
+        "facts"
+      ]
+    },
+    {
+      "capability": "identity",
+      "scope": "read"
+    },
+    {
+      "capability": "person",
+      "scope": "read"
+    },
+    {
+      "capability": "twenty",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "digest",
+      "scope": "write"
+    },
+    {
+      "capability": "read_url",
+      "scope": "read"
+    },
+    {
+      "capability": "orakel",
+      "scope": "read"
+    },
+    {
+      "capability": "remind",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "deadline",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "gmail",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "calendar",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "notion",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "obligation",
+      "scope": "write"
+    },
+    {
+      "capability": "echo",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "outreach",
+      "scope": "write"
+    },
+    {
+      "capability": "voice",
+      "scope": "read"
+    },
+    {
+      "capability": "autonomy",
+      "scope": "write-with-confirm"
+    },
+    {
+      "capability": "transit",
+      "scope": "read"
+    },
+    {
+      "capability": "travel",
+      "scope": "read"
+    }
+  ],
+  "autonomy": {
+    "network": "gated",
+    "vault": "gated",
+    "identity": "gated",
+    "person": "gated",
+    "twenty": "gated",
+    "digest": "gated",
+    "read_url": "gated",
+    "orakel": "gated",
+    "remind": "gated",
+    "deadline": "gated",
+    "gmail": "gated",
+    "calendar": "gated",
+    "notion": "gated",
+    "obligation": "gated",
+    "echo": "gated",
+    "outreach": "gated",
+    "voice": "gated",
+    "autonomy": "gated",
+    "transit": "gated",
+    "travel": "gated"
+  },
+  "skills": [
+    {
+      "name": "commercial",
+      "requires": [
+        {
+          "capability": "twenty",
+          "scope": "read"
+        },
+        {
+          "capability": "orakel",
+          "scope": "read"
+        }
+      ]
+    }
+  ],
+  "role": "chief-of-staff",
+  "description": "",
+  "doors": [],
+  "schedules": {
+    "conversation-prune": {
+      "on": false
+    },
+    "crm-routing": {
+      "on": false
+    },
+    "deadlines": {
+      "on": true
+    },
+    "digest": {
+      "on": true
+    },
+    "dream": {
+      "on": false
+    },
+    "email-triage": {
+      "on": true
+    },
+    "evening-brief": {
+      "on": true
+    },
+    "market-refresh": {
+      "on": false
+    },
+    "meeting-followup": {
+      "on": true
+    },
+    "morning-brief": {
+      "on": true
+    },
+    "outreach-reply-watch": {
+      "on": false
+    },
+    "owner-clock": {
+      "on": true
+    },
+    "proposals-watch": {
+      "on": true
+    },
+    "reminders": {
+      "on": true
+    },
+    "reping": {
+      "on": false
+    },
+    "telegram-handover": {
+      "on": true
+    },
+    "voice-learn": {
+      "on": false
+    },
+    "weekly-summary": {
+      "on": false
+    }
+  }
+}

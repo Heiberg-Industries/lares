@@ -1,0 +1,12 @@
+[Unit]
+Description=Check that the inputs other jobs read are still alive; alert Kuma when one goes stale
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/input-freshness.sh
+# Exits 1 when an input is stale, which is a real finding, not a broken unit — the alert has
+# already been pushed to Kuma by then. Without this the unit shows up in `systemctl --failed`
+# every hour and becomes its own source of noise.
+SuccessExitStatus=0 1

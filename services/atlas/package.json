@@ -1,0 +1,29 @@
+{
+  "name": "@lares/atlas",
+  "version": "0.1.0",
+  "description": "Keeps the Atlas (the business knowledge store) derived from its canonical sources.",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.ts",
+  "exports": {
+    ".": "./lib/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lares/agent-box": "workspace:^",
+    "@lares/notion-sync": "workspace:^",
+    "@lares/vault-format": "workspace:*",
+    "commander": "^12.1.0",
+    "undici": "^7.29.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^10.13.2",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.21.0"
+  },
+  "license": "AGPL-3.0-only"
+}

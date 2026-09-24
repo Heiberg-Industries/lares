@@ -1,0 +1,35 @@
+{
+  "name": "@lares/console",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@lares/agent-box": "workspace:^",
+    "@lares/notion-sync": "workspace:^",
+    "@lares/taste": "workspace:^",
+    "eve": "0.60.1",
+    "googleapis": "^173.0.0",
+    "jose": "^6.2.12",
+    "next": "^16.3.5",
+    "pg": "^8.21.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "@lares/agent-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "^6.0.3",
+    "vite": "^6.0.0",
+    "vitest": "^4.1.9"
+  },
+  "license": "AGPL-3.0-only"
+}

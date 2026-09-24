@@ -1,0 +1,21 @@
+{
+  "name": "@lares/memory-evals",
+  "version": "0.1.0",
+  "description": "A recall test set over a sample markdown vault (W0-4a) \u2014 measures whether notes-store's search+read layer finds the note holding the answer to a realistic owner question, deterministically and at zero model cost, with a committed baseline so a later change to search cannot silently regress recall.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "baseline": "UPDATE_BASELINE=1 vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lares/agent-kit": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "AGPL-3.0-only"
+}

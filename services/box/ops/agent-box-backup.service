@@ -1,0 +1,9 @@
+[Unit]
+Description=Agent box nightly restic backup (encrypted, append-only, off-box)
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agent-box/backup.sh
+# backup.sh sources /etc/agent-box/backup.env and reads the root-only restic password.

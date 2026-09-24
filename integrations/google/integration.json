@@ -1,0 +1,17 @@
+{
+  "id": "google",
+  "name": "Google (Gmail + Calendar)",
+  "provenance": "core",
+  "concept": ["mailbox", "calendar"],
+  "capability": ["gmail", "calendar"],
+  "region": "global",
+  "data_path": "non_eu_cloud",
+  "outbound_hosts": [".googleapis.com"],
+  "secrets": [],
+  "credential_type": "oauth2_owner_client",
+  "owner_supplies_client": true,
+  "sdk": { "package": "googleapis-common", "licence": "Apache-2.0" },
+  "live_probe": "services/chief-of-staff/tests/live/google.live.mts",
+  "quality": "integrations/google/quality.yaml",
+  "codeowner": "lares-core"
+}

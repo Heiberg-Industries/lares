@@ -1,0 +1,85 @@
+name: sync-jobs image
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "services/sync-jobs/**"
+      # The closure the Dockerfile copies — a change to any of these changes the installed
+      # image.
+      - "services/notion-sync/**"
+      - "services/atlas/**"
+      - "services/box/**"
+      # A digest-pin edit in compose.yaml is not a code change — it never touches anything
+      # this image copies, so it must not retrigger a rebuild (ORB-178 final-review fix).
+      - "!services/box/compose.yaml"
+      - "services/network/**"
+      - "packages/strength/**"
+      - "packages/junk/**"
+      - "patches/**"
+      - "pnpm-workspace.yaml"
+      - "pnpm-lock.yaml"
+      - "package.json"
+      - ".github/workflows/sync-jobs-image.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-jobs-image
+  cancel-in-progress: false
+
+jobs:
+  build-push:
+    if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/heiberg-industries/lares-sync-jobs
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=sha-
+
+      # Build context is the REPO ROOT, not services/sync-jobs: sync-jobs is a pnpm workspace
+      # member with no lockfile of its own, so the install needs the root pnpm-workspace.yaml
+      # and pnpm-lock.yaml. Same convention as eve-marcel's and eve-saga's image workflows.
+      - name: Build and push (linux/amd64, digest-pinned)
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/sync-jobs/Dockerfile
+          platforms: linux/amd64
+          push: "${{ vars.PUBLISH_IMAGES == 'true' }}"
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Publish digest to job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## sync-jobs image pushed"
+            echo ''
+            echo "Pin this digest on BOTH notion-sync and atlas-sync in services/box/compose.yaml:"
+            echo '```'
+            echo "ghcr.io/heiberg-industries/lares-sync-jobs@$DIGEST"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

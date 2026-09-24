@@ -1,0 +1,15 @@
+# What this file is: the evidence for the tier integrations/slack/integration.json's row claims.
+# A rule is `done`, `todo`, or `exempt` WITH a comment — an exempt with no comment fails the check.
+# The tier is only as good as its rules: claiming bronze with a bronze rule `todo` fails the build.
+#
+# tier: none (owner decision C1, 2026-09-19) — five bronze rules are still `todo` below.
+tier: none
+rules:
+  live-probe: todo            # the manifest names services/chief-of-staff/tests/live/slack.live.mts; it does not exist yet (W6B-s5 commits it). A different live probe exists (services/chief-of-staff/tests/live/slack-user-tz.live.mts) but it is not the one the manifest names.
+  region-declared: done       # integrations/slack/integration.json: "region": "global", checked for every integration by packages/agent-kit/tests/integration-manifest-agrees.test.ts ("declares a region on every integration")
+  outbound-declared: todo     # W6C-s2 re-examined this now that W6A-s5 (services/keeper/tests/egress-from-manifest.test.ts) has landed — still todo: slack's manifest capability is [] (WAVE-3-NOTES: slack's real wiring is per agent instance), so the test's capability-to-host loop never runs for slack at all; its real hosts are DOOR_HOSTS in services/keeper/lib/egress.ts, hand-copied to match outbound_hosts, with nothing pinning the two together
+  secrets-declared: todo      # W6C-s2 re-examined this now that W6A-s4 (packages/agent-kit/tests/integration-secret-lint.test.ts) has landed — still todo: the lint scans services/chief-of-staff/lib but not agent/channels/, and slack's real secrets (eve-slack-bot-token, eve-slack-signing-secret in agent/channels/slack.ts) live only in that unscanned door, so this rule is unproven rather than proven
+  no-telemetry: todo          # no test proves the client reaches only .slack.com/.slack-files.com and nothing else — W6B-s4's transport test is what will prove this
+  contract-tests: done        # services/chief-of-staff/tests/slack-source.test.ts and tests/slack-channel.test.ts exercise the slack tooling against the neutral default agent
+  shared-request-path: todo   # services/chief-of-staff/lib/slack-source.ts:156-175's callSlack() calls `fetch` directly; no @slack/web-api SDK, no shared makeRequester (./request.ts) — W6B-s4/s5 replace it
+  credential-tested: todo     # packages/agent-kit/src/credential.ts's test-call machinery exists but no concrete CredentialType is defined for slack yet — nothing calls defineCredentialType or runCredentialTest

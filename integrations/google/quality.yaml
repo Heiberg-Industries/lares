@@ -1,0 +1,19 @@
+# What this file is: the evidence for the tier integrations/google/integration.json's row claims.
+# A rule is `done`, `todo`, or `exempt` WITH a comment — an exempt with no comment fails the check.
+# The tier is only as good as its rules: claiming bronze with a bronze rule `todo` fails the build.
+#
+# tier: none (owner decision C1, 2026-09-19) — two bronze rules are still `todo` below, so this
+# is closest to bronze of the three but still not there.
+#
+# W6C-s2 re-examined outbound-declared and secrets-declared now that W6A-s4 and W6A-s5 have
+# landed, and flipped both to `done` for google — see the per-rule comments below for the tests.
+tier: none
+rules:
+  live-probe: done             # services/chief-of-staff/tests/live/google.live.mts (286 lines) is committed and is exactly the file the manifest names
+  region-declared: done        # integrations/google/integration.json: "region": "global", checked for every integration by packages/agent-kit/tests/integration-manifest-agrees.test.ts; packages/agent-kit/tests/capability-region.test.ts separately confirms the gmail/calendar adapter capability docs also declare "global"
+  outbound-declared: done      # services/keeper/tests/egress-from-manifest.test.ts ("lets no capability reach a host its manifest did not declare") checks the "gmail" and "calendar" capabilities' hosts against outbound_hosts and passes (W6A-s5)
+  secrets-declared: done       # packages/agent-kit/tests/integration-secret-lint.test.ts scans services/chief-of-staff/lib and services/travel/lib for undeclared /run/secrets/<name> literals; the google-client-id/-secret files this manifest's capabilities read are declared per instance in integrations/installation.json, and google-places-api-key (a different, uncovered capability, not gmail/calendar) is the only google-shaped allow-listed gap (W6A-s4)
+  no-telemetry: todo           # no test proves google's client traffic reaches only .googleapis.com and nothing else
+  contract-tests: done         # services/chief-of-staff/tests/tools-gmail.test.ts, tests/tools-calendar.test.ts and tests/google.test.ts exercise the gmail/calendar tooling against the neutral default agent
+  shared-request-path: done    # packages/agent-kit/src/google-auth.ts:43 and services/chief-of-staff/lib/google.ts:62 build clients on the official `googleapis`/`googleapis-common` SDK, not a hand-rolled fetch loop
+  credential-tested: todo      # packages/agent-kit/src/credential.ts's test-call machinery exists but no concrete CredentialType is defined for google's oauth2 yet — nothing calls defineCredentialType or runCredentialTest

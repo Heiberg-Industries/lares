@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    // agent/agent.ts and the agent-kit override files import ../agent.json — the agent
+    // declaration (ORB-144) — as a JSON module.
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["agent/**/*.ts", "bin/**/*.ts", "catalogue/**/*.ts", "evals/**/*.ts", "lib/**/*.ts"]
+}

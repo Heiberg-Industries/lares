@@ -1,0 +1,14 @@
+[
+  { "position": 5,   "project": "zero7",     "kind": "report",    "destinations": ["C0AKB0BC29Z"], "allowTarget": true },
+  { "position": 8,   "project": "lares",     "kind": "report",    "destinations": ["D0BD72JEKT6"], "allowTarget": true },
+  { "position": 9,   "source": "eve-saga",  "kind": "event",     "destinations": ["C0BUXBHRX9A"], "allowTarget": false },
+  { "position": 10,  "project": "zero7",     "severity": "error", "destinations": ["C0ADJ6KJVR7", "C0B4DN0HG6P"], "allowTarget": false },
+  { "position": 20,  "project": "zero7",     "severity": "warn",  "destinations": ["C0ADJ6KJVR7"], "allowTarget": false },
+  { "position": 40,  "project": "orakel",    "severity": "error", "destinations": ["C0B6WJL4L4E", "C0B4DN0HG6P"], "allowTarget": false },
+  { "position": 50,  "project": "orakel",    "severity": "warn",  "destinations": ["C0B6WJL4L4E"], "allowTarget": false },
+  { "position": 60,  "project": "folkepuls", "severity": "error", "destinations": ["C0BSA34PHFX", "C0B4DN0HG6P"], "allowTarget": false },
+  { "position": 70,  "project": "folkepuls", "severity": "warn",  "destinations": ["C0BSA34PHFX"], "allowTarget": false },
+  { "position": 100, "severity": "error", "destinations": ["C0B4DN0HG6P"],   "allowTarget": false },
+  { "position": 110, "severity": "warn",  "destinations": ["C0BUCAQDF63"], "allowTarget": false },
+  { "position": 120, "severity": "info",  "destinations": ["C0BUXBHRX9A"],  "allowTarget": false }
+]

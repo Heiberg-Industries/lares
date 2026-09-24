@@ -1,0 +1,30 @@
+{
+  "name": "@lares/notion-sync",
+  "version": "0.1.0",
+  "description": "Keeps the Heiberg Brain vault and Notion in step.",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.ts",
+  "exports": {
+    ".": "./lib/index.ts",
+    "./lib/store.js": "./lib/store.ts",
+    "./lib/adapters/notion-client.js": "./lib/adapters/notion-client.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lares/agent-box": "workspace:^",
+    "@lares/vault-format": "workspace:*",
+    "commander": "^12.1.0",
+    "googleapis": "^173.0.0"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^10.13.2",
+    "@types/pg": "^8.11.10",
+    "pg": "^8.21.0"
+  },
+  "license": "AGPL-3.0-only"
+}

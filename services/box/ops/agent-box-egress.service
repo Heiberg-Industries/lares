@@ -1,0 +1,9 @@
+# services/box/ops/agent-box-egress.service
+[Unit]
+Description=Refresh agent-box nftables egress allowlist
+After=network-online.target nftables.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/refresh-egress-allowlist.sh

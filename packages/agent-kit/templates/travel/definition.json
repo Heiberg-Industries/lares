@@ -1,0 +1,93 @@
+{
+  "name": "travel",
+  "model": "installation-brain",
+  "persona": "agent/persona.md",
+  "scope": "personal",
+  "channels": [],
+  "framework_tools": [
+    "web_search"
+  ],
+  "egress": {
+    "sealed": true
+  },
+  "grants": [
+    {
+      "capability": "calendar",
+      "scope": "read"
+    },
+    {
+      "capability": "travel",
+      "scope": "write"
+    },
+    {
+      "capability": "places",
+      "scope": "read"
+    },
+    {
+      "capability": "strava",
+      "scope": "read"
+    },
+    {
+      "capability": "shopping",
+      "scope": "write"
+    },
+    {
+      "capability": "vault",
+      "scope": "write",
+      "areas": [
+        "facts"
+      ]
+    },
+    {
+      "capability": "persona",
+      "scope": "write"
+    },
+    {
+      "capability": "currency",
+      "scope": "read"
+    },
+    {
+      "capability": "read_url",
+      "scope": "read"
+    },
+    {
+      "capability": "admin",
+      "scope": "write"
+    },
+    {
+      "capability": "transit",
+      "scope": "read"
+    }
+  ],
+  "autonomy": {
+    "calendar": "gated",
+    "travel": "gated",
+    "places": "gated",
+    "strava": "gated",
+    "shopping": "gated",
+    "vault": "gated",
+    "persona": "gated",
+    "currency": "gated",
+    "read_url": "gated",
+    "admin": "gated",
+    "transit": "gated"
+  },
+  "skills": [],
+  "role": "travel",
+  "description": "",
+  "doors": [],
+  "schedules": {
+    "dream": {
+      "on": false
+    },
+    "proximity": {
+      "on": true
+    },
+    "taste-promote": {
+      "on": false
+    },
+    "trip-lifecycle": {
+      "on": true
+    }
+  }
+}

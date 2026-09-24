@@ -1,0 +1,15 @@
+# /etc/systemd/system/saga-egress.service — reloads the Saga egress nft rule on boot.
+# Installed + enabled on lares-agent-1 (2026-06-18). After=docker.service so Docker's own
+# iptables-nft rules are in place first; our `inet saga_egress` table is independent of them.
+[Unit]
+Description=Saga egress containment (nft saga_egress table)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/nft -f /opt/agent-box/proxy/egress.nft
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

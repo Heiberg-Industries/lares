@@ -1,0 +1,3 @@
+{$LARES_DOMAIN} {
+    reverse_proxy console:3000
+}

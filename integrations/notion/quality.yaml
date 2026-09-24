@@ -1,0 +1,21 @@
+# What this file is: the evidence for the tier integrations/notion/integration.json's row claims.
+# A rule is `done`, `todo`, or `exempt` WITH a comment — an exempt with no comment fails the check.
+# The tier is only as good as its rules: claiming bronze with a bronze rule `todo` fails the build.
+#
+# tier: none (owner decision C1, 2026-09-19) — four bronze rules are still `todo` below, so
+# claiming `bronze` today would be the exact claim-not-backed-by-evidence this file exists to
+# prevent. Wave 6B flips each `todo` to `done` as its slice lands; only then does this claim
+# `bronze`.
+#
+# W6C-s2 re-examined outbound-declared and secrets-declared now that W6A-s4 and W6A-s5 have
+# landed, and flipped both to `done` for notion — see the per-rule comments below for the tests.
+tier: none
+rules:
+  live-probe: todo            # the manifest names services/notion-sync/tests/live/notion.live.mts; it does not exist yet (W6B-s2 commits it). A different, narrower live probe already exists (services/chief-of-staff/tests/live/notion-page.live.mts) but it is not the one the manifest names.
+  region-declared: done       # integrations/notion/integration.json: "region": "global", checked for every integration by packages/agent-kit/tests/integration-manifest-agrees.test.ts ("declares a region on every integration")
+  outbound-declared: done     # services/keeper/tests/egress-from-manifest.test.ts ("lets no capability reach a host its manifest did not declare") checks the "notion" capability's hosts against outbound_hosts and passes; generateEgress builds the squid allow-list from the same list (W6A-s5)
+  secrets-declared: done      # packages/agent-kit/tests/integration-secret-lint.test.ts scans services/notion-sync/lib (and five other roots) for undeclared /run/secrets/<name> literals; notion-token is the only secret this manifest names and no notion-shaped finding is among the six allow-listed gaps (W6A-s4)
+  no-telemetry: todo          # no test proves the client reaches only api.notion.com and nothing else — W6B-s1's transport test is what will prove this
+  contract-tests: done        # services/chief-of-staff/tests/notion-page.test.ts exercises the notion tooling against the neutral default agent
+  shared-request-path: todo   # services/notion-sync/lib/adapters/notion-client.ts:492 calls `globalThis.fetch` directly in a hand-rolled 831-line client; no SDK, no shared makeRequester (./request.ts) — W6B-s2 replaces it
+  credential-tested: todo     # packages/agent-kit/src/credential.ts defines the test-call machinery but "NO CONCRETE CREDENTIAL TYPE IS DEFINED HERE" (its own header) — nothing calls defineCredentialType or runCredentialTest for notion yet

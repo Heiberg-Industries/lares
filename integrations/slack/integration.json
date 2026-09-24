@@ -1,0 +1,17 @@
+{
+  "id": "slack",
+  "name": "Slack",
+  "provenance": "core",
+  "concept": [],
+  "capability": [],
+  "region": "global",
+  "data_path": "non_eu_cloud",
+  "outbound_hosts": [".slack.com", ".slack-files.com"],
+  "secrets": [],
+  "credential_type": "api_key",
+  "owner_supplies_client": false,
+  "sdk": { "package": "@slack/web-api", "licence": "MIT" },
+  "live_probe": "services/chief-of-staff/tests/live/slack.live.mts",
+  "quality": "integrations/slack/quality.yaml",
+  "codeowner": "lares-core"
+}

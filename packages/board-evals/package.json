@@ -1,0 +1,23 @@
+{
+  "name": "@lares/board-evals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval": "node scripts/all-evals.mjs",
+    "proof:web-chat": "node scripts/web-chat-proof.mjs",
+    "proof:web-chat-approval": "node scripts/web-chat-approval-proof.mjs",
+    "snapshot:capture": "bash scripts/capture-snapshot.sh",
+    "snapshot:check": "vitest run tests/snapshot-gate.test.ts",
+    "snapshot:compare": "bash scripts/snapshot-compare.sh"
+  },
+  "dependencies": {
+    "@lares/agent-kit": "workspace:*",
+    "eve": "0.60.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^10.13.2",
+    "pg": "^8.21.0"
+  },
+  "license": "AGPL-3.0-only"
+}

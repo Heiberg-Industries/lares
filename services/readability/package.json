@@ -1,0 +1,27 @@
+{
+  "name": "@lares/readability",
+  "version": "0.1.0",
+  "description": "Contained URL\u2192readable-text service (Mozilla Readability). Web egress lives here, not in the sealed agents.",
+  "private": true,
+  "type": "module",
+  "main": "./lib/server.ts",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "serve": "tsx bin/serve.ts"
+  },
+  "dependencies": {
+    "@mozilla/readability": "^0.6.0",
+    "jsdom": "^29.0.0",
+    "undici": "^8.0.0",
+    "unpdf": "^1.8.1"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^21.1.7",
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "AGPL-3.0-only"
+}

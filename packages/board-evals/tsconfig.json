@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "types": ["node"],
+    "strict": true,
+    // `pg`'s ESM entry (resolved under "bundler") ships no types condition; @types/pg is not a
+    // declared dependency of this package (every sibling role service that imports `pg` carries
+    // it — see e.g. services/creative/package.json — board-evals never did, and this is the first
+    // time anything here type-checked it). Adding the dependency is out of this slice's scope (no
+    // lockfile change); this narrows `strict`'s implied noImplicitAny for that one untyped import
+    // only, exactly as an unavailable-declarations gap is normally handled.
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": ["agent/**/*.ts", "catalogue/**/*.ts", "evals/**/*.ts", "lib/**/*.ts", "probe-extension/**/*.ts", "tests/**/*.ts"]
+}

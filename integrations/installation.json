@@ -1,0 +1,192 @@
+{
+  "_README": [
+    "THIS FILE LEAVES THE ENGINE IN WAVE 9. It is installation DATA sitting in engine code:",
+    "which instances of each connection exist, what each instance's secret files are called on",
+    "the box, which capability needs which connection, and the consumers that have no grants to",
+    "derive their connections from. An integration manifest (integrations/<id>/integration.json)",
+    "describes the VENDOR and cannot carry any of this, because it is the same for every",
+    "installation and none of this is.",
+    "",
+    "Lifted verbatim from packages/agent-kit/src/connections.ts as it stood at commit b4ff019.",
+    "Nothing was renamed and no value changed. The names inside it (org ids, agent instance ids,",
+    "secret file names, one base URL) belong to the one existing installation; wave 9 moves this",
+    "whole file out of the engine, which is why it is ONE file and not eight.",
+    "",
+    "Edit this, or an integration manifest, then run:",
+    "  pnpm -C packages/agent-kit run generate:connections",
+    "",
+    "That ONE command writes BOTH generated files (LAR-76):",
+    "  packages/agent-kit/src/connections.ts         — what the console shows",
+    "  packages/agent-kit/src/integration-secrets.ts — what the keeper may MOUNT",
+    "",
+    "`secretEnv` on an instance is what the second one is made of: secret file name -> the",
+    "environment variable the runtime reads that file's path from. A secret with no entry is a",
+    "credential the keeper will NOT mount from an agent definition. Declare `secretEnv` on an",
+    "instance and you must declare it for EVERY secret of that instance — half a credential pair",
+    "is worse than none. An env key may appear once across the whole file.",
+    "",
+    "`note` is emitted as a comment above the rendered object; `instancesNote` above its",
+    "`instances:` line; `capabilityNotes[c].above` / `.inline` around a capability's line."
+  ],
+
+  "connections": [
+    {
+      "id": "google",
+      "label": "Google (Gmail + Calendar)",
+      "custody": "console",
+      "configEnv": { "redirectUri": { "env": "GOOGLE_REDIRECT_URI", "default": "" } },
+      "instancesNote": [
+        "One OAuth client per org. Internal consent only accepts users of that client's Workspace,",
+        "which is why a user in another Workspace cannot go through the heiberg client (ORB-28)."
+      ],
+      "instances": [
+        { "id": "heiberg", "label": "Workspace A", "secrets": ["google-client-id-heiberg", "google-client-secret-heiberg"],
+          "secretEnv": { "google-client-id-heiberg": "GOOGLE_CLIENT_ID_HEIBERG_FILE", "google-client-secret-heiberg": "GOOGLE_CLIENT_SECRET_HEIBERG_FILE" } },
+        { "id": "zero7", "label": "Workspace B", "secrets": ["google-client-id-zero7", "google-client-secret-zero7"] }
+      ]
+    },
+    {
+      "id": "twenty",
+      "label": "Twenty CRM (API key)",
+      "custody": "host",
+      "configEnv": { "baseUrl": { "env": "TWENTY_BASE_URL", "default": "" } },
+      "instances": [{ "id": "shared", "secrets": ["twenty-key"], "secretEnv": { "twenty-key": "TWENTY_KEY_FILE" } }]
+    },
+    {
+      "id": "orakel",
+      "label": "Orakel",
+      "custody": "host",
+      "configEnv": { "baseUrl": { "env": "ORAKEL_URL", "default": "" } },
+      "instances": [{ "id": "shared", "secrets": ["orakel-key"], "secretEnv": { "orakel-key": "ORAKEL_KEY_FILE" } }]
+    },
+    {
+      "id": "readability",
+      "label": "Readability worker",
+      "custody": "host",
+      "configEnv": { "baseUrl": { "env": "READABILITY_URL", "default": "" } },
+      "instances": [{ "id": "shared", "secrets": ["readability-token"], "secretEnv": { "readability-token": "READABILITY_TOKEN_FILE" } }]
+    },
+    {
+      "id": "gateway",
+      "label": "LiteLLM gateway",
+      "custody": "host",
+      "note": [
+        "No configEnv: GATEWAY_URL is read directly via ctx.env at each build site today, and adding",
+        "it here would change gen-compose output for no gain. Left deliberately."
+      ],
+      "instances": [
+        { "id": "shared", "secrets": ["gateway-key"] },
+        { "id": "marcel", "secrets": ["marcel-gateway-key"] }
+      ]
+    },
+    {
+      "id": "notion",
+      "label": "Notion (integration token)",
+      "custody": "host",
+      "instances": [{ "id": "shared", "secrets": ["notion-token"], "secretEnv": { "notion-token": "NOTION_TOKEN_FILE" } }]
+    },
+    {
+      "id": "slack",
+      "label": "Slack (bot)",
+      "custody": "host",
+      "instances": [
+        { "id": "saga", "secrets": ["slack-bot-token", "slack-app-token"] },
+        { "id": "calliope", "secrets": ["calliope-slack-bot-token", "calliope-slack-app-token"] }
+      ]
+    },
+    {
+      "id": "telegram",
+      "label": "Telegram (bot)",
+      "custody": "host",
+      "instances": [
+        { "id": "saga", "secrets": ["telegram-bot-token"] },
+        { "id": "marcel", "secrets": ["marcel-telegram-bot-token"] }
+      ]
+    },
+    {
+      "id": "karakeep",
+      "label": "Karakeep (bookmarks)",
+      "custody": "host",
+      "note": [
+        "LAR-76: added because the keeper already mounts this key from an agent definition and no",
+        "list said so. Read by the digest schedule alongside the KARAKEEP_URL environment binding."
+      ],
+      "instances": [{ "id": "shared", "secrets": ["karakeep-api-key"], "secretEnv": { "karakeep-api-key": "KARAKEEP_API_KEY_FILE" } }]
+    },
+    {
+      "id": "signals",
+      "label": "Signal spine (bearer token)",
+      "custody": "host",
+      "note": [
+        "LAR-76: the bearer token for the installation's own signals endpoint (SIGNAL_SPINE_URL).",
+        "Already mountable by the keeper; declared here so it is visible and rotatable like the rest."
+      ],
+      "instances": [{ "id": "shared", "secrets": ["signal-spine-token"], "secretEnv": { "signal-spine-token": "SIGNAL_SPINE_TOKEN_FILE" } }]
+    },
+    {
+      "id": "places",
+      "label": "Google Places (API key)",
+      "custody": "host",
+      "note": [
+        "A plain API key, NOT the OAuth client above: different credential, different custody, and",
+        "the travel tools treat it as optional. LAR-76 closes the gap the secret lint reported —",
+        "this key was read in code and declared nowhere."
+      ],
+      "instances": [{ "id": "shared", "secrets": ["google-places-api-key"], "secretEnv": { "google-places-api-key": "GOOGLE_PLACES_API_KEY_FILE" } }]
+    },
+    {
+      "id": "aerodatabox",
+      "label": "AeroDataBox (flight status)",
+      "custody": "host",
+      "note": ["LAR-76: optional third-party flight-status key the keeper already mounts."],
+      "instances": [{ "id": "shared", "secrets": ["aerodatabox-api-key"], "secretEnv": { "aerodatabox-api-key": "AERODATABOX_API_KEY_FILE" } }]
+    },
+    {
+      "id": "strava",
+      "label": "Strava (OAuth client)",
+      "custody": "host",
+      "note": [
+        "LAR-76: optional. The file names below are the ones the keeper mounts today; the adapter's",
+        "own hard-coded fallback path spells them with an agent prefix, which only ever applies when",
+        "the environment variables below are unset — the keeper always sets them."
+      ],
+      "instances": [{ "id": "shared", "secrets": ["strava-client-id", "strava-client-secret"],
+        "secretEnv": { "strava-client-id": "MARCEL_STRAVA_CLIENT_ID_FILE", "strava-client-secret": "MARCEL_STRAVA_CLIENT_SECRET_FILE" } }]
+    }
+  ],
+
+  "capabilities": {
+    "twenty": ["twenty"],
+    "read_url": ["readability"],
+    "orakel": ["orakel"],
+    "person": ["twenty", "google", "orakel"],
+    "studio": ["gateway:shared"],
+    "gmail": ["google"],
+    "calendar": ["google"],
+    "commercial": ["twenty", "gateway:shared", "orakel"]
+  },
+
+  "capabilityNotes": {
+    "identity": { "inline": "reads the box's own user_aliases registry — no external credential" },
+    "person": {
+      "above": ["Fans out over capabilities Saga already holds — so it needs their credentials, and no new one."]
+    },
+    "obligation": { "inline": "reads/writes the box's own obligation_threads table — no external credential" }
+  },
+
+  "consumers": [
+    {
+      "note": [
+        "Reads Calendar through agent-runtime's resolver, Notion with its own token, and — since",
+        "ORB-39 Phase 4 — Twenty, for the People projection (read-only, keyed by email)."
+      ],
+      "name": "notion-sync", "kind": "service", "connections": ["google", "notion", "twenty"]
+    },
+    { "name": "email-watcher", "kind": "service", "connections": ["google"] },
+    { "name": "marcel", "kind": "service", "connections": ["google", "gateway:marcel", "telegram:marcel"] },
+    { "name": "console", "kind": "console", "connections": ["google"] },
+    { "name": "saga (Slack door)", "kind": "door", "connections": ["slack:saga"] },
+    { "name": "saga (Telegram door)", "kind": "door", "connections": ["telegram:saga"] },
+    { "name": "calliope (Slack door)", "kind": "door", "connections": ["slack:calliope"] }
+  ]
+}

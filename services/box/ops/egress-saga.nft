@@ -1,0 +1,68 @@
+# egress-saga.nft — Saga egress containment (APPLIED + LIVE 2026-06-18).
+#
+# Deployed at /opt/agent-box/proxy/egress.nft on the box; loaded on boot by
+# /etc/systemd/system/saga-egress.service (After=docker.service), and reloadable with
+#   nft -f /opt/agent-box/proxy/egress.nft
+#
+# Model (see docs/research/2026-06-18-saga-egress-domain-proxy-scoping.md):
+#   - Saga (172.18.0.10), the digest service (172.18.0.11), AND Calliope (172.18.0.13) run on
+#     FIXED IPs (pinned in compose) so this rule is stable. All are contained identically: the
+#     allow-list below matches by DESTINATION, so adding an agent's IP to the saddr exemption
+#     set subjects it to the same gateway/db/proxy/DNS allows + final drop. (Calliope reaches
+#     only the gateway + db + slack-proxy + DNS, all already allowed below.)
+#   - eve-saga (172.18.0.24, sealed 2026-08-12) is the eve-framework shadow of Saga. It needs
+#     the gateway + db only, both already allowed, so it needed no new allow — just membership
+#     of the saddr set. It is sealed BECAUSE it shadows a sealed agent: leaving it out would
+#     have given the rebuild broader reach than the Saga it is meant to be compared against.
+#     When Task 8 gives it a Slack door, its Slack path is the squid proxy, like Saga's.
+#   - eve-marcel (172.18.0.25, sealed 2026-08-16) is the eve-framework rebuild of Marcel
+#     (Telegram travel concierge). Unlike old Marcel (172.18.0.22, still unrestricted egress
+#     today — deliberately not in this saddr set), eve-marcel is sealed from day one: it needs
+#     the gateway + db (already allowed) PLUS ~11 travel-API domains (Google Places/Maps,
+#     Nominatim, Overpass, Valhalla, MET Norway, Open-Meteo marine, Strava, Avinor,
+#     AeroDataBox, Frankfurter, Telegram) that rotate IPs, so those go through the squid
+#     proxy by DOMAIN (proxy/squid.conf) exactly like Slack/Google do for Saga/eve-saga.
+#   - eve-calliope (172.18.0.26, sealed 2026-08-23) is the eve-framework port of Calliope
+#     (Slack ideation agent, the `calliope:` block at 172.18.0.13 — ALSO in this set, and it
+#     stays sealed and running until the ORB-135 cutover stops it). She needs the gateway +
+#     db (already allowed) plus Slack and cloud.langfuse.com, both of which she reaches
+#     through the squid proxy by DOMAIN — both are already allow-listed in proxy/squid.conf
+#     for Saga/eve-saga, so eve-calliope needed NO new allow here and NO squid change: just
+#     membership of the saddr set below. She reaches nothing else — no Google, no Twenty, no
+#     Orakel, no Telegram — because she has no hand that wants any of them.
+#   - Slack (rotating AWS IPs) is reached BY DOMAIN through the `slack-proxy` squid
+#     container (allow-list *.slack.com). Saga's only Slack path is the proxy.
+#   - gateway.example.com + crm.owner.example are one stable IP (192.0.2.10) → direct.
+#   - This is a SEPARATE `inet` table; it coexists with Docker's `ip filter`/`ip nat`
+#     and is removed (rollback) with `nft delete table inet saga_egress` — NEVER
+#     `nft flush ruleset` (that would wipe Docker's rules and break all networking).
+#
+# Verified live: Saga → 1.1.1.1/8.8.8.8:443 BLOCKED (drop counter increments);
+# Saga → 192.0.2.10:443 (gateway+Twenty), 172.18.0.3:8888 (proxy), 172.18.0.2:5432 (db)
+# OPEN; Slack stays connected through the proxy; container healthy.
+
+# Idempotent reload: ensure-exists → delete → recreate. Atomic under `nft -f`, so a
+# re-apply REPLACES the table rather than appending duplicate rules (which would leave a
+# stale `drop` ahead of newer allows). Always load this file with `nft -f`, never piecemeal.
+add table inet saga_egress
+delete table inet saga_egress
+
+table inet saga_egress {
+  chain forward {
+    type filter hook forward priority -10; policy accept;
+    ip saddr != { 172.18.0.10, 172.18.0.11, 172.18.0.13, 172.18.0.14, 172.18.0.23, 172.18.0.24, 172.18.0.25, 172.18.0.26 } accept   # not Saga/digest/calliope/nora/atlas-sync/eve-saga/eve-marcel/eve-calliope -> Docker/host handle unchanged (nora .14 sealed 2026-07-01, Plan A; atlas-sync .23 2026-08-12; eve-saga .24 2026-08-12; eve-marcel .25 sealed 2026-08-16; eve-calliope .26 sealed 2026-08-23)
+    ct state established,related accept       # Saga return traffic
+    ip daddr 172.18.0.0/16 accept            # inter-container: db + slack-proxy
+    ip daddr 192.0.2.10 accept              # our box: LiteLLM gateway + Twenty CRM (direct)
+    ip daddr 198.51.100.10 accept            # service.example (Saga Orakel hand) — stable Hetzner IP; re-resolve if it breaks
+    # Migadu mail servers (stable OVH IPs — IMAP imap.migadu.com + SMTP smtp.migadu.com).
+    # Unlike Slack these don't rotate, so a direct IP allow is sound. Re-resolve if email breaks.
+    ip daddr { 51.210.3.20, 51.210.3.23, 37.59.57.117, 51.255.82.75 } accept
+    # Telegram Bot API (api.telegram.org). Telegram load-balances across its own /20 block,
+    # so allow the whole documented range rather than a single (rotating-within-block) IP.
+    ip daddr 149.154.160.0/20 accept
+    udp dport 53 accept                       # DNS
+    tcp dport 53 accept
+    counter drop                              # Saga -> rest of the internet: contained
+  }
+}

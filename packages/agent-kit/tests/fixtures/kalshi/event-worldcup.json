@@ -1,0 +1,33 @@
+{
+  "event": {
+    "event_ticker": "KXWORLDCUP-26",
+    "series_ticker": "KXWORLDCUP",
+    "title": "World Cup Winner",
+    "sub_title": "2026",
+    "category": "Sports",
+    "mutually_exclusive": true
+  },
+  "markets": [
+    {
+      "ticker": "KXWORLDCUP-26-ESP", "event_ticker": "KXWORLDCUP-26",
+      "title": "Will Spain win the 2026 World Cup?", "yes_sub_title": "Spain", "no_sub_title": "Spain",
+      "yes_ask_dollars": "0.1500", "yes_bid_dollars": "0.1300", "no_ask_dollars": "0.8700",
+      "last_price_dollars": "0.1400", "liquidity_dollars": "120000.00", "volume_fp": "50000.00",
+      "status": "active", "close_time": "2026-07-20T15:00:00Z", "market_type": "binary"
+    },
+    {
+      "ticker": "KXWORLDCUP-26-BRA", "event_ticker": "KXWORLDCUP-26",
+      "title": "Will Brazil win the 2026 World Cup?", "yes_sub_title": "Brasil", "no_sub_title": "Brasil",
+      "yes_ask_dollars": "0.2300", "yes_bid_dollars": "0.2100", "no_ask_dollars": "0.7900",
+      "last_price_dollars": "0.2200", "liquidity_dollars": "90000.00", "volume_fp": "40000.00",
+      "status": "active", "close_time": "2026-07-20T15:00:00Z", "market_type": "binary"
+    },
+    {
+      "ticker": "KXWORLDCUP-26-NZL", "event_ticker": "KXWORLDCUP-26",
+      "title": "Will New Zealand win the 2026 World Cup?", "yes_sub_title": "New Zealand", "no_sub_title": "New Zealand",
+      "yes_ask_dollars": "0.0010", "yes_bid_dollars": "0.0005", "no_ask_dollars": "0.9990",
+      "last_price_dollars": "0.0008", "liquidity_dollars": "5000.00", "volume_fp": "1000.00",
+      "status": "active", "close_time": "2026-07-20T15:00:00Z", "market_type": "binary"
+    }
+  ]
+}

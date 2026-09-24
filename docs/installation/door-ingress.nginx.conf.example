@@ -1,0 +1,28 @@
+# MANUAL Task20 preparation. Substitute reviewed TLS/domain/upstream values before enabling.
+# Keep the Console's existing private 127.0.0.1:3000 publication. This server exposes only
+# the fixed webhook surface. Never proxy /, /api/auth, or /lares/runtime through this vhost.
+limit_req_zone $binary_remote_addr zone=lares_doors:10m rate=10r/s;
+upstream lares_console_private { server 127.0.0.1:3000; }
+server {
+    listen 443 ssl;
+    server_name doors.example.invalid;
+    ssl_certificate /REVIEWED/certificate.pem;
+    ssl_certificate_key /REVIEWED/private-key.pem;
+    client_max_body_size 256k;
+    client_body_timeout 5s;
+    location ~ ^/api/doors/[a-z][a-z0-9-]{1,30}/(slack|telegram)/events$ {
+        limit_except POST { deny all; }
+        limit_req zone=lares_doors burst=20 nodelay;
+        proxy_pass http://lares_console_private;
+        proxy_http_version 1.1;
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 10s;
+        proxy_send_timeout 10s;
+        proxy_request_buffering on;
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "";
+        # Preserve original request body, Content-Type and Slack signature/timestamp or
+        # Telegram secret-token headers. Do not parse/re-serialize JSON at this layer.
+    }
+    location / { return 404; }
+}

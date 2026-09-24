@@ -1,0 +1,25 @@
+{
+  "name": "@lares/vault-format",
+  "version": "0.1.0",
+  "description": "The vault's shared vocabulary \u2014 the five origin classes and the OKF v0.2-compatible conformance check \u2014 with no dependencies, so agents, sync jobs and the console can all afford to import it.",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./origin": "./src/origin.ts",
+    "./okf": "./src/okf.ts",
+    "./forget-ledger": "./src/forget-ledger.ts",
+    "./settings": "./src/settings.ts",
+    "./settings-scan": "./src/settings-scan.ts",
+    "./settings-check": "./src/settings-check.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "AGPL-3.0-only"
+}

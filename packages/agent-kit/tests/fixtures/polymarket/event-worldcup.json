@@ -1,0 +1,35 @@
+{
+  "slug": "world-cup-winner",
+  "title": "World Cup Winner ",
+  "negRisk": true,
+  "endDate": "2026-07-20",
+  "markets": [
+    {
+      "question": "Will Spain win the 2026 FIFA World Cup?",
+      "slug": "will-spain-win", "conditionId": "0xspain",
+      "groupItemTitle": "Spain",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.1385\", \"0.8615\"]",
+      "clobTokenIds": "[\"tok-spain-yes\", \"tok-spain-no\"]",
+      "liquidityNum": 9455365.57, "active": true, "closed": false
+    },
+    {
+      "question": "Will Brazil win the 2026 FIFA World Cup?",
+      "slug": "will-brazil-win", "conditionId": "0xbrazil",
+      "groupItemTitle": "Brazil",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.2200\", \"0.7800\"]",
+      "clobTokenIds": "[\"tok-brazil-yes\", \"tok-brazil-no\"]",
+      "liquidityNum": 8000000.0, "active": true, "closed": false
+    },
+    {
+      "question": "Will New Zealand win the 2026 FIFA World Cup?",
+      "slug": "will-nz-win", "conditionId": "0xnz",
+      "groupItemTitle": "New Zealand",
+      "outcomes": "[\"Yes\", \"No\"]",
+      "outcomePrices": "[\"0.0005\", \"0.9995\"]",
+      "clobTokenIds": "[\"tok-nz-yes\", \"tok-nz-no\"]",
+      "liquidityNum": 50000.0, "active": true, "closed": false
+    }
+  ]
+}

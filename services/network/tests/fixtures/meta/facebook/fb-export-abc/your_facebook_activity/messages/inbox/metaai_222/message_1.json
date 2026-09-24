@@ -1,0 +1,6 @@
+{
+  "participants": [{ "name": "Meta AI" }, { "name": "Bendik Heiberg" }],
+  "messages": [{ "sender_name": "Meta AI", "timestamp_ms": 1752300000000, "content": "I am a bot" }],
+  "title": "Meta AI",
+  "thread_path": "inbox/metaai_222"
+}

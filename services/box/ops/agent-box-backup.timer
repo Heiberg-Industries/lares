@@ -1,0 +1,9 @@
+[Unit]
+Description=Run agent-box backup nightly at 03:00 UTC
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

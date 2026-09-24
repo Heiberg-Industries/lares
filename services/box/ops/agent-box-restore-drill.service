@@ -1,0 +1,13 @@
+[Unit]
+Description=Rehearse a real restore of the agent box's nightly backup, monthly
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/agent-box/restore-drill.sh
+# Reads /etc/agent-box/backup.env and the root-only restic password. Creates and
+# drops only scratch databases named drill_*, and writes only a scratch directory it
+# removes itself. Reads the live database ONLY to count its tables — never writes to
+# it. Sends no heartbeat; backup-verify.sh stays the single alarm owner (LAR-54-s4
+# adds the check that a stale or failed drill raises it).

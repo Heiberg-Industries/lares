@@ -1,0 +1,23 @@
+{
+  "name": "@lares/taste",
+  "version": "0.1.0",
+  "description": "The taste store's entry shape (ORB-97/98): OKF-typed markdown files under /srv/taste, parsed and serialised by ONE implementation shared by the console (write path) and Marcel (read path) so the shape cannot fork. Pure \u2014 no fs, no deps.",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./takeout": "./src/takeout.ts",
+    "./s2": "./src/s2.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "license": "AGPL-3.0-only"
+}

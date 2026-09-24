@@ -1,0 +1,7 @@
+{
+  "ticker": "KXNEWPOPE-70-PPAR", "event_ticker": "KXNEWPOPE-70",
+  "title": "Who will the next Pope be?", "yes_sub_title": "Pietro Parolin", "no_sub_title": "Pietro Parolin",
+  "yes_ask_dollars": "0.0510", "yes_bid_dollars": "0.0400", "no_ask_dollars": "0.9600",
+  "last_price_dollars": "0.0510", "liquidity_dollars": "0.0000", "volume_fp": "22613.48",
+  "status": "active", "close_time": "2070-01-01T15:00:00Z", "market_type": "binary"
+}

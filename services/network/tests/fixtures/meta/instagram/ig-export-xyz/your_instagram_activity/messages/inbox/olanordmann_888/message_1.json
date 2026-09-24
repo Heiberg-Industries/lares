@@ -1,0 +1,6 @@
+{
+  "participants": [{ "name": "Ola Nordmann" }, { "name": "Bendik Heiberg" }],
+  "messages": [{ "sender_name": "Ola Nordmann", "timestamp_ms": 1756600000000, "content": "Yo" }],
+  "title": "Ola Nordmann",
+  "thread_path": "inbox/olanordmann_888"
+}

@@ -1,0 +1,31 @@
+# Exclude large directories that must never enter the Docker build context.
+# Keep service source dirs — the build stage uses them for `next build`.
+
+.git
+.claude
+.firecrawl
+.superpowers
+.vscode
+
+# Root-level node_modules (hoisted deps are re-created inside the image)
+node_modules
+
+# Per-package node_modules (re-created inside the image)
+**/node_modules
+
+# Next.js build artifacts
+**/.next
+**/dist
+**/out
+**/coverage
+
+# eve build artifacts — `eve build` regenerates .output inside the image, and .eve/builds/
+# keeps a ~10 MB copy of every local build. Both are gitignored; without them here a local
+# `eve build` would ship its stale output into the image too.
+**/.output
+**/.eve
+
+# Logs / OS noise
+**/*.log
+.DS_Store
+**/Thumbs.db

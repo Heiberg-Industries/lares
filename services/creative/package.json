@@ -1,0 +1,42 @@
+{
+  "name": "lares-creative",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "assemble": "tsx ../../packages/agent-kit/bin/assemble-instructions.ts --agent . --role ../../packages/agent-kit/templates/creative/role.md --voice agent/voice.md --out agent/persona.md",
+    "assemble:check": "tsx ../../packages/agent-kit/bin/assemble-instructions.ts --agent . --role ../../packages/agent-kit/templates/creative/role.md --voice agent/voice.md --out agent/persona.md --check",
+    "build": "pnpm run assemble && eve build",
+    "dev": "eve dev",
+    "start": "eve start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc",
+    "regen:eve-sql": "tsx ../../packages/agent-kit/bin/regen-eve-workflow-sql.ts --service .",
+    "regen:eve-sql:check": "tsx ../../packages/agent-kit/bin/regen-eve-workflow-sql.ts --service . --check"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.37",
+    "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
+    "@opentelemetry/resources": "2.11.0",
+    "@opentelemetry/sdk-node": "0.222.0",
+    "@opentelemetry/semantic-conventions": "1.39.0",
+    "@lares/agent-kit": "workspace:*",
+    "@workflow/world-postgres": "5.0.0-beta.42",
+    "ai": "^7.0.105",
+    "eve": "0.60.1",
+    "https-proxy-agent": "7.0.6",
+    "just-bash": "^3.3.0",
+    "pg": "^8.21.0",
+    "undici": "^7",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.x",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.0",
+    "typescript": "7.0.2",
+    "vitest": "2.1.9"
+  },
+  "license": "AGPL-3.0-only"
+}

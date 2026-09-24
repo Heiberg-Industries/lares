@@ -1,0 +1,63 @@
+# The keeper's own compose file. ops/install.sh's run_keeper (W8F-F7b) copies it to this
+# installation's opt directory and brings it up there, after the owner exists, with every
+# variable below supplied through a rendered --env-file: the two image digests come from the
+# release the install was given, the eight paths from the installation itself.
+#
+# CORRECTED W8F-F7b. This line used to read "Copy/set values explicitly in Task20; NEVER
+# compose-up automatically", from when every value here was set by hand on one box. What that
+# sentence protected against was a compose-up with variables nobody had set — which is exactly
+# what the `:?` on each variable below refuses, loudly, before anything starts. The installer
+# now sets every one of them from data it holds, so the rule the line stated is kept by the
+# file itself.
+#
+# Docker bind sources refer to HOST paths. Mount keeper-owned roots at the SAME absolute path.
+# EVERY PATH keeper.json NAMES MUST BE UNDER ONE OF THESE MOUNTS (except the keeper's own
+# /app/… image paths): the keeper reads that configuration from inside this container, so a
+# path no mount covers is a file it cannot open. services/box/tests/install-keeper.test.ts
+# derives both sides — the mounts from this file, the paths from a rendered keeper.json — and
+# fails if the two ever stop agreeing.
+services:
+  lares-keeper:
+    image: ${LARES_KEEPER_IMAGE:?full digest required}
+    read_only: true
+    user: '0:0'
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    command: [/app/services/keeper/node_modules/.bin/tsx, /app/services/keeper/bin/keeper.ts, serve]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${LARES_ROOT:?absolute keeper-owned root}:${LARES_ROOT:?absolute keeper-owned root}
+      - ${LARES_KEEPER_CONFIG:?absolute config file}:/etc/lares/keeper.json:ro
+      # ADDED W8F-F7b, read-only. The keeper reads the database password itself, before it does
+      # anything else: bin/keeper.ts's first two statements are loadKeeperConfig() and
+      # keeperPool(config.db), and keeperPool reads `db.passwordFile` EAGERLY, inside the Pool
+      # constructor. Without this mount that readFileSync throws, the keeper exits with
+      # "keeper: database credentials unavailable", `restart: unless-stopped` restarts it for
+      # ever — and `docker compose up -d` still exits 0, so the installer reports a keeper that
+      # is up while it crash-loops. Read-only is the point: the keeper must READ
+      # database-password (and adminDb's, the same file), and nothing in this container should
+      # be able to write a secret.
+      - ${LARES_SECRETS_DIR:?absolute secrets directory}:${LARES_SECRETS_DIR:?absolute secrets directory}:ro
+      - ${LARES_SOCKET_DIR:?absolute app socket directory}:/run/lares
+      - ${LARES_HOST_SOCKET_DIR:?absolute host socket directory}:/run/lares-host
+    tmpfs: [/tmp]
+    networks: [lares-network]
+  lares-egress-proxy:
+    image: ${LARES_SQUID_IMAGE:?full digest required}
+    container_name: lares-egress-proxy
+    # Squid refuses reload when its PID file names PID 1; keep it behind Docker init.
+    init: true
+    restart: unless-stopped
+    # Directory mount is mandatory: atomic config replacement must change the inode seen by Squid.
+    volumes:
+      - ${LARES_EGRESS_DIR:?absolute egress directory}:/config:ro
+    command: [squid, -N, -f, /config/squid.conf]
+    networks:
+      lares-network:
+        ipv4_address: ${LARES_PROXY_ADDRESS:?reserved proxy address}
+networks:
+  lares-network:
+    external: true
+    name: ${LARES_NETWORK:?existing network}

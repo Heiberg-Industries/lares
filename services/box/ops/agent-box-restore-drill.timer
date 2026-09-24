@@ -1,0 +1,19 @@
+[Unit]
+Description=Rehearse a restore monthly, so a broken backup is caught before it is needed
+
+[Timer]
+# 03:40 UTC, not the 06:00 originally proposed: 06:00 UTC is 08:00 in Oslo in
+# summer — the same hour the morning brief runs — and this drill loads every
+# database dump into the live Postgres server right alongside it. 03:40 sits after
+# the nightly backup (03:00 UTC) has normally finished and before backup-verify
+# (05:00 UTC), hours before anyone is awake in any timezone this fleet runs in.
+# Landing before the backup timer is fully clear on a slow night is fine — see the
+# script header's note that the drill then rehearses last night's snapshot instead
+# of tonight's, which is still a real rehearsal. Persistent=true: a box that was
+# off or rebooting at 03:40 on the 1st still runs the drill on the next boot
+# instead of silently skipping a whole month.
+OnCalendar=*-*-01 03:40:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target

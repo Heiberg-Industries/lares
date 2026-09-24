@@ -1,0 +1,71 @@
+{
+  "name": "chief-of-staff",
+  "display": "Chief of Staff",
+  "model": "heiberg-brain",
+  "persona": "agent/persona.md",
+  "role": "chief-of-staff",
+  "scope": "personal",
+  "channels": [],
+  "egress": { "sealed": true },
+  "grants": [
+    { "capability": "network", "scope": "read" },
+    { "capability": "vault", "scope": "write-with-confirm", "areas": ["private", "shared", "facts"] },
+    { "capability": "identity", "scope": "read" },
+    { "capability": "person", "scope": "read" },
+    { "capability": "twenty", "scope": "write-with-confirm" },
+    { "capability": "digest", "scope": "write" },
+    { "capability": "read_url", "scope": "read" },
+    { "capability": "orakel", "scope": "read" },
+    { "capability": "remind", "scope": "write-with-confirm" },
+    { "capability": "signals", "scope": "read" },
+    { "capability": "deadline", "scope": "write-with-confirm" },
+    { "capability": "gmail", "scope": "write-with-confirm" },
+    { "capability": "calendar", "scope": "write-with-confirm" },
+    { "capability": "notion", "scope": "write-with-confirm" },
+    { "capability": "obligation", "scope": "write" },
+    { "capability": "echo", "scope": "write-with-confirm" },
+    { "capability": "outreach", "scope": "write" },
+    { "capability": "voice", "scope": "read" },
+    { "capability": "autonomy", "scope": "write-with-confirm" },
+    { "capability": "transit", "scope": "read" },
+    { "capability": "travel", "scope": "read" }
+  ],
+  "autonomy": {
+    "network": "gated",
+    "vault": "gated",
+    "identity": "gated",
+    "person": "gated",
+    "twenty": "gated",
+    "digest": "gated",
+    "read_url": "gated",
+    "orakel": "gated",
+    "remind": "gated",
+    "signals": "gated",
+    "deadline": "gated",
+    "gmail": "gated",
+    "calendar": "gated",
+    "notion": "gated",
+    "obligation": "gated",
+    "echo": "gated",
+    "outreach": "gated",
+    "voice": "gated",
+    "autonomy": "gated",
+    "transit": "gated",
+    "travel": "gated"
+  },
+  "skills": [
+    {
+      "name": "commercial",
+      "requires": [
+        { "capability": "twenty", "scope": "read" },
+        { "capability": "orakel", "scope": "read" }
+      ]
+    },
+    {
+      "name": "signals",
+      "requires": [
+        { "capability": "signals", "scope": "read" }
+      ]
+    }
+  ]
+}

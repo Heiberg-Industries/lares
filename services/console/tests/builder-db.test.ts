@@ -1,0 +1,23 @@
+import {beforeAll,afterAll,it,expect,vi} from 'vitest';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {startTestDb,type TestDb} from '@lares/agent-box/tests/helpers/pg.js';
+const seam=vi.hoisted(()=>({query:(..._args:unknown[]):Promise<unknown>=>Promise.reject(new Error('not initialized'))}));
+vi.mock('../lib/db',()=>({pool:{query:(...args:unknown[])=>seam.query(...args)}}));
+import {editedOutsideTheConsole} from '../lib/builder';
+let db:TestDb;
+beforeAll(async()=>{db=await startTestDb();seam.query=(...args)=>db.pool.query(args[0] as string,args[1] as unknown[]);for(const file of ['039_agent_definitions.sql','040_keeper.sql'])await db.pool.query(readFileSync(resolve('../box/sql',file),'utf8'));},120000);
+afterAll(async()=>{await db?.stop();});
+it('compares the latest successful fingerprint, independent of refreshed valid_at and failed saves',async()=>{
+ await db.pool.query("INSERT INTO agent_definitions(name,hash,definition,status,valid_at) VALUES('example','first','{}','valid',now())");
+ await db.pool.query(`INSERT INTO keeper_audit(action,actor,input,outcome,detail,at) VALUES('definition.create','owner','{"name":"example"}','ok','{"hash":"first"}',now()-interval '3 days')`);
+ expect(await editedOutsideTheConsole('example')).toBeNull();
+ await db.pool.query("UPDATE agent_definitions SET valid_at=now(),hash='manual' WHERE name='example'");
+ expect(await editedOutsideTheConsole('example')).not.toBeNull();
+ await db.pool.query(`INSERT INTO keeper_audit(action,actor,input,outcome,detail,at) VALUES('definition.save','owner','{"name":"example"}','failed','{"hash":"manual"}',now()-interval '1 day')`);
+ expect(await editedOutsideTheConsole('example')).not.toBeNull();
+ await db.pool.query(`INSERT INTO keeper_audit(action,actor,input,outcome,detail) VALUES('definition.save','owner','{"name":"example"}','ok','{"hash":"manual"}')`);
+ expect(await editedOutsideTheConsole('example')).toBeNull();
+ await db.pool.query("UPDATE agent_definitions SET hash='first' WHERE name='example'");
+ expect(await editedOutsideTheConsole('example')).not.toBeNull();
+});

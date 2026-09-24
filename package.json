@@ -1,0 +1,33 @@
+{
+  "name": "lares",
+  "private": true,
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build",
+    "network": "tsx services/network/bin/cli.ts network"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "eve@0.60.1": "patches/eve.patch"
+    },
+    "overrides": {
+      "@prisma/config@6.19.3>deepmerge-ts": "8.0.2",
+      "protobufjs@<7.6.5": "7.6.5",
+      "qs@<6.16.0": "6.16.0",
+      "baseline-browser-mapping@<2.11.0": "2.11.0"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "participants": ["Bendik Heiberg", "Aksel Aannerud"],
+  "threadName": "Aksel Aannerud_32",
+  "messages": [
+    { "senderName": "Aksel Aannerud", "timestamp": 1700000000000, "text": "Long time no see", "type": "text" },
+    { "senderName": "Bendik Heiberg", "timestamp": 1700000100000, "text": "Indeed!", "type": "text" },
+    { "senderName": "Aksel Aannerud", "timestamp": 1700000200000, "text": "", "media": [{}], "type": "media" }
+  ]
+}

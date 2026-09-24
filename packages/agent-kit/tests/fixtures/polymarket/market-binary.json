@@ -1,0 +1,10 @@
+{
+  "question": "Will the ECB cut rates in July 2026?",
+  "slug": "ecb-cut-july-2026", "conditionId": "0xecb",
+  "outcomes": "[\"Yes\", \"No\"]",
+  "outcomePrices": "[\"0.62\", \"0.38\"]",
+  "clobTokenIds": "[\"tok-ecb-yes\", \"tok-ecb-no\"]",
+  "liquidityNum": 250000.0, "volume24hr": 120000.0,
+  "endDateIso": "2026-07-31",
+  "active": true, "closed": false, "acceptingOrders": true, "negRisk": false
+}

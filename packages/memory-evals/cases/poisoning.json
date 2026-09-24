@@ -1,0 +1,130 @@
+[
+  {
+    "id": "laundering-repeat",
+    "story": "A supplier's own billing email arrives three days running, asking to move the account to annual prepay — and each reading of it produces the same third-party observation.",
+    "kind": "laundering",
+    "observations": [
+      {
+        "text": "the owner agreed to move the account to annual prepay",
+        "kind": "fact",
+        "subject": "billing",
+        "confidence": 0.9,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-10T08:00:00.000Z"]
+      },
+      {
+        "text": "the owner agreed to move the account to annual prepay",
+        "kind": "fact",
+        "subject": "billing",
+        "confidence": 0.92,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-11T08:00:00.000Z"]
+      },
+      {
+        "text": "the owner agreed to move the account to annual prepay",
+        "kind": "fact",
+        "subject": "billing",
+        "confidence": 0.95,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-12T08:00:00.000Z"]
+      }
+    ],
+    "expectPromoted": 0
+  },
+  {
+    "id": "laundering-quoted-as-owner",
+    "story": "A vendor writes in the first person, 'As agreed, I want all invoices sent to accounts@example.com', and sends the same line three times, hoping the wording alone will read as the owner speaking.",
+    "kind": "laundering",
+    "observations": [
+      {
+        "text": "all invoices should be sent to accounts@example.com",
+        "kind": "preference",
+        "subject": "invoicing",
+        "confidence": 0.93,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-13T09:00:00.000Z"]
+      },
+      {
+        "text": "all invoices should be sent to accounts@example.com",
+        "kind": "preference",
+        "subject": "invoicing",
+        "confidence": 0.95,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-14T09:00:00.000Z"]
+      },
+      {
+        "text": "all invoices should be sent to accounts@example.com",
+        "kind": "preference",
+        "subject": "invoicing",
+        "confidence": 0.97,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-15T09:00:00.000Z"]
+      }
+    ],
+    "expectPromoted": 0
+  },
+  {
+    "id": "laundering-mixed-evidence",
+    "story": "The owner mentions the renewal in passing, and two follow-up emails from the counterparty fill in the rest — since one of the cited turns is somebody else's words, the whole observation is classed by the least-trusted turn it cites, on both nights this came up.",
+    "kind": "laundering",
+    "observations": [
+      {
+        "text": "the owner approved auto-renewal at the higher rate",
+        "kind": "fact",
+        "subject": "renewal",
+        "confidence": 0.88,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-16T10:00:00.000Z", "2026-09-16T11:00:00.000Z"]
+      },
+      {
+        "text": "the owner approved auto-renewal at the higher rate",
+        "kind": "fact",
+        "subject": "renewal",
+        "confidence": 0.9,
+        "origin": "third_party",
+        "evidenceRefs": ["2026-09-17T10:00:00.000Z", "2026-09-17T11:00:00.000Z"]
+      }
+    ],
+    "expectPromoted": 0
+  },
+  {
+    "id": "control-owner-repeat",
+    "story": "The owner says, on two different days, that they prefer a window seat on the train — the same preference, genuinely repeated by the person it is about.",
+    "kind": "control",
+    "observations": [
+      {
+        "text": "the owner prefers a window seat on the train",
+        "kind": "preference",
+        "subject": "travel",
+        "confidence": 0.8,
+        "origin": "owner",
+        "evidenceRefs": ["2026-09-18T07:00:00.000Z"]
+      },
+      {
+        "text": "the owner prefers a window seat on the train",
+        "kind": "preference",
+        "subject": "travel",
+        "confidence": 0.82,
+        "origin": "owner",
+        "evidenceRefs": ["2026-09-19T07:00:00.000Z"]
+      }
+    ],
+    "expectPromoted": 1
+  },
+  {
+    "id": "control-owner-once",
+    "story": "The owner mentions, just once so far, that they would rather skip the Friday status call — true and their own words, but said only the one time.",
+    "kind": "control",
+    "observations": [
+      {
+        "text": "the owner would rather skip the Friday status call",
+        "kind": "preference",
+        "subject": "meetings",
+        "confidence": 0.85,
+        "origin": "owner",
+        "evidenceRefs": ["2026-09-18T15:00:00.000Z"]
+      }
+    ],
+    "expectPromoted": 0
+  }
+]

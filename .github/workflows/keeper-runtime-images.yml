@@ -1,0 +1,106 @@
+name: keeper and neutral runtime images
+on:
+  push:
+    branches: [main]
+    paths: ['services/**', 'packages/**', 'images/**', 'patches/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', '.github/workflows/keeper-runtime-images.yml']
+  workflow_dispatch:
+permissions: {contents: read, packages: write}
+env:
+  EVE_TELEMETRY_DISABLED: "1"
+jobs:
+  runtime:
+    if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    strategy:
+      max-parallel: 1
+      matrix:
+        role: [chief-of-staff, travel, creative]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.role }}/Dockerfile
+          target: runtime
+          load: true
+          tags: lares-runtime:test
+      - name: Verify compiled executable and unprivileged runtime
+        run: |
+          docker run --rm --network none --entrypoint sh lares-runtime:test -c 'test "$(id -u)" = 10001 && test -f .output/server/index.mjs && test -x ./node_modules/.bin/eve && ./node_modules/.bin/eve --version'
+      - name: Exercise compiled runtime, mounted persona and gateway selection across restart
+        if: matrix.role == 'chief-of-staff'
+        run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
+      # LAR-48 item 4: travel and creative each carry a `tests/agent-declaration.test.ts`
+      # framework_tools/tool-truth block that is `skipIf` on a compiled manifest under a
+      # gitignored `.output/` — the ONE thing that can prove a disable-sentinel or a
+      # build-time-disabled extension tool didn't silently drift from the persona's "where I
+      # run" section (see packages/agent-kit/src/persona/deployed-tools.ts's header: filesystem
+      # naming is cheap but naive; the compiled manifest is authoritative). No workflow ever ran
+      # them, so they only ever checked anything on someone's own machine. chief-of-staff has no
+      # such file: its tool-truth check (tests/instructions.test.ts) already runs entirely off
+      # source via `deployedToolsFor`, so nothing to extract there.
+      - name: Extract the compiled agent manifest
+        if: matrix.role != 'chief-of-staff'
+        run: |
+          set -euo pipefail
+          id=$(docker create lares-runtime:test)
+          trap 'docker rm "$id" >/dev/null' EXIT
+          mkdir -p "services/${{ matrix.role }}/.output/.eve/compile"
+          docker cp "$id:/app/services/${{ matrix.role }}/.output/.eve/compile/compiled-agent-manifest.json" \
+            "services/${{ matrix.role }}/.output/.eve/compile/compiled-agent-manifest.json"
+      # corepack first, as in console-image.yml: setup-node's `cache: pnpm` runs `pnpm store path`
+      # and fails the job when pnpm is not on the PATH yet.
+      - name: Enable corepack and prepare pnpm 9.15.0
+        if: matrix.role != 'chief-of-staff'
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+      - name: Setup Node 24 + pnpm
+        if: matrix.role != 'chief-of-staff'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - name: Install the role's own dependency closure
+        if: matrix.role != 'chief-of-staff'
+        run: pnpm install --frozen-lockfile --filter "lares-${{ matrix.role }}..."
+      - name: Run the agent-declaration conformance suite against the compiled manifest
+        if: matrix.role != 'chief-of-staff'
+        run: pnpm --filter "lares-${{ matrix.role }}" exec vitest run tests/agent-declaration.test.ts
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/${{ matrix.role }}/Dockerfile
+          target: runtime
+          push: "${{ vars.PUBLISH_IMAGES == 'true' }}"
+          tags: ghcr.io/heiberg-industries/lares-${{ matrix.role }}-runtime:sha-${{ github.sha }}
+  keeper:
+    if: ${{ vars.BUILD_IMAGES == 'true' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/keeper/Dockerfile, load: true, tags: 'lares-keeper:test'}
+      - name: Verify keeper runtime imports without starting sockets or migrations
+        run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/keeper/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-keeper:sha-${{ github.sha }}'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-firewall-helper:sha-${{ github.sha }}'}
+
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/egress-proxy/Dockerfile, load: true, tags: 'lares-squid:test'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/firewall-helper/Dockerfile, load: true, tags: 'lares-nft:test'}
+      - name: Generate representative configs and validate with native target parsers
+        run: |
+          mkdir -p "$RUNNER_TEMP/lares-parser"
+          docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/output" --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/egress.ts').then(({generateEgress})=>{const fs=require('node:fs');const e=generateEgress([{name:'example',address:'172.18.0.24',grants:[{capability:'notion',scope:'read'}],doors:[{kind:'slack',enabled:true}]}],{legacyConsumers:[{name:'sync',address:'172.18.0.10',hosts:['api.notion.com']}],internalNetworks:['172.18.0.0/16'],directDestinations:['192.0.2.1']});fs.writeFileSync('/output/squid.conf',e.squid);fs.writeFileSync('/output/rules.nft',e.nft)})"
+          docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" --entrypoint squid lares-squid:test -k parse -f /config/squid.conf
+          docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" lares-nft:test --check -f /config/rules.nft
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-egress-proxy:sha-${{ github.sha }}'}

@@ -1,0 +1,50 @@
+[
+  {
+    "source": "notion-sync",
+    "type": "app-exception",
+    "key": "",
+    "description": "notion-sync hit a problem on its hourly pass; the runbook docs/runbooks/notion-sync.md names the fix."
+  },
+  {
+    "source": "notion-sync",
+    "type": "data-quality",
+    "key": "",
+    "description": "notion-sync's pass found something off with the data itself, not a hard failure; check the sync log for which page or database."
+  },
+  {
+    "source": "atlas",
+    "type": "data-quality",
+    "key": "",
+    "description": "Atlas found a source it could not read or a note it could not derive; the SOMA/venture narrative may be stale until fixed."
+  },
+  {
+    "source": "litellm",
+    "type": "budget",
+    "key": "",
+    "description": "An LLM key is approaching or past its monthly budget; when the cap is crossed that consumer's model calls are refused until the budget is raised."
+  },
+  {
+    "source": "signal-spine",
+    "type": "data-quality",
+    "key": "",
+    "description": "The spine noticed a gap in its own configuration; open the Signals pages in the console to fix it."
+  },
+  {
+    "source": "uptime-kuma",
+    "type": "service-down",
+    "key": "",
+    "description": "A monitored host or endpoint stopped responding to Uptime Kuma; the card turns green in place when the same monitor comes back."
+  },
+  {
+    "source": "healthchecks",
+    "type": "heartbeat-missed",
+    "key": "",
+    "description": "A scheduled job did not check in to healthchecks.io within its grace period, so it has either not run or not finished."
+  },
+  {
+    "source": "cloud-build",
+    "type": "deploy-failed",
+    "key": "",
+    "description": "A Cloud Build pipeline failed, so whatever it was going to deploy is not deployed; the card turns green when that same pipeline next succeeds."
+  }
+]

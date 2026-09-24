@@ -1,0 +1,6 @@
+{
+  "participants": [{ "name": "A Person" }, { "name": "B Person" }, { "name": "Bendik Heiberg" }],
+  "messages": [{ "sender_name": "A Person", "timestamp_ms": 1752337978000, "content": "group hello" }],
+  "title": "A group",
+  "thread_path": "inbox/group3_111"
+}

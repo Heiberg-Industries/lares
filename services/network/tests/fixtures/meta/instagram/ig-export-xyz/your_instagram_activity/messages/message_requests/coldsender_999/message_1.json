@@ -1,0 +1,6 @@
+{
+  "participants": [{ "name": "Cold Sender" }, { "name": "Bendik Heiberg" }],
+  "messages": [{ "sender_name": "Cold Sender", "timestamp_ms": 1756700000000, "content": "buy my course" }],
+  "title": "Cold Sender",
+  "thread_path": "message_requests/coldsender_999"
+}

@@ -1,0 +1,22 @@
+{
+  "name": "@lares/keeper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "tsx bin/keeper.ts serve",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lares/agent-kit": "workspace:*",
+    "pg": "^8.21.0",
+    "yaml": "^2.6.0",
+    "zod": "4.5.4",
+    "tsx": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.11.10",
+    "@testcontainers/postgresql": "^10.13.2"
+  },
+  "license": "AGPL-3.0-only"
+}

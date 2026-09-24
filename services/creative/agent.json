@@ -1,0 +1,19 @@
+{
+  "name": "creative",
+  "display": "Creative",
+  "model": "heiberg-brain",
+  "persona": "agent/persona.md",
+  "role": "creative",
+  "scope": "org",
+  "channels": [],
+  "egress": { "sealed": true },
+  "grants": [
+    { "capability": "studio", "scope": "write" },
+    { "capability": "vault", "scope": "write-with-confirm", "areas": ["shared"] }
+  ],
+  "autonomy": {
+    "studio": "gated",
+    "vault": "gated"
+  },
+  "skills": []
+}

@@ -1,0 +1,16 @@
+[Unit]
+Description=Verify the agent box's nightly backup actually reached the repository
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+# taste.bak-*: disposable pre-repair safety copies from the 2026-08-27 taste repair
+# (ORB-97 namesake fix). Redundant on purpose: /srv/taste is in every nightly since
+# 2026-08-24, so the pre-repair state lives in the append-only snapshots of Aug 25-27.
+# Delete the dirs when confident and drop this line with them.
+Environment="BACKUP_IGNORED_PATHS=/srv/taste.bak-20260827-country /srv/taste.bak-20260827-nyc"
+ExecStart=/opt/agent-box/backup-verify.sh
+# Reads /etc/agent-box/backup.env and the root-only restic password. Reads only —
+# it never writes to the repository. Failure here means NO healthchecks.io ping,
+# which is what raises the alert (ORB-150).
