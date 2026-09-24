@@ -31,6 +31,8 @@ export interface StackComposeOptions {
    *  caddy service's OWN environment, because the Caddyfile substitutes it from the Caddy
    *  process's environment inside the container — not from the host's, and not from compose. */
   readonly domain: string;
+  /** The only purpose alias the on-box gateway config actually defines. */
+  readonly modelAlias: string;
   readonly pgUser: string;
   readonly pgDatabase: string;
 }
@@ -75,6 +77,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // own defaults already say `db` / 5432, but they are stated here so this file, not a
       // default buried in the image, decides where the console looks.
       environment: {
+        LARES_CONFIGURED_MODEL_ALIAS: opts.modelAlias,
         CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret",
         EVE_ROUTE_PASSWORD_FILE: "/run/secrets/eve-route-password",
         // The console encrypts the Google refresh token with the SAME key the agents decrypt
