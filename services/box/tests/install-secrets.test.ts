@@ -50,6 +50,11 @@ const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n
 /** A stub that logs its own name and argv, and exits 0. */
 function stub(name: string, body = "exit 0") {
   const p = join(binDir, name);
+  // Real psql consumes piped SQL. Exiting early can SIGPIPE the producer under pipefail.
+  // Query-mode calls use -tAc and must not consume the installer's prompt input.
+  if (name === "docker") {
+    body = `case "$*" in *" -tAc "*) ;; *" psql "*) cat >/dev/null ;; esac\n${body}`;
+  }
   const prelude = name === "pnpm" && !body.includes("render-stack") ? `${RENDER_STACK}\n` : "";
   writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${prelude}${body}\n`);
   chmodSync(p, 0o755);
