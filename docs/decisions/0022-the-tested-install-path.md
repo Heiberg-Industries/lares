@@ -100,6 +100,12 @@ After migrations, the installer initializes two settings only when they are abse
 values, including an explicit zero lockout or a separately approved higher ceiling. This closes
 the console's deliberate fail-closed state without making a hidden host override.
 
+The installer also enrols the explicitly created first owner in one organisation. The
+configured domain supplies its stable id and initial display name; the owner can rename the
+display name later. Membership and the default owner policy are written together. A repair run
+preserves a matching organisation and refuses conflicting people, membership or policy for
+manual review. It never adopts an unrelated organisation or guesses another owner's identity.
+
 The installer also cannot guess the name or role chosen on `/agents/new`. Fresh keeper configs
 therefore bind the real owner and the shared route-password source by role, with an exact per-name
 binding taking precedence on existing installations. Keeper-created runtime, door and per-agent

@@ -129,6 +129,8 @@ describe("the database the installer creates", () => {
     expect(calls.indexOf("CREATE DATABASE lares_state;")).toBeLessThan(calls.indexOf("migrate"));
     expect(calls.indexOf("migrate")).toBeLessThan(calls.indexOf("installation-settings"));
     expect(calls.indexOf("installation-settings")).toBeLessThan(calls.indexOf("first-owner"));
+    expect(calls.indexOf("first-owner")).toBeLessThan(calls.indexOf("first-organisation"));
+    expect(calls.indexOf("first-organisation")).toBeLessThan(calls.indexOf("render-keeper-config"));
   });
 
   it("stops when the runner refuses, repeats its sentence, and applies nothing else", () => {
@@ -162,6 +164,17 @@ describe("the database the installer creates", () => {
     expect(r.stderr).toMatch(/first-agent settings/i);
     const calls = readFileSync(log, "utf8");
     expect(calls).not.toMatch(/first-owner/);
+    expect(calls).not.toMatch(/render-keeper-config/);
+  });
+
+  it("does not start the keeper when organisation enrolment refuses", () => {
+    stub("pnpm", 'case "$3" in first-organisation) echo "membership conflict" >&2; exit 1 ;; esac\nexit 0');
+    const r = runWithStdin([], answers);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain("membership conflict");
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toMatch(/first-owner/);
+    expect(calls).toMatch(/first-organisation/);
     expect(calls).not.toMatch(/render-keeper-config/);
   });
 

@@ -85,10 +85,13 @@ make their hashes match. Back up and review the dry run before an upgrade.
 ## First-owner and organisation seeds
 
 Migrations 014, 028 and 029 now create schema only. Fresh databases contain no
-assumed member, alias, organisation or member-policy row. The first-owner command
-creates only the explicitly supplied owner and email alias; organisation enrolment
-and policy configuration remain separate setup steps. Do not run routing or
-multi-member features until the installation's organisation is configured.
+assumed member, alias, organisation or member-policy row. The installer creates the
+explicitly supplied owner and email alias, then enrols that sole member as owner of
+an organisation whose id and initial display name are the configured domain. It
+creates the owner's default policy in the same transaction. Repair runs preserve an
+existing matching membership and refuse conflicts for manual review. The owner can
+rename the display name later; the domain-derived id is stable. Multi-member routing
+still requires its own setup and acceptance.
 
 Exact reviewed historical hashes in `migration-seed-cleanup.ts` are skipped for
 existing ledgers without altering identities, reminder ownership, OAuth key paths,
