@@ -40,13 +40,15 @@ describe("the settings list", () => {
     for (const s of SETTINGS) if (s.name.endsWith("_FILE")) expect(s.secret, s.name).toBe(false);
   });
 
-  it("records the one fallback that is an installation's own name", () => {
+  it("records fail-closed identity and console configuration", () => {
     // services/console/lib/auth.ts:152 — the reason `lares doctor` has a check of its own.
     const allowed = settingByName("CONSOLE_ALLOWED_EMAILS")!;
     expect(allowed.readers).toContain("console");
     expect(allowed.source).toBe("owner");
-    expect(allowed.fallback).not.toBeNull();
-    expect(allowed.breaksWithout).toMatch(/one address from another installation/i);
+    expect(allowed.fallback).toBeNull();
+    expect(allowed.breaksWithout).toMatch(/admits nobody/i);
+    expect(settingByName("AGENT_OWNER_USER_ID")!.fallback).toBeNull();
+    expect(settingByName("SLACK_TOKEN_PRINCIPAL_ID")!.breaksWithout).toMatch(/refuses before querying/);
   });
 
   it("every reader has at least one setting", () => {
