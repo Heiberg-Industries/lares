@@ -10,14 +10,6 @@ import { readResolvedTools, registerAgent } from "../src/agent-registry.js";
 const here = dirname(fileURLToPath(import.meta.url));
 let c: StartedPostgreSqlContainer;
 let pool: Pool;
-beforeAll(async () => {
-  c = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: c.getConnectionUri() });
-  for (const f of ["008_ratchet.sql", "038_permissions_board.sql"]) {
-    await pool.query(readFileSync(join(here, "../../../services/box/sql", f), "utf8"));
-  }
-}, 120_000);
-afterAll(async () => { await pool?.end(); await c?.stop(); });
 
 // A fake service dir: eve's compiled manifest + a fake eve package exposing its framework tool names.
 function fakeService(): string {
@@ -27,6 +19,8 @@ function fakeService(): string {
     tools: [{ name: "vault_write" }, { name: "atlas_read" }], disabledFrameworkTools: ["bash"],
   }));
   mkdirSync(join(d, "node_modules/eve/dist/src/runtime/framework-tools"), { recursive: true });
+  // Match the real eve package: Node must load this fixture as ESM.
+  writeFileSync(join(d, "node_modules/eve/package.json"), JSON.stringify({ name: "eve", type: "module" }));
   writeFileSync(join(d, "node_modules/eve/dist/src/runtime/framework-tools/index.js"),
     'export function getAllFrameworkToolNames() { return new Set(["bash", "web_fetch"]); }');
   return d;
@@ -36,11 +30,23 @@ const manifest = {
   channels: ["slack"], grants: [{ capability: "vault", scope: "write-with-confirm" }], autonomy: { vault: "gated" },
 };
 
-describe("agent registry", () => {
+describe("compiled tool discovery", () => {
   it("reads the tools /eve/v1/info will list: authored + enabled framework tools", async () => {
     expect(await readResolvedTools(fakeService())).toEqual(["atlas_read", "vault_write", "web_fetch"]);
     expect(await readResolvedTools(mkdtempSync(join(tmpdir(), "empty-")))).toBeNull();
   });
+});
+
+describe("agent registry", () => {
+  beforeAll(async () => {
+    c = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
+    pool = new Pool({ connectionString: c.getConnectionUri() });
+    for (const f of ["008_ratchet.sql", "038_permissions_board.sql"]) {
+      await pool.query(readFileSync(join(here, "../../../services/box/sql", f), "utf8"));
+    }
+  }, 120_000);
+  afterAll(async () => { await pool?.end(); await c?.stop(); });
+
   it("writes one row per agent and replaces it on the next start", async () => {
     const d = fakeService();
     await registerAgent({ manifest, serviceDir: d, pool });

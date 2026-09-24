@@ -79,6 +79,46 @@ const NOT_AN_INSTALLATION_SETTING =
   "Nothing — this is a switch for a hand-run probe, never set on an installation.";
 
 export const SETTINGS: readonly SettingDef[] = [
+  {
+    name: "LARES_ATLAS_REPOSITORIES_FILE",
+    readers: ["atlas"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Repository-source reads fail without an explicit mounted repository mapping.",
+    readAt: ["services/atlas/lib/adapters/github-source.ts"],
+  },
+  {
+    name: "LARES_ATLAS_PROBE_CODEBASE",
+    readers: ["atlas"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Doctor mode refuses to run until an operator probe codebase is configured.",
+    readAt: ["services/atlas/bin/atlas-sync.ts"],
+  },
+  {
+    name: "LARES_ATLAS_PROBE_NOTION_PAGE",
+    readers: ["atlas"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Doctor mode refuses to run until an operator probe page is configured.",
+    readAt: ["services/atlas/bin/atlas-sync.ts"],
+  },
+  {
+    name: "LARES_HTTP_USER_AGENT",
+    readers: ["travel"],
+    source: "integration",
+    requiredFor: [],
+    fallback: "Lares/0.1 (+https://github.com/Heiberg-Industries/lares)",
+    secret: false,
+    breaksWithout: "Uses the public Lares project identity for weather and geocoding HTTP requests.",
+    readAt: ["services/travel/catalogue/weather_forecast.ts"],
+  },
   // ── The startup guard — images/agent-runtime/start.sh, required for every role image ──────
   {
     name: "DATABASE_URL",
@@ -199,9 +239,9 @@ export const SETTINGS: readonly SettingDef[] = [
     readers: ["console", "chief-of-staff", "creative"],
     source: "owner",
     requiredFor: [],
-    fallback: "owner@example.invalid",
+    fallback: null,
     secret: false,
-    breaksWithout: "In production the console throws on the first login check. When unset outside production, this falls back to one address from another installation, admitting a stranger to the console. On an unmanaged agent container it is also the web-chat approver list (W8B-s5): unset there, an approval answered in web chat is refused — fail-closed, and the agent has no fallback.",
+    breaksWithout: "In production the console throws on login when no allow-list is configured. Outside production an empty allow-list admits nobody. Unmanaged web-chat approvals without an approver list are refused.",
     readAt: ["services/console/lib/auth.ts:152", "services/chief-of-staff/lib/principals.ts (ENV_VAR_FOR.console)", "services/creative/lib/principals.ts (ENV_VAR_FOR.console)"],
   },
 
@@ -291,9 +331,9 @@ export const SETTINGS: readonly SettingDef[] = [
     readers: ["chief-of-staff", "travel", "console", "agent-kit"],
     source: "owner",
     requiredFor: [],
-    fallback: "fixture-owner",
+    fallback: null,
     secret: false,
-    breaksWithout: "A managed incarnation throws immediately (\"Managed owner identity is not configured\"); an unmanaged one falls back to one specific installation's own owner id, hardcoded today (services/chief-of-staff/lib/principals.ts:42) — a placeholder is used here instead of that real id.",
+    breaksWithout: "Owner-scoped operations throw when the configured owner id is missing or blank; no installation identity is guessed.",
     readAt: ["services/chief-of-staff/lib/principals.ts:41", "packages/agent-kit/src/note-tools.ts:135"],
   },
   {
@@ -1028,7 +1068,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Nothing breaks — the console falls back to the same owner key every other person-keyed row in the fleet uses (ownerId()).",
+    breaksWithout: "Uses AGENT_OWNER_USER_ID when unset; owner-scoped console operations throw if neither principal nor owner is configured.",
     readAt: ["services/console/lib/accounts.ts:22"],
   },
   {
@@ -1476,7 +1516,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Nothing breaks — the Slack user-token lookup falls back to a built-in default principal id instead of the configured one.",
+    breaksWithout: "Slack user-token lookup requires this value or an explicit principal argument and refuses before querying credentials when neither is configured.",
     readAt: ["services/chief-of-staff/lib/slack-source.ts:57"],
   },
 
