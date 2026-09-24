@@ -1404,6 +1404,26 @@ run_first_owner() {
   OWNER_ID="$owner_id"
 }
 
+# A fresh identity register has no organisation. Enrol the one verified owner under the
+# configured domain before the keeper starts. The command is transactional and refuses to
+# adopt or change an existing organisation on a repair run.
+run_first_organisation() {
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
+  local db_password domain owner_email code=0
+  domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
+  owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
+  db_password=$(cat "$SECRETS_DIR/database-password")
+  PGHOST="$db_host" PGPORT="$db_port" PGDATABASE="$db_name" PGUSER="$db_user" \
+    PGPASSWORD="$db_password" LARES_OWNER_ID="$OWNER_ID" \
+    LARES_OWNER_EMAIL="$owner_email" LARES_DOMAIN="$domain" \
+    pnpm -C "$BOX_DIR" first-organisation || code=$?
+  db_password=""
+  if [ "$code" -ne 0 ]; then
+    die "the first organisation could not be enrolled. The keeper was not started; review the existing membership before retrying." "$EX_REFUSED"
+  fi
+}
+
 # --- 12. the keeper is configured and started, from the same release (W8F-F7b) ---------------
 # WHAT THIS STEP IS. The keeper is the only thing in the fleet allowed to start, stop or
 # reconfigure an agent. It boots from ONE file, $PREFIX/etc/lares/keeper.json, whose shape is
@@ -1563,6 +1583,7 @@ else
   run_database
   run_installation_settings
   run_first_owner
+  run_first_organisation
   run_keeper
   run_finish
 fi
