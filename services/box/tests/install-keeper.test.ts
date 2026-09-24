@@ -58,6 +58,11 @@ let dir: string, binDir: string, prefix: string, log: string, releaseFile: strin
 
 function stub(name: string, body = "exit 0") {
   const p = join(binDir, name);
+  // Real psql consumes piped SQL. Exiting early can SIGPIPE the producer under pipefail.
+  // Query-mode calls use -tAc and must not consume the installer's prompt input.
+  if (name === "docker") {
+    body = `case "$*" in *" -tAc "*) ;; *" psql "*) cat >/dev/null ;; esac\n${body}`;
+  }
   writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${body}\n`);
   chmodSync(p, 0o755);
 }

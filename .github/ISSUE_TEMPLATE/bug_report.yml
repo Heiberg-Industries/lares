@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a reproducible problem in Lares.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Lares is an experimental alpha with best-effort support. Search existing issues first.
+        This report is public: remove credentials, customer content, private hostnames and personal data.
+        For security vulnerabilities, use [private reporting](https://github.com/Heiberg-Industries/lares/security/advisories/new).
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Include the release or commit SHA you tested.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, installation method and affected component. Use generic details, not private configuration.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest reproducible example using synthetic data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics (optional)
+      description: Share only the relevant redacted error or screenshot. Do not upload full logs or environment files.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked that this public report contains no secrets, private data or unpatched security-vulnerability details.
+          required: true
