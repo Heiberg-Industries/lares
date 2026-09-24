@@ -21,6 +21,7 @@
     "migrate": "tsx migrate.ts",
     "erase-person": "tsx bin/erase-person.ts",
     "first-owner": "tsx bin/first-owner.ts",
+    "first-organisation": "tsx bin/first-organisation.ts",
     "installation-settings": "tsx bin/installation-settings.ts",
     "render-stack": "tsx bin/render-stack.ts",
     "render-keeper-config": "tsx bin/render-keeper-config.ts",

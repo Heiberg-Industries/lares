@@ -20,8 +20,8 @@ Lares is an experimental alpha under active development. It is not a promise of 
 
 Use Node.js 24 and pnpm 9.15.0. From the repository root, run `pnpm install --frozen-lockfile`, then `pnpm typecheck`. The test suites use disposable PostgreSQL containers, so Docker must be running. See [PR CI coverage and exclusions](docs/pr-ci.md) before interpreting a green result. Image builds and runtime probes run in CI; build and deployment are separate operations.
 
-The remaining setup limitations include legacy integration instance bindings and an incomplete
-fresh-install organisation enrolment path. See the migration runbook before upgrading.
+The remaining setup limitations include legacy integration instance bindings and an unproved
+fresh-install conversation path. See the migration runbook before upgrading.
 
 ## License and contributions
 
