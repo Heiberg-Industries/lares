@@ -1660,6 +1660,16 @@ export const SETTINGS: readonly SettingDef[] = [
 
   // ── The neutral stack's own containers — the model gateway and the edge proxy (8F) ────────
   {
+    name: "LARES_CONFIGURED_MODEL_ALIAS",
+    readers: ["console"],
+    source: "installer",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "The agent builder offers every purpose alias from models.alias_prefix, including aliases an on-box single-model gateway does not serve. Older externally managed gateways may intentionally leave it unset.",
+    readAt: ["services/console/lib/builder.ts"],
+  },
+  {
     name: "MODEL_PROVIDER_KEY_FILE",
     readers: ["gateway"],
     source: "installer",
