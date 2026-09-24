@@ -22,6 +22,7 @@ const OPTS = {
   network: "lares-network",
   subnet: "172.30.0.0/24",
   domain: "example.invalid",
+  modelAlias: "lares-brain",
   pgUser: "lares",
   pgDatabase: "lares_state",
 };
@@ -69,6 +70,7 @@ describe("the generated stack compose file", () => {
     expect(env.PGHOST).toBe("db");
     expect(env.PGDATABASE).toBe(OPTS.pgDatabase);
     expect(env.PGUSER).toBe(OPTS.pgUser);
+    expect(env.LARES_CONFIGURED_MODEL_ALIAS).toBe(OPTS.modelAlias);
     expect(env.DATABASE_URL).toBeUndefined();
     // services/console/lib/accounts.ts throws without it when an account is connected.
     expect(env.TOKEN_ENC_KEY_FILE).toBe("/run/secrets/token-enc-key");

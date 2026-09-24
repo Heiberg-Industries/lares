@@ -105,6 +105,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     network: at("network"),
     subnet: at("subnet"),
     domain: at("domain"),
+    modelAlias: at("alias"),
     pgUser: at("pgUser"),
     pgDatabase: at("pgDatabase"),
   });

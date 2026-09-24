@@ -24,15 +24,19 @@ export function startingPoints(): StartingPoint[] {
     return { ...role, definition, capabilities: definition.grants.map(g=>g.capability), schedules: Object.keys(definition.schedules) };
   });
 }
-export function modelAliases(prefix: string): { alias: string; label: string; when: string }[] {
+export function modelAliases(prefix: string, configuredAlias?: string): { alias: string; label: string; when: string }[] {
   if (!/^[a-z0-9]+$/.test(prefix) || prefix === 'installation') throw new Error('Configure models.alias_prefix with the installation gateway purpose prefix.');
-  return [
+  const aliases = [
     ['brain','Brain','General reasoning and everyday agent work.'],
     ['writer','Writer','Writing and editing.'],
     ['utility','Utility','Small, routine tasks.'],
     ['gate','Gate','Classification and routing.'],
     ['embed','Embed','Embedding work; requires a compatible gateway mapping.'],
   ].map(([purpose,label,when])=>({alias:`${prefix}-${purpose}`,label,when}));
+  if (configuredAlias === undefined) return aliases; // Older external gateways manage their own aliases.
+  const selected = aliases.filter(item => item.alias === configuredAlias);
+  if (selected.length !== 1) throw new Error('The configured gateway model alias does not match models.alias_prefix.');
+  return selected;
 }
 const CONVERSATION = 'Takes effect at its next conversation. On a direct-message door a conversation lasts the day, so that usually means tomorrow — or start a fresh one now.';
 export function takesEffect(field: string): string {
@@ -62,7 +66,7 @@ export async function builderData(name?: string) {
   const email=await verify((await cookies()).get('lares_session')?.value);
   if(!email) throw new Error('unauthenticated');
   const prefix = (await pool.query<{value:unknown}>("SELECT value FROM settings WHERE key='models.alias_prefix'")).rows[0]?.value;
-  const aliases=modelAliases(typeof prefix === 'string' ? prefix : '');
+  const aliases=modelAliases(typeof prefix === 'string' ? prefix : '', process.env.LARES_CONFIGURED_MODEL_ALIAS);
   const points=startingPoints();
   const [capacity,list]=await Promise.all([
     keeper<Capacity>('definition.capacity',{},email),

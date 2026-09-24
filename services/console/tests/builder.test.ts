@@ -11,6 +11,8 @@ describe('builder read model', () => {
   });
   it('offers only configured purpose aliases', () => {
     expect(modelAliases('heiberg').map(a => a.alias)).toEqual(['heiberg-brain','heiberg-writer','heiberg-utility','heiberg-gate','heiberg-embed']);
+    expect(modelAliases('lares', 'lares-brain').map(a => a.alias)).toEqual(['lares-brain']);
+    expect(() => modelAliases('lares', 'other-brain')).toThrow(/does not match/);
     expect(() => modelAliases('')).toThrow(/prefix/);
     expect(() => modelAliases('installation')).toThrow(/prefix/);
   });
