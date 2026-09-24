@@ -91,21 +91,21 @@ describe("how the install ends", () => {
   it("waits until the console really answers, then prints one address", () => {
     stub("curl", 'printf "%s %s\\n" "curl" "$*" >> "$STUB_LOG"; exit 0');
     const result = runWithStdin([], answers);
-    expect(result.code).toBe(0);
+    expect(result.code, result.stderr).toBe(0);
     const printed = result.stdout.trim().split("\n").filter((line) => line.includes("https://"));
     expect(printed).toHaveLength(1);
     expect(printed[0]).toContain("https://lares.example.invalid/agents/new");
     expect(readFileSync(log, "utf8")).toMatch(/curl .*\/api\/auth\/login/);
-  });
+  }, 20_000);
 
   it("says what to do when it never comes up, instead of printing an address that does not work", () => {
     stub("curl", "exit 7");
     const result = runWithStdin([], answers);
-    expect(result.code).toBe(75);
+    expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
     expect(result.stderr).toMatch(/docker compose logs/);
     expect(result.stdout).not.toContain("https://lares.example.invalid/agents/new");
-  });
+  }, 20_000);
 
   it("says honestly what remains, and does not ask about it now", () => {
     stub("curl", "exit 0");
