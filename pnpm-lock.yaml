@@ -694,7 +694,7 @@ importers:
         version: 19.2.7(react@19.2.7)
     devDependencies:
       '@tailwindcss/postcss':
-        specifier: '4'
+        specifier: 4.3.3
         version: 4.3.3
       '@types/mdx':
         specifier: ^2.0.14
@@ -709,7 +709,7 @@ importers:
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.17)
       tailwindcss:
-        specifier: '4'
+        specifier: 4.3.3
         version: 4.3.3
       typescript:
         specifier: ^6.0.3
