@@ -1353,6 +1353,39 @@ run_database() {
   fi
 }
 
+# Keeper clones this empty database for each agent. The committed world-postgres
+# schema is shared by the role images; its DDL body is identical in creative and
+# chief-of-staff. An interrupted first run may leave the database without the
+# marker, so the schema is applied transactionally on the next run.
+run_workflow_template() {
+  local compose_file="$PREFIX/opt/lares/compose.yaml"
+  local marker="$PREFIX/etc/lares/workflow-template-created"
+  local schema="$BOX_DIR/../creative/sql/001-eve-workflow.sql"
+  local db_user="${PGUSER:-lares}" existing
+
+  [ -r "$schema" ] || die "the workflow template schema is missing at $schema. No agent can be started." "$EX_REFUSED"
+  if [ -f "$marker" ]; then
+    say "workflow template empty_workflow — already prepared. Left exactly as it is."
+    return
+  fi
+  existing=$(docker compose -f "$compose_file" exec -T db \
+    psql -U "$db_user" -d postgres -tAc \
+    "SELECT 1 FROM pg_database WHERE datname = 'empty_workflow'" </dev/null 2>/dev/null \
+    | tr -d '[:space:]') || existing=""
+  if [ "$existing" != "1" ]; then
+    if ! printf 'CREATE DATABASE empty_workflow;\n' \
+      | docker compose -f "$compose_file" exec -T db psql -v ON_ERROR_STOP=1 -U "$db_user" -d postgres; then
+      die "could not create the empty_workflow database. No agent has been started." "$EX_REFUSED"
+    fi
+  fi
+  if ! docker compose -f "$compose_file" exec -T db \
+      psql -v ON_ERROR_STOP=1 --single-transaction -U "$db_user" -d empty_workflow -f - < "$schema"; then
+    die "could not prepare the empty_workflow schema. The database remains for a safe retry; no agent has been started." "$EX_REFUSED"
+  fi
+  do_or_say touch "$marker"
+  say "workflow template empty_workflow — prepared for first-agent databases."
+}
+
 # --- 10b. the first-agent screen's installation settings ----------------------------------
 # The schema is now complete, but two deliberately fail-closed settings have no migration
 # default: the gateway alias prefix and the approved number of agents. A fresh installation's
@@ -1626,6 +1659,7 @@ else
   run_stack
   run_model_check
   run_database
+  run_workflow_template
   run_installation_settings
   run_first_owner
   run_first_organisation
