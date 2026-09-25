@@ -1505,6 +1505,17 @@ run_keeper() {
   do_or_say mkdir -p "$root" "$agents_dir" "$retired_dir" "$backup_dir" "$egress_dir" \
     "$socket_dir" "$host_socket_dir" "$(dirname "$keeper_config")" "$(dirname "$keeper_compose")"
 
+  # The proxy starts with the keeper, before the first agent exists. Its regular
+  # per-agent seal is written by keeper on agent creation, so give this empty
+  # installation a deny-all bootstrap config. Never replace a keeper-owned seal.
+  [ ! -L "$egress_dir/squid.conf" ] || die "$egress_dir/squid.conf is a symbolic link; refusing to replace the proxy configuration." "$EX_REFUSED"
+  if [ ! -e "$egress_dir/squid.conf" ]; then
+    printf 'http_port 8888\nhttp_access deny all\n' > "$egress_dir/squid.conf.partial"
+    do_or_say chmod 0644 "$egress_dir/squid.conf.partial"
+    do_or_say mv "$egress_dir/squid.conf.partial" "$egress_dir/squid.conf"
+    say "installed a deny-all proxy configuration until the first agent is created."
+  fi
+
   # Runtime-control, door and per-agent gateway secrets are keeper-owned output, not installer
   # inputs. They live below the keeper's writable same-path root. The installer secret directory
   # remains mounted read-only and supplies only shared platform inputs such as the database and
