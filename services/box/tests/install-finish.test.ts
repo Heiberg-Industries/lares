@@ -101,11 +101,22 @@ describe("how the install ends", () => {
   it("says what to do when it never comes up, instead of printing an address that does not work", () => {
     // The gateway's local readiness succeeds; only the public console stays down.
     stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
+      "GOOGLE_CLIENT_ID_CONSOLE=fixture-id\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
     const result = runWithStdin([], answers);
     expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
     expect(result.stderr).toMatch(/docker compose logs/);
     expect(result.stdout).not.toContain("https://lares.example.invalid/agents/new");
+  }, 20_000);
+
+  it("names the missing Google sign-in file instead of waiting on a console 500", () => {
+    stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
+    const result = runWithStdin([], answers);
+    expect(result.code).toBe(78);
+    expect(result.stderr).toContain("console-oauth.env");
+    expect(result.stderr).toContain("GOOGLE_CLIENT_ID_CONSOLE");
   }, 20_000);
 
   it("says honestly what remains, and does not ask about it now", () => {

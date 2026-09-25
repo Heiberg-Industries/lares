@@ -1097,10 +1097,12 @@ run_stack() {
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
-  local domain model_alias provider_model tmp tries=0 existing
+  local domain owner_email model_alias provider_model tmp tries=0 existing
 
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the stack cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
+  owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
+  [ -n "$owner_email" ] || die "the owner e-mail is not written down in $INSTALL_ENV, so console access cannot be restricted. Nothing has been brought up." "$EX_REFUSED"
 
   # F7a-2: the two values the gateway's own config is rendered from (lib/gateway-config.ts),
   # read back exactly as LARES_DOMAIN is above — never re-derived, never defaulted here.
@@ -1119,7 +1121,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$owner_email"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1575,12 +1577,18 @@ run_keeper() {
 # console's existing first-agent setup page. A later launch gate owns creation, key registration,
 # agent health and the first proved web-chat turn; this installer claims none of them.
 run_finish() {
-  local domain compose_file tries=0
+  local domain compose_file oauth_file tries=0
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the console cannot be checked. The installation is left exactly as it is." "$EX_REFUSED"
   compose_file="$PREFIX/opt/lares/compose.yaml"
+  oauth_file="$PREFIX/etc/lares/console-oauth.env"
 
   until curl -fsS --max-time 5 "https://$domain/api/auth/login" >/dev/null 2>&1; do
+    if [ ! -f "$oauth_file" ] || \
+       ! grep -Eq '^GOOGLE_CLIENT_ID_CONSOLE=.+$' "$oauth_file" || \
+       ! grep -Eq '^GOOGLE_CLIENT_SECRET_CONSOLE=.+$' "$oauth_file"; then
+      die "the console cannot offer Google sign-in yet. Save GOOGLE_CLIENT_ID_CONSOLE and GOOGLE_CLIENT_SECRET_CONSOLE in $oauth_file (root-owned, mode 0600), then run this installer again. Everything installed so far is preserved." "$EX_REFUSED"
+    fi
     tries=$((tries + 1))
     if [ "$tries" -ge 60 ]; then
       die "the console did not come up at the public address. The installation is left exactly as it is. Inspect it with docker compose logs: docker compose -f $compose_file logs --tail 200 console caddy" "$EX_TEMPFAIL"

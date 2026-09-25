@@ -5,6 +5,7 @@
  * both up together); this file never mentions the keeper.
  */
 import { stringify } from "yaml";
+import { dirname, join } from "node:path";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 
 export interface StackComposeOptions {
@@ -31,6 +32,8 @@ export interface StackComposeOptions {
    *  caddy service's OWN environment, because the Caddyfile substitutes it from the Caddy
    *  process's environment inside the container — not from the host's, and not from compose. */
   readonly domain: string;
+  /** Owner allow-list entry written by the installer, never a built-in identity. */
+  readonly ownerEmail: string;
   /** The only purpose alias the on-box gateway config actually defines. */
   readonly modelAlias: string;
   readonly pgUser: string;
@@ -66,6 +69,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     console: {
       image: imageFor(manifest, "console"),
       restart: "unless-stopped",
+      // Google sign-in credentials are installation-owned. Compose reads this
+      // root-only file when present; no credential value enters the stack file.
+      env_file: [{ path: join(dirname(opts.secretsDir), "console-oauth.env"), required: false }],
       secrets: [
         "console-session-secret",
         "eve-route-password",
@@ -78,6 +84,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // default buried in the image, decides where the console looks.
       environment: {
         LARES_CONFIGURED_MODEL_ALIAS: opts.modelAlias,
+        CONSOLE_ALLOWED_EMAILS: opts.ownerEmail,
+        CONSOLE_OAUTH_REDIRECT: `https://${opts.domain}/api/auth/callback`,
         CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret",
         EVE_ROUTE_PASSWORD_FILE: "/run/secrets/eve-route-password",
         // The console encrypts the Google refresh token with the SAME key the agents decrypt
