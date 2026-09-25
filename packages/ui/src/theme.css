@@ -33,8 +33,10 @@
 }
 
 :root {
-  --font-sans: "Instrument Sans Variable", sans-serif;
-  --font-mono: "DM Mono", monospace;
+  --font-lares-sans: "Instrument Sans Variable", sans-serif;
+  --font-sans: var(--font-lares-sans);
+  --font-lares-mono: "DM Mono", monospace;
+  --font-mono: var(--font-lares-mono);
   /* semantic, light */
   --background: oklch(0.988 0.004 175);
   --foreground: oklch(0.20 0.03 185);
@@ -253,8 +255,8 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 6px);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --font-sans: var(--font-lares-sans);
+  --font-mono: var(--font-lares-mono);
 }
 
 /* motion: arrivals fade and settle; the mark's nodes light in sequence. Nothing bounces. */
