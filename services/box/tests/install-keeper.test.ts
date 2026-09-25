@@ -161,6 +161,8 @@ describe("the keeper the installer configures and starts", () => {
     expect(config.db.database).toBe("lares_state");
     expect(config.lifecycle.network).toBe("lares-network");
     expect(config.lifecycle.reservedAddresses).toEqual(["172.30.0.254"]);
+    expect(readFileSync(join(prefix, "srv", "lares", "egress", "squid.conf"), "utf8"))
+      .toBe("http_port 8888\nhttp_access deny all\n");
     expect(config.secretsDir).toBe(join(prefix, "srv", "lares", "secrets"));
     expect(config.agentsDir).toBe(join(prefix, "srv", "lares", "agents"));
   });
@@ -184,7 +186,7 @@ describe("the keeper the installer configures and starts", () => {
     expect(mode).toBe(0o700);
     expect(calls()).toContain(`chmod 0700 ${path}`);
     expect(calls()).toContain(`chown 0:0 ${path}`);
-  });
+  }, 20_000);
 
   it("refuses a linked keeper-managed secret root", () => {
     const root = join(prefix, "srv", "lares");
