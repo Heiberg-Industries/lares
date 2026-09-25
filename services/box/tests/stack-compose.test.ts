@@ -44,12 +44,13 @@ describe("the generated stack compose file", () => {
   it("publishes the database port to loopback only, matching run_database's own PGHOST default", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.services.db.ports).toEqual(["127.0.0.1:5432:5432"]);
+    expect(doc.services["lares-gateway"].ports).toEqual(["127.0.0.1:4000:4000"]);
   });
 
   it("publishes nothing else — only caddy opens a port beyond loopback (owner decision C2: this engine never touches a firewall, so a port it does not publish here can never be reached from outside)", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     for (const [name, svc] of Object.entries(doc.services) as [string, any][]) {
-      if (name === "db") continue;
+      if (name === "db" || name === "lares-gateway") continue;
       if (name === "caddy") { expect(svc.ports).toEqual(["80:80", "443:443"]); continue; }
       expect(svc.ports ?? []).toEqual([]);
     }
