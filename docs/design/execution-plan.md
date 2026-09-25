@@ -25,6 +25,14 @@ Get in touch.” Add a GitHub icon in the site header. PostHog and Google Search
 Console are the intended analytics/search tools; hosting on the Orbis box is a
 candidate for later discussion. This update supersedes older waitlist notes below.
 
+## Owner visual correction — production website
+
+The owner flagged visible diagonal lines and differences in card, hero, footer and
+font sizing after the first website merge. The production website should retain
+the draft's soft card gradients and fine grain, without a diagonal stripe overlay.
+The hero retains gradient light and grain without a visible diagonal pattern.
+Keep the reference's mono scale, card proportions and solid footer treatment.
+
 ## 1. Outcome and implementation principles
 
 Deliver the approved Lares console and marketing experience in real application code, using one shared design system. Preserve the current working runtime and self-hosted installation model. Prefer established shadcn/ui behavior and selected AI Elements presentation over custom interface infrastructure. The UI supports the product.
