@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { AgentsList } from "../components/AgentsList";
 import {
   PageHeader,
   EmptyState,
@@ -20,7 +21,7 @@ export default async function HomePage() {
   return (
     <div className="lares-page lares-stack">
       <PageHeader
-        title="Home"
+        title="Your house"
         description="A quiet place to keep an eye on things."
         actions={
           <Button asChild>
@@ -51,49 +52,18 @@ export default async function HomePage() {
           <Link href="/chat">Open chat</Link> to review them.
         </p>
       </section>
-      <div className="lares-grid">
-        <section className="lares-surface">
-          <div className="lares-actions">
+      <div className="lares-stack">
+        <section>
+          <div className="lares-section-heading">
             <h2 className="lares-section-title">Your agents</h2>
-            <Link href="/agents">View all →</Link>
+            <Link href="/agents">Manage agents →</Link>
           </div>
-          {!snapshot.agents.available ? (
-            <Notice error>The agent registry is unavailable.</Notice>
-          ) : snapshot.agents.value.length ? (
-            <ul className="lares-data-list">
-              {snapshot.agents.value.slice(0, 6).map((a) => (
-                <li key={a.name}>
-                  <Link
-                    className="lares-actions"
-                    href={`/agents/${encodeURIComponent(a.name)}`}
-                  >
-                    <AgentAvatar role={a.role} />
-                    <span>
-                      {a.displayName || a.name}
-                      <br />
-                      <span className="lares-muted">{a.role}</span>
-                    </span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState
-              title="Make room for your first agent"
-              action={
-                <Button asChild>
-                  <Link href="/agents/new">Create agent</Link>
-                </Button>
-              }
-            >
-              Choose a purpose, give it instructions and decide its access.
-            </EmptyState>
-          )}
+          <AgentsList snapshot={snapshot} compact />
         </section>
-        <section className="lares-surface">
+        <section>
           <h2 className="lares-section-title">Recent permission checks</h2>
           <p className="lares-muted">
-            Policy decisions, not proof an action completed.
+            Recent decisions about what your agents may do.
           </p>
           <PermissionEvents events={events} />
           <Link href="/activity">View activity →</Link>

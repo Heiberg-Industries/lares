@@ -3,13 +3,17 @@ import React from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ThemeControl, useConsoleTheme } from "../components/ThemeControl";
+import {
+  ThemeControl,
+  useConsoleTheme,
+  SettingsThemeControl,
+} from "../components/ThemeControl";
 function Fixture() {
   const theme = useConsoleTheme();
   return (
     <>
       <ThemeControl {...theme} />
-      <ThemeControl {...theme} />
+      <SettingsThemeControl />
     </>
   );
 }

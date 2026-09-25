@@ -17,7 +17,7 @@ export default async function ActivityPage({
     <div className="lares-page lares-stack">
       <PageHeader
         title="Activity"
-        description="Recorded permission checks. These show what policy decided, not whether an action completed."
+        description="Permission decisions across your agents."
         actions={
           <Button variant="outline" asChild>
             <Link href="/signals">Signals & events →</Link>
@@ -38,9 +38,13 @@ export default async function ActivityPage({
         </Button>
         {agent && <Link href="/activity">Clear filter</Link>}
       </form>
-      <section className="lares-surface">
+      <section>
         <PermissionEvents events={events} />
       </section>
+      <p className="lares-muted">
+        These records show permission decisions. Completed work appears in the
+        original conversation.
+      </p>
       {next && (
         <Button variant="outline" asChild>
           <Link

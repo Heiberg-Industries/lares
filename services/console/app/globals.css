@@ -11,17 +11,331 @@
   --run: var(--muted-foreground);
 }
 
-* { box-sizing: border-box; }
-body { font: var(--text-body); }
-a { color: var(--foreground); text-decoration: none; }
-a:hover { text-decoration: underline; text-underline-offset: 3px; }
-.mono { font-family: var(--font-mono); }
-table { width: 100%; border-collapse: collapse; }
-th { font: var(--text-mono-sm); letter-spacing: .04em; text-transform: uppercase; color: var(--mist); text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--rule); }
-td { padding: 10px 12px; border-bottom: 1px solid var(--rule); }
-.card { background: var(--card); border: 1px solid var(--rule); border-radius: var(--lares-surface-radius); }
-:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+* {
+  box-sizing: border-box;
+}
+body {
+  font: var(--text-body);
+}
+a {
+  color: var(--foreground);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.mono {
+  font-family: var(--font-mono);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th {
+  font: var(--text-mono-sm);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--mist);
+  text-align: left;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.card {
+  background: var(--card);
+  border: 1px solid var(--rule);
+  border-radius: var(--lares-surface-radius);
+}
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
 
-button, input, textarea, select { font-family: inherit; }
-html { color-scheme: light; }
-html.dark { color-scheme: dark; }
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+}
+html {
+  color-scheme: light;
+}
+html.dark {
+  color-scheme: dark;
+}
+
+/* Console-only geometry, matched to the approved console reference. */
+.lares-page {
+  margin-inline: 0;
+}
+.lares-page-header h1 {
+  font: 500 24px/1.25 var(--font-sans);
+}
+.lares-page-header {
+  margin-bottom: 28px;
+}
+.lares-page.lares-stack > .lares-page-header {
+  margin-bottom: 8px;
+}
+th {
+  font: var(--text-body-sm);
+  text-transform: none;
+  letter-spacing: normal;
+  background: light-dark(#faf8f5, #202a29);
+}
+.lares-surface,
+.card {
+  border-color: light-dark(#e8e5df, var(--border));
+}
+.lares-settings {
+  max-width: 880px;
+}
+.lares-settings h2 {
+  margin-bottom: 18px;
+}
+.lares-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 0;
+  border-top: 1px solid var(--border);
+}
+.lares-setting-row:last-child {
+  padding-bottom: 0;
+}
+.lares-setting-row p {
+  margin: 4px 0 0;
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.lares-setting-row a {
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.lares-event-table {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+}
+.lares-event-table th,
+.lares-event-table td {
+  padding: 16px 18px;
+}
+.lares-event-table tr:last-child td {
+  border-bottom: 0;
+}
+.lares-event-table time {
+  white-space: nowrap;
+}
+.lares-chat {
+  max-width: 920px;
+}
+.lares-chat-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.lares-chat-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+.lares-chat-selector label {
+  display: grid;
+  gap: 2px;
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.lares-chat-selector select {
+  max-width: 240px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: var(--text-body);
+}
+.lares-conversation {
+  padding: 24px;
+  min-height: 400px;
+  max-height: 60dvh;
+  overflow-y: auto;
+  border-radius: 18px;
+  background: color-mix(in oklch, var(--card) 65%, transparent);
+}
+.lares-chat-intro {
+  min-height: 352px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 12px;
+}
+.lares-chat-intro p {
+  max-width: 480px;
+  font: var(--text-lead);
+  margin: 4px 0;
+}
+.lares-composer {
+  margin-top: 14px;
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+  padding: 4px;
+}
+.lares-composer textarea {
+  width: 100%;
+  min-height: 90px;
+  resize: vertical;
+  padding: 14px 62px 14px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--foreground);
+  font: var(--text-body);
+  border-radius: 12px;
+}
+.lares-composer button {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  border-radius: 50%;
+}
+.lares-chat-hint {
+  text-align: center;
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.lares-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+.lares-suggestions button {
+  border-radius: 999px;
+}
+@media (max-width: 760px) {
+  .lares-setting-row {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .lares-chat-selector select {
+    max-width: 160px;
+  }
+  .lares-conversation {
+    min-height: 300px;
+    padding: 16px;
+  }
+  .lares-chat-intro {
+    min-height: 268px;
+  }
+}
+
+.lares-operational h2 {
+  font: var(--text-h3) !important;
+  margin-block: 28px 12px !important;
+}
+.lares-operational input,
+.lares-operational select,
+.lares-operational textarea,
+.lares-operational button {
+  font: var(--text-body-sm) !important;
+  border-radius: 10px !important;
+  min-height: 38px;
+}
+.lares-operational .card {
+  padding: 16px;
+}
+.lares-operational table.card {
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  padding: 0;
+}
+.lares-operational table td {
+  padding: 16px;
+}
+
+.lares-connections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 16px;
+  margin-block: 24px;
+}
+.lares-connections details {
+  margin-top: 24px;
+  overflow-wrap: anywhere;
+}
+.lares-connections summary {
+  cursor: pointer;
+}
+
+.lares-chat-selector {
+  color: var(--foreground);
+  cursor: pointer;
+  text-align: left;
+  font: var(--text-body-sm);
+  max-width: 70%;
+}
+.lares-chat-selector > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.lares-chat-selector strong {
+  font: var(--text-body);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lares-agent-menu {
+  z-index: 60;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 8px;
+  background: var(--card);
+  box-shadow: var(--shadow-dialog);
+}
+.lares-agent-option {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  outline: none;
+}
+.lares-agent-option[data-highlighted] {
+  background: var(--muted);
+}
+.lares-agent-option > span:nth-child(2) {
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.lares-agent-option strong {
+  font-weight: 500;
+}
+
+.lares-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin: 16px 0;
+}

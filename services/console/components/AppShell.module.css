@@ -17,7 +17,7 @@
   top: var(--space-3);
 }
 .sidebar {
-  width: var(--lares-sidebar-width);
+  width: 200px;
   flex: none;
   position: sticky;
   top: 0;
@@ -26,7 +26,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
-  padding: var(--space-8) var(--space-4);
+  padding: 28px 12px;
   border-right: 1px solid var(--sidebar-border);
   background: var(--sidebar);
 }
@@ -52,8 +52,8 @@
   min-height: var(--lares-control-height);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--lares-control-radius);
-  color: var(--sidebar-foreground);
-  font: var(--text-body-sm);
+  color: var(--muted-foreground);
+  font: var(--text-body);
 }
 .navItem svg {
   width: 17px;
@@ -67,11 +67,14 @@
 .navItem.current {
   background: var(--sidebar-accent);
   color: var(--sidebar-accent-foreground);
-  font-weight: 600;
+  font-weight: 500;
 }
 .groupLabel {
-  margin: var(--space-6) var(--space-3) var(--space-2);
-  font: var(--text-mono-sm);
+  margin: 14px 0 4px;
+  padding: 25px 12px 8px;
+  border-top: 1px solid var(--border);
+  font: var(--text-body-sm);
+  font-weight: 600;
   color: var(--muted-foreground);
 }
 .bottom {
@@ -87,7 +90,7 @@
 .main {
   flex: 1;
   min-width: 0;
-  padding: var(--space-10) var(--space-8) var(--space-16);
+  padding: 40px 60px 64px;
 }
 .mobileBar {
   display: none;

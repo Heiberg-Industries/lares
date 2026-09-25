@@ -27,8 +27,17 @@ export function useConsoleTheme() {
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [theme]);
+  useEffect(() => {
+    const sync = (event: Event) =>
+      setTheme((event as CustomEvent<Theme>).detail);
+    window.addEventListener("lares-theme-change", sync);
+    return () => window.removeEventListener("lares-theme-change", sync);
+  }, []);
   function choose(next: Theme) {
     setTheme(next);
+    window.dispatchEvent(
+      new CustomEvent("lares-theme-change", { detail: next }),
+    );
     try {
       localStorage.setItem(key, next);
     } catch {}
@@ -64,4 +73,8 @@ export function ThemeControl({
       ))}
     </div>
   );
+}
+
+export function SettingsThemeControl() {
+  return <ThemeControl {...useConsoleTheme()} />;
 }

@@ -17,6 +17,7 @@
   border: 1px solid var(--border);
   border-radius: var(--lares-surface-radius);
   background: var(--card);
+  overflow: hidden;
 }
 .table {
   table-layout: fixed;
@@ -24,7 +25,7 @@
 .table th,
 .table td {
   padding: var(--space-4);
-  vertical-align: top;
+  vertical-align: middle;
 }
 .table th:first-child {
   width: 36%;

@@ -14,7 +14,13 @@ import { Plus, ArrowRight } from "@lares/ui/icons";
 import type { FleetSnapshot } from "../lib/console-overview";
 import { workflowState } from "../lib/workflow-state";
 import styles from "./AgentsList.module.css";
-export function AgentsList({ snapshot }: { snapshot: FleetSnapshot }) {
+export function AgentsList({
+  snapshot,
+  compact = false,
+}: {
+  snapshot: FleetSnapshot;
+  compact?: boolean;
+}) {
   const [search, setSearch] = useState("");
   const agents = snapshot.agents.available ? snapshot.agents.value : [];
   const term = search.trim().toLocaleLowerCase();
@@ -31,11 +37,13 @@ export function AgentsList({ snapshot }: { snapshot: FleetSnapshot }) {
   );
   return (
     <section className="lares-page">
-      <PageHeader
-        title="Agents"
-        description="Give each agent a purpose. Keep their work and access in one place."
-        actions={create}
-      />
+      {!compact && (
+        <PageHeader
+          title="Agents"
+          description="Give each agent a purpose. Keep their work and access in one place."
+          actions={create}
+        />
+      )}
       {!snapshot.agents.available ? (
         <Notice error>
           Agents are unavailable. Reload to try again; this does not mean your
@@ -43,18 +51,20 @@ export function AgentsList({ snapshot }: { snapshot: FleetSnapshot }) {
         </Notice>
       ) : (
         <>
-          <div className={styles.toolbar}>
-            <Input
-              aria-label="Find an agent"
-              type="search"
-              placeholder="Find an agent…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-            <span className={styles.count} aria-live="polite">
-              {visible.length} {visible.length === 1 ? "agent" : "agents"}
-            </span>
-          </div>
+          {!compact && (
+            <div className={styles.toolbar}>
+              <Input
+                aria-label="Find an agent"
+                type="search"
+                placeholder="Find an agent…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <span className={styles.count} aria-live="polite">
+                {visible.length} {visible.length === 1 ? "agent" : "agents"}
+              </span>
+            </div>
+          )}
           {!snapshot.workflows.available && (
             <Notice>
               Workflow status is unavailable. Agent identities and access below

@@ -22,33 +22,49 @@ export function PermissionEvents({ events }: { events: Reading<EventPage> }) {
       </EmptyState>
     );
   return (
-    <ul className="lares-data-list">
-      {events.value.rows.map((r) => (
-        <li key={r.id}>
-          <div className="lares-actions">
-            <Link href={`/agents/${encodeURIComponent(r.agent)}`}>
-              {r.agent}
-            </Link>
-            <StatusBadge
-              tone={
-                r.decision === "failed-closed" || r.decision === "denied"
-                  ? "error"
-                  : r.decision === "asked" || r.decision === "locked"
-                    ? "attention"
-                    : "quiet"
-              }
-            >
-              {labels[r.decision] ?? r.decision}
-            </StatusBadge>
-          </div>
-          <p>
-            {r.tool} <span className="lares-muted">· {r.capability}</span>
-          </p>
-          <time className="mono lares-muted" dateTime={r.at}>
-            {r.at.replace("T", " ").slice(0, 19)} UTC
-          </time>
-        </li>
-      ))}
-    </ul>
+    <div className="lares-event-table">
+      <table>
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Agent & tool</th>
+            <th>Permission decision</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.value.rows.map((r) => (
+            <tr key={r.id}>
+              <td>
+                <time title={r.at} dateTime={r.at}>
+                  {r.at.slice(0, 10)}
+                  <br />
+                  {r.at.slice(11, 16)} UTC
+                </time>
+              </td>
+              <td>
+                <Link href={`/agents/${encodeURIComponent(r.agent)}`}>
+                  {r.agent}
+                </Link>
+                <br />
+                <span className="lares-muted">{r.tool}</span>
+              </td>
+              <td>
+                <StatusBadge
+                  tone={
+                    r.decision === "failed-closed" || r.decision === "denied"
+                      ? "error"
+                      : r.decision === "asked" || r.decision === "locked"
+                        ? "attention"
+                        : "quiet"
+                  }
+                >
+                  {labels[r.decision] ?? r.decision}
+                </StatusBadge>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
