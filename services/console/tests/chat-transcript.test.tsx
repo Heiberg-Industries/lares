@@ -33,6 +33,15 @@ describe("the chat transcript", () => {
       .toMatch(/something this page cannot show/i);
   });
 
+  it("hides Eve's step marker while showing the assistant's reply", () => {
+    const assistant = { id: "step", role: "assistant", parts: [
+      { type: "step-start" }, { type: "text", text: "Hello from the agent." },
+    ] } as unknown as EveMessage;
+    const html = renderToStaticMarkup(<ChatTranscript status="ready" messages={[assistant]} />);
+    expect(html).toContain("Hello from the agent.");
+    expect(html).not.toContain("something this page cannot show yet");
+  });
+
   it("shows the failure instead of an empty reply", () => {
     expect(renderToStaticMarkup(<ChatTranscript status="error" messages={[]} error="the agent did not answer" />))
       .toContain("the agent did not answer");

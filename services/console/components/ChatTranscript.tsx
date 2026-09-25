@@ -240,7 +240,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState) {
   }
   // Streamed model reasoning is not owner-facing here; skipped silently rather than shown as an
   // unsupported placeholder, per the plan's minimal implementation.
-  if (part.type === "reasoning") return null;
+  if (part.type === "reasoning" || part.type === "step-start") return null;
   const request = requestOf(part);
   if (part.type === "dynamic-tool" && request !== undefined && request.kind === "tool-approval") {
     return (
