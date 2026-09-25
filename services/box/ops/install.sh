@@ -1219,10 +1219,13 @@ run_stack() {
 # still proven by this call, one layer further in: the gateway uses it to reach the model, and
 # a bad one comes back as the gateway's own upstream failure.
 run_model_check() {
-  local gateway_url model_alias
-  gateway_url=$(read_setting GATEWAY_URL "$INSTALL_ENV")
+  local model_alias
   model_alias=$(read_setting LARES_MODEL_ALIAS "$INSTALL_ENV")
-  if ! do_or_say lares_doctor --test-model --gateway "$gateway_url" --alias "$model_alias" --key-file "$SECRETS_DIR/gateway-master-key"; then
+  # The doctor runs on the host. The Compose service name in GATEWAY_URL is only
+  # resolvable inside Docker, while the gateway's diagnostic port is loopback-only.
+  # At this stage migrations and owner creation have not happened, so ask for the
+  # model result alone rather than the full installation report.
+  if ! do_or_say lares_doctor --test-model --model-only --gateway "http://127.0.0.1:4000" --alias "$model_alias" --key-file "$SECRETS_DIR/gateway-master-key"; then
     die "the gateway did not answer with a working model. Everything generated so far is left exactly as it is — fix what the line above names (the model provider key, or the gateway), then run this again." "$EX_REFUSED"
   fi
 }

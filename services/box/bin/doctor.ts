@@ -17,7 +17,7 @@ import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { Pool } from "pg";
 import { poolFromEnv } from "../lib/db.js";
-import { runDoctor, doctorReport, doctorExitCode, type ModelTestDeps } from "../lib/doctor.js";
+import { runDoctor, doctorReport, doctorExitCode, testModel as probeModel, type ModelTestDeps } from "../lib/doctor.js";
 
 const SQL_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "sql");
 
@@ -30,6 +30,7 @@ const HELP_TEXT = [
   "  --help                Show this message.",
   "  --test-model          Ask the model gateway for one real, tiny completion (a paid call —",
   "                        a fraction of a cent). Makes no call unless you pass this flag.",
+  "  --model-only          Check only that completion during installation, before migrations.",
   "                        Requires all three of the following:",
   "  --gateway <url>       The gateway's own URL (this installation's GATEWAY_URL).",
   "  --alias <name>        The model alias to test.",
@@ -44,6 +45,7 @@ const HELP_TEXT = [
 export interface ParsedDoctorArgs {
   help: boolean;
   testModel: boolean;
+  modelOnly: boolean;
   gatewayUrl: string | undefined;
   alias: string | undefined;
   keyFile: string | undefined;
@@ -56,6 +58,7 @@ const VALUE_FLAGS = new Set(["--gateway", "--alias", "--key-file"]);
 export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
   let help = false;
   let testModel = false;
+  let modelOnly = false;
   let gatewayUrl: string | undefined;
   let alias: string | undefined;
   let keyFile: string | undefined;
@@ -66,6 +69,7 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
     if (arg === "--") continue;
     else if (arg === "--help") help = true;
     else if (arg === "--test-model") testModel = true;
+    else if (arg === "--model-only") modelOnly = true;
     else if (VALUE_FLAGS.has(arg)) {
       const value = argv[i + 1];
       if (value === undefined) throw new Error(`doctor: ${arg} needs a value.`);
@@ -80,7 +84,8 @@ export function parseArgs(argv: readonly string[]): ParsedDoctorArgs {
     }
   }
 
-  return { help, testModel, gatewayUrl, alias, keyFile };
+  if (modelOnly && !testModel) throw new Error("doctor: --model-only requires --test-model.");
+  return { help, testModel, modelOnly, gatewayUrl, alias, keyFile };
 }
 
 function messageOf(err: unknown): string {
@@ -130,6 +135,12 @@ export async function main(
     testModel = { gatewayUrl: args.gatewayUrl, key, alias: args.alias, fetch: deps.fetch };
   }
 
+  if (args.modelOnly && testModel) {
+    const result = await probeModel(testModel);
+    deps.out(`Model connection: ${result.say}`);
+    return result.verdict === "ok" ? 0 : 1;
+  }
+
   const results = await runDoctor({
     db: deps.db,
     env: process.env,
@@ -140,6 +151,7 @@ export async function main(
   deps.out(doctorReport(results));
   return doctorExitCode(results);
 }
+
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const pool = poolFromEnv();

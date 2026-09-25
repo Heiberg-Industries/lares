@@ -97,6 +97,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     "lares-gateway": {
       image: imageFor(manifest, "lares-gateway"),
       restart: "unless-stopped",
+      // The installer runs on the host and proves one model completion before migrations.
+      // Keep this diagnostic route private to the host; agents use the Compose service name.
+      ports: ["127.0.0.1:4000:4000"],
       // Virtual keys are persisted by LiteLLM, not represented in config.yaml. The gateway
       // therefore needs its own database and the same file-only database credential discipline
       // as every other service in this stack. install.sh creates the `litellm` database before
