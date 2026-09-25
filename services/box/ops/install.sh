@@ -947,7 +947,7 @@ write_installation_env() {
     env_line LARES_OWNER_NAME "$LARES_OWNER_NAME"
     env_line OWNER_HOME_TZ "$OWNER_HOME_TZ"
     printf '%s\n' "# CONSOLE_ALLOWED_EMAILS is comma-separated; add more addresses by editing"
-    printf '%s\n' "# this file and restarting the console — Lares never assumes there is only"
+    printf '%s\n' "# this file and rerunning the installer — Lares never assumes there is only"
     printf '%s\n' "# one person."
     env_line CONSOLE_ALLOWED_EMAILS "$LARES_OWNER_EMAIL"
     env_line CONSOLE_OAUTH_REDIRECT "https://$LARES_DOMAIN/api/auth/callback"
@@ -1097,12 +1097,12 @@ run_stack() {
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
-  local domain owner_email model_alias provider_model tmp tries=0 existing
+  local domain allowed_emails model_alias provider_model tmp tries=0 existing
 
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the stack cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
-  owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
-  [ -n "$owner_email" ] || die "the owner e-mail is not written down in $INSTALL_ENV, so console access cannot be restricted. Nothing has been brought up." "$EX_REFUSED"
+  allowed_emails=$(read_setting CONSOLE_ALLOWED_EMAILS "$INSTALL_ENV")
+  [ -n "$allowed_emails" ] || die "the console allowed e-mails are not written down in $INSTALL_ENV, so access cannot be restricted. Nothing has been brought up." "$EX_REFUSED"
 
   # F7a-2: the two values the gateway's own config is rendered from (lib/gateway-config.ts),
   # read back exactly as LARES_DOMAIN is above — never re-derived, never defaulted here.
@@ -1121,7 +1121,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$owner_email"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this

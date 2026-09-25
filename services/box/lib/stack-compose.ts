@@ -32,8 +32,8 @@ export interface StackComposeOptions {
    *  caddy service's OWN environment, because the Caddyfile substitutes it from the Caddy
    *  process's environment inside the container — not from the host's, and not from compose. */
   readonly domain: string;
-  /** Owner allow-list entry written by the installer, never a built-in identity. */
-  readonly ownerEmail: string;
+  /** Installation-owned comma-separated console allow-list. */
+  readonly consoleAllowedEmails: string;
   /** The only purpose alias the on-box gateway config actually defines. */
   readonly modelAlias: string;
   readonly pgUser: string;
@@ -84,7 +84,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // default buried in the image, decides where the console looks.
       environment: {
         LARES_CONFIGURED_MODEL_ALIAS: opts.modelAlias,
-        CONSOLE_ALLOWED_EMAILS: opts.ownerEmail,
+        CONSOLE_ALLOWED_EMAILS: opts.consoleAllowedEmails,
         CONSOLE_OAUTH_REDIRECT: `https://${opts.domain}/api/auth/callback`,
         CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret",
         EVE_ROUTE_PASSWORD_FILE: "/run/secrets/eve-route-password",
