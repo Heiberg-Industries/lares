@@ -57,9 +57,9 @@ export function AgentsList({ agents }: { agents: AgentSummaryDTO[] }) {
                     <Link className={styles.agentName} href={`/agents/${encodeURIComponent(agent.name)}`}>{agent.name}</Link>
                     <span className={styles.role}>{agent.role}</span>
                   </td>
-                  <td><StatePill state={agent.status} /></td>
-                  <td>{agent.pendingApprovals > 0 ? `${agent.pendingApprovals} pending` : "—"}</td>
-                  <td className={styles.capabilities} title={agent.capabilities.join(", ")}>{capabilitiesLabel(agent.capabilities)}</td>
+                  <td data-label="Status"><StatePill state={agent.status} /></td>
+                  <td data-label="Needs you">{agent.pendingApprovals > 0 ? `${agent.pendingApprovals} pending` : "—"}</td>
+                  <td data-label="Access" className={styles.capabilities} title={agent.capabilities.join(", ")}>{capabilitiesLabel(agent.capabilities)}</td>
                   <td><Link className={styles.chatAction} href={`/chat/${encodeURIComponent(agent.name)}`}>Chat <span aria-hidden="true">→</span></Link></td>
                 </tr>
               ))}
