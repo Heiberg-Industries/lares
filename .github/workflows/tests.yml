@@ -133,6 +133,26 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Type check every workspace package
         run: pnpm typecheck
+
+  website-build:
+    name: website build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Enable corepack and prepare pnpm 9.15.0
+        run: corepack enable && corepack prepare pnpm@9.15.0 --activate
+      - name: Setup Node 24 + pnpm
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build public website
+        run: pnpm --filter @lares/website build
       - name: Verify Prisma security override compatibility
         run: node scripts/check-prisma-config.mjs
 
