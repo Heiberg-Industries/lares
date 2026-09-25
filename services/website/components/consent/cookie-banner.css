@@ -149,3 +149,10 @@
 }
 
 @media (prefers-reduced-motion: reduce) { [data-testid="consent-banner-card"] { animation: none; } }
+
+/* c15t focuses its container on opening; only interactive controls need a ring. */
+[data-testid="consent-banner-card"]:focus,
+[data-testid="consent-dialog-root"]:focus,
+[data-testid="consent-dialog-card"]:focus {
+  outline: none;
+}
