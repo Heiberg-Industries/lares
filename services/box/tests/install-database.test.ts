@@ -127,6 +127,9 @@ describe("the database the installer creates", () => {
     expect(calls).toMatch(/pnpm -C .*services\/box installation-settings/);
     // The runner runs AFTER the database exists, never before.
     expect(calls.indexOf("CREATE DATABASE lares_state;")).toBeLessThan(calls.indexOf("migrate"));
+    expect(calls).toContain("CREATE DATABASE empty_workflow;");
+    expect(calls).toContain("CREATE SCHEMA IF NOT EXISTS workflow;");
+    expect(calls.indexOf("CREATE DATABASE empty_workflow;")).toBeLessThan(calls.indexOf("render-keeper-config"));
     expect(calls.indexOf("migrate")).toBeLessThan(calls.indexOf("installation-settings"));
     expect(calls.indexOf("installation-settings")).toBeLessThan(calls.indexOf("first-owner"));
     expect(calls.indexOf("first-owner")).toBeLessThan(calls.indexOf("first-organisation"));
