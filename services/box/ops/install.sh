@@ -1637,7 +1637,7 @@ run_finish() {
     say "the installer is finished. No agent is running and no conversation is ready yet."
     say "Open this to create your first agent:"
     say "https://$domain/agents/new"
-    say 'Nothing is backed up yet. `lares backup` sets that up.'
+    say 'Backups are not configured by this installer yet. Do not rely on this installation for data you need to keep until backup and restore have been configured and tested.'
     say "No chat app is connected yet; after the first agent is running, web chat is the first door and Slack or Telegram can be connected later."
   fi
 }

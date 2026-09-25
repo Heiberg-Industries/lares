@@ -52,6 +52,7 @@ Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-va
 ## runbooks
 
 - [`definition-backups.md`](runbooks/definition-backups.md) — Optional Git backups of agent definitions
+- [`golden-path-runs.md`](runbooks/golden-path-runs.md) — Observed fresh-install runs and their remaining checks
 
 ## installation
 
