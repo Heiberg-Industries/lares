@@ -499,6 +499,13 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason: "an agent's own self-registration (grants, autonomy, skills, doors) — about the agent, not a member.",
   },
 
+  {
+    table: "agent_avatars",
+    scope: "operational",
+    createdBy: `${BOX}/089_agent_avatars.sql`,
+    reason: "the installation's agent identity image, keyed to agent_definitions rather than a member; reset explicitly or removed by the agent-definition deletion cascade.",
+  },
+
   // ── 039_agent_definitions.sql ─────────────────────────────────────────────────────────────
   {
     table: "agent_definitions",
