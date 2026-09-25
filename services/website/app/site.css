@@ -23,6 +23,8 @@ a { color: inherit; }
 .coming { border: 1px solid var(--border); border-radius: 999px; padding: 3px 9px; color: var(--muted-foreground); font-size: 11px; font-weight: 400; margin-left: 4px; }
 .theme-toggle { border: 1px solid var(--border); background: var(--card); color: var(--foreground); border-radius: 10px; min-width: 64px; min-height: 40px; padding: 8px 12px; font: var(--text-body-sm); }
 .theme-toggle:hover { background: var(--secondary); }
+.github-link { display: inline-grid; place-items: center; width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 10px; color: var(--foreground); }
+.github-link:hover { background: var(--secondary); }
 .hero-field { position: relative; overflow: hidden; isolation: isolate; border-block: 1px solid var(--border); background: linear-gradient(160deg, var(--lares-field-from), var(--lares-field-mid) 45%, var(--lares-field-to)); }
 .hero-field::after { content: ""; position: absolute; inset: 0; z-index: 0; pointer-events: none; background: linear-gradient(90deg, color-mix(in oklch, var(--lares-field-from) 80%, transparent), transparent 68%); }
 .gradient-light { position: absolute; inset: -22%; z-index: 0; pointer-events: none; }
@@ -89,19 +91,14 @@ a { color: inherit; }
 .name-story { padding-bottom: 88px; }
 .name-story > div { max-width: 64ch; border-top: 1px solid var(--border); padding-top: 32px; }
 .name-story p { margin-top: 16px; font: var(--text-lead); }
-.signup-footer { background: var(--secondary); }
-.dark .signup-footer { background: var(--sidebar); }
-.waitlist-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 64px 56px; }
-.waitlist h2 { margin-bottom: 12px; font: var(--text-h1); letter-spacing: var(--tracking-heading); }
-.waitlist p { max-width: 42ch; margin-bottom: 16px; }
-.waitlist .hint { color: var(--lares-ink-2); }
-.signup-preview-note { margin-top: 24px !important; padding-top: 16px; border-top: 1px solid var(--border); font: var(--text-body-sm); color: var(--muted-foreground); }
-.waitlist fieldset { display: grid; gap: 16px; border: 0; padding: 0; margin: 0; }
-.waitlist label { display: grid; gap: 7px; font: var(--text-label); }
-.waitlist input, .waitlist select { width: 100%; min-height: 43px; padding: 9px 12px; border: 1px solid var(--input); border-radius: 10px; background: var(--card); color: var(--foreground); font: var(--text-body); }
-.waitlist input::placeholder { color: var(--muted-foreground); }
-.waitlist input:disabled, .waitlist select:disabled { opacity: .7; }
-.waitlist button:disabled { opacity: .65; justify-self: start; }
+.contact-footer { background: var(--secondary); }
+.dark .contact-footer { background: var(--sidebar); }
+.contact-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; padding-block: 64px 56px; }
+.contact-sheet h2 { margin-bottom: 12px; font: var(--text-h1); letter-spacing: var(--tracking-heading); }
+.contact-sheet p { max-width: 42ch; margin-bottom: 16px; }
+.contact-sheet .hint { color: var(--lares-ink-2); }
+.contact-actions { display: flex; align-items: start; justify-content: center; flex-direction: column; gap: 14px; }
+.contact-actions p { margin: 0; color: var(--muted-foreground); font: var(--text-body-sm); }
 .site-footer { position: relative; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; padding-block: 28px; color: var(--muted-foreground); }
 .site-footer::before { content: ""; position: absolute; top: 0; left: 40px; right: 40px; height: 1px; background: color-mix(in oklch, var(--foreground) 13%, transparent); }
 .site-footer a { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; font: var(--text-mono-sm); }
@@ -115,7 +112,7 @@ a { color: inherit; }
   .feature-grid article:nth-child(3) { padding-left: 0; border-top: 1px solid var(--border); }
   .feature-grid article:nth-child(4) { border-top: 1px solid var(--border); }
   .product-peek { gap: 30px; }
-  .waitlist-grid { gap: 32px; }
+  .contact-grid { gap: 32px; }
 }
 @media (max-width: 700px) {
   .site-wrap { padding-inline: 20px; }
@@ -127,14 +124,14 @@ a { color: inherit; }
   .hero-note { margin-top: 34px !important; }
   .hero-motion-control { right: 20px; bottom: 16px; }
   .features { padding-block: 64px 52px; }
-  .product-peek, .waitlist-grid { grid-template-columns: 1fr; }
+  .product-peek, .contact-grid { grid-template-columns: 1fr; }
   .product-peek { padding-block: 20px 64px; }
   .doors, .name-story { padding-bottom: 64px; }
   .door-grid { grid-template-columns: 1fr; }
   .door-card { min-height: 260px; }
   .section-heading { display: block; }
   .section-heading > span { display: block; margin-top: 9px; }
-  .waitlist-grid { padding-block: 40px; }
+  .contact-grid { padding-block: 40px; }
   .site-footer::before { left: 20px; right: 20px; }
 }
 @media (max-width: 450px) {

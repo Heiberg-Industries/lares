@@ -8,6 +8,7 @@ Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-va
 
 - [`design/execution-plan.md`](design/execution-plan.md) — approved console and marketing direction, implementation slices and release gates
 - [`tools/design-preview/README.md`](../tools/design-preview/README.md) — standalone visual and interaction preview; sample state only
+- [`marketing/analytics-and-launch.md`](marketing/analytics-and-launch.md) — current contact, booking, analytics and hosting decisions for the public website
 
 ## decisions
 
