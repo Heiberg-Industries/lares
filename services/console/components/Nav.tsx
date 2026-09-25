@@ -1,28 +1,41 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import styles from "./AppShell.module.css";
+
 const items = [
-  { href: "/chat", label: "Chat" },
-  { href: "/", label: "Fleet" },
-  { href: "/activity", label: "Activity" },
-  { href: "/signals", label: "Signals" },
-  { href: "/integrations", label: "Integrations & Accounts" },
-  { href: "/voice", label: "Voice" },
-  { href: "/proactivity", label: "Proactivity" },
-  { href: "/deadlines", label: "Deadlines" },
-  { href: "/backup", label: "Backup" },
-  { href: "/meetings", label: "Meetings" },
-  { href: "/taste", label: "Taste" },
-  { href: "/markets", label: "Markets" },
+  { href: "/", label: "Agents", active: (path: string) => path === "/" || path.startsWith("/agents") },
+  { href: "/chat", label: "Chat", active: (path: string) => path.startsWith("/chat") },
+  { href: "/activity", label: "Activity", active: (path: string) => path === "/activity" },
+  { href: "/integrations", label: "Connections", active: (path: string) => path === "/integrations" },
+  { href: "/signals", label: "Signals", active: (path: string) => path.startsWith("/signals") },
+  { href: "/voice", label: "Voice", active: (path: string) => path === "/voice" },
+  { href: "/proactivity", label: "Proactivity", active: (path: string) => path === "/proactivity" },
+  { href: "/deadlines", label: "Deadlines", active: (path: string) => path === "/deadlines" },
+  { href: "/backup", label: "Backup", active: (path: string) => path === "/backup" },
+  { href: "/meetings", label: "Meetings", active: (path: string) => path === "/meetings" },
+  { href: "/taste", label: "Saved preferences", active: (path: string) => path === "/taste" },
+  { href: "/markets", label: "Market watch", active: (path: string) => path === "/markets" },
 ];
+
 export function Nav() {
+  const pathname = usePathname();
   return (
-    <nav style={{ width: 200, borderRight: "1px solid var(--rule)", padding: 16 }}>
-      <div className="mono" style={{ fontWeight: 600, marginBottom: 20 }}>lares</div>
-      {items.map((i) => (
-        <Link key={i.href} href={i.href} className="mono"
-          style={{ display: "block", padding: "6px 0", color: "var(--ink)", fontSize: 13 }}>
-          {i.label}
-        </Link>
-      ))}
+    <nav className={styles.nav} aria-label="Console navigation">
+      <Link className={styles.brand} href="/">lares</Link>
+      <div className={styles.navItems}>
+        {items.map((item) => (
+          <Link
+            key={item.href}
+            href={item.href}
+            className={`${styles.navItem} ${item.active(pathname) ? styles.current : ""}`}
+            aria-current={item.active(pathname) ? "page" : undefined}
+          >
+            {item.label}
+          </Link>
+        ))}
+      </div>
     </nav>
   );
 }
