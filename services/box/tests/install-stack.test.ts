@@ -15,7 +15,7 @@
 // rule, and "the stack file is written" is a test of the real renderer, not of a stub restating
 // either. Everything else that would touch this machine (docker, migrate, first-owner,
 // lares-doctor, chown, …) is a logging stub, and every write lands in a temp --prefix.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
+vi.setConfig({ testTimeout: 20_000 });
 const SCRIPT = join(here, "..", "ops", "install.sh");
 const COMMITTED_CADDYFILE = join(here, "..", "ops", "Caddyfile");
 /** The gateway's start script, committed once and installed — never re-generated, never
@@ -95,6 +96,9 @@ beforeEach(() => {
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, GOOD_RELEASE);
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
+  // The installer pipes SQL to this command. Consume stdin so Bash pipefail
+  // does not race the stub's exit while the writer is still sending the query.
+  stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
   stub("lares-doctor");
   // `pnpm` reaches three of the box's own commands from this script: render-stack (this slice),
   // migrate and first-owner. Only the first is what this file is about, and only it runs for

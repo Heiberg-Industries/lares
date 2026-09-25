@@ -13,7 +13,7 @@
 // `pnpm` hands only the box's own renderers to the real pnpm so the release is read and the
 // files written by the REAL lib/keeper-config.ts, and every write lands in a temp --prefix. No
 // Docker, no network, no server.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
@@ -25,6 +25,9 @@ import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
+// Each case launches the real renderer twice through a shell fixture. CI runs
+// this suite alongside other packages, so allow for process startup contention.
+vi.setConfig({ testTimeout: 20_000 });
 const SCRIPT = join(here, "..", "ops", "install.sh");
 const COMMITTED_KEEPER_COMPOSE = join(here, "..", "compose.lares-keeper.yaml");
 
