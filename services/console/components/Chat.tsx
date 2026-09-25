@@ -1,8 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useEveAgent } from "eve/react";
+import type { ClientSessionState } from "eve/client";
 import { ChatTranscript, composerState, expiredRequestIds } from "./ChatTranscript";
+import { chatSessionKey, readChatSession, saveChatSession } from "../lib/chat-session";
+
+function tabStorage(): Storage | null {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * W8B-s3 — the thin client half. All state and transport is eve's own `useEveAgent`; this
@@ -31,8 +41,35 @@ import { ChatTranscript, composerState, expiredRequestIds } from "./ChatTranscri
  *    it anyway (`StaleApprovalError`) and a button that cannot work is worse than a sentence.
  *    `Date.now()` is read HERE, at render, and handed down as a set.
  */
-export function Chat({ name }: { name: string }) {
-  const agent = useEveAgent({ host: `/api/chat/${name}` });
+export function Chat({ name, owner }: { name: string; owner: string }) {
+  const storageKey = chatSessionKey(owner, name);
+  const [binding, setBinding] = useState<{ key: string; session: ClientSessionState | null } | null>(null);
+
+  // The server and first browser render agree. Read tab storage only after hydration; a changed
+  // agent or owner gets a new binding before its Eve hook can mount under the wrong host.
+  useEffect(() => {
+    const storage = tabStorage();
+    setBinding({ key: storageKey, session: storage ? readChatSession(storage, storageKey) : null });
+  }, [storageKey]);
+
+  if (binding?.key !== storageKey) return <p role="status">Opening chat…</p>;
+  return <ChatSession key={storageKey} name={name} storageKey={storageKey} initialSession={binding.session} />;
+}
+
+function ChatSession({ name, storageKey, initialSession }: {
+  name: string;
+  storageKey: string;
+  initialSession: ClientSessionState | null;
+}) {
+  const agent = useEveAgent({
+    host: `/api/chat/${name}`,
+    initialSession: initialSession ?? undefined,
+    resume: initialSession !== null,
+    onSessionChange(session) {
+      const storage = tabStorage();
+      if (storage) saveChatSession(storage, storageKey, session);
+    },
+  });
   const [text, setText] = useState("");
   const [answering, setAnswering] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
