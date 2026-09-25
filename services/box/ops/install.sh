@@ -462,8 +462,16 @@ fi
 SS_OUT=$(ss -ltn 2>/dev/null) || SS_OUT=""
 BLOCKED=$(printf '%s\n' "$SS_OUT" | awk '{ print $4 }' | grep -E ':(80|443)$' | tr '\n' ' ') || BLOCKED=""
 if [ -n "$BLOCKED" ]; then
-  problem "something is already listening on: ${BLOCKED% }. Caddy needs 80 and 443 free to answer https and fetch a certificate." \
-    "stop whatever is using ${BLOCKED% } (as root, 'ss -ltnp' names it), or move it elsewhere, then run this again."
+  # A previous partial install can have started this exact stack already. Compose
+  # lists only running containers by default; an unrelated listener still fails.
+  OWN_CADDY=""
+  if [ -f "$PREFIX/opt/lares/compose.yaml" ]; then
+    OWN_CADDY=$(docker compose -f "$PREFIX/opt/lares/compose.yaml" ps -q caddy 2>/dev/null) || OWN_CADDY=""
+  fi
+  if [ -z "$OWN_CADDY" ]; then
+    problem "something is already listening on: ${BLOCKED% }. Caddy needs 80 and 443 free to answer https and fetch a certificate." \
+      "stop whatever is using ${BLOCKED% } (as root, 'ss -ltnp' names it), or move it elsewhere, then run this again."
+  fi
 fi
 
 # --- 6. an existing installation ----------------------------------------------------------
@@ -1219,12 +1227,19 @@ run_stack() {
 # still proven by this call, one layer further in: the gateway uses it to reach the model, and
 # a bad one comes back as the gateway's own upstream failure.
 run_model_check() {
-  local model_alias
+  local model_alias tries=0
   model_alias=$(read_setting LARES_MODEL_ALIAS "$INSTALL_ENV")
   # The doctor runs on the host. The Compose service name in GATEWAY_URL is only
   # resolvable inside Docker, while the gateway's diagnostic port is loopback-only.
   # At this stage migrations and owner creation have not happened, so ask for the
   # model result alone rather than the full installation report.
+  until curl -fsS --max-time 2 "http://127.0.0.1:4000/health/liveliness" >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge 60 ]; then
+      die "the gateway did not become ready within two minutes. Check its container logs, then run this again." "$EX_TEMPFAIL"
+    fi
+    sleep 2
+  done
   if ! do_or_say lares_doctor --test-model --model-only --gateway "http://127.0.0.1:4000" --alias "$model_alias" --key-file "$SECRETS_DIR/gateway-master-key"; then
     die "the gateway did not answer with a working model. Everything generated so far is left exactly as it is — fix what the line above names (the model provider key, or the gateway), then run this again." "$EX_REFUSED"
   fi
