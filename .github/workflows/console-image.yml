@@ -18,6 +18,11 @@ on:
       - "pnpm-workspace.yaml"
       - "package.json"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the built image (also requires PUBLISH_IMAGES)
+        type: boolean
+        default: false
 
 concurrency:
   group: console-image
@@ -84,7 +89,7 @@ jobs:
           context: .
           file: services/console/Dockerfile
           platforms: linux/amd64
-          push: "${{ vars.PUBLISH_IMAGES == 'true' }}"
+          push: "${{ vars.PUBLISH_IMAGES == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}"
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -92,9 +97,9 @@ jobs:
 
       - name: Publish digest to job summary
         run: |
-          echo "## console image pushed" >> "$GITHUB_STEP_SUMMARY"
+          echo "## console image build" >> "$GITHUB_STEP_SUMMARY"
           echo '' >> "$GITHUB_STEP_SUMMARY"
-          echo "Pin this digest in compose.yaml:" >> "$GITHUB_STEP_SUMMARY"
+          echo "Build digest (a build-only run does not publish it):" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           echo "ghcr.io/heiberg-industries/lares-engine-console@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
