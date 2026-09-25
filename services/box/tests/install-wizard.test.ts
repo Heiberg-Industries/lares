@@ -77,6 +77,9 @@ beforeEach(() => {
   // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "pnpm", "openssl", "lares-doctor"]) stub(name);
+  // CREATE DATABASE is sent on stdin; consume it before exiting so pipefail
+  // does not race the fake Docker process under CI load.
+  stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
   stub("id", "echo 0");                                   // running as root
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
