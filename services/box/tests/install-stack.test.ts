@@ -175,6 +175,7 @@ describe("the stack the installer brings up", () => {
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.image).toBe(D("console"));
+    expect(doc.services.console.volumes).toContain(`${join(prefix, "run", "lares")}:/run/lares`);
   });
 
   it("writes the release's own stack file where run_database looks for it", () => {

@@ -44,6 +44,7 @@ const ARGUMENTS = [
   "providerModel",
   "gatewayStartScript",
   "consoleAllowedEmails",
+  "socketDir",
 ] as const;
 
 /** The gateway's start script, committed once at the repository root and installed verbatim —
@@ -98,6 +99,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   }
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
+    socketDir: at("socketDir"),
     gatewayConfigFile: at("gatewayConfigFile"),
     gatewayStartScript: at("gatewayStartScript"),
     caddyfile: at("caddyfile"),
