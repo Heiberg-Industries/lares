@@ -3,8 +3,8 @@ import "./site.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "Lares — agents that live in your house",
-  description: "A small fleet for the everyday work of your business. Lares is in development.",
+  title: "lares — agents that live in your house",
+  description: "A small fleet for the everyday work of your business. The code is open; setup help starts with a conversation.",
   robots: { index: false, follow: false },
 };
 

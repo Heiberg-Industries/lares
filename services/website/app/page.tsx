@@ -1,7 +1,7 @@
-import { Brand, Bracket, Mark } from "../components/Brand";
+import { Brand, Bracket, GitHubMark, Mark } from "../components/Brand";
 import { HeroField } from "../components/HeroField";
 import { ThemeToggle } from "../components/ThemeToggle";
-import { features, offerings, selectedOffering } from "../lib/content";
+import { features, offerings } from "../lib/content";
 
 function Arrow({ diagonal = false }: { diagonal?: boolean }) {
   return <span aria-hidden="true">{diagonal ? "↗" : "→"}</span>;
@@ -15,8 +15,7 @@ function AgentSymbol({ role }: { role: "chief" | "travel" | "thinking" }) {
   );
 }
 
-export default async function Home({ searchParams }: { searchParams: Promise<{ edition?: string }> }) {
-  const edition = selectedOffering((await searchParams).edition);
+export default function Home() {
   return (
     <div className="marketing" id="top">
       <header className="site-header site-wrap">
@@ -24,8 +23,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
         <nav aria-label="Website">
           <a href="#how">How it works</a>
           <a href="#doors">Ways to get started</a>
-          <a href="#list">Get on the list <Arrow diagonal /></a>
+          <a href="#contact">Contact <Arrow diagonal /></a>
         </nav>
+        <a className="github-link" href="https://github.com/Heiberg-Industries/lares" aria-label="Lares source code on GitHub" title="Source code on GitHub"><GitHubMark /></a>
         <ThemeToggle />
       </header>
 
@@ -35,7 +35,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
           <h1>Agents that live<br />in your house.</h1>
           <p className="hero-copy">A small fleet for the everyday work of your business. Bring your inbox, calendar and follow-ups together, with clear permissions for what each agent can do.</p>
           <div className="hero-actions">
-            <a className="button button-primary" href="#list">Get on the list <Arrow /></a>
+            <a className="button button-primary" href="#contact">Get in touch <Arrow /></a>
             <a className="button button-quiet" href="https://github.com/Heiberg-Industries/lares">Explore the code <Arrow diagonal /></a>
           </div>
           <p className="mono hero-note">In development. Availability and pricing are still to be confirmed.</p>
@@ -85,7 +85,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
                 <span className="offering-subtitle">{offering.label}</span>
                 <h3>{offering.title}</h3>
                 <p>{offering.body}</p>
-                <a href={`/?edition=${offering.id}#list`}>{offering.action} <Arrow diagonal /></a>
+                <a href={offering.href}>{offering.action} <Arrow diagonal /></a>
               </article>
             ))}
           </div>
@@ -99,29 +99,19 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
         </section>
       </main>
 
-      <div className="signup-footer">
-        <section className="waitlist" id="list" aria-labelledby="waitlist-title">
-          <div className="site-wrap waitlist-grid">
+      <div className="contact-footer">
+        <section className="contact-sheet" id="contact" aria-labelledby="contact-title">
+          <div className="site-wrap contact-grid">
             <div>
-              <h2 id="waitlist-title">Get on the list</h2>
-              <p>What would you like taken off your plate?</p>
-              <p className="hint">Choose your setup and tell us where you’d start. Lares is in development; availability and pricing are still to be confirmed.</p>
-              <p className="signup-preview-note">Form preview only. Nothing you enter is sent or saved.</p>
+              <h2 id="contact-title">A note to the house.</h2>
+              <p>Want us to set up lares for you, or have something else in mind?</p>
+              <p className="hint">Tell us what you need. The code is open; setup and managed work start with a conversation.</p>
             </div>
-            <form aria-label="Signup preview">
-              <fieldset disabled>
-                <label>Email<input type="email" placeholder="you@company.no" /></label>
-                <label>How would you like to use Lares?
-                  <select defaultValue={edition}>
-                    <option value="domus">domus — I run it myself</option>
-                    <option value="villa">villa — you run it</option>
-                    <option value="familia">familia — I want the results</option>
-                  </select>
-                </label>
-                <label>What should it help with first?<input type="text" placeholder="Chase the invoices I keep forgetting" /></label>
-                <button className="button button-primary" type="button">Signups are not open yet</button>
-              </fieldset>
-            </form>
+            <div className="contact-actions">
+              <a className="button button-primary" href="mailto:bendik@heiberg.co?subject=Lares%20enquiry">Write to Bendik <Arrow diagonal /></a>
+              <a className="button button-outline" href="https://booking.heiberg.co/intro">Book a call <Arrow diagonal /></a>
+              <p>Email opens in your mail app. Booking currently opens the Heiberg calendar page.</p>
+            </div>
           </div>
         </section>
         <footer className="site-wrap site-footer">

@@ -15,6 +15,16 @@ excluded. PR #20 owns chat reload and session access while it remains in review.
 LAR-11 stay open until their production acceptance criteria are met; LAR-50 remains open for
 the broader fresh-install run.
 
+## Owner update — contact replaces waitlist
+
+The repository is now public. The owner removed the waitlist/signup plan for the
+website. Keep a contact sheet for setup enquiries and other messages, and a booking
+path using the Orbis service backed by the Heiberg calendar. The exact familia
+headline in the approved brand copy is intentional: “Care f**k all about agents?
+Get in touch.” Add a GitHub icon in the site header. PostHog and Google Search
+Console are the intended analytics/search tools; hosting on the Orbis box is a
+candidate for later discussion. This update supersedes older waitlist notes below.
+
 ## 1. Outcome and implementation principles
 
 Deliver the approved Lares console and marketing experience in real application code, using one shared design system. Preserve the current working runtime and self-hosted installation model. Prefer established shadcn/ui behavior and selected AI Elements presentation over custom interface infrastructure. The UI supports the product.
@@ -77,7 +87,7 @@ Earlier notes may be stale: the original motion note says animations are not imp
 - Offering cards have static grainy gradients and distinct compositions. No animation on the cards.
 - Product example uses the actual shared approval/avatar/status presentation.
 - Domus: Run it yourself; Villa: Hosted for you; Familia: Managed service. Content and availability must be verified before publishing.
-- Solid full-width signup/footer, height determined by content. Light stone grey with a green undertone in light mode; near-black in dark mode. White fields in light mode, slightly lighter fields in dark mode. No grain/gradient or outer rounded signup card. Content aligns to the page grid; quiet divider above footer links.
+- Solid full-width contact/footer, height determined by content. Light stone grey with a green undertone in light mode; near-black in dark mode. No grain/gradient or outer rounded contact card. Content aligns to the page grid; quiet divider above footer links.
 
 ## 5. Shared architecture and enforcement
 
@@ -89,7 +99,7 @@ packages/ui/
   src/theme/motion.css        # shared keyframes and reduced-motion policy
   src/primitives/             # selected shadcn source, consistent primitive family
   src/patterns/               # PageHeader, EmptyState, StatusBadge, AgentAvatar, etc.
-  src/marketing/              # GradientSurface, offering and signup layout primitives
+  src/marketing/              # GradientSurface, offering and contact layout primitives
   src/index.ts               # explicit supported exports
   tests/                     # behavior, semantic states and theme checks
 services/console/             # authenticated product views and domain adapters
@@ -155,11 +165,11 @@ Tools preserve existing deadline actions, preference browsing/import and market 
 
 Confirm whether another session creates a website first. If absent, use a small separate `services/website` app with the existing supported React/Next stack and static output where practical. Do not couple the public root to console authentication or install a new deployment platform to use shared components.
 
-Compose content-driven sections: header, hero, benefits, real-component product example, offering cards, name story, signup/footer. Keep text/offering metadata in a typed content module. Retain stable anchors, keyboard navigation and mobile flow. No sample agent data enters real console adapters.
+Compose content-driven sections: header, hero, benefits, real-component product example, offering cards, name story, contact/footer. Keep text/offering metadata in a typed content module. Retain stable anchors, keyboard navigation and mobile flow. No sample agent data enters real console adapters.
 
 Hero decorative layers are isolated, clipped and pointer-transparent. Pause stops grain and light; reduced motion is static from initial render. Pause offscreen/in hidden tabs where useful, keep content visible before JS, profile SVG noise and large moving layers on modest mobile hardware. Use a cached static grain asset if runtime filters are costly, preserving the same component contract. Avoid introducing WebGL for this treatment.
 
-Signup: select the agreed destination/storage only after checking existing infrastructure. Implement server-side validation, failure/success states, duplicate handling and appropriate abuse controls. Define actual contact/privacy wording and retention with the owner. In preview, keep explicit “not sent/saved” language; in production, enable a real CTA only when the endpoint and intended delivery/storage are verified. Never show a successful signup after a failed request. Offering links preselect their matching option. No fake call-booking links.
+Contact: the public site has no waitlist/signup. Keep a real contact path for setup enquiries and other messages. The current email link opens the visitor's mail app; it does not claim to submit anything through the site. The booking link goes to the existing Heiberg calendar page. The popup requires an Orbis frame-policy and Lares-brand decision before integration. If a contact form is later chosen, implement verified delivery, validation, failure/success states and abuse controls before enabling it.
 
 Before publishing: verify installation/availability/pricing and capability claims against the current release; confirm public source/docs links, metadata, canonical URL, social image, sitemap/robots as appropriate, favicon, fonts/licenses and no private console data. Use ordinary stable navigation, not preview surface-switching controls. Hosting/deploy and launch remain separate explicit steps.
 
@@ -178,7 +188,7 @@ No agents should start until the owner resumes implementation and the integratio
 | P6 Chat | Chat agent: presentation/history/approval mapping | P2/P3/P5 contract | Send/stream/switch/reconnect/reset/approval evidence |
 | P7 Operations | Console agent: Home/Activity/Connections/Settings/Tools | P3 and verified source contracts | Real event coverage, filters, permissions and recovery UX |
 | P8 Website | Marketing agent: separate app/content/sections | P1/P2 stable; identity API agreed | v6 fidelity, motion behavior, both themes/mobile; mock mode isolated |
-| P9 Signup | Website/backend owner: real submission integration | P8 + destination decision | Verified intended storage/delivery, errors and accessibility |
+| P9 Contact and booking | Website/Orbis owner: contact delivery and branded booking popup | P8 + cross-repo decision | Verified mail path, booking flow, errors and accessibility |
 | P10 Consolidate | Lead: cleanup/docs/CI/review package | P4–P9 | Gates below, no old style duplication, owner-reviewed final build |
 
 P8 can run alongside console slices once shared component APIs stabilize. P5 can run alongside P3 with a fixed avatar contract. P4/P6/P7 must not concurrently edit shared shell/agent detail files without explicit ownership. Only lead resolves shared dependency and migration changes. If backend gaps block one slice, proceed with independent slices; keep the blocker visible.
@@ -194,13 +204,13 @@ Each assignment must include: goal, allowed files, prohibited shared files, base
 5. Visual: browser screenshots against approved console and v6 marketing in both themes. Video/manual check for hero motion/pause and conversation scroll. Earlier preview DOM checks did not establish browser visual correctness; this gate remains necessary.
 6. Performance: compare bundle and page metrics to baseline, avoid layout shifts, lazy-load noncritical tools, don't ship console runtime to marketing, keep animated surfaces responsive on modest devices. Establish measurable budgets from P0 baselines.
 7. Build: use repository pnpm commands and actual scripts (console currently supports typecheck/test/build); run changed-package checks first and broader integration gates once needed. Document precise commands and outcomes. Seven old preview tests are reference evidence only, not production acceptance.
-8. Publication: real signup, factual copy, open-source notices, SEO/link checks, deployment configuration and owner acceptance. Do not interpret local green tests as live launch approval.
+8. Publication: working contact and booking, factual copy, open-source notices, SEO/link checks, deployment configuration and owner acceptance. Do not interpret local green tests as live launch approval.
 
 ## 10. Migration, rollback and definition of done
 
 Ship reviewed slices rather than a route-wide visual rewrite in one merge. Keep compatibility redirects and temporary token aliases until all dependents move. Prefer additive metadata changes; back up and plan rollback before any schema/storage migration. Capture current behavior before replacing controls. If chat presentation fails a gate, retain the existing authenticated transport/rendering path until corrected; never substitute sample responses.
 
-Completion means all in-scope routes use the shared system, runtime features and error semantics are preserved, approved visuals work in light/dark/mobile, avatar/history/signup persistence is truthful, old routes remain usable, raw visual duplication is removed from migrated pages, and component/API/theme/motion documentation is current. Deferred product features (notably pause/resume) are explicitly listed, not implied by UI affordances.
+Completion means all in-scope routes use the shared system, runtime features and error semantics are preserved, approved visuals work in light/dark/mobile, avatar/history/contact/booking behavior is truthful, old routes remain usable, raw visual duplication is removed from migrated pages, and component/API/theme/motion documentation is current. Deferred product features (notably pause/resume) are explicitly listed, not implied by UI affordances.
 
 Delivery packet: final component/token inventory; route map; data-source coverage; before/after screenshots; meaningful test results; dependency/license notes; backend migrations and rollback notes; remaining known limitations; exact candidate SHA and deploy instructions. Owner reviews before any merge/release step.
 
@@ -212,7 +222,7 @@ Decisions to resolve during P0 without blocking this written plan:
 - New website location if another session has already established one.
 - Canonical avatar metadata/store and backup contract.
 - Authoritative event/usage sources and supported conversation restoration.
-- Signup destination, hosting and confirmed launch copy.
+- Contact/booking destination, hosting and confirmed launch copy.
 
 Default choices already settled: real-code implementation, shadcn + Tailwind, selected AI Elements over Eve, original fonts/palette, approved console structure and v6 marketing surfaces. No Figma dependency or new general-purpose UI framework is needed.
 
@@ -226,4 +236,4 @@ The owner subsequently authorized branch-only commits of the completed design wo
 
 ### Linear reconciliation during commit review
 
-LAR-10 and LAR-11 were re-read on 2026-09-25 and remain Backlog. LAR-10 also contains an older alternative-theme/customization requirement; reconcile this separately from the approved light/dark baseline. LAR-11 includes docs, booking, contact, consent/analytics and waitlist integrations beyond this visual prototype. Preserve those requirements in their existing ticket; verify current repository placement and service ownership before implementation. Public website analytics must never leak into the self-hosted console. The kickoff coordinates these tickets rather than claiming their acceptance criteria are already complete.
+LAR-10 and LAR-11 were re-read on 2026-09-25 and remain Backlog. LAR-10 also contains an older alternative-theme/customization requirement; reconcile this separately from the approved light/dark baseline. LAR-11's older waitlist requirement is superseded by the owner update above; it still includes docs, booking, contact and consent/analytics beyond this visual prototype. Verify current repository placement and service ownership before implementation. Public website analytics must never leak into the self-hosted console. The kickoff coordinates these tickets rather than claiming their acceptance criteria are already complete.
