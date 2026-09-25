@@ -283,7 +283,13 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
   return (
     <div>
       {messages.length === 0 ? (
-        <p style={{ color: "var(--mist)" }}>Say something to start.</p>
+        <p style={{ color: "var(--mist)" }}>
+          {status === "resuming"
+            ? "Reconnecting to this conversation…"
+            : status === "error"
+              ? "This conversation could not be reopened. Start a new chat to continue."
+              : "Say something to start."}
+        </p>
       ) : (
         messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} />)
       )}
