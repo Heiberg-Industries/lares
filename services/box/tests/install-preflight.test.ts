@@ -112,6 +112,14 @@ describe("the installer, before it writes anything", () => {
     expect(run(["--yes"]).code).toBe(78);
   });
 
+  it("allows a retry when this installation's Caddy already owns the public ports", () => {
+    mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services: {}\n");
+    stub("ss", 'echo "LISTEN 0 511 *:443 *:*"');
+    stub("docker", 'case "$*" in *"ps -q caddy"*) echo own-caddy-container ;; esac\nexit 0');
+    expect(run(["--dry-run", "--yes"]).code).toBe(0);
+  });
+
   it("refuses when Docker is not installed, rather than installing it silently", () => {
     rmSync(join(binDir, "docker"));
     // Removing the stub is not enough where the HOST has Docker in /usr/bin (a GitHub runner
