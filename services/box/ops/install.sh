@@ -549,6 +549,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
     echo "install: there is no release file at '$RELEASE_FILE'. Nothing has been changed." >&2
     exit "$EX_USAGE"
   fi
+  # The renderers run through `pnpm -C "$BOX_DIR"`, which changes their working directory.
+  # Anchor a caller-relative release path now, while it still names the file we checked.
+  case "$RELEASE_FILE" in
+    /*) ;;
+    *) RELEASE_FILE="$PWD/$RELEASE_FILE" ;;
+  esac
 fi
 
 # --- 7. the installation's own credentials (W8C-s2) -----------------------------------------

@@ -21,7 +21,7 @@ import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
 
@@ -59,10 +59,11 @@ const answers = ["lares.example.invalid", "owner@example.invalid", "A Name", "sk
 /** Every run bakes in `--yes` (screen one is not what this file is about) and, unless the case
  *  is about the flag itself, `--release <fixture>`. The real PATH is kept on the end so the
  *  release read and the render run under the real `node`, exactly as they will on a box. */
-function run(args: string[], input = answers, env: Record<string, string> = {}) {
+function run(args: string[], input = answers, env: Record<string, string> = {}, cwd = process.cwd()) {
   try {
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", ...args], {
       input,
+      cwd,
       encoding: "utf8",
       env: {
         PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
@@ -162,6 +163,16 @@ describe("the release file the installer was given", () => {
 });
 
 describe("the stack the installer brings up", () => {
+  it("reads a release path relative to the caller before pnpm changes directory", () => {
+    const callerDir = join(here, "..", "..", "..");
+    const fromCaller = relative(callerDir, releaseFile);
+    expect(fromCaller).not.toMatch(/^\//);
+    expect(run(["--release", fromCaller], answers, {}, callerDir).code).toBe(0);
+    const composeFile = join(prefix, "opt", "lares", "compose.yaml");
+    const doc = parse(readFileSync(composeFile, "utf8")) as any;
+    expect(doc.services.console.image).toBe(D("console"));
+  });
+
   it("writes the release's own stack file where run_database looks for it", () => {
     expect(run(["--release", releaseFile]).code).toBe(0);
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
