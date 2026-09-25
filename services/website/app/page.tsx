@@ -1,5 +1,6 @@
 import { Brand, Bracket, GitHubMark, Mark } from "../components/Brand";
 import { HeroField } from "../components/HeroField";
+import { BookingButton } from "../components/Booking";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { features, offerings } from "../lib/content";
 
@@ -8,25 +9,25 @@ function Arrow({ diagonal = false }: { diagonal?: boolean }) {
 }
 
 function AgentSymbol({ role }: { role: "chief" | "travel" | "thinking" }) {
-  return (
-    <span className={`agent-symbol agent-symbol-${role}`} aria-hidden="true">
-      <span />
-    </span>
-  );
+  const points = role === 'chief' ? [[20,32],[9.6,14],[30.4,14]] : [[20,8],[32,20],[20,32],[8,20]];
+  return <span className="agent-symbol" aria-hidden="true"><svg viewBox="0 0 40 40" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+    {role === 'travel' ? <><circle cx="20" cy="20" r="12" strokeDasharray="60 16" transform="rotate(-60 20 20)"/><circle cx="32" cy="20" r="2.3" fill="currentColor" stroke="none"/><path d="M8 20h11"/></> : <><circle cx="20" cy="20" r="12"/>{points.map(([cx,cy]) => <circle key={`${cx}-${cy}`} cx={cx} cy={cy} r="2.3" fill="currentColor" stroke="none"/>)}</>}
+  </svg></span>;
 }
 
 export default function Home() {
   return (
     <div className="marketing" id="top">
       <header className="site-header site-wrap">
-        <a className="brand-link" href="#top" aria-label="Lares home"><Brand /><span className="coming mono">coming</span></a>
+        <a className="brand-link" href="#top" aria-label="Lares home"><Brand /></a>
         <nav aria-label="Website">
           <a href="#how">How it works</a>
-          <a href="#doors">Ways to get started</a>
+          <a href="#doors">Get started</a>
+          <a href="/docs/">Docs</a>
           <a href="#contact">Contact <Arrow diagonal /></a>
         </nav>
-        <a className="github-link" href="https://github.com/Heiberg-Industries/lares" aria-label="Lares source code on GitHub" title="Source code on GitHub"><GitHubMark /></a>
-        <ThemeToggle />
+        <div className="header-tools"><a className="github-link" href="https://github.com/Heiberg-Industries/lares" aria-label="Lares source code on GitHub" title="Source code on GitHub"><GitHubMark /></a>
+        <ThemeToggle /></div>
       </header>
 
       <HeroField>
@@ -56,12 +57,12 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="site-wrap product-peek" aria-labelledby="product-title">
+        <section className="site-wrap product-peek" id="product" aria-labelledby="product-title">
           <div>
             <span className="mono muted">a quiet place to keep an eye on things</span>
             <h2 id="product-title">See what happened.<br />Decide what happens next.</h2>
             <p>Your agents, their work, and the decisions that need you. A small console for keeping the house in order.</p>
-            <a className="button button-outline" href="https://github.com/Heiberg-Industries/lares">Read about the console <Arrow /></a>
+            <a className="button button-outline" href="/docs/console/">Read the docs <Arrow /></a>
           </div>
           <div className="mini-console" aria-label="Illustrative console example">
             <div className="mini-header"><Brand /><span className="mono muted">illustrative example</span></div>
@@ -92,7 +93,7 @@ export default function Home() {
                 <span className="offering-subtitle">{offering.label}</span>
                 <h3>{offering.title}</h3>
                 <p>{offering.body}</p>
-                <a href={offering.href}>{offering.action} <Arrow diagonal /></a>
+                {offering.id === 'villa' ? <BookingButton className="door-action" placement="villa">{offering.action} <Arrow diagonal /></BookingButton> : <a href={offering.href} data-analytics-action={offering.id === 'domus' ? 'github' : 'contact'} data-analytics-placement={offering.id}>{offering.action} <Arrow diagonal /></a>}
               </article>
             ))}
           </div>
@@ -116,14 +117,14 @@ export default function Home() {
             </div>
             <div className="contact-actions">
               <a className="button button-primary" href="mailto:bendik@heiberg.co?subject=Lares%20enquiry">Write to Bendik <Arrow diagonal /></a>
-              <a className="button button-outline" href="https://booking.heiberg.co/intro">Book a call <Arrow diagonal /></a>
-              <p>Email opens in your mail app. Booking currently opens the Heiberg calendar page.</p>
+              <BookingButton className="button button-outline" placement="contact">Book a call <Arrow diagonal /></BookingButton>
+              <p>Email opens in your mail app. Booking opens a small calendar window.</p>
             </div>
           </div>
         </section>
         <footer className="site-wrap site-footer">
           <span className="brand"><Mark /><span className="mono">lares · Heiberg Industries · Oslo</span></span>
-          <a href="https://github.com/Heiberg-Industries/lares">Source code <Arrow diagonal /></a>
+          <div className="footer-links"><a href="/docs/">Docs</a><a href="/docs/privacy/">Privacy</a><a href="https://github.com/Heiberg-Industries/lares">Source code <Arrow diagonal /></a></div>
         </footer>
       </div>
     </div>

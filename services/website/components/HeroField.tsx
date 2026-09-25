@@ -1,5 +1,6 @@
 "use client";
 
+import { capture } from "../lib/analytics";
 import { useId, useState, type ReactNode } from "react";
 
 export function HeroField({ children }: { children: ReactNode }) {
@@ -20,11 +21,11 @@ export function HeroField({ children }: { children: ReactNode }) {
       <button
         className="hero-motion-control"
         type="button"
-        onClick={() => setPaused((value) => !value)}
+        onClick={() => { capture("hero_motion_changed", { paused: !paused }); setPaused(!paused); }}
         aria-label={paused ? "Play background animation" : "Pause background animation"}
         aria-pressed={paused}
       >
-        <span aria-hidden="true">{paused ? "▶" : "Ⅱ"}</span> {paused ? "Play motion" : "Pause motion"}
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" aria-hidden="true">{paused ? <path d="m5 3 7 5-7 5Z"/> : <><rect x="4" y="3" width="2" height="10" rx=".5"/><rect x="10" y="3" width="2" height="10" rx=".5"/></>}</svg> {paused ? "Play motion" : "Pause motion"}
       </button>
     </div>
   );

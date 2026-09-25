@@ -1,6 +1,7 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
-  transpilePackages: ["@lares/ui"],
-};
-
-export default nextConfig;
+import { createMDX } from 'fumadocs-mdx/next';
+const withMDX = createMDX();
+export default withMDX({
+  output: 'export',
+  trailingSlash: true,
+  transpilePackages: ['@lares/ui'],
+});

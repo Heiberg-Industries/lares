@@ -5,3 +5,7 @@ dist/
 *.tsbuildinfo
 .env
 .env.*
+
+# Marketing documentation build output
+services/website/.source/
+services/website/out/

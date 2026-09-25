@@ -1,0 +1,29 @@
+name: marketing website
+on:
+  pull_request:
+    paths: ['services/website/**', 'packages/ui/**', 'pnpm-lock.yaml', '.github/workflows/website.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm --filter @lares/website... install --frozen-lockfile
+      - run: pnpm exec vitest run services/website/tests/analytics.test.ts --maxWorkers=1
+      - run: pnpm --filter @lares/website build
+      - run: pnpm --filter @lares/website typecheck
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lares-website-preview
+          path: services/website/out
+      # Build only. No registry publication or deployment from PRs.
+      - run: docker build -f services/website/Dockerfile -t lares-website:review .
