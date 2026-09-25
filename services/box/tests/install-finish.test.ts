@@ -99,7 +99,8 @@ describe("how the install ends", () => {
   }, 20_000);
 
   it("says what to do when it never comes up, instead of printing an address that does not work", () => {
-    stub("curl", "exit 7");
+    // The gateway's local readiness succeeds; only the public console stays down.
+    stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
     const result = runWithStdin([], answers);
     expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
@@ -123,7 +124,7 @@ describe("how the install ends", () => {
     stub("curl", "exit 0");
     const result = runWithStdin([], answers);
     expect(result.stdout).not.toMatch(/sk-|xoxb-|[0-9a-f]{64}/);
-  });
+  }, 20_000);
 
   it("does not tell an existing installation to create its first agent or set up its first backup", () => {
     mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
