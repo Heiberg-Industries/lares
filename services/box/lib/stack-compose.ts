@@ -11,6 +11,8 @@ import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 export interface StackComposeOptions {
   /** Absolute path to the secrets directory ($PREFIX/etc/lares/secrets). */
   readonly secretsDir: string;
+  /** Host directory shared with keeper for the console's private Unix socket. */
+  readonly socketDir: string;
   /** Absolute path to the generated LiteLLM config file (F4 writes it; F1 only mounts it). */
   readonly gatewayConfigFile: string;
   /** Absolute path the gateway's own start script is installed at on the host. The file itself
@@ -72,6 +74,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // Google sign-in credentials are installation-owned. Compose reads this
       // root-only file when present; no credential value enters the stack file.
       env_file: [{ path: join(dirname(opts.secretsDir), "console-oauth.env"), required: false }],
+      volumes: [`${opts.socketDir}:/run/lares`],
       secrets: [
         "console-session-secret",
         "eve-route-password",

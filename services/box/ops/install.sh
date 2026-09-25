@@ -1121,7 +1121,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this

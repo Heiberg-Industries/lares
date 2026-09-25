@@ -14,6 +14,7 @@ const MANIFEST: ReleaseManifest = {
 
 const OPTS = {
   secretsDir: "/etc/lares/secrets",
+  socketDir: "/run/lares",
   gatewayConfigFile: "/etc/lares/litellm-config.yaml",
   gatewayStartScript: "/etc/lares/gateway-start.sh",
   caddyfile: "/etc/lares/Caddyfile",
@@ -78,6 +79,7 @@ describe("the generated stack compose file", () => {
     expect(doc.services.console.env_file).toEqual([
       { path: "/etc/lares/console-oauth.env", required: false },
     ]);
+    expect(doc.services.console.volumes).toContain("/run/lares:/run/lares");
     expect(env.DATABASE_URL).toBeUndefined();
     // services/console/lib/accounts.ts throws without it when an account is connected.
     expect(env.TOKEN_ENC_KEY_FILE).toBe("/run/secrets/token-enc-key");
