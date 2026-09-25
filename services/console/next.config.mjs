@@ -8,7 +8,7 @@ const downlevelUsingLoader = fileURLToPath(new URL("./build/downlevel-using-load
 export default {
   output: "standalone",
   reactStrictMode: true,
-  experimental: { cpus: 1 },
+  experimental: { cpus: 1, serverActions: { bodySizeLimit: "3mb" } },
   outputFileTracingIncludes: {
     "/*": ["../../packages/agent-kit/templates/*/definition.json"],
   },

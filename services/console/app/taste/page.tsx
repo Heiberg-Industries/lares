@@ -196,52 +196,6 @@ export default async function TastePage({
       </p>
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Google Maps-lister
-      </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Last ned de lagrede listene dine fra Google Takeout og legg inn
-        CSV-fila. Koordinatene ligger i lenkene — de hentes ut her, ingen
-        oppslag utenfor boksen. Laster du opp samme liste på nytt, oppdateres
-        oppføringene i stedet for å komme i tillegg.
-      </p>
-      <TakeoutImport />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Lim inn en liste
-      </h2>
-      <PasteImport />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Fyll inn by og land
-      </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Utledes fra koordinatene, offline — du skal ikke måtte skrive «København
-        / Danmark» på hver liste. Nye opplastinger får det automatisk; dette er
-        for det som alt ligger her. Det du har skrevet inn selv, blir stående.
-      </p>
-      <DerivePlaceNames />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Sett land på en liste
-      </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Listene som lå her før land fantes som felt, får det herfra — uten å
-        laste opp CSV-ene på nytt. Endrer bare landet; alt annet står urørt.
-      </p>
-      <ListCountry lists={optionsFor(everything, "list")} />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Sjekk koordinatene
-      </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Hver lagret lenke sier selv omtrent hvor stedet ligger. Står pinnen et
-        helt annet sted enn lenken, er den nesten alltid et likelydende sted i
-        en annen by — det skjer når et navn er slått opp i stedet for lenken.
-        Her finnes de, og de kan slås opp på nytt.
-      </p>
-      <PinAudit />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
         Det som ligger der nå
       </h2>
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
@@ -314,6 +268,54 @@ export default async function TastePage({
           )}
         </section>
       ))}
+      <details className="lares-disclosure">
+        <summary>Add or import preferences</summary>{" "}
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Google Maps-lister
+        </h2>
+        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+          Last ned de lagrede listene dine fra Google Takeout og legg inn
+          CSV-fila. Koordinatene ligger i lenkene — de hentes ut her, ingen
+          oppslag utenfor boksen. Laster du opp samme liste på nytt, oppdateres
+          oppføringene i stedet for å komme i tillegg.
+        </p>
+        <TakeoutImport />
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Lim inn en liste
+        </h2>
+        <PasteImport />
+      </details>
+      <details className="lares-disclosure">
+        <summary>Maintain saved places</summary>{" "}
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Fyll inn by og land
+        </h2>
+        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+          Utledes fra koordinatene, offline — du skal ikke måtte skrive
+          «København / Danmark» på hver liste. Nye opplastinger får det
+          automatisk; dette er for det som alt ligger her. Det du har skrevet
+          inn selv, blir stående.
+        </p>
+        <DerivePlaceNames />
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Sett land på en liste
+        </h2>
+        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+          Listene som lå her før land fantes som felt, får det herfra — uten å
+          laste opp CSV-ene på nytt. Endrer bare landet; alt annet står urørt.
+        </p>
+        <ListCountry lists={optionsFor(everything, "list")} />
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Sjekk koordinatene
+        </h2>
+        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+          Hver lagret lenke sier selv omtrent hvor stedet ligger. Står pinnen et
+          helt annet sted enn lenken, er den nesten alltid et likelydende sted i
+          en annen by — det skjer når et navn er slått opp i stedet for lenken.
+          Her finnes de, og de kan slås opp på nytt.
+        </p>
+        <PinAudit />
+      </details>
     </div>
   );
 }

@@ -1,11 +1,16 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AgentAvatar, PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import * as Menu from "@lares/ui/primitives/dropdown-menu";
-type ChatIdentity = { name: string; displayName: string; role: string };
+type ChatIdentity = {
+  avatarVersion?: string;
+  name: string;
+  displayName: string;
+  role: string;
+};
 
 import { useEveAgent } from "eve/react";
 import type { ClientSessionState } from "eve/client";
@@ -135,6 +140,29 @@ function ChatSession({
   }
   const [answering, setAnswering] = useState<string | null>(null);
   const [answerError, setAnswerError] = useState<string | null>(null);
+  const transcript = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  const restored = useRef(false);
+  const [awayFromBottom, setAwayFromBottom] = useState(false);
+  useEffect(() => {
+    const element = transcript.current;
+    if (!element || !agent.data.messages.length) return;
+    if (!restored.current) {
+      restored.current = true;
+      let saved: string | null = null;
+      try {
+        saved = tabStorage()?.getItem(`${storageKey}:scroll`) ?? null;
+      } catch {}
+      if (saved !== null && Number.isFinite(Number(saved))) {
+        element.scrollTop = Number(saved);
+        follow.current =
+          element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+        setAwayFromBottom(!follow.current);
+        return;
+      }
+    }
+    if (follow.current) element.scrollTop = element.scrollHeight;
+  }, [agent.data.messages, agent.status, storageKey]);
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
   const composer = composerState(agent.status);
   const expired = expiredRequestIds(agent.events, Date.now());
@@ -170,7 +198,14 @@ function ChatSession({
               className="lares-chat-selector"
               aria-label={`Chat with ${identity.displayName}`}
             >
-              <AgentAvatar role={identity.role} />
+              <AgentAvatar
+                role={identity.role}
+                src={
+                  identity.avatarVersion
+                    ? `/api/agents/${encodeURIComponent(identity.name)}/avatar?v=${identity.avatarVersion}`
+                    : undefined
+                }
+              />
               <span>
                 <span className="lares-muted">Chat with</span>
                 <strong>{identity.displayName}</strong>
@@ -192,7 +227,14 @@ function ChatSession({
                     router.push(`/chat/${encodeURIComponent(a.name)}`)
                   }
                 >
-                  <AgentAvatar role={a.role} />
+                  <AgentAvatar
+                    role={a.role}
+                    src={
+                      a.avatarVersion
+                        ? `/api/agents/${encodeURIComponent(a.name)}/avatar?v=${a.avatarVersion}`
+                        : undefined
+                    }
+                  />
                   <span>
                     <strong>{a.displayName}</strong>
                     <span className="lares-muted">{a.role}</span>
@@ -209,18 +251,49 @@ function ChatSession({
           onClick={() => {
             setText("");
             setAnswerError(null);
+            restored.current = false;
+            follow.current = true;
+            try {
+              tabStorage()?.removeItem(`${storageKey}:scroll`);
+            } catch {}
             agent.reset();
           }}
         >
           New conversation
         </Button>
       </div>
-      <div className="lares-conversation">
+      <div
+        className="lares-conversation"
+        ref={transcript}
+        role="log"
+        aria-label="Conversation"
+        onScroll={() => {
+          const element = transcript.current;
+          if (!element) return;
+          follow.current =
+            element.scrollHeight - element.scrollTop - element.clientHeight <
+            80;
+          setAwayFromBottom(!follow.current);
+          try {
+            tabStorage()?.setItem(
+              `${storageKey}:scroll`,
+              String(element.scrollTop),
+            );
+          } catch {}
+        }}
+      >
         {agent.data.messages.length === 0 &&
         agent.status !== "error" &&
         agent.status !== "resuming" ? (
           <div className="lares-chat-intro">
-            <AgentAvatar role={identity.role} />
+            <AgentAvatar
+              role={identity.role}
+              src={
+                identity.avatarVersion
+                  ? `/api/agents/${encodeURIComponent(identity.name)}/avatar?v=${identity.avatarVersion}`
+                  : undefined
+              }
+            />
             <span className="lares-muted">{identity.displayName}</span>
             <p>What would you like to work on?</p>
           </div>
@@ -235,6 +308,19 @@ function ChatSession({
           />
         )}
       </div>
+      {awayFromBottom && (
+        <Button
+          variant="outline"
+          onClick={() => {
+            const element = transcript.current;
+            if (element) element.scrollTop = element.scrollHeight;
+            follow.current = true;
+            setAwayFromBottom(false);
+          }}
+        >
+          Jump to latest ↓
+        </Button>
+      )}
       {answerError ? (
         <p
           role="alert"

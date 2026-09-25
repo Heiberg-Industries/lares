@@ -1,4 +1,8 @@
-import {expect,it,vi} from 'vitest';
+// @vitest-environment jsdom
+import React from 'react';
+import {expect,it,vi,afterEach} from 'vitest';
+import {render,cleanup} from '@testing-library/react';
+afterEach(cleanup);
 import {renderToStaticMarkup} from 'react-dom/server';
 import {DefinitionForm} from '../components/DefinitionForm';
 import {CeilingNotice} from '../components/CeilingNotice';
@@ -8,11 +12,12 @@ vi.mock('../app/actions/definition',()=>({createAgent:vi.fn(),saveDefinition:vi.
 vi.mock('../app/actions/autonomy',()=>({setAutonomy:vi.fn()}));
 const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true}};
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
- const html=renderToStaticMarkup(<DefinitionForm {...base}/>);
+ render(<DefinitionForm {...base}/>);
+ const html=document.body.innerHTML;
  expect(html).toContain('Create this agent first');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
  expect(html).toContain('This box holds 6 agents. You have 3.');
- expect(html).toContain('Takes effect at its next action.');expect(html).toContain('Takes effect the next time it runs.');
+ expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
  expect(html).not.toContain('installation-brain');
 });
 it('prefills edit data, shows pending restart, and renders permission buttons as non-submit',()=>{

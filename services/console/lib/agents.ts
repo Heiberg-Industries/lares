@@ -6,6 +6,7 @@ import type { AutonomyLevel } from "./contracts";
 
 export interface AgentFolder {
   name: string;
+  avatarVersion?: string;
   displayName: string;
   role: string;
   /** `areas` is only ever set on the `vault` grant (agent-kit's `grantSchema`), and it is what
@@ -41,7 +42,10 @@ export async function listAgents(options: { strict?: boolean } = {}): Promise<Ag
       console.error(`[agents] agent registry could not be read: ${err instanceof Error ? err.message : String(err)}`);
       return { rows: [] };
     });
+  const avatars = await pool.query<{name:string;version:string}>("SELECT name, extract(epoch from updated_at)::text version FROM agent_avatars").catch(()=>({rows:[]}));
+  const versions = new Map(avatars.rows.filter(a=>typeof a.version==='string').map(a=>[a.name,a.version]));
   return rows.map((r) => ({
+    avatarVersion: versions.get(r.name),
     name: r.name,
     displayName: r.display_name,
     role: (r.role && ROLE_LABELS[r.role]) ?? r.role ?? "Agent",

@@ -26,10 +26,11 @@ export default async function ChatAgentPage({
       <Chat
         name={name}
         owner={owner}
-        agents={agents.map(({ name, displayName, role }) => ({
+        agents={agents.map(({ name, displayName, role, avatarVersion }) => ({
           name,
           displayName,
           role,
+          avatarVersion,
         }))}
       />
     </>

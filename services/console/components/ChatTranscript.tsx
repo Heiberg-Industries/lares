@@ -146,9 +146,9 @@ export function settledSay(part: Extract<EveMessagePart, { type: "dynamic-tool" 
 
 const cardStyle = {
   border: "1px solid var(--rule)",
-  borderRadius: 4,
+  borderRadius: 12,
   background: "var(--card)",
-  padding: 12,
+  padding: 20,
   margin: "8px 0",
 } as const;
 
@@ -264,7 +264,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState) {
 function TranscriptMessage({ message, cards }: { message: EveMessage; cards: CardState }) {
   const who = message.role === "user" ? "You" : "Agent";
   return (
-    <article style={{ marginBottom: 16 }}>
+    <article className={`lares-message ${message.role === "user" ? "lares-message-user" : "lares-message-agent"}`}>
       <div
         className="mono"
         style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--mist)", marginBottom: 4 }}

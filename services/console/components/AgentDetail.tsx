@@ -54,7 +54,7 @@ export function AgentDetail({
         <Link href="/agents">← Agents</Link>
       </div>
       <div className={styles.identity}>
-        <AgentAvatar role={agent.role} />
+        <AgentAvatar role={agent.role} src={agent.avatarVersion ? `/api/agents/${encodeURIComponent(agent.name)}/avatar?v=${agent.avatarVersion}` : undefined} />
         <PageHeader
           title={agent.displayName || agent.name}
           description={agent.role}

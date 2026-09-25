@@ -42,8 +42,9 @@ export function HomeIcon() {
     </svg>
   );
 }
-/** Default geometric identity. Uploads are intentionally not implied by this component. */
-export function AgentAvatar({ role }: { role: string }) {
+/** Shared geometric identity with an optional application-owned image URL. */
+export function AgentAvatar({ role, src }: { role: string; src?: string }) {
+  if (src) return <span className="lares-avatar" aria-hidden="true"><img src={src} alt="" width={40} height={40} /></span>;
   const travel = /travel/i.test(role);
   const chief = /chief/i.test(role);
   const nodes = chief

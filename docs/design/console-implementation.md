@@ -113,3 +113,36 @@ server is shipped in the application. No live Keeper or provider is connected.
   Settings/Chat, avatar menu, and the restored Deadlines page. No provider call was made.
 
 This is a visual correction pass, not full redesign acceptance. LAR-50 remains open.
+
+## Editor and operational follow-through — 25 September
+
+- Creation is a three-step dialog over the agent list: purpose, identity/access, review.
+  Instructions, model, access/skills and schedules remain editable in disclosures. The
+  final review names the grants and enabled schedules; creation still uses the existing
+  authenticated Keeper action. No provider or lifecycle adapter was replaced.
+- Edit pages retain saved/pending effects. Closing a changed create dialog, clicking away
+  through a link, or reloading warns about unsaved changes. Browser history navigation is
+  not intercepted. Retirement has a confirmation dialog; deletion requires the exact slug.
+  Unknown write outcomes disable subsequent writes until authoritative state is reloaded.
+- Agent images use migration `089_agent_avatars.sql`, authenticated upload/reset/read paths,
+  decoded PNG/JPEG/WebP input (2 MB limit), 256px WebP normalization and stripped metadata.
+  Images are database rows with an agent-definition foreign key and follow database backups.
+  Missing pre-upgrade avatar storage falls back to geometric identities. Apply the normal
+  migration runner before using uploads; do not hand-apply a migration on a deployed box.
+- Chat now distinguishes owner/agent messages, follows new output only while near the bottom,
+  restores per-owner/per-agent tab scroll position, and offers Jump to latest. Existing
+  plain-text safety, approval handling, replay, resume and draft isolation remain intact.
+- Deadlines and Saved preferences show current items first, with add/import/maintenance
+  controls in disclosures. No operational action was removed or replaced with sample data.
+- Local avatar dump/restore preserved bytes; deleting its synthetic parent removed the image.
+  This narrow test is not the installation-wide backup/restore proof required by LAR-50.
+
+The earlier remaining-slices list is historical: editor, lifecycle, image storage and chat
+presentation are implemented by this pass. Broader Home health/usage/actionable approvals
+and completed-action Activity coverage need authoritative backend data (LAR-20), not more
+styling. The console must not imply these unsupported states are already available.
+
+The local browser's create dialog uses an external read-only Keeper fixture for layout
+review. It refuses all writes and is not included in the repository or image. Live Keeper
+create/edit/retire/delete and provider-backed chat on the final candidate remain release
+verification, separate from automated/local design checks. LAR-50 remains In Progress.

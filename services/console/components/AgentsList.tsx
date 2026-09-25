@@ -115,7 +115,7 @@ export function AgentsList({
                       <tr key={agent.name}>
                         <td>
                           <div className={styles.identity}>
-                            <AgentAvatar role={agent.role} />
+                            <AgentAvatar role={agent.role} src={agent.avatarVersion ? `/api/agents/${encodeURIComponent(agent.name)}/avatar?v=${agent.avatarVersion}` : undefined} />
                             <div>
                               <Link
                                 className={styles.agentName}

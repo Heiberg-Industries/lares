@@ -414,6 +414,9 @@ importers:
       react-dom:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
+      sharp:
+        specifier: 0.35.4
+        version: 0.35.4(@types/node@26.0.0)
     devDependencies:
       '@tailwindcss/postcss':
         specifier: 4.1.18
@@ -5810,8 +5813,7 @@ snapshots:
       protobufjs: 7.6.5
       yargs: 17.7.2
 
-  '@img/colour@1.1.0':
-    optional: true
+  '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.35.4':
     optionalDependencies:
@@ -9506,7 +9508,6 @@ snapshots:
       '@img/sharp-win32-ia32': 0.35.4
       '@img/sharp-win32-x64': 0.35.4
       '@types/node': 26.0.0
-    optional: true
 
   shebang-command@2.0.0:
     dependencies:

@@ -89,16 +89,6 @@ export default async function DeadlinesPage() {
       </p>
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Ladder
-      </h2>
-      <p style={lede}>
-        {view.ladderEnabled
-          ? "The escalation ladder is on: a day-before nudge, a due-day nudge for statutory rows, and a final stop the day after."
-          : "OFF: the brief still lists deadlines; nothing is sent on its own."}
-      </p>
-      <LadderSwitch enabled={view.ladderEnabled} />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
         Open{" "}
         <span style={{ color: "var(--mist)", fontSize: 12 }}>
           ({today}, your clock)
@@ -131,24 +121,6 @@ export default async function DeadlinesPage() {
           ))}
         </tbody>
       </table>
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Add
-      </h2>
-      <AddForm />
-
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Mint a statutory year
-      </h2>
-      <p style={lede}>
-        A mint adds only the terms still ahead of today — a date already past is
-        greyed here and skipped; add it by hand if it is genuinely still owed.
-      </p>
-      <MintForm
-        rules={mintRules}
-        defaultYear={Number(today.slice(0, 4))}
-        today={today}
-      />
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
         Candidates
@@ -236,6 +208,38 @@ export default async function DeadlinesPage() {
           ))}
         </tbody>
       </table>
+      <details className="lares-disclosure">
+        <summary>Add a deadline</summary>{" "}
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Add
+        </h2>
+        <AddForm />
+      </details>
+      <details className="lares-disclosure">
+        <summary>Reminders and statutory dates</summary>{" "}
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Ladder
+        </h2>
+        <p style={lede}>
+          {view.ladderEnabled
+            ? "The escalation ladder is on: a day-before nudge, a due-day nudge for statutory rows, and a final stop the day after."
+            : "OFF: the brief still lists deadlines; nothing is sent on its own."}
+        </p>
+        <LadderSwitch enabled={view.ladderEnabled} />
+        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+          Mint a statutory year
+        </h2>
+        <p style={lede}>
+          A mint adds only the terms still ahead of today — a date already past
+          is greyed here and skipped; add it by hand if it is genuinely still
+          owed.
+        </p>
+        <MintForm
+          rules={mintRules}
+          defaultYear={Number(today.slice(0, 4))}
+          today={today}
+        />
+      </details>
     </div>
   );
 }
