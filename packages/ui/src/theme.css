@@ -72,6 +72,8 @@
   /* component (project-specific) */
   --lares-attention: var(--accent);               /* "needs the owner" — aliases --accent */
   --lares-attention-foreground: var(--accent-foreground);
+  --lares-status-success: oklch(0.47 0.075 150);
+  --lares-surface-radius: 12px;
   --lares-ink-2: oklch(0.34 0.03 182);            /* secondary body text on marketing */
   --lares-grain-opacity: 0.32;                    /* console sets 0 */
   --lares-grain-frequency: 0.85;                  /* feTurbulence baseFrequency */
@@ -144,6 +146,7 @@
   --chart-4: oklch(0.30 0.025 186);
   --chart-5: oklch(0.66 0.14 34);
   --lares-ink-2: oklch(0.80 0.02 178);
+  --lares-status-success: oklch(0.72 0.09 150);
   --lares-field-from: oklch(0.18 0.025 190);
   --lares-field-mid: oklch(0.24 0.03 188);
   --lares-field-to: oklch(0.34 0.045 200);
