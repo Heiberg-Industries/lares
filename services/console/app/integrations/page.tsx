@@ -1,3 +1,5 @@
+import Link from "next/link";
+import { PageHeader } from "@lares/ui/patterns";
 import { getNotionSyncStatus } from "../../lib/queries";
 import { getConnectionRows } from "../../lib/connections";
 import { getBoardRows } from "../../lib/board";
@@ -41,7 +43,7 @@ export default async function IntegrationsPage({
 
   return (
     <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Integrations &amp; Accounts</h1>
+      <PageHeader title="Connections" description="Accounts, recorded connection status and agent access." actions={<><Link href="/voice">Email writing style</Link><Link href="/meetings">Meetings</Link></>}/>
 
       {params.added && (
         <p className="mono" style={{ marginTop: 12, color: "var(--good, #2a7)" }}>

@@ -9,7 +9,7 @@ vi.mock('../app/actions/autonomy',()=>({setAutonomy:vi.fn()}));
 const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true}};
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
  const html=renderToStaticMarkup(<DefinitionForm {...base}/>);
- expect(html).toContain('Create this agent first');expect(html).not.toContain('title="Always allow"');
+ expect(html).toContain('Create this agent first');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
  expect(html).toContain('This box holds 6 agents. You have 3.');
  expect(html).toContain('Takes effect at its next action.');expect(html).toContain('Takes effect the next time it runs.');
@@ -19,7 +19,7 @@ it('prefills edit data, shows pending restart, and renders permission buttons as
  const definition={...base.startingPoints[0].definition,name:'example',model:'example-brain'};
  const html=renderToStaticMarkup(<DefinitionForm {...base} initial={{definition,duties:'Unique duties',voice:'Unique voice',hash:'a'.repeat(64),runtime:{pending:true,reason:'Changed doors'},status:'valid'}} permissions={[{agent:'example',displayName:'Example',capability:'twenty',action:'',actionLabel:null,scope:'write-with-confirm',level:'gated',source:{kind:'definition'},controllable:true,lockedTools:[{tool:'delete',reason:'Always asks'}],evidence:{asked:0,autonomous:0,denied:0,locked:0,failedClosed:0,lastAt:null},answers:{approved:0,cancelled:0,neverAnswered:0,rate:null},couldGraduate:false}]}/>);
  expect(html).toContain('Unique duties');expect(html).toContain('Unique voice');expect(html).not.toContain('name="startingPoint"');
- expect(html).toContain('Apply connection changes (restarts agent)');expect(html).toContain('type="button" title="Always allow"');expect(html).toContain('Always asks');expect(html).toContain('Start a fresh conversation now');
+ expect(html).toContain('Apply connection changes (restarts agent)');expect(html).toMatch(/<button[^>]*type="button"[^>]*>Allow<\/button>/);expect(html).toContain('Always asks');expect(html).toContain('Start a fresh conversation now');
 });
 it('distinguishes unapproved capacity and a full box',()=>{
  expect(renderToStaticMarkup(<CeilingNotice capacity={{ceiling:null,activeCount:3,approved:false,creationAvailable:false}}/>)).toContain('not been measured and approved');

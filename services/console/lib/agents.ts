@@ -28,13 +28,14 @@ const ROLE_LABELS: Record<string, string> = {
   creative: "Ideation",
 };
 
-export async function listAgents(): Promise<AgentFolder[]> {
+export async function listAgents(options: { strict?: boolean } = {}): Promise<AgentFolder[]> {
   const { rows } = await pool
     .query<{
       name: string; display_name: string; role: string | null; grants: AgentFolder["grants"]; autonomy: Record<string, AutonomyLevel>;
       skills: unknown[]; doors: unknown[]; tools: string[] | null; started_at: Date | string;
     }>("SELECT name, display_name, role, grants, autonomy, skills, doors, tools, started_at FROM agent_registry ORDER BY name")
     .catch((err: unknown) => {
+      if (options.strict) throw err;
       // A silently empty list here reads as "no agents" on the permissions page — log so an
       // unreadable registry (table missing, connection down) is visible somewhere, not just absent.
       console.error(`[agents] agent registry could not be read: ${err instanceof Error ? err.message : String(err)}`);

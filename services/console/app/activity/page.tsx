@@ -1,32 +1,55 @@
-import { getAuditRows } from "../../lib/queries";
-
+import Link from "next/link";
+import { PageHeader } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
+import { getPermissionEvents } from "../../lib/console-overview";
+import { PermissionEvents } from "../../components/PermissionEvents";
 export const dynamic = "force-dynamic";
-
-export default async function ActivityPage() {
-  const rows = await getAuditRows(100);
+export default async function ActivityPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ agent?: string; before?: string }>;
+}) {
+  const { agent, before } = await searchParams;
+  const events = await getPermissionEvents({ agent, before });
+  const next = events.available && events.value.next;
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Activity</h1>
-      <table className="card" style={{ marginTop: 16 }}>
-        <thead>
-          <tr>
-            <th>When</th>
-            <th>Agent</th>
-            <th>Action</th>
-            <th>Summary</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r, i) => (
-            <tr key={i}>
-              <td className="mono">{r.at}</td>
-              <td className="mono">{r.agent}</td>
-              <td className="mono">{r.action}</td>
-              <td style={{ color: "var(--mist)" }}>{r.summary}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
+    <div className="lares-page lares-stack">
+      <PageHeader
+        title="Activity"
+        description="Recorded permission checks. These show what policy decided, not whether an action completed."
+        actions={
+          <Button variant="outline" asChild>
+            <Link href="/signals">Signals & events →</Link>
+          </Button>
+        }
+      />
+      <form className="lares-actions" action="/activity">
+        <label>
+          Agent name
+          <Input
+            name="agent"
+            defaultValue={agent ?? ""}
+            placeholder="All agents"
+          />
+        </label>
+        <Button variant="outline" type="submit">
+          Filter
+        </Button>
+        {agent && <Link href="/activity">Clear filter</Link>}
+      </form>
+      <section className="lares-surface">
+        <PermissionEvents events={events} />
+      </section>
+      {next && (
+        <Button variant="outline" asChild>
+          <Link
+            href={`/activity?${new URLSearchParams({ ...(agent ? { agent } : {}), before: next })}`}
+          >
+            Older checks →
+          </Link>
+        </Button>
+      )}
+    </div>
   );
 }

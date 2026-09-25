@@ -13,7 +13,7 @@
 
 * { box-sizing: border-box; }
 body { font: var(--text-body); }
-a { color: var(--signal); text-decoration: none; }
+a { color: var(--foreground); text-decoration: none; }
 a:hover { text-decoration: underline; text-underline-offset: 3px; }
 .mono { font-family: var(--font-mono); }
 table { width: 100%; border-collapse: collapse; }
@@ -21,3 +21,7 @@ th { font: var(--text-mono-sm); letter-spacing: .04em; text-transform: uppercase
 td { padding: 10px 12px; border-bottom: 1px solid var(--rule); }
 .card { background: var(--card); border: 1px solid var(--rule); border-radius: var(--lares-surface-radius); }
 :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+
+button, input, textarea, select { font-family: inherit; }
+html { color-scheme: light; }
+html.dark { color-scheme: dark; }
