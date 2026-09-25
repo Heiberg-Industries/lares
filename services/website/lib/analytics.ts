@@ -1,5 +1,4 @@
 import type { PostHog } from 'posthog-js';
-export const CONSENT_KEY = 'lares-marketing-analytics';
 export const ANALYTICS_EVENTS = new Set(['$pageview', 'marketing_action', 'section_viewed', 'reading_progress', 'docs_search_used', 'docs_search_result_clicked', 'docs_code_copied', 'booking_opened', 'booking_completed', 'booking_closed', 'booking_failed', 'appearance_changed', 'hero_motion_changed']);
 let client: PostHog | undefined;
 let allowed = false;

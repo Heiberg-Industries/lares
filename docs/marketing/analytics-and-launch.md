@@ -34,7 +34,7 @@ Browser SDK loads only after opt-in on `lares.is` or `www.lares.is`. Local and p
 | `booking_closed`, `booking_failed` | Dismissal/completion or load/configuration failure |
 | `appearance_changed`, `hero_motion_changed` | Theme and motion interactions |
 
-Analytics preferences and privacy documentation are included. Public ingestion token is a build setting, not a private management credential. The local ignored `.env.local` is configured; CI/production must receive the public token separately. Project settings (timezone etc.) have not been changed.
+Consent uses the shared c15t service at `https://consent.heiberg.co/api`. The banner is ported from Orakel, with Lares colors, fonts and radii. Categories are Necessary and Analytics (`measurement`); PostHog requires a saved Analytics choice. The superseded local-only preference is ignored. Footer preferences and privacy documentation are included. Public ingestion token is a build setting, not a private management credential. The local ignored `.env.local` is configured; CI/production must receive the public token separately. Project settings (timezone etc.) have not been changed.
 
 ## Booking dependency and rollout
 
@@ -48,7 +48,7 @@ Prepared separately in Orbis branch `codex/lares-booking`:
 
 Launch order after approval:
 
-1. Review and merge the two candidates; build booking and website images in CI, record their immutable digests. Check Orbis capacity and current Coolify routing before applying changes.
+1. Review and merge the two candidates; deploy the Lares domain entry in the shared consent service and run `services/website/tests/live/consent.live.mts` (read-only CORS and initialization gate); build booking and website images in CI, record their immutable digests. Check Orbis capacity and current Coolify routing before applying changes.
 2. Add `booking.lares.is` DNS to the same existing server; configure its hostname/TLS on the existing booking application. Apex/www A records are already present and were verified on 2026-09-25.
 3. Deploy the booking candidate; run the Lares-only provisioning check, then explicitly apply the draft. Review the Lares theme and scheduling policy in admin and activate the walkthrough.
 4. Verify live headers, the compact popup and the Heiberg calendar binding. A real test booking/invitation is a separate explicitly authorized action.
@@ -61,4 +61,10 @@ Rollback: restore previous website/booking image digests. The new booking brand 
 
 Local website build/typecheck and eight analytics privacy tests pass. Browser review includes desktop and 390px marketing/docs, light and dark, search and navigation. Booking host/embed tests pass (13). Local Docker image built successfully; the running nginx container returned 200 for docs and search, and 404 for an unknown route. No image was published.
 
-No production image published or service deployed. Booking draft script has not run against a database. PostHog dashboard exists, but live ingestion is unproved until deployment. Google Search Console verification, live server capacity, TLS/routing and real calendar behavior remain launch checks. The deleted Hetzner test server has not been recreated.
+No production image published or service deployed. Booking draft script has not run against a database. PostHog dashboard exists, but live ingestion is unproved until deployment. Read-only Orbis capacity check on 2026-09-25 found 2.5 GiB available RAM, 29 GiB free disk and low load; the static nginx site fits. Google Search Console verification, TLS/routing and real calendar behavior remain launch checks. The deleted Hetzner test server has not been recreated.
+
+## Shared consent follow-up (2026-09-25)
+
+Owner requested the portfolio consent service and Orakel banner design. Orbis PR #13 includes `lares.is` and `www.lares.is` in the consent tenant map; no preview origins are added. Three tenant tests cover exact domains, rejected lookalikes and preserved existing attribution. Live OPTIONS currently omits allow-origin for Lares, so the service update remains necessary. Existing Heiberg `/api/init` returns 200 with GDPR opt-in. The website uses the same c15t 2.1.0 client versions declared by Orakel.
+
+Current live consent image is based on `50747ca0`; current booking image on `d87456f1`. Existing Coolify services build from source, so changing them to a CI-built immutable image needs an explicit rollout configuration. No service, DNS or database mutations were made during this follow-up.

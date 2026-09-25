@@ -1,5 +1,8 @@
 import "@lares/ui/theme.css";
+import "@c15t/nextjs/styles.css";
 import "./site.css";
+import { ConsentProvider } from "../components/consent/consent-provider";
+import { CookieBanner } from "../components/consent/cookie-banner";
 import { Analytics } from "../components/Analytics";
 import { BookingProvider } from "../components/Booking";
 import type { Metadata } from "next";
@@ -18,7 +21,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: appearanceScript }} /></head>
-      <body><BookingProvider>{children}</BookingProvider><Analytics /></body>
+      <body><ConsentProvider><BookingProvider>{children}</BookingProvider><Analytics /><CookieBanner /></ConsentProvider></body>
     </html>
   );
 }

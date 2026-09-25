@@ -1,22 +1,17 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
+import { ConsentDialogLink, useConsentManager } from '@c15t/nextjs';
 import { usePathname } from 'next/navigation';
-import { capture, CONSENT_KEY, pageview, setAnalyticsConsent } from '../lib/analytics';
+import { capture, pageview, setAnalyticsConsent } from '../lib/analytics';
 export function Analytics() {
   const path = usePathname();
-  const [choice, setChoice] = useState<string | null>(null);
-  const [show, setShow] = useState(false);
+  const store = useConsentManager();
+  const hasConsent = store.hasConsented() && store.has('measurement');
   useEffect(() => {
-    let saved: string | null = null;
-    try { saved = localStorage.getItem(CONSENT_KEY); } catch {}
-    setChoice(saved); setShow(saved !== 'accepted' && saved !== 'declined');
-    void setAnalyticsConsent(saved === 'accepted');
-    const sync = (e: StorageEvent) => { if (e.key === CONSENT_KEY) { setChoice(e.newValue); void setAnalyticsConsent(e.newValue === 'accepted'); } };
-    window.addEventListener('storage', sync);
-    return () => window.removeEventListener('storage', sync);
-  }, []);
+    if (!hasConsent) void setAnalyticsConsent(false);
+  }, [hasConsent]);
   useEffect(() => {
-    if (choice !== 'accepted') return;
+    if (!hasConsent) return;
     let active = true;
     // Wait for the SDK before observing initial section impressions.
     void setAnalyticsConsent(true).then(() => {
@@ -59,18 +54,6 @@ export function Analytics() {
     }), { threshold: 0.2 });
     document.addEventListener('keydown', keydown); document.addEventListener('click', click); document.addEventListener('input', input); window.addEventListener('scroll', scroll, { passive: true });
     return () => { active = false; observer.disconnect(); document.removeEventListener('keydown', keydown); document.removeEventListener('click', click); document.removeEventListener('input', input); window.removeEventListener('scroll', scroll); };
-  }, [path, choice]);
-  function choose(value: 'accepted' | 'declined') {
-    try { localStorage.setItem(CONSENT_KEY, value); } catch {}
-    setChoice(value); setShow(false);
-    if (value === 'declined') void setAnalyticsConsent(false);
-  }
-  return <>
-    <button className="analytics-preferences" onClick={() => setShow(true)}>Analytics preferences</button>
-    {show && <aside className="consent-panel" aria-label="Analytics preferences">
-      <strong>A little insight, with your permission.</strong>
-      <p>Help us understand how the website and docs are used. No session recordings. <a href="/docs/privacy/">Privacy details</a></p>
-      <div><button className="button button-outline" onClick={() => choose('declined')}>No thanks</button><button className="button button-primary" onClick={() => choose('accepted')}>Allow analytics</button></div>
-    </aside>}
-  </>;
+  }, [path, hasConsent]);
+  return <ConsentDialogLink className="analytics-preferences">Analytics preferences</ConsentDialogLink>;
 }

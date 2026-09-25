@@ -151,9 +151,7 @@ a { color: inherit; }
 .door-card a:hover, .door-action:hover { text-decoration: underline; }
 .footer-links { display: flex; gap: 22px; flex-wrap: wrap; }
 .analytics-preferences { display: block; margin: 0; padding: 10px 20px; width: 100%; text-align: center; background: var(--background); color: var(--muted-foreground); border: 0; font: var(--text-mono-sm); }
-.consent-panel, .booking-notice { position: fixed; z-index: 100; right: 20px; bottom: 20px; width: min(420px, calc(100vw - 40px)); padding: 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 40px #0002; font: var(--text-body-sm); }
-.consent-panel p { margin-block: 10px 18px; color: var(--muted-foreground); }
-.consent-panel > div { display: flex; gap: 10px; }
+.booking-notice { position: fixed; z-index: 100; right: 20px; bottom: 20px; width: min(420px, calc(100vw - 40px)); padding: 22px; background: var(--card); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 12px 40px #0002; font: var(--text-body-sm); }
 .booking-notice button { background: none; border: 0; color: inherit; font-size: 20px; }
 [data-orbis-overlay] > div { background: var(--background) !important; border: 1px solid var(--border); }
 [data-orbis-overlay] > div > button { color: var(--foreground) !important; }
@@ -163,3 +161,36 @@ a { color: inherit; }
   .mini-console { padding: 20px; }
 }
 @media (prefers-reduced-motion: reduce) { .hero-motion-control { display: none; } }
+
+/* Shared Heiberg consent banner, themed with Lares tokens. */
+:root, .dark {
+  --consent-bg: var(--card);
+  --consent-fg: var(--foreground);
+  --consent-muted: var(--muted-foreground);
+  --consent-border: var(--border);
+  --consent-radius: 16px;
+  --consent-shadow: 0 12px 40px #0002;
+  --consent-button-primary-bg: var(--primary);
+  --consent-button-primary-fg: var(--primary-foreground);
+  --consent-button-secondary-bg: var(--muted);
+  --consent-button-secondary-fg: var(--foreground);
+  --consent-button-radius: 8px;
+}
+
+/* c15t's shared preferences dialog uses the same Lares theme. */
+html:root, html.dark {
+  --c15t-font-family: var(--font-lares-sans);
+  --c15t-surface: var(--card);
+  --c15t-surface-hover: var(--muted);
+  --c15t-text: var(--foreground);
+  --c15t-text-muted: var(--muted-foreground);
+  --c15t-border: var(--border);
+  --c15t-primary: var(--primary);
+  --c15t-primary-hover: var(--primary);
+  --c15t-text-on-primary: var(--primary-foreground);
+  --c15t-switch-track: var(--border);
+  --c15t-switch-track-active: var(--primary);
+  --c15t-switch-thumb: var(--primary-foreground);
+  --c15t-radius-lg: 16px;
+  --c15t-radius-md: 8px;
+}

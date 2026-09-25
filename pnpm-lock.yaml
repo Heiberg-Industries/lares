@@ -659,9 +659,18 @@ importers:
 
   services/website:
     dependencies:
+      '@c15t/nextjs':
+        specifier: 2.1.0
+        version: 2.1.0(@types/react@19.2.17)(next@16.3.5(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.77.4))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
+      '@c15t/react':
+        specifier: 2.1.0
+        version: 2.1.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
       '@lares/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      c15t:
+        specifier: 2.1.0
+        version: 2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)
       fumadocs-core:
         specifier: 16.10.5
         version: 16.10.5(@mdx-js/mdx@3.1.1)(@types/estree-jsx@1.0.5)(@types/hast@3.0.5)(@types/mdast@4.0.4)(@types/react@19.2.17)(lucide-react@1.48.0(react@19.2.7))(next@16.3.5(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.77.4))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(zod@4.5.4)
@@ -801,6 +810,28 @@ packages:
   '@bramus/specificity@2.4.2':
     resolution: {integrity: sha512-ctxtJ/eA+t+6q2++vj5j7FYX3nRu311q1wfYH3xjlLOsczhlhxAg2FWNUXhpGvAw3BWo1xBcvOV6/YLc2r5FJw==}
     hasBin: true
+
+  '@c15t/nextjs@2.1.0':
+    resolution: {integrity: sha512-W64elZWmNRNqXQIdz8sK5QNcECQkGxRVtls2prqTRdZIvtngYCO+5UJafQvAyRKJrePKCyBVlmunS08XR+3EOg==}
+    peerDependencies:
+      next: ^16.0.0 || ^15.0.0 || ^14.0.0 || ^13.0.0
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0 || ^19.0.0-rc
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0 || ^19.0.0-rc
+
+  '@c15t/react@2.1.0':
+    resolution: {integrity: sha512-tlHPjLN8R/M2xXkjoVfoiFxAy/NALVfO+DtDVUO/KL+/fqV9j1ycL489lG7s1p2jAgYeurHEnNmeb8lgjvoIDg==}
+    peerDependencies:
+      react: ^19.0.0 || ^19.0.0-rc || ^18.0.0 || ^17.0.0 || ^16.8.0
+      react-dom: ^19.0.0 || ^19.0.0-rc || ^18.0.0 || ^17.0.0 || ^16.8.0
+
+  '@c15t/schema@2.1.0':
+    resolution: {integrity: sha512-/Kxe4qv6E5cR6wgzxx1CTZuhMFfJQHi3GGFzcRCx4smqN8IrgsVtXv800O7Nz9RqoDu/8DFiHGpJ25aupwMsRQ==}
+
+  '@c15t/translations@2.1.0':
+    resolution: {integrity: sha512-pB6A5nMKHaAwFOUetcIkyIscMBr5iVm/lxBqzoSk3MU0KMGn4F/OTpcLZOT7k5P87RMkuuKkXN+gyf6jCuvBAw==}
+
+  '@c15t/ui@2.1.0':
+    resolution: {integrity: sha512-tl9mQnQdPbtWQQpXNFRzqrQDk4crjRUX+lIJmd7Le+uZVIuEiNbDeEIjQLj0XH0Cp3Xv3NJn0C7XF5H9CRVHKA==}
 
   '@cbor-extract/cbor-extract-darwin-arm64@2.2.2':
     resolution: {integrity: sha512-ZKZ/F8US7JR92J4DMct6cLW/Y66o2K576+zjlEN/MevH70bFIsB10wkZEQPLzl2oNh2SMGy55xpJ9JoBRl5DOA==}
@@ -3161,6 +3192,9 @@ packages:
     peerDependenciesMeta:
       magicast:
         optional: true
+
+  c15t@2.1.0:
+    resolution: {integrity: sha512-ukWy6y/yNGPrJv4bAr2DeMNkxtcsdehe++AeqzEC6ITDCVVaqCGeePIKo/3qMZzhyyCPtcKsQJKNIfqszyzpvQ==}
 
   cac@6.7.14:
     resolution: {integrity: sha512-b6Ilus+c3RrdDk+JhLKUAQfzzgLEPy6wcXqS7f/xe1EETvsDP6GORG7SFuOs6cID5YkqchW/LXZbX5bc8j7ZcQ==}
@@ -5526,6 +5560,14 @@ packages:
     deprecated: uuid@10 and below is no longer supported.  For ESM codebases, update to uuid@latest.  For CommonJS codebases, use uuid@11 (but be aware this version will likely be deprecated in 2028).
     hasBin: true
 
+  valibot@1.3.1:
+    resolution: {integrity: sha512-sfdRir/QFM0JaF22hqTroPc5xy4DimuGQVKFrzF1YfGwaS1nJot3Y8VqMdLO2Lg27fMzat2yD3pY5PbAYO39Gg==}
+    peerDependencies:
+      typescript: '>=5'
+    peerDependenciesMeta:
+      typescript:
+        optional: true
+
   vfile-location@5.0.3:
     resolution: {integrity: sha512-5yXvWDEgqeiYiBe1lbxYF7UMAIm/IcopxMHrMQDq3nvKcjPKIhZklUKL+AE7J7uApI4kwe2snsK+eI6UTj9EHg==}
 
@@ -5758,6 +5800,24 @@ packages:
   zod@4.5.4:
     resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
+  zustand@5.0.12:
+    resolution: {integrity: sha512-i77ae3aZq4dhMlRhJVCYgMLKuSiZAaUPAct2AksxQ+gOtimhGMdXljRT21P5BNpeT4kXlLIckvkPM029OljD7g==}
+    engines: {node: '>=12.20.0'}
+    peerDependencies:
+      '@types/react': '>=18.0.0'
+      immer: '>=9.0.6'
+      react: '>=18.0.0'
+      use-sync-external-store: '>=1.2.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+      immer:
+        optional: true
+      react:
+        optional: true
+      use-sync-external-store:
+        optional: true
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -5868,6 +5928,51 @@ snapshots:
   '@bramus/specificity@2.4.2':
     dependencies:
       css-tree: 3.2.1
+
+  '@c15t/nextjs@2.1.0(@types/react@19.2.17)(next@16.3.5(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.77.4))(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)':
+    dependencies:
+      '@c15t/react': 2.1.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)
+      '@c15t/translations': 2.1.0
+      c15t: 2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)
+      next: 16.3.5(@opentelemetry/api@1.9.1)(@types/node@26.0.0)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(sass@1.77.4)
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - typescript
+      - use-sync-external-store
+
+  '@c15t/react@2.1.0(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@6.0.3)':
+    dependencies:
+      '@c15t/ui': 2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)
+      c15t: 2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)
+      react: 19.2.7
+      react-dom: 19.2.7(react@19.2.7)
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - typescript
+      - use-sync-external-store
+
+  '@c15t/schema@2.1.0(typescript@6.0.3)':
+    dependencies:
+      valibot: 1.3.1(typescript@6.0.3)
+    transitivePeerDependencies:
+      - typescript
+
+  '@c15t/translations@2.1.0': {}
+
+  '@c15t/ui@2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)':
+    dependencies:
+      '@c15t/translations': 2.1.0
+      c15t: 2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3)
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - react
+      - typescript
+      - use-sync-external-store
 
   '@cbor-extract/cbor-extract-darwin-arm64@2.2.2':
     optional: true
@@ -7914,6 +8019,18 @@ snapshots:
     optionalDependencies:
       magicast: 0.3.5
     optional: true
+
+  c15t@2.1.0(@types/react@19.2.17)(react@19.2.7)(typescript@6.0.3):
+    dependencies:
+      '@c15t/schema': 2.1.0(typescript@6.0.3)
+      '@c15t/translations': 2.1.0
+      zustand: 5.0.12(@types/react@19.2.17)(react@19.2.7)
+    transitivePeerDependencies:
+      - '@types/react'
+      - immer
+      - react
+      - typescript
+      - use-sync-external-store
 
   cac@6.7.14: {}
 
@@ -10851,6 +10968,10 @@ snapshots:
 
   uuid@10.0.0: {}
 
+  valibot@1.3.1(typescript@6.0.3):
+    optionalDependencies:
+      typescript: 6.0.3
+
   vfile-location@5.0.3:
     dependencies:
       '@types/unist': 3.0.3
@@ -11163,5 +11284,10 @@ snapshots:
       readable-stream: 4.7.0
 
   zod@4.5.4: {}
+
+  zustand@5.0.12(@types/react@19.2.17)(react@19.2.7):
+    optionalDependencies:
+      '@types/react': 19.2.17
+      react: 19.2.7
 
   zwitch@2.0.4: {}

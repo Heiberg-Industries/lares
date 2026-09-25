@@ -9,7 +9,10 @@
     "typecheck": "fumadocs-mdx && tsc --noEmit"
   },
   "dependencies": {
+    "@c15t/nextjs": "2.1.0",
+    "@c15t/react": "2.1.0",
     "@lares/ui": "workspace:*",
+    "c15t": "2.1.0",
     "fumadocs-core": "16.10.5",
     "fumadocs-mdx": "15.0.12",
     "fumadocs-ui": "16.10.5",
