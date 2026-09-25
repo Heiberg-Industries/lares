@@ -1,9 +1,40 @@
-/* lares — tokens.css
+/* Lares shared design tokens and local fonts.
    primitive → semantic → component. Colours in OKLCH.
    :root = light (default), .dark = class-based dark, [data-theme="slate"] = the one alternative theme (a pure token swap).
    Semantic names follow the shadcn/ui v4 vocabulary verbatim; do not rename or add at this layer. */
 
+@font-face {
+  font-family: "Instrument Sans Variable";
+  src: url("./fonts/instrument-sans-latin-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Instrument Sans Variable";
+  src: url("./fonts/instrument-sans-latin-wght-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Mono";
+  src: url("./fonts/dm-mono-latin-400-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Mono";
+  src: url("./fonts/dm-mono-latin-500-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
 :root {
+  --font-sans: "Instrument Sans Variable", sans-serif;
+  --font-mono: "DM Mono", monospace;
   /* semantic, light */
   --background: oklch(0.988 0.004 175);
   --foreground: oklch(0.20 0.03 185);
