@@ -1,10 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
-@import "./tokens.css";
+@import "../../../packages/ui/src/theme.css";
 @custom-variant dark (&:is(.dark *));
 :root {
-  --font-sans: "Instrument Sans Variable", "Instrument Sans", sans-serif;
-  --font-mono: "DM Mono", monospace;
   --motion-fast: 140ms;
   --motion-enter: 190ms;
   --lares-dur-settle: 240ms;

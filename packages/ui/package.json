@@ -1,0 +1,10 @@
+{
+  "name": "@lares/ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    "./theme.css": "./src/theme.css"
+  },
+  "license": "AGPL-3.0-only"
+}
