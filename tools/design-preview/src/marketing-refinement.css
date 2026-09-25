@@ -1,0 +1,492 @@
+/* Shared Lares tokens; expressive surfaces are limited to marketing. */
+html[data-surface="marketing"] {
+  --radius: 0.625rem;
+}
+.marketing [data-slot="button"],
+.marketing [data-slot="input"],
+.marketing [data-slot="select-trigger"] {
+  border-radius: 10px;
+}
+.marketing [data-slot="button"] {
+  min-height: 40px;
+  transition:
+    background-color 160ms,
+    transform 160ms;
+}
+.marketing [data-slot="button"]:active {
+  transform: translateY(1px);
+}
+.marketing .hero-primary {
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+.marketing .coming {
+  border-radius: 999px;
+  padding: 3px 9px;
+}
+.marketing .grain {
+  isolation: isolate;
+}
+.marketing .gradient-light {
+  position: absolute;
+  pointer-events: none;
+  inset: -35%;
+  z-index: 0;
+}
+.marketing .light-one {
+  background: radial-gradient(
+    ellipse at 72% 45%,
+    color-mix(in oklch, var(--lares-field-to) 85%, transparent),
+    transparent 48%
+  );
+  transform: rotate(-18deg);
+}
+.marketing .light-two {
+  background:
+    radial-gradient(ellipse at 74% 70%, var(--lares-door-to), transparent 38%),
+    radial-gradient(
+      ellipse at 55% 20%,
+      var(--lares-field-from),
+      transparent 45%
+    );
+}
+.marketing .hero-field {
+  background: var(--lares-field-mid);
+}
+.marketing .hero-field .light-one {
+  animation: lares-light-one 26s ease-in-out infinite alternate;
+}
+.marketing .hero-field .light-two {
+  animation: lares-light-two 32s ease-in-out infinite alternate;
+}
+.marketing .surface-texture {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    112deg,
+    transparent 0 34px,
+    #ffffff09 35px,
+    transparent 39px 85px
+  );
+  opacity: 0.45;
+  mask-image: linear-gradient(to right, transparent 20%, black 80%);
+}
+.marketing .grain > svg {
+  z-index: 1;
+  opacity: 0.14;
+  mix-blend-mode: multiply;
+}
+.marketing .grain-content {
+  z-index: 2;
+}
+.marketing .hero-field:after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--lares-field-from) 88%, transparent),
+    transparent 80%
+  );
+}
+.marketing .hero {
+  padding-block: 92px 84px;
+}
+.marketing .hero-copy {
+  max-width: 52ch;
+}
+.marketing .hero-note {
+  max-width: 54ch;
+  margin-top: 36px;
+}
+.marketing .hero-motion-control {
+  position: absolute;
+  z-index: 3;
+  right: 24px;
+  bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: var(--text-body-sm);
+  border: 1px solid var(--border);
+  padding: 7px 12px;
+  border-radius: 999px;
+  color: var(--foreground);
+  background: color-mix(in oklch, var(--background) 85%, transparent);
+}
+.marketing .motion-paused .gradient-light {
+  animation-play-state: paused;
+}
+.marketing .feature-grid {
+  gap: 28px;
+  border: 0;
+}
+.marketing .feature-grid article {
+  border: 0;
+  padding: 20px 0;
+}
+.marketing .feature-grid article > .mono {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  background: var(--secondary);
+  border-radius: 10px;
+}
+.marketing .mini-console {
+  border-radius: 20px;
+  padding: 28px;
+  box-shadow: 0 14px 45px color-mix(in oklch, var(--foreground) 5%, transparent);
+}
+.marketing .mini-draft {
+  border-radius: 14px;
+  padding: 20px;
+  background: var(--secondary);
+  border-color: transparent;
+}
+.marketing .mini-identity {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  font: var(--text-body-sm);
+}
+.marketing .approval-label {
+  margin-left: auto;
+  color: var(--lares-attention);
+  font: var(--text-body-sm);
+}
+.marketing .mini-agent:last-child {
+  border-bottom: 0;
+}
+.marketing .grain-door {
+  border-radius: 20px;
+  background: var(--lares-door-from);
+}
+.marketing .grain-door .light-one {
+  background: radial-gradient(
+    ellipse at 65% 90%,
+    var(--lares-door-to),
+    transparent 60%
+  );
+}
+.marketing .grain-door .light-two {
+  opacity: 0.5;
+}
+.marketing .grain-door:nth-child(2) .light-one {
+  transform: rotate(85deg);
+}
+.marketing .grain-door:nth-child(3) .light-one {
+  transform: rotate(160deg);
+}
+.marketing .grain-door article {
+  padding: 28px;
+  min-height: 355px;
+}
+.marketing .door-grid {
+  gap: 20px;
+}
+.marketing .offering-subtitle {
+  margin-top: 20px;
+  font: var(--text-body-sm);
+  color: var(--lares-ink-2);
+}
+.marketing .grain-door h2 {
+  margin-top: 9px;
+}
+.marketing .grain-door a {
+  text-decoration: none;
+}
+.marketing .grain-door a:hover {
+  text-decoration: underline;
+}
+.marketing .doors {
+  padding-bottom: 56px;
+}
+.marketing .name-story {
+  padding-bottom: 48px;
+}
+.marketing .name-story > div {
+  max-width: 74ch;
+}
+.marketing .name-story p {
+  font: var(--text-body);
+  line-height: 1.75;
+}
+.marketing .waitlist {
+  max-width: 1120px;
+  width: calc(100% - 48px);
+  margin: 0 auto 36px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+}
+.marketing .waitlist-grid {
+  width: 100%;
+  padding: 42px;
+  gap: 48px;
+}
+.dark .marketing .grain > svg {
+  mix-blend-mode: soft-light;
+  opacity: 0.22;
+}
+.dark .marketing .mini-console,
+.dark .marketing .waitlist {
+  background: color-mix(in oklch, var(--card) 90%, white);
+}
+.dark .marketing .hint,
+.dark .marketing .muted,
+.dark .marketing .hero-note {
+  color: color-mix(in oklch, var(--foreground) 75%, var(--background));
+}
+.dark .marketing [data-slot="input"],
+.dark .marketing [data-slot="select-trigger"] {
+  background: var(--background);
+  border-color: color-mix(in oklch, var(--foreground) 28%, var(--background));
+}
+@keyframes lares-light-one {
+  from {
+    transform: translate(-4%, -3%) rotate(-18deg) scale(1);
+  }
+  to {
+    transform: translate(8%, 5%) rotate(16deg) scale(1.12);
+  }
+}
+@keyframes lares-light-two {
+  from {
+    transform: translate(5%, 4%) scale(1.05);
+  }
+  to {
+    transform: translate(-7%, -5%) scale(0.95);
+  }
+}
+@media (max-width: 760px) {
+  .marketing .site-header {
+    flex-wrap: wrap;
+    gap: 16px;
+    padding-block: 20px;
+  }
+  .marketing .site-header nav {
+    flex-wrap: wrap;
+    gap: 14px;
+  }
+  .marketing .hero {
+    padding-block: 56px 80px;
+  }
+  .marketing .door-grid,
+  .marketing .product-peek,
+  .marketing .waitlist-grid {
+    grid-template-columns: 1fr;
+  }
+  .marketing .feature-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
+  .marketing .grain-door article {
+    min-height: 290px;
+  }
+  .marketing .waitlist-grid {
+    padding: 24px;
+    gap: 24px;
+  }
+  .marketing .product-peek {
+    gap: 32px;
+  }
+  .marketing .hero-actions {
+    flex-wrap: wrap;
+  }
+  .marketing .mini-console {
+    padding: 20px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marketing .hero-field .gradient-light {
+    animation: none;
+  }
+  .marketing .hero-motion-control {
+    display: none;
+  }
+  .marketing [data-slot="button"] {
+    transition: none;
+  }
+}
+
+/* Screenshot follow-up: a more legible moving field and a warmer invitation. */
+.marketing .hero-field .light-one {
+  inset: -18%;
+  background: radial-gradient(
+    ellipse at 78% 48%,
+    color-mix(in oklch, var(--lares-field-to) 84%, var(--foreground)) 0%,
+    var(--lares-field-to) 24%,
+    transparent 58%
+  );
+  animation-duration: 14s;
+}
+.marketing .hero-field .light-two {
+  inset: -22%;
+  background:
+    radial-gradient(
+      ellipse at 55% 76%,
+      var(--lares-door-to) 8%,
+      transparent 43%
+    ),
+    radial-gradient(
+      ellipse at 82% 18%,
+      var(--lares-field-from) 6%,
+      transparent 38%
+    );
+  animation-duration: 19s;
+}
+.marketing .hero-field:after {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--lares-field-from) 80%, transparent),
+    transparent 68%
+  );
+}
+.marketing .hero-field > svg {
+  inset: -3%;
+  width: 106%;
+  height: 106%;
+  opacity: 0.25;
+  animation: lares-grain-drift 5s ease-in-out infinite alternate;
+}
+.dark .marketing .hero-field > svg {
+  opacity: 0.34;
+}
+.marketing .hero-field .surface-texture {
+  opacity: 0.6;
+}
+.marketing .motion-paused > svg {
+  animation-play-state: paused;
+}
+.marketing .waitlist {
+  max-width: 1040px;
+  width: calc(100% - 80px);
+  background: linear-gradient(
+    125deg,
+    var(--lares-door-to),
+    var(--secondary) 52%,
+    var(--lares-door-from)
+  );
+  border-color: color-mix(in oklch, var(--border) 75%, var(--lares-door-to));
+}
+.marketing .waitlist-grid {
+  padding: 36px;
+  gap: 40px;
+  align-items: start;
+}
+.marketing .waitlist h2 {
+  font: var(--text-h1);
+  letter-spacing: var(--tracking-heading);
+}
+.marketing .waitlist [data-slot="input"],
+.marketing .waitlist [data-slot="select-trigger"] {
+  background: var(--card);
+}
+.marketing .signup-preview-note {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  font: var(--text-body-sm);
+  color: var(--muted-foreground);
+}
+.dark .marketing .waitlist {
+  background: linear-gradient(
+    125deg,
+    var(--lares-door-to),
+    var(--secondary) 60%,
+    var(--card)
+  );
+}
+@keyframes lares-grain-drift {
+  from {
+    transform: translate(-1%, -0.6%);
+  }
+  to {
+    transform: translate(1%, 0.6%);
+  }
+}
+@media (max-width: 760px) {
+  .marketing .waitlist {
+    width: calc(100% - 40px);
+  }
+  .marketing .waitlist-grid {
+    padding: 24px;
+    gap: 28px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .marketing .hero-field > svg,
+  .marketing .hero-field .gradient-light {
+    animation: none;
+  }
+}
+
+/* Solid closing section: signup and footer share a single full-width surface. */
+.marketing .signup-footer {
+  background: oklch(0.925 0.007 170);
+}
+.dark .marketing .signup-footer {
+  background: oklch(0.155 0.009 175);
+}
+.marketing .signup-footer .waitlist {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.marketing .signup-footer .waitlist-grid {
+  max-width: 1120px;
+  margin-inline: auto;
+  padding: 64px 40px 56px;
+  gap: 64px;
+}
+.marketing .signup-footer .site-footer {
+  position: relative;
+  padding-block: 28px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.marketing .signup-footer .site-footer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 40px;
+  right: 40px;
+  height: 1px;
+  background: color-mix(in oklch, var(--foreground) 13%, transparent);
+}
+.marketing .signup-footer [data-slot="input"],
+.marketing .signup-footer [data-slot="select-trigger"] {
+  background: white;
+}
+.dark .marketing .signup-footer [data-slot="input"],
+.dark .marketing .signup-footer [data-slot="select-trigger"] {
+  background: oklch(0.22 0.01 175);
+}
+@media (max-width: 1000px) {
+  .marketing .signup-footer .waitlist-grid {
+    padding-inline: 28px;
+    gap: 32px;
+  }
+  .marketing .signup-footer .site-footer::before {
+    left: 28px;
+    right: 28px;
+  }
+}
+@media (max-width: 700px) {
+  .marketing .signup-footer .waitlist-grid {
+    padding: 40px 20px;
+    gap: 28px;
+  }
+  .marketing .signup-footer .site-footer::before {
+    left: 20px;
+    right: 20px;
+  }
+}

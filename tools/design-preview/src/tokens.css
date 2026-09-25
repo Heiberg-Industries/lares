@@ -1,0 +1,234 @@
+/* lares — tokens.css
+   primitive → semantic → component. Colours in OKLCH.
+   :root = light (default), .dark = class-based dark, [data-theme="slate"] = the one alternative theme (a pure token swap).
+   Semantic names follow the shadcn/ui v4 vocabulary verbatim; do not rename or add at this layer. */
+
+:root {
+  /* semantic, light */
+  --background: oklch(0.988 0.004 175);
+  --foreground: oklch(0.20 0.03 185);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.03 185);
+  --popover: oklch(0.992 0.004 175);
+  --popover-foreground: oklch(0.20 0.03 185);
+  --primary: oklch(0.20 0.03 185);
+  --primary-foreground: oklch(0.985 0.005 175);
+  --secondary: oklch(0.94 0.014 175);
+  --secondary-foreground: oklch(0.20 0.03 185);
+  --muted: oklch(0.94 0.014 175);
+  --muted-foreground: oklch(0.47 0.03 178);
+  --accent: oklch(0.54 0.14 32);
+  --accent-foreground: oklch(0.99 0.01 32);
+  --destructive: oklch(0.46 0.13 30);
+  --border: oklch(0.88 0.018 175);
+  --input: oklch(0.88 0.018 175);
+  --ring: oklch(0.20 0.03 185);
+  --sidebar: oklch(0.955 0.012 175);
+  --sidebar-foreground: oklch(0.20 0.03 185);
+  --sidebar-primary: oklch(0.20 0.03 185);
+  --sidebar-primary-foreground: oklch(0.985 0.005 175);
+  --sidebar-accent: oklch(0.90 0.02 175);
+  --sidebar-accent-foreground: oklch(0.20 0.03 185);
+  --sidebar-border: oklch(0.88 0.018 175);
+  --sidebar-ring: oklch(0.20 0.03 185);
+  --chart-1: oklch(0.20 0.03 185);
+  --chart-2: oklch(0.47 0.03 178);
+  --chart-3: oklch(0.76 0.025 175);
+  --chart-4: oklch(0.88 0.018 175);
+  --chart-5: oklch(0.54 0.14 32);
+  --radius: 0.25rem;
+
+  /* component (project-specific) */
+  --lares-attention: var(--accent);               /* "needs the owner" — aliases --accent */
+  --lares-attention-foreground: var(--accent-foreground);
+  --lares-ink-2: oklch(0.34 0.03 182);            /* secondary body text on marketing */
+  --lares-grain-opacity: 0.32;                    /* console sets 0 */
+  --lares-grain-frequency: 0.85;                  /* feTurbulence baseFrequency */
+  --lares-grain-octaves: 2;
+  --lares-field-from: oklch(0.988 0.004 175);     /* tonal field, hero */
+  --lares-field-mid: oklch(0.93 0.02 172);
+  --lares-field-to: oklch(0.82 0.04 196);
+  --lares-door-from: oklch(0.96 0.012 172);       /* tonal field, door panels */
+  --lares-door-to: oklch(0.87 0.03 192);
+  --lares-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --lares-dur-settle: 480ms;                      /* arrivals fade and settle */
+  --lares-dur-node: 900ms;                        /* one node lights per step in the loading loop */
+
+  /* type scale, fixed count (12) */
+  --text-display: 500 58px/1.02 var(--font-sans);
+  --text-h1: 500 36px/1.1 var(--font-sans);
+  --text-h2: 500 24px/1.2 var(--font-sans);
+  --text-h3: 500 18px/1.3 var(--font-sans);
+  --text-lead: 400 18px/1.5 var(--font-sans);
+  --text-body: 400 15px/1.55 var(--font-sans);
+  --text-body-sm: 400 13px/1.5 var(--font-sans);
+  --text-label: 500 13px/1.3 var(--font-sans);
+  --text-console-title: 500 20px/1.2 var(--font-sans);
+  --text-mono: 400 12px/1.5 var(--font-mono);
+  --text-mono-sm: 400 11px/1.4 var(--font-mono);
+  --text-code: 400 13px/1.6 var(--font-mono);
+  --tracking-display: -0.025em;
+  --tracking-heading: -0.015em;
+
+  /* spacing (4px base) */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+  --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px; --space-24: 96px;
+  --measure: 62ch;
+
+  /* elevation: borders carry structure; shadows only on popover/dialog */
+  --shadow-popover: 0 4px 16px oklch(0.20 0.03 185 / 0.08), 0 1px 2px oklch(0.20 0.03 185 / 0.06);
+  --shadow-dialog: 0 16px 48px oklch(0.20 0.03 185 / 0.14), 0 2px 6px oklch(0.20 0.03 185 / 0.08);
+}
+
+.dark {
+  --background: oklch(0.18 0.025 190);
+  --foreground: oklch(0.95 0.01 175);
+  --card: oklch(0.22 0.025 188);
+  --card-foreground: oklch(0.95 0.01 175);
+  --popover: oklch(0.22 0.025 188);
+  --popover-foreground: oklch(0.95 0.01 175);
+  --primary: oklch(0.95 0.01 175);
+  --primary-foreground: oklch(0.18 0.025 190);
+  --secondary: oklch(0.27 0.025 186);
+  --secondary-foreground: oklch(0.95 0.01 175);
+  --muted: oklch(0.27 0.025 186);
+  --muted-foreground: oklch(0.68 0.025 178);
+  --accent: oklch(0.66 0.14 34);
+  --accent-foreground: oklch(0.15 0.03 30);
+  --destructive: oklch(0.66 0.14 30);
+  --border: oklch(0.30 0.025 186);
+  --input: oklch(0.30 0.025 186);
+  --ring: oklch(0.95 0.01 175);
+  --sidebar: oklch(0.16 0.025 190);
+  --sidebar-foreground: oklch(0.95 0.01 175);
+  --sidebar-primary: oklch(0.95 0.01 175);
+  --sidebar-primary-foreground: oklch(0.18 0.025 190);
+  --sidebar-accent: oklch(0.26 0.025 186);
+  --sidebar-accent-foreground: oklch(0.95 0.01 175);
+  --sidebar-border: oklch(0.30 0.025 186);
+  --sidebar-ring: oklch(0.95 0.01 175);
+  --chart-1: oklch(0.95 0.01 175);
+  --chart-2: oklch(0.68 0.025 178);
+  --chart-3: oklch(0.45 0.025 180);
+  --chart-4: oklch(0.30 0.025 186);
+  --chart-5: oklch(0.66 0.14 34);
+  --lares-ink-2: oklch(0.80 0.02 178);
+  --lares-field-from: oklch(0.18 0.025 190);
+  --lares-field-mid: oklch(0.24 0.03 188);
+  --lares-field-to: oklch(0.34 0.045 200);
+  --lares-door-from: oklch(0.22 0.025 188);
+  --lares-door-to: oklch(0.30 0.04 196);
+  --shadow-popover: 0 4px 16px oklch(0 0 0 / 0.4), 0 1px 2px oklch(0 0 0 / 0.3);
+  --shadow-dialog: 0 16px 48px oklch(0 0 0 / 0.55), 0 2px 6px oklch(0 0 0 / 0.35);
+}
+
+/* The one alternative theme: slate hue set with cold amber as the contrast colour. Pure token swap. */
+[data-theme="slate"] {
+  --background: oklch(0.975 0.006 250);
+  --foreground: oklch(0.20 0.025 262);
+  --card: oklch(0.992 0.003 250);
+  --card-foreground: oklch(0.20 0.025 262);
+  --popover: oklch(0.992 0.003 250);
+  --popover-foreground: oklch(0.20 0.025 262);
+  --primary: oklch(0.20 0.025 262);
+  --primary-foreground: oklch(0.985 0.004 250);
+  --secondary: oklch(0.94 0.010 250);
+  --secondary-foreground: oklch(0.20 0.025 262);
+  --muted: oklch(0.94 0.010 250);
+  --muted-foreground: oklch(0.47 0.025 255);
+  --accent: oklch(0.62 0.13 75);
+  --accent-foreground: oklch(0.15 0.03 75);
+  --destructive: oklch(0.46 0.13 30);
+  --border: oklch(0.88 0.012 250);
+  --input: oklch(0.88 0.012 250);
+  --ring: oklch(0.20 0.025 262);
+  --sidebar: oklch(0.955 0.008 250);
+  --sidebar-foreground: oklch(0.20 0.025 262);
+  --sidebar-primary: oklch(0.20 0.025 262);
+  --sidebar-primary-foreground: oklch(0.985 0.004 250);
+  --sidebar-accent: oklch(0.90 0.014 250);
+  --sidebar-accent-foreground: oklch(0.20 0.025 262);
+  --sidebar-border: oklch(0.88 0.012 250);
+  --sidebar-ring: oklch(0.20 0.025 262);
+  --chart-1: oklch(0.20 0.025 262);
+  --chart-2: oklch(0.47 0.025 255);
+  --chart-3: oklch(0.76 0.018 250);
+  --chart-4: oklch(0.88 0.012 250);
+  --chart-5: oklch(0.62 0.13 75);
+  --lares-ink-2: oklch(0.34 0.025 258);
+  --lares-field-from: oklch(0.975 0.006 250);
+  --lares-field-mid: oklch(0.93 0.014 248);
+  --lares-field-to: oklch(0.82 0.03 268);
+  --lares-door-from: oklch(0.96 0.008 250);
+  --lares-door-to: oklch(0.87 0.022 262);
+}
+[data-theme="slate"].dark {
+  --background: oklch(0.18 0.02 262);
+  --foreground: oklch(0.95 0.008 250);
+  --card: oklch(0.22 0.02 260);
+  --popover: oklch(0.22 0.02 260);
+  --primary: oklch(0.95 0.008 250);
+  --primary-foreground: oklch(0.18 0.02 262);
+  --secondary: oklch(0.27 0.02 260);
+  --muted: oklch(0.27 0.02 260);
+  --muted-foreground: oklch(0.68 0.02 255);
+  --accent: oklch(0.72 0.13 78);
+  --border: oklch(0.30 0.02 260);
+  --input: oklch(0.30 0.02 260);
+  --sidebar: oklch(0.16 0.02 262);
+  --sidebar-accent: oklch(0.26 0.02 260);
+  --sidebar-border: oklch(0.30 0.02 260);
+}
+
+/* Tailwind 4 mapping. No tailwind.config theme block. */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-lares-attention: var(--lares-attention);
+  --color-lares-attention-foreground: var(--lares-attention-foreground);
+  --radius-sm: calc(var(--radius) - 2px);
+  --radius-md: var(--radius);
+  --radius-lg: calc(var(--radius) + 2px);
+  --radius-xl: calc(var(--radius) + 6px);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+/* motion: arrivals fade and settle; the mark's nodes light in sequence. Nothing bounces. */
+@keyframes lares-settle { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes lares-node { 0%, 100% { opacity: 0.25; } 33% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; } }
+
+/* body reset + link defaults */
+body { margin: 0; background: var(--background); color: var(--foreground); font: var(--text-body); -webkit-font-smoothing: antialiased; }
+a { color: inherit; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--border); }
+a:hover { text-decoration-color: currentColor; }

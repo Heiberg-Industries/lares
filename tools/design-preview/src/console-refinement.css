@@ -1,0 +1,502 @@
+/* Console review pass. Original palette and fonts; marketing remains unchanged. */
+html[data-surface="console"] {
+  --radius: 0.625rem;
+}
+html[data-surface="console"] [data-slot="button"] {
+  border-radius: 10px;
+  min-height: 36px;
+}
+html[data-surface="console"] [data-slot="input"],
+html[data-surface="console"] [data-slot="textarea"],
+html[data-surface="console"] [data-slot="select-trigger"] {
+  border-radius: 10px;
+  font: var(--text-body);
+}
+html[data-surface="console"] [data-slot="dialog-content"] {
+  border-radius: 16px;
+  padding: 28px;
+}
+html[data-surface="console"] [data-slot="dropdown-menu-content"],
+html[data-surface="console"] [data-slot="select-content"] {
+  border-radius: 12px;
+  padding: 6px;
+}
+html[data-surface="console"] [data-slot="dropdown-menu-item"],
+html[data-surface="console"] [data-slot="select-item"] {
+  border-radius: 7px;
+  min-height: 36px;
+}
+.app-shell .main {
+  padding: 40px clamp(24px, 4vw, 64px) 64px;
+}
+.app-shell .page-content {
+  max-width: 1120px;
+  margin: 0;
+}
+.app-shell .page-heading h1 {
+  font: var(--text-h2);
+}
+.app-shell .page-heading p {
+  font: var(--text-body);
+  margin-top: 8px;
+}
+.app-shell .page-heading {
+  margin-bottom: 28px;
+}
+.app-shell .sidebar {
+  padding-inline: 12px;
+}
+.app-shell .nav-item {
+  padding: 10px 12px;
+  margin-bottom: 3px;
+  min-height: 42px;
+  border-radius: 10px;
+  font: var(--text-body);
+}
+.app-shell .nav-item > span {
+  gap: 11px;
+}
+.app-shell .nav-item svg {
+  width: 17px;
+  height: 18px;
+}
+.app-shell .nav-item.active {
+  font-weight: 500;
+  background: var(--sidebar-accent);
+}
+.app-shell .nav-label {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 26px 12px 10px;
+  color: var(--muted-foreground);
+  font: var(--text-body);
+}
+.app-shell .installation {
+  padding-top: 24px;
+}
+.agent-badge {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: var(--secondary);
+  color: var(--foreground);
+  font: var(--text-label);
+  font-weight: 500;
+}
+.app-shell .agent-name {
+  gap: 11px;
+  font: var(--text-body);
+  font-weight: 500;
+}
+.app-shell .agent-role {
+  font: var(--text-body-sm);
+  margin-left: 41px;
+  margin-top: 0;
+}
+.app-shell .table-frame {
+  border-radius: 14px;
+  border-color: color-mix(in oklch, var(--border) 65%, var(--card));
+}
+.app-shell [data-slot="table-head"] {
+  background: color-mix(in oklch, var(--secondary) 35%, var(--card));
+  font: var(--text-body-sm);
+  height: 44px;
+  padding: 12px 18px;
+}
+.app-shell [data-slot="table-cell"] {
+  padding: 18px;
+  font: var(--text-body);
+}
+.app-shell [data-slot="table-row"] {
+  border-color: color-mix(in oklch, var(--border) 55%, var(--card));
+}
+.app-shell [data-slot="table-row"]:hover {
+  background: color-mix(in oklch, var(--secondary) 22%, var(--card));
+}
+.app-shell .status {
+  font: var(--text-body-sm);
+  padding: 4px 9px;
+  border-radius: 999px;
+  background: var(--secondary);
+}
+.app-shell .approval-summary {
+  border-radius: 14px;
+  padding: 24px;
+  border-color: color-mix(in oklch, var(--border) 65%, var(--card));
+}
+.app-shell .connection {
+  padding: 24px;
+  border-radius: 16px;
+  border-color: color-mix(in oklch, var(--border) 65%, var(--card));
+}
+.app-shell .connection .section-heading {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+.app-shell .connection .mono {
+  font: var(--text-body-sm);
+}
+.app-shell .connection button {
+  margin-top: 24px;
+}
+.app-shell .hint.mt-4 {
+  margin-top: 16px;
+}
+.app-shell .list-toolbar {
+  margin-bottom: 20px;
+}
+.app-shell .list-toolbar input {
+  min-height: 42px;
+}
+.app-shell .empty {
+  border-radius: 16px;
+  border-style: solid;
+  background: var(--card);
+}
+.app-shell .quiet-panel {
+  border-radius: 12px;
+}
+.app-shell .permission-row {
+  padding: 20px 0;
+  border-color: color-mix(in oklch, var(--border) 60%, transparent);
+}
+.app-shell .page-settings {
+  max-width: 880px;
+}
+.app-shell .page-settings .section {
+  border: 1px solid color-mix(in oklch, var(--border) 65%, var(--card));
+  border-radius: 16px;
+  background: var(--card);
+  padding: 24px;
+  margin-top: 20px;
+}
+.app-shell .page-settings .permission-row:last-child {
+  padding-bottom: 0;
+}
+.app-shell .page-settings .section-heading {
+  margin-bottom: 18px;
+}
+.app-shell .page-settings .section > p + p {
+  margin-top: 8px;
+}
+.app-shell .agent-tabs {
+  background: var(--secondary) !important;
+  border: 0;
+  border-radius: 12px;
+  gap: 4px;
+  padding: 4px;
+  width: fit-content;
+  height: auto;
+}
+.app-shell .agent-tabs [data-slot="tabs-trigger"] {
+  padding: 8px 16px;
+  border: 0;
+  border-radius: 9px;
+  height: 36px;
+}
+.app-shell .agent-tabs [data-state="active"] {
+  background: var(--card) !important;
+}
+html[data-surface="console"] .template {
+  border-radius: 12px;
+}
+html[data-surface="console"] .draft {
+  border-radius: 12px;
+  overflow: hidden;
+}
+.app-shell .page-chat {
+  max-width: 920px;
+}
+.app-shell .chat-selector {
+  gap: 8px;
+  margin-bottom: 22px;
+}
+.app-shell .chat-selector [data-slot="button"] {
+  border-radius: 999px;
+  padding: 6px 14px 6px 6px;
+  min-height: 42px;
+  gap: 8px;
+}
+.app-shell .chat-selector .agent-badge {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+}
+.app-shell .chat-selector [data-variant="secondary"] .agent-badge {
+  background: var(--card);
+}
+.app-shell .chat-panel {
+  height: clamp(460px, 65dvh, 680px);
+  min-height: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+}
+.app-shell .chat-top {
+  border: 0;
+  padding: 0 4px 18px;
+}
+.app-shell .chat-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.app-shell .chat-identity strong {
+  font: var(--text-body);
+  font-weight: 500;
+}
+.app-shell .chat-top > span {
+  gap: 12px;
+}
+.app-shell .chat-top .agent-badge {
+  height: 38px;
+  width: 38px;
+  border-radius: 12px;
+}
+.app-shell .conversation {
+  border-radius: 18px;
+  background: color-mix(in oklch, var(--card) 65%, transparent);
+}
+.app-shell .transcript-content {
+  padding: 24px;
+  gap: 22px;
+}
+.app-shell .chat-intro .transcript-content {
+  min-height: 100%;
+  justify-content: center;
+  align-items: center;
+}
+.app-shell .chat-intro .message {
+  text-align: center;
+  max-width: 500px;
+}
+.app-shell .chat-intro .message-author {
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+}
+.app-shell .chat-intro .message-author .agent-badge {
+  width: 46px;
+  height: 46px;
+  border-radius: 16px;
+  font: var(--text-h3);
+}
+.app-shell .chat-intro .message p {
+  font: var(--text-lead);
+  margin-top: 16px;
+}
+.app-shell .message {
+  max-width: 65ch;
+  padding: 12px 16px;
+}
+.app-shell .message-author {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: var(--text-body-sm);
+  color: var(--muted-foreground);
+}
+.app-shell .message-author .agent-badge {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+}
+.app-shell .message p {
+  line-height: 1.7;
+}
+.app-shell .user-message {
+  border-radius: 16px 16px 5px 16px;
+  padding: 14px 18px;
+}
+.app-shell .composer-area {
+  border: 0;
+  padding: 18px 0 0;
+}
+.app-shell .suggestions {
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.app-shell .suggestions button {
+  border-radius: 999px;
+  border-color: color-mix(in oklch, var(--border) 65%, transparent);
+  padding-inline: 15px;
+  background: transparent;
+}
+.app-shell .composer {
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 16px;
+  padding: 4px;
+}
+.app-shell .composer:focus-within {
+  outline: 2px solid color-mix(in oklch, var(--ring) 25%, transparent);
+  outline-offset: 2px;
+}
+.app-shell .composer textarea {
+  min-height: 84px;
+  border: 0 !important;
+  border-radius: 12px;
+  padding: 14px 56px 14px 14px;
+  box-shadow: none;
+  outline: none;
+  resize: none;
+  background: transparent;
+}
+.app-shell .composer button {
+  border-radius: 999px;
+  right: 14px;
+  bottom: 14px;
+}
+.app-shell .composer-area > .hint {
+  text-align: center;
+  margin-top: 10px;
+  font: var(--text-body-sm);
+}
+@media (max-width: 700px) {
+  .app-shell .main {
+    padding: 24px 18px 40px;
+  }
+  .app-shell .chat-panel {
+    height: clamp(420px, 65dvh, 600px);
+  }
+  .app-shell .page-heading h1 {
+    font: var(--text-h2);
+  }
+  .app-shell [data-slot="table-cell"] {
+    padding: 14px 10px;
+    font: var(--text-body-sm);
+  }
+  .app-shell [data-slot="table-head"] {
+    padding: 10px;
+  }
+  .app-shell .agent-role {
+    margin-left: 0;
+    margin-top: 6px;
+  }
+  .app-shell .agent-name {
+    gap: 7px;
+    font: var(--text-body-sm);
+  }
+  .app-shell .agent-name .agent-badge {
+    width: 24px;
+    height: 24px;
+    border-radius: 8px;
+  }
+  .app-shell .page-settings .section {
+    padding: 20px;
+  }
+  .app-shell .transcript-content {
+    padding: 14px;
+  }
+  .app-shell .agent-tabs {
+    width: 100%;
+  }
+  .app-shell .agent-tabs [data-slot="tabs-trigger"] {
+    flex: 1;
+    padding: 8px;
+  }
+  .app-shell .chat-selector [data-slot="button"] {
+    padding-right: 12px;
+  }
+}
+
+/* Clear navigation hierarchy and reusable agent identities. */
+.app-shell .nav-label {
+  font: var(--text-body-sm);
+  font-weight: 600;
+  padding: 25px 12px 8px;
+  margin-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.app-shell .nav-item:not(.active):hover {
+  background: color-mix(in oklch, var(--sidebar-accent) 40%, transparent);
+}
+.agent-badge {
+  overflow: hidden;
+}
+.agent-badge > svg {
+  width: 85%;
+  height: 85%;
+}
+.agent-badge > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.app-shell .chat-top .agent-switcher {
+  height: auto;
+  padding: 8px 12px;
+  gap: 12px;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 12px;
+}
+.agent-switcher .chat-identity,
+.agent-switcher-menu .chat-identity {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.agent-switcher-menu {
+  min-width: 280px;
+}
+.agent-switcher-menu [role="menuitem"] {
+  padding: 10px;
+  gap: 12px;
+}
+.agent-check {
+  margin-left: auto;
+}
+.app-shell .user-message {
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+.app-shell .user-message .message-author {
+  color: inherit;
+  opacity: 0.8;
+}
+.app-shell .message:not(.user-message) {
+  background: var(--secondary);
+  border-radius: 16px 16px 16px 5px;
+}
+.app-shell .chat-intro .message:not(.user-message) {
+  background: transparent;
+}
+.avatar-editor {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.avatar-editor .agent-badge {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+}
+.avatar-editor input {
+  display: block;
+  margin-block: 8px;
+  max-width: 100%;
+  font: var(--text-body-sm);
+}
+.avatar-editor input::file-selector-button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--secondary);
+  color: var(--foreground);
+  padding: 6px 10px;
+  margin-right: 10px;
+  cursor: pointer;
+}
+.app-shell .status.needs-attention {
+  color: var(--lares-attention);
+  background: color-mix(in oklch, var(--lares-attention) 9%, var(--card));
+}

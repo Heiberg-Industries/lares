@@ -4,6 +4,11 @@ The engine's decisions, specs and research of record. Some historical documents 
 
 Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-vault.md` (memory) and `decisions/0022-the-tested-install-path.md` (how Lares is installed).
 
+## current design reference
+
+- [`design/execution-plan.md`](design/execution-plan.md) — approved console and marketing direction, implementation slices and release gates
+- [`tools/design-preview/README.md`](../tools/design-preview/README.md) — standalone visual and interaction preview; sample state only
+
 ## decisions
 
 - [`0010-knowledge-store-authority.md`](decisions/0010-knowledge-store-authority.md) — ADR 0010 — One owner per fact: Brain, Atlas, Notion, repos, CRM, and a separate taste layer
