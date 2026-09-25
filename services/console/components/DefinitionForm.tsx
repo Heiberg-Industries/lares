@@ -618,17 +618,22 @@ export function DefinitionForm(p: DefinitionFormProps) {
             )}
             {!editing && step < 2 ? (
               <Button
+                key="continue-step"
                 type="button"
                 disabled={
                   step === 1 &&
                   (Boolean(validation) || !validName || !validModel)
                 }
-                onClick={() => setStep(step + 1)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  setStep(step + 1);
+                }}
               >
                 Continue →
               </Button>
             ) : (
               <Button
+                key="save-agent"
                 type="submit"
                 disabled={
                   Boolean(validation) ||
