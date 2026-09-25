@@ -160,6 +160,7 @@ describe("the keeper the installer configures and starts", () => {
     // The same database, network and secrets this installation actually has.
     expect(config.db.database).toBe("lares_state");
     expect(config.lifecycle.network).toBe("lares-network");
+    expect(config.lifecycle.reservedAddresses).toEqual(["172.30.0.254"]);
     expect(config.secretsDir).toBe(join(prefix, "srv", "lares", "secrets"));
     expect(config.agentsDir).toBe(join(prefix, "srv", "lares", "agents"));
   });

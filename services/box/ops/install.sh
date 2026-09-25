@@ -1471,7 +1471,9 @@ run_first_organisation() {
 # neither creates a second one nor needs to.
 OWNER_ID=""
 LARES_PROJECT="${LARES_PROJECT:-lares}"
-LARES_PROXY_ADDRESS="${LARES_PROXY_ADDRESS:-172.30.0.2}"
+# Reserve the high end of the default /24 for the static proxy. Docker assigns
+# the stack's ordinary services from the low end; .2 is already the fresh DB.
+LARES_PROXY_ADDRESS="${LARES_PROXY_ADDRESS:-172.30.0.254}"
 
 run_keeper() {
   # THE KEEPER-OWNED ROOT. compose.lares-keeper.yaml mounts this one directory into the keeper
