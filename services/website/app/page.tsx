@@ -81,6 +81,13 @@ export default function Home() {
           <div className="door-grid">
             {offerings.map((offering) => (
               <article className="door-card" key={offering.id}>
+                <svg className="door-grain" aria-hidden="true" focusable="false">
+                  <filter id={`door-grain-${offering.id}`}>
+                    <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch" />
+                    <feColorMatrix type="saturate" values="0" />
+                  </filter>
+                  <rect width="100%" height="100%" filter={`url(#door-grain-${offering.id})`} />
+                </svg>
                 <span className="mono door-label"><Bracket /> {offering.id}</span>
                 <span className="offering-subtitle">{offering.label}</span>
                 <h3>{offering.title}</h3>

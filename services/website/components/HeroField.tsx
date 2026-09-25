@@ -9,7 +9,6 @@ export function HeroField({ children }: { children: ReactNode }) {
     <div className={`hero-field${paused ? " motion-paused" : ""}`}>
       <div className="gradient-light light-one" aria-hidden="true" />
       <div className="gradient-light light-two" aria-hidden="true" />
-      <div className="surface-texture" aria-hidden="true" />
       <svg className="hero-grain" aria-hidden="true" focusable="false">
         <filter id={filterId}>
           <feTurbulence type="fractalNoise" baseFrequency="0.85" numOctaves="2" stitchTiles="stitch" />
