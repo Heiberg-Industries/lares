@@ -361,6 +361,9 @@ importers:
       '@lares/taste':
         specifier: workspace:^
         version: link:../../packages/taste
+      '@lares/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       eve:
         specifier: 0.60.1
         version: 0.60.1(patch_hash=x74as3nkhd6mrjokp7rgtykgta)(@opentelemetry/api@1.9.1)(ai@7.0.106(zod@4.5.4))(just-bash@3.3.0)
