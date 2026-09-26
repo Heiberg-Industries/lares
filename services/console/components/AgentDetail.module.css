@@ -1,0 +1,31 @@
+.back {
+  margin-bottom: var(--space-6);
+}
+.identity {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-4);
+}
+.identity > header {
+  flex: 1;
+}
+.tabs {
+  max-width: 100%;
+  overflow-x: auto;
+  margin-bottom: var(--space-6);
+}
+.accessRow {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+.accessRow strong {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .identity {
+    flex-direction: column;
+  }
+}

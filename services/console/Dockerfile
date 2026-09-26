@@ -22,7 +22,7 @@
 FROM node:24-bookworm AS deps
 # agent-kit's `prepare` is `eve extension build`, so this image's pnpm install is an eve CLI run:
 # eve's CLI telemetry is switched off before it (nothing phones home).
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH EVE_TELEMETRY_DISABLED=1
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH EVE_TELEMETRY_DISABLED=1 NEXT_TELEMETRY_DISABLED=1
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /app
 
@@ -51,6 +51,9 @@ COPY services/box/package.json     services/box/package.json
 COPY services/network/package.json       services/network/package.json
 COPY packages/strength/package.json      packages/strength/package.json
 COPY packages/taste/package.json         packages/taste/package.json
+COPY packages/ui/package.json            packages/ui/package.json
+COPY packages/junk/package.json          packages/junk/package.json
+COPY services/notion-sync/package.json   services/notion-sync/package.json
 
 # Install the console dependency closure (the `...` pulls in workspace deps).
 RUN pnpm install --frozen-lockfile --filter @lares/console...
@@ -58,12 +61,20 @@ RUN pnpm install --frozen-lockfile --filter @lares/console...
 # ---- build: next build -------------------------------------------------------
 # Same tag as `deps` (see its comment) — this stage copies deps' node_modules verbatim.
 FROM node:24-bookworm-slim AS build
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
+ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH EVE_TELEMETRY_DISABLED=1 NEXT_TELEMETRY_DISABLED=1
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/services/console/node_modules ./services/console/node_modules
+COPY --from=deps /app/packages/ui/node_modules ./packages/ui/node_modules
+COPY --from=deps /app/packages/agent-kit/node_modules ./packages/agent-kit/node_modules
+COPY --from=deps /app/packages/taste/node_modules ./packages/taste/node_modules
+COPY --from=deps /app/packages/strength/node_modules ./packages/strength/node_modules
+COPY --from=deps /app/packages/junk/node_modules ./packages/junk/node_modules
+COPY --from=deps /app/services/box/node_modules ./services/box/node_modules
+COPY --from=deps /app/services/network/node_modules ./services/network/node_modules
+COPY --from=deps /app/services/notion-sync/node_modules ./services/notion-sync/node_modules
 COPY . .
 
 RUN pnpm --filter @lares/console build
@@ -73,7 +84,7 @@ RUN pnpm --filter @lares/console build
 # native addons built under that Node ABI.
 FROM node:24-bookworm-slim AS run
 WORKDIR /app
-ENV NODE_ENV=production PORT=3000
+ENV NODE_ENV=production PORT=3000 NEXT_TELEMETRY_DISABLED=1 EVE_TELEMETRY_DISABLED=1
 
 COPY --from=build /app/services/console/.next/standalone ./
 COPY --from=build /app/services/console/.next/static ./services/console/.next/static

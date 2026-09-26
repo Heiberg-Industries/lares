@@ -6,6 +6,7 @@ import type { AutonomyLevel } from "./contracts";
 
 export interface AgentFolder {
   name: string;
+  avatarVersion?: string;
   displayName: string;
   role: string;
   /** `areas` is only ever set on the `vault` grant (agent-kit's `grantSchema`), and it is what
@@ -28,19 +29,23 @@ const ROLE_LABELS: Record<string, string> = {
   creative: "Ideation",
 };
 
-export async function listAgents(): Promise<AgentFolder[]> {
+export async function listAgents(options: { strict?: boolean } = {}): Promise<AgentFolder[]> {
   const { rows } = await pool
     .query<{
       name: string; display_name: string; role: string | null; grants: AgentFolder["grants"]; autonomy: Record<string, AutonomyLevel>;
       skills: unknown[]; doors: unknown[]; tools: string[] | null; started_at: Date | string;
     }>("SELECT name, display_name, role, grants, autonomy, skills, doors, tools, started_at FROM agent_registry ORDER BY name")
     .catch((err: unknown) => {
+      if (options.strict) throw err;
       // A silently empty list here reads as "no agents" on the permissions page — log so an
       // unreadable registry (table missing, connection down) is visible somewhere, not just absent.
       console.error(`[agents] agent registry could not be read: ${err instanceof Error ? err.message : String(err)}`);
       return { rows: [] };
     });
+  const avatars = await pool.query<{name:string;version:string}>("SELECT name, extract(epoch from updated_at)::text version FROM agent_avatars").catch(()=>({rows:[]}));
+  const versions = new Map(avatars.rows.filter(a=>typeof a.version==='string').map(a=>[a.name,a.version]));
   return rows.map((r) => ({
+    avatarVersion: versions.get(r.name),
     name: r.name,
     displayName: r.display_name,
     role: (r.role && ROLE_LABELS[r.role]) ?? r.role ?? "Agent",

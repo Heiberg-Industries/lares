@@ -37,8 +37,8 @@ const AREA_LABELS: Record<string, string> = {
   taste: "Taste",
 };
 
-export async function getBoardRows(): Promise<BoardRowDTO[]> {
-  const agents = await listAgents();
+export async function getBoardRows(options: { strict?: boolean } = {}): Promise<BoardRowDTO[]> {
+  const agents = await listAgents(options);
   const [ratchet, events, counts] = await Promise.all([
     pool
       .query<{ agent: string; capability: string; action: string; level: AutonomyLevel; updated_by: string; updated_at: string }>(
@@ -46,7 +46,7 @@ export async function getBoardRows(): Promise<BoardRowDTO[]> {
         // instead. Nothing else is fetched — a meeting series' per-event row is not a board row.
         "SELECT agent, capability, action, level, updated_by, updated_at FROM ratchet WHERE action = '' OR capability = 'vault'",
       )
-      .catch(() => ({ rows: [] as never[] })),
+      .catch((error: unknown) => { if (options.strict) throw error; return { rows: [] as never[] }; }),
     pool
       .query<{ agent: string; capability: string; tool: string; decision: string; n: string; last_at: string }>(
         // Grouped by TOOL as well, because `approval_events` (038) has no action column: the area a
@@ -55,7 +55,7 @@ export async function getBoardRows(): Promise<BoardRowDTO[]> {
         `SELECT agent, capability, tool, decision, count(*) AS n, max(at) AS last_at FROM approval_events
           WHERE at > now() - interval '30 days' GROUP BY agent, capability, tool, decision`,
       )
-      .catch(() => ({ rows: [] as never[] })),
+      .catch((error: unknown) => { if (options.strict) throw error; return { rows: [] as never[] }; }),
     // What the OWNER answered (approval_asks, box 086) — never what the policy decided (above).
     // `readApprovalCounts` never throws: a box that has not applied 086 answers [].
     readApprovalCounts(pool),

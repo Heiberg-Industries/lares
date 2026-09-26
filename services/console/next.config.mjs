@@ -8,7 +8,7 @@ const downlevelUsingLoader = fileURLToPath(new URL("./build/downlevel-using-load
 export default {
   output: "standalone",
   reactStrictMode: true,
-  experimental: { cpus: 1 },
+  experimental: { cpus: 1, serverActions: { bodySizeLimit: "3mb" } },
   outputFileTracingIncludes: {
     "/*": ["../../packages/agent-kit/templates/*/definition.json"],
   },
@@ -24,7 +24,7 @@ export default {
   // by the webpack rule below (before anything else sees the file), webpack's ordinary node_modules
   // handling parses the rest of eve's output (private class fields, etc.) without help — adding it
   // to transpilePackages was tried and is not needed once that rule is in place.
-  transpilePackages: ["@lares/agent-box", "@lares/agent-kit", "@lares/notion-sync", "@lares/taste", "@lares/vault-format"],
+  transpilePackages: ["@lares/ui", "@lares/agent-box", "@lares/agent-kit", "@lares/notion-sync", "@lares/taste", "@lares/vault-format"],
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ...(config.resolve.extensionAlias ?? {}),

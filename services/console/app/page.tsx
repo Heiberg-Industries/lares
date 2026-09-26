@@ -1,40 +1,74 @@
 import Link from "next/link";
-import { getAgentSummaries } from "../lib/queries";
-import { AgentChip } from "../components/AgentChip";
-import { StatePill } from "../components/StatePill";
-
+import { AgentsList } from "../components/AgentsList";
+import {
+  PageHeader,
+  EmptyState,
+  Notice,
+  AgentAvatar,
+} from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
+import { getFleetSnapshot, getPermissionEvents } from "../lib/console-overview";
+import { PermissionEvents } from "../components/PermissionEvents";
 export const dynamic = "force-dynamic";
-
-export default async function FleetPage() {
-  const agents = await getAgentSummaries();
+export default async function HomePage() {
+  const [snapshot, events] = await Promise.all([
+    getFleetSnapshot(),
+    getPermissionEvents({ limit: 5 }),
+  ]);
+  const failures = snapshot.workflows.available
+    ? snapshot.workflows.value.filter((r) => r.status === "failed" && r.n > 0)
+    : [];
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Fleet</h1>
-      <p><Link href="/agents/new">Create an agent</Link></p>
-      <table className="card" style={{ marginTop: 16 }}>
-        <thead>
-          <tr>
-            <th>Agent</th>
-            <th>Status</th>
-            <th>Pending</th>
-            <th>Capabilities</th>
-          </tr>
-        </thead>
-        <tbody>
-          {agents.map((a) => (
-            <tr key={a.name}>
-              <td>
-                <Link href={`/agents/${a.name}`}>
-                  <AgentChip name={a.name} role={a.role} />
-                </Link>
-              </td>
-              <td><StatePill state={a.status} /></td>
-              <td className="mono">{a.pendingApprovals || ""}</td>
-              <td className="mono" style={{ color: "var(--mist)" }}>{a.capabilities.join(", ")}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </>
+    <div className="lares-page lares-stack">
+      <PageHeader
+        title="Your house"
+        description="A quiet place to keep an eye on things."
+        actions={
+          <Button asChild>
+            <Link href="/chat">Open chat →</Link>
+          </Button>
+        }
+      />
+      <section className="lares-surface">
+        <h2 className="lares-section-title">Work to review</h2>
+        {!snapshot.workflows.available ? (
+          <Notice error>Workflow status is unavailable.</Notice>
+        ) : failures.length ? (
+          <ul className="lares-data-list">
+            {failures.map((r) => (
+              <li key={r.agent}>
+                <Link href={`/agents/${encodeURIComponent(r.agent)}`}>
+                  {r.agent}
+                </Link>{" "}
+                · {r.n} failed {r.n === 1 ? "workflow" : "workflows"}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="lares-muted">No failed workflows recorded.</p>
+        )}
+        <p className="lares-muted">
+          Approval requests stay in their original conversation.{" "}
+          <Link href="/chat">Open chat</Link> to review them.
+        </p>
+      </section>
+      <div className="lares-stack">
+        <section>
+          <div className="lares-section-heading">
+            <h2 className="lares-section-title">Your agents</h2>
+            <Link href="/agents">Manage agents →</Link>
+          </div>
+          <AgentsList snapshot={snapshot} compact />
+        </section>
+        <section>
+          <h2 className="lares-section-title">Recent permission checks</h2>
+          <p className="lares-muted">
+            Recent decisions about what your agents may do.
+          </p>
+          <PermissionEvents events={events} />
+          <Link href="/activity">View activity →</Link>
+        </section>
+      </div>
+    </div>
   );
 }
