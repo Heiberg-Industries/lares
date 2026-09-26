@@ -1,6 +1,0 @@
-# Public build-time settings, never private PostHog API credentials.
-NEXT_PUBLIC_POSTHOG_KEY=<public project token from PostHog EU project 250457>
-NEXT_PUBLIC_BOOKING_ENABLED=false
-NEXT_PUBLIC_SITE_INDEXABLE=false
-# Enable booking only after booking.lares.is/walkthrough is live and embeddable.
-# Enable indexing only for the approved public launch. Rebuild after changes.

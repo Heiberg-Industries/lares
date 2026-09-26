@@ -8,8 +8,9 @@ Isolated branch `codex/console-redesign` starts at main `166613e` and locally in
 Agents draft PR #29 (`c63c316`) and chat draft PR #20 (`c5ae62e`). Neither upstream
 PR is merged or marked ready by this work. Protected main is untouched.
 
-The approved console and marketing are one design package. Marketing PR #31 and
-Orbis PR #13 remain separate from the console implementation and live release.
+The approved console and marketing share a design language. As of 26 September,
+the website lives in private `Heiberg-Industries/lares-website`; marketing PR #31
+is superseded. Orbis PR #13 remains the consent/booking deployment dependency.
 
 ## First review slice
 

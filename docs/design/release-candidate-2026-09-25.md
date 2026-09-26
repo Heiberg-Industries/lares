@@ -15,31 +15,16 @@ unprivileged nginx container on the existing Orbis/Coolify server (port 8080).
 The authenticated console stays part of the self-hosted Lares installation. A
 hosted console is a separate deployment scope, not implied by the public website.
 
-## Public launch sequence
+## Website repository split — 26 September
 
-Use `docs/marketing/analytics-and-launch.md` for settings, privacy event definitions,
-probes and rollback. The cross-repository dependency is Orbis draft PR #13.
-
-1. Review the merged candidate and passing exact-commit checks. Merge the desired
-   public-site and Orbis changes; record source SHA and immutable image digest.
-2. Deploy the Lares tenant entry in the existing consent service and verify the
-   Lares initialization/CORS probe. Do not change other tenants.
-3. Route `booking.lares.is` to the existing booking application and configure TLS.
-   Run the Lares-only provisioning script in read-only mode, then create the draft
-   brand/event. Review and activate **Lares walkthrough — 30 minutes**, using the
-   existing Heiberg calendar. Do not alter the intro appointment.
-4. Verify the booking origin/frame policy and popup. Build the website with the
-   PostHog EU project token, booking enabled and indexing enabled for public launch.
-5. Deploy the website container in Coolify with apex TLS and www-to-apex redirect.
-   Apex/www A records already point at the server; recheck before rollout. Leave
-   `lares.heiberg.co` DNS untouched.
-6. Verify homepage, docs/search, redirects/404, sitemap/robots, consent refusal,
-   consent withdrawal and real opted-in PostHog delivery. A real test booking
-   sends an invitation and needs explicit authorization for its attendee/calendar.
-
-Rollback the website and shared services to their recorded previous image digests;
-return the Lares booking brand to draft if necessary. No new server is needed for
-this public-site plan. The console is not exposed by the website container.
+Marketing, curated public docs, booking UI, consent and PostHog now live in the
+private `Heiberg-Industries/lares-website` repository. Its README and launch runbook
+own public-site deployment. Lares PR #31 is superseded. PR #32 now contains console
+work plus removal of the website from this repository; it is not a website release.
+The public engine, console, installation and contributor documentation stay here.
+The shared UI tokens/fonts remain here; the website vendors a versioned snapshot
+with source hashes and original licences. Protected main and public Git history
+are unchanged by preparation; removal takes effect only after this PR is merged.
 
 ## Console release verification
 
