@@ -116,14 +116,14 @@ export default function Home() {
               <p className="hint">Tell us what you need. The code is open; setup and managed work start with a conversation.</p>
             </div>
             <div className="contact-actions">
-              <a className="button button-primary" href="mailto:bendik@heiberg.co?subject=Lares%20enquiry">Write to Bendik <Arrow diagonal /></a>
+              <a className="button button-primary" href="mailto:bendik@heiberg.co?subject=Lares%20enquiry">Ask us anything <Arrow diagonal /></a>
               <BookingButton className="button button-outline" placement="contact">Book a call <Arrow diagonal /></BookingButton>
               <p>Email opens in your mail app. Booking opens a small calendar window.</p>
             </div>
           </div>
         </section>
         <footer className="site-wrap site-footer">
-          <span className="brand"><Mark /><span className="mono">lares · Heiberg Industries · Oslo</span></span>
+          <span className="brand"><Mark /><span className="mono">lares · Heiberg Industries · Oslo<br /><a href="https://orakel.cloud/selskap/918145354">Org. no. 918 145 354</a></span></span>
           <div className="footer-links"><a href="/docs/">Docs</a><a href="/docs/privacy/">Privacy</a><a href="https://github.com/Heiberg-Industries/lares">Source code <Arrow diagonal /></a></div>
         </footer>
       </div>
