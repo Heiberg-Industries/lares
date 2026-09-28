@@ -69,6 +69,9 @@ generic placeholders; PR #32 source now labels tool activity without showing
 private results. The live editor also exposed unstyled connection controls and
 10-second lifecycle timeouts; the branch now uses the shared button component,
 scoped door layout and a 60-second timeout for creation and reconciliation.
+Connections now derives Google workspace cards from configured clients and stored
+accounts, so a blank installation no longer displays the catalogue's example
+Workspace A/B cards.
 These source changes have not been redeployed or visually rechecked on the test
 server. Brief/heartbeat,
 backup/restore, a clean installer run and all configured tool states still need proof.

@@ -120,9 +120,18 @@ describe("buildConnectionRows", () => {
     expect(rows.find((r) => r.instanceId === "heiberg")!.status).toBe("partial");
   });
 
-  it("reports a Google org with no client at all as missing", () => {
+  it("omits catalogue-only workspaces that do not exist on this installation", () => {
     const rows = buildConnectionRows({ ...base, configuredOrgs: ["heiberg"] });
-    expect(rows.find((r) => r.instanceId === "zero7")!.status).toBe("missing");
+    expect(rows.find((r) => r.connectionId === "google" && r.instanceId === "zero7")).toBeUndefined();
+    expect(rows.find((r) => r.connectionId === "google")!.label).toContain("heiberg");
+  });
+
+  it("shows one honest missing Google connection before any client is configured", () => {
+    const rows = buildConnectionRows({ ...base, configuredOrgs: [] });
+    const google = rows.filter((r) => r.connectionId === "google");
+    expect(google).toHaveLength(1);
+    expect(google[0]).toMatchObject({ instanceId: "unconfigured", status: "missing", detail: "no client" });
+    expect(google[0].label).not.toContain("Workspace");
   });
 
   // Minor B (final review): the accounts.length > 0 branch used to fire before the configured
