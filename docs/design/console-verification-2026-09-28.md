@@ -211,3 +211,14 @@ fields that the current `voice-learn` schedule never reads. PR #32 now shows
 only the live lookback and per-mailbox message-cap settings, bounds their writes,
 and uses the console's rounded control treatment. This needs an exact-image
 visual check; no Sent-mail learning run has been exercised on the test server.
+
+The owner approved a GHCR image from exact commit `b29fe92`. Workflow
+`36423360122` published digest `sha256:1aaeb010fc5b4dd994b970385577cfe75acdd71df9b3343d4349b2b4f3b50b7c`,
+and only the disposable server's console service was replaced. The authenticated
+browser showed the corrected Google agent grant, Notion empty state and
+writing-style controls, while Settings retained its newer stacked layout and
+Europe/Oslo values. Home, agent screens, Chat, Activity and the tool pages loaded
+their available configured/empty states. Desktop Agents and Chat, plus phone-size
+Agents, Chat and Connections, were visually inspected. The phone Chat composer
+was reachable after page scroll. This establishes the current image's observed
+states, not the unexercised pending, failure, write and multi-agent states.
