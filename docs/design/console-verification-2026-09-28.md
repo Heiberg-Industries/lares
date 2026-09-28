@@ -136,5 +136,27 @@ were returned to off. No Telegram door was configured, so no brief was
 delivered. Google data-client configuration now appears in Connections, and
 the owner completed Google's Gmail/Drive/Calendar consent. Connections now
 shows one live mailbox with five scopes. The agent-specific connection start
-was blocked by the automated Chrome tab, so its owner-browser handoff and
-agent-level read checks remain pending.
+was blocked by the automated Chrome tab. The owner had already approved binding
+the disposable agent, so Keeper's audited `email.connect`, definition save and
+reconcile actions applied that saved account without another Google consent.
+The editor then showed **Owner connection applied**, with only Gmail and
+Calendar capabilities enabled and both set to **Ask first**. In live chat the
+agent completed `gmail_search`, `calendar_list_events` and
+`calendar_conflicts`, returning only an inbox count and a next-24-hours event
+count. No provider write was requested. The full transcript, including the
+tool labels, survived page reload. The new installation's four recorded model
+calls cost USD 0.18612325; adding the earlier disposable installation's
+USD 0.22890675 gives USD 0.41503 observed cumulative spend, under the approved
+USD 5 cap.
+
+The owner-approved export was refreshed after those reads. It contains five
+non-template database dumps, globals, agent definitions and retired definitions;
+all eight manifest entries passed size and SHA-256 checks. Its SHA-256 is
+`50ba122d508c0df515aa0794910274dc25011da2af9a74a4a7936425077b29f1`.
+The age-encrypted off-box copy decrypted to the same checksum without writing
+plaintext on the Mac. A separate scratch database restored the `lares_state`
+dump with matching counts for agent definitions, OAuth tokens, agent
+conversations and heartbeat rows, then was dropped. This proves dump replay,
+not a complete installation restore. The `/etc/lares` credential escrow is
+separate; per-agent secrets under `/srv/lares/secrets` are not in the archive,
+and their regeneration on a new installation remains to be tested.
