@@ -64,6 +64,30 @@ principal, so it can't be used to delete another principal's account.
    listed. Confirm `SELECT email_address, org_id FROM oauth_tokens WHERE provider='google';`
    shows it, and that Saga's workflow can draft on it (Plan 3 probe).
 
+### Keeper-managed fresh installation
+
+The Google sign-in client is separate from a Google **data** client. Before an agent can use a
+connected mailbox, put the data client's `GOOGLE_CLIENT_ID_<ORG>` and
+`GOOGLE_CLIENT_SECRET_<ORG>` entries in the root-owned `0600` console OAuth env file, and register
+`https://<console-host>/api/accounts/google/callback` on that client. The owner still has to
+complete Google's consent screen. For an explicit lower-case org id (for example `heiberg`), run
+from the Lares checkout on the installed server:
+
+```sh
+sudo python3 services/box/ops/configure-google-keeper.py --org heiberg --dry-run
+sudo python3 services/box/ops/configure-google-keeper.py --org heiberg
+sudo docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart lares-keeper
+```
+
+The command writes no credential to stdout or argv. It copies the two client values into
+root:10001 `0440` files that the Keeper can mount read-only, and adds the installed owner and
+explicit org to `/etc/lares/keeper.json`. It does not connect a mailbox or enable an agent.
+After the Keeper restart, connect the mailbox in the agent editor, select only the intended
+capabilities, enable Email, and apply connection changes. Inspect the agent's current state if
+an apply times out before retrying it. Re-run this configuration command after any installer
+rerun that replaces `/etc/lares/keeper.json`; the installer does not yet preserve these
+post-install Google settings automatically.
+
 ## Follow-ups
 
 - Revoke the token at Google (not just delete the row) on Remove.
