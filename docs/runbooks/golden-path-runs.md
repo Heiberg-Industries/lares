@@ -1,6 +1,8 @@
 # Fresh-install golden-path runs
 
 This ledger records what a blank-server run actually proved. A partial run is not a release sign-off. The [tested install path](../decisions/0022-the-tested-install-path.md) and [golden-path design](../specs/2026-09-03-fresh-install-golden-path-design.md) define the intended scope; the latter predates the web-chat-first decision, so its Slack-first order is historical.
+The current next-session order and destructive-test boundary are in the
+[28 September handoff](../design/console-lar50-next-session-2026-09-28.md).
 
 ## 2026-09-25 — partial first-conversation checkpoint
 

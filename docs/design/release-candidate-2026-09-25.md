@@ -1,5 +1,9 @@
 # Lares design release candidate — 25 September 2026
 
+> Historical integration checkpoint. For the current 28 September console image,
+> restored-server evidence and next session, use the
+> [console/LAR-50 handoff](console-lar50-next-session-2026-09-28.md).
+
 ## Candidate and scope
 
 `codex/design-release-review` is an isolated integration of marketing/docs PR #31

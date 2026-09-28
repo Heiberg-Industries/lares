@@ -222,3 +222,7 @@ their available configured/empty states. Desktop Agents and Chat, plus phone-siz
 Agents, Chat and Connections, were visually inspected. The phone Chat composer
 was reachable after page scroll. This establishes the current image's observed
 states, not the unexercised pending, failure, write and multi-agent states.
+
+The [next-session handoff](console-lar50-next-session-2026-09-28.md) separates
+the remaining exact-image console checks from the destructive docs-only
+fresh-install and LAR-50 acceptance run.
