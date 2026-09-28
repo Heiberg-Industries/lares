@@ -38,7 +38,7 @@ export function TasteEntryRow({
         <button
           disabled={pending}
           onClick={() => {
-            if (window.confirm(`Permanently remove ${name} from saved preferences?`)) {
+            if (window.confirm(`Permanently remove ${name} from preferences?`)) {
               start(async () => { await removeEntry({ domain, file }); });
             }
           }}

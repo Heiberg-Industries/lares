@@ -32,7 +32,7 @@ const main = [
 ];
 const tools = [
   { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
-  { href: "/taste", label: "Saved preferences", Icon: Bookmark },
+  { href: "/taste", label: "Preferences", Icon: Bookmark },
   { href: "/markets", label: "Market watch", Icon: ChartNoAxesCombined },
 ];
 export function Nav() {

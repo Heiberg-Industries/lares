@@ -241,3 +241,8 @@ PR #32 now adds a current-image preview to that section and updates it after
 save or restore. Focused avatar tests, console typecheck and production build
 pass locally. This fix is source-only until a new exact image is approved and
 installed; the running test image still has the old editor.
+
+The next source-only copy pass shortens the Tools label and page heading from
+**Saved preferences** to **Preferences**, retaining the `/taste` route and data
+behavior. The one-agent capacity notice also uses singular grammar and one
+clear next action. These changes await the next console image.

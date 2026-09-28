@@ -185,7 +185,7 @@ export default async function TastePage({
   return (
     <div className="lares-page lares-operational">
       <PageHeader
-        title="Saved preferences"
+        title="Preferences"
         description="Places, music and preferences your agents can draw on."
       />
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
