@@ -260,8 +260,18 @@ th {
 .lares-operational table.card {
   border-collapse: separate;
   border-spacing: 0;
-  overflow: hidden;
   padding: 0;
+}
+.lares-table-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--lares-surface-radius);
+}
+.lares-table-scroll table {
+  min-width: 620px;
+}
+.lares-signals-filter {
+  flex-wrap: wrap;
 }
 .lares-operational table td {
   padding: 16px;

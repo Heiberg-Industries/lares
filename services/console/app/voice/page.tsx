@@ -4,6 +4,7 @@ import { VoiceSettings } from "../../components/VoiceSettings";
 import { ProposedCard } from "../../components/ProposedCard";
 import { ExampleToggle } from "../../components/ExampleToggle";
 import { RelearnButton } from "../../components/RelearnButton";
+import { PageHeader } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,8 @@ export default async function VoicePage() {
   const def = cards[0]!;
   const mailboxes = cards.slice(1);
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Email voice</h1>
+    <div className="lares-page lares-operational">
+      <PageHeader title="Email writing style" description="Mailbox-specific style and shared defaults." />
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
         One card per mailbox — you write differently from each. Learned from that mailbox&apos;s Sent mail; your edits always win.
         A mailbox with an empty card uses the shared defaults below until it has learned.
@@ -57,7 +58,7 @@ export default async function VoicePage() {
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>Example emails ({examples.length})</h2>
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>Untick to drop one from voice matching (it stays stored).</p>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
         <thead><tr><th>Lang</th><th>Snippet</th><th>In voice</th></tr></thead>
         <tbody>
           {examples.length === 0 && <tr><td colSpan={3} style={{ color: "var(--mist)" }}>No examples yet — press &quot;Re-learn from Sent mail&quot;.</td></tr>}
@@ -69,7 +70,7 @@ export default async function VoicePage() {
             </tr>
           ))}
         </tbody>
-      </table>
-    </>
+      </table></div>
+    </div>
   );
 }

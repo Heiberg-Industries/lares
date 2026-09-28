@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
+import { PageHeader } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 const ICON = { error: "🔴", warn: "🟠", info: "⚪" } as const;
@@ -9,12 +10,12 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
   const q = await searchParams;
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Signals</h1>
+    <div className="lares-page lares-operational">
+      <PageHeader title="Signals" description="Recent recorded alerts, events and reports." />
       <p className="mono" style={{ fontSize: 12, marginTop: 4 }}>
         <Link href="/signals">Recent</Link> · <Link href="/signals/rules">Routes</Link> · <Link href="/signals/catalogue">Catalogue</Link>
       </p>
-      <form method="get" className="mono" style={{ marginTop: 12, display: "flex", gap: 8, fontSize: 12 }}>
+      <form method="get" className="mono lares-signals-filter" style={{ marginTop: 12, display: "flex", gap: 8, fontSize: 12 }}>
         <select name="severity" defaultValue={q.severity ?? ""}><option value="">any severity</option><option>error</option><option>warn</option><option>info</option></select>
         <select name="kind" defaultValue={q.kind ?? ""}><option value="">any kind</option><option>alert</option><option>event</option><option>report</option></select>
         <select name="state" defaultValue={q.state ?? ""}><option value="">any state</option><option>open</option><option>recovered</option><option>closed</option></select>
@@ -26,7 +27,7 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
       ) : r.signals.length === 0 ? (
         <p className="mono" style={{ marginTop: 12, color: "var(--mist)" }}>Nothing in this window.</p>
       ) : (
-        <table className="mono" style={{ marginTop: 12, fontSize: 12, borderCollapse: "collapse", width: "100%" }}>
+        <div className="lares-table-scroll"><table className="card" style={{ marginTop: 12, borderCollapse: "collapse", width: "100%" }}>
           <thead><tr><th align="left">when</th><th align="left">what</th><th align="left">count</th><th align="left">state</th><th align="left">source</th></tr></thead>
           <tbody>
             {r.signals.map((s) => (
@@ -39,8 +40,8 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       )}
-    </>
+    </div>
   );
 }

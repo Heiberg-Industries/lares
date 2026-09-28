@@ -135,7 +135,7 @@ export default async function IntegrationsPage({
         data, contacting someone for the first time, publishing, an agent
         changing its own autonomy.
       </p>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
         <thead>
           <tr>
             <th>Agent</th>
@@ -206,7 +206,7 @@ export default async function IntegrationsPage({
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }

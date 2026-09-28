@@ -1,4 +1,5 @@
 import { getBackupStatus, type BackupCheckRow, type BackupState } from "../../lib/backup-status";
+import { PageHeader } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -47,8 +48,8 @@ export default async function BackupPage() {
   const status = await getBackupStatus();
 
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Backup</h1>
+    <div className="lares-page lares-operational">
+      <PageHeader title="Backup" description="Recorded backup and restore evidence for this installation." />
       <p style={lede}>
         Whether this installation&apos;s data is protected: when the nightly backup was last
         verified, when a restore was last actually rehearsed, and where backups go. This page only
@@ -73,7 +74,7 @@ export default async function BackupPage() {
           )}
 
           <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>Checks</h2>
-          <table className="card" style={{ marginTop: 8 }}>
+          <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
             <thead>
               <tr><th>Check</th><th>Status</th><th>Last checked</th><th>Last pass</th><th>Target</th></tr>
             </thead>
@@ -81,9 +82,9 @@ export default async function BackupPage() {
               <CheckRow label="Nightly backup verify" row={status.verify} neverPassLabel="never" />
               <CheckRow label="Monthly restore drill" row={status.drill} neverPassLabel="never rehearsed" />
             </tbody>
-          </table>
+          </table></div>
         </>
       )}
-    </>
+    </div>
   );
 }

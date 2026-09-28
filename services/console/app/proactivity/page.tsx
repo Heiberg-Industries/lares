@@ -9,6 +9,7 @@ import { BriefLanguageControl } from "../../components/BriefLanguageControl";
 import { readBriefLanguage } from "../../lib/brief-settings";
 import { ScheduleHoursControl } from "../../components/ScheduleHoursControl";
 import { readScheduleHoursSettings } from "../../lib/schedule-settings";
+import { PageHeader } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
@@ -75,8 +76,8 @@ export default async function ProactivityPage() {
   const today = foldTodayByDoor(view.today);
 
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Proactivity</h1>
+    <div className="lares-page lares-operational">
+      <PageHeader title="Proactivity" description="When agents may speak, and what the gate decided." />
       <p style={lede}>
         When the agents may start a conversation with you, how often, and what they decided today.
         Every proactive message in the fleet passes this one gate — a message held back is recorded, never lost.
@@ -125,7 +126,7 @@ export default async function ProactivityPage() {
       <CeilingSection values={globalCeilings} engine={ENGINE} />
 
       <h2 className="mono" style={{ ...label, marginTop: 24 }}>Today <span style={{ color: "var(--mist)", fontSize: 12 }}>({view.todayDay}, your clock)</span></h2>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
         <thead><tr><th>Door</th><th>Sent</th><th>Held back</th><th>Waiting</th></tr></thead>
         <tbody>
           {today.length === 0 && (
@@ -140,13 +141,13 @@ export default async function ProactivityPage() {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table></div>
       <p style={lede}>Held back = dropped for good. Waiting = deferred, and reconsidered when the window or the day opens.</p>
 
       <h2 className="mono" style={{ ...label, marginTop: 24 }}>
         Last 50 decisions <span style={{ color: "var(--mist)", fontSize: 12 }}>({view.recent.length} recorded)</span>
       </h2>
-      <table className="card" style={{ marginTop: 8 }}>
+      <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
         <thead><tr><th>Time</th><th>Agent</th><th>Door</th><th>Class</th><th>Item</th><th>Status</th><th>Reason</th></tr></thead>
         <tbody>
           {view.recent.length === 0 && (
@@ -167,7 +168,7 @@ export default async function ProactivityPage() {
             </tr>
           ))}
         </tbody>
-      </table>
-    </>
+      </table></div>
+    </div>
   );
 }
