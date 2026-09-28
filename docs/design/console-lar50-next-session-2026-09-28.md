@@ -166,3 +166,8 @@ its image remains `test.4`. A container write probe passed. PR #32 has the
 corresponding installer/renderer and export-default correction. A clean
 installation and real browser Save/reload/delete are still unproved. Retest
 the same QA entry before planning any rebuild.
+
+The owner then reported that Save succeeded. A server check found the one
+disposable `Console QA` place file and no new save error. Reload, filters and
+deletion still need an owner observation; do not call the populated-view check
+complete from the server file alone.

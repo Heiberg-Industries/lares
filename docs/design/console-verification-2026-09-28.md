@@ -337,3 +337,6 @@ it in default export paths. The disposable server received a backed-up,
 console-only Compose repair; a write probe passed. The original Save error and
 the root cause are recorded in the [LAR-50 run ledger](../runbooks/golden-path-runs.md).
 Browser Save, reload, filter, and delete still require the owner's retest.
+The owner subsequently reported a successful Save, and the test server now
+holds one matching QA place file. Populated rendering, filters and deletion
+remain to be checked in the browser.
