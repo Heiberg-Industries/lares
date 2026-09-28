@@ -1,7 +1,7 @@
 import { PageHeader } from "@lares/ui/patterns";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
 
-import { listAll, tasteRoot, type StoredEntry } from "../../lib/taste-store";
+import { listAll, type StoredEntry } from "../../lib/taste-store";
 import {
   FRESH_DAYS,
   badgeFor,
@@ -26,11 +26,10 @@ import { badgeStyle } from "../../components/FreshBadge";
 export const dynamic = "force-dynamic";
 
 const DOMAIN_BLURB: Record<TasteDomain, string> = {
-  places:
-    "Steder du har lagret. Marcel finner dem igjen når du er i nærheten på tur.",
-  music: "Spillelister og spor.",
-  food: "Retter og matnotater.",
-  notes: "Alt annet.",
+  places: "Places you have saved for later.",
+  music: "Playlists and tracks.",
+  food: "Dishes and food notes.",
+  notes: "Everything else.",
 };
 
 const control = {
@@ -71,7 +70,7 @@ function Facet({
         defaultValue={value}
         style={control}
       >
-        <option value="">alle</option>
+        <option value="">all</option>
         {options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -83,7 +82,7 @@ function Facet({
 }
 
 /** A plain GET form: the filter lives in the URL, so the whole browse view stays a server
- *  component and a filtered view is a link Bendik can bookmark. No client JS involved. */
+ *  component and a filtered view can be bookmarked. No client JS involved. */
 function FilterBar({
   filters,
   everything,
@@ -106,25 +105,25 @@ function FilterBar({
     >
       <Facet
         name="list"
-        label="Liste"
+        label="List"
         options={optionsFor(everything, "list")}
         value={filters.list}
       />
       <Facet
         name="city"
-        label="By"
+        label="City"
         options={optionsFor(everything, "city")}
         value={filters.city}
       />
       <Facet
         name="country"
-        label="Land"
+        label="Country"
         options={optionsFor(everything, "country")}
         value={filters.country}
       />
       <div>
         <label style={controlLabel} htmlFor="taste-q">
-          Navn inneholder
+          Name contains
         </label>
         <input
           id="taste-q"
@@ -136,7 +135,7 @@ function FilterBar({
       </div>
       <div>
         <label style={controlLabel} htmlFor="taste-sort">
-          Sortering
+          Sort
         </label>
         <select
           id="taste-sort"
@@ -144,16 +143,16 @@ function FilterBar({
           defaultValue={filters.sort}
           style={control}
         >
-          <option value="navn">navn</option>
-          <option value="nyeste">nyeste først</option>
+          <option value="navn">name</option>
+          <option value="nyeste">newest first</option>
         </select>
       </div>
       <button type="submit" style={{ ...control, cursor: "pointer" }}>
-        Vis
+        Show
       </button>
       {isFiltered(filters) && (
         <a href="/taste" style={{ fontSize: 12, paddingBottom: 6 }}>
-          Nullstill
+          Reset
         </a>
       )}
     </form>
@@ -190,21 +189,20 @@ export default async function TastePage({
         description="Places, music and preferences your agents can draw on."
       />
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Din egen smak, som filer: <span className="mono">{tasteRoot()}</span>.
-        Konsollet er det eneste som skriver her — agentene leser bare. Ingenting
-        synkroniseres automatisk; det som står her, er det du selv har lagt inn.
+        Your saved preferences live on this installation. The console writes
+        them; agents can read them. Nothing syncs automatically.
       </p>
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Det som ligger der nå
+        What is saved
       </h2>
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
         {filtered
-          ? `${matching} av ${total} oppføringer`
-          : `${total} oppføringer i alt`}
-        . Merket <span style={badgeStyle}>ny</span> eller{" "}
-        <span style={badgeStyle}>endret</span> vil si rørt av en opplasting de
-        siste {FRESH_DAYS} dagene.
+          ? `${matching} of ${total} entries`
+          : `${total} entries`}
+        . <span style={badgeStyle}>new</span> or{" "}
+        <span style={badgeStyle}>changed</span> means touched by an import in
+        the last {FRESH_DAYS} days.
       </p>
 
       <FilterBar filters={filters} everything={everything} />
@@ -214,7 +212,7 @@ export default async function TastePage({
           className="mono"
           style={{ color: "var(--mist)", fontSize: 12, marginTop: 12 }}
         >
-          Ingen oppføringer passer filteret. {total} ligger i butikken.
+          No entries match these filters. {total} saved in total.
         </p>
       )}
 
@@ -225,7 +223,7 @@ export default async function TastePage({
             <span style={{ color: "var(--mist)" }}>
               ·{" "}
               {filtered
-                ? `${shown[domain].length} av ${store[domain].length}`
+                ? `${shown[domain].length} of ${store[domain].length}`
                 : store[domain].length}
             </span>
           </h3>
@@ -238,16 +236,16 @@ export default async function TastePage({
               style={{ color: "var(--mist)", fontSize: 12, marginTop: 6 }}
             >
               {store[domain].length === 0
-                ? "tomt"
-                : "ingenting som passer filteret"}
+                ? "Nothing saved yet"
+                : "Nothing matches these filters"}
             </p>
           ) : (
             <table className="card" style={{ marginTop: 6 }}>
               <thead>
                 <tr>
-                  <th>Navn</th>
+                  <th>Name</th>
                   <th></th>
-                  <th>Fil</th>
+                  <th>File</th>
                   <th></th>
                 </tr>
               </thead>
@@ -271,48 +269,43 @@ export default async function TastePage({
       <details className="lares-disclosure">
         <summary>Add or import preferences</summary>{" "}
         <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-          Google Maps-lister
+          Google Maps lists
         </h2>
         <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-          Last ned de lagrede listene dine fra Google Takeout og legg inn
-          CSV-fila. Koordinatene ligger i lenkene — de hentes ut her, ingen
-          oppslag utenfor boksen. Laster du opp samme liste på nytt, oppdateres
-          oppføringene i stedet for å komme i tillegg.
+          Download your saved lists from Google Takeout and import the CSV.
+          Coordinates are read from the links locally. Importing the same list
+          again updates its entries.
         </p>
         <TakeoutImport />
         <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-          Lim inn en liste
+          Paste a list
         </h2>
         <PasteImport />
       </details>
       <details className="lares-disclosure">
         <summary>Maintain saved places</summary>{" "}
         <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-          Fyll inn by og land
+          Fill in city and country
         </h2>
         <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-          Utledes fra koordinatene, offline — du skal ikke måtte skrive
-          «København / Danmark» på hver liste. Nye opplastinger får det
-          automatisk; dette er for det som alt ligger her. Det du har skrevet
-          inn selv, blir stående.
+          Derive city and country from saved coordinates offline. New imports
+          receive them automatically. Your manual edits are preserved.
         </p>
         <DerivePlaceNames />
         <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-          Sett land på en liste
+          Set a list's country
         </h2>
         <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-          Listene som lå her før land fantes som felt, får det herfra — uten å
-          laste opp CSV-ene på nytt. Endrer bare landet; alt annet står urørt.
+          Set the country on older lists without importing their CSV again.
+          Other fields stay as they are.
         </p>
         <ListCountry lists={optionsFor(everything, "list")} />
         <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-          Sjekk koordinatene
+          Check coordinates
         </h2>
         <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-          Hver lagret lenke sier selv omtrent hvor stedet ligger. Står pinnen et
-          helt annet sted enn lenken, er den nesten alltid et likelydende sted i
-          en annen by — det skjer når et navn er slått opp i stedet for lenken.
-          Her finnes de, og de kan slås opp på nytt.
+          Compare each saved pin with its source link. A distant pin may point
+          to a place with the same name in another city; review it here.
         </p>
         <PinAudit />
       </details>

@@ -119,3 +119,11 @@ Those source corrections are not in the deployed test image. The Backup page
 still says **Not protected**; Google data consent, agent-level Calendar/Gmail
 reads, brief/heartbeat, and restore rehearsal remain unverified on this
 rebuilt installation. LAR-50 stays open.
+
+The corrected export script has since produced and hash-verified a local
+archive with every non-template database and portable agent definitions. After
+specific owner approval, the archive and configuration were streamed into
+separate age-encrypted files on the owner's Mac. This is transfer and integrity
+evidence; the archive has not been restored. A fresh Saved preferences check
+also found Norwegian copy and an internal path on the English screen. PR #32
+now removes those from the page body; its import controls still need review.
