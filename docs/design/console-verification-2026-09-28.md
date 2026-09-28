@@ -157,8 +157,9 @@ The age-encrypted off-box copy decrypted to the same checksum without writing
 plaintext on the Mac. A separate scratch database restored the `lares_state`
 dump with matching counts for agent definitions, OAuth tokens, agent
 conversations and heartbeat rows, then was dropped. This proves dump replay,
-not a complete installation restore. The `/etc/lares` credential escrow is
-separate; per-agent secrets under `/srv/lares/secrets` are not in the archive,
+not a complete installation restore. The `/etc/lares` credential escrow was
+refreshed after Google setup and contains 21 entries; its decrypted checksum
+matches the source stream. Per-agent secrets under `/srv/lares/secrets` are not in the archive,
 and their regeneration on a new installation remains to be tested.
 
 A further live Connections check showed the fresh installation's Google card
