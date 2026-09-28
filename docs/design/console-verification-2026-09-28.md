@@ -77,3 +77,19 @@ server. Brief/heartbeat,
 backup/restore, a clean installer run and all configured tool states still need proof.
 The current evidence and remaining gates are in
 [`golden-path-runs.md`](../runbooks/golden-path-runs.md). LAR-50 remains open.
+
+### Later console check and one-server retest plan
+
+The owner approved a second exact-commit test image from `7c5bc76`. Its
+digest-pinned console replaced only the test console service. The persisted
+chat now labels both Google tool calls, Connections shows the one configured
+Google client/account, and Settings still shows Europe/Oslo and quiet hours.
+No provider call or migration was part of that update. The agent wizard opens,
+but this installation's one-agent capacity is occupied by `console-proof`.
+
+The owner proposed reusing the same server. LAR-50 can be tested sequentially:
+discard this first disposable installation, genuinely reprovision the OS, run
+the documented install, then create and verify an off-box encrypted export of
+the **new** installation before a second reprovision and restore rehearsal.
+The existing export script targets the older installation and needs repair
+before that later backup. Neither reprovision has happened yet.
