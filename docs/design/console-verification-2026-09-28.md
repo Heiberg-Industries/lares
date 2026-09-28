@@ -295,4 +295,35 @@ Preferences and Backup tests (64), console typecheck and production build pass
 locally. A live
 populated Preferences page, the new image's typography and density, and actual
 Backup/Signals failure rendering still need exact-image browser review. The
-installed server still runs `b29fe92`.
+installed server still ran `b29fe92` at the time of this source pass.
+
+### Exact-image console check after compact pass
+
+The owner approved a console-only test image from exact PR #32 source commit
+`f7f15f2268e733feb538c1cdb0b0b860707a0acb`. The manual
+[image workflow](https://github.com/Heiberg-Industries/lares/actions/runs/36439401423)
+passed typecheck and published linux/amd64 digest
+`ghcr.io/heiberg-industries/lares-engine-console@sha256:9c80d04adf86f6fc86840d4dbdbd1ea9c346d703ab769febe2b468b8737292ea`.
+The disposable server pulled it anonymously; its OCI revision matched the
+source commit. Only the console container was recreated. The prior compose
+file is retained as `/opt/lares/compose.yaml.pre-f7f15f2`.
+
+Authenticated Chrome reload showed **Preferences** in the sidebar and page
+heading, the current-image preview in the agent editor, and the singular
+one-agent capacity copy. The owner had already reported that the uploaded
+image persisted after reload; the new editor visibly renders a current image.
+This check did not compare the pixels against the original uploaded PNG.
+Connections now presents the one live Google account first and keeps 15
+catalogue-only entries in a disclosure. The blank Preferences page opens its
+add/import flow and has no entries with which to check populated filters.
+Deadlines shows the disposable open row, labels its reminder column clearly,
+and explains the Done/Dismiss effects. Permission activity has an explicit
+empty state. Market watch uses the shared controls and clearer refresh copy.
+Signals shows the new actionable unavailable state because its record service
+is still unavailable; no populated Signals behavior was verified. Settings
+retains Europe/Oslo and 21:00–07:00 quiet hours and links separately to backup
+status and the optional definition-backup guide. Backup still reports **Not
+protected**, with neither recurring check recorded as run. The desktop layout
+and control treatment on these pages were visually checked. Mobile is deferred
+by the owner. The remaining operational pages, actual font loading, and
+populated/error/write states still need a bounded installed-image review.

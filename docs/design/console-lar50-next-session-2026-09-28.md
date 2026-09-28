@@ -2,6 +2,17 @@
 
 ## Start here
 
+**28 September continuation:** PR #32 source `f7f15f2268e733feb538c1cdb0b0b860707a0acb`
+was published as a console-only test image and installed on the disposable
+server. Its digest is
+`sha256:9c80d04adf86f6fc86840d4dbdbd1ea9c346d703ab769febe2b468b8737292ea`;
+`releases/2026-09-28-console-test.4.json` records the unchanged base pins.
+The authenticated desktop check found the new Preferences label, agent image
+preview and compact page treatments. Signals remains unavailable because its
+record service cannot be reached; Backup still reports **Not protected**.
+See the newer exact-image section of the screen record and the latest run
+ledger entry below before using the historical `test.3` notes in this handoff.
+
 Work in `/private/tmp/lares-console-redesign-20260925` on
 `codex/console-redesign`. Recheck Git, [PR #32](https://github.com/Heiberg-Industries/lares/pull/32),
 [LAR-50](https://linear.app/heiberg-industries/issue/LAR-50/the-fresh-install-golden-path-qa-for-the-installation-bendik-does-not),
@@ -13,7 +24,7 @@ docs-only CI run had no failures and two checks still running when observed.
 GitHub PR #20 is the Chat draft; it is unrelated to Linear issue LAR-20
 (cost and activity).
 
-The current console *image* was built from exact PR #32 commit `b29fe92`, not
+At the original handoff, the console *image* was built from PR #32 commit `b29fe92`, not
 the later documentation commits. GHCR workflow
 [`36423360122`](https://github.com/Heiberg-Industries/lares/actions/runs/36423360122)
 published `ghcr.io/heiberg-industries/lares-engine-console@sha256:1aaeb010fc5b4dd994b970385577cfe75acdd71df9b3343d4349b2b4f3b50b7c`.
@@ -65,13 +76,14 @@ LAR-50 sign-off.
 ## Next work, in order
 
 1. **Finish exact-image console proof on the current restored installation.**
-   Recheck the image pin and spend. Run one bounded provider-backed web-chat
-   turn on `b29fe92`, reload during/after its reply, and verify the transcript.
-   Exercise the remaining safe UI states, including avatar persistence,
-   edit/retire/delete recovery, connection changes, and pending/failure states
-   where a disposable setup permits them. Approval replay and cross-agent
-   isolation need a planned second-agent arrangement because the current box
-   holds one agent. Do not infer them from source tests or an old-image turn.
+   Recheck the `test.4` image pin and spend. The bounded pending-reply reload
+   and the owner's avatar-retention check already passed on the earlier image;
+   the new editor preview and several compact desktop pages have been checked
+   on `f7f15f2`. Exercise remaining safe UI states, including populated
+   Preferences, edit/retire/delete recovery, connection changes, and
+   pending/failure states where a disposable setup permits them. Approval
+   replay and cross-agent isolation need a planned second-agent arrangement
+   because the current box holds one agent.
 2. **Decide console design readiness separately.** Compare the installed image
    to the September 25 mockups and screenshot feedback, preserving the newer
    Settings layout. Keep PR #32 draft until the owner has reviewed the actual
@@ -94,7 +106,7 @@ LAR-50 sign-off.
    actual Hetzner and local teardown only after the owner approves final
    destructive cleanup. Keep LAR-50 In Progress until its acceptance is met.
 
-The installed `test.3` image is a test pin, not a public release. Local CI,
+The installed `test.4` image is a test pin, not a public release. Local CI,
 source tests and available empty states do not prove the remaining live states.
 
 ## Subsequent owner review
@@ -102,8 +114,9 @@ source tests and available empty states do not prove the remaining live states.
 The owner reports the dirty-editor close check passed and an uploaded avatar
 remained after reload. Desktop screenshots now cover Connections, Preferences,
 Deadlines, agent detail/edit, Activity, Signals, Settings and Market watch.
-The installed image is still `b29fe92`; PR #32 source changes made after that
-image need a fresh exact-image review. Mobile review is intentionally later.
+The screenshot set in this section shows `b29fe92`; the later `f7f15f2`
+image has now received a partial exact-image desktop review. Mobile review is
+intentionally later.
 On the blank Preferences screen, filtering cannot be proved without a
 disposable entry. The console design-system and density changes are recorded
 in `console-verification-2026-09-28.md`; they do not alter the LAR-50 backup,
