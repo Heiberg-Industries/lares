@@ -112,6 +112,7 @@ describe("what the installer asks", () => {
     runWithStdin(["--yes"], answers);
     const env = readFileSync(installEnv, "utf8");
     expect(env).toContain("CONSOLE_ALLOWED_EMAILS=owner@example.invalid");
+    expect(env).toContain("LARES_OWNER_ID=owner");
     expect(env).toContain("CONSOLE_OAUTH_REDIRECT=https://lares.example.invalid/api/auth/callback");
     expect(env).toContain("OWNER_HOME_TZ=");
     expect(env).not.toContain("sk-disposable-fixture-only");

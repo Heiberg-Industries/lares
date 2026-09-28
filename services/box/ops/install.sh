@@ -936,6 +936,14 @@ wizard_already_done() {
 # later run would mistake for a finished one.
 write_installation_env() {
   local tmp="$INSTALL_ENV.partial"
+  local owner_id
+  if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+    [ -n "$OWNER_ID_FLAG" ] || die "--owner-id was given as an empty id. Nothing else was changed." "$EX_USAGE"
+    owner_id="$OWNER_ID_FLAG"
+  else
+    owner_id=$(derive_owner_id "$LARES_OWNER_EMAIL")
+    [ -n "$owner_id" ] || die "could not derive an owner id from '$LARES_OWNER_EMAIL'; use --owner-id. Nothing else was changed." "$EX_USAGE"
+  fi
   do_or_say mkdir -p "$(dirname "$INSTALL_ENV")"
   rm -f "$tmp"
   {
@@ -945,6 +953,7 @@ write_installation_env() {
     env_line LARES_DOMAIN "$LARES_DOMAIN"
     env_line LARES_OWNER_EMAIL "$LARES_OWNER_EMAIL"
     env_line LARES_OWNER_NAME "$LARES_OWNER_NAME"
+    env_line LARES_OWNER_ID "$owner_id"
     env_line OWNER_HOME_TZ "$OWNER_HOME_TZ"
     printf '%s\n' "# CONSOLE_ALLOWED_EMAILS is comma-separated; add more addresses by editing"
     printf '%s\n' "# this file and rerunning the installer — Lares never assumes there is only"
@@ -1097,12 +1106,22 @@ run_stack() {
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
-  local domain allowed_emails model_alias provider_model tmp tries=0 existing
+  local domain allowed_emails model_alias provider_model owner_id owner_home_tz tmp tries=0 existing
 
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the stack cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
   allowed_emails=$(read_setting CONSOLE_ALLOWED_EMAILS "$INSTALL_ENV")
   [ -n "$allowed_emails" ] || die "the console allowed e-mails are not written down in $INSTALL_ENV, so access cannot be restricted. Nothing has been brought up." "$EX_REFUSED"
+  owner_id=$(read_setting LARES_OWNER_ID "$INSTALL_ENV")
+  if [ -z "$owner_id" ]; then
+    if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+      owner_id="$OWNER_ID_FLAG"
+    else
+      owner_id=$(derive_owner_id "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")")
+    fi
+  fi
+  [ -n "$owner_id" ] || die "the owner's id cannot be resolved, so the console cannot be configured. Nothing has been brought up." "$EX_REFUSED"
+  owner_home_tz=$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")
 
   # F7a-2: the two values the gateway's own config is rendered from (lib/gateway-config.ts),
   # read back exactly as LARES_DOMAIN is above — never re-derived, never defaulted here.
@@ -1121,7 +1140,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1429,7 +1448,10 @@ run_first_owner() {
   owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
   owner_name=$(read_setting LARES_OWNER_NAME "$INSTALL_ENV")
 
-  if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+  owner_id=$(read_setting LARES_OWNER_ID "$INSTALL_ENV")
+  if [ -n "$owner_id" ]; then
+    : # The wizard recorded the exact identity before the stack was rendered.
+  elif [ "$OWNER_ID_GIVEN" -eq 1 ]; then
     if [ -z "$OWNER_ID_FLAG" ]; then
       die "--owner-id was given as an empty id. Name one, or leave the flag out to have it derived from the e-mail address. Nothing else was changed." "$EX_USAGE"
     fi

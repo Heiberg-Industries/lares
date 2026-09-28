@@ -36,6 +36,10 @@ export interface StackComposeOptions {
   readonly domain: string;
   /** Installation-owned comma-separated console allow-list. */
   readonly consoleAllowedEmails: string;
+  /** Canonical owner identity used by the console's owner-scoped tools. */
+  readonly ownerId: string;
+  /** Owner clock selected during installation. */
+  readonly ownerHomeTz: string;
   /** The only purpose alias the on-box gateway config actually defines. */
   readonly modelAlias: string;
   readonly pgUser: string;
@@ -88,6 +92,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       environment: {
         LARES_CONFIGURED_MODEL_ALIAS: opts.modelAlias,
         CONSOLE_ALLOWED_EMAILS: opts.consoleAllowedEmails,
+        AGENT_OWNER_USER_ID: opts.ownerId,
+        OWNER_HOME_TZ: opts.ownerHomeTz,
         CONSOLE_OAUTH_REDIRECT: `https://${opts.domain}/api/auth/callback`,
         CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret",
         EVE_ROUTE_PASSWORD_FILE: "/run/secrets/eve-route-password",

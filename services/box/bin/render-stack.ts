@@ -45,6 +45,8 @@ const ARGUMENTS = [
   "gatewayStartScript",
   "consoleAllowedEmails",
   "socketDir",
+  "ownerId",
+  "ownerHomeTz",
 ] as const;
 
 /** The gateway's start script, committed once at the repository root and installed verbatim —
@@ -109,6 +111,8 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     subnet: at("subnet"),
     domain: at("domain"),
     consoleAllowedEmails: at("consoleAllowedEmails"),
+    ownerId: at("ownerId"),
+    ownerHomeTz: at("ownerHomeTz"),
     modelAlias: at("alias"),
     pgUser: at("pgUser"),
     pgDatabase: at("pgDatabase"),

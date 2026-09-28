@@ -212,6 +212,7 @@ describe("the stack the installer brings up", () => {
   it("installs the committed gateway start script where the compose entrypoint executes it", () => {
     expect(run(["--release", releaseFile]).code).toBe(0);
     const doc = parse(readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8")) as any;
+    expect(doc.services.console.environment.AGENT_OWNER_USER_ID).toBe("owner");
     const gateway = doc.services["lares-gateway"];
     const mount = (gateway.volumes as string[]).find((v) => v.startsWith(`${join(prefix, "etc", "lares", "gateway-start.sh")}:`));
     expect(mount, "the compose file mounts no start script into the gateway").toBeTruthy();
