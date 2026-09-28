@@ -1,5 +1,5 @@
 import {
-  AGENTS, ENGINE, agentLabel, doorLabel, effectiveDnd, effectiveQuietWindow, effectiveSettings,
+  ENGINE, agentLabel, doorLabel, effectiveDnd, effectiveQuietWindow, effectiveSettings,
   foldTodayByDoor, formatInOwnerTz, getProactivityView, reasonLabel, rowFor,
 } from "../../lib/proactivity";
 import type { TodayRowDTO } from "../../lib/proactivity";
@@ -46,7 +46,7 @@ export default async function ProactivityPage() {
   const globalRow = rowFor(settings, "*", "*");
   const dndScopes: DndScope[] = [
     { agent: "*", label: "Every agent", dnd: globalRow?.dnd === true, effective: globalRow?.dnd === true },
-    ...AGENTS.map((a) => {
+    ...view.agents.map((a) => {
       const own = rowFor(settings, a, "*")?.dnd === true;
       return { agent: a, label: agentLabel(a), dnd: own, effective: effectiveDnd(globalRow?.dnd === true, own) };
     }),
@@ -97,8 +97,7 @@ export default async function ProactivityPage() {
       <p style={lede}>
         Owner clock: <span className="mono">{clock.tz}</span> via <span className="mono">{clock.source}</span> ({clock.detail}).
         Home timezone <span className="mono">{view.homeTz}</span> (set by <span className="mono">OWNER_HOME_TZ</span> on the box).
-        A trip in Marcel&apos;s trip store outranks both — that source is visible on the box, not from here, because the console
-        does not mount it.
+        {view.agents.includes("marcel") && " A trip in Marcel's trip store can outrank both; that source is visible on the box, not here."}
       </p>
       <BriefLanguageControl language={briefLanguage.language} unavailable={briefLanguage.unavailable} />
       <p style={lede}>

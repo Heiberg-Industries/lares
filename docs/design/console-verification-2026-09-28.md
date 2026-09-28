@@ -167,3 +167,13 @@ claiming it was “Used by” fleet components such as `email-watcher` and
 PR #32 now shows actual agent grants on the card and moves built-in declarations
 into connection details with an explicit caveat. The 27 focused connection
 tests and console typecheck pass; this copy change is not in the deployed image.
+
+Settings links load Proactivity, Backup, Email writing style and Signal routes;
+Connections links to Meeting follow-ups. On this blank installation Backup
+correctly says **Not protected** and Signal routes says the spine is unavailable.
+Proactivity incorrectly offered do-not-disturb controls for the old Saga,
+Marcel and Calliope fleet, and Meeting follow-ups told the owner to ask Saga.
+PR #32 now reads the valid agent list for proactivity controls and writes, and
+uses generic meeting copy. Focused proactivity tests and typecheck pass. Email
+writing style still exposes legacy learn-key choices and has no mailbox cards
+until a learn run; that workflow has not been verified on this test install.

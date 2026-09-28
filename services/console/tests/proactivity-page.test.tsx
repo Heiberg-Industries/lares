@@ -65,6 +65,7 @@ function row(
 function view(settings: SettingsRowDTO[]): ProactivityView {
   return {
     owner: "bendik",
+    agents: ["saga", "marcel", "calliope"],
     clock: { tz: "America/New_York", source: "slack-profile", detail: "Slack profile, observed 2h ago", tripVisible: false },
     homeTz: "Europe/Oslo",
     settings,
@@ -86,8 +87,8 @@ function view(settings: SettingsRowDTO[]): ProactivityView {
   };
 }
 
-async function render(settings: SettingsRowDTO[]): Promise<string> {
-  getProactivityView.mockResolvedValue(view(settings));
+async function render(settings: SettingsRowDTO[], agents?: string[]): Promise<string> {
+  getProactivityView.mockResolvedValue({ ...view(settings), ...(agents ? { agents } : {}) });
   const { default: ProactivityPage } = await import("../app/proactivity/page");
   return renderToStaticMarkup(await ProactivityPage());
 }
@@ -102,6 +103,13 @@ beforeEach(() => {
 });
 
 describe("/proactivity", () => {
+  it("does not offer controls for agents absent from a fresh installation", async () => {
+    const html = await render([], ["console-proof"]);
+    expect(html).toContain("console-proof");
+    expect(html).not.toContain("marcel —");
+    expect(html).not.toContain("Marcel&#x27;s trip store");
+  });
+
   it("renders the four sections, the owner clock, and the reasons behind today's numbers", async () => {
     const html = await render([
       row({

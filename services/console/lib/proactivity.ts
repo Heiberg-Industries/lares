@@ -52,9 +52,13 @@ export const ENGINE = {
   perOwnerPerDay: 30,
 } as const;
 
-/** The agents that can hold a DND switch of their own (plan Ruling 6: global + per agent). */
-export const AGENTS = ["saga", "marcel", "calliope"] as const;
-export type AgentScope = "*" | (typeof AGENTS)[number];
+/** Agent scopes come from this installation's valid definitions, never a fleet fixture. */
+export async function readProactiveAgents(): Promise<string[]> {
+  const { rows } = await pool.query<{ name: string }>(
+    "SELECT name FROM agent_definitions WHERE status='valid' ORDER BY name",
+  );
+  return rows.map((row) => row.name);
+}
 
 /** The same regex as `sql/035_proactivity.sql`'s CHECK and the kit's read-time validation. */
 export const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/u;
@@ -423,6 +427,7 @@ export interface InitiationRowDTO {
 
 export interface ProactivityView {
   owner: string;
+  agents: string[];
   clock: ConsoleOwnerClock;
   homeTz: string;
   /** Every stored settings row for this owner (any scope). */
@@ -562,14 +567,15 @@ export async function getProactivityView(now: Date = new Date()): Promise<Proact
   const clock = resolveConsoleOwnerClock(now, { homeTz: home, ...(signal ? { slackProfile: signal } : {}) });
   const todayDay = ownerDayIn(now, clock.tz);
 
-  const [settings, doors, today, recent] = await Promise.all([
+  const [agents, settings, doors, today, recent] = await Promise.all([
+    attempt("the agent list", [] as string[], errors, readProactiveAgents),
     attempt("the proactivity settings", [] as SettingsRowDTO[], errors, () => readSettings(owner)),
     attempt("the door list", ["*"], errors, () => readDoors(owner)),
     attempt("today's ledger", [] as TodayRowDTO[], errors, () => readToday(owner, todayDay)),
     attempt("the recent initiations", [] as InitiationRowDTO[], errors, () => readRecent(owner, 50)),
   ]);
 
-  return { owner, clock, homeTz: home, settings, doors, today, todayDay, recent, errors };
+  return { owner, agents, clock, homeTz: home, settings, doors, today, todayDay, recent, errors };
 }
 
 /**
