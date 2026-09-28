@@ -3,18 +3,16 @@ import { PageHeader } from "@lares/ui/patterns";
 
 export const dynamic = "force-dynamic";
 
-const lede = { color: "var(--mist)", fontSize: 12, marginTop: 4 } as const;
-
 const STATE_LABEL: Record<BackupState, string> = {
   protected: "Protected",
   unproven: "Unproven",
   "not-protected": "Not protected",
 };
 
-const STATE_COLOR: Record<BackupState, string> = {
-  protected: "var(--ok)",
-  unproven: "var(--warn)",
-  "not-protected": "var(--bad)",
+const STATE_CLASS: Record<BackupState, string> = {
+  protected: "lares-status-success",
+  unproven: "lares-status-warning",
+  "not-protected": "lares-status-error",
 };
 
 const STATE_SUMMARY: Record<BackupState, string> = {
@@ -34,12 +32,12 @@ function CheckRow({ label, row, neverPassLabel }: { label: string; row: BackupCh
   return (
     <tr>
       <td className="mono">{label}</td>
-      <td className="mono" style={{ color: row.ok === true ? "var(--ok)" : row.ok === false ? "var(--bad)" : "var(--mist)" }}>
+      <td className={`mono ${row.ok === true ? "lares-status-success" : row.ok === false ? "lares-status-error" : "lares-status-muted"}`}>
         {row.ok === true ? "ok" : row.ok === false ? "failed" : "never run"}
       </td>
       <td className="mono">{when(row.checkedAt, "—")}</td>
       <td className="mono">{when(row.lastPassAt, neverPassLabel)}</td>
-      <td style={{ color: "var(--mist)" }}>{row.target ?? "—"}</td>
+      <td className="lares-status-muted">{row.target ?? "—"}</td>
     </tr>
   );
 }
@@ -50,31 +48,31 @@ export default async function BackupPage() {
   return (
     <div className="lares-page lares-operational">
       <PageHeader title="Backup" description="Recorded backup and restore evidence for this installation." />
-      <p style={lede}>
+      <p className="lares-muted lares-operational-intro">
         Whether this installation&apos;s data is protected: when the nightly backup was last
         verified, when a restore was last actually rehearsed, and where backups go. This page only
         reads that record — it runs no backup and no restore itself.
       </p>
 
       {status.unavailable ? (
-        <p className="mono" style={{ marginTop: 16, color: "var(--bad)" }}>
-          Backup status couldn&apos;t be read. If this installation has not applied sql/049_backup_status.sql yet, apply it on the server and reload this page; otherwise the database is not answering.
+        <p className="lares-operational-error" role="alert">
+          Backup status couldn&apos;t be read. Check the database and backup-status setup, then reload this page. This does not confirm whether a backup exists.
         </p>
       ) : (
         <>
-          <h2 className="mono" style={{ fontSize: 14, marginTop: 24, color: STATE_COLOR[status.state] }}>
+          <h2 className={STATE_CLASS[status.state]}>
             {STATE_LABEL[status.state]}
           </h2>
-          <p style={lede}>{STATE_SUMMARY[status.state]}</p>
+          <p className="lares-muted lares-operational-intro">{STATE_SUMMARY[status.state]}</p>
 
           {status.reasons.length > 0 && (
-            <ul style={{ marginTop: 8, color: "var(--mist)", fontSize: 12 }}>
+            <ul className="lares-muted lares-operational-note">
               {status.reasons.map((reason, i) => <li key={i}>{reason}</li>)}
             </ul>
           )}
 
-          <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>Checks</h2>
-          <div className="lares-table-scroll"><table className="card" style={{ marginTop: 8 }}>
+          <h2>Checks</h2>
+          <div className="lares-table-scroll"><table className="card lares-operational-table">
             <thead>
               <tr><th>Check</th><th>Status</th><th>Last checked</th><th>Last pass</th><th>Target</th></tr>
             </thead>

@@ -17,11 +17,11 @@ export default async function MeetingsPage() {
       </p>
 
       {series.length === 0 ? (
-        <p style={{ color: "var(--mist)", fontSize: 13, marginTop: 24 }}>
+        <p className="lares-operational-empty">
           No meeting series are on auto-send. Ask your agent to switch one on.
         </p>
       ) : (
-        <div className="lares-table-scroll"><table className="card" style={{ marginTop: 16 }}>
+        <div className="lares-table-scroll"><table className="card lares-operational-table">
           <thead><tr><th>Series</th><th>Turned on by</th><th>When</th><th></th></tr></thead>
           <tbody>
             {series.map((s) => (

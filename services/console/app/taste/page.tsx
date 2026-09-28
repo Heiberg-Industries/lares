@@ -22,7 +22,6 @@ import {
 import { PinAudit } from "../../components/PinAudit";
 import { DerivePlaceNames } from "../../components/DerivePlaceNames";
 import { TasteEntryRow } from "../../components/TasteEntryRow";
-import { badgeStyle } from "../../components/FreshBadge";
 
 export const dynamic = "force-dynamic";
 
@@ -175,8 +174,8 @@ export default async function TastePage({
         {filtered
           ? `${matching} of ${total} entries`
           : `${total} entries`}
-        . <span style={badgeStyle}>new</span> or{" "}
-        <span style={badgeStyle}>changed</span> means touched by an import in
+        . <span className="lares-fresh-badge">new</span> or{" "}
+        <span className="lares-fresh-badge">changed</span> means touched by an import in
         the last {FRESH_DAYS} days.
       </p>
 
@@ -215,7 +214,7 @@ export default async function TastePage({
                 : "Nothing matches these filters"}
             </p>
           ) : (
-            <table className="card" style={{ marginTop: 6 }}>
+            <table className="card lares-operational-table">
               <thead>
                 <tr>
                   <th>Name</th>

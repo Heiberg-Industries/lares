@@ -278,3 +278,21 @@ detail/edit, and Settings. It should check actual Instrument Sans/DM Mono font
 loading, labels, alignment, density and control states. The existing public
 integrations document mixes old fleet assumptions with fresh-install notes, so
 the console deliberately does not link to it until a current owner guide exists.
+
+### Final source-only operational-page pass
+
+Backup, Meeting follow-ups, Proactivity, Email writing style and all three
+Signals pages now use shared token-backed spacing, table, navigation, status
+and empty/error classes instead of their page-level inline styling. The
+Preferences freshness badge uses the same shared class in its legend and rows.
+Signals no longer relies on colored emoji to communicate row state. Backup and
+Signals failures give an owner action without exposing a SQL filename or an
+internal service nickname. No data flow or provider operation changed.
+
+Existing populated Preferences fixtures cover combined filters, empty matches,
+facet options, freshness, sorting and unreadable entries. The focused
+Preferences and Backup tests (59), console typecheck and production build pass
+locally. A live
+populated Preferences page, the new image's typography and density, and actual
+Backup/Signals failure rendering still need exact-image browser review. The
+installed server still runs `b29fe92`.

@@ -7,18 +7,6 @@
 // Type-only, so the bundler never follows this into `taste-browse`'s filesystem imports.
 import type { Badge } from "../lib/taste-browse";
 
-export const badgeStyle = {
-  fontFamily: "var(--font-mono)",
-  fontSize: 10,
-  letterSpacing: ".04em",
-  textTransform: "uppercase",
-  padding: "1px 5px",
-  borderRadius: 3,
-  border: "1px solid var(--signal)",
-  color: "var(--signal)",
-  whiteSpace: "nowrap",
-} as const;
-
 export function FreshBadge({ badge }: { badge: Badge }) {
-  return <span style={badgeStyle} title={badge.title}>{badge.text}</span>;
+  return <span className="lares-fresh-badge" title={badge.title}>{badge.text}</span>;
 }
