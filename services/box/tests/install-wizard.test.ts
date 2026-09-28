@@ -76,7 +76,7 @@ beforeEach(() => {
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "pnpm", "openssl", "lares-doctor"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "lares-doctor"]) stub(name);
   // CREATE DATABASE is sent on stdin; consume it before exiting so pipefail
   // does not race the fake Docker process under CI load.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');

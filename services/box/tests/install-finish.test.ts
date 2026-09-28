@@ -73,7 +73,7 @@ beforeEach(() => {
 
   for (const name of [
     "docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl",
-    "pnpm", "openssl", "lares-doctor", "sleep",
+    "node", "pnpm", "openssl", "lares-doctor", "sleep",
   ]) stub(name);
   stub("id", "echo 0");
   stub("uname", "echo Linux");

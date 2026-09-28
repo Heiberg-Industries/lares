@@ -60,7 +60,12 @@ applied. Google sign-in, one restricted first-agent creation and a provider-back
 web-chat reply with transcript reload now have live proof. Agent creation reported
 an unknown-outcome timeout although Keeper completed it. Owner-scoped tools first
 failed because the generated console stack omitted the owner's identity; PR #32
-now includes the renderer fix and the test stack was repaired. Calendar/Gmail,
-brief/heartbeat, backup/restore and all configured tool states still need proof.
+now includes the renderer fix and the test stack was repaired. The owner then
+connected the Google mailbox and approved access for the disposable agent. A
+missing Keeper Google configuration and incorrect credential file modes needed
+manual repair; the agent's Calendar and Gmail read request then returned counts
+and survived reload. The deployed chat still renders two ordinary tool parts as
+generic placeholders, now fixed in PR #32 source. Brief/heartbeat,
+backup/restore, a clean installer run and all configured tool states still need proof.
 The current evidence and remaining gates are in
 [`golden-path-runs.md`](../runbooks/golden-path-runs.md). LAR-50 remains open.

@@ -254,6 +254,15 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState) {
       />
     );
   }
+  if (part.type === "dynamic-tool") {
+    const outcome = part.state === "output-error" ? " failed"
+      : part.state === "output-available" ? " completed" : " is running…";
+    return (
+      <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 12, margin: "4px 0" }}>
+        {part.toolName}{outcome}
+      </p>
+    );
+  }
   return (
     <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 13, margin: "4px 0" }}>
       {UNSUPPORTED_PART}

@@ -114,7 +114,7 @@ beforeEach(() => {
   // that is expected never to be called at all (the entropy comes from /dev/urandom).
   // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "pnpm", "openssl", "getent", "lares-doctor"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "getent", "lares-doctor"]) stub(name);
   // The only `getent` the installer may run is the DNS lookup for the domain (W8C-s4); both
   // seams agree on one address so that check passes. It must never look up a GROUP.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; else exit 2; fi');

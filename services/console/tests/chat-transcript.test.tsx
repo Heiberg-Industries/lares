@@ -54,6 +54,21 @@ describe("the chat transcript", () => {
     expect(html).not.toContain("something this page cannot show yet");
   });
 
+  it("names ordinary tool calls without exposing tool results or a generic placeholder", () => {
+    const assistant = { id: "tools", role: "assistant", parts: [
+      { type: "dynamic-tool", toolName: "calendar_list_events", state: "output-available", output: { title: "Private event" } },
+      { type: "dynamic-tool", toolName: "gmail_search", state: "output-error", output: { message: "Private error" } },
+      { type: "text", text: "Both checked." },
+    ] } as unknown as EveMessage;
+    const html = renderToStaticMarkup(<ChatTranscript status="ready" messages={[assistant]} />);
+    expect(html).toContain("calendar_list_events completed");
+    expect(html).toContain("gmail_search failed");
+    expect(html).toContain("Both checked.");
+    expect(html).not.toContain("Private event");
+    expect(html).not.toContain("Private error");
+    expect(html).not.toContain("something this page cannot show yet");
+  });
+
   it("shows the failure instead of an empty reply", () => {
     expect(renderToStaticMarkup(<ChatTranscript status="error" messages={[]} error="the agent did not answer" />))
       .toContain("the agent did not answer");
