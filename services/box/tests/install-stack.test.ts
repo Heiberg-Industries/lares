@@ -176,6 +176,8 @@ describe("the stack the installer brings up", () => {
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.image).toBe(D("console"));
     expect(doc.services.console.volumes).toContain(`${join(prefix, "run", "lares")}:/run/lares`);
+    expect(doc.services.console.volumes).toContain(`${join(prefix, "srv", "taste")}:/srv/taste`);
+    expect(calls()).toContain(`chown 10001:10001 ${join(prefix, "srv", "taste")}`);
   });
 
   it("writes the release's own stack file where run_database looks for it", () => {

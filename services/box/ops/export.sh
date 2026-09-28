@@ -40,7 +40,7 @@ fi
 EXPORT_VAULT_PATHS="${EXPORT_VAULT_PATHS-}"
 # The current installer keeps credential files in /srv/lares/secrets. Export only
 # portable definition directories by default; database dumps are handled below.
-EXPORT_DATA_PATHS="${EXPORT_DATA_PATHS-/srv/lares/agents /srv/lares/retired}"
+EXPORT_DATA_PATHS="${EXPORT_DATA_PATHS-/srv/lares/agents /srv/lares/retired /srv/taste}"
 EXPORT_COMPOSE_FILE="${EXPORT_COMPOSE_FILE:-/opt/lares/compose.yaml}"
 EXPORT_DIR="${EXPORT_DIR:-/var/backups/export}"
 # Never /tmp — restore-drill.sh's own comment on DRILL_SCRATCH_ROOT applies exactly as

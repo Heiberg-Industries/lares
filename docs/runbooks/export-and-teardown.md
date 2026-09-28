@@ -26,7 +26,7 @@ Run everything as `root`, on the server, over a session that will not drop halfw
 ### 2a. Set the two path lists — the defaults are narrower than your backup
 
 For the current `/opt/lares` installation, the export defaults to the portable
-`/srv/lares/agents` and `/srv/lares/retired` directories and has no default
+`/srv/lares/agents`, `/srv/lares/retired`, and `/srv/taste` directories and has no default
 vault bundles. It dumps every non-template database through
 `/opt/lares/compose.yaml`. **Do not add `/srv/lares` as a whole:** that tree
 contains `/srv/lares/secrets`, which holds agent keys. The script refuses a
@@ -80,7 +80,7 @@ Three things to know while you build those lists:
 | Setting | What it does | Default |
 | --- | --- | --- |
 | `EXPORT_VAULT_PATHS` | the bare git repositories to bundle | empty on a new installation |
-| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares/agents /srv/lares/retired` |
+| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares/agents /srv/lares/retired /srv/taste` |
 | `EXPORT_COMPOSE_FILE` | Compose file for the database container | `/opt/lares/compose.yaml` |
 | `EXPORT_DIR` | where the finished archive is written | `/var/backups/export` |
 | `EXPORT_WORKDIR_ROOT` | scratch space while it works; never `/tmp`, which can be a small RAM disk | `/var/tmp` |

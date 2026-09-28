@@ -327,3 +327,13 @@ protected**, with neither recurring check recorded as run. The desktop layout
 and control treatment on these pages were visually checked. Mobile is deferred
 by the owner. The remaining operational pages, actual font loading, and
 populated/error/write states still need a bounded installed-image review.
+
+### Preferences save QA defect
+
+The owner's first populated Preferences attempt failed on Save with React error
+441. The server log traced this to a missing writable `/srv/taste` mount, not
+to the entered place. PR #32 now provisions and mounts that store and includes
+it in default export paths. The disposable server received a backed-up,
+console-only Compose repair; a write probe passed. The original Save error and
+the root cause are recorded in the [LAR-50 run ledger](../runbooks/golden-path-runs.md).
+Browser Save, reload, filter, and delete still require the owner's retest.

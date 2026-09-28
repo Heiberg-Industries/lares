@@ -153,3 +153,16 @@ Audit those and other remaining operational components for shared tokens and
 primitives before the next image. Do not claim a font-loading defect from the
 screenshots alone; inspect computed fonts or loaded assets when that check is
 available. Mobile remains deferred by the owner.
+
+## Preferences save defect found during the owner's QA
+
+The owner followed the disposable `Console QA Test Place` flow above. Save
+displayed React error 441. The test server's console log identified the actual
+failure: `EACCES` while creating `/srv/taste/places`. The fresh installer had
+neither provisioned `/srv/taste` nor mounted it into the console. The test
+server now has a backed-up Compose file, a 10001-owned `/srv/taste` directory
+and a writable console bind mount. Only the console container was recreated;
+its image remains `test.4`. A container write probe passed. PR #32 has the
+corresponding installer/renderer and export-default correction. A clean
+installation and real browser Save/reload/delete are still unproved. Retest
+the same QA entry before planning any rebuild.

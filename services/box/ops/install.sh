@@ -1127,6 +1127,7 @@ run_stack() {
   local gateway_start="$PREFIX/etc/lares/gateway-start.sh"
   local caddy_data="$PREFIX/var/lib/lares/caddy"
   local db_data="$PREFIX/var/lib/lares/postgres"
+  local taste_dir="$PREFIX/srv/taste"
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
@@ -1155,6 +1156,10 @@ run_stack() {
   [ -n "$provider_model" ] || die "the model is not written down in $INSTALL_ENV, so the gateway's configuration cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
 
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
+  [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
+  do_or_say mkdir -p "$taste_dir"
+  do_or_say chown 10001:10001 "$taste_dir"
+  do_or_say chmod 0750 "$taste_dir"
 
   # Rendered to a NEIGHBOURING name and moved into place, the same discipline every other file
   # this script writes gets: an interrupted run leaves a .partial the next run overwrites,
@@ -1164,7 +1169,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
