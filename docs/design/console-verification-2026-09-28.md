@@ -134,5 +134,7 @@ A tightly scoped schedule probe then produced a real `morning-brief/tick`
 heartbeat on the rebuilt installation. The schedule and global runtime switch
 were returned to off. No Telegram door was configured, so no brief was
 delivered. Google data-client configuration now appears in Connections, and
-the account flow reached Google's Gmail/Drive/Calendar scope screen. Consent
-and the agent-level read checks remain pending.
+the owner completed Google's Gmail/Drive/Calendar consent. Connections now
+shows one live mailbox with five scopes. The agent-specific connection start
+was blocked by the automated Chrome tab, so its owner-browser handoff and
+agent-level read checks remain pending.
