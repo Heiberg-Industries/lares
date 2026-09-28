@@ -47,3 +47,15 @@ This window creates paid infrastructure and makes real provider calls. Its exact
 candidate, account, cost ceiling, test hostnames and teardown owner must be
 agreed before it starts. CI, the local fixture, and the September 25 partial
 run do not replace it.
+
+## Live checkpoint — 28 September
+
+The owner approved a USD 5 API ceiling, provisioned a fresh Ubuntu server at
+`89.167.43.7`, and pointed `lares.heiberg.co` to it. This supersedes the proposed
+temporary-hostname step above for this test. One exact console image was
+published from `6889c0e` and anonymously pulled by that server. The fresh
+installer completed after a missing host Node/pnpm/toolchain prerequisite was
+repaired; its real model check succeeded and box migration `089_agent_avatars.sql`
+applied. The current evidence and remaining gates are in
+[`golden-path-runs.md`](../runbooks/golden-path-runs.md). No authenticated screen,
+first-agent or chat proof has been recorded yet. LAR-50 remains open.
