@@ -73,7 +73,7 @@ html.dark {
   margin-inline: 0;
 }
 .lares-page-header h1 {
-  font: 500 24px/1.25 var(--font-sans);
+  font: var(--text-h2);
 }
 .lares-page-header {
   margin-bottom: var(--space-5);
@@ -85,11 +85,11 @@ th {
   font: var(--text-body-sm);
   text-transform: none;
   letter-spacing: normal;
-  background: light-dark(#faf8f5, #202a29);
+  background: var(--muted);
 }
 .lares-surface,
 .card {
-  border-color: light-dark(#e8e5df, var(--border));
+  border-color: var(--border);
 }
 .lares-settings {
   max-width: 880px;
@@ -120,7 +120,7 @@ th {
 .lares-event-table {
   overflow-x: auto;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--lares-surface-radius);
 }
 .lares-event-table th,
 .lares-event-table td {
