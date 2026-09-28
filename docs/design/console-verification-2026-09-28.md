@@ -129,3 +129,10 @@ also found Norwegian copy and an internal path on the English screen. PR #32
 now removes those from the page body and translates the import, list maintenance,
 and pin audit controls. Related typecheck and 45 taste-store/browse tests pass;
 the new copy has not been deployed to the test image.
+
+A tightly scoped schedule probe then produced a real `morning-brief/tick`
+heartbeat on the rebuilt installation. The schedule and global runtime switch
+were returned to off. No Telegram door was configured, so no brief was
+delivered. Google data-client configuration now appears in Connections, and
+the account flow reached Google's Gmail/Drive/Calendar scope screen. Consent
+and the agent-level read checks remain pending.
