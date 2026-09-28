@@ -25,6 +25,19 @@ Run everything as `root`, on the server, over a session that will not drop halfw
 
 ### 2a. Set the two path lists — the defaults are narrower than your backup
 
+For the current `/opt/lares` installation, the export defaults to the portable
+`/srv/lares/agents` and `/srv/lares/retired` directories and has no default
+vault bundles. It dumps every non-template database through
+`/opt/lares/compose.yaml`. **Do not add `/srv/lares` as a whole:** that tree
+contains `/srv/lares/secrets`, which holds agent keys. The script refuses a
+nested `secrets` directory and common secret filenames. This export does not
+include the token encryption key in `/etc/lares/secrets`; recovery needs that
+key carried separately through a secure owner-controlled channel.
+
+The older `/opt/agent-box` procedure below applies only when those legacy
+paths really exist. Set the path lists and `EXPORT_COMPOSE_FILE` explicitly
+for such an installation; do not assume its defaults describe a new box.
+
 `export.sh` takes what you tell it to take. Its built-in defaults are deliberately small, and
 they are **not** the same list your nightly backup uses. Anything you do not name is left
 behind, silently as far as the archive is concerned (the script says so in its last lines, but
@@ -66,8 +79,9 @@ Three things to know while you build those lists:
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `EXPORT_VAULT_PATHS` | the bare git repositories to bundle | `/srv/brain.git /srv/atlas.git` |
-| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares /srv/taste` |
+| `EXPORT_VAULT_PATHS` | the bare git repositories to bundle | empty on a new installation |
+| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares/agents /srv/lares/retired` |
+| `EXPORT_COMPOSE_FILE` | Compose file for the database container | `/opt/lares/compose.yaml` |
 | `EXPORT_DIR` | where the finished archive is written | `/var/backups/export` |
 | `EXPORT_WORKDIR_ROOT` | scratch space while it works; never `/tmp`, which can be a small RAM disk | `/var/tmp` |
 | `LARES_ENGINE_VERSION` | recorded in the manifest, so the archive says which engine wrote it | `unknown` |
@@ -93,6 +107,13 @@ df -Pk /var/backups                           # room for the finished archive
 `df -Pk` (not `-h`) because its columns are the same on the server and on your laptop.
 
 ## 3. Run the export
+
+On a current installation, run the `services/box/ops/export.sh` file from the
+exact tested source checkout as root. The first LAR-50 rehearsal records the
+checkout commit, validates the archive manifest and database dump list, and
+keeps the archive on the test server until its encrypted off-box transfer is
+prepared. The legacy command below is only for an older `/opt/agent-box`
+installation.
 
 ```bash
 /opt/agent-box/export.sh

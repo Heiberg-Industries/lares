@@ -234,9 +234,20 @@ it("refuses a nested *.age file found deeper inside a data path, without exporti
   expect(readdirSync(workdirRoot)).toEqual([]);
 });
 
+it("refuses a nested secrets directory on the current installation layout", () => {
+  writeDockerStub(["dbone"]);
+  mkdirSync(join(dataLares, "secrets"));
+  writeFileSync(join(dataLares, "secrets", "agent-gateway-key"), "fixture-only");
+  const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("secrets");
+  expect(existsSync(exportDir) ? readdirSync(exportDir) : []).toEqual([]);
+});
+
 it("contains no network call and no push", () => {
   const script = readFileSync(SCRIPT, "utf8");
   expect(/curl|wget|git\s+push|scp|rsync/.test(script)).toBe(false);
+  expect(script).not.toContain("datname<>'postgres'");
 });
 
 // "lares" is the engine's own Postgres role name (used the same way throughout
