@@ -338,5 +338,14 @@ console-only Compose repair; a write probe passed. The original Save error and
 the root cause are recorded in the [LAR-50 run ledger](../runbooks/golden-path-runs.md).
 Browser Save, reload, filter, and delete still require the owner's retest.
 The owner subsequently reported a successful Save, and the test server now
-holds one matching QA place file. Populated rendering, filters and deletion
-remain to be checked in the browser.
+held one matching QA place file. That first save report did not establish
+populated rendering, filters or deletion in the browser.
+
+The owner's follow-up screenshots showed the populated row after reload and a
+no-match filter state. Delete worked, and the server store returned to zero
+files. The installed image still mixes English page copy with Norwegian `NY`,
+`uten koordinater` and `fra` row text. It also uses red outlined freshness
+labels and a plain Reset link. PR #32 source now renders the shared quiet
+status badge with English New/Changed text, translates the row details, and
+styles Reset as a shared ghost button link. Focused browse tests and console
+typecheck pass; this visual correction awaits a new exact image.

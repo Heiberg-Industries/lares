@@ -110,17 +110,17 @@ describe("freshness badges", () => {
   const imported = (at: string) => stored(place({ name: "P", importedAt: at }));
   const changed = (at: string) => stored(place({ name: "P", importedAt: daysAgo(90), updatedAt: at }));
 
-  it("badges a just-imported entry ny, with the exact date to hover", () => {
+  it("badges a just-imported entry New, with the exact date to hover", () => {
     expect(badgeFor(imported(daysAgo(1)).entry, NOW)).toMatchObject({
-      text: "ny",
-      title: `Lagt inn ${daysAgo(1).slice(0, 10)}`,
+      text: "New",
+      title: `Added ${daysAgo(1).slice(0, 10)}`,
     });
   });
 
-  it("badges a changed entry endret, dated by the change and not the import", () => {
+  it("badges a changed entry Changed, dated by the change and not the import", () => {
     expect(badgeFor(changed(daysAgo(2)).entry, NOW)).toMatchObject({
-      text: "endret",
-      title: `Endret ${daysAgo(2).slice(0, 10)}`,
+      text: "Changed",
+      title: `Updated ${daysAgo(2).slice(0, 10)}`,
     });
   });
 
@@ -180,15 +180,15 @@ describe("touchedAt", () => {
 
 describe("the detail line", () => {
   it("shows city, country, coordinates and the source list", () => {
-    expect(detailFor(LUCALI)).toBe("New York, USA · 40.6810, -73.9985 · fra «NYC»");
+    expect(detailFor(LUCALI)).toBe("New York, USA · 40.6810, -73.9985 · From “NYC”");
   });
 
   it("says outright when a place has no pin", () => {
-    expect(detailFor(NOMA)).toBe("København, Danmark · uten koordinater · fra «CPH»");
+    expect(detailFor(NOMA)).toBe("København, Danmark · No coordinates · From “CPH”");
   });
 
   it("counts the lines of a list entry", () => {
-    expect(detailFor(PLAYLIST)).toBe("playlist · 1 linjer");
+    expect(detailFor(PLAYLIST)).toBe("playlist · 1 line");
   });
 
   it("is empty for a file that could not be read", () => {

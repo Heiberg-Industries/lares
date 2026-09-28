@@ -155,12 +155,14 @@ export function Notice({
 export function StatusBadge({
   children,
   tone = "quiet",
+  title,
 }: {
   children: ReactNode;
   tone?: "quiet" | "attention" | "success" | "error";
+  title?: string;
 }) {
   return (
-    <span className="lares-status" data-tone={tone}>
+    <span className="lares-status" data-tone={tone} title={title}>
       <span aria-hidden="true" />
       {children}
     </span>

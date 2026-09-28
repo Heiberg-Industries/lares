@@ -310,16 +310,6 @@ th {
 }
 .lares-preferences-domain { margin-top: var(--space-4); }
 .lares-domain-title { font: var(--text-label); margin: 0; }
-.lares-fresh-badge {
-  display: inline-block;
-  padding: 0 var(--space-1);
-  border: 1px solid var(--accent);
-  border-radius: var(--radius-sm);
-  color: var(--accent);
-  font: var(--text-label);
-  text-transform: uppercase;
-  white-space: nowrap;
-}
 .lares-preferences-paste {
   margin-top: var(--space-2);
   min-height: 8rem;

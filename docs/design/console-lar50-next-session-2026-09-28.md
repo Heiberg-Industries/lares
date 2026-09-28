@@ -168,6 +168,14 @@ installation and real browser Save/reload/delete are still unproved. Retest
 the same QA entry before planning any rebuild.
 
 The owner then reported that Save succeeded. A server check found the one
-disposable `Console QA` place file and no new save error. Reload, filters and
-deletion still need an owner observation; do not call the populated-view check
-complete from the server file alone.
+disposable `Console QA` place file and no new save error. At that checkpoint,
+the server file alone did not establish populated browser behavior.
+
+The owner subsequently showed the populated row after reload, a no-match
+filter state, and the delete confirmation; Delete worked and a server check
+found zero Preferences files afterward. This confirms the disposable
+save/reload/delete path. The screenshot exposed Norwegian row copy and red
+freshness labels alongside English text, plus an unstyled Reset link. PR #32
+source now uses shared status/button components and English row details. The
+`test.4` image still shows the old treatment; a new exact image would be needed
+for visual sign-off. Do not rebuild the whole server for this source-only pass.

@@ -1,4 +1,4 @@
-import { EmptyState, PageHeader } from "@lares/ui/patterns";
+import { EmptyState, PageHeader, StatusBadge } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
 
@@ -125,9 +125,7 @@ function FilterBar({
       </div>
       <Button type="submit" variant="outline">Show</Button>
       {isFiltered(filters) && (
-        <a href="/taste">
-          Reset
-        </a>
+        <Button variant="ghost" asChild><a href="/taste">Reset</a></Button>
       )}
     </form>
   );
@@ -174,8 +172,8 @@ export default async function TastePage({
         {filtered
           ? `${matching} of ${total} entries`
           : `${total} entries`}
-        . <span className="lares-fresh-badge">new</span> or{" "}
-        <span className="lares-fresh-badge">changed</span> means touched by an import in
+        . <StatusBadge>New</StatusBadge> or{" "}
+        <StatusBadge>Changed</StatusBadge> means touched by an import in
         the last {FRESH_DAYS} days.
       </p>
 
