@@ -29,7 +29,7 @@ export function TasteEntryRow({
         {name}
         {badge && <> <FreshBadge badge={badge} /></>}
         {broken && (
-          <span style={{ color: "var(--bad)", fontSize: 12 }}> · uleselig fil: {broken}</span>
+          <span style={{ color: "var(--bad)", fontSize: 12 }}> · unreadable file: {broken}</span>
         )}
       </td>
       <td style={{ color: "var(--mist)", fontSize: 12 }}>{detail}</td>
@@ -37,13 +37,17 @@ export function TasteEntryRow({
       <td>
         <button
           disabled={pending}
-          onClick={() => start(async () => { await removeEntry({ domain, file }); })}
+          onClick={() => {
+            if (window.confirm(`Permanently remove ${name} from saved preferences?`)) {
+              start(async () => { await removeEntry({ domain, file }); });
+            }
+          }}
           style={{
             padding: "2px 8px", fontSize: 12, border: "1px solid var(--rule)", borderRadius: 3,
             background: "transparent", color: "var(--mist)", cursor: "pointer",
           }}
         >
-          Slett
+          Delete
         </button>
       </td>
     </tr>

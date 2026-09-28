@@ -126,4 +126,6 @@ specific owner approval, the archive and configuration were streamed into
 separate age-encrypted files on the owner's Mac. This is transfer and integrity
 evidence; the archive has not been restored. A fresh Saved preferences check
 also found Norwegian copy and an internal path on the English screen. PR #32
-now removes those from the page body; its import controls still need review.
+now removes those from the page body and translates the import, list maintenance,
+and pin audit controls. Related typecheck and 45 taste-store/browse tests pass;
+the new copy has not been deployed to the test image.

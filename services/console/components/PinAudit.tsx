@@ -43,11 +43,11 @@ export function PinAudit() {
     <div style={{ marginTop: 8 }}>
       <div style={{ display: "flex", gap: 8 }}>
         <button type="button" style={button} disabled={pending} onClick={() => run(true)}>
-          {pending ? "Ser etter …" : "Se etter feil pins"}
+          {pending ? "Checking…" : "Find misplaced pins"}
         </button>
         {result !== null && result.found > 0 && !repaired && (
           <button type="button" style={button} disabled={pending} onClick={() => run(false)}>
-            Rett {result.found} pins
+            Correct {result.found} pins
           </button>
         )}
       </div>
@@ -60,10 +60,10 @@ export function PinAudit() {
         <div style={{ marginTop: 8 }}>
           <p className="mono" style={{ fontSize: 12 }}>
             {result.found === 0
-              ? "Ingen pins motsies av sin egen lenke."
+              ? "No saved pins conflict with their source links."
               : repaired
-                ? `Rettet ${result.exact} av ${result.found} med bekreftet treff. ${result.kept} står urørt — ingenting bekreftet en bedre posisjon, og da er den lagrede pinnen like gjerne den riktige (${result.searches} oppslag).`
-                : `${result.found} pins ligger et helt annet sted enn lenken sier. Ingenting er skrevet ennå.`}
+                ? `Corrected ${result.exact} of ${result.found} with confirmed matches. ${result.kept} stayed unchanged because no better location was confirmed (${result.searches} lookups).`
+                : `${result.found} pins are far from their source links. Nothing has changed yet.`}
           </p>
           {result.rows.length > 0 && (
             <table className="mono" style={{ fontSize: 12, marginTop: 8, borderCollapse: "collapse" }}>
@@ -72,9 +72,9 @@ export function PinAudit() {
                   <tr key={`${row.sourceList}/${row.name}`}>
                     <td style={{ padding: "2px 12px 2px 0", color: "var(--mist)" }}>{row.sourceList}</td>
                     <td style={{ padding: "2px 12px 2px 0" }}>{row.name}</td>
-                    <td style={{ padding: "2px 12px 2px 0", color: "var(--mist)" }}>{km(row.wrongBy)} feil</td>
+                    <td style={{ padding: "2px 12px 2px 0", color: "var(--mist)" }}>{km(row.wrongBy)} away</td>
                     <td style={{ padding: "2px 0" }}>
-                      {row.outcome === "exact" ? "→ bekreftet" : `→ urørt${row.reason ? ` (${row.reason})` : ""}`}
+                      {row.outcome === "exact" ? "→ confirmed" : `→ unchanged${row.reason ? ` (${row.reason})` : ""}`}
                     </td>
                   </tr>
                 ))}
