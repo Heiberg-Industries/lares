@@ -226,3 +226,18 @@ states, not the unexercised pending, failure, write and multi-agent states.
 The [next-session handoff](console-lar50-next-session-2026-09-28.md) separates
 the remaining exact-image console checks from the destructive docs-only
 fresh-install and LAR-50 acceptance run.
+
+### Manual avatar check and editor feedback
+
+The owner used Chrome's file picker on the installed `b29fe92` image and sent
+screenshots of the edit page. After **Save image**, the page said **Image saved.**
+The Agent image section showed only the file chooser and buttons, with no
+visible current image. The later screenshot showed the same section without
+the status message. These screenshots establish the success message and a
+missing editor preview; they do not independently prove that the image rendered
+after reload or on Agents/Chat. The editor source had no preview element.
+
+PR #32 now adds a current-image preview to that section and updates it after
+save or restore. Focused avatar tests, console typecheck and production build
+pass locally. This fix is source-only until a new exact image is approved and
+installed; the running test image still has the old editor.

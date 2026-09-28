@@ -47,6 +47,7 @@ export interface DefinitionFormProps {
     hash: string;
     runtime?: RuntimeState;
     status: string;
+    avatarVersion?: string;
   };
   permissions?: BoardRowDTO[];
 }
@@ -648,7 +649,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
           </div>
         </fieldset>
       </form>
-      {editing && active && <AvatarEditor name={definition.name} />}
+      {editing && active && <AvatarEditor name={definition.name} role={definition.role ?? ""} initialVersion={p.initial?.avatarVersion} />}
       {editing && active && p.initial && (
         <DoorSetup
           name={p.initial.definition.name}

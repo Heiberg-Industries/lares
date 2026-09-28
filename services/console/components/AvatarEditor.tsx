@@ -2,12 +2,14 @@
 import React, { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@lares/ui/primitives/button";
+import { AgentAvatar } from "@lares/ui/patterns";
 import { saveAvatar } from "../app/actions/avatar";
-export function AvatarEditor({ name }: { name: string }) {
+export function AvatarEditor({ name, role, initialVersion }: { name: string; role: string; initialVersion?: string }) {
   const router = useRouter();
   const running = useRef(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [previewVersion, setPreviewVersion] = useState(initialVersion);
   async function save(data: FormData) {
     if (running.current) return;
     running.current = true;
@@ -17,7 +19,10 @@ export function AvatarEditor({ name }: { name: string }) {
     try {
       const result = await saveAvatar(data);
       setMessage(result.message);
-      if (result.ok) router.refresh();
+      if (result.ok) {
+        setPreviewVersion(data.get("reset") === "true" ? undefined : String(Date.now()));
+        router.refresh();
+      }
     } catch {
       setMessage(
         "The image could not be saved. Reload to check its current state.",
@@ -34,6 +39,13 @@ export function AvatarEditor({ name }: { name: string }) {
         PNG, JPEG or WebP, up to 2 MB. Images save immediately and are included
         in the database backup.
       </p>
+      <figure className="lares-avatar-preview">
+        <AgentAvatar
+          role={role}
+          src={previewVersion ? `/api/agents/${encodeURIComponent(name)}/avatar?v=${previewVersion}` : undefined}
+        />
+        <figcaption>{previewVersion ? "Current image" : "Default symbol"}</figcaption>
+      </figure>
       <form action={save}>
         <label>
           Choose an image
