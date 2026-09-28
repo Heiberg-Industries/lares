@@ -32,6 +32,7 @@ import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
 import { CeilingNotice } from "./CeilingNotice";
+import { scheduleLabel } from "../lib/schedule-labels";
 import { firstChatPath } from "../lib/first-conversation";
 
 export interface DefinitionFormProps {
@@ -60,13 +61,6 @@ const LANGUAGES = [
   "German",
   "Spanish",
 ];
-const fieldStyle = {
-  display: "block",
-  width: "100%",
-  maxWidth: 760,
-  marginBottom: 8,
-  padding: 8,
-};
 export function DefinitionForm(p: DefinitionFormProps) {
   const router = useRouter();
   const editing = Boolean(p.initial);
@@ -290,7 +284,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     pattern="[a-z][a-z0-9-]{1,30}"
                     minLength={2}
                     maxLength={31}
-                    style={fieldStyle}
+                    className="lares-editor-field"
                     value={definition.name}
                     onChange={(e) => patch({ name: e.target.value })}
                   />
@@ -311,7 +305,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
               Display name
               <input
                 maxLength={80}
-                style={fieldStyle}
+                className="lares-editor-field"
                 value={definition.display ?? ""}
                 onChange={(e) => patch({ display: e.target.value })}
               />
@@ -319,7 +313,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
             <label>
               Gender
               <select
-                style={fieldStyle}
+                className="lares-editor-field"
                 value={definition.gender ?? "agent"}
                 onChange={(e) =>
                   patch({ gender: e.target.value as AgentDefinition["gender"] })
@@ -330,11 +324,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 <option value="male">Male</option>
               </select>
             </label>
-            {timing("gender")}
             <label>
               Description
               <input
-                style={fieldStyle}
+                className="lares-editor-field"
                 value={definition.description ?? ""}
                 onChange={(e) => patch({ description: e.target.value })}
               />
@@ -346,28 +339,26 @@ export function DefinitionForm(p: DefinitionFormProps) {
                 What is this agent for? Write it the way you would tell a
                 person.
                 <textarea
-                  rows={7}
-                  style={fieldStyle}
+                  rows={5}
+                  className="lares-editor-field"
                   value={duties}
                   onChange={(e) => setDuties(e.target.value)}
                 />
               </label>
-              {timing("duties")}
               <label>
                 Personality
                 <textarea
-                  rows={6}
-                  style={fieldStyle}
+                  rows={4}
+                  className="lares-editor-field"
                   value={voice}
                   onChange={(e) => setVoice(e.target.value)}
                 />
               </label>
-              {timing("voice")}
               <label>
                 Language
                 <select
                   required
-                  style={fieldStyle}
+                  className="lares-editor-field"
                   value={definition.language ?? ""}
                   onChange={(e) => patch({ language: e.target.value })}
                 >
@@ -386,13 +377,13 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </label>
               {timing("language")}
             </details>
-            <details className="lares-disclosure" open={editing}>
+            <details className="lares-disclosure" open={!validModel}>
               <summary>Model</summary>
               <label>
                 Purpose
                 <select
                   required
-                  style={fieldStyle}
+                  className="lares-editor-field"
                   value={definition.model}
                   onChange={(e) => patch({ model: e.target.value })}
                 >
@@ -413,8 +404,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
               ))}
               {timing("model")}
             </details>
-            <details className="lares-disclosure" open={editing}>
-              <summary>Access and skills</summary>
+            <details className="lares-disclosure" open={!editing}>
+              <summary>Access and skills · {definition.grants.length} integrations</summary>
               <h2>Integrations</h2>
               {point.definition.grants.map((g) => (
                 <label
@@ -444,7 +435,6 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   {g.capability} ({g.scope})
                 </label>
               ))}
-              {timing("grants")}
               <h2>Skills</h2>
               {point.definition.skills?.map((s) => (
                 <label
@@ -530,8 +520,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
               )}
               {timing("autonomy")}
             </details>
-            <details className="lares-disclosure" open={editing}>
-              <summary>Schedules</summary>
+            <details className="lares-disclosure">
+              <summary>Schedules · {Object.values(definition.schedules).filter((s) => s.on).length} enabled</summary>
               {Object.entries(definition.schedules).map(([name, s]) => (
                 <label key={name} style={{ display: "block", marginBottom: 8 }}>
                   <input
@@ -546,7 +536,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                       })
                     }
                   />{" "}
-                  {name}
+                  {scheduleLabel(name)}
                 </label>
               ))}
               {timing("schedules")}

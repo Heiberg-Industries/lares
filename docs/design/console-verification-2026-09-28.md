@@ -246,3 +246,35 @@ The next source-only copy pass shortens the Tools label and page heading from
 **Saved preferences** to **Preferences**, retaining the `/taste` route and data
 behavior. The one-agent capacity notice also uses singular grammar and one
 clear next action. These changes await the next console image.
+
+### Owner screenshot review and compact design-system pass
+
+The owner confirmed the editor close check passed and the uploaded agent image
+remained visible after reload. The owner captured Connections and a disposable
+Deadline row. The empty Preferences installation has no entry with which to
+verify filtering; mobile review is deferred. The 22 desktop screenshots show
+the installed `b29fe92` image, so they still display the older Saved preferences
+label, capacity grammar and editor without an image preview.
+
+The screenshots exposed mixed native and custom controls, excessive spacing in
+some cards and empty states, and technical labels that obscure the next owner
+action. PR #32 source now uses shared button/input patterns and token-based
+control classes on Signals, Connections account add, Preferences import/filter,
+Deadlines, Market watch and the conversation reset control. Operational cards,
+tables and disclosures use tighter shared spacing while retaining full-height
+controls. Connections places catalogue-only unknown entries in a secondary
+disclosure; Preferences opens the add/import flow on an empty installation;
+Signals gives an actionable unavailable state. The agent editor collapses
+advanced sections when editing, reduces repeated timing copy, and shows human
+schedule labels without changing their saved keys. The agent detail groups
+disabled schedules and removes nested empty-state framing. Settings now calls
+the Backup link a status view and links specifically to the optional definition
+backup guide. These are source-only changes; no image was published or installed.
+
+This does not establish typography or layout on the installed server. The
+next exact-image visual check should cover desktop Connections, Preferences
+(empty and populated), Deadlines, Signals error state, Market watch, agent
+detail/edit, and Settings. It should check actual Instrument Sans/DM Mono font
+loading, labels, alignment, density and control states. The existing public
+integrations document mixes old fleet assumptions with fresh-install notes, so
+the console deliberately does not link to it until a current owner guide exists.

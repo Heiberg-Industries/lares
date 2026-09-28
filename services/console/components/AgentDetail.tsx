@@ -18,6 +18,7 @@ import type { BoardRowDTO } from "../lib/contracts";
 import type { EventPage, Reading } from "../lib/console-overview";
 import { AutonomyControl } from "./AutonomyControl";
 import { PermissionEvents } from "./PermissionEvents";
+import { scheduleLabel } from "../lib/schedule-labels";
 import styles from "./AgentDetail.module.css";
 export function AgentDetail({
   agent,
@@ -102,7 +103,7 @@ export function AgentDetail({
                 Edit instructions, personality and model →
               </Link>
             </section>
-            <section className="lares-surface">
+            <section>
               <h2 className="lares-section-title">Recent permission checks</h2>
               <PermissionEvents events={events} />
             </section>
@@ -188,13 +189,25 @@ export function AgentDetail({
                 definition.
               </Notice>
             ) : schedules.value.length ? (
-              <ul className="lares-data-list">
-                {schedules.value.map((s) => (
-                  <li key={s.name}>
-                    {s.name} · {s.on ? "Enabled" : "Disabled"}
-                  </li>
-                ))}
-              </ul>
+              <>
+                {schedules.value.some((s) => s.on) ? (
+                  <ul className="lares-data-list">
+                    {schedules.value.filter((s) => s.on).map((s) => (
+                      <li key={s.name}>{scheduleLabel(s.name)} · Enabled</li>
+                    ))}
+                  </ul>
+                ) : <p>No recurring work enabled.</p>}
+                {schedules.value.some((s) => !s.on) && (
+                  <details className="lares-inset-disclosure">
+                    <summary>Disabled schedules ({schedules.value.filter((s) => !s.on).length})</summary>
+                    <ul className="lares-data-list">
+                      {schedules.value.filter((s) => !s.on).map((s) => (
+                        <li key={s.name}>{scheduleLabel(s.name)}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+              </>
             ) : (
               <EmptyState title="No schedules configured">
                 This definition has no recurring work.
@@ -209,7 +222,7 @@ export function AgentDetail({
           </section>
         </TabsContent>
         <TabsContent value="activity">
-          <section className="lares-surface">
+          <section>
             <p className="lares-muted">
               Permission policy evidence for this agent. It does not include
               every action or prove completion.

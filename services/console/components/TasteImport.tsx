@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 
 import {
   commitPaste,
@@ -11,26 +13,6 @@ import {
   type ListPreview,
   type UploadedList,
 } from "../app/actions/taste";
-
-const label = { display: "block", fontSize: 12, color: "var(--mist)", marginBottom: 4 } as const;
-const field = {
-  width: "100%",
-  padding: "6px 8px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-} as const;
-const button = {
-  padding: "6px 12px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer",
-} as const;
 
 /**
  * Google Maps saved lists. A re-upload is a DIFF of that list — added, updated, removed — shown
@@ -82,13 +64,13 @@ export function TakeoutImport() {
   return (
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div>
-        <label style={label} htmlFor="taste-csv">Google Takeout CSV files</label>
-        <input
+        <label className="lares-field-label" htmlFor="taste-csv">Google Takeout CSV files</label>
+        <Input
           id="taste-csv"
           type="file"
           accept=".csv,text/csv"
           multiple
-          style={{ ...field, padding: 4 }}
+          className="lares-field"
           onChange={(e) => void onFiles(e.target.files)}
         />
       </div>
@@ -99,13 +81,13 @@ export function TakeoutImport() {
           <tbody>
             {lists.map((l, i) => (
               <tr key={i}>
-                <td><input style={field} value={l.listName} onChange={(e) => edit(i, { listName: e.target.value })} /></td>
+                <td><Input className="lares-field" value={l.listName} onChange={(e) => edit(i, { listName: e.target.value })} /></td>
                 <td>
-                  <input style={field} value={l.city ?? ""} placeholder="New York"
+                  <Input className="lares-field" value={l.city ?? ""} placeholder="New York"
                     onChange={(e) => edit(i, { city: e.target.value })} />
                 </td>
                 <td>
-                  <input style={field} value={l.country ?? ""} placeholder="USA"
+                  <Input className="lares-field" value={l.country ?? ""} placeholder="USA"
                     onChange={(e) => edit(i, { country: e.target.value })} />
                 </td>
                 <td style={{ color: "var(--mist)", fontSize: 12 }}>{l.csvText.split("\n").length - 1} rows</td>
@@ -116,10 +98,10 @@ export function TakeoutImport() {
       )}
 
       {lists.length > 0 && (
-        <button style={{ ...button, marginTop: 8 }} disabled={pending}
+        <Button  disabled={pending}
           onClick={() => run(async () => setPreview(await previewTakeout({ lists })))}>
           Preview changes
-        </button>
+        </Button>
       )}
 
       {error && <p className="mono" style={{ marginTop: 8, fontSize: 12, color: "var(--bad)" }}>✕ {error}</p>}
@@ -150,10 +132,10 @@ export function TakeoutImport() {
               {removedNames.length > 12 && ` … (+${removedNames.length - 12})`}
             </p>
           )}
-          <button style={{ ...button, marginTop: 8 }} disabled={pending}
+          <Button  disabled={pending}
             onClick={() => run(async () => { setResults(await commitTakeout({ lists })); setPreview(null); })}>
             Save changes
-          </button>
+          </Button>
         </div>
       )}
 
@@ -185,20 +167,19 @@ export function ListCountry({ lists }: { lists: string[] }) {
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div style={{ minWidth: 220 }}>
-          <label style={label} htmlFor="country-list">List</label>
-          <select id="country-list" style={field} value={listName}
+          <label className="lares-field-label" htmlFor="country-list">List</label>
+          <select id="country-list" className="lares-field" value={listName}
             onChange={(e) => { setListName(e.target.value); setResult(null); }}>
             <option value="">Choose a list</option>
             {lists.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
         </div>
         <div style={{ minWidth: 160 }}>
-          <label style={label} htmlFor="country-value">Country</label>
-          <input id="country-value" style={field} value={country} placeholder="Denmark"
+          <label className="lares-field-label" htmlFor="country-value">Country</label>
+          <Input id="country-value" className="lares-field" value={country} placeholder="Denmark"
             onChange={(e) => { setCountry(e.target.value); setResult(null); }} />
         </div>
-        <button
-          style={button}
+        <Button
           disabled={pending || listName === "" || country.trim() === ""}
           onClick={() => {
             setError("");
@@ -213,7 +194,7 @@ export function ListCountry({ lists }: { lists: string[] }) {
           }}
         >
           Set country
-        </button>
+        </Button>
         {error && <span className="mono" style={{ fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
         {result && (
           <span className="mono" style={{ fontSize: 12, color: "var(--ok)" }}>
@@ -257,8 +238,8 @@ export function PasteImport() {
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div>
-          <label style={label} htmlFor="paste-domain">Category</label>
-          <select id="paste-domain" style={field} value={domain} onChange={(e) => setDomain(e.target.value)}>
+          <label className="lares-field-label" htmlFor="paste-domain">Category</label>
+          <select id="paste-domain" className="lares-field" value={domain} onChange={(e) => setDomain(e.target.value)}>
             <option value="music">music — playlists and tracks</option>
             <option value="food">food — dishes and notes</option>
             <option value="notes">notes — everything else</option>
@@ -266,21 +247,21 @@ export function PasteImport() {
           </select>
         </div>
         <div style={{ minWidth: 200 }}>
-          <label style={label} htmlFor="paste-name">List name</label>
-          <input id="paste-name" style={field} value={name} placeholder="Summer 2026"
+          <label className="lares-field-label" htmlFor="paste-name">List name</label>
+          <Input id="paste-name" className="lares-field" value={name} placeholder="Summer 2026"
             onChange={(e) => setName(e.target.value)} />
         </div>
         {domain === "places" && (
           <div style={{ minWidth: 160 }}>
-            <label style={label} htmlFor="paste-city">City (optional)</label>
-            <input id="paste-city" style={field} value={city} placeholder="New York"
+            <label className="lares-field-label" htmlFor="paste-city">City (optional)</label>
+            <Input id="paste-city" className="lares-field" value={city} placeholder="New York"
               onChange={(e) => setCity(e.target.value)} />
           </div>
         )}
         {domain === "places" && (
           <div style={{ minWidth: 140 }}>
-            <label style={label} htmlFor="paste-country">Country (optional)</label>
-            <input id="paste-country" style={field} value={country} placeholder="USA"
+            <label className="lares-field-label" htmlFor="paste-country">Country (optional)</label>
+            <Input id="paste-country" className="lares-field" value={country} placeholder="USA"
               onChange={(e) => setCountry(e.target.value)} />
           </div>
         )}
@@ -291,15 +272,15 @@ export function PasteImport() {
         </p>
       )}
       <textarea
-        style={{ ...field, marginTop: 8, minHeight: 120, fontFamily: "inherit" }}
+        className="lares-field lares-preferences-paste"
         value={text}
         placeholder={"- Nick Drake — Pink Moon\n- Alice Coltrane — Turiya and Ramakrishna"}
         onChange={(e) => setText(e.target.value)}
       />
       <div style={{ marginTop: 8 }}>
-        <button style={button} disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
+        <Button  disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
           Save
-        </button>
+        </Button>
         {error && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
         {message && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--good, #2a7)" }}>✓ {message}</span>}
       </div>
@@ -328,16 +309,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
   const [showApprox, setShowApprox] = useState(false);
 
   return (
-    <div
-      ref={ref}
-      style={{
-        marginTop: 12,
-        padding: "10px 12px",
-        border: "1px solid var(--ok)",
-        borderRadius: 3,
-        background: "color-mix(in srgb, var(--ok) 8%, transparent)",
-      }}
-    >
+    <div ref={ref} className="lares-result-card">
       <p className="mono" style={{ fontSize: 13, color: "var(--ok)" }}>
         ✓ Saved {results.length} {results.length === 1 ? "list" : "lists"}: +{sum((r) => r.added)} added,{" "}
         ~{sum((r) => r.changed)} changed, −{sum((r) => r.removed)} removed
@@ -359,13 +331,13 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
 
       {approximate.length > 0 && (
         <div style={{ marginTop: 6 }}>
-          <button
+          <Button
             type="button"
             onClick={() => setShowApprox((v) => !v)}
-            style={{ ...button, padding: "2px 8px", fontSize: 12 }}
+            size="sm" variant="outline"
           >
             {showApprox ? "Hide" : "Show"} {approximate.length} approximate locations
-          </button>
+          </Button>
           {showApprox && (
             <p style={{ fontSize: 12, marginTop: 4, color: "var(--mist)" }}>
               Placed from the link location without a confirmed match:{" "}

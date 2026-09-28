@@ -1,4 +1,5 @@
-import { PageHeader } from "@lares/ui/patterns";
+import { EmptyState, PageHeader } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
 
 import { listAll, type StoredEntry } from "../../lib/taste-store";
@@ -32,22 +33,6 @@ const DOMAIN_BLURB: Record<TasteDomain, string> = {
   notes: "Everything else.",
 };
 
-const control = {
-  padding: "5px 8px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "var(--card)",
-  color: "var(--ink)",
-} as const;
-
-const controlLabel = {
-  display: "block",
-  fontSize: 11,
-  color: "var(--mist)",
-  marginBottom: 3,
-} as const;
-
 function Facet({
   name,
   label,
@@ -60,15 +45,15 @@ function Facet({
   value: string;
 }) {
   return (
-    <div>
-      <label style={controlLabel} htmlFor={`taste-${name}`}>
+    <div className="lares-field-label">
+      <label htmlFor={`taste-${name}`}>
         {label}
       </label>
       <select
         id={`taste-${name}`}
         name={name}
         defaultValue={value}
-        style={control}
+        className="lares-field"
       >
         <option value="">all</option>
         {options.map((o) => (
@@ -93,15 +78,7 @@ function FilterBar({
   return (
     <form
       method="get"
-      className="card"
-      style={{
-        padding: 12,
-        marginTop: 8,
-        display: "flex",
-        gap: 12,
-        flexWrap: "wrap",
-        alignItems: "flex-end",
-      }}
+      className="card lares-inline-form lares-preferences-filter"
     >
       <Facet
         name="list"
@@ -121,37 +98,35 @@ function FilterBar({
         options={optionsFor(everything, "country")}
         value={filters.country}
       />
-      <div>
-        <label style={controlLabel} htmlFor="taste-q">
+      <div className="lares-field-label">
+        <label htmlFor="taste-q">
           Name contains
         </label>
         <input
           id="taste-q"
           name="q"
           defaultValue={filters.q}
-          placeholder="lucali"
-          style={control}
+          placeholder="Search names"
+          className="lares-field"
         />
       </div>
-      <div>
-        <label style={controlLabel} htmlFor="taste-sort">
+      <div className="lares-field-label">
+        <label htmlFor="taste-sort">
           Sort
         </label>
         <select
           id="taste-sort"
           name="sort"
           defaultValue={filters.sort}
-          style={control}
+          className="lares-field"
         >
           <option value="navn">name</option>
           <option value="nyeste">newest first</option>
         </select>
       </div>
-      <button type="submit" style={{ ...control, cursor: "pointer" }}>
-        Show
-      </button>
+      <Button type="submit" variant="outline">Show</Button>
       {isFiltered(filters) && (
-        <a href="/taste" style={{ fontSize: 12, paddingBottom: 6 }}>
+        <a href="/taste">
           Reset
         </a>
       )}
@@ -188,15 +163,15 @@ export default async function TastePage({
         title="Preferences"
         description="Places, music and preferences your agents can draw on."
       />
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+      <p className="lares-muted lares-operational-intro">
         Your saved preferences live on this installation. The console writes
         them; agents can read them. Nothing syncs automatically.
       </p>
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         What is saved
       </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+      <p className="lares-muted lares-operational-intro">
         {filtered
           ? `${matching} of ${total} entries`
           : `${total} entries`}
@@ -205,36 +180,36 @@ export default async function TastePage({
         the last {FRESH_DAYS} days.
       </p>
 
-      <FilterBar filters={filters} everything={everything} />
+      {total > 0 && <FilterBar filters={filters} everything={everything} />}
+
+      {total === 0 && (
+        <EmptyState title="Nothing saved yet">
+          Add a list or import saved places to give your agents preferences they can read.
+        </EmptyState>
+      )}
 
       {filtered && matching === 0 && (
-        <p
-          className="mono"
-          style={{ color: "var(--mist)", fontSize: 12, marginTop: 12 }}
-        >
+        <p className="lares-muted lares-operational-intro">
           No entries match these filters. {total} saved in total.
         </p>
       )}
 
-      {TASTE_DOMAINS.map((domain) => (
-        <section key={domain} style={{ marginTop: 16 }}>
-          <h3 className="mono" style={{ fontSize: 13 }}>
+      {total > 0 && TASTE_DOMAINS.map((domain) => (
+        <section key={domain} className="lares-preferences-domain">
+          <h3 className="lares-domain-title">
             {domain}{" "}
-            <span style={{ color: "var(--mist)" }}>
+            <span className="lares-muted">
               ·{" "}
               {filtered
                 ? `${shown[domain].length} of ${store[domain].length}`
                 : store[domain].length}
             </span>
           </h3>
-          <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 2 }}>
+          <p className="lares-muted lares-operational-intro">
             {DOMAIN_BLURB[domain]}
           </p>
           {shown[domain].length === 0 ? (
-            <p
-              className="mono"
-              style={{ color: "var(--mist)", fontSize: 12, marginTop: 6 }}
-            >
+            <p className="lares-muted lares-operational-intro">
               {store[domain].length === 0
                 ? "Nothing saved yet"
                 : "Nothing matches these filters"}
@@ -266,44 +241,44 @@ export default async function TastePage({
           )}
         </section>
       ))}
-      <details className="lares-disclosure">
+      <details className="lares-disclosure" open={total === 0}>
         <summary>Add or import preferences</summary>{" "}
-        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+        <h2>
           Google Maps lists
         </h2>
-        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+        <p className="lares-muted lares-operational-intro">
           Download your saved lists from Google Takeout and import the CSV.
           Coordinates are read from the links locally. Importing the same list
           again updates its entries.
         </p>
         <TakeoutImport />
-        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+        <h2>
           Paste a list
         </h2>
         <PasteImport />
       </details>
       <details className="lares-disclosure">
         <summary>Maintain saved places</summary>{" "}
-        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+        <h2>
           Fill in city and country
         </h2>
-        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+        <p className="lares-muted lares-operational-intro">
           Derive city and country from saved coordinates offline. New imports
           receive them automatically. Your manual edits are preserved.
         </p>
         <DerivePlaceNames />
-        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+        <h2>
           Set a list's country
         </h2>
-        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+        <p className="lares-muted lares-operational-intro">
           Set the country on older lists without importing their CSV again.
           Other fields stay as they are.
         </p>
         <ListCountry lists={optionsFor(everything, "list")} />
-        <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+        <h2>
           Check coordinates
         </h2>
-        <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+        <p className="lares-muted lares-operational-intro">
           Compare each saved pin with its source link. A distant pin may point
           to a place with the same name in another city; review it here.
         </p>

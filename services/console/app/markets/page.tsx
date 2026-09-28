@@ -21,7 +21,6 @@ export const dynamic = "force-dynamic";
  * refresh switch down with it, which is the one control an owner needs when the engine is broken.
  * `/proactivity` renders `view.errors` the same way.
  */
-const lede = { color: "var(--mist)", fontSize: 12, marginTop: 4 } as const;
 
 export default async function MarketsPage() {
   const view = await getMarketsView();
@@ -32,10 +31,8 @@ export default async function MarketsPage() {
         title="Market watch"
         description="Your watchlist and refresh settings."
       />
-      <p style={lede}>
-        Proactive alerts stay OFF — this only refreshes what{" "}
-        <span className="mono">market-edge</span> can answer when asked. Nothing
-        here posts anywhere on its own.
+      <p className="lares-muted lares-operational-intro">
+        Refreshing updates the information your agent can answer with when asked. It does not send alerts on its own.
       </p>
 
       {view.errors.length > 0 && (
@@ -55,12 +52,12 @@ export default async function MarketsPage() {
         </div>
       )}
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Refresh
       </h2>
       <RefreshSwitch enabled={view.settings.refreshEnabled} />
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Watchlist size
       </h2>
       <WatchlistSizeControl
@@ -68,10 +65,10 @@ export default async function MarketsPage() {
         engineMax={MARKETS_ENGINE.watchlistMax}
       />
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Watchlist
       </h2>
-      <table className="card" style={{ marginTop: 8, maxWidth: 480 }}>
+      <table className="card lares-stats-table">
         <tbody>
           <tr>
             <td>Open</td>
@@ -95,15 +92,13 @@ export default async function MarketsPage() {
           </tr>
         </tbody>
       </table>
-      <p style={lede}>
-        Last pass is the schedule proving it is alive — it stamps even when the
-        switch is off or nothing was fetched. Last observation is the newest
-        price a refresh actually recorded.
+      <p className="lares-muted lares-operational-note">
+        Last pass shows when the schedule checked, including when refresh was off. Last observation shows when it recorded new price data.
       </p>
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2>
         Last 20 recorded edges{" "}
-        <span style={{ color: "var(--mist)", fontSize: 12 }}>
+        <span className="lares-section-count">
           ({view.recentAlerts.length} shown)
         </span>
       </h2>

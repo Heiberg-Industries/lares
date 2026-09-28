@@ -6,21 +6,13 @@
  * reaches the database, and a client component may not pull that in.
  */
 import { useState, useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 import { saveRefreshEnabled, saveWatchlistMax } from "../app/actions/markets";
-
-const inp = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px",
-  fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--card)", color: "var(--ink)",
-} as const;
-
-const btn = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 12px",
-  background: "var(--signal)", color: "#fff", cursor: "pointer", fontSize: 12,
-} as const;
 
 function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
   if (!msg) return null;
-  return <span className="mono" style={{ fontSize: 12, color: msg.ok ? "var(--ok)" : "var(--bad)" }}>{msg.text}</span>;
+  return <span role="status" className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>;
 }
 
 export function RefreshSwitch({ enabled }: { enabled: boolean }) {
@@ -40,15 +32,14 @@ export function RefreshSwitch({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, maxWidth: 720 }}>
-      <label className="mono" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "baseline" }}>
+    <div className="card lares-control-card">
+      <label className="lares-checkbox-row">
         <input type="checkbox" checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
-        <span>Market refresh{on ? " — ON" : ""}</span>
+        <span>Market refresh — {on ? "On" : "Off"}</span>
         <Msg msg={msg} />
       </label>
-      <p style={{ color: "var(--mist)", fontSize: 12, margin: "2px 0 0" }}>
-        On = the nightly watchlist discovery and edge-recording pass runs. Proactive alerts stay off
-        either way — this switch never sends anything, it only refreshes what <span className="mono">market-edge</span> can answer.
+      <p className="lares-muted">
+        When on, a nightly pass updates the watchlist and records new market observations. This setting never sends proactive alerts.
       </p>
     </div>
   );
@@ -68,14 +59,14 @@ export function WatchlistSizeControl({ value, engineMax }: { value: number; engi
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, maxWidth: 720 }}>
-      <label className="mono" style={{ fontSize: 12, display: "flex", gap: 8, alignItems: "center" }}>
-        <input style={{ ...inp, width: 80 }} type="number" min={10} max={engineMax} step={1} value={n} onChange={(e) => setN(Number(e.target.value))} />
-        <span>Watchlist size</span>
-        <span style={{ color: "var(--mist)" }}>engine max {engineMax}</span>
+    <div className="card lares-control-card">
+      <label className="lares-field-label">
+        Watchlist size
+        <Input className="lares-short-input" type="number" min={10} max={engineMax} step={1} value={n} onChange={(e) => setN(Number(e.target.value))} />
       </label>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
-        <button style={btn} disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</button>
+      <p className="lares-muted">Maximum supported: {engineMax} markets.</p>
+      <div className="lares-actions">
+        <Button disabled={pending} onClick={submit}>{pending ? "Saving…" : "Save"}</Button>
         <Msg msg={msg} />
       </div>
     </div>

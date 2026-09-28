@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 import { getNotionSyncStatus } from "../../lib/queries";
 import { getConnectionRows } from "../../lib/connections";
 import { getBoardRows } from "../../lib/board";
@@ -56,8 +57,8 @@ export default async function IntegrationsPage({
         description="Accounts, recorded connection status and agent access."
         actions={
           <>
-            <Link href="/voice">Email writing style</Link>
-            <Link href="/meetings">Meetings</Link>
+            <Button variant="outline" asChild><Link href="/voice">Email writing style</Link></Button>
+            <Button variant="outline" asChild><Link href="/meetings">Meetings</Link></Button>
           </>
         }
       />
@@ -76,21 +77,17 @@ export default async function IntegrationsPage({
         </p>
       )}
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Connections
-      </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        What the box is plugged into. Credentials the console holds it can
-        reconnect; credentials the box holds it reports from recorded use, never
-        by reading the file.
+      <p className="lares-muted lares-operational-intro">
+        Connected accounts and the access granted to agents on this installation. Other catalogue entries are available below for inspection.
       </p>
       <ConnectionsTable rows={rows} />
 
+      <details className="lares-disclosure">
+        <summary>Service sync status and Notion proposals</summary>
+        <p className="lares-muted">These services report recorded activity separately from account connections.</p>
       <CrmStatusSection status={crmStatus} />
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        notion-sync
-      </h2>
+      <h2>Notion sync</h2>
       {notionSync.unavailable ? (
         <p className="mono" style={{ marginTop: 8, color: "var(--bad)" }}>
           Status unavailable.
@@ -131,12 +128,11 @@ export default async function IntegrationsPage({
           frozen={notionProposals.frozen}
         />
       )}
+      </details>
 
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
-        Permissions
-      </h2>
+      <h2>Agent permissions</h2>
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        What each agent may do on its own. ✓ acts on its own · ✋ asks first ·
+        These counts record permission checks, not every read or conversation. ✓ acts on its own · ✋ asks first ·
         🚫 never. A change reaches the agent at its next action. 🔒 Some actions
         always ask, even at ✓ (🚫 still refuses them): moving money, deleting
         data, contacting someone for the first time, publishing, an agent

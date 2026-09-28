@@ -53,9 +53,14 @@ export default async function SettingsPage() {
         <section className="lares-surface">
           <h2 className="lares-section-title">Backup & recovery</h2>
           <p className="lares-muted">
-            Review recorded backups and recovery options.
+            Check whether this installation has a recorded backup and how recovery is configured.
           </p>
-          <Link href="/backup">View backup settings →</Link>
+          <Link href="/backup">View backup status →</Link>
+          <p className="lares-muted">
+            <a href="https://github.com/Heiberg-Industries/lares/blob/main/docs/runbooks/definition-backups.md#optional-setup-for-an-installation-administrator" target="_blank" rel="noopener noreferrer">
+              Guide: optional backups of agent definitions ↗
+            </a>
+          </p>
         </section>
         <section className="lares-surface">
           <h2 className="lares-section-title">More settings</h2>

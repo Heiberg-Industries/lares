@@ -96,3 +96,15 @@ LAR-50 sign-off.
 
 The installed `test.3` image is a test pin, not a public release. Local CI,
 source tests and available empty states do not prove the remaining live states.
+
+## Subsequent owner review
+
+The owner reports the dirty-editor close check passed and an uploaded avatar
+remained after reload. Desktop screenshots now cover Connections, Preferences,
+Deadlines, agent detail/edit, Activity, Signals, Settings and Market watch.
+The installed image is still `b29fe92`; PR #32 source changes made after that
+image need a fresh exact-image review. Mobile review is intentionally later.
+On the blank Preferences screen, filtering cannot be proved without a
+disposable entry. The console design-system and density changes are recorded
+in `console-verification-2026-09-28.md`; they do not alter the LAR-50 backup,
+fresh-install, provider and teardown gates above.

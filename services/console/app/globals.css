@@ -76,7 +76,7 @@ html.dark {
   font: 500 24px/1.25 var(--font-sans);
 }
 .lares-page-header {
-  margin-bottom: 28px;
+  margin-bottom: var(--space-5);
 }
 .lares-page.lares-stack > .lares-page-header {
   margin-bottom: 8px;
@@ -102,7 +102,7 @@ th {
   align-items: center;
   justify-content: space-between;
   gap: 24px;
-  padding: 20px 0;
+  padding: var(--space-4) 0;
   border-top: 1px solid var(--border);
 }
 .lares-setting-row:last-child {
@@ -124,7 +124,7 @@ th {
 }
 .lares-event-table th,
 .lares-event-table td {
-  padding: 16px 18px;
+  padding: var(--space-3) var(--space-4);
 }
 .lares-event-table tr:last-child td {
   border-bottom: 0;
@@ -242,20 +242,13 @@ th {
   }
 }
 
-.lares-operational h2 {
-  font: var(--text-h3) !important;
-  margin-block: 28px 12px !important;
-}
-.lares-operational input,
-.lares-operational select,
-.lares-operational textarea,
-.lares-operational button {
-  font: var(--text-body-sm) !important;
-  border-radius: 10px !important;
-  min-height: 38px;
+.lares-operational > h2,
+.lares-operational > details h2 {
+  font: var(--text-h3);
+  margin-block: var(--space-5) var(--space-2);
 }
 .lares-operational .card {
-  padding: 16px;
+  padding: var(--space-4);
 }
 .lares-operational table.card {
   border-collapse: separate;
@@ -274,17 +267,88 @@ th {
   flex-wrap: wrap;
 }
 .lares-operational table td {
-  padding: 16px;
+  padding: var(--space-3);
 }
+.lares-operational-intro {
+  margin: var(--space-2) 0 var(--space-4);
+  font: var(--text-body-sm);
+}
+.lares-operational-note {
+  margin: var(--space-2) 0 var(--space-4);
+  font: var(--text-body-sm);
+}
+.lares-section-count { color: var(--muted-foreground); font: var(--text-body-sm); }
+.lares-stats-table {
+  margin-top: var(--space-2);
+  max-width: 30rem;
+}
+.lares-operational-filter {
+  margin-top: var(--space-3);
+}
+.lares-preferences-filter {
+  margin-top: var(--space-2);
+}
+.lares-preferences-domain { margin-top: var(--space-4); }
+.lares-domain-title { font: var(--text-label); margin: 0; }
+.lares-preferences-paste {
+  margin-top: var(--space-2);
+  min-height: 8rem;
+}
+.lares-result-card {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--lares-status-success);
+  border-radius: var(--lares-surface-radius);
+  background: color-mix(in oklch, var(--lares-status-success) 8%, var(--card));
+}
+.lares-operational-filter > [data-slot="input"] {
+  width: min(100%, 16rem);
+}
+.lares-control-card {
+  margin-top: var(--space-2);
+  max-width: 45rem;
+}
+.lares-control-card > .lares-muted {
+  margin: var(--space-2) 0 0;
+  font: var(--text-body-sm);
+}
+.lares-control-card > .lares-actions {
+  margin-top: var(--space-2);
+}
+.lares-checkbox-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  font: var(--text-body);
+}
+.lares-checkbox-row input {
+  accent-color: var(--primary);
+}
+.lares-short-input {
+  max-width: 6rem;
+}
+.lares-wide-input { min-width: min(100%, 14rem); }
+.lares-deadline-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  gap: var(--space-3);
+  max-width: 55rem;
+}
+.lares-deadline-submit { align-self: end; }
+.lares-inset-disclosure { margin-top: var(--space-4); }
+.lares-inset-disclosure > summary { cursor: pointer; font: var(--text-label); }
+.lares-form-success { color: var(--lares-status-success); font: var(--text-body-sm); }
+.lares-form-error { color: var(--destructive); font: var(--text-body-sm); }
 
 .lares-connections {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
-  gap: 16px;
-  margin-block: 24px;
+  gap: var(--space-3);
+  margin-block: var(--space-4);
 }
 .lares-connections details {
-  margin-top: 24px;
+  margin-top: var(--space-3);
   overflow-wrap: anywhere;
 }
 .lares-connections summary {
@@ -350,17 +414,19 @@ th {
   margin: 16px 0;
 }
 
-.lares-editor { max-width:880px; }
-.lares-editor h2 { font:var(--text-h3); margin:28px 0 14px; }
+.lares-editor { max-width:55rem; }
+.lares-editor-field { display:block; width:100%; max-width: 48rem; margin-bottom:var(--space-2); }
+.lares-effect-note { color: var(--muted-foreground); font: var(--text-body-sm); margin: var(--space-1) 0 var(--space-3); }
+.lares-editor h2 { font:var(--text-h3); margin:var(--space-5) 0 var(--space-3); }
 .lares-editor fieldset { min-width:0; }
-.lares-editor input:not([type=checkbox]):not([type=radio]), .lares-editor textarea, .lares-editor select { border:1px solid var(--border); border-radius:10px; background:var(--card); color:var(--foreground); font:var(--text-body); padding:12px; max-width:100%; }
+.lares-editor input:not([type=checkbox]):not([type=radio]), .lares-editor textarea, .lares-editor select { border:1px solid var(--border); border-radius:var(--lares-control-radius); background:var(--card); color:var(--foreground); font:var(--text-body); padding:var(--space-3); max-width:100%; }
 .lares-editor input[type=checkbox], .lares-editor input[type=radio] { accent-color:var(--primary); }
 .lares-editor label { font:var(--text-body); }
 .lares-editor p { color:var(--muted-foreground); }
-.lares-editor section { margin-bottom:24px; }
+.lares-editor section { margin-bottom:var(--space-4); }
 .lares-door-setup { display:grid; gap:14px; }
 .lares-door-setup > p { margin:0; }
-.lares-door-setup fieldset { min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:20px; border:1px solid var(--rule); border-radius:var(--lares-surface-radius); background:var(--card); }
+.lares-door-setup fieldset { min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-3); padding:var(--space-4); border:1px solid var(--rule); border-radius:var(--lares-surface-radius); background:var(--card); }
 .lares-door-setup legend { padding:0 8px; font:var(--text-h3); }
 .lares-door-setup fieldset > p, .lares-door-setup fieldset > ol { flex-basis:100%; margin:0; }
 .lares-door-setup fieldset > ol { padding-left:20px; }
@@ -387,9 +453,9 @@ th {
 .lares-create-dialog .lares-editor { width: 100%; }
 @media(max-width: 600px) { .lares-create-dialog { padding: 20px; max-height: calc(100dvh - 24px); } }
 
-.lares-disclosure { margin-top: 24px; padding: 20px 24px; border: 1px solid var(--rule); border-radius: 16px; background: var(--card); }
+.lares-disclosure { margin-top: var(--space-4); padding: var(--space-4); border: 1px solid var(--rule); border-radius: var(--lares-surface-radius); background: var(--card); }
 .lares-disclosure > summary { cursor: pointer; font-size: 16px; font-weight: 500; }
-.lares-disclosure[open] > summary { margin-bottom: 24px; }
+.lares-disclosure[open] > summary { margin-bottom: var(--space-4); }
 
 .lares-create-dialog > [data-slot="dialog-title"], .lares-create-dialog > [data-slot="dialog-description"] { margin: 0; }
 .lares-create-dialog .lares-editor section { margin-bottom: 16px; }

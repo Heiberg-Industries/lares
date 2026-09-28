@@ -16,7 +16,7 @@ export default async function ActivityPage({
   return (
     <div className="lares-page lares-stack">
       <PageHeader
-        title="Activity"
+        title="Permission activity"
         description="Permission decisions across your agents."
         actions={
           <Button variant="outline" asChild>
@@ -26,7 +26,7 @@ export default async function ActivityPage({
       />
       <form className="lares-actions" action="/activity">
         <label>
-          Agent name
+          Filter by agent name
           <Input
             name="agent"
             defaultValue={agent ?? ""}

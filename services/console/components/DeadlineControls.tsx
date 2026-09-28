@@ -14,29 +14,17 @@
  * already past; that module has no pool and nothing else in it, so it is safe for the client bundle.
  */
 import { useState, useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 import {
   addDeadline, addFromCandidate, dismiss, ignoreCandidate, markDone, mintStatutoryYear, resetRung,
   saveLadderEnabled,
 } from "../app/actions/deadlines";
 import { ruleDueDate } from "../lib/deadline-date";
 
-const inp = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 8px",
-  fontFamily: "var(--font-mono)", fontSize: 12, background: "var(--card)", color: "var(--ink)",
-} as const;
-
-const btn = {
-  border: "1px solid var(--rule)", borderRadius: 4, padding: "4px 10px",
-  background: "var(--signal)", color: "#fff", cursor: "pointer", fontSize: 12,
-} as const;
-
-const btnQuiet = {
-  ...btn, background: "var(--card)", color: "var(--ink)",
-} as const;
-
 function Msg({ msg }: { msg: { ok: boolean; text: string } | null }) {
   if (!msg) return null;
-  return <span className="mono" style={{ fontSize: 12, color: msg.ok ? "var(--ok)" : "var(--bad)" }}>{msg.text}</span>;
+  return <span role="status" className={msg.ok ? "lares-form-success" : "lares-form-error"}>{msg.text}</span>;
 }
 
 // ── Ladder ─────────────────────────────────────────────────────────────────────────────────────
@@ -58,12 +46,12 @@ export function LadderSwitch({ enabled }: { enabled: boolean }) {
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, maxWidth: 720 }}>
-      <label className="mono" style={{ fontSize: 13, display: "flex", gap: 8, alignItems: "baseline" }}>
+    <div className="card lares-control-card">
+      <label className="lares-checkbox-row">
         <input type="checkbox" checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
         {/* Both states are STATED (review fix): a bare "Escalation ladder" beside an unchecked box
             reads as a label whose value failed to render, not as a switch that is off. */}
-        <span>Escalation ladder{on ? " — ON" : " — OFF"}</span>
+        <span>Escalation ladder — {on ? "ON" : "OFF"}</span>
         <Msg msg={msg} />
       </label>
     </div>
@@ -156,20 +144,20 @@ export function OpenRow({ row }: { row: OpenDeadlineRow }) {
       <td>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 220 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button style={btnQuiet} disabled={pending} onClick={() => { setShowDone((v) => !v); setShowDismiss(false); }}>Done</button>
-            <button style={btnQuiet} disabled={pending} onClick={() => { setShowDismiss((v) => !v); setShowDone(false); }}>Dismiss</button>
-            {row.rung > 0 && <button style={btnQuiet} disabled={pending} onClick={bringBack}>Bring back</button>}
+            <Button variant="outline" disabled={pending} onClick={() => { setShowDone((v) => !v); setShowDismiss(false); }}>Done</Button>
+            <Button variant="outline" disabled={pending} onClick={() => { setShowDismiss((v) => !v); setShowDone(false); }}>Dismiss</Button>
+            {row.rung > 0 && <Button variant="outline" disabled={pending} onClick={bringBack}>Bring back</Button>}
           </div>
           {showDone && (
             <div style={{ display: "flex", gap: 6 }}>
-              <input style={inp} placeholder="Evidence (required)" value={evidence} onChange={(e) => setEvidence(e.target.value)} aria-label={`Evidence for ${row.title}`} />
-              <button style={btn} disabled={pending} onClick={submitDone}>Confirm done</button>
+              <Input className="lares-field" placeholder="Evidence (required)" value={evidence} onChange={(e) => setEvidence(e.target.value)} aria-label={`Evidence for ${row.title}`} />
+              <Button  disabled={pending} onClick={submitDone}>Confirm done</Button>
             </div>
           )}
           {showDismiss && (
             <div style={{ display: "flex", gap: 6 }}>
-              <input style={inp} placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label={`Dismiss reason for ${row.title}`} />
-              <button style={btn} disabled={pending} onClick={submitDismiss}>Confirm dismiss</button>
+              <Input className="lares-field" placeholder="Reason (required)" value={reason} onChange={(e) => setReason(e.target.value)} aria-label={`Dismiss reason for ${row.title}`} />
+              <Button  disabled={pending} onClick={submitDismiss}>Confirm dismiss</Button>
             </div>
           )}
           <Msg msg={msg} />
@@ -219,25 +207,25 @@ export function AddForm() {
   }
 
   return (
-    <div className="card" style={{ padding: 12, marginTop: 8, display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", maxWidth: 900 }}>
-      <input style={inp} placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
-      <input style={inp} placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title" />
-      <input style={inp} type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label="Due date" />
-      <select style={inp} value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])} aria-label="Source">
+    <div className="card lares-deadline-form">
+      <label className="lares-field-label">Entity<Input placeholder="Company or person" value={entity} onChange={(e) => setEntity(e.target.value)} /></label>
+      <label className="lares-field-label">Title<Input placeholder="What is due" value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <label className="lares-field-label">Due date<Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></label>
+      <label className="lares-field-label">Source<select className="lares-field" value={source} onChange={(e) => setSource(e.target.value as (typeof SOURCES)[number])}>
         {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
-      </select>
-      <select style={inp} value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])} aria-label="Recurrence">
+      </select></label>
+      <label className="lares-field-label">Repeats<select className="lares-field" value={recurrence} onChange={(e) => setRecurrence(e.target.value as (typeof RECURRENCES)[number])}>
         {RECURRENCES.map((r) => <option key={r} value={r}>{r}</option>)}
-      </select>
-      <input style={{ ...inp, minWidth: 200 }} placeholder="Consequence (optional)" value={consequence} onChange={(e) => setConsequence(e.target.value)} aria-label="Consequence" />
+      </select></label>
+      <label className="lares-field-label">Consequence (optional)<Input placeholder="What happens if missed" value={consequence} onChange={(e) => setConsequence(e.target.value)} /></label>
       {isRenewal && (
         <>
-          <input style={inp} placeholder="Vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} aria-label="Vendor" />
-          <input style={{ ...inp, width: 90 }} type="number" step="0.01" min="0" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} aria-label="Amount" />
-          <input style={{ ...inp, width: 60 }} placeholder="NOK" value={currency} onChange={(e) => setCurrency(e.target.value)} aria-label="Currency" maxLength={3} />
+          <label className="lares-field-label">Vendor<Input placeholder="Vendor" value={vendor} onChange={(e) => setVendor(e.target.value)} /></label>
+          <label className="lares-field-label">Amount<Input type="number" step="0.01" min="0" placeholder="Amount" value={amount} onChange={(e) => setAmount(e.target.value)} /></label>
+          <label className="lares-field-label">Currency<Input placeholder="NOK" value={currency} onChange={(e) => setCurrency(e.target.value)} maxLength={3} /></label>
         </>
       )}
-      <button style={btn} disabled={pending} onClick={submit}>{pending ? "Adding…" : "Add"}</button>
+      <div className="lares-actions lares-deadline-submit"><Button disabled={pending} onClick={submit}>{pending ? "Adding…" : "Add deadline"}</Button></div>
       <Msg msg={msg} />
     </div>
   );
@@ -297,8 +285,8 @@ export function MintForm({
         Confirm each date against the authority before minting — these are the standing dates, not a feed.
       </p>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
-        <input style={inp} placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
-        <input style={{ ...inp, width: 90 }} type="number" value={fiscalYear} onChange={(e) => setFiscalYear(Number(e.target.value))} aria-label="Fiscal year" />
+        <Input className="lares-field" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Entity" />
+        <Input className="lares-short-input" type="number" value={fiscalYear} onChange={(e) => setFiscalYear(Number(e.target.value))} aria-label="Fiscal year" />
         <span style={{ color: "var(--mist)", fontSize: 12 }}>Jurisdiction: NO-AS</span>
       </div>
       <table>
@@ -325,7 +313,7 @@ export function MintForm({
         </tbody>
       </table>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12 }}>
-        <button style={btn} disabled={pending} onClick={submit}>{pending ? "Minting…" : "Mint this year"}</button>
+        <Button  disabled={pending} onClick={submit}>{pending ? "Minting…" : "Mint this year"}</Button>
         <Msg msg={msg} />
       </div>
     </div>
@@ -384,15 +372,15 @@ export function CandidateRow({ candidate }: { candidate: CandidateDTO }) {
       <td>
         <div style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 260 }}>
           <div style={{ display: "flex", gap: 6 }}>
-            <button style={btnQuiet} disabled={pending} onClick={() => setAdding((v) => !v)}>Add</button>
-            <button style={btnQuiet} disabled={pending} onClick={submitIgnore}>Ignore</button>
+            <Button variant="outline" disabled={pending} onClick={() => setAdding((v) => !v)}>Add</Button>
+            <Button variant="outline" disabled={pending} onClick={submitIgnore}>Ignore</Button>
           </div>
           {adding && (
             <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <input style={inp} placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label={`Entity for ${candidate.subject}`} />
-              <input style={inp} placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label={`Title for ${candidate.subject}`} />
-              <input style={inp} type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label={`Due date for ${candidate.subject}`} />
-              <button style={btn} disabled={pending} onClick={submitAdd}>Confirm add</button>
+              <Input className="lares-field" placeholder="Entity" value={entity} onChange={(e) => setEntity(e.target.value)} aria-label={`Entity for ${candidate.subject}`} />
+              <Input className="lares-field" placeholder="Title" value={title} onChange={(e) => setTitle(e.target.value)} aria-label={`Title for ${candidate.subject}`} />
+              <Input className="lares-field" type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} aria-label={`Due date for ${candidate.subject}`} />
+              <Button  disabled={pending} onClick={submitAdd}>Confirm add</Button>
             </div>
           )}
           <Msg msg={msg} />
