@@ -2,7 +2,7 @@
 import { useState, useTransition } from "react";
 import type { NotionProposalDTO, FrozenDocDTO } from "../lib/notion-proposals";
 import { approveConsequence, rejectConsequence } from "@lares/agent-box/lib/notion-proposals.js";
-import { NOTION_RESOLVE_COMMAND } from "../lib/contracts";
+import { NOTION_RESOLVE_GUIDANCE } from "../lib/contracts";
 
 async function postAction(id: number, action: "approve" | "reject"): Promise<void> {
   const res = await fetch("/api/notion-proposals", {
@@ -102,32 +102,31 @@ export function NotionProposalsCard(p: { proposals: NotionProposalDTO[]; frozen:
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
         Frozen {p.frozen.length > 0 && `(${p.frozen.length})`}
       </h2>
-      <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Conflicts nothing here can resolve automatically — a human picks a side, on the box, with
-        the daemon quiesced. <code>--keep md</code> overwrites the Notion page from the vault;{" "}
-        <code>--keep notion</code> queues a proposal you still approve.
-      </p>
-      <pre
-        className="mono"
-        style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: 12, marginTop: 8, color: "var(--mist)" }}
-      >
-        {NOTION_RESOLVE_COMMAND}
-      </pre>
       {p.frozen.length === 0 ? (
         <p style={{ color: "var(--mist)", fontSize: 13, marginTop: 8 }}>Nothing frozen.</p>
       ) : (
-        <table className="card" style={{ marginTop: 8 }}>
-          <thead><tr><th>Path</th><th>Reason</th><th>Frozen</th></tr></thead>
-          <tbody>
-            {p.frozen.map((row) => (
-              <tr key={row.vaultPath}>
-                <td className="mono">{row.vaultPath}</td>
-                <td style={{ color: "var(--mist)" }}>{row.reason ?? "—"}</td>
-                <td style={{ color: "var(--mist)" }}>{row.frozenAt.slice(0, 10)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <>
+          <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
+            Conflicts nothing here can resolve automatically — a human picks a side, on the box, with
+            the daemon quiesced. <code>--keep md</code> overwrites the Notion page from the vault;{" "}
+            <code>--keep notion</code> queues a proposal you still approve.
+          </p>
+          <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 8 }}>
+            {NOTION_RESOLVE_GUIDANCE}
+          </p>
+          <table className="card" style={{ marginTop: 8 }}>
+            <thead><tr><th>Path</th><th>Reason</th><th>Frozen</th></tr></thead>
+            <tbody>
+              {p.frozen.map((row) => (
+                <tr key={row.vaultPath}>
+                  <td className="mono">{row.vaultPath}</td>
+                  <td style={{ color: "var(--mist)" }}>{row.reason ?? "—"}</td>
+                  <td style={{ color: "var(--mist)" }}>{row.frozenAt.slice(0, 10)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </>
       )}
     </>
   );

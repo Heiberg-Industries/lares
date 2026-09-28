@@ -178,3 +178,30 @@ PR #32 now reads the valid agent list for proactivity controls and writes, and
 uses generic meeting copy. Focused proactivity tests and typecheck pass. Email
 writing style still exposes legacy learn-key choices and has no mailbox cards
 until a learn run; that workflow has not been verified on this test install.
+
+### Fresh-target restore and restored console check
+
+The owner rebuilt the same disposable Hetzner server again. Its new SSH key was
+matched to the fingerprint read inside Hetzner Console, and the clean Ubuntu
+disk had no Lares directories. Exact PR #32 source `2d3031c` installed the
+existing digest-pinned test manifest with the saved, separately encrypted
+credentials. The new database was then replaced with all five verified dumps,
+and portable agent files and configuration were restored. Table and key row
+counts matched the export. Keeper's first agent reconcile exposed a missing
+step in the portable export: `/srv/lares/secrets` was intentionally excluded,
+but LiteLLM still held the old agent key alias. The single obsolete hashed key
+was removed through the local gateway API; Keeper's audited retry regenerated
+the agent runtime files and returned no pending change.
+
+The owner session opened Home with `console-proof`; the old chat transcript
+loaded. One new bounded provider-backed turn completed Gmail and Calendar
+reads, returned only counts, and survived page reload. Connections still
+showed the live one-mailbox, five-scope account and Ask first agent grants.
+This is live restore and chat proof, separate from local design completion.
+The installed console image remains the older test digest, so its catalogue
+still labels fleet services as Google consumers and its empty Notion section
+shows an operator command for the old layout. PR #32 source now gives a
+never-run Notion sync an honest empty state, hides frozen recovery guidance
+until a frozen row exists, and no longer prints a host command whose compose
+layout it cannot verify. The source change is not yet deployed. Other configured, pending and failure
+states in the screen inventory remain unverified, and LAR-50 stays open.

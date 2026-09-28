@@ -45,6 +45,9 @@ export default async function IntegrationsPage({
       getNotionProposalsView(),
       getCrmStatus(),
     ]);
+  const noNotionRun = !notionSync.unavailable && notionSync.lastRunAt === null &&
+    notionSync.synced === 0 && notionSync.needsYou === 0 &&
+    notionSync.retrying === 0 && notionSync.unmatched === 0;
 
   return (
     <div className="lares-page lares-operational">
@@ -91,6 +94,10 @@ export default async function IntegrationsPage({
       {notionSync.unavailable ? (
         <p className="mono" style={{ marginTop: 8, color: "var(--bad)" }}>
           Status unavailable.
+        </p>
+      ) : noNotionRun ? (
+        <p className="mono" style={{ marginTop: 8, color: "var(--mist)" }}>
+          No sync run recorded. Check the service setup before expecting Notion changes here.
         </p>
       ) : (
         <p className="mono" style={{ marginTop: 8 }}>

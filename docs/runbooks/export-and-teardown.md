@@ -239,14 +239,74 @@ rm -rf "$CHECK"
 
 ## 5. Restoring on a fresh server
 
-> **Current `/opt/lares` installations:** the commands below still describe the
-> older `/opt/agent-box` layout. A current fresh install creates `lares_state`,
-> `litellm`, `empty_workflow` and `postgres` before this manual restore, so the
-> `CREATE DATABASE` loop below would refuse. Do not run this section verbatim on
-> `/opt/lares` or drop the live databases to make it pass. The 28 September
-> LAR-50 rehearsal has verified all five dumps in separate scratch databases,
-> but has not yet restored a whole current installation. Its exact fresh-target
-> sequence will be recorded here after that rehearsal.
+> **Current `/opt/lares` installations:** the commands in 5a–5d below describe
+> the older `/opt/agent-box` layout. Do not run them verbatim on `/opt/lares`.
+> The current-layout procedure just below was rehearsed on a separately rebuilt,
+> disposable Ubuntu server on 28 September 2026; its exact results are in
+> [golden-path-runs.md](golden-path-runs.md). It is an operator procedure, not an
+> automatic `install.sh --restore` path.
+
+### Current `/opt/lares` restore sequence, rehearsed on a disposable target
+
+1. Verify the new server's SSH host key through the provider's console and pin
+   it before transferring the escrow. Install the same digest-pinned release
+   and Postgres image used for the export. If reusing the original credentials,
+   stream only `installation.env`, `console-oauth.env` and `secrets/` from the
+   separate `/etc/lares` escrow before installing. This leaves installer marker
+   files out until the fresh installer has created its databases. Preserve the
+   age identity and ciphertext off the box until the live checks finish.
+2. Stop application services, leaving the new Postgres container up. Decrypt
+   the export over the pinned SSH connection into a root-only directory on the
+   new server. Verify each file's size and SHA-256 against `manifest.json`
+   **before** replacing databases. The rehearsal used `/var/tmp/lares-restore`.
+
+   ```bash
+   docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml stop
+   docker compose -f /opt/lares/compose.yaml stop console caddy lares-gateway
+   ```
+
+3. On that *fresh, disposable target only*, replace the four databases created
+   by the installer, using the database container's matching `pg_restore`.
+   `postgres` already exists and its dump is restored into it. The fresh
+   `lares` role already uses the escrowed database password; `globals.sql` is
+   verified in the manifest but was not replayed in this rehearsal.
+
+   ```bash
+   RESTORE=/var/tmp/lares-restore
+   DC='docker compose -f /opt/lares/compose.yaml'
+   for db in empty_workflow litellm lares_1d1570450fea4a59aa0319dc72f7e376 lares_state; do
+     $DC exec -T db dropdb -U lares --if-exists --force "$db" </dev/null
+     $DC exec -T db createdb -U lares "$db" </dev/null
+     $DC exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U lares -d "$db" < "$RESTORE/$db.dump"
+   done
+   $DC exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U lares -d postgres < "$RESTORE/postgres.dump"
+   ```
+
+   The agent database name above belongs to this particular export. On another
+   export, derive the list from verified `.dump` names and validate each name
+   before using it in a shell command. Redirect non-restore `docker compose
+   exec` calls from `/dev/null` when the loop itself is read from standard
+   input; otherwise a child process can consume the rest of the script.
+4. Extract `agents.tar` and `retired.tar` under `/srv/lares`, then restore the
+   complete `/etc/lares` escrow (including Keeper's configured Google client).
+   Start the base compose file, then the Keeper compose file with
+   `--env-file /etc/lares/keeper.env`. Verify table and key row counts, HTTPS
+   sign-in, the owner session, agent definition, and OAuth connection.
+5. This export intentionally excludes `/srv/lares/secrets`. A restored LiteLLM
+   database can therefore retain an agent key alias whose plaintext is gone.
+   In the rehearsal, exactly one `lares-agent-console-proof` hashed key existed.
+   Its first audited Keeper reconcile failed; the operator verified that no
+   old runtime existed, removed only that obsolete hash through LiteLLM's
+   authenticated local `/key/delete` API, and retried
+   `definition.reconcile` with the saved definition hash. Keeper then created
+   new runtime secrets and reached `pending: false`. Never delete a key by
+   alias alone or apply this rotation to a running agent. A general-purpose
+   restore command still needs a guarded version of this step.
+6. Confirm the restored conversation after reload and perform a bounded live
+   provider read using the restored OAuth token. The rehearsal completed Gmail
+   and Calendar reads without a write. Only after this proof should the
+   temporary extracted files and off-box age escrow for this rehearsal be
+   removed. This procedure does not configure nightly backup protection.
 
 This is the path `services/box/ops/restore-drill.sh` rehearses every month against the nightly
 snapshot: create a database, `pg_restore` the dump into it through the container, count the
