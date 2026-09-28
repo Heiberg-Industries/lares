@@ -26,6 +26,7 @@ export default async function ChatAgentPage({
       <Chat
         name={name}
         owner={owner}
+        fresh={notice.ready !== null}
         agents={agents.map(({ name, displayName, role, avatarVersion }) => ({
           name,
           displayName,

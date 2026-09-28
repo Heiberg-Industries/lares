@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -103,7 +103,7 @@ describe("how the install ends", () => {
     stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
     mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
     writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
-      "GOOGLE_CLIENT_ID_CONSOLE=fixture-id\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
+      "GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
     const result = runWithStdin([], answers);
     expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
@@ -118,6 +118,18 @@ describe("how the install ends", () => {
     expect(result.stderr).toContain("console-oauth.env");
     expect(result.stderr).toContain("GOOGLE_CLIENT_ID_CONSOLE");
   }, 20_000);
+
+  it("refuses a client ID copied with an adjacent JSON field before changing the box", () => {
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
+      'GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com","project_id\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n');
+    const result = runWithStdin([], answers);
+    expect(result.code).toBe(78);
+    expect(result.stderr).toMatch(/client ID.*malformed/);
+    expect(result.stderr).not.toContain("fixture-secret");
+    expect(existsSync(join(prefix, "etc", "lares", "secrets"))).toBe(false);
+    expect(readFileSync(log, "utf8")).not.toMatch(/curl|docker compose .*up/);
+  });
 
   it("says honestly what remains, and does not ask about it now", () => {
     stub("curl", "exit 0");

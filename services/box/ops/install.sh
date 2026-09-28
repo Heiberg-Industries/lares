@@ -524,6 +524,13 @@ if [ "$REPAIR_MODE" -eq 0 ]; then
   fi
 fi
 
+# The owner may have saved OAuth credentials before running this installer. Validate the
+# public client ID while preflight can still refuse without writing installation secrets.
+if [ "$DRY_RUN" -eq 0 ] && [ -f "$PREFIX/etc/lares/console-oauth.env" ] && \
+   ! grep -Eq '^GOOGLE_CLIENT_ID_CONSOLE=[0-9]+-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com$' "$PREFIX/etc/lares/console-oauth.env"; then
+  problem "the Google console client ID is malformed" "save only the client_id value ending in .apps.googleusercontent.com in $PREFIX/etc/lares/console-oauth.env, without quotes or adjacent JSON fields"
+fi
+
 # --- report --------------------------------------------------------------------------------
 if [ -s "$WARNINGS" ]; then
   say "warnings (this can still go ahead):"
@@ -1069,11 +1076,13 @@ run_wizard() {
 
     # Time zone (owner decision C4): read from the server, never asked.
     OWNER_HOME_TZ=""
-    if [ -r /etc/timezone ]; then
-      OWNER_HOME_TZ=$(cat /etc/timezone 2>/dev/null | tr -d '[:space:]') || OWNER_HOME_TZ=""
-    fi
-    if [ -z "$OWNER_HOME_TZ" ] && command -v timedatectl >/dev/null 2>&1; then
+    # timedatectl follows the active /etc/localtime link. On Ubuntu, /etc/timezone can
+    # remain stale after set-timezone, so consult it only when timedatectl is unavailable.
+    if command -v timedatectl >/dev/null 2>&1; then
       OWNER_HOME_TZ=$(timedatectl show -p Timezone --value 2>/dev/null) || OWNER_HOME_TZ=""
+    fi
+    if [ -z "$OWNER_HOME_TZ" ] && [ -r /etc/timezone ]; then
+      OWNER_HOME_TZ=$(cat /etc/timezone 2>/dev/null | tr -d '[:space:]') || OWNER_HOME_TZ=""
     fi
 
     write_installation_env

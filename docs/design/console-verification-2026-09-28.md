@@ -93,3 +93,29 @@ the documented install, then create and verify an off-box encrypted export of
 the **new** installation before a second reprovision and restore rehearsal.
 The existing export script targets the older installation and needs repair
 before that later backup. Neither reprovision has happened yet.
+
+### Rebuilt-server checkpoint
+
+The owner rebuilt the same test server from Ubuntu 24.04 and ran the real
+installer from pinned source `4d8d00d` with the `2026-09-28-console-test.2`
+manifest. The fresh schema reached `089_agent_avatars.sql`; the live model
+check and one subsequent provider-backed `console-proof` chat reply succeeded.
+Google sign-in initially failed because the saved public client ID contained
+an adjacent JSON fragment. After correcting that one field, sign-in as the
+owner succeeded. The agent was created through the live wizard with only
+Gmail and Calendar capabilities and no schedules; its first response survived
+reload. The first chat view briefly showed an inaccessible conversation until
+**New conversation** was used.
+The same hostname and agent slug had been used in an earlier disposable
+installation, leaving a stale browser session key. PR #32 now clears that key
+on the explicit `created=1` transition and then removes the one-time URL flag,
+so a later reload can resume the new conversation normally.
+
+The installer also copied a stale `/etc/timezone` value (Etc/UTC) despite the
+active Europe/Oslo host clock. The test installation was repaired and Settings
+now displays Europe/Oslo. PR #32 contains installer checks for both input
+defects and an accurate notice for disabled optional Git definition backup.
+Those source corrections are not in the deployed test image. The Backup page
+still says **Not protected**; Google data consent, agent-level Calendar/Gmail
+reads, brief/heartbeat, and restore rehearsal remain unverified on this
+rebuilt installation. LAR-50 stays open.

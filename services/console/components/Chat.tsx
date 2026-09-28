@@ -63,10 +63,12 @@ function tabStorage(): Storage | null {
 export function Chat({
   name,
   owner,
+  fresh = false,
   agents = [],
 }: {
   name: string;
   owner: string;
+  fresh?: boolean;
   agents?: ChatIdentity[];
 }) {
   const storageKey = chatSessionKey(owner, name);
@@ -79,11 +81,19 @@ export function Chat({
   // agent or owner gets a new binding before its Eve hook can mount under the wrong host.
   useEffect(() => {
     const storage = tabStorage();
+    if (fresh && storage) {
+      storage.removeItem(storageKey);
+      storage.removeItem(`${storageKey}:draft`);
+      storage.removeItem(`${storageKey}:scroll`);
+      const url = new URL(window.location.href);
+      url.searchParams.delete("created");
+      window.history.replaceState(window.history.state, "", url);
+    }
     setBinding({
       key: storageKey,
-      session: storage ? readChatSession(storage, storageKey) : null,
+      session: storage && !fresh ? readChatSession(storage, storageKey) : null,
     });
-  }, [storageKey]);
+  }, [storageKey, fresh]);
 
   if (binding?.key !== storageKey) return <p role="status">Opening chat…</p>;
   return (
