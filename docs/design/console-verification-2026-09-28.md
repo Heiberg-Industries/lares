@@ -56,6 +56,11 @@ temporary-hostname step above for this test. One exact console image was
 published from `6889c0e` and anonymously pulled by that server. The fresh
 installer completed after a missing host Node/pnpm/toolchain prerequisite was
 repaired; its real model check succeeded and box migration `089_agent_avatars.sql`
-applied. The current evidence and remaining gates are in
-[`golden-path-runs.md`](../runbooks/golden-path-runs.md). No authenticated screen,
-first-agent or chat proof has been recorded yet. LAR-50 remains open.
+applied. Google sign-in, one restricted first-agent creation and a provider-backed
+web-chat reply with transcript reload now have live proof. Agent creation reported
+an unknown-outcome timeout although Keeper completed it. Owner-scoped tools first
+failed because the generated console stack omitted the owner's identity; PR #32
+now includes the renderer fix and the test stack was repaired. Calendar/Gmail,
+brief/heartbeat, backup/restore and all configured tool states still need proof.
+The current evidence and remaining gates are in
+[`golden-path-runs.md`](../runbooks/golden-path-runs.md). LAR-50 remains open.

@@ -458,7 +458,22 @@ elif ! docker compose version >/dev/null 2>&1; then
     "install the compose plugin (apt-get install -y docker-compose-plugin), then run this again."
 fi
 
-# --- 5. ports 80 and 443 ------------------------------------------------------------------
+# --- 5. host tools used later by the real install -----------------------------------------
+# render-stack, migrations and first-owner run from this checkout through pnpm. Check them
+# during the dry run, before generating secrets or starting containers.
+if ! command -v node >/dev/null 2>&1; then
+  problem "Node.js is not installed; this installer needs Node.js 24 on the host." \
+    "install Node.js 24, then run pnpm install --frozen-lockfile in the Lares checkout and retry."
+fi
+if ! command -v pnpm >/dev/null 2>&1; then
+  problem "pnpm is not installed; this installer needs pnpm 9.15.0 on the host." \
+    "install pnpm 9.15.0, run pnpm install --frozen-lockfile in the Lares checkout, and retry."
+elif [ ! -x "$BOX_DIR/node_modules/.bin/tsx" ]; then
+  problem "the Lares checkout's box dependencies are not installed." \
+    "run pnpm install --frozen-lockfile from the Lares repository root, then retry."
+fi
+
+# --- 6. ports 80 and 443 ------------------------------------------------------------------
 SS_OUT=$(ss -ltn 2>/dev/null) || SS_OUT=""
 BLOCKED=$(printf '%s\n' "$SS_OUT" | awk '{ print $4 }' | grep -E ':(80|443)$' | tr '\n' ' ') || BLOCKED=""
 if [ -n "$BLOCKED" ]; then
@@ -474,7 +489,7 @@ if [ -n "$BLOCKED" ]; then
   fi
 fi
 
-# --- 6. an existing installation ----------------------------------------------------------
+# --- 7. an existing installation ----------------------------------------------------------
 # Found, not fixed: a partial install is reported as what it is, never silently repaired
 # by this slice.
 REPAIR_MODE=0
