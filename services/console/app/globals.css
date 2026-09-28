@@ -358,6 +358,16 @@ th {
 .lares-editor label { font:var(--text-body); }
 .lares-editor p { color:var(--muted-foreground); }
 .lares-editor section { margin-bottom:24px; }
+.lares-door-setup { display:grid; gap:14px; }
+.lares-door-setup > p { margin:0; }
+.lares-door-setup fieldset { min-width:0; display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:20px; border:1px solid var(--rule); border-radius:var(--lares-surface-radius); background:var(--card); }
+.lares-door-setup legend { padding:0 8px; font:var(--text-h3); }
+.lares-door-setup fieldset > p, .lares-door-setup fieldset > ol { flex-basis:100%; margin:0; }
+.lares-door-setup fieldset > ol { padding-left:20px; }
+.lares-door-setup label { display:grid; gap:6px; min-width:min(100%,220px); }
+.lares-door-setup form { display:flex; flex-wrap:wrap; align-items:end; gap:12px; }
+.lares-door-setup form input[type=hidden] { display:none; }
+.lares-door-setup > button { justify-self:start; }
 .lares-editor-actions { display:flex; justify-content:flex-end; gap:12px; padding-top:24px; border-top:1px solid var(--border); }
 .lares-steps { list-style:none; display:flex; justify-content:space-between; gap:12px; padding:0 0 16px; margin:0 0 24px; border-bottom:1px solid var(--border); font:var(--text-mono-sm); color:var(--muted-foreground); }
 .lares-steps [aria-current=step] { color:var(--foreground); }

@@ -65,7 +65,12 @@ connected the Google mailbox and approved access for the disposable agent. A
 missing Keeper Google configuration and incorrect credential file modes needed
 manual repair; the agent's Calendar and Gmail read request then returned counts
 and survived reload. The deployed chat still renders two ordinary tool parts as
-generic placeholders, now fixed in PR #32 source. Brief/heartbeat,
+generic placeholders; PR #32 source now labels tool activity without showing
+private results. The live editor also exposed unstyled connection controls and
+10-second lifecycle timeouts; the branch now uses the shared button component,
+scoped door layout and a 60-second timeout for creation and reconciliation.
+These source changes have not been redeployed or visually rechecked on the test
+server. Brief/heartbeat,
 backup/restore, a clean installer run and all configured tool states still need proof.
 The current evidence and remaining gates are in
 [`golden-path-runs.md`](../runbooks/golden-path-runs.md). LAR-50 remains open.
