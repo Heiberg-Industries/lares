@@ -49,10 +49,9 @@ export default async function VoicePage() {
 
       <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>Learn settings</h2>
       <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 4 }}>
-        Model alias overrides — leave empty to use the <span className="mono">writer</span> purpose, which the gateway maps to a model.
+        Limit how far back learning reads Sent mail and how many messages it checks per mailbox.
       </p>
       <VoiceSettings
-        modelEn={def.modelEn} modelNo={def.modelNo} learnKey={def.learnKey}
         lookbackDays={def.lookbackDays} cap={def.cap}
       />
 

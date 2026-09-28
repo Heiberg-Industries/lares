@@ -28,12 +28,15 @@ export async function saveCard(input: { id: string; core: string; english: strin
   revalidatePath("/voice");
 }
 
-export async function saveSettings(input: { modelEn: string; modelNo: string; learnKey: string; lookbackDays: number; cap: number }): Promise<void> {
+export async function saveSettings(input: { lookbackDays: number; cap: number }): Promise<void> {
   const email = await requireUser();
+  if (!Number.isInteger(input.lookbackDays) || input.lookbackDays < 1 || input.lookbackDays > 3650 ||
+      !Number.isInteger(input.cap) || input.cap < 1 || input.cap > 300)
+    throw new Error("Choose 1–3650 lookback days and a message cap of 1–300.");
   await pool.query(
-    `UPDATE voice_profile SET model_en = $1, model_no = $2, learn_key = $3, learn_lookback_days = $4, learn_cap = $5,
-            updated_by = $6, updated_at = now() WHERE id = 'default'`,
-    [input.modelEn || null, input.modelNo || null, input.learnKey, input.lookbackDays, input.cap, email],
+    `UPDATE voice_profile SET learn_lookback_days = $1, learn_cap = $2,
+            updated_by = $3, updated_at = now() WHERE id = 'default'`,
+    [input.lookbackDays, input.cap, email],
   );
   revalidatePath("/voice");
 }

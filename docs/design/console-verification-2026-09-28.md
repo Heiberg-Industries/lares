@@ -205,3 +205,9 @@ never-run Notion sync an honest empty state, hides frozen recovery guidance
 until a frozen row exists, and no longer prints a host command whose compose
 layout it cannot verify. The source change is not yet deployed. Other configured, pending and failure
 states in the screen inventory remain unverified, and LAR-50 stays open.
+
+Source review also found that Email writing style exposed model and learn-key
+fields that the current `voice-learn` schedule never reads. PR #32 now shows
+only the live lookback and per-mailbox message-cap settings, bounds their writes,
+and uses the console's rounded control treatment. This needs an exact-image
+visual check; no Sent-mail learning run has been exercised on the test server.
