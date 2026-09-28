@@ -452,10 +452,10 @@ esac
 # --- 4. Docker ---------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   problem "docker is not installed." \
-    "install it from your distribution's own packages (on Ubuntu: apt-get install -y docker.io docker-compose-plugin), then run this again."
+    "install it from your distribution's own packages (on Ubuntu 24.04: apt-get install -y docker.io docker-compose-v2), then run this again."
 elif ! docker compose version >/dev/null 2>&1; then
   problem "'docker compose' is not available (docker is installed, but the compose plugin is not)." \
-    "install the compose plugin (apt-get install -y docker-compose-plugin), then run this again."
+    "install the Compose v2 package (apt-get install -y docker-compose-v2), then run this again."
 fi
 
 # --- 5. host tools used later by the real install -----------------------------------------
@@ -504,7 +504,7 @@ if [ "$REPAIR_MODE" -eq 0 ]; then
   say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
   say "  1) start fresh (the default)"
   say "  2) check a backup archive — or pass --restore <archive> next time to skip this question"
-  if [ "$ASSUME_YES" != "1" ]; then
+  if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" -eq 0 ]; then
     if [ -t 0 ]; then
       printf 'install: start fresh, or check a backup archive? [F/r] ' >&2
       IFS= read -r SCREEN_ONE_ANSWER || SCREEN_ONE_ANSWER=""

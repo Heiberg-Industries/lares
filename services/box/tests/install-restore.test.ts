@@ -161,9 +161,11 @@ describe("screen one: start fresh, or restore from a backup", () => {
 
   it("asks before anything else, and both answers are on screen one", () => {
     const r = run(["--dry-run"], { LARES_ASSUME_YES: "" });
+    expect(r.code).toBe(0);
     const firstScreen = r.stdout.split("\n").slice(0, 12).join("\n");
     expect(firstScreen).toMatch(/start fresh/i);
     expect(firstScreen).toMatch(/restore/i);
+    expect(readdirSync(prefix)).toEqual([]);
   });
 
   it("refuses a restore it cannot read, and never half-restores", () => {
