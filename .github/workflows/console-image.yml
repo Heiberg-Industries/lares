@@ -20,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish the built image (also requires PUBLISH_IMAGES)
+        description: Publish this exact manually selected ref
         type: boolean
         default: false
 
@@ -89,7 +89,7 @@ jobs:
           context: .
           file: services/console/Dockerfile
           platforms: linux/amd64
-          push: "${{ vars.PUBLISH_IMAGES == 'true' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}"
+          push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}"
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
