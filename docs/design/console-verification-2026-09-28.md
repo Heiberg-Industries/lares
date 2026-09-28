@@ -291,7 +291,7 @@ internal service nickname. No data flow or provider operation changed.
 
 Existing populated Preferences fixtures cover combined filters, empty matches,
 facet options, freshness, sorting and unreadable entries. The focused
-Preferences and Backup tests (59), console typecheck and production build pass
+Preferences and Backup tests (64), console typecheck and production build pass
 locally. A live
 populated Preferences page, the new image's typography and density, and actual
 Backup/Signals failure rendering still need exact-image browser review. The
