@@ -239,6 +239,15 @@ rm -rf "$CHECK"
 
 ## 5. Restoring on a fresh server
 
+> **Current `/opt/lares` installations:** the commands below still describe the
+> older `/opt/agent-box` layout. A current fresh install creates `lares_state`,
+> `litellm`, `empty_workflow` and `postgres` before this manual restore, so the
+> `CREATE DATABASE` loop below would refuse. Do not run this section verbatim on
+> `/opt/lares` or drop the live databases to make it pass. The 28 September
+> LAR-50 rehearsal has verified all five dumps in separate scratch databases,
+> but has not yet restored a whole current installation. Its exact fresh-target
+> sequence will be recorded here after that rehearsal.
+
 This is the path `services/box/ops/restore-drill.sh` rehearses every month against the nightly
 snapshot: create a database, `pg_restore` the dump into it through the container, count the
 tables. The drill restores into throwaway databases; here you are restoring into the real ones
