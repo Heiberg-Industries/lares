@@ -121,3 +121,35 @@ On the blank Preferences screen, filtering cannot be proved without a
 disposable entry. The console design-system and density changes are recorded
 in `console-verification-2026-09-28.md`; they do not alter the LAR-50 backup,
 fresh-install, provider and teardown gates above.
+
+## Owner's final desktop check before the next visual pass
+
+There is no saved Preferences entry on this disposable installation. To test a
+populated view without importing personal files, open **Preferences → Paste a
+list** and choose **places — one place per line**. Use list name `Console QA`,
+city `Oslo`, country `Norway`, and one line `Console QA Test Place`. Save,
+reload, and confirm that one places row appears with the list, city and country
+available in filters. Filter **Name contains** with `Console QA`, then with
+`no-match-qa`, and use **Reset**. Confirm the positive row, the explicit
+no-match message, and the restored full view. Delete only the `Console QA Test
+Place` row, accept its permanent-delete prompt, reload, and confirm the count
+returns to zero. Do not import a real Google Takeout archive for this check.
+
+The owner already showed the current image preview and applied Google mailbox
+in the editor; the source and prior live check cover image persistence after
+reload and current connection status. No further provider-backed request is
+needed for this UI pass. Do not click **Enable door**, **Disable door**,
+**Retire agent**, **Delete agent**, permission-level controls, or account
+**Connect** merely for a visual check; those change live state.
+
+The new screenshots still show the agent editor's long open Slack and Telegram
+setup blocks, uneven field/button rows, and a Save definition button visually
+crowding the image card. The Connections Google account card is much taller
+than its content; its permissions explanation and table are comparatively
+dense. These are specific next-pass visual targets, not a reason to erase the
+restored server. `TasteImport.tsx` and `TasteEntryRow.tsx` also retain inline
+pixel spacing/font-size declarations despite the design-system-only direction.
+Audit those and other remaining operational components for shared tokens and
+primitives before the next image. Do not claim a font-loading defect from the
+screenshots alone; inspect computed fonts or loaded assets when that check is
+available. Mobile remains deferred by the owner.
