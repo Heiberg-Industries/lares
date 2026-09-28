@@ -29,7 +29,7 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
             <StatePill state={r.status} />
             <p className="lares-muted">{r.detail}</p>
             <p className="lares-muted">
-              Used by {r.usedBy.join(", ") || "no agents yet"}
+              Agent access: {r.usedBy.join(", ") || "none granted"}
             </p>
             <details>
               <summary>Connection details</summary>
@@ -37,6 +37,11 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
                 Credentials held by {r.custody}. Last used:{" "}
                 {r.lastUsed ? ago(r.lastUsed) : "not recorded"}.
               </p>
+              {r.declaredFor.length > 0 && (
+                <p className="lares-muted">
+                  Built-in consumers in the catalogue: {r.declaredFor.join(", ")}. This does not confirm they are running here.
+                </p>
+              )}
               {r.custody === "console" &&
                 r.accounts.map((a) => (
                   <div key={a.email} className="lares-stack">

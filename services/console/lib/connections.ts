@@ -114,7 +114,8 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
     const used = input.lastUsed.get(connectionId) ?? null;
 
     for (const inst of instances) {
-      const usedBy = consumersFor(connectionId, inst.id, input.agents, input.connectionsByCapability);
+      const usedBy = agentConsumersFor(connectionId, inst.id, input.agents, input.connectionsByCapability);
+      const declaredFor = declaredConsumersFor(connectionId, inst.id);
       const accounts = def.custody === "console"
         ? input.accounts.filter((a) => a.org === inst.id)
         : [];
@@ -169,6 +170,7 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
         detail,
         lastUsed: single && used ? used.toISOString() : null,
         usedBy,
+        declaredFor,
         accounts,
       });
     }
@@ -176,8 +178,8 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
   return rows;
 }
 
-/** Agents from their grants; services, doors and the console from declaredConsumers. */
-function consumersFor(
+/** Only grants on agent definitions present in this installation. */
+function agentConsumersFor(
   connectionId: string,
   instanceId: string,
   agents: AgentFolder[],
@@ -194,6 +196,12 @@ function consumersFor(
       }
     }
   }
+  return [...out].sort();
+}
+
+/** Catalogue declarations can describe services that are absent on a fresh install. */
+function declaredConsumersFor(connectionId: string, instanceId: string): string[] {
+  const out = new Set<string>();
   for (const consumer of declaredConsumers) {
     for (const ref of consumer.connections) {
       if (matches(ref, connectionId, instanceId)) out.add(consumer.name);

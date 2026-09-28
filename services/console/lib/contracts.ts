@@ -71,7 +71,10 @@ export interface ConnectionRowDTO {
   detail: string;
   /** ISO timestamp, or null when unknown or unattributable. */
   lastUsed: string | null;
+  /** Agents on this installation with a grant for the connection. */
   usedBy: string[];
+  /** Static service declarations from the catalogue, not proof that they are running. */
+  declaredFor: string[];
   /** Enrolled mailboxes — console-custody rows only; empty for every other row. */
   accounts: GoogleAccountDTO[];
 }

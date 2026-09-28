@@ -160,3 +160,10 @@ conversations and heartbeat rows, then was dropped. This proves dump replay,
 not a complete installation restore. The `/etc/lares` credential escrow is
 separate; per-agent secrets under `/srv/lares/secrets` are not in the archive,
 and their regeneration on a new installation remains to be tested.
+
+A further live Connections check showed the fresh installation's Google card
+claiming it was “Used by” fleet components such as `email-watcher` and
+`notion-sync`, even though those names came from static catalogue declarations.
+PR #32 now shows actual agent grants on the card and moves built-in declarations
+into connection details with an explicit caveat. The 27 focused connection
+tests and console typecheck pass; this copy change is not in the deployed image.
