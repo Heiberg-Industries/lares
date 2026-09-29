@@ -201,3 +201,33 @@ Ubuntu 24.04, 7745 MiB RAM, about 142 GiB free on `/`, no `/etc/lares`,
 at `Etc/UTC` and has no Docker, Node or pnpm executable yet. No host
 prerequisite, Lares stack, first agent, provider call, backup or restore has
 been run on the new OS. LAR-50 remains In Progress.
+
+## 2026-09-29 — guided owner install on rebuilt server (agent proof pending)
+
+The owner installed Docker Compose 2.40.3, checksum-verified Node v24.21.0,
+pnpm 9.15.0, and frozen-lockfile dependencies on the blank Ubuntu host. They
+checked out detached PR #32 source `87832d2e8d9693ca896701f01b2253eb8df9b1b9`.
+The release-manifest dry run reported that nothing changed. The owner then
+saved the console OAuth client privately; a read-only SSH check confirmed its
+root ownership, mode `0600`, and the expected ID/secret line shapes without
+printing either value.
+
+The owner reports the real interactive installer finished successfully after
+the fresh-start and four-answer path. Independent read-only checks found the
+same detached source revision, generated `/opt/lares/compose.yaml`, `/srv/lares`,
+and all six base containers running: database, console, gateway, Caddy, Keeper
+and egress proxy. The running console image is the exact
+`2026-09-29-console-test.1` digest
+`sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`,
+with OCI revision `6b801692d05278f1287b78d2228689bb67a57f93`. The
+`lares_state.schema_migrations` ledger has 74 entries through
+`089_agent_avatars.sql`. Public HTTPS returned 307 to sign-in for `/`,
+`/api/auth/login`, and `/agents/new`, with certificate verification result 0.
+The installer's model check is implied by its reported success but its gateway
+usage row has not yet been independently counted in this run.
+
+This is an assisted run, so it does not prove the strict docs-only owner
+acceptance. Fresh-account sign-in, first agent, provider-backed chat,
+Calendar/Gmail read, first brief or accepted freshness heartbeat, Preferences
+export/restore, fresh-target key repair, recurring off-box backup protection,
+and teardown remain open. LAR-50 stays In Progress and PR #32 stays draft.
