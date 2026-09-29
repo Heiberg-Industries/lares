@@ -2,6 +2,14 @@
 
 ## Start here
 
+**29 September current pin:** The console-only image from PR #32 source
+`6b801692d05278f1287b78d2228689bb67a57f93` is installed on the disposable
+server at digest `sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`.
+The earlier `test.4` statements below are historical. The previous temporary
+worktree was cleared; the branch was reopened at
+`/private/tmp/lares-console-redesign-20260929`. Recheck its existence before
+using it in a later session.
+
 **28 September continuation:** PR #32 source `f7f15f2268e733feb538c1cdb0b0b860707a0acb`
 was published as a console-only test image and installed on the disposable
 server. Its digest is
@@ -13,7 +21,7 @@ record service cannot be reached; Backup still reports **Not protected**.
 See the newer exact-image section of the screen record and the latest run
 ledger entry below before using the historical `test.3` notes in this handoff.
 
-Work in `/private/tmp/lares-console-redesign-20260925` on
+Work in `/private/tmp/lares-console-redesign-20260929` on
 `codex/console-redesign`. Recheck Git, [PR #32](https://github.com/Heiberg-Industries/lares/pull/32),
 [LAR-50](https://linear.app/heiberg-industries/issue/LAR-50/the-fresh-install-golden-path-qa-for-the-installation-bendik-does-not),
 the test server and the owner session before acting; these states can change.
@@ -76,7 +84,7 @@ LAR-50 sign-off.
 ## Next work, in order
 
 1. **Finish exact-image console proof on the current restored installation.**
-   Recheck the `test.4` image pin and spend. The bounded pending-reply reload
+   Recheck the current console digest and spend. The bounded pending-reply reload
    and the owner's avatar-retention check already passed on the earlier image;
    the new editor preview and several compact desktop pages have been checked
    on `f7f15f2`. Exercise remaining safe UI states, including populated
@@ -179,3 +187,19 @@ freshness labels alongside English text, plus an unstyled Reset link. PR #32
 source now uses shared status/button components and English row details. The
 `test.4` image still shows the old treatment; a new exact image would be needed
 for visual sign-off. Do not rebuild the whole server for this source-only pass.
+
+## 2026-09-29 console image checkpoint
+
+The owner authorized and installed a console-only test image from PR #32 commit
+`6b801692d05278f1287b78d2228689bb67a57f93`. All PR checks and the manual
+[image run](https://github.com/Heiberg-Industries/lares/actions/runs/36529611279)
+passed. The test server now runs console digest
+`sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`;
+its OCI revision matches the commit. The prior Compose pin is backed up at
+`/opt/lares/compose.yaml.pre-6b80169`. Only the console container was
+recreated; `/srv/taste` remains mounted. The owner's authenticated Chrome tab
+loaded `/taste`, where the empty-state legend now shows shared neutral English
+**New/Changed** badges. Computed body and heading font is Instrument Sans
+Variable. The Preferences store is empty, so populated row details and Reset
+still need exact-image visual review. Do not infer that a fresh install or
+Preferences export/restore passed from this console image update.

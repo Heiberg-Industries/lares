@@ -349,3 +349,24 @@ labels and a plain Reset link. PR #32 source now renders the shared quiet
 status badge with English New/Changed text, translates the row details, and
 styles Reset as a shared ghost button link. Focused browse tests and console
 typecheck pass; this visual correction awaits a new exact image.
+
+### 2026-09-29 console-only image check
+
+The owner approved another console-only test image. Draft PR #32 was at exact
+commit `6b801692d05278f1287b78d2228689bb67a57f93` with all reported checks
+green. [Manual image run](https://github.com/Heiberg-Industries/lares/actions/runs/36529611279)
+passed typecheck and built/pushed linux/amd64 digest
+`ghcr.io/heiberg-industries/lares-engine-console@sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`.
+The pulled image's OCI revision matched that exact commit. On the disposable
+server, only `lares-console-1` was recreated; the other six containers stayed
+up. Compose retains its `/srv/taste` bind mount and the previous pin is backed
+up at `/opt/lares/compose.yaml.pre-6b80169`. The public `/taste` route returned
+HTTP 307 to authentication, and the authenticated owner Chrome tab loaded it.
+
+The empty Preferences screen visibly shows English **New** and **Changed** via
+the shared quiet status treatment. Computed body and heading font is
+`Instrument Sans Variable`. The store has zero files after the owner's prior
+QA deletion, so the populated row wording and shared ghost **Reset** control
+were not visually exercised in this image. Source tests cover those branches;
+they remain an exact-image review gate. This update does not establish a clean
+installer run, backup protection, export/restore of Preferences, or mobile UI.
