@@ -180,3 +180,24 @@ installation remains disposable only after an explicit
 owner decision. The next clean run must prove docs-only owner input, first-brief
 acceptance, protected backup and restore including Preferences, and final
 teardown before LAR-50 can close.
+
+## 2026-09-29 — approved blank-OS rebuild (installation pending)
+
+The owner explicitly approved rebuilding only `lares-install-test-2`
+(Hetzner #167781592). In the signed-in Hetzner control plane, I selected
+Ubuntu 24.04, confirmed the exact server name in the destructive dialog, and
+submitted Rebuild. Hetzner then showed **Server rebuilt** in that server's
+activity list. The same page still showed assigned IPv4 `89.167.43.7` and
+IPv6 `2a01:4f9:c015:520f::/64`; neither Primary IP nor DNS was changed. The
+rebuild overwrote the disk; no export was taken from the disposable restored
+installation. Provider Backups were disabled and there were no snapshots.
+
+The ED25519 fingerprint read inside Hetzner's authenticated server console
+matched the freshly scanned network key exactly:
+`SHA256:Dw372usD9K/t5uBPcFmbjTLAo5+e/ZJquer4psZbTPc`. SSH using only that
+pinned key reached hostname `lares-install-test-2`. Read-only checks found
+Ubuntu 24.04, 7745 MiB RAM, about 142 GiB free on `/`, no `/etc/lares`,
+`/srv/lares` or `/opt/lares`, and no listener on ports 80 or 443. The host is
+at `Etc/UTC` and has no Docker, Node or pnpm executable yet. No host
+prerequisite, Lares stack, first agent, provider call, backup or restore has
+been run on the new OS. LAR-50 remains In Progress.
