@@ -46,3 +46,25 @@ server console and the network; a pinned SSH check confirmed a blank Ubuntu
 fingerprint and baseline are in the [run ledger](../runbooks/golden-path-runs.md).
 This is the start of the next LAR-50 attempt, not a completed install or a
 new release-readiness sign-off. The final teardown decision remains separate.
+
+## 30 September follow-up
+
+The final blank-OS run used the documented prerequisites and four interactive
+owner answers without a restored answer file. The first templated agent and
+provider-backed conversation passed; the fresh Google account connection and
+agent-level Gmail/Calendar read passed after fixing the missing explicit
+Google principal and enabling the agent's email door. Encrypted off-box backup,
+scratch restore drill and verifier passed, while the earlier guarded
+fresh-target restore remains recorded separately. The owner accepted the
+earlier morning-brief freshness heartbeat as the brief substitute. Exact
+evidence and limits are in the [run ledger](../runbooks/golden-path-runs.md).
+
+Draft PR #32 head `07c22b6c511e98b5ae0ebe48a435e6b34792a991` has all 18
+reported checks successful in [run 36638260941](https://github.com/Heiberg-Industries/lares/actions/runs/36638260941).
+The test server still runs the digest-pinned console image and source noted in
+the run ledger; a green branch CI run does not change that installed image.
+The current server, IP, backup bucket, credential, monitor and DNS inventory
+for a teardown decision is in the
+[decision record](lar50-rebuild-teardown-decision-2026-09-29.md). Keep LAR-50
+In Progress until teardown is approved, performed and verified. Keep PR #32
+draft while its merge and production release are decided separately.

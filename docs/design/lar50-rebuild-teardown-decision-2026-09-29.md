@@ -140,14 +140,25 @@ credential. The Object Storage bucket holds an encrypted restic recovery copy;
 deleting it would permanently remove that copy. Confirm whether the owner
 wants that copy retained or destroyed before any bucket action.
 
-The final pre-delete check must reopen Hetzner project `lares-install-test`
-and confirm the exact server, Primary IPs, bucket and S3 credential inventory.
-The last authenticated Hetzner inventory, before its browser session expired,
-showed exactly server #167781592, attached IPv4 #152047957 and IPv6 #152047958
-with Auto Delete enabled, no Floating IPs or Volumes, and one private bucket.
-The bucket now has **at least five** known encrypted snapshots, including the
-post-read clean-run point above; its current object count must be rechecked. The
-current OS contains the fresh agent and Google account described above, not
+The 30 September pre-decision inventory in the signed-in Hetzner project
+`lares-install-test` showed exactly one running CPX32, `lares-install-test-2`
+#167781592, with 160 GB disk and IPv4 `89.167.43.7`. Attached Primary IPv4
+#152047957 and IPv6 #152047958 both have Auto Delete enabled. There are no
+Floating IPs, Volumes, server snapshots, provider Backups or Hetzner DNS zones.
+The one private Falkenstein bucket `lares-lar50-rehearsal-20260929-bk`
+#13651453 showed 22 objects / 939.01 KB. A separate authenticated restic
+listing found exactly five encrypted snapshots, latest
+`68e4c7088a9aeb913339fe21f8b7f37aa30bcd02e344912ed827f488c7c3dd7d`.
+Hetzner shows one project-wide S3 credential labelled for the disposable
+backup; its key values are not recorded here. The dedicated Healthchecks
+`LAR-50 disposable backup verified` check exists with email and Slack
+integrations, a one-day period and two-hour grace; its last ping was five
+minutes before inspection. Public DNS still resolves `lares.heiberg.co` to
+`89.167.43.7`. The DigitalOcean DNS control plane requires a fresh owner
+sign-in, so its record and deletion controls were not inspected in this pass.
+Repeat the exact inventory immediately before any deletion.
+
+The current OS contains the fresh agent and Google account described above, not
 the earlier restored Preferences marker. Deleting the server while retaining
 the bucket preserves encrypted recovery material; revoking the project-wide
 S3 credential then requires a new credential for any later read. Deleting the
