@@ -416,3 +416,40 @@ Mac Terminal helper that sends a replacement provider key only over the
 provider-console-verified, pinned SSH connection; it does not echo or save
 the key on the Mac. No replacement or successful provider call is claimed
 at this checkpoint.
+
+## 2026-09-29 — fresh first-agent and conversation proof
+
+The owner supplied a new Anthropic provider key through the hidden Mac
+Terminal helper. A shape/permission-only server check found one printable
+line with the expected provider prefix, owned by root:10001, mode `0440`.
+Only the test gateway was recreated to mount that file. The saved-answer
+installer resume exited zero. Its live gateway check reported a real model
+completion, migrations ran, the `empty_workflow` template was prepared, the
+owner was enrolled as a real member, and Keeper plus its egress proxy started.
+The installer explicitly reported no agent or conversation yet. This was a
+four-question owner run followed by a documented key-entry repair and resume,
+not an uninterrupted pass.
+
+The rebuilt server's running console image is still exactly
+`ghcr.io/heiberg-industries/lares-engine-console@sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`,
+with OCI revision `6b801692d05278f1287b78d2228689bb67a57f93`.
+Base and Keeper Compose services are running; the initial databases were
+`postgres`, `litellm`, `lares_state`, and `empty_workflow`. Public HTTPS for
+`/agents/new` redirected to sign-in before the authenticated owner Chrome
+session opened the first-agent form.
+
+The owner session created `lar50-fresh-proof` from the Chief of Staff starting
+point, with **no integrations and no enabled schedules**. The console reported
+it healthy and opened its web chat. One bounded message requested a one-line
+reply without tools or external data; the agent replied, “I'm running —
+LAR-50 Fresh Proof, up and responding normally.” Both turns survived a page
+reload. This proves a fresh first-agent runtime, provider-backed conversation,
+and persisted transcript on the exact console image. Git definition backup
+was disabled and the page warned that server backup was not yet configured.
+
+The fresh Connections page showed Google as `missing · no client`: the staged
+console OAuth file contains only the sign-in client, not the separate Google
+data-client pair required for Gmail and Calendar enrollment. Google data
+connection in this run, restore onto this target, recurring backup, and final
+teardown remain open. The previous run's Google read and accepted
+morning-brief freshness heartbeat remain separately documented above.
