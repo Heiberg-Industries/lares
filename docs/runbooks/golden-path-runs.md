@@ -332,7 +332,10 @@ Preferences marker had SHA-256
 matching the live server file, and the encrypted configuration bundle
 decrypted in a stream with the Mac-only age identity to a tar with 21 entries.
 No plaintext bundle was written to disk. The Healthchecks check shows a
-recent success and email/Slack integrations. `backup_status.verify` is true;
+recent success and enabled owner email plus the existing `orbis-alerts` Slack
+integration. Its event log records a failure POST, `new → down`, then the
+successful GET and `down → up` recovery. Receipt by an individual email or
+Slack client was not checked. `backup_status.verify` is true;
 `backup_status.drill` has never run. Both systemd timers are enabled, with
 the next backup at 03:00 UTC and verification at 05:00 UTC on 30 September.
 The console's source classifies this as **Unproven** until a restore passes;
@@ -343,3 +346,10 @@ password is pending confirmation. A full fresh-target restore, guarded
 gateway-key recovery, strict unassisted docs-only owner install, and final
 teardown remain open. Production deployment is separate. Keep LAR-50 In
 Progress and PR #32 draft.
+
+An attempted durable Mac copy of `/etc/lares/backup.env` was rejected by
+automatic approval review because it contains S3 credentials and secret
+export was not explicitly authorized. No local copy was made. The temporary
+read-back script was removed. Recovery after a rebuild will require the S3
+pair the owner saved in the password manager; the restic password and age
+identity are separate Mac-only files pending durable escrow.
