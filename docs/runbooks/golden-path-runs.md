@@ -369,6 +369,19 @@ activity log showed `Server is being rebuilt` followed by `Server rebuilt`
 around 19:40 UTC. Its browser console displayed a fresh Ubuntu 24.04 tty1
 login; the same IPv4 and IPv6 addresses remained attached. The old pinned SSH
 host key was correctly rejected. A new ED25519 key was offered over the
-network, but its fingerprint still needs comparison against the authenticated
-Hetzner console before any SSH login. No fresh installer, restore or teardown
-has been run at this checkpoint. Keep LAR-50 In Progress.
+network; it was not trusted until checked in the provider console. Keep
+LAR-50 In Progress.
+
+The owner logged into the new root tty. In that provider console,
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` returned
+`SHA256:TDOrT3zP9GO/n+Hf2UJI0b50CmrLbNeycwygcAisd7k`, matching the new
+network-offered ED25519 key. A separate known-hosts file was pinned to that
+key; strict SSH login then confirmed Ubuntu 24.04.4 and a nearly empty 150 GB
+root filesystem. Host packages from the owner runbook plus `age` and `restic`
+installed successfully. Docker Compose is 2.40.3, time zone Europe/Oslo,
+official Node 24.21.0 tarball checksum `OK`, and pnpm 9.15.0. Source is
+detached at `87832d2e8d9693ca896701f01b2253eb8df9b1b9`; frozen dependency
+install completed. The installer dry run with
+`releases/2026-09-29-console-test.1.json` exited zero and stated nothing had
+changed. Only host prerequisites and source checkout have been installed so
+far. The fresh four-question setup and OAuth client staging remain pending.
