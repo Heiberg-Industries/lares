@@ -151,10 +151,13 @@ describe("how the install ends", () => {
 
   it("does not tell an existing installation to create its first agent or set up its first backup", () => {
     mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
+      "GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
     stub("curl", "exit 0");
     const result = runWithStdin([], answers);
     const printed = result.stdout.trim().split("\n").filter((line) => line.includes("https://"));
-    expect(result.code).toBe(0);
+    expect(result.code, result.stderr).toBe(0);
     expect(printed).toEqual(["install: https://lares.example.invalid/"]);
     expect(result.stdout).toMatch(/repair run is finished/i);
     expect(result.stdout).not.toMatch(/create your first agent|Nothing is backed up yet/i);
