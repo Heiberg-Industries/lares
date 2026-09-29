@@ -383,5 +383,17 @@ official Node 24.21.0 tarball checksum `OK`, and pnpm 9.15.0. Source is
 detached at `87832d2e8d9693ca896701f01b2253eb8df9b1b9`; frozen dependency
 install completed. The installer dry run with
 `releases/2026-09-29-console-test.1.json` exited zero and stated nothing had
-changed. Only host prerequisites and source checkout have been installed so
-far. The fresh four-question setup and OAuth client staging remain pending.
+changed. Before the real installer, the owner used a hidden-prompt Mac helper
+to read the saved off-box recovery point and stream only the escrowed console
+OAuth client into `/etc/lares/console-oauth.env` on the rebuilt server. A
+root-only, non-secret shape check found the two expected fields and mode
+`0600`; no installation config or Compose file existed yet. In the provider
+console, the exact pinned installer started, the default fresh path was
+selected, and it reached the domain question. The owner is entering the four
+private answers there; completion and first-agent proof remain pending.
+
+PR #32's latest head `2f5b72a` has no pending or failed checks. Its final
+change gives the existing-install finish-test fixture the OAuth file that an
+existing installation requires; the focused seven-test run and full GitHub
+checks passed. The test server remains on the separately pinned installer
+source `87832d2e`.
