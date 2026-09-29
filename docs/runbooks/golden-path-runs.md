@@ -160,7 +160,18 @@ secrets. The export regression test passed. The helper's read-only mode refused
 the current active agent because its plaintext key exists; it has not yet
 rotated a key on a fresh target. PR #32's previous head `26cc76f` completed
 [tests run 36531506658](https://github.com/Heiberg-Industries/lares/actions/runs/36531506658)
-successfully. Check the new head and CI after these fixes are pushed.
+successfully. The source-only fixes at `7e6f810` completed
+[tests run 36532606100](https://github.com/Heiberg-Industries/lares/actions/runs/36532606100)
+successfully.
+
+After the owner signed in to Hetzner, a read-only provider check confirmed
+running Helsinki CPX32 `lares-install-test-2` #167781592 in project
+`lares-install-test`. Provider Backups are disabled and the server has zero
+snapshots. Primary IPv4 #152047957 (`89.167.43.7`) and IPv6 #152047958 are
+assigned with Auto Delete enabled. The project has no Volumes, Floating IPs,
+Firewalls, Storage Boxes or Object Storage buckets. This rules out a provider
+backup or project storage target for the current test installation. The exact
+resource and discard boundary are recorded in the release review.
 
 No installation, migration, provider call, backup, restore, rebuild or teardown
 was performed in this review. The earlier off-box rehearsal escrow was reported
