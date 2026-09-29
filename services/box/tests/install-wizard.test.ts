@@ -126,6 +126,18 @@ describe("what the installer asks", () => {
     expect(readFileSync(log, "utf8")).not.toContain("sk-disposable-fixture-only");
   });
 
+  it("rejects invisible ESC bytes inserted by a browser console before saving a key", () => {
+    const input = [
+      "lares.example.invalid", "owner@example.invalid", "A Name",
+      "\u001bsk-malformed", "sk-disposable-fixture-only",
+    ].join("\n") + "\n";
+    const r = runWithStdin(["--yes"], input);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toMatch(/no whitespace or control characters/);
+    expect(readFileSync(join(secretsDir, "model-provider-key"), "utf8"))
+      .toBe("sk-disposable-fixture-only\n");
+  });
+
   it("does not ask again on a re-run", () => {
     runWithStdin(["--yes"], answers);
     const second = runWithStdin(["--yes"], "");

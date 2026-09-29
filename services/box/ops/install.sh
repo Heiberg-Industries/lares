@@ -828,7 +828,9 @@ validate_name() {
 validate_model_key() {
   local v="$1"
   [ -n "$v" ] || return 1
-  case "$v" in *[[:space:]]*) return 1 ;; esac
+  # Browser consoles can insert ESC before pasted characters. Those bytes are
+  # invisible at this prompt but make the upstream HTTP auth header invalid.
+  case "$v" in *[[:space:]]*|*[[:cntrl:]]*) return 1 ;; esac
   return 0
 }
 
@@ -1016,7 +1018,7 @@ capture_model_key() {
     key=$(cat "$MODEL_KEY_FILE_FLAG")
     if ! validate_model_key "$key"; then
       key=""
-      die "the file given with --model-key-file does not hold a usable key: it must be one line, non-empty, with no spaces or tabs inside it." "$EX_USAGE"
+      die "the file given with --model-key-file does not hold a usable key: it must be one line, non-empty, with no whitespace or control characters inside it." "$EX_USAGE"
     fi
   else
     while :; do
@@ -1041,7 +1043,7 @@ capture_model_key() {
         break
       fi
       key=""
-      say "that does not look like a key: it must be one line, non-empty, with no spaces or tabs inside it. Try again."
+      say "that does not look like a key: it must be one line, non-empty, with no whitespace or control characters inside it. Try again."
     done
   fi
 

@@ -397,3 +397,22 @@ change gives the existing-install finish-test fixture the OAuth file that an
 existing installation requires; the focused seven-test run and full GitHub
 checks passed. The test server remains on the separately pinned installer
 source `87832d2e`.
+
+The real four-question run then stopped at its live model check, before
+database migrations or first-owner creation. LiteLLM logged a forbidden
+control character in the Anthropic request header. A byte-class-only check of
+the root-only model key found an ESC byte before every printable character,
+plus one trailing ESC. We removed only that exact injected pattern and
+recreated only the test gateway. On resume, Anthropic returned HTTP 401 with
+`authentication_error` and “API key is invalid.” The installation is still
+partial: base Compose services are running, but Keeper and the owner setup
+are absent. A new key must be entered through a safer private channel and
+the live check must pass before acceptance can continue.
+
+The PR branch now rejects control characters in model-key input, with a
+focused regression test. This code fix has not been installed on the test
+server, whose exact release source remains pinned. The owner has a hidden
+Mac Terminal helper that sends a replacement provider key only over the
+provider-console-verified, pinned SSH connection; it does not echo or save
+the key on the Mac. No replacement or successful provider call is claimed
+at this checkpoint.
