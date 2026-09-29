@@ -341,8 +341,13 @@ the next backup at 03:00 UTC and verification at 05:00 UTC on 30 September.
 The console's source classifies this as **Unproven** until a restore passes;
 that label has not been independently viewed in the browser.
 
-The owner's durable escrow of the Mac-only age identity and repository
-password is pending confirmation. A full fresh-target restore, guarded
+The owner confirmed the S3 pair, Mac-only age identity and repository password
+are saved in the password manager. From the Mac, a fresh hidden-prompt check
+using the **saved S3 values** found snapshot `e96a6c19` and independently
+dumped the Preferences marker with SHA-256
+`e3f98c54efb594a547f43babd31a24b4d014012f54a84f6a66e10ec32cf78d26`.
+This proves the saved S3 pair can read the remote recovery point, with the
+local repository-password file. A full fresh-target restore, guarded
 gateway-key recovery, strict unassisted docs-only owner install, and final
 teardown remain open. Production deployment is separate. Keep LAR-50 In
 Progress and PR #32 draft.
@@ -352,4 +357,6 @@ automatic approval review because it contains S3 credentials and secret
 export was not explicitly authorized. No local copy was made. The temporary
 read-back script was removed. Recovery after a rebuild will require the S3
 pair the owner saved in the password manager; the restic password and age
-identity are separate Mac-only files pending durable escrow.
+identity are separate Mac-only files whose contents the owner reports saving
+in the password manager. The temporary files must not be treated as durable
+escrow.

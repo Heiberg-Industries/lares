@@ -24,8 +24,11 @@ request an explicit owner decision to rebuild **server #167781592's OS disk**.
 No rebuild is permitted merely because this plan exists.
 
 The owner confirmed on 29 September that the S3 pair, repository password and
-age identity were saved in the password manager. Independent access with the
-saved S3 values is still pending, and a root SSH session is still logged in.
+age identity were saved in the password manager. A Mac hidden-prompt check
+using the saved S3 pair found snapshot `e96a6c19` and read its Preferences
+marker with the expected SHA-256
+`e3f98c54efb594a547f43babd31a24b4d014012f54a84f6a66e10ec32cf78d26`.
+A root SSH session is still logged in; close it before rebuilding.
 
 After approval, the shortest remaining sequence is:
 
