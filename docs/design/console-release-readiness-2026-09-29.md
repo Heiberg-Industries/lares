@@ -68,3 +68,11 @@ for a teardown decision is in the
 [decision record](lar50-rebuild-teardown-decision-2026-09-29.md). Keep LAR-50
 In Progress until teardown is approved, performed and verified. Keep PR #32
 draft while its merge and production release are decided separately.
+
+The owner subsequently approved test teardown, while choosing to retain the
+`lares.heiberg.co` A record. Hetzner now shows no test server, Primary IP,
+bucket or S3 credential, and the dedicated Healthchecks check was removed.
+The retained DNS points to the released test IPv4 and needs repointing before
+reuse. The observed LAR-50 acceptance and teardown are in the run ledger;
+this disposal does not publish or deploy PR #32. The broader LAR-7 build scope
+and PR merge/release decision remain open.

@@ -676,7 +676,8 @@ Calendar both set to **Ask first**. The first read attempt used an existing
 conversation and found no mail or calendar tools. Source inspection showed that
 the email door must be enabled for those tools to mount. Enabling only that door
 and applying the connection restarted the disposable agent; its editor then
-showed **Owner connection applied**. No schedule or other door was enabled.
+showed **Owner connection applied**. No schedule, Slack door or Telegram door
+was enabled.
 
 In a new conversation, a bounded request asked for the connected mailbox's
 inbox count and next-24-hour calendar event count only, with no message or
@@ -701,3 +702,49 @@ provider-backed chat, Google read, backup, restore rehearsal, and Protected
 state now have observed evidence across the runs above. Final teardown has
 not been approved or observed, so LAR-50 stays In Progress. PR #32 remains
 draft; production deployment is a separate decision.
+
+## 2026-09-30 — approved teardown and LAR-50 acceptance record
+
+The owner selected full disposal of the test server, both attached Primary IPs,
+the encrypted backup bucket, its test S3 credential and the dedicated backup
+monitor. They separately chose to **keep** the DigitalOcean DNS record for
+later reuse. Before deletion, the signed-in Hetzner inventory and five-snapshot
+restic listing matched the
+[decision record](../design/lar50-rebuild-teardown-decision-2026-09-29.md).
+The final snapshot had already been read back and the scratch restore and
+verifier had passed. The three backup timers were disabled and stopped; the
+dedicated Healthchecks monitor was paused, then removed with owner approval.
+
+The bucket showed 22 objects, versioning disabled. A bounded S3 deletion
+removed exactly those 22 objects and verified zero remained. Hetzner then
+showed 0 B / 0 files; the owner approved the final named bucket deletion and
+the bucket list returned to empty. The owner approved Hetzner's final named
+server deletion with **Delete** selected for both Primary IPv4 and IPv6.
+The server list then showed no servers and the Primary IP list showed no IPs.
+The only S3 credential, labelled `LAR-50 disposable backup 2026-09-29`, was
+revoked with owner approval; the credential list returned to empty. The
+Healthchecks list no longer contained the LAR-50 check. No other project
+checks or production resources were altered.
+
+`dig` still resolved `lares.heiberg.co` to the retired test IPv4
+`89.167.43.7` after server deletion. This stale A record is **intentional at
+the owner's request** and must be repointed before the hostname is used again.
+DigitalOcean authentication was not completed and no DNS change was made.
+The five encrypted snapshots were permanently deleted with the bucket; the
+saved test S3 pair is now revoked. The run ledger, PR and Linear comment retain
+non-secret evidence, not a live recovery copy.
+
+| LAR-50 acceptance item | Observed proof and limit |
+| --- | --- |
+| Blank-OS, four-answer install | Final clean OS run from the candidate guide, no restored answer file, database or model key; the owner used a Mac Terminal helper to avoid Hetzner-console paste corruption. |
+| Owner, first agent and conversation | One owner, first Chief of Staff agent, real model-backed chat and transcript reload on the final clean OS. |
+| Calendar and Gmail | Owner Google consent, agent connection applied, both bounded read tools completed and the counts-only reply survived reload on the final OS. |
+| First brief | The earlier `morning-brief` freshness heartbeat was observed; the owner explicitly accepted it instead of a delivered first brief. No delivered brief is claimed. |
+| Restore and protected backup | Earlier guarded fresh-target restore recovered five databases, an agent and the Preferences marker after the one-key repair. On the final OS, an encrypted off-box snapshot, independent readback, scratch restore drill, verifier and Protected UI state passed. These proofs span two runs; the final OS was not replaced by a restored image. |
+| Teardown | Exact server/IP, bucket, S3 credential and monitor removal observed as above. The retained stale DNS record is documented for reuse. |
+
+The observed steps meet LAR-50's live acceptance checkpoint with the owner's
+explicit brief substitution and reuse of the earlier restore rehearsal. This
+is a QA run record, not approval to merge PR #32 or deploy production. The
+candidate still requires its own merge/release decision; broader LAR-7 scope
+remains separate.

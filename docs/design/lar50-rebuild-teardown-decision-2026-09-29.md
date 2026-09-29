@@ -1,7 +1,8 @@
 # LAR-50 rebuild and teardown decision record — 29 September 2026
 
-**State:** two test rebuilds and one guarded restore were completed; the latest
-clean installation remains running and final teardown is unapproved.
+**State:** two test rebuilds, one guarded restore and final clean-run proof
+were completed. The disposable server, IPs, bucket, S3 credential and monitor
+were then deleted; the owner retained the stale DNS record for later reuse.
 Production deployment is a separate decision. The detailed observations are
 in [the run ledger](../runbooks/golden-path-runs.md).
 
@@ -129,8 +130,8 @@ pending-agent-connection checkpoint above. Final teardown is still unapproved.
 
 ## Final teardown after acceptance
 
-This requires a **separate** decision after the above evidence is written.
-The current Hetzner project has one server, two attached Primary IPs, one
+This required a **separate** decision after the above evidence was written.
+The pre-deletion Hetzner project had one server, two attached Primary IPs, one
 private Object Storage bucket, no server snapshots, no Hetzner server backups,
 no volumes, no Floating IPs and no Hetzner DNS zone. The public
 `lares.heiberg.co` A record currently resolves to `89.167.43.7`; the domain's
@@ -158,7 +159,7 @@ minutes before inspection. Public DNS still resolves `lares.heiberg.co` to
 sign-in, so its record and deletion controls were not inspected in this pass.
 Repeat the exact inventory immediately before any deletion.
 
-The current OS contains the fresh agent and Google account described above, not
+Before deletion, the current OS contained the fresh agent and Google account described above, not
 the earlier restored Preferences marker. Deleting the server while retaining
 the bucket preserves encrypted recovery material; revoking the project-wide
 S3 credential then requires a new credential for any later read. Deleting the
@@ -172,3 +173,32 @@ the external DNS record and monitor at the agreed time, delete or retain the
 bucket and credential as decided, and delete the Hetzner server and both
 Primary IPs. Reopen the project inventory afterward and document what remains.
 Do not treat the server deletion alone as complete teardown.
+
+### Executed result — 30 September
+
+The owner approved full disposable test teardown, with a later correction to
+**retain the DigitalOcean DNS record**. They separately approved the final
+Healthchecks removal, named Hetzner bucket and server deletions, and S3
+credential revocation at the action screens. The three test backup timers were
+disabled and stopped before removing storage. The dedicated Healthchecks
+check was paused and removed; the check list no longer showed it.
+
+The private bucket had versioning disabled and exactly 22 objects. A bounded
+S3 operation deleted those 22 and verified zero remained. Hetzner then showed
+0 B / 0 files and, after the named confirmation, an empty bucket list. The
+server deletion dialog had **Delete** selected for both Primary IPv4 and IPv6.
+After the named confirmation, Hetzner showed no servers and no Primary IPs.
+The one disposable S3 credential was revoked; its list returned to empty.
+The provider project had no Floating IPs, Volumes, server snapshots, Backups
+or Hetzner DNS zones before teardown. A final project check also found no
+Firewalls, Load Balancers, private Networks or Storage Boxes. No production
+checkout or deployment was touched.
+
+The five encrypted recovery snapshots are permanently gone with the bucket;
+the test S3 pair saved by the owner is now inert. A post-delete DNS lookup still
+returned `89.167.43.7` for `lares.heiberg.co`, exactly as the owner requested.
+That IP has been released, so the A record must be repointed before reuse.
+The owner did not sign into DigitalOcean, and no DNS record was changed. The
+[run ledger](../runbooks/golden-path-runs.md) holds the acceptance table and
+the observed teardown sequence. PR #32 merge and production deployment remain
+separate decisions.
