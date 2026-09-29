@@ -1,5 +1,25 @@
 # Console / LAR-50 handoff — 29 September 2026
 
+## Post-rebuild continuation
+
+The closing checkpoint below is historical. The owner approved and completed
+the disposable server rebuild. Its fresh first agent and provider-backed chat
+passed on the exact pinned console image, followed by a guarded off-box restore
+of the prior agent and Preferences marker. The corrected one-key repair,
+audited reconcile and post-restore chat passed. The post-restore off-box
+snapshot, five-database scratch drill and verifier passed; the installed
+Backup page says **Protected**. The detailed record is in
+[the run ledger](../runbooks/golden-path-runs.md), and the exact targets and
+recovery points are in [the teardown decision record](lar50-rebuild-teardown-decision-2026-09-29.md).
+
+PR #32 is still draft, now at `263d64f` with its new checks running at this
+update. Linear LAR-50 is still In Progress; a checkpoint comment was added.
+The four-answer install needed a model-key entry repair and saved-answer
+resume, so strict unassisted docs-only acceptance remains unobserved. The
+prior Google reads and accepted freshness heartbeat are documented in the
+28 September run. Final teardown has its own unapproved decision. Production
+deployment remains separate.
+
 ## Closing checkpoint
 
 The owner accepted the current desktop console result as **good for now** and
