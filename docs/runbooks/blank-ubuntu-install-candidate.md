@@ -46,13 +46,13 @@ run as a clean pass. The current acceptance and later restore work are in the
    Stop if the checksum, package install, or version checks fail. Do not run an
    unverified downloaded shell script to repair them.
 4. Check out the exact test source and install its frozen dependencies. For
-   this run, the source commit is `87832d2e8d9693ca896701f01b2253eb8df9b1b9`:
+   this run, the source commit is `a2cd26ca74c0ba695b4354ce4b1aae8734e883c1`:
 
    ```bash
    git clone https://github.com/Heiberg-Industries/lares.git /root/lares
    cd /root/lares
    git fetch origin codex/console-redesign
-   git checkout --detach 87832d2e8d9693ca896701f01b2253eb8df9b1b9
+   git checkout --detach a2cd26ca74c0ba695b4354ce4b1aae8734e883c1
    git rev-parse HEAD
    pnpm install --frozen-lockfile
    bash services/box/ops/install.sh --dry-run --release releases/2026-09-29-console-test.1.json
@@ -70,6 +70,12 @@ client may be reused only if it admits the fresh test account. Save its ID and
 secret on this server before the real install, without putting either in a
 shell command, history, chat, or repository:
 
+For a repeat run, the same two-field console sign-in client may instead be
+restored from the owner's encrypted escrow into this root-only file. That is a
+credential handoff, not an installation-state restore: do not restore the
+database, owner answers, model key, or agent files before the fresh installer.
+Check the resulting file is root-owned and mode `0600`.
+
 ```bash
 install -d -m 0700 /etc/lares
 umask 077
@@ -84,6 +90,10 @@ chmod 0600 /etc/lares/console-oauth.env
 Run the installer **without** `--domain`, `--email`, `--name`,
 `--model-key-file`, or `--yes` so the owner actually sees the fresh setup path:
 
+Use a normal SSH terminal for the hidden model-key prompt. The Hetzner browser
+console injected control bytes during the 29 September rehearsal; pasting a
+key there is not a clean test of the installer.
+
 ```bash
 cd /root/lares
 bash services/box/ops/install.sh --release releases/2026-09-29-console-test.1.json
@@ -97,8 +107,9 @@ the four-question acceptance step. Record the questions, any refusal or repair,
 the exact source and manifest, the migration result, and the final URL. A
 partial or repaired run stays marked partial.
 
-After the installer reports success, use a **fresh test account** to sign in,
-create one first agent from the console, and prove one real web-chat reply.
+After the installer reports success, sign in as the designated test owner on
+this fresh installation, create one first agent from the console, and prove
+one real web-chat reply.
 Do not mistake console sign-in for agent data access. To test Calendar and
 Gmail, the owner must separately supply a Google Workspace data OAuth client
 with the needed scopes and redirect. Save its pair privately in the same
