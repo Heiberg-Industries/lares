@@ -181,6 +181,24 @@ it("removes the work dir after a successful export", () => {
   expect(readdirSync(workdirRoot)).toEqual([]);
 });
 
+it("keeps a verified export when another export runs on the same day", () => {
+  writeDockerStub(["dbone"]);
+  const first = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(first.status).toBe(0);
+  const firstPath = join(exportDir, `lares-export-${todayUTC()}.tar`);
+  const firstBytes = readFileSync(firstPath);
+
+  writeFileSync(join(dataTaste, "notes.txt"), "newer preferences");
+  const second = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(second.status).toBe(0);
+  const secondPath = join(exportDir, `lares-export-${todayUTC()}-2.tar`);
+  expect(readFileSync(firstPath)).toEqual(firstBytes);
+  expect(existsSync(secondPath)).toBe(true);
+  expect(readFileSync(secondPath)).not.toEqual(firstBytes);
+  expect(readdirSync(exportDir).sort()).toEqual([firstPath, secondPath].map((path) => path.split("/").at(-1)!).sort());
+  expect(readdirSync(workdirRoot)).toEqual([]);
+});
+
 it("fails loudly when a database dump fails, and leaves no archive or work dir behind", () => {
   writeDockerStub(["dbone", "dbtwo"], "dbtwo");
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });

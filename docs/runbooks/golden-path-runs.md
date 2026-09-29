@@ -139,3 +139,33 @@ This decision does not complete the golden-path acceptance or authorize a
 server rebuild, merge, production deployment or teardown. The next-session
 order and exact checkpoint are in the
 [29 September handoff](../design/console-lar50-handoff-2026-09-29.md).
+
+## 2026-09-29 — release review and rebuild preparation (no rebuild)
+
+The focused [release review](../design/console-release-readiness-2026-09-29.md)
+verified PR #32, LAR-50 and the exact test-server image. A host-key-pinned,
+read-only server check found all seven expected containers, the console digest
+`sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`
+with OCI revision `6b80169`, one owned ready agent, one stored avatar, zero
+Preferences files, and five non-template databases. The current LiteLLM ledger
+contains eight rows and USD 0.42528125; the broader known cumulative spend is
+at least USD 0.654188 plus the earlier small model check. DNS currently
+resolves to `89.167.43.7`. Backup `verify` and `drill` rows remain empty; no
+Lares backup timers, backup configuration or archive in the default export path
+were found.
+
+This review fixed a same-day export overwrite risk and added a guarded helper
+for the orphaned LiteLLM hash that appears after restoring without runtime
+secrets. The export regression test passed. The helper's read-only mode refused
+the current active agent because its plaintext key exists; it has not yet
+rotated a key on a fresh target. PR #32's previous head `26cc76f` completed
+[tests run 36531506658](https://github.com/Heiberg-Industries/lares/actions/runs/36531506658)
+successfully. Check the new head and CI after these fixes are pushed.
+
+No installation, migration, provider call, backup, restore, rebuild or teardown
+was performed in this review. The earlier off-box rehearsal escrow was reported
+removed at the prior handoff; other Mac copies were not checked. The current
+installation remains disposable only after an explicit
+owner decision. The next clean run must prove docs-only owner input, first-brief
+acceptance, protected backup and restore including Preferences, and final
+teardown before LAR-50 can close.

@@ -106,8 +106,10 @@ for p in $EXPORT_DATA_PATHS; do refuse_secret_path "$p"; done
 # same shape as restore-drill.sh's SCRATCH/remove_scratch, so a trap that fires before
 # mktemp ever runs (a bad EXPORT_WORKDIR_ROOT, say) has nothing to remove.
 WORKDIR=""
+TEMP_ARCHIVE=""
 cleanup() {
   local rc=$?
+  [ -z "$TEMP_ARCHIVE" ] || rm -f "$TEMP_ARCHIVE"
   [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"
   exit "$rc"
 }
@@ -211,7 +213,18 @@ MANIFEST="$WORKDIR/manifest.json"
 mkdir -p "$EXPORT_DIR"
 FINAL_DATE=$(date -u +%Y-%m-%d)
 FINAL="$EXPORT_DIR/lares-export-${FINAL_DATE}.tar"
-tar -C "$WORKDIR" -cf "$FINAL" .
+TEMP_ARCHIVE=$(mktemp "$EXPORT_DIR/.lares-export.XXXXXX")
+tar -C "$WORKDIR" -cf "$TEMP_ARCHIVE" .
+# Publish only a complete archive. A second export on the same day must preserve
+# the first one: hard-linking refuses an existing name atomically on this filesystem.
+suffix=1
+while ! ln "$TEMP_ARCHIVE" "$FINAL" 2>/dev/null; do
+  [ -e "$FINAL" ] || { echo "export: could not publish archive at $FINAL" >&2; exit 1; }
+  suffix=$((suffix + 1))
+  FINAL="$EXPORT_DIR/lares-export-${FINAL_DATE}-${suffix}.tar"
+done
+rm -f "$TEMP_ARCHIVE"
+TEMP_ARCHIVE=""
 
 echo "export: wrote $FINAL" >&2
 echo "export: it holds every database, these vaults: $EXPORT_VAULT_PATHS" >&2

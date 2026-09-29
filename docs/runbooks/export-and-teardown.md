@@ -1,11 +1,12 @@
 # Leaving cleanly — export the installation, prove it, restore it elsewhere, then tear this one down
 
-> **This is the written procedure, not a rehearsed one.** Every command below is taken from a
-> script in this repository (`services/box/ops/export.sh`, `restore-drill.sh`, `backup.sh`) or
-> from the way those scripts already call Postgres, git and tar on the server. Nobody has yet
-> walked the whole path end to end. The first rehearsal — on a throwaway server, with a
-> throwaway copy of the archive — is the owner's, and it should happen **before** the day this
-> is needed for real. Where a step has no rehearsed command behind it, it says so in place.
+> **Partly rehearsed on a disposable server.** The current `/opt/lares` path
+> exported and restored five databases, agent files and separately escrowed
+> configuration on 28 September 2026; see the [run ledger](golden-path-runs.md).
+> The restore needed a manual orphaned-key repair. The guarded helper below has
+> not yet completed a fresh-target run, and recurring backup protection and
+> final teardown remain unproved. The older `/opt/agent-box` instructions are
+> historical unless that is the installation you are actually leaving.
 
 ---
 
@@ -108,16 +109,17 @@ df -Pk /var/backups                           # room for the finished archive
 
 ## 3. Run the export
 
-On a current installation, run the `services/box/ops/export.sh` file from the
-exact tested source checkout as root. The first LAR-50 rehearsal records the
-checkout commit, validates the archive manifest and database dump list, and
-keeps the archive on the test server until its encrypted off-box transfer is
-prepared. The legacy command below is only for an older `/opt/agent-box`
-installation.
+On a current installation, run `services/box/ops/export.sh` from the exact
+tested source checkout as root and record that checkout commit. Verify the
+archive manifest and database dump list, then encrypt it for off-box transfer.
 
 ```bash
-/opt/agent-box/export.sh
+sudo bash services/box/ops/export.sh
 ```
+
+Only on an older installation whose Compose file really lives under
+`/opt/agent-box`, set the export paths and `EXPORT_COMPOSE_FILE` explicitly,
+then run its installed `/opt/agent-box/export.sh`.
 
 It reads Postgres through the database container, so the stack must be running. It will refuse
 the whole export rather than produce a partial one — every refusal is in section 7.
@@ -129,6 +131,10 @@ before going any further: they are the script telling you what it did **not** ta
 export: wrote /var/backups/export/lares-export-<YYYY-MM-DD>.tar
 ```
 
+A second export on the same UTC day gets `-2`, then `-3`, before `.tar`.
+The script publishes a complete archive under a new name and keeps earlier
+exports intact. Use the exact path printed by that run in every command below.
+
 Inside that one `.tar` are:
 
 | File | What it is |
@@ -139,8 +145,9 @@ Inside that one `.tar` are:
 | `<directory>.tar` | one tar per data directory |
 | `manifest.json` | the engine version, the date, and every file's name, size and `sha256` |
 
-No secret is inside. The dumps do hold your saved sign-ins to outside services, but only in
-encrypted form — see section 5g.
+No plaintext credential file is inside. Database dumps and agent definitions are
+still sensitive; protect and encrypt the archive before off-box transfer. Saved
+sign-ins in the dumps are encrypted with a key carried separately — see section 5g.
 
 ## 4. Prove the archive is readable — before anything destructive
 
@@ -294,14 +301,26 @@ rm -rf "$CHECK"
    sign-in, the owner session, agent definition, and OAuth connection.
 5. This export intentionally excludes `/srv/lares/secrets`. A restored LiteLLM
    database can therefore retain an agent key alias whose plaintext is gone.
-   In the rehearsal, exactly one `lares-agent-console-proof` hashed key existed.
-   Its first audited Keeper reconcile failed; the operator verified that no
-   old runtime existed, removed only that obsolete hash through LiteLLM's
-   authenticated local `/key/delete` API, and retried
-   `definition.reconcile` with the saved definition hash. Keeper then created
-   new runtime secrets and reached `pending: false`. Never delete a key by
-   alias alone or apply this rotation to a running agent. A general-purpose
-   restore command still needs a guarded version of this step.
+   Before reconciling each affected agent, run the guarded helper from the
+   **same checked-out release source** on the freshly restored target:
+
+   ```bash
+   sudo python3 services/box/ops/rotate-restored-gateway-key.py --agent <exact-agent-name>
+   sudo python3 services/box/ops/rotate-restored-gateway-key.py --agent <exact-agent-name> --execute
+   ```
+
+   The first command only checks. The second removes exactly one hash through
+   the authenticated gateway API. Both refuse if the agent's plaintext key or
+   any Compose agent container still exists, if the restored resource is not
+   owned and ready, or if the gateway key's alias, policy and metadata do not
+   match. The helper never prints the hash or master key. After it reports a
+   verified deletion, retry the audited `definition.reconcile` with the saved
+   definition hash, and confirm a new key file, healthy runtime and
+   `pending: false`. If the helper refuses, inspect the cause; never delete a
+   key by alias alone or run this repair against an active agent. The earlier
+   `console-proof` rehearsal performed these checks manually; this helper is
+   source-checked but still needs a fresh-target exercise before the general
+   restore path can be called proved.
 6. Confirm the restored conversation after reload and perform a bounded live
    provider read using the restored OAuth token. The rehearsal completed Gmail
    and Calendar reads without a write. Only after this proof should the
