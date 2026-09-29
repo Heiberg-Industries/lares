@@ -453,3 +453,81 @@ data-client pair required for Gmail and Calendar enrollment. Google data
 connection in this run, restore onto this target, recurring backup, and final
 teardown remain open. The previous run's Google read and accepted
 morning-brief freshness heartbeat remain separately documented above.
+
+## 2026-09-29 — off-box restore onto the rebuilt server
+
+The owner entered the saved Hetzner test S3 pair through the Mac helper's
+hidden prompts. The rebuilt server held it only in root-owned
+`/etc/lares/backup.env` (mode `0400`); the off-box age identity remained on
+the Mac. Before replacing the fresh agent, the current-layout backup and
+verifier produced and checked rollback snapshot
+`8549d5039554eced1cdd96b95dba5440dbc512f1f9c2ea12ef9846b2b387df97`
+at 22:33:46 +02. It contained all five then-live dumps, three portable stores
+and encrypted configuration.
+
+The guarded restore then read snapshot
+`e96a6c1902bfcafcb2c741c36cbd6145382b50508fb3842795543a285ac765f6`
+from the private FSN1 bucket, verified the custom-format dumps, and restored
+five databases, `/srv/lares/agents`, `/srv/lares/retired`, `/srv/taste` and
+the encrypted `/etc/lares` escrow onto the rebuilt target. It quarantined the
+fresh agent's files under `/var/tmp` and aligned the database role password
+to the restored configuration. The six base/Keeper services restarted. The
+restored state has one definition, one owned resource, one registry row, zero
+OAuth tokens and zero old conversation rows. The source snapshot predates a
+Google data connection; the 28 September separate restore had proved token
+and conversation recovery, but this snapshot cannot repeat those two checks.
+The Preferences marker's restored SHA-256 is
+`e3f98c54efb594a547f43babd31a24b4d014012f54a84f6a66e10ec32cf78d26`,
+matching both the original live file and the Mac's saved-key read-back.
+The installed Preferences page displayed the one restored note.
+
+The guarded orphaned-gateway-key helper initially refused because its default
+master-key path was wrong: it looked in `/srv/lares/secrets` instead of the
+installed `/etc/lares/secrets`. The PR branch now separates those paths; its
+three focused tests pass. A staged copy of that exact fix first verified one
+orphaned `restore-proof` managed key without changing it, then removed only
+that verified hash through the local gateway. Keeper's audited
+`definition.reconcile` with the saved definition hash returned
+`pending: false`, generated a new mode-`0440` agent key and started
+`lares-lares-restore-proof-1`. A bounded, provider-backed browser chat received
+“I'm running — restore-proof, live and operational.” The turn survived page
+reload. The fixed helper was staged separately; the server's checked-out
+release source and running console image were not silently changed.
+
+## 2026-09-29 — recurring protection on the restored installation
+
+The old monthly drill only understood the legacy dual-Compose layout and
+rejected valid zero-table workflow databases. PR #32 now selects the current
+single-Compose layout, restores the explicit agents/retired/Preferences
+stores, permits an empty retired store and a zero-table restored database only
+when its live counterpart is also empty. Eight focused drill tests and three
+gateway-key helper tests pass. The rebuilt server passed `bash -n` and
+`systemd-analyze verify` for the staged script and units.
+
+The server installed root-owned current-layout backup, verifier and monthly
+drill units. All three timers are enabled: 03:00 and 05:00 UTC daily, then
+03:40 UTC on the first of each month. Running the backup unit after restoration
+created exact off-box snapshot
+`f66cd5a478c35c169999716877fd13c44894c7c56c963597a4e2a84598c7cf40`
+at 22:53:46 +02. The drill restored its contents into scratch, loaded all five
+dumps into `drill_*` databases, compared table counts to live, then dropped
+all five; no scratch database or directory remained. The verifier confirmed
+the five dumps, three portable stores and encrypted configuration and a drill
+age of zero days. Both `backup_status` rows are true with pass timestamps.
+The installed Backup page displayed **Protected** with both checks **ok**.
+This proves a run through the units, not that tomorrow's timer has fired.
+The bucket has no Object Lock and its project-wide S3 credential can delete
+snapshots; this remains disposable server-loss protection.
+
+PR #32 was still open and draft at `dff5ee5` when checked; all 18 listed
+checks on that head succeeded. The new drill/helper changes were local at
+that check and need their own CI result after push. The exact installed
+console image remains the pinned `ce296213` digest and `6b801692` revision.
+
+**LAR-50 remains In Progress.** The repaired/resumed four-question install
+does not prove the strict unassisted docs-only path. Calendar/Gmail enrollment
+and reads were observed on 28 September, and the owner accepted that run's
+freshness heartbeat in place of first-brief delivery; the rebuilt first-agent
+run did not repeat them. Final teardown is unapproved and unobserved. Keep
+this distinction in the acceptance decision rather than treating the
+successful restore and Protected badge as the whole golden path.

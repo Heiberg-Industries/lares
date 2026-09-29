@@ -321,6 +321,24 @@ describe("restore-drill.sh", () => {
     expect(scratchLeftovers()).toEqual([]);
   });
 
+  it("drills current-layout stores and an intentionally empty database using only its Compose file", () => {
+    stageArchive({ dumps: { app: "x".repeat(2048), empty_workflow: "x".repeat(2048) } });
+    mkdirSync(join(archiveRoot, "srv/lares/retired"), { recursive: true });
+    mkdirSync(join(archiveRoot, "srv/taste/notes"), { recursive: true });
+    writeFileSync(join(archiveRoot, "srv/taste/notes/proof.md"), "recovered\n");
+    stageCounts({ app: { live: 12, drill: 12 }, empty_workflow: { live: 0, drill: 0 } });
+
+    const r = run({ LARES_CURRENT_LAYOUT: "1", RESTIC_REPOSITORY: "s3:https://example.invalid/test" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("2 database dump(s) loaded");
+    expect(lines(pgRestoreLog)).toHaveLength(2);
+    expect(recordedArgs()).toContain("-f /opt/lares/compose.yaml");
+    expect(recordedArgs()).not.toContain("compose.override.yaml");
+    expect(resticArgs()).toContain("/srv/lares/retired");
+    expect(lines(dropLog)).toEqual(lines(createLog));
+    expect(scratchLeftovers()).toEqual([]);
+  });
+
   it("too little free space on the scratch root fails before anything is restored or created", () => {
     // 1MB free, well under the default 5120MB floor. This must be caught before
     // mktemp even runs — nothing is restored and no database is ever created.

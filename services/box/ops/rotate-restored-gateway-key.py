@@ -64,6 +64,8 @@ def main() -> None:
     parser.add_argument("--execute", action="store_true", help="delete the one verified orphan hash")
     parser.add_argument("--compose", type=Path, default=Path("/opt/lares/compose.yaml"))
     parser.add_argument("--secrets-dir", type=Path, default=Path("/srv/lares/secrets"))
+    parser.add_argument("--master-key-file", type=Path,
+                        default=Path("/etc/lares/secrets/gateway-master-key"))
     args = parser.parse_args()
     name = args.agent
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,30}", name):
@@ -117,7 +119,7 @@ SELECT row_to_json(k) FROM (
             or not re.fullmatch(r"[0-9a-f]{64}", str(item.get("token", "")))):
         refuse("the matching alias does not have the exact managed-key policy")
 
-    master_file = args.secrets_dir / "gateway-master-key"
+    master_file = args.master_key_file
     if not master_file.is_file():
         refuse("the installed gateway master key is missing")
     master = master_file.read_text().strip()

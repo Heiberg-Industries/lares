@@ -23,11 +23,14 @@ class RestoreGatewayKeyTest(unittest.TestCase):
         self.compose.write_text("services: {}\n")
         self.secrets = root / "secrets"
         self.secrets.mkdir()
-        (self.secrets / "gateway-master-key").write_text("sk-synthetic-master-key")
+        self.master_key = root / "installed" / "gateway-master-key"
+        self.master_key.parent.mkdir()
+        self.master_key.write_text("sk-synthetic-master-key")
 
     def run_main(self, execute=False):
         args = ["repair", "--agent", "example", "--compose", str(self.compose),
-                "--secrets-dir", str(self.secrets)]
+                "--secrets-dir", str(self.secrets),
+                "--master-key-file", str(self.master_key)]
         if execute:
             args.append("--execute")
         with patch.object(sys, "argv", args), patch.object(module.os, "geteuid", return_value=0):

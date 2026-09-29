@@ -1,14 +1,14 @@
 # LAR-50 rebuild and teardown decision record — 29 September 2026
 
-**State:** rebuild completed by the owner; final teardown remains unapproved.
+**State:** rebuild and guarded restore completed; final teardown remains unapproved.
 Production deployment is a separate decision. The detailed observations are
 in [the run ledger](../runbooks/golden-path-runs.md).
 
 **Rebuild action:** The owner submitted the Ubuntu 24.04 rebuild of server
 #167781592 on 29 September at approximately 19:40 UTC. Hetzner reported it
-complete, and the console showed the new OS login. Fresh SSH host-key
-verification, installation and restore remain pending. The final teardown
-decision has not been made.
+complete, and the console showed the new OS login. The new SSH host key was
+confirmed in the Hetzner console, then the guided installation and guarded
+off-box restore completed. The final teardown decision has not been made.
 
 ## Rebuild of the disposable test server
 
@@ -53,6 +53,44 @@ After approval, the shortest remaining sequence is:
    restore verdict and remaining console status. Keep LAR-50 open if any step
    fails or cannot be observed.
 
+### Result and protected recovery point
+
+The rebuilt Ubuntu 24.04.4 server kept both Primary IPs. Its new ED25519 host
+key was verified in the provider console before strict SSH access. The
+four-answer installer reached a live provider check, where Hetzner's browser
+console had inserted control bytes into the hidden model key. A replacement
+was entered by the owner through a hidden Mac prompt; the saved-answer
+installer resume, first agent, provider-backed chat and reload then passed.
+This is a repaired run, not a strict unassisted docs-only install. The
+separate Google data client was missing from this fresh run; the 28 September
+run contains the observed Calendar/Gmail reads and accepted freshness
+heartbeat.
+
+Before restoring old state, off-box snapshot
+`8549d5039554eced1cdd96b95dba5440dbc512f1f9c2ea12ef9846b2b387df97`
+protected the fresh installation. The original off-box snapshot
+`e96a6c1902bfcafcb2c741c36cbd6145382b50508fb3842795543a285ac765f6`
+was restored to the rebuilt server. Its agent was reconciled after a guarded
+single-key rotation; the Preferences marker matched its prior SHA-256, and a
+new provider-backed chat turn survived reload. The restored source snapshot
+contains zero Google OAuth tokens and no old conversations, so this restore
+does not itself prove recovery of those records.
+
+Post-restore off-box snapshot
+`f66cd5a478c35c169999716877fd13c44894c7c56c963597a4e2a84598c7cf40`
+was created at 22:53:46 +02. The current-layout monthly drill loaded all five
+dumps into scratch databases and removed them; the verifier passed and the
+installed Backup page said **Protected**. Backup, verifier and drill timers are
+enabled. This proves their manual unit runs; scheduled execution has not yet
+occurred. The private bucket has no Object Lock, and its test project S3
+credential can delete its snapshots. The Mac-only age identity and repository
+password were escrowed by the owner. No production system was changed.
+
+LAR-50 remains In Progress because the repaired install does not meet the
+strict docs-only criterion and final teardown has not been observed. PR #32
+remains draft. These are acceptance and disposal decisions, not permission to
+delete anything.
+
 ## Final teardown after acceptance
 
 This requires a **separate** decision after the above evidence is written.
@@ -65,6 +103,19 @@ needs to account for the dedicated Healthchecks check and the test-only S3
 credential. The Object Storage bucket holds an encrypted restic recovery copy;
 deleting it would permanently remove that copy. Confirm whether the owner
 wants that copy retained or destroyed before any bucket action.
+
+The final pre-delete check must reopen Hetzner project `lares-install-test`
+and confirm the exact server, Primary IPs, bucket and S3 credential inventory.
+The server's current OS contains the restored databases, agent and
+Preferences store plus the quarantined fresh-agent files. The bucket currently
+contains three known snapshots, including the fresh rollback and the
+post-restore point above. Deleting the server while retaining the bucket
+preserves only that encrypted recovery material; revoking the project-wide S3
+credential then requires a new credential for any later read. Deleting the
+bucket destroys all three recovery points. Removing the DigitalOcean A record
+and the dedicated Healthchecks check should be timed with server deletion to
+avoid a stale public route or false backup alarms. The owner must select
+retention or destruction of the bucket in the separate teardown decision.
 
 Once the owner approves exact targets, record the pre-delete inventory, remove
 the external DNS record and monitor at the agreed time, delete or retain the

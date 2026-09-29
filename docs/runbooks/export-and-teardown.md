@@ -317,10 +317,11 @@ rm -rf "$CHECK"
    verified deletion, retry the audited `definition.reconcile` with the saved
    definition hash, and confirm a new key file, healthy runtime and
    `pending: false`. If the helper refuses, inspect the cause; never delete a
-   key by alias alone or run this repair against an active agent. The earlier
-   `console-proof` rehearsal performed these checks manually; this helper is
-   source-checked but still needs a fresh-target exercise before the general
-   restore path can be called proved.
+   key by alias alone or run this repair against an active agent. The 29
+   September `restore-proof` rehearsal exercised the corrected helper on a
+   rebuilt target, then verified an audited reconcile, replacement key and
+   provider-backed chat. Its evidence is in
+   [the golden-path run ledger](golden-path-runs.md).
 6. Confirm the restored conversation after reload and perform a bounded live
    provider read using the restored OAuth token. The rehearsal completed Gmail
    and Calendar reads without a write. Only after this proof should the
