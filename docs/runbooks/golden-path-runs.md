@@ -540,10 +540,26 @@ off-box restic snapshots were verified. The provider activity changed from
 `Server is being rebuilt` to `Server rebuilt` at about 21:15 UTC. Its
 authenticated console displayed a fresh Ubuntu 24.04.4 tty1 login. The new
 network-offered ED25519 host key has fingerprint
-`SHA256:Ru4ByCQYGU1TU34+dttcGT8iQW+oBtUA0gwcOnPzQzk`; it is **not trusted or
-pinned yet** pending comparison with the host's public key from the provider
-console. No SSH login, prerequisites, sign-in-client transfer, or installer
-run on this rebuilt OS is claimed yet. PR #32 remains open and draft at
-`b963fb0d52ca1cb400c694385a85f849ab9cfb14`; all listed checks except
-the still-running box job had passed at the latest observation. LAR-50 stays
-In Progress.
+`SHA256:Ru4ByCQYGU1TU34+dttcGT8iQW+oBtUA0gwcOnPzQzk`. The owner logged
+in as root through Hetzner's authenticated server console. Its on-host
+`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` printed the same fingerprint;
+only then was the new public key pinned in a separate local known-hosts file.
+Strict SSH confirmed Ubuntu 24.04.4, a 150 GB root filesystem with 1.2 GB used,
+and no `/etc/lares` or `/root/lares` from the previous OS.
+
+The documented prerequisites were installed on that disposable server. The
+official Node 24.21.0 archive checksum returned `OK`; Docker Compose is 2.40.3
+and pnpm is 9.15.0. The source is detached at reviewed code commit
+`a2cd26ca74c0ba695b4354ce4b1aae8734e883c1`, frozen dependencies installed,
+and the pinned manifest dry run exited zero with `this was a dry run. Nothing
+has been changed.` The test manifest includes the exact console image digest
+`sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`.
+Only the already escrowed console sign-in OAuth client was decrypted in a pipe
+from the Mac and streamed over pinned SSH into `/etc/lares/console-oauth.env`;
+its root-owned mode is `0600` and a non-secret shape check found the two expected
+fields. The former installation's database, answer file, model key, agent files,
+and Compose file were not restored. Both `/etc/lares/installation.env` and
+`/opt/lares/compose.yaml` were absent before the real run. The owner has a short
+Mac Terminal helper for the four-question installer, which has not run yet at
+this checkpoint. PR #32 remains open and draft at `4654815e6f4038e24d1a168f8770a1ea45921332`;
+all 18 listed checks on that head succeeded. LAR-50 stays In Progress.
