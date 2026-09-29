@@ -25,10 +25,16 @@ run as a clean pass. The current acceptance and later restore work are in the
    apt-get update
    apt-get install -y docker.io docker-compose-v2 git curl ca-certificates xz-utils build-essential python3
    timedatectl set-timezone Europe/Oslo
+   cd /root
    node_version=v24.21.0
    curl -fsSLO "https://nodejs.org/dist/$node_version/node-$node_version-linux-x64.tar.xz"
    curl -fsSLO "https://nodejs.org/dist/$node_version/SHASUMS256.txt"
    grep " node-$node_version-linux-x64.tar.xz$" SHASUMS256.txt | sha256sum -c -
+   ```
+
+   **Stop here and read the checksum result.** Only when it says `OK`, run:
+
+   ```bash
    tar -C /usr/local --strip-components=1 -xf "node-$node_version-linux-x64.tar.xz"
    corepack enable
    corepack prepare pnpm@9.15.0 --activate
