@@ -563,3 +563,38 @@ and Compose file were not restored. Both `/etc/lares/installation.env` and
 Mac Terminal helper for the four-question installer, which has not run yet at
 this checkpoint. PR #32 remains open and draft at `4654815e6f4038e24d1a168f8770a1ea45921332`;
 all 18 listed checks on that head succeeded. LAR-50 stays In Progress.
+
+## 2026-09-29 — uninterrupted fresh wizard and first agent
+
+From the blank state above, the owner ran the exact no-answer-flags installer
+through a pinned-SSH Mac Terminal wrapper. They chose the default fresh path,
+entered the four private prompts there, and reported completion without an
+error or repair. Independent checks found the installer exited, all six base
+services up, 74 migration ledger entries through `089_agent_avatars.sql`, one
+owner row, and one real LiteLLM spend row at USD 0.00018. `/api/auth/login`
+returned 307 with a valid TLS certificate. The running console is exactly
+`ghcr.io/heiberg-industries/lares-engine-console@sha256:ce29621357025ca109cbba09481ae62f87bc81a6f1abcc7c1a72f9510bfa513c`,
+OCI revision `6b801692d05278f1287b78d2228689bb67a57f93`; source remains
+`a2cd26ca74c0ba695b4354ce4b1aae8734e883c1`. Prerequisites and the
+sign-in client were scripted from the candidate guide; the owner answered the
+fresh wizard interactively. No previous answer file, database, or model key
+was restored before that run.
+
+The authenticated fresh console showed no registered agents. Its browser
+wizard created `lar50-clean-proof` from Chief of Staff with **zero** granted
+integrations, skills, and enabled schedules. The review screen displayed
+those limits; after a short startup wait, the console reported `Agent created
+and healthy`, the dedicated agent container was running, and the registry
+had one row. One bounded web-chat message requested a short reply without
+tools, external data or writes. The agent replied, `Running — LAR-50 Clean
+Proof is up, no tools called and nothing changed.` Both turns survived page
+reload. The database has one conversation; LiteLLM records two calls totaling
+USD 0.04304 on this fresh OS, within the owner's cumulative USD 5 test ceiling.
+
+The fresh Connections page still says `Google (Gmail + Calendar): missing no
+client`; its sign-in client is separate from the Google data client. No
+Calendar/Gmail connection or read has occurred on this final clean OS yet.
+The 28 September Google read and the owner's accepted brief-freshness
+heartbeat, plus the 29 September restore and backup drill, remain separate
+observed runs. Final teardown has not been approved or observed. LAR-50 stays
+In Progress until the golden-path evidence and disposal are complete.
