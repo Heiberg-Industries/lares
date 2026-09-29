@@ -252,3 +252,27 @@ fresh-target rehearsal already proved those records and a live Google read,
 though it needed manual orphaned-key repair. The guarded replacement helper,
 Preferences recovery, recurring off-box protection and final teardown remain
 unproved. LAR-50 stays In Progress.
+
+## 2026-09-29 — local recovery export and acceptance clarification
+
+The current-layout `services/box/ops/export.sh` produced
+`/var/backups/export/lares-export-2026-09-29.tar` on the test server. Its
+archive SHA-256 is
+`fd79fed231603e1fc2b1ff11467717e3af782c3f3380e8d2af81a9f2910d63a7`.
+All nine manifest members matched their recorded size and SHA-256. The nested
+agent bundle contains `restore-proof/agent.json`, and the Preferences bundle
+contains `notes/lar-50-restore-marker.md`. The archive has no credential paths.
+It is still on the same server, contains sensitive database records, and has
+not been restored. It is neither off-box protection nor a recovery result.
+
+The owner explicitly accepted the previously observed `morning-brief`
+freshness heartbeat in place of a delivered first brief for this acceptance
+run. The 28 September ledger entry records what that heartbeat proved and its
+limits. The owner asked whether the off-box backup target could wait until a
+later test. LAR-50 still requires a repeatable backup-protection path; the
+current Backup screen says **Not protected**, so this gate remains open.
+The legacy scheduled backup, verifier and drill scripts target the older
+`/opt/agent-box` dual-Compose layout and cannot be safely installed unchanged
+on this `/opt/lares` installation. In particular, their broad `/srv/lares`
+snapshot would include the live `secrets` directory. Do not run those scripts
+here. LAR-50 remains In Progress.
