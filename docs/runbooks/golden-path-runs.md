@@ -531,3 +531,19 @@ freshness heartbeat in place of first-brief delivery; the rebuilt first-agent
 run did not repeat them. Final teardown is unapproved and unobserved. Keep
 this distinction in the acceptance decision rather than treating the
 successful restore and Protected badge as the whole golden path.
+
+## 2026-09-29 — final clean-install rehearsal started
+
+The owner explicitly approved another Ubuntu 24.04 rebuild of disposable
+Hetzner server `lares-install-test-2` #167781592 after the three encrypted
+off-box restic snapshots were verified. The provider activity changed from
+`Server is being rebuilt` to `Server rebuilt` at about 21:15 UTC. Its
+authenticated console displayed a fresh Ubuntu 24.04.4 tty1 login. The new
+network-offered ED25519 host key has fingerprint
+`SHA256:Ru4ByCQYGU1TU34+dttcGT8iQW+oBtUA0gwcOnPzQzk`; it is **not trusted or
+pinned yet** pending comparison with the host's public key from the provider
+console. No SSH login, prerequisites, sign-in-client transfer, or installer
+run on this rebuilt OS is claimed yet. PR #32 remains open and draft at
+`b963fb0d52ca1cb400c694385a85f849ab9cfb14`; all listed checks except
+the still-running box job had passed at the latest observation. LAR-50 stays
+In Progress.
