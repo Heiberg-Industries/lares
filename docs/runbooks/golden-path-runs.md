@@ -634,9 +634,16 @@ only the disposable `lar50-clean-proof` agent; its editor saved Gmail and
 Calendar as its two integrations, with all other integrations and schedules
 off. Its **Connect mailbox with Google** form reached
 `/api/accounts/google/start` but Chrome displayed `ERR_BLOCKED_BY_CLIENT` in
-both the automated and owner's clicks. No agent mailbox binding or same-run
-Gmail/Calendar read is claimed. The owner is checking the form in another
-browser; this is still an acceptance blocker unless that path succeeds.
+both the automated and owner's clicks. Safari exposed the server response:
+`Configure the explicit Google principal before connecting an agent mailbox.`
+The data-client helper had configured Keeper but left `CONSOLE_PRINCIPAL_ID`
+absent from the console OAuth env. PR #32 now makes that helper pin the
+installed owner in the root-only console env and refuse a conflicting value;
+two focused helper tests passed. The exact staged helper passed a live dry run,
+added the missing setting and preserved both configuration files at root-only
+mode `0600`. Only Keeper and console were recreated. TLS-verified
+`/api/auth/login` returned 307 after startup. The owner is retrying the agent
+connection; no same-run Gmail/Calendar read is claimed yet.
 
 The owner supplied the saved Hetzner S3 pair through the new pinned-SSH Mac
 helper. Root-only `/etc/lares/backup.env` passed a shape and mode check. The

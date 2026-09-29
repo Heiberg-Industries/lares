@@ -24,6 +24,26 @@ def read_values(path: Path) -> dict[str, str]:
     return values
 
 
+def console_env_with_principal(contents: str, owner: str) -> str:
+    """Keep existing OAuth secrets intact while pinning agent OAuth to this owner."""
+    if not re.fullmatch(r"[A-Za-z0-9._@-]+", owner):
+        raise ValueError("installed owner is not safe for an env assignment")
+    assignments: list[str] = []
+    for line in contents.splitlines():
+        if line.lstrip().startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key.strip() == "CONSOLE_PRINCIPAL_ID":
+            if key != "CONSOLE_PRINCIPAL_ID":
+                raise ValueError("console Google principal assignment is not canonical")
+            assignments.append(value)
+    if len(assignments) > 1 or (assignments and assignments[0] != owner):
+        raise ValueError("console Google principal must match the installed owner exactly once")
+    if assignments:
+        return contents
+    return contents + ("" if not contents or contents.endswith("\n") else "\n") + f"CONSOLE_PRINCIPAL_ID={owner}\n"
+
+
 def atomic_write(path: Path, value: bytes, mode: int, gid: int) -> None:
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
@@ -77,8 +97,10 @@ def main() -> None:
     lifecycle = config["lifecycle"]
     runtime = lifecycle["runtime"]
     owner = lifecycle["defaultBindings"]["chief-of-staff"]["ownerId"]
-    if values.get("CONSOLE_PRINCIPAL_ID", owner) != owner:
-        parser.error("console Google principal must match the installed owner")
+    try:
+        console_env = console_env_with_principal(args.env_file.read_text(), owner)
+    except ValueError as error:
+        parser.error(str(error))
     token_key = args.secrets_dir / "token-enc-key"
     if not token_key.is_file():
         parser.error("installed token encryption key is missing")
@@ -94,12 +116,14 @@ def main() -> None:
     runtime["google"] = google
 
     if args.dry_run:
-        print(f"Would configure Google org {args.org} for installed owner {owner}; no files changed.")
+        print(f"Would configure Google org {args.org} for Keeper and console; no files changed.")
         return
     atomic_write(client_id_file, (client_id + "\n").encode(), 0o440, 10001)
     atomic_write(client_secret_file, (client_secret + "\n").encode(), 0o440, 10001)
     atomic_write(args.keeper_config, (json.dumps(config, indent=2) + "\n").encode(), 0o600, 0)
-    print(f"Configured Google org {args.org} for Keeper. Restart only the Keeper before connecting an agent.")
+    if console_env != args.env_file.read_text():
+        atomic_write(args.env_file, console_env.encode(), 0o600, 0)
+    print(f"Configured Google org {args.org} for Keeper and console. Restart only Keeper and console before connecting an agent.")
 
 
 if __name__ == "__main__":

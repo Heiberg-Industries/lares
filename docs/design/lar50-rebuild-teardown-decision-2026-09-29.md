@@ -1,6 +1,7 @@
 # LAR-50 rebuild and teardown decision record — 29 September 2026
 
-**State:** rebuild and guarded restore completed; final teardown remains unapproved.
+**State:** two test rebuilds and one guarded restore were completed; the latest
+clean installation remains running and final teardown is unapproved.
 Production deployment is a separate decision. The detailed observations are
 in [the run ledger](../runbooks/golden-path-runs.md).
 
@@ -91,6 +92,32 @@ strict docs-only criterion and final teardown has not been observed. PR #32
 remains draft. These are acceptance and disposal decisions, not permission to
 delete anything.
 
+### Final clean-install checkpoint, 29–30 September
+
+The owner approved and completed a second Ubuntu 24.04 rebuild at about 21:15
+UTC. The new host key was matched to Hetzner's on-host fingerprint before
+pinned SSH. The subsequent no-answer-flags installer used the four owner
+prompts on a blank OS, with documented prerequisites and no restored answers,
+database or model key. The first templated agent and provider-backed chat
+passed. The separate Google data client was configured, and owner consent
+returned one live mailbox with five scopes. The agent-specific mailbox form
+yielded Chrome `ERR_BLOCKED_BY_CLIENT`; Safari exposed a missing explicit
+Google principal. The data-client helper now pins the installed owner in the
+root-only console env, and the test Keeper/console have reloaded it. The owner
+is retrying the agent flow; account access has not yet been observed as applied
+to this agent, and no same-run provider read is claimed.
+
+The new OS holds one fresh disposable agent and its conversation, the connected
+Google token, and root-only backup settings. Encrypted off-box snapshot
+`55f4dd18aee67e446c5d16ab2bdb0cb3f269303b52405a6fb72ded8f22ee2b45`
+was created at 23:54:25 +02 and read back. A focused fresh-empty-Preferences
+drill fix was staged after ten passing tests; the live scratch restore and
+verifier passed, with no leftover scratch database or directory. The Backup
+page displayed **Protected** and all three timers are enabled. The prior
+restore rehearsal and encrypted snapshots remain documented in the ledger;
+the current fresh OS has not been replaced by a restore. No production system
+was changed.
+
 ## Final teardown after acceptance
 
 This requires a **separate** decision after the above evidence is written.
@@ -106,13 +133,16 @@ wants that copy retained or destroyed before any bucket action.
 
 The final pre-delete check must reopen Hetzner project `lares-install-test`
 and confirm the exact server, Primary IPs, bucket and S3 credential inventory.
-The server's current OS contains the restored databases, agent and
-Preferences store plus the quarantined fresh-agent files. The bucket currently
-contains three known snapshots, including the fresh rollback and the
-post-restore point above. Deleting the server while retaining the bucket
-preserves only that encrypted recovery material; revoking the project-wide S3
-credential then requires a new credential for any later read. Deleting the
-bucket destroys all three recovery points. Removing the DigitalOcean A record
+The last authenticated Hetzner inventory, before its browser session expired,
+showed exactly server #167781592, attached IPv4 #152047957 and IPv6 #152047958
+with Auto Delete enabled, no Floating IPs or Volumes, and one private bucket.
+The bucket now has **at least four** known encrypted snapshots, including the
+new clean-run point above; its current object count must be rechecked. The
+current OS contains the fresh agent and Google account described above, not
+the earlier restored Preferences marker. Deleting the server while retaining
+the bucket preserves encrypted recovery material; revoking the project-wide
+S3 credential then requires a new credential for any later read. Deleting the
+bucket destroys every recovery point in it. Removing the DigitalOcean A record
 and the dedicated Healthchecks check should be timed with server deletion to
 avoid a stale public route or false backup alarms. The owner must select
 retention or destruction of the bucket in the separate teardown decision.

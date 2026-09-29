@@ -117,7 +117,10 @@ root-only OAuth env file as `GOOGLE_CLIENT_ID_<ORG>` and
 `GOOGLE_CLIENT_SECRET_<ORG>`, where `<ORG>` is one lower-case organisation id.
 Use the same hidden-prompt pattern above; never put the secret in argv or Git.
 Then run `python3 services/box/ops/configure-google-keeper.py --org <org>` as
-root and restart only the Keeper, as the helper's `--help` output instructs.
+root. It pins `CONSOLE_PRINCIPAL_ID` to the installed owner in the same
+root-only OAuth env file and configures Keeper's matching Google principal;
+it refuses a conflicting value. Restart only Keeper and console to load those
+settings before connecting an agent mailbox.
 If the callback, scopes, or account eligibility are unclear, stop and record a
 documentation blocker rather than guessing. Authorize only read access for
 this test and record a bounded Calendar and Gmail read, without private
