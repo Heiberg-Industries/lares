@@ -22,6 +22,9 @@ ENV_FILE="${AGENT_BOX_BACKUP_ENV:-/etc/agent-box/backup.env}"
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 
 # Keeper configuration includes credential references and its secrets live here.
 # A Lares installation must never report a complete backup without escrow encryption.
@@ -182,7 +185,7 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   for p in /srv/lares/*; do
     [ -e "$p" ] || continue
     case "$p" in
-      /srv/lares/agents|/srv/lares/retired|/srv/lares/backup|/srv/lares/egress|/srv/lares/secrets) ;;
+      /srv/lares/agents|/srv/lares/retired|/srv/lares/backup|/srv/lares/egress|/srv/lares/secrets|/srv/lares/compose.lares-agents.yaml) ;;
       *) echo "backup: unclassified Lares store: $p" >&2; exit 1 ;;
     esac
   done

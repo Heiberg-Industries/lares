@@ -11,6 +11,7 @@ function fixture(encrypted:boolean){
  for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
  writeFileSync(join(root,'opt/agent-box/.env'),'OLD_TEST_SECRET=old-secret');
  writeFileSync(join(root,'opt/lares/compose.yaml'),'services: {}\n');
+ writeFileSync(join(root,'srv/lares/compose.lares-agents.yaml'),'services: {}\n');
  writeFileSync(join(root,'etc/lares/keeper.json'),'{"privateConfig":"test-only"}');
  writeFileSync(join(root,'etc/lares/secrets/key'),'NEW_TEST_SECRET');
  writeFileSync(join(root,'srv/lares/agents/example/agent.json'),'{"name":"example"}');
@@ -18,7 +19,7 @@ function fixture(encrypted:boolean){
  execFileSync('age-keygen',['-o',key],{stdio:'pipe'});
  const recipient=execFileSync('age-keygen',['-y',key],{encoding:'utf8'}).trim();
  const envFile=join(root,'backup.env');
- writeFileSync(envFile,`RESTIC_PASSWORD_FILE=/dev/null\nSTORAGEBOX_SSH_KEY=/dev/null\nSTORAGEBOX_USER=test\nSTORAGEBOX_HOST=example.invalid\nRESTIC_REPO_PATH=test\nLARES_WORKFLOW_VOLUMES=fixture_workflow\n${encrypted?`AGE_SECRETS_RECIPIENT=${recipient}\n`:''}`);
+ writeFileSync(envFile,`RESTIC_PASSWORD_FILE=/dev/null\nSTORAGEBOX_SSH_KEY=/dev/null\nSTORAGEBOX_USER=test\nSTORAGEBOX_HOST=example.invalid\nRESTIC_REPO_PATH=test\nAWS_ACCESS_KEY_ID=TESTACCESSKEY\nAWS_SECRET_ACCESS_KEY=TESTSECRETKEY\nLARES_WORKFLOW_VOLUMES=fixture_workflow\n${encrypted?`AGE_SECRETS_RECIPIENT=${recipient}\n`:''}`);
  writeFileSync(join(root,'bin/docker'),`#!/usr/bin/env python3
 import sys,os
 a=sys.argv
@@ -39,6 +40,7 @@ print(os.stat(sys.argv[-1]).st_size)
 import json,os,pathlib,shutil,sys
 r=pathlib.Path(os.environ['FIXTURE_ROOT'])
 (r/'restic-args.json').write_text(json.dumps(sys.argv[1:]))
+(r/'restic-credential-shapes.json').write_text(json.dumps([bool(os.environ.get('AWS_ACCESS_KEY_ID')),bool(os.environ.get('AWS_SECRET_ACCESS_KEY'))]))
 shutil.copytree(r/'var/backups/pg',r/'captured-dumps')
 `,{mode:0o755});
  // Relocate only filesystem roots into this disposable fixture. The actual dump,
@@ -98,6 +100,7 @@ it('backs up only portable current-layout stores and an encrypted configuration 
    expect(args).toContain(join(f.root,path));
  for(const path of ['srv/lares','srv/lares/secrets','etc/lares','opt/agent-box'])
    expect(args).not.toContain(join(f.root,path));
+ expect(JSON.parse(readFileSync(join(f.root,'restic-credential-shapes.json'),'utf8'))).toEqual([true,true]);
  const encrypted=join(f.root,'captured-dumps/secrets/agent-box-secrets.tar.age');
  expect(readFileSync(join(f.root,'captured-dumps/postgres.dump')).length).toBeGreaterThan(1024);
  const archive=execFileSync('age',['-d','-i',f.key,encrypted]);

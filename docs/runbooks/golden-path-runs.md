@@ -276,3 +276,70 @@ The legacy scheduled backup, verifier and drill scripts target the older
 on this `/opt/lares` installation. In particular, their broad `/srv/lares`
 snapshot would include the live `secrets` directory. Do not run those scripts
 here. LAR-50 remains In Progress.
+
+## 2026-09-29 — current-layout backup preparation, not yet protected
+
+The owner approved and created a private Hetzner Object Storage bucket in
+Falkenstein, separate from the Helsinki test server, and saved its newly
+generated project-wide S3 credential pair in a password manager. A dedicated
+daily Healthchecks check was created with a two-hour grace period and the
+existing email/Slack integrations. Neither a remote snapshot nor a heartbeat
+receipt has been observed yet.
+
+PR #32 commit `09d1f56` adds explicit current-layout branches to the existing
+backup and verifier scripts. The old agent-box default remains in place. The
+new path archives all databases, portable agent and Preferences stores, and an
+age-encrypted `/etc/lares` bundle, while refusing the plaintext secrets parent
+and unclassified data directories. The verifier requires these paths, the
+encrypted bundle, a real heartbeat target and plausible dumps. Focused backup
+and verifier tests passed (29 tests), as did the agent-box typecheck and Bash
+syntax checks. The test server has `age` 1.1.1 and `restic` 0.16.4 from Ubuntu;
+root-owned staged scripts match the reviewed SHA-256s
+`eb5f4bfc25e01789dc3613aadc77b32926771405cbe4d6da8646560d8dd77d73`
+and `1876c93aae738a843420f7d1b0f5af3ee7ebeaeaf6f99cf7baf659298df2529c`.
+The systemd units pass `systemd-analyze verify` but both timers are disabled.
+The off-box age identity and restic repository password are in a private local
+Mac directory for this rehearsal; they still need durable owner escrow.
+The server has the repository password and a root-only one-time helper for the
+owner to enter the S3 pair without echo or shell history. At this checkpoint,
+the helper has not been completed and `/etc/lares/backup.env` is absent.
+Backup therefore remains **Not protected**.
+
+## 2026-09-29 — first remote backup and read-back
+
+The owner entered the saved S3 pair into the root-only server prompt. A
+read-only check verified `/etc/lares/backup.env` is `0400` and root-owned,
+and validated the expected field shapes without printing any value. The
+remote restic repository was initialized in the private Falkenstein bucket.
+
+The first backup attempt failed closed on an unclassified generated
+`compose.lares-agents.yaml` file; its temporary plaintext dumps were removed.
+The script now explicitly classifies that generated file without archiving it.
+The next backup produced snapshot
+`e96a6c1902bfcafcb2c741c36cbd6145382b50508fb3842795543a285ac765f6`
+at `2026-09-29T20:50:36+02:00`: 11 files, approximately 444 KiB source and
+120 KiB stored. The initial verifier then failed closed because `restic ls`
+lists the encrypted bundle only when queried inside the `pg/secrets`
+subdirectory. After correcting that lookup, the verifier passed against the
+same remote snapshot: globals, all five non-template database dumps, the
+three portable Lares stores and encrypted configuration were present. The
+small, empty built-in `postgres` dump uses its own 1024-byte floor; the live
+export measured 1078 bytes. The verifier service also passed through systemd.
+
+Independent read-back from the Mac found that exact snapshot. The restored
+Preferences marker had SHA-256
+`e3f98c54efb594a547f43babd31a24b4d014012f54a84f6a66e10ec32cf78d26`,
+matching the live server file, and the encrypted configuration bundle
+decrypted in a stream with the Mac-only age identity to a tar with 21 entries.
+No plaintext bundle was written to disk. The Healthchecks check shows a
+recent success and email/Slack integrations. `backup_status.verify` is true;
+`backup_status.drill` has never run. Both systemd timers are enabled, with
+the next backup at 03:00 UTC and verification at 05:00 UTC on 30 September.
+The console's source classifies this as **Unproven** until a restore passes;
+that label has not been independently viewed in the browser.
+
+The owner's durable escrow of the Mac-only age identity and repository
+password is pending confirmation. A full fresh-target restore, guarded
+gateway-key recovery, strict unassisted docs-only owner install, and final
+teardown remain open. Production deployment is separate. Keep LAR-50 In
+Progress and PR #32 draft.

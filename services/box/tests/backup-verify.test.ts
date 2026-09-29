@@ -104,6 +104,7 @@ beforeEach(() => {
   writeFileSync(
     restic,
     `#!/usr/bin/env bash\n` +
+      `if [ "\${LARES_CURRENT_LAYOUT:-0}" = 1 ] && { [ -z "\${AWS_ACCESS_KEY_ID:-}" ] || [ -z "\${AWS_SECRET_ACCESS_KEY:-}" ]; }; then exit 1; fi\n` +
       // LAR-54-s6: log every call's argv (one call per "---"-separated block) so tests
       // can assert what restic was actually invoked with -- in particular, whether
       // RESTIC_REPOSITORY produced "-r <value>" with no rclone option at all.
@@ -172,6 +173,8 @@ beforeEach(() => {
       "STORAGEBOX_SSH_KEY=/dev/null",
       "RESTIC_REPO_PATH=box-backup",
       "RESTIC_PASSWORD_FILE=/dev/null",
+      "AWS_ACCESS_KEY_ID=TESTACCESSKEY",
+      "AWS_SECRET_ACCESS_KEY=TESTSECRETKEY",
       "HC_URL=https://hc-ping.com/test-uuid",
       "",
     ].join("\n"),

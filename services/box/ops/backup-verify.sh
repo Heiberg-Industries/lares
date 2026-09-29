@@ -66,6 +66,9 @@ ENV_FILE="${AGENT_BOX_BACKUP_ENV:-/etc/agent-box/backup.env}"
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 
 MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-24}"
 # The dumps are the store with no upstream source of truth and the one whose absence
@@ -317,7 +320,9 @@ DUMP_SIZES=$(printf '%s' "$DUMP_LS" \
 printf '%s' "$DUMP_SIZES" | grep -q '^globals\.sql ' \
   || fail "snapshot $SNAP_ID has no globals.sql under $REQUIRED_PATH — the roles and grants are missing, so a restore comes back with no users"
 if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
-  printf '%s' "$DUMP_SIZES" | grep -q '^agent-box-secrets\.tar\.age ' \
+  SECRET_LS=$("${RESTIC[@]}" ls --json "$SNAP_ID" "$REQUIRED_PATH/secrets/agent-box-secrets.tar.age" 2>&1) \
+    || fail "cannot read the encrypted Lares configuration bundle from snapshot $SNAP_ID"
+  printf '%s' "$SECRET_LS" | grep -q '"name":"agent-box-secrets.tar.age"' \
     || fail "snapshot $SNAP_ID has no encrypted Lares configuration bundle"
 fi
 
@@ -410,7 +415,12 @@ else
 fi
 
 DB_COUNT=$(printf '%s\n' "$DBS" | wc -l | tr -d ' ')
-OK_MSG="OK — nightly snapshot $SNAP_ID ${AGE_HOURS}h old (${AGE_MIN}m); carries $REQUIRED_PATH with globals.sql + all $DB_COUNT database dumps, and every directory under /srv; $DRILL_NOTE"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  COVERAGE_NOTE="the three portable Lares stores and encrypted configuration"
+else
+  COVERAGE_NOTE="every directory under /srv"
+fi
+OK_MSG="OK — nightly snapshot $SNAP_ID ${AGE_HOURS}h old (${AGE_MIN}m); carries $REQUIRED_PATH with globals.sql + all $DB_COUNT database dumps, and $COVERAGE_NOTE; $DRILL_NOTE"
 echo "backup-verify: $OK_MSG"
 curl -fsS -m 15 --retry 3 "$HC_URL" >/dev/null
 record_status true "$OK_MSG"
