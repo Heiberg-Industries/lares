@@ -231,3 +231,24 @@ acceptance. Fresh-account sign-in, first agent, provider-backed chat,
 Calendar/Gmail read, first brief or accepted freshness heartbeat, Preferences
 export/restore, fresh-target key repair, recurring off-box backup protection,
 and teardown remain open. LAR-50 stays In Progress and PR #32 stays draft.
+
+## 2026-09-29 — minimal programmatic recovery fixtures
+
+At the owner's request, the new installation was seeded programmatically for
+the narrow remaining recovery checks. The audited Keeper host socket reported
+capacity one and zero agents before the write. Its `definition.create` action
+created `restore-proof` from the Chief of Staff starting point with no grants,
+skills, doors or enabled schedules. It returned `pending: false`; the database
+shows one valid definition, Keeper audit records `definition.create|ok`, and
+the agent container is running. Definition Git backup reported `disabled`.
+This is a recovery fixture, not a repeated browser first-agent acceptance run.
+
+The shared `@lares/taste` serializer created one disposable Preferences note,
+`/srv/taste/notes/lar-50-restore-marker.md`, with no private content. Its
+parse/serialize round trip passed, and the console's uid 10001 can read it.
+The marker has not yet been exported or restored. No chat conversation or
+Google data connection was repeated on this installation; the 28 September
+fresh-target rehearsal already proved those records and a live Google read,
+though it needed manual orphaned-key repair. The guarded replacement helper,
+Preferences recovery, recurring off-box protection and final teardown remain
+unproved. LAR-50 stays In Progress.
