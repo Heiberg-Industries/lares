@@ -360,3 +360,15 @@ pair the owner saved in the password manager; the restic password and age
 identity are separate Mac-only files whose contents the owner reports saving
 in the password manager. The temporary files must not be treated as durable
 escrow.
+
+## 2026-09-29 — owner-initiated same-server rebuild
+
+After the saved-key read-back, the owner submitted the prepared Ubuntu 24.04
+rebuild of Hetzner test server `lares-install-test-2` #167781592. Hetzner's
+activity log showed `Server is being rebuilt` followed by `Server rebuilt`
+around 19:40 UTC. Its browser console displayed a fresh Ubuntu 24.04 tty1
+login; the same IPv4 and IPv6 addresses remained attached. The old pinned SSH
+host key was correctly rejected. A new ED25519 key was offered over the
+network, but its fingerprint still needs comparison against the authenticated
+Hetzner console before any SSH login. No fresh installer, restore or teardown
+has been run at this checkpoint. Keep LAR-50 In Progress.

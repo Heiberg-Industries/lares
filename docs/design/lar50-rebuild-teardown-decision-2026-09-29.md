@@ -1,8 +1,14 @@
 # LAR-50 rebuild and teardown decision record — 29 September 2026
 
-**State:** prepared for review; neither action is authorized by this file.
+**State:** rebuild completed by the owner; final teardown remains unapproved.
 Production deployment is a separate decision. The detailed observations are
 in [the run ledger](../runbooks/golden-path-runs.md).
+
+**Rebuild action:** The owner submitted the Ubuntu 24.04 rebuild of server
+#167781592 on 29 September at approximately 19:40 UTC. Hetzner reported it
+complete, and the console showed the new OS login. Fresh SSH host-key
+verification, installation and restore remain pending. The final teardown
+decision has not been made.
 
 ## Rebuild of the disposable test server
 
