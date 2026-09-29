@@ -665,3 +665,39 @@ installed Backup page displayed **Protected**, with both checks `ok` and
 pass timestamps at 21:57/21:58 UTC. Tomorrow's scheduled timer execution is
 not yet observed. The separate bucket remains deletable by its project-wide
 test credential and has no Object Lock.
+
+## 2026-09-30 — final clean-run mailbox read and recovery point
+
+After the explicit Google principal fix, the owner retried the agent-specific
+OAuth flow in Safari. The agent editor returned with **Owner connection
+pending/applied**; applying the change persisted the selected mailbox.
+Connections showed agent access for only `lar50-clean-proof`, with Gmail and
+Calendar both set to **Ask first**. The first read attempt used an existing
+conversation and found no mail or calendar tools. Source inspection showed that
+the email door must be enabled for those tools to mount. Enabling only that door
+and applying the connection restarted the disposable agent; its editor then
+showed **Owner connection applied**. No schedule or other door was enabled.
+
+In a new conversation, a bounded request asked for the connected mailbox's
+inbox count and next-24-hour calendar event count only, with no message or
+event details and no writes. The live transcript showed `gmail_search` and
+`calendar_list_events` both completed. The agent returned the two counts and
+said it made no mail or calendar changes. Reloading `/chat/lar50-clean-proof`
+preserved that request, both completed tool labels, and the reply. This is
+provider-backed, agent-reported read evidence in the final clean installation;
+the private mailbox and event details were not copied into the ledger.
+
+With the new conversation persisted, the backup unit made encrypted off-box
+snapshot `68e4c7088a9aeb913339fe21f8b7f37aa30bcd02e344912ed827f488c7c3dd7d`
+at 00:11:00 +02. A separate restic listing read it back. The scratch restore
+drill and verifier units passed again, and all three timers remained active.
+The current clean OS has not itself been replaced by a restored image; the
+earlier guarded fresh-target restore and current-layout scratch drill are
+separately recorded above. Future timer executions remain unobserved.
+
+The owner explicitly accepted the earlier `morning-brief` freshness heartbeat
+as the first-brief substitute. The four-question blank-OS install, first agent,
+provider-backed chat, Google read, backup, restore rehearsal, and Protected
+state now have observed evidence across the runs above. Final teardown has
+not been approved or observed, so LAR-50 stays In Progress. PR #32 remains
+draft; production deployment is a separate decision.

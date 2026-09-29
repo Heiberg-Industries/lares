@@ -118,6 +118,15 @@ restore rehearsal and encrypted snapshots remain documented in the ledger;
 the current fresh OS has not been replaced by a restore. No production system
 was changed.
 
+On 30 September the owner completed the agent-specific Google connection and
+mailbox apply. Enabling only the disposable agent's email door mounted its
+Gmail and Calendar read tools. A new web conversation showed both read calls
+complete, returned counts only, and survived reload. A new encrypted off-box
+snapshot `68e4c7088a9aeb913339fe21f8b7f37aa30bcd02e344912ed827f488c7c3dd7d`
+was read back; the scratch restore drill and verifier passed again. See the
+run ledger for the exact observed sequence. This supersedes the earlier
+pending-agent-connection checkpoint above. Final teardown is still unapproved.
+
 ## Final teardown after acceptance
 
 This requires a **separate** decision after the above evidence is written.
@@ -136,8 +145,8 @@ and confirm the exact server, Primary IPs, bucket and S3 credential inventory.
 The last authenticated Hetzner inventory, before its browser session expired,
 showed exactly server #167781592, attached IPv4 #152047957 and IPv6 #152047958
 with Auto Delete enabled, no Floating IPs or Volumes, and one private bucket.
-The bucket now has **at least four** known encrypted snapshots, including the
-new clean-run point above; its current object count must be rechecked. The
+The bucket now has **at least five** known encrypted snapshots, including the
+post-read clean-run point above; its current object count must be rechecked. The
 current OS contains the fresh agent and Google account described above, not
 the earlier restored Preferences marker. Deleting the server while retaining
 the bucket preserves encrypted recovery material; revoking the project-wide
