@@ -129,3 +129,13 @@ This was a useful first-conversation proof, not completion of LAR-50. The next p
 | Server change | Backed up Compose to `/opt/lares/compose.yaml.pre-6b80169`, replaced only the console image pin, asserted the `/srv/taste` bind mount, validated Compose, and recreated only `lares-console-1` with `--no-deps`. The console reported running at the new digest/revision; the other six expected containers remained up with prior uptimes. No migration, provider call, agent restart or full server rebuild was performed. |
 | Browser and route | Public `/taste` returned HTTP 307 to authentication. The owner's authenticated Chrome tab loaded the updated page after reload. The empty Preferences legend visibly renders English New/Changed with the shared quiet status treatment. Computed body and heading font is Instrument Sans Variable. `/srv/taste` still contained zero files after the earlier QA cleanup. |
 | Remaining proof | The populated row details and Reset control are source-tested but have not been visually exercised on this exact image because the QA entry was deleted. Fresh-install provisioning, Preferences export/restore, backup protection, approval replay, cross-agent isolation and mobile remain separate gates. Keep PR #32 draft and LAR-50 In Progress. |
+
+## 2026-09-29 — owner close-of-session decision
+
+The owner accepted the current desktop console image as good for now and chose
+to defer further visual polish while moving to release review. The exact-image
+populated Preferences row and Reset control, and mobile, remain follow-ups.
+This decision does not complete the golden-path acceptance or authorize a
+server rebuild, merge, production deployment or teardown. The next-session
+order and exact checkpoint are in the
+[29 September handoff](../design/console-lar50-handoff-2026-09-29.md).

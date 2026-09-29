@@ -1,5 +1,8 @@
 # Console and LAR-50 — next-session handoff (28 September 2026)
 
+For the closing 29 September checkpoint and current next-session order, use
+[the newer handoff](console-lar50-handoff-2026-09-29.md).
+
 ## Start here
 
 **29 September current pin:** The console-only image from PR #32 source
