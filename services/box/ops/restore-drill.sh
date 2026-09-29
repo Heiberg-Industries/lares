@@ -363,8 +363,14 @@ dumps=("$DUMP_DIR"/*.dump)
 MISSING_DIRS=""
 for p in $DRILL_RESTORE_PATHS; do
   target_dir="$SCRATCH$p"
-  # A retired-agent store may legitimately be empty on a new installation.
-  if [ ! -d "$target_dir" ] || { [ "$p" != /srv/lares/retired ] && [ -z "$(ls -A "$target_dir" 2>/dev/null)" ]; }; then
+  # A fresh installation can have empty portable stores (notably /srv/taste).
+  # Still require the directory itself in the snapshot, and reject an empty
+  # restore when the current-layout live directory has since gained data.
+  if [ ! -d "$target_dir" ]; then
+    MISSING_DIRS="$MISSING_DIRS $p"
+  elif [ -z "$(ls -A "$target_dir" 2>/dev/null)" ] && \
+       [ "$p" != /srv/lares/retired ] && \
+       { [ "${LARES_CURRENT_LAYOUT:-0}" != 1 ] || [ ! -d "$p" ] || [ -n "$(ls -A "$p" 2>/dev/null)" ]; }; then
     MISSING_DIRS="$MISSING_DIRS $p"
   fi
 done

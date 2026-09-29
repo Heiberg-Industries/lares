@@ -598,3 +598,63 @@ The 28 September Google read and the owner's accepted brief-freshness
 heartbeat, plus the 29 September restore and backup drill, remain separate
 observed runs. Final teardown has not been approved or observed. LAR-50 stays
 In Progress until the golden-path evidence and disposal are complete.
+
+## 2026-09-29 — Google consent and final-run backup preparation
+
+The owner entered the saved Google data-client pair through a hidden Mac
+Terminal prompt. The pair was saved only in the fresh server's root-owned
+console OAuth settings. The current-layout configurator passed its dry run,
+then installed the owner-scoped Keeper client files; only Keeper and console
+were recreated to load the new settings. The authenticated Connections page
+changed from `missing no client` to `partial client configured, no mailbox`.
+The owner approved starting the Google connection and personally clicked
+**Allow** on Google's consent screen. It requested Gmail reading and sending,
+Drive file reading, and Calendar viewing and editing. The browser returned to
+the fresh console with `?added=` and showed `Connected`, one live mailbox,
+five scopes, and no agent access yet. Agent-level Gmail/Calendar reads have not
+yet been proved on this final clean OS.
+
+The reviewed current-layout backup, verifier and restore-drill scripts and
+their systemd units were staged on the fresh server. Bash syntax and unit
+verification passed. The existing test restic repository password was streamed
+over pinned SSH into `/etc/lares/restic-password` with root-only mode `0400`.
+The hidden-prompt S3 configuration helper is root-only, but this OS has no
+`/etc/lares/backup.env`; all three timers remain disabled. No new snapshot or
+drill has run after this rebuild. The prior encrypted off-box snapshots remain
+in the separate Falkenstein bucket.
+
+PR #32 is still open and draft at `8b0557d13fecd0551513916079889d176d35f34b`;
+all 18 checks on that head succeeded. Linear LAR-50 remains In Progress.
+
+## 2026-09-29 — final-run Google account and protected backup
+
+The owner completed Google's five-scope consent in the fresh run. Connections
+showed one live mailbox, but no agent access. The owner approved a grant to
+only the disposable `lar50-clean-proof` agent; its editor saved Gmail and
+Calendar as its two integrations, with all other integrations and schedules
+off. Its **Connect mailbox with Google** form reached
+`/api/accounts/google/start` but Chrome displayed `ERR_BLOCKED_BY_CLIENT` in
+both the automated and owner's clicks. No agent mailbox binding or same-run
+Gmail/Calendar read is claimed. The owner is checking the form in another
+browser; this is still an acceptance blocker unless that path succeeds.
+
+The owner supplied the saved Hetzner S3 pair through the new pinned-SSH Mac
+helper. Root-only `/etc/lares/backup.env` passed a shape and mode check. The
+backup unit created encrypted off-box snapshot
+`55f4dd18aee67e446c5d16ab2bdb0cb3f269303b52405a6fb72ded8f22ee2b45`
+at 23:54:25 +02. A separate repository read listed it with the portable
+agents, retired and Preferences stores and `/var/backups/pg`.
+
+The first restore drill failed because a genuinely empty `/srv/taste` on this
+clean installation was classified as a missing restored store. PR #32 now
+allows an empty current-layout restored directory only when the matching live
+directory is also empty, and still refuses a missing directory or an empty
+copy of a populated live store. Ten focused drill tests, Bash syntax, and the
+staged script's SHA-256 check passed. The test server reran the drill
+successfully against snapshot `55f4dd18`; zero `drill_*` databases and scratch
+directories remained. The verifier unit passed. All three timers are enabled
+for 03:00 and 05:00 UTC daily and 03:40 UTC on the first of each month. The
+installed Backup page displayed **Protected**, with both checks `ok` and
+pass timestamps at 21:57/21:58 UTC. Tomorrow's scheduled timer execution is
+not yet observed. The separate bucket remains deletable by its project-wide
+test credential and has no Object Lock.

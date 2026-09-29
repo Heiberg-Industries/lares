@@ -339,6 +339,31 @@ describe("restore-drill.sh", () => {
     expect(scratchLeftovers()).toEqual([]);
   });
 
+  it("accepts an empty current-layout store only when the live store is also empty", () => {
+    const live = join(dir, "fresh-preferences");
+    mkdirSync(live);
+    mkdirSync(`${archiveRoot}${live}`, { recursive: true });
+
+    const r = run({ LARES_CURRENT_LAYOUT: "1", DRILL_RESTORE_PATHS: live });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("1 database dump(s) loaded");
+    expect(lines(dropLog)).toEqual(lines(createLog));
+    expect(scratchLeftovers()).toEqual([]);
+  });
+
+  it("rejects an empty restored store after the live current-layout store gains data", () => {
+    const live = join(dir, "populated-preferences");
+    mkdirSync(live);
+    writeFileSync(join(live, "entry.json"), "saved preference\n");
+    mkdirSync(`${archiveRoot}${live}`, { recursive: true });
+
+    const r = run({ LARES_CURRENT_LAYOUT: "1", DRILL_RESTORE_PATHS: live });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`missing or empty for: ${live}`);
+    expect(lines(createLog)).toEqual([]);
+    expect(scratchLeftovers()).toEqual([]);
+  });
+
   it("too little free space on the scratch root fails before anything is restored or created", () => {
     // 1MB free, well under the default 5120MB floor. This must be caught before
     // mktemp even runs — nothing is restored and no database is ever created.
