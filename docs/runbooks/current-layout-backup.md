@@ -24,6 +24,12 @@ test server. Prove that escrow from another machine by reading the repository.
 Never paste these values into Git, chat, Linear, or a command line that remains
 in shell history. An empty heartbeat target must fail verification.
 
+The LAR-50 Falkenstein test bucket has Object Lock disabled, and its S3 key can
+delete objects and access every bucket in the disposable Hetzner project. This
+rehearsal proves recovery from loss of the test server, not protection against
+a compromised server deleting its remote backup. Do not reuse this credential
+or claim immutable storage for a production installation.
+
 ## Install and prove
 
 Install the distribution's `age` and `restic` packages. Copy the reviewed

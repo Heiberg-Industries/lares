@@ -14,6 +14,7 @@ in [the run ledger](../runbooks/golden-path-runs.md).
 | Data that rebuild erases | The current `/etc/lares` configuration, five databases, one `restore-proof` agent, one disposable Preferences marker, locally staged backup scripts/configuration, and the local export. |
 | Remote recovery point | Private Falkenstein restic snapshot `e96a6c1902bfcafcb2c741c36cbd6145382b50508fb3842795543a285ac765f6`; verifier passed for five dumps, portable stores and encrypted configuration. Mac read-back matched the live Preferences marker SHA-256 and decrypted the age bundle. |
 | Monitoring | Dedicated daily Healthchecks check with two-hour grace and email/Slack integrations; backup and verifier timers enabled for 03:00/05:00 UTC. |
+| Backup limit | The private S3 bucket has no Object Lock, and its server credential can delete objects. This is a disposable server-loss recovery rehearsal, not immutable backup protection. The current `backup_status.drill` row is unset; the fresh-target restore must supply the missing proof. |
 
 Before a rebuild, confirm the owner has durably escrowed the S3 key pair,
 restic repository password and Mac-only age identity, and repeat off-box
@@ -21,6 +22,10 @@ restic repository password and Mac-only age identity, and repeat off-box
 temporary directory. Confirm no other work is using this test server. Then
 request an explicit owner decision to rebuild **server #167781592's OS disk**.
 No rebuild is permitted merely because this plan exists.
+
+The owner confirmed on 29 September that the S3 pair, repository password and
+age identity were saved in the password manager. Independent access with the
+saved S3 values is still pending, and a root SSH session is still logged in.
 
 After approval, the shortest remaining sequence is:
 
