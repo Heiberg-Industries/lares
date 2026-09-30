@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 30 September 2026, against `main` at `0da2e05`.
+Last checked: 30 September 2026, against `main` at `ac23bcb`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -24,6 +24,11 @@ page, this page is newer.
   `brace-expansion`, `postcss`; and #25). GitHub still lists 18 warnings, all
   in test tooling (`vitest`, `@vitest/mocker`, `esbuild`, `uuid`) and none in
   an image that runs on a server. They are tracked in LAR-99.
+- **Release candidate images are built and pinned** (30 September), all from
+  `ac23bcb`: console, keeper, firewall helper, egress proxy, the three agent
+  runtimes and sync-jobs. The sync-jobs package is private, so its fingerprint
+  comes from the build's own record and a server needs registry sign-in to
+  pull it.
 - **The marketing website has left this repository.** It lives in a private
   repository; see [`website-repository.md`](website-repository.md).
 - **The fresh-install test (LAR-50) is closed.** A blank Ubuntu install, first
@@ -36,10 +41,10 @@ page, this page is newer.
 ## Not done
 
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
-- **No image has been built from the current `main`.** The console image used
-  in testing was built from an earlier commit (`6b80169`). A release needs an
-  image built from the chosen commit, inspected, and pinned by digest.
-- **No release is published.** `releases/` holds test manifests only.
+- **No release is published.** A release candidate exists:
+  [`releases/2026-09-30-rc.1.json`](../releases/2026-09-30-rc.1.json) pins the
+  images built from one commit, `ac23bcb`. It has not been installed or
+  rehearsed anywhere. The other files in `releases/` are test manifests.
 - **A production rollout still needs** a migration and rollback plan (rolling
   back the schema after `089` has not been rehearsed) and a separate approval.
 - **A strict docs-only install is unobserved.** The test install needed a
@@ -54,6 +59,7 @@ page, this page is newer.
 - No pull requests are open. The automatic update pull requests #2, #23, #33
   and #34 were closed; #37 replaced the ones that mattered.
 - The switch on the existing server has not been rehearsed (LAR-98).
+- One installer test fails at random on GitHub (LAR-100).
 - Several Linear tickets lag behind the merged work and need a status review.
 
 ## Where the detail lives
