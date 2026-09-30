@@ -10,7 +10,7 @@ PR is merged or marked ready by this work. Protected main is untouched.
 
 The approved console and marketing share a design language. As of 26 September,
 the website lives in private `Heiberg-Industries/lares-website`; marketing PR #31
-is superseded. Orbis PR #13 remains the consent/booking deployment dependency.
+is superseded. The booking service's PR #13 remains the consent/booking deployment dependency.
 
 ## First review slice
 

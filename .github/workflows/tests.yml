@@ -139,6 +139,8 @@ jobs:
         run: pnpm typecheck
       - name: Verify Prisma security override compatibility
         run: node scripts/check-prisma-config.mjs
+      - name: Reject retired namespace references
+        run: node scripts/check-namespace.mjs
 
   ci-passed:
     # Require this stable name in the main ruleset after this workflow is merged.
