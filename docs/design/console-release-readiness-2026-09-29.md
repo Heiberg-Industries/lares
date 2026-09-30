@@ -76,3 +76,37 @@ The retained DNS points to the released test IPv4 and needs repointing before
 reuse. The observed LAR-50 acceptance and teardown are in the run ledger;
 this disposal does not publish or deploy PR #32. The broader LAR-7 build scope
 and PR merge/release decision remain open.
+
+## 30 September merge-readiness checkpoint
+
+Draft PR #32 is open and mergeable at `08f9912bfed2e83535d7d1030448918bfa63b702`
+against `166613e4a68ad533219990d7bfd9c19a19af5fda`. Its 18 reported
+checks all succeeded in [run 36639797724](https://github.com/Heiberg-Industries/lares/actions/runs/36639797724).
+No review has been submitted. The focused source review found no new code
+blocker in the current-layout backup, verifier, restore drill, installer,
+Google-principal repair, or image publication guard since `7e6f810`. This
+does not add a live run of the final PR head: the disposable server was
+deleted after testing the earlier pinned console image.
+
+The repository's manual runtime-image probe was not run after migration 089
+was added, so the 18 PR checks alone do not satisfy its pre-merge gate.
+This review also found that a manual run of that workflow could inherit an
+unreadable organization-wide `PUBLISH_IMAGES` setting. The branch now makes
+manual publication an explicit, default-off input for all its image builds.
+Run the manual image probe from this pushed branch before merging; record the
+run result here. Production publication and deployment remain separate.
+
+LAR-50 is Done with the owner's accepted brief heartbeat substitution and
+restore proof spanning two disposable installations. The exact observations
+and their limits are in the [run ledger](../runbooks/golden-path-runs.md).
+PR #20's head `c5ae62e` and PR #29's head `c63c316` are both ancestors of
+PR #32's head, with no separate reviews or comments, so they carry no unique
+code to merge ahead of #32. The retained `lares.heiberg.co` A record remains
+unchanged by owner decision; it points to the released test IPv4 and must be
+repointed before reuse.
+
+Keep PR #32 draft for a separate merge decision. Before any production
+rollout, decide migration timing and rollback, build and inspect a release
+image from the selected merge commit, pin its immutable digest, and plan a
+separate deployment. The green CI run and completed LAR-50 test are evidence
+for review, not a production image or deployment approval.
