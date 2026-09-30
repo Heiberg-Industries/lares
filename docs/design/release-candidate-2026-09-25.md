@@ -15,7 +15,7 @@ pinned to their already-tested 4.3.3 versions; console keeps 4.1.18. Shared toke
 merge cleanly. Do not resolve this merge by choosing one entire branch's lockfile.
 
 Public application: marketing and curated docs at `lares.is`, served by a separate
-unprivileged nginx container on the existing Orbis/Coolify server (port 8080).
+unprivileged nginx container on the owner's existing Coolify server (port 8080).
 The authenticated console stays part of the self-hosted Lares installation. A
 hosted console is a separate deployment scope, not implied by the public website.
 

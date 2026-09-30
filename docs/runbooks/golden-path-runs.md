@@ -332,7 +332,7 @@ Preferences marker had SHA-256
 matching the live server file, and the encrypted configuration bundle
 decrypted in a stream with the Mac-only age identity to a tar with 21 entries.
 No plaintext bundle was written to disk. The Healthchecks check shows a
-recent success and enabled owner email plus the existing `orbis-alerts` Slack
+recent success and enabled owner email plus the existing alerts-channel Slack
 integration. Its event log records a failure POST, `new → down`, then the
 successful GET and `down → up` recovery. Receipt by an individual email or
 Slack client was not checked. `backup_status.verify` is true;

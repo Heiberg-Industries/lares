@@ -19,10 +19,10 @@ the broader fresh-install run.
 
 The repository is now public. The owner removed the waitlist/signup plan for the
 website. Keep a contact sheet for setup enquiries and other messages, and a booking
-path using the Orbis service backed by the Heiberg calendar. The exact familia
+path using the owner's booking service backed by the Heiberg calendar. The exact familia
 headline in the approved brand copy is intentional: “Care f**k all about agents?
 Get in touch.” Add a GitHub icon in the site header. PostHog and Google Search
-Console are the intended analytics/search tools; hosting on the Orbis box is a
+Console are the intended analytics/search tools; hosting on the owner's other server is a
 candidate for later discussion. This update supersedes older waitlist notes below.
 
 ## Owner visual correction — production website
@@ -177,7 +177,7 @@ Compose content-driven sections: header, hero, benefits, real-component product 
 
 Hero decorative layers are isolated, clipped and pointer-transparent. Pause stops grain and light; reduced motion is static from initial render. Pause offscreen/in hidden tabs where useful, keep content visible before JS, profile SVG noise and large moving layers on modest mobile hardware. Use a cached static grain asset if runtime filters are costly, preserving the same component contract. Avoid introducing WebGL for this treatment.
 
-Contact: the public site has no waitlist/signup. Keep a real contact path for setup enquiries and other messages. The current email link opens the visitor's mail app; it does not claim to submit anything through the site. The booking link goes to the existing Heiberg calendar page. The popup requires an Orbis frame-policy and Lares-brand decision before integration. If a contact form is later chosen, implement verified delivery, validation, failure/success states and abuse controls before enabling it.
+Contact: the public site has no waitlist/signup. Keep a real contact path for setup enquiries and other messages. The current email link opens the visitor's mail app; it does not claim to submit anything through the site. The booking link goes to the existing Heiberg calendar page. The popup requires a booking-service frame-policy and Lares-brand decision before integration. If a contact form is later chosen, implement verified delivery, validation, failure/success states and abuse controls before enabling it.
 
 Before publishing: verify installation/availability/pricing and capability claims against the current release; confirm public source/docs links, metadata, canonical URL, social image, sitemap/robots as appropriate, favicon, fonts/licenses and no private console data. Use ordinary stable navigation, not preview surface-switching controls. Hosting/deploy and launch remain separate explicit steps.
 
@@ -196,7 +196,7 @@ No agents should start until the owner resumes implementation and the integratio
 | P6 Chat | Chat agent: presentation/history/approval mapping | P2/P3/P5 contract | Send/stream/switch/reconnect/reset/approval evidence |
 | P7 Operations | Console agent: Home/Activity/Connections/Settings/Tools | P3 and verified source contracts | Real event coverage, filters, permissions and recovery UX |
 | P8 Website | Marketing agent: separate app/content/sections | P1/P2 stable; identity API agreed | v6 fidelity, motion behavior, both themes/mobile; mock mode isolated |
-| P9 Contact and booking | Website/Orbis owner: contact delivery and branded booking popup | P8 + cross-repo decision | Verified mail path, booking flow, errors and accessibility |
+| P9 Contact and booking | Website/booking-service owner: contact delivery and branded booking popup | P8 + cross-repo decision | Verified mail path, booking flow, errors and accessibility |
 | P10 Consolidate | Lead: cleanup/docs/CI/review package | P4–P9 | Gates below, no old style duplication, owner-reviewed final build |
 
 P8 can run alongside console slices once shared component APIs stabilize. P5 can run alongside P3 with a fixed avatar contract. P4/P6/P7 must not concurrently edit shared shell/agent detail files without explicit ownership. Only lead resolves shared dependency and migration changes. If backend gaps block one slice, proceed with independent slices; keep the blocker visible.
