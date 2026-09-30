@@ -1,9 +1,42 @@
-/* lares — tokens.css
+/* Lares shared design tokens and local fonts.
    primitive → semantic → component. Colours in OKLCH.
    :root = light (default), .dark = class-based dark, [data-theme="slate"] = the one alternative theme (a pure token swap).
    Semantic names follow the shadcn/ui v4 vocabulary verbatim; do not rename or add at this layer. */
 
+@font-face {
+  font-family: "Instrument Sans Variable";
+  src: url("./fonts/instrument-sans-latin-wght-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Instrument Sans Variable";
+  src: url("./fonts/instrument-sans-latin-wght-italic.woff2") format("woff2");
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Mono";
+  src: url("./fonts/dm-mono-latin-400-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "DM Mono";
+  src: url("./fonts/dm-mono-latin-500-normal.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+
 :root {
+  --font-lares-sans: "Instrument Sans Variable", sans-serif;
+  --font-sans: var(--font-lares-sans);
+  --font-lares-mono: "DM Mono", monospace;
+  --font-mono: var(--font-lares-mono);
   /* semantic, light */
   --background: oklch(0.988 0.004 175);
   --foreground: oklch(0.20 0.03 185);
@@ -38,9 +71,19 @@
   --chart-5: oklch(0.54 0.14 32);
   --radius: 0.25rem;
 
+  --lares-control-radius: 10px;
+  --lares-control-height: 42px;
+  --lares-sidebar-width: 232px;
+  --lares-page-width: 1120px;
+  --lares-dialog-width: 560px;
+  --lares-avatar-size: 36px;
+  --lares-overlay: oklch(0.15 0.025 185 / 0.4);
+  --lares-hover: color-mix(in oklch, var(--sidebar-accent) 45%, transparent);
   /* component (project-specific) */
   --lares-attention: var(--accent);               /* "needs the owner" — aliases --accent */
   --lares-attention-foreground: var(--accent-foreground);
+  --lares-status-success: oklch(0.47 0.075 150);
+  --lares-surface-radius: 12px;
   --lares-ink-2: oklch(0.34 0.03 182);            /* secondary body text on marketing */
   --lares-grain-opacity: 0.32;                    /* console sets 0 */
   --lares-grain-frequency: 0.85;                  /* feTurbulence baseFrequency */
@@ -113,6 +156,7 @@
   --chart-4: oklch(0.30 0.025 186);
   --chart-5: oklch(0.66 0.14 34);
   --lares-ink-2: oklch(0.80 0.02 178);
+  --lares-status-success: oklch(0.72 0.09 150);
   --lares-field-from: oklch(0.18 0.025 190);
   --lares-field-mid: oklch(0.24 0.03 188);
   --lares-field-to: oklch(0.34 0.045 200);
@@ -219,8 +263,8 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 6px);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --font-sans: var(--font-lares-sans);
+  --font-mono: var(--font-lares-mono);
 }
 
 /* motion: arrivals fade and settle; the mark's nodes light in sequence. Nothing bounces. */

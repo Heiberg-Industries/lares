@@ -27,6 +27,18 @@ describe("the chat transcript", () => {
       .toMatch(/Say something/i);
   });
 
+  it("does not invite a new message while a saved conversation is being replayed", () => {
+    const html = renderToStaticMarkup(<ChatTranscript status="resuming" messages={[]} />);
+    expect(html).toContain("Reconnecting to this conversation");
+    expect(html).not.toContain("Say something to start");
+  });
+
+  it("explains how to recover when a saved conversation cannot be reopened", () => {
+    const html = renderToStaticMarkup(<ChatTranscript status="error" messages={[]} error="Forbidden" />);
+    expect(html).toContain("Start a new chat");
+    expect(html).not.toContain("Say something to start");
+  });
+
   it("renders a part it does not know about as a labelled placeholder, never as blank", () => {
     const odd = { id: "3", role: "assistant", parts: [{ type: "file" }] } as unknown as EveMessage;
     expect(renderToStaticMarkup(<ChatTranscript status="ready" messages={[odd]} />))
@@ -39,6 +51,21 @@ describe("the chat transcript", () => {
     ] } as unknown as EveMessage;
     const html = renderToStaticMarkup(<ChatTranscript status="ready" messages={[assistant]} />);
     expect(html).toContain("Hello from the agent.");
+    expect(html).not.toContain("something this page cannot show yet");
+  });
+
+  it("names ordinary tool calls without exposing tool results or a generic placeholder", () => {
+    const assistant = { id: "tools", role: "assistant", parts: [
+      { type: "dynamic-tool", toolName: "calendar_list_events", state: "output-available", output: { title: "Private event" } },
+      { type: "dynamic-tool", toolName: "gmail_search", state: "output-error", output: { message: "Private error" } },
+      { type: "text", text: "Both checked." },
+    ] } as unknown as EveMessage;
+    const html = renderToStaticMarkup(<ChatTranscript status="ready" messages={[assistant]} />);
+    expect(html).toContain("calendar_list_events completed");
+    expect(html).toContain("gmail_search failed");
+    expect(html).toContain("Both checked.");
+    expect(html).not.toContain("Private event");
+    expect(html).not.toContain("Private error");
     expect(html).not.toContain("something this page cannot show yet");
   });
 

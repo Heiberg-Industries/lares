@@ -94,7 +94,7 @@ export interface Badge {
   fresh: boolean;
 }
 
-/** "ny" for an entry an import added, "endret" for one it changed — and nothing at all once it
+/** "New" for an entry an import added, "Changed" for one it changed — and nothing at all once it
  *  is older than `FRESH_DAYS`, or for the 862 entries imported before anything recorded a date.
  *  Absence is not staleness; it is "we never knew", and inventing a date to badge it would be a
  *  worse answer than showing none. */
@@ -104,8 +104,8 @@ export function badgeFor(entry: TasteEntry | null, now: number): Badge | undefin
   if ((now - Date.parse(at)) / 86_400_000 > FRESH_DAYS) return undefined;
   const changed = entry.updatedAt !== undefined;
   return {
-    text: changed ? "endret" : "ny",
-    title: `${changed ? "Endret" : "Lagt inn"} ${at.slice(0, 10)}`,
+    text: changed ? "Changed" : "New",
+    title: `${changed ? "Updated" : "Added"} ${at.slice(0, 10)}`,
     fresh: true,
   };
 }
@@ -134,9 +134,9 @@ export function detailFor(stored: StoredEntry): string {
   if (isPlace(entry)) {
     return [
       [entry.city, entry.country].filter(Boolean).join(", "),
-      entry.lat === undefined ? "uten koordinater" : `${entry.lat.toFixed(4)}, ${entry.lon!.toFixed(4)}`,
-      entry.sourceList && `fra «${entry.sourceList}»`,
+      entry.lat === undefined ? "No coordinates" : `${entry.lat.toFixed(4)}, ${entry.lon!.toFixed(4)}`,
+      entry.sourceList && `From “${entry.sourceList}”`,
     ].filter(Boolean).join(" · ");
   }
-  return `${entry.type} · ${entry.items.length} linjer`;
+  return `${entry.type} · ${entry.items.length} ${entry.items.length === 1 ? "line" : "lines"}`;
 }

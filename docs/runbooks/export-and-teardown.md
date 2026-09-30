@@ -1,11 +1,12 @@
 # Leaving cleanly — export the installation, prove it, restore it elsewhere, then tear this one down
 
-> **This is the written procedure, not a rehearsed one.** Every command below is taken from a
-> script in this repository (`services/box/ops/export.sh`, `restore-drill.sh`, `backup.sh`) or
-> from the way those scripts already call Postgres, git and tar on the server. Nobody has yet
-> walked the whole path end to end. The first rehearsal — on a throwaway server, with a
-> throwaway copy of the archive — is the owner's, and it should happen **before** the day this
-> is needed for real. Where a step has no rehearsed command behind it, it says so in place.
+> **Partly rehearsed on a disposable server.** The current `/opt/lares` path
+> exported and restored five databases, agent files and separately escrowed
+> configuration on 28 September 2026; see the [run ledger](golden-path-runs.md).
+> The restore needed a manual orphaned-key repair. The guarded helper below has
+> not yet completed a fresh-target run, and recurring backup protection and
+> final teardown remain unproved. The older `/opt/agent-box` instructions are
+> historical unless that is the installation you are actually leaving.
 
 ---
 
@@ -24,6 +25,19 @@ Run everything as `root`, on the server, over a session that will not drop halfw
 `scp` in section 4 and the revocations in section 6.
 
 ### 2a. Set the two path lists — the defaults are narrower than your backup
+
+For the current `/opt/lares` installation, the export defaults to the portable
+`/srv/lares/agents`, `/srv/lares/retired`, and `/srv/taste` directories and has no default
+vault bundles. It dumps every non-template database through
+`/opt/lares/compose.yaml`. **Do not add `/srv/lares` as a whole:** that tree
+contains `/srv/lares/secrets`, which holds agent keys. The script refuses a
+nested `secrets` directory and common secret filenames. This export does not
+include the token encryption key in `/etc/lares/secrets`; recovery needs that
+key carried separately through a secure owner-controlled channel.
+
+The older `/opt/agent-box` procedure below applies only when those legacy
+paths really exist. Set the path lists and `EXPORT_COMPOSE_FILE` explicitly
+for such an installation; do not assume its defaults describe a new box.
 
 `export.sh` takes what you tell it to take. Its built-in defaults are deliberately small, and
 they are **not** the same list your nightly backup uses. Anything you do not name is left
@@ -66,8 +80,9 @@ Three things to know while you build those lists:
 
 | Setting | What it does | Default |
 | --- | --- | --- |
-| `EXPORT_VAULT_PATHS` | the bare git repositories to bundle | `/srv/brain.git /srv/atlas.git` |
-| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares /srv/taste` |
+| `EXPORT_VAULT_PATHS` | the bare git repositories to bundle | empty on a new installation |
+| `EXPORT_DATA_PATHS` | the directory trees to tar | `/srv/lares/agents /srv/lares/retired /srv/taste` |
+| `EXPORT_COMPOSE_FILE` | Compose file for the database container | `/opt/lares/compose.yaml` |
 | `EXPORT_DIR` | where the finished archive is written | `/var/backups/export` |
 | `EXPORT_WORKDIR_ROOT` | scratch space while it works; never `/tmp`, which can be a small RAM disk | `/var/tmp` |
 | `LARES_ENGINE_VERSION` | recorded in the manifest, so the archive says which engine wrote it | `unknown` |
@@ -94,9 +109,17 @@ df -Pk /var/backups                           # room for the finished archive
 
 ## 3. Run the export
 
+On a current installation, run `services/box/ops/export.sh` from the exact
+tested source checkout as root and record that checkout commit. Verify the
+archive manifest and database dump list, then encrypt it for off-box transfer.
+
 ```bash
-/opt/agent-box/export.sh
+sudo bash services/box/ops/export.sh
 ```
+
+Only on an older installation whose Compose file really lives under
+`/opt/agent-box`, set the export paths and `EXPORT_COMPOSE_FILE` explicitly,
+then run its installed `/opt/agent-box/export.sh`.
 
 It reads Postgres through the database container, so the stack must be running. It will refuse
 the whole export rather than produce a partial one — every refusal is in section 7.
@@ -108,6 +131,10 @@ before going any further: they are the script telling you what it did **not** ta
 export: wrote /var/backups/export/lares-export-<YYYY-MM-DD>.tar
 ```
 
+A second export on the same UTC day gets `-2`, then `-3`, before `.tar`.
+The script publishes a complete archive under a new name and keeps earlier
+exports intact. Use the exact path printed by that run in every command below.
+
 Inside that one `.tar` are:
 
 | File | What it is |
@@ -118,8 +145,9 @@ Inside that one `.tar` are:
 | `<directory>.tar` | one tar per data directory |
 | `manifest.json` | the engine version, the date, and every file's name, size and `sha256` |
 
-No secret is inside. The dumps do hold your saved sign-ins to outside services, but only in
-encrypted form — see section 5g.
+No plaintext credential file is inside. Database dumps and agent definitions are
+still sensitive; protect and encrypt the archive before off-box transfer. Saved
+sign-ins in the dumps are encrypted with a key carried separately — see section 5g.
 
 ## 4. Prove the archive is readable — before anything destructive
 
@@ -217,6 +245,88 @@ rm -rf "$CHECK"
 ```
 
 ## 5. Restoring on a fresh server
+
+> **Current `/opt/lares` installations:** the commands in 5a–5d below describe
+> the older `/opt/agent-box` layout. Do not run them verbatim on `/opt/lares`.
+> The current-layout procedure just below was rehearsed on a separately rebuilt,
+> disposable Ubuntu server on 28 September 2026; its exact results are in
+> [golden-path-runs.md](golden-path-runs.md). It is an operator procedure, not an
+> automatic `install.sh --restore` path.
+
+### Current `/opt/lares` restore sequence, rehearsed on a disposable target
+
+1. Verify the new server's SSH host key through the provider's console and pin
+   it before transferring the escrow. Install the same digest-pinned release
+   and Postgres image used for the export. If reusing the original credentials,
+   stream only `installation.env`, `console-oauth.env` and `secrets/` from the
+   separate `/etc/lares` escrow before installing. This leaves installer marker
+   files out until the fresh installer has created its databases. Preserve the
+   age identity and ciphertext off the box until the live checks finish.
+2. Stop application services, leaving the new Postgres container up. Decrypt
+   the export over the pinned SSH connection into a root-only directory on the
+   new server. Verify each file's size and SHA-256 against `manifest.json`
+   **before** replacing databases. The rehearsal used `/var/tmp/lares-restore`.
+
+   ```bash
+   docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml stop
+   docker compose -f /opt/lares/compose.yaml stop console caddy lares-gateway
+   ```
+
+3. On that *fresh, disposable target only*, replace the four databases created
+   by the installer, using the database container's matching `pg_restore`.
+   `postgres` already exists and its dump is restored into it. The fresh
+   `lares` role already uses the escrowed database password; `globals.sql` is
+   verified in the manifest but was not replayed in this rehearsal.
+
+   ```bash
+   RESTORE=/var/tmp/lares-restore
+   DC='docker compose -f /opt/lares/compose.yaml'
+   for db in empty_workflow litellm lares_1d1570450fea4a59aa0319dc72f7e376 lares_state; do
+     $DC exec -T db dropdb -U lares --if-exists --force "$db" </dev/null
+     $DC exec -T db createdb -U lares "$db" </dev/null
+     $DC exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U lares -d "$db" < "$RESTORE/$db.dump"
+   done
+   $DC exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U lares -d postgres < "$RESTORE/postgres.dump"
+   ```
+
+   The agent database name above belongs to this particular export. On another
+   export, derive the list from verified `.dump` names and validate each name
+   before using it in a shell command. Redirect non-restore `docker compose
+   exec` calls from `/dev/null` when the loop itself is read from standard
+   input; otherwise a child process can consume the rest of the script.
+4. Extract `agents.tar` and `retired.tar` under `/srv/lares`, then restore the
+   complete `/etc/lares` escrow (including Keeper's configured Google client).
+   Start the base compose file, then the Keeper compose file with
+   `--env-file /etc/lares/keeper.env`. Verify table and key row counts, HTTPS
+   sign-in, the owner session, agent definition, and OAuth connection.
+5. This export intentionally excludes `/srv/lares/secrets`. A restored LiteLLM
+   database can therefore retain an agent key alias whose plaintext is gone.
+   Before reconciling each affected agent, run the guarded helper from the
+   **same checked-out release source** on the freshly restored target:
+
+   ```bash
+   sudo python3 services/box/ops/rotate-restored-gateway-key.py --agent <exact-agent-name>
+   sudo python3 services/box/ops/rotate-restored-gateway-key.py --agent <exact-agent-name> --execute
+   ```
+
+   The first command only checks. The second removes exactly one hash through
+   the authenticated gateway API. Both refuse if the agent's plaintext key or
+   any Compose agent container still exists, if the restored resource is not
+   owned and ready, or if the gateway key's alias, policy and metadata do not
+   match. The helper never prints the hash or master key. After it reports a
+   verified deletion, retry the audited `definition.reconcile` with the saved
+   definition hash, and confirm a new key file, healthy runtime and
+   `pending: false`. If the helper refuses, inspect the cause; never delete a
+   key by alias alone or run this repair against an active agent. The 29
+   September `restore-proof` rehearsal exercised the corrected helper on a
+   rebuilt target, then verified an audited reconcile, replacement key and
+   provider-backed chat. Its evidence is in
+   [the golden-path run ledger](golden-path-runs.md).
+6. Confirm the restored conversation after reload and perform a bounded live
+   provider read using the restored OAuth token. The rehearsal completed Gmail
+   and Calendar reads without a write. Only after this proof should the
+   temporary extracted files and off-box age escrow for this rehearsal be
+   removed. This procedure does not configure nightly backup protection.
 
 This is the path `services/box/ops/restore-drill.sh` rehearses every month against the nightly
 snapshot: create a database, `pg_restore` the dump into it through the container, count the

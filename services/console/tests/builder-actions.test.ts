@@ -16,6 +16,12 @@ it('preserves backup and pending results and authenticated actor',async()=>{
  expect(mocks.keeper).toHaveBeenCalledWith('definition.save',input,'owner@example.test');
  expect(JSON.parse(JSON.stringify(result))).toMatchObject({ok:true,result:{backup:{ok:false},runtime:{pending:true}}});
 });
+it('waits for slow first-agent lifecycle work before reporting an unknown outcome',async()=>{
+ await createAgent({...input,startingPoint:'travel'});
+ await applyConnections({name:'example',hash:'abc'});
+ expect(mocks.keeper).toHaveBeenNthCalledWith(1,'definition.create',expect.anything(),'owner@example.test',{timeoutMs:60_000});
+ expect(mocks.keeper).toHaveBeenNthCalledWith(2,'definition.reconcile',{name:'example',hash:'abc'},'owner@example.test',{timeoutMs:60_000});
+});
 it('does not retry or hide a post-send failure',async()=>{
  mocks.keeper.mockRejectedValue(new Error('outcome may be unknown'));
  expect(await saveDefinition(input)).toMatchObject({ok:false,error:{outcomeMayBeUnknown:true,message:expect.stringContaining('unknown')}});

@@ -11,7 +11,7 @@ import {
   toProposalDTO, toFrozenDTO, getNotionProposalsView, applyProposalAction,
 } from "../lib/notion-proposals";
 import type { ProposalRow, FrozenDocRow } from "@lares/notion-sync/lib/store.js";
-import { NOTION_RESOLVE_COMMAND } from "../lib/contracts";
+import { NOTION_RESOLVE_GUIDANCE } from "../lib/contracts";
 
 beforeEach(() => { queryMock.mockReset(); });
 
@@ -173,17 +173,9 @@ describe("applyProposalAction", () => {
   });
 });
 
-// I1 (final review): the frozen table used to print `notion-sync resolve <path>
-// --keep md|notion`, a command that cannot be run anywhere the sync actually
-// lives — the box has no lares checkout and the image ships services/notion-sync
-// alone. The card now shows the entrypoint flag, which is runnable as printed.
-describe("NOTION_RESOLVE_COMMAND — what the frozen table tells a human to run", () => {
-  it("is the box entrypoint with both halves of the decision, not the commander CLI", () => {
-    expect(NOTION_RESOLVE_COMMAND).toContain("docker compose");
-    expect(NOTION_RESOLVE_COMMAND).toContain("services/notion-sync/bin/notion-sync.ts");
-    expect(NOTION_RESOLVE_COMMAND).toContain("--resolve <path>");
-    expect(NOTION_RESOLVE_COMMAND).toContain("--keep md|notion");
-    // The old, unrunnable form must not creep back.
-    expect(NOTION_RESOLVE_COMMAND).not.toMatch(/(^|\s)notion-sync resolve\b/);
+describe("NOTION_RESOLVE_GUIDANCE — deployment-specific frozen recovery", () => {
+  it("does not suggest a compose command the console cannot verify", () => {
+    expect(NOTION_RESOLVE_GUIDANCE).toContain("Notion sync runbook");
+    expect(NOTION_RESOLVE_GUIDANCE).not.toMatch(/docker compose|\/opt\/agent-box|\/opt\/lares/);
   });
 });

@@ -15,6 +15,7 @@ const MANIFEST: ReleaseManifest = {
 const OPTS = {
   secretsDir: "/etc/lares/secrets",
   socketDir: "/run/lares",
+  tasteDir: "/srv/taste",
   gatewayConfigFile: "/etc/lares/litellm-config.yaml",
   gatewayStartScript: "/etc/lares/gateway-start.sh",
   caddyfile: "/etc/lares/Caddyfile",
@@ -24,6 +25,8 @@ const OPTS = {
   subnet: "172.30.0.0/24",
   domain: "example.invalid",
   consoleAllowedEmails: "owner@example.invalid",
+  ownerId: "fixture-owner",
+  ownerHomeTz: "Europe/Oslo",
   modelAlias: "lares-brain",
   pgUser: "lares",
   pgDatabase: "lares_state",
@@ -75,11 +78,14 @@ describe("the generated stack compose file", () => {
     expect(env.PGUSER).toBe(OPTS.pgUser);
     expect(env.LARES_CONFIGURED_MODEL_ALIAS).toBe(OPTS.modelAlias);
     expect(env.CONSOLE_ALLOWED_EMAILS).toBe(OPTS.consoleAllowedEmails);
+    expect(env.AGENT_OWNER_USER_ID).toBe(OPTS.ownerId);
+    expect(env.OWNER_HOME_TZ).toBe(OPTS.ownerHomeTz);
     expect(env.CONSOLE_OAUTH_REDIRECT).toBe("https://example.invalid/api/auth/callback");
     expect(doc.services.console.env_file).toEqual([
       { path: "/etc/lares/console-oauth.env", required: false },
     ]);
     expect(doc.services.console.volumes).toContain("/run/lares:/run/lares");
+    expect(doc.services.console.volumes).toContain("/srv/taste:/srv/taste");
     expect(env.DATABASE_URL).toBeUndefined();
     // services/console/lib/accounts.ts throws without it when an account is connected.
     expect(env.TOKEN_ENC_KEY_FILE).toBe("/run/secrets/token-enc-key");

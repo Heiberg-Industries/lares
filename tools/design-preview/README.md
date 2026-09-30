@@ -35,8 +35,9 @@ package globs so its npm lockfile and prototype dependencies remain isolated.
   Dropdown Menu, Switch, Select and Table. Registry snapshots are under `upstream/`.
 - AI Elements Conversation, ConversationContent and ConversationScrollButton from
   the official registry; uses use-stick-to-bottom. AI SDK supplies its message types.
-- Original Lares `tokens.css` copied from the downloaded design project. Source
-  semantic color values are unchanged. Fonts are bundled through Fontsource.
+- Approved Lares tokens now come from `packages/ui/src/theme.css`, shared with future
+  production consumers. The same self-hosted Instrument Sans and DM Mono files are
+  bundled from that package; semantic color values remain unchanged.
 - Brand mark and bracket geometry follow the supplied SVGs. Marketing Grain follows
   the kit's SVG turbulence treatment. Selected original marketing copy is retained;
   launch assertions and placeholder prices are omitted or labeled as preview copy.

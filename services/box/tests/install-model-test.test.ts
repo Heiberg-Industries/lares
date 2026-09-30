@@ -73,7 +73,7 @@ beforeEach(() => {
   prefix = join(dir, "root"); mkdirSync(prefix);
   secretsDir = join(prefix, "etc", "lares", "secrets");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "pnpm", "openssl"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
   // CREATE DATABASE is piped into docker. Drain that tiny SQL input so the
   // writer cannot race this stub's exit and trip the installer's pipefail.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');

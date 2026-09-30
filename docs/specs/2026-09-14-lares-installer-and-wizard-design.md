@@ -50,7 +50,7 @@ small privileged helper with a fixed list of actions: **the keeper**.
 
 Three parts, one release.
 
-1. **The install command.** `curl -fsSL https://lares.sh/install | bash`, as root, on a fresh Ubuntu 24.04
+1. **The install command (historical proposal, not a published endpoint).** The owner chose `lares.is` on 2026-09-25; `lares.sh` was not purchased. Installer distribution must be confirmed separately before documenting a runnable command. The proposed target is root on a fresh Ubuntu 24.04
    server. Idempotent: a second run repairs what is missing and changes nothing else.
 2. **The keeper.** The privileged helper (Part 3). The installer's work after the bootstrap is the
    keeper's first run. A small host command `lares` (`lares status`, `lares setup-link`, `lares backup`,

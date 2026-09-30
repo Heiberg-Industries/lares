@@ -45,6 +45,9 @@ const ARGUMENTS = [
   "gatewayStartScript",
   "consoleAllowedEmails",
   "socketDir",
+  "ownerId",
+  "ownerHomeTz",
+  "tasteDir",
 ] as const;
 
 /** The gateway's start script, committed once at the repository root and installed verbatim —
@@ -100,6 +103,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
     socketDir: at("socketDir"),
+    tasteDir: at("tasteDir"),
     gatewayConfigFile: at("gatewayConfigFile"),
     gatewayStartScript: at("gatewayStartScript"),
     caddyfile: at("caddyfile"),
@@ -109,6 +113,8 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     subnet: at("subnet"),
     domain: at("domain"),
     consoleAllowedEmails: at("consoleAllowedEmails"),
+    ownerId: at("ownerId"),
+    ownerHomeTz: at("ownerHomeTz"),
     modelAlias: at("alias"),
     pgUser: at("pgUser"),
     pgDatabase: at("pgDatabase"),

@@ -225,6 +225,39 @@ it('recovers an interrupted owned provisioning row before applying connections',
  expect((await pool.query('SELECT datname FROM pg_database WHERE datname=$1',[row.workflow_database])).rows).toHaveLength(1);
  expect(events.at(-1)).toBe('start:bookkeeper');
 });
+// LAR-97: box 085 renames the saved Google sign-in onto the register's id. The keeper's own
+// email row holds the same value and is looked up against the installation's configured
+// principal and against oauth_tokens — so the script has to move it too, and the configuration
+// has to follow. Neutral fixture names throughout; the real 085 file is what runs.
+it('accepts the email door after box 085 once the configured principal is the register id, and still refuses the old spelling',async()=>{
+ for(const f of ['006_oauth_tokens.sql','010_oauth_tokens_multi_account.sql','014_identity.sql'])await pool.query(readFileSync(join(repo,'services/box/sql',f),'utf8'));
+ try{
+  const l=lifecycle();await l.create('bookkeeper',definition);
+  const row=await l.storage.row('bookkeeper');
+  const secret=join(root,'secrets','google');writeFileSync(secret,'fixture',{mode:0o600});
+  const google=(principal:string)=>({principal,tokenKeyFile:secret,clients:{tenant:{clientIdFile:secret,clientSecretFile:secret}}});
+  const withMail={...definition,role:'chief-of-staff',doors:[{kind:'email',enabled:true}]};
+  await pool.query("INSERT INTO users(id,display_name) VALUES('fixture-owner','Fixture Owner')");
+  await pool.query("INSERT INTO user_aliases(system,alias,user_id) VALUES('google','U_fixture','fixture-owner')");
+  await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc) VALUES('U_fixture','google','tenant','selected@example.test','not-a-token')");
+  await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox,applied_connection)
+    VALUES('bookkeeper','email',$1::uuid,$1::uuid,'owner@example.test','U_fixture','tenant','selected@example.test',
+      jsonb_build_object('kind','email','principal','U_fixture','revision',$1::text,'owner_email','owner@example.test','org','tenant','mailbox','selected@example.test'))`,[row.ownership_token]);
+  // Before: everything agrees on the old spelling, and the door is accepted.
+  config.runtime.google=google('U_fixture');
+  await expect(lifecycle().prepare('bookkeeper',withMail,false)).resolves.toBeUndefined();
+
+  await pool.query(readFileSync(join(repo,'services/box/sql/085_oauth_principal_is_the_register_id.sql'),'utf8'));
+  const after=(await pool.query("SELECT principal,applied_connection->>'principal' AS applied FROM agent_door_connections WHERE agent='bookkeeper' AND kind='email'")).rows[0];
+  expect(after).toEqual({principal:'fixture-owner',applied:'fixture-owner'});
+
+  // After: the configuration still names the old spelling -> refused (the refusal is unchanged).
+  await expect(lifecycle().prepare('bookkeeper',withMail,false)).rejects.toThrow('Configure and select a Google mailbox before enabling email');
+  // The configuration follows the script -> accepted, and the token is found under the new id.
+  config.runtime.google=google('fixture-owner');
+  await expect(lifecycle().prepare('bookkeeper',withMail,false)).resolves.toBeUndefined();
+ }finally{await pool.query('DROP TABLE IF EXISTS user_aliases,users,oauth_tokens CASCADE');}
+});
 it.each(['retired','deleting','legacy'])('refuses %s reconciliation before any runtime effect',async state=>{
  const l=lifecycle();await l.create('bookkeeper',definition);events=[];
  await pool.query("UPDATE agent_resources SET state=$1,ownership=$2,runtime_control_token=CASE WHEN $2='legacy' THEN NULL ELSE ownership_token END WHERE name='bookkeeper'",[state==='legacy'?'ready':state,state==='legacy'?'legacy':'owned']);

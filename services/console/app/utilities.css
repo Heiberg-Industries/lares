@@ -1,0 +1,7 @@
+/* No preflight: existing operational pages retain their reset until migrated. */
+@layer theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "@lares/ui/theme.css";
+@import "tailwindcss/utilities.css" layer(utilities);
+@source "../../../packages/ui/src";
+@custom-variant dark (&:where(.dark, .dark *));

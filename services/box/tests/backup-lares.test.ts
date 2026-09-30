@@ -8,8 +8,10 @@ const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(d=>rmSync(d,{recursive:true,force:true})));
 function fixture(encrypted:boolean){
  const root=mkdtempSync(join(tmpdir(),'lares-backup-'));roots.push(root);
- for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','srv/lares/agents/example','var/backups','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
+ for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
  writeFileSync(join(root,'opt/agent-box/.env'),'OLD_TEST_SECRET=old-secret');
+ writeFileSync(join(root,'opt/lares/compose.yaml'),'services: {}\n');
+ writeFileSync(join(root,'srv/lares/compose.lares-agents.yaml'),'services: {}\n');
  writeFileSync(join(root,'etc/lares/keeper.json'),'{"privateConfig":"test-only"}');
  writeFileSync(join(root,'etc/lares/secrets/key'),'NEW_TEST_SECRET');
  writeFileSync(join(root,'srv/lares/agents/example/agent.json'),'{"name":"example"}');
@@ -17,14 +19,16 @@ function fixture(encrypted:boolean){
  execFileSync('age-keygen',['-o',key],{stdio:'pipe'});
  const recipient=execFileSync('age-keygen',['-y',key],{encoding:'utf8'}).trim();
  const envFile=join(root,'backup.env');
- writeFileSync(envFile,`RESTIC_PASSWORD_FILE=/dev/null\nSTORAGEBOX_SSH_KEY=/dev/null\nSTORAGEBOX_USER=test\nSTORAGEBOX_HOST=example.invalid\nRESTIC_REPO_PATH=test\nLARES_WORKFLOW_VOLUMES=fixture_workflow\n${encrypted?`AGE_SECRETS_RECIPIENT=${recipient}\n`:''}`);
+ writeFileSync(envFile,`RESTIC_PASSWORD_FILE=/dev/null\nSTORAGEBOX_SSH_KEY=/dev/null\nSTORAGEBOX_USER=test\nSTORAGEBOX_HOST=example.invalid\nRESTIC_REPO_PATH=test\nAWS_ACCESS_KEY_ID=TESTACCESSKEY\nAWS_SECRET_ACCESS_KEY=TESTSECRETKEY\nLARES_WORKFLOW_VOLUMES=fixture_workflow\n${encrypted?`AGE_SECRETS_RECIPIENT=${recipient}\n`:''}`);
  writeFileSync(join(root,'bin/docker'),`#!/usr/bin/env python3
 import sys,os
 a=sys.argv
 if 'volume' in a:
  if os.environ.get('MISSING_WORKFLOW'): sys.exit(1)
  print(os.environ['FIXTURE_ROOT']+'/var/lib/docker/volumes/fixture_workflow/_data')
-elif 'psql' in a: print('fixture_db')
+elif 'psql' in a:
+ print('fixture_db')
+ if "datname<>'postgres'" not in ' '.join(a): print('postgres')
 elif 'pg_dump' in a: print('x'*2048)
 elif 'pg_dumpall' in a: print('-- fixture roles')
 `,{mode:0o755});
@@ -36,6 +40,7 @@ print(os.stat(sys.argv[-1]).st_size)
 import json,os,pathlib,shutil,sys
 r=pathlib.Path(os.environ['FIXTURE_ROOT'])
 (r/'restic-args.json').write_text(json.dumps(sys.argv[1:]))
+(r/'restic-credential-shapes.json').write_text(json.dumps([bool(os.environ.get('AWS_ACCESS_KEY_ID')),bool(os.environ.get('AWS_SECRET_ACCESS_KEY'))]))
 shutil.copytree(r/'var/backups/pg',r/'captured-dumps')
 `,{mode:0o755});
  // Relocate only filesystem roots into this disposable fixture. The actual dump,
@@ -86,4 +91,35 @@ it('uses RESTIC_REPOSITORY directly and drops the rclone option when it is set',
  expect(args).toContain('-r');expect(args).toContain('s3:https://key:secret@example.invalid/bucket');
  expect(args).not.toContain('-o');
  expect(args.some((a:string)=>String(a).includes('rclone.program'))).toBe(false);
+});
+it('backs up only portable current-layout stores and an encrypted configuration bundle',()=>{
+ const f=fixture(true);
+ execFileSync('bash',[f.file],{env:{...f.env,LARES_CURRENT_LAYOUT:'1'},stdio:'pipe'});
+ const args=JSON.parse(readFileSync(join(f.root,'restic-args.json'),'utf8'));
+ for(const path of ['srv/lares/agents','srv/lares/retired','srv/taste'])
+   expect(args).toContain(join(f.root,path));
+ for(const path of ['srv/lares','srv/lares/secrets','etc/lares','opt/agent-box'])
+   expect(args).not.toContain(join(f.root,path));
+ expect(JSON.parse(readFileSync(join(f.root,'restic-credential-shapes.json'),'utf8'))).toEqual([true,true]);
+ const encrypted=join(f.root,'captured-dumps/secrets/agent-box-secrets.tar.age');
+ expect(readFileSync(join(f.root,'captured-dumps/postgres.dump')).length).toBeGreaterThan(1024);
+ const archive=execFileSync('age',['-d','-i',f.key,encrypted]);
+ const entries=execFileSync('tar',['-tf','-'],{input:archive,encoding:'utf8'});
+ expect(entries).toContain('etc/lares/secrets/key');
+ expect(entries).not.toContain('opt/agent-box/.env');
+});
+it('refuses an unclassified current-layout store before taking a snapshot',()=>{
+ const f=fixture(true);mkdirSync(join(f.root,'srv/lares/new-store'));
+ const result=spawnSync('bash',[f.file],{env:{...f.env,LARES_CURRENT_LAYOUT:'1'},encoding:'utf8'});
+ expect(result.status).not.toBe(0);
+ expect(result.stderr).toContain('unclassified Lares store');
+ expect(()=>readFileSync(join(f.root,'restic-args.json'),'utf8')).toThrow();
+});
+it('refuses a nested plaintext key in a current-layout portable store',()=>{
+ const f=fixture(true);
+ writeFileSync(join(f.root,'srv/lares/agents/example/gateway-key'),'test-only-secret');
+ const result=spawnSync('bash',[f.file],{env:{...f.env,LARES_CURRENT_LAYOUT:'1'},encoding:'utf8'});
+ expect(result.status).not.toBe(0);
+ expect(result.stderr).toContain('portable store contains a secret path');
+ expect(()=>readFileSync(join(f.root,'restic-args.json'),'utf8')).toThrow();
 });

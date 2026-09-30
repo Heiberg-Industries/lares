@@ -133,11 +133,20 @@ async function tokenRows(): Promise<TokenRow[]> {
 
 async function rowCounts(): Promise<Record<string, number>> {
   const out: Record<string, number> = {};
-  for (const table of ["oauth_tokens", "email_watch_cursors", "user_aliases"]) {
+  for (const table of ["oauth_tokens", "email_watch_cursors", "user_aliases", "agent_door_connections"]) {
     const { rows } = await db.pool.query<{ n: string }>(`SELECT count(*) AS n FROM ${table}`);
     out[table] = Number(rows[0].n);
   }
   return out;
+}
+
+/** The keeper's door rows for the fixture agent: `kind|principal|principal inside applied_connection`. */
+async function doorShape(): Promise<string[]> {
+  const { rows } = await db.pool.query<{ kind: string; principal: string; applied: string | null }>(
+    `SELECT kind, principal, applied_connection->>'principal' AS applied
+       FROM agent_door_connections WHERE agent = 'fixture-agent' ORDER BY kind`,
+  );
+  return rows.map((r) => `${r.kind}|${r.principal}|${r.applied}`);
 }
 
 /** Every (principal, provider, mailbox) the token table holds — the state this migration is
@@ -185,6 +194,19 @@ beforeAll(async () => {
   await db.pool.query(
     `INSERT INTO user_aliases (system, alias, user_id) VALUES ('google', $1, $2), ('google', $3, $4)`,
     [LEGACY, FIXTURE_OWNER, LEGACY_SECOND, FIXTURE_SECOND],
+  );
+
+  // LAR-97 — the keeper's own record of which mailbox an agent uses. One EMAIL row under the old
+  // spelling, already applied once (so the old spelling is also inside `applied_connection`).
+  // The fixture already carries a SLACK row for 'fixture-agent' whose principal is the very same
+  // string: a door-native id that happens to be one of the owner's aliases. That one must not move.
+  await db.pool.query(
+    `INSERT INTO agent_door_connections
+       (agent, kind, incarnation, revision, owner_email, principal, org, mailbox, applied_connection)
+     VALUES ('fixture-agent', 'email', gen_random_uuid(), gen_random_uuid(), 'owner@fixture.test',
+             $1, 'fixture-org', $2,
+             jsonb_build_object('kind', 'email', 'principal', $1::text, 'org', 'fixture-org', 'mailbox', $2::text))`,
+    [LEGACY, REAL_TOKEN_MAILBOX],
   );
 
   rowsBefore = await tokenRows();
@@ -267,6 +289,28 @@ describe("box 085 — the Google token rows are named by the register", () => {
     expect(rows.map((r) => r.principal)).toEqual([FIXTURE_OWNER]);
   });
 
+  it("moves the keeper's saved EMAIL connection with the token, and leaves the Slack row's door-native id alone", async () => {
+    expect(await doorShape()).toEqual([
+      `email|${FIXTURE_OWNER}|${FIXTURE_OWNER}`,
+      `slack|${LEGACY}|null`,
+    ]);
+    // The rest of what the keeper applied is untouched — only the principal inside it moved.
+    const { rows } = await db.pool.query<{ applied_connection: Record<string, string> }>(
+      `SELECT applied_connection FROM agent_door_connections WHERE agent = 'fixture-agent' AND kind = 'email'`,
+    );
+    expect(rows[0].applied_connection).toEqual({
+      kind: "email", principal: FIXTURE_OWNER, org: "fixture-org", mailbox: REAL_TOKEN_MAILBOX,
+    });
+    // …and the token the keeper will look up by that value is there.
+    const token = await db.pool.query(
+      `SELECT 1 FROM oauth_tokens WHERE principal = $1 AND provider = 'google' AND org_id = 'fixture-org' AND email_address = $2`,
+      [FIXTURE_OWNER, REAL_TOKEN_MAILBOX],
+    );
+    expect(token.rowCount).toBe(1);
+    // Nothing is reported as left behind in that table.
+    expect(report.filter((r) => r.table_name === "agent_door_connections" && r.finding.startsWith("LEFT ALONE"))).toEqual([]);
+  });
+
   it("deletes nothing and inserts nothing", async () => {
     expect(await rowCounts()).toEqual(countsBefore);
   });
@@ -293,6 +337,11 @@ describe("box 085 — the Google token rows are named by the register", () => {
       expect.arrayContaining(["email_watch_cursors", "oauth_tokens"]),
     );
     expect(wouldChange.some((r) => r.value === LEGACY && r.what_085_would_do === `WOULD BECOME ${FIXTURE_OWNER}`)).toBe(true);
+    for (const table of ["agent_door_connections", "agent_door_connections.applied_connection"]) {
+      expect(dryRunBefore.filter((r) => r.table_name === table), table).toEqual([
+        { table_name: table, value: LEGACY, row_count: "1", what_085_would_do: `WOULD BECOME ${FIXTURE_OWNER}` },
+      ]);
+    }
 
     const strangerBefore = dryRunBefore.find((r) => r.value === STRANGER);
     expect(strangerBefore?.what_085_would_do).toMatch(/^LEFT ALONE/);
@@ -307,12 +356,15 @@ describe("box 085 — the Google token rows are named by the register", () => {
 
   it("re-runs without error and changes nothing the second time", async () => {
     const before = await tokenShape();
+    const doorsBefore = await doorShape();
     await applyMigration();
     expect(await tokenShape()).toEqual(before);
+    expect(await doorShape()).toEqual(doorsBefore);
   });
 
   it("the rollback in the header really puts the old spelling back, and forward works again", async () => {
     const afterForward = await tokenShape();
+    const afterDoors = await doorShape();
 
     await db.pool.query(headerSql("ROLLBACK"));
     const rolledBack = await tokenShape();
@@ -324,9 +376,11 @@ describe("box 085 — the Google token rows are named by the register", () => {
       `SELECT principal FROM email_watch_cursors WHERE watcher = 'fixture-watcher'`,
     );
     expect(rows.map((r) => r.principal)).toEqual([LEGACY]);
+    expect(await doorShape()).toEqual([`email|${LEGACY}|${LEGACY}`, `slack|${LEGACY}|null`]);
 
     await applyMigration();
     expect(await tokenShape()).toEqual(afterForward);
+    expect(await doorShape()).toEqual(afterDoors);
   });
 
   it("the inventory now calls both tables `registry`, and nothing was lost from it", () => {

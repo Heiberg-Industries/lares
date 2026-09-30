@@ -68,7 +68,7 @@ beforeEach(() => {
   binDir = join(dir, "bin"); mkdirSync(binDir);
   prefix = join(dir, "root"); mkdirSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "pnpm", "openssl"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
   stub("id", 'echo 0');                                   // running as root
   stub("uname", 'echo Linux');
   stub("free", 'echo "Mem: 8192 1024 7168"');

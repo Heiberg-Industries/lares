@@ -9,8 +9,8 @@ async function actor(): Promise<string> {
   return email;
 }
 export type DefinitionActionResult<T> = {ok:true;result:T}|{ok:false;error:{message:string;findings?:{check:string;message:string}[];outcomeMayBeUnknown:boolean}};
-async function call<T>(action:string,input:unknown,email:string):Promise<DefinitionActionResult<T>> {
-  try { return {ok:true,result:await keeper<T>(action,input,email)}; }
+async function call<T>(action:string,input:unknown,email:string,timeoutMs?:number):Promise<DefinitionActionResult<T>> {
+  try { return {ok:true,result:await (timeoutMs ? keeper<T>(action,input,email,{timeoutMs}) : keeper<T>(action,input,email))}; }
   catch(error) {
     if(error instanceof KeeperRefusedError) return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length}};
     if(error instanceof KeeperUnavailableError) return {ok:false,error:{message:error.message,outcomeMayBeUnknown:error.outcomeMayBeUnknown}};
@@ -19,7 +19,7 @@ async function call<T>(action:string,input:unknown,email:string):Promise<Definit
 }
 export interface DefinitionInput { name: string; definition: unknown; duties: string; voice: string }
 export async function createAgent(input: DefinitionInput & { startingPoint: Role }): Promise<DefinitionActionResult<DefinitionResult>> {
-  return call('definition.create', input, await actor());
+  return call('definition.create', input, await actor(), 60_000);
 }
 export async function saveDefinition(input: DefinitionInput): Promise<DefinitionActionResult<DefinitionResult>> {
   return call('definition.save', input, await actor());
@@ -37,7 +37,7 @@ export async function connectDoor(input: {name: string; kind:'slack'|'telegram';
   return call('door.connect', input, await actor());
 }
 export async function applyConnections(input: {name: string; hash: string}): Promise<DefinitionActionResult<RuntimeState>> {
-  return call('definition.reconcile', input, await actor());
+  return call('definition.reconcile', input, await actor(), 60_000);
 }
 export async function listConversations(input:{name:string}):Promise<DefinitionActionResult<{sessionId:string;incarnation:string;door:string;observedAt:string;terminal:boolean}[]>> {
   return call('conversation.list',input,await actor());

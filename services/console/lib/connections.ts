@@ -89,23 +89,18 @@ export interface BuildInput {
   connectionsByCapability: Record<string, string[]>;
 }
 
-/** For a console-custody connection, the catalogue alone is not the row set: an operator can
- *  register a client (`GOOGLE_CLIENT_ID_<ORG>`) or connect a mailbox for an org the catalogue
- *  never declared. Both must still get a visible, removable row — otherwise a live mailbox is
- *  invisible and stuck (Remove only renders inside a row). Union order: catalogue instances
- *  first (they carry the real label), then configured orgs, then orgs that only exist because a
- *  mailbox is stored for them — each of the latter two falls back to showing its bare id, same
- *  as a catalogue instance with no explicit `label`. */
+/** Console-custody rows describe this installation, not the catalogue's example workspaces.
+ *  A configured client or stored mailbox must have a row (Remove lives there). A blank install
+ *  gets one unconfigured Google row so the connection remains discoverable. */
 function consoleInstances(
   def: ConnectionDef,
   configuredOrgs: readonly string[],
   accounts: readonly GoogleAccountDTO[],
 ): { id: string; label?: string }[] {
-  const byId = new Map<string, { id: string; label?: string }>();
-  for (const inst of def.instances) byId.set(inst.id, inst);
-  for (const org of configuredOrgs) if (!byId.has(org)) byId.set(org, { id: org });
-  for (const acct of accounts) if (!byId.has(acct.org)) byId.set(acct.org, { id: acct.org });
-  return [...byId.values()];
+  const byId = new Map<string, { id: string }>();
+  for (const org of configuredOrgs) byId.set(org, { id: org });
+  for (const acct of accounts) byId.set(acct.org, { id: acct.org });
+  return byId.size ? [...byId.values()] : [{ id: "unconfigured" }];
 }
 
 export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
@@ -119,7 +114,8 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
     const used = input.lastUsed.get(connectionId) ?? null;
 
     for (const inst of instances) {
-      const usedBy = consumersFor(connectionId, inst.id, input.agents, input.connectionsByCapability);
+      const usedBy = agentConsumersFor(connectionId, inst.id, input.agents, input.connectionsByCapability);
+      const declaredFor = declaredConsumersFor(connectionId, inst.id);
       const accounts = def.custody === "console"
         ? input.accounts.filter((a) => a.org === inst.id)
         : [];
@@ -166,12 +162,15 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
       rows.push({
         connectionId,
         instanceId: inst.id,
-        label: single ? def.label : `${def.label} · ${inst.label ?? inst.id}`,
+        label: def.custody === "console" && inst.id !== "unconfigured"
+          ? `${def.label} · ${inst.id}`
+          : single ? def.label : `${def.label} · ${inst.label ?? inst.id}`,
         custody: def.custody,
         status,
         detail,
         lastUsed: single && used ? used.toISOString() : null,
         usedBy,
+        declaredFor,
         accounts,
       });
     }
@@ -179,8 +178,8 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
   return rows;
 }
 
-/** Agents from their grants; services, doors and the console from declaredConsumers. */
-function consumersFor(
+/** Only grants on agent definitions present in this installation. */
+function agentConsumersFor(
   connectionId: string,
   instanceId: string,
   agents: AgentFolder[],
@@ -197,6 +196,12 @@ function consumersFor(
       }
     }
   }
+  return [...out].sort();
+}
+
+/** Catalogue declarations can describe services that are absent on a fresh install. */
+function declaredConsumersFor(connectionId: string, instanceId: string): string[] {
+  const out = new Set<string>();
   for (const consumer of declaredConsumers) {
     for (const ref of consumer.connections) {
       if (matches(ref, connectionId, instanceId)) out.add(consumer.name);

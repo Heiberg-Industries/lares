@@ -96,9 +96,11 @@ describe("/backup", () => {
     expect(html).toContain("The last successful restore drill was more than 45 days ago (52d).");
   });
 
-  it("missing table: renders the apply-sql/049 notice, not a crash", async () => {
+  it("unavailable status: gives a recovery action without claiming protection", async () => {
     const html = await render(status({ unavailable: true }));
-    expect(html).toContain("sql/049_backup_status.sql");
+    expect(html).toContain("Check the database and backup-status setup, then reload");
+    expect(html).toContain("This does not confirm whether a backup exists");
+    expect(html).toContain('role="alert"');
     expect(html).not.toContain("Protected");
     expect(html).not.toContain("Not protected");
   });

@@ -1,6 +1,7 @@
 import {beforeEach,it,expect,vi} from 'vitest';
 import {renderToStaticMarkup} from 'react-dom/server';
 import type {ReactElement,ReactNode} from 'react';
+import {Button} from '@lares/ui/primitives/button';
 const mocks=vi.hoisted(()=>({status:vi.fn(),states:[] as any[],setters:[] as any[]}));
 vi.mock('react',async original=>({...await original<typeof import('react')>(),useEffect:()=>{},useState:(initial:unknown)=>{const i=mocks.setters.length,set=vi.fn();mocks.setters.push(set);return [mocks.states[i]??initial,set];}}));
 vi.mock('../app/actions/definition',()=>({doorStatus:mocks.status}));
@@ -8,7 +9,7 @@ import {DoorSetup} from '../components/DoorSetup';
 const props={name:'example',display:'Example',role:'creative',origin:'https://doors.example.test',hash:'a'.repeat(64)};
 function find(node:ReactNode,label:string):ReactElement<{onClick:()=>void;disabled?:boolean}>|undefined {
  if(!node||typeof node!=='object')return;if(Array.isArray(node)){for(const c of node){const f=find(c,label);if(f)return f;}return;}
- const e=node as ReactElement<{children?:ReactNode;onClick:()=>void}>;if(e.type==='button'&&e.props.children===label)return e;return find(e.props?.children,label);
+ const e=node as ReactElement<{children?:ReactNode;onClick:()=>void}>;if((e.type==='button'||e.type===Button)&&e.props.children===label)return e;return find(e.props?.children,label);
 }
 beforeEach(()=>{vi.clearAllMocks();mocks.states=[];mocks.setters=[];});
 it('offers only role adapters and describes pending changes without claiming connected',()=>{

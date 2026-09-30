@@ -4,6 +4,11 @@ on:
     branches: [main]
     paths: ['services/**', 'packages/**', 'images/**', 'patches/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', '.github/workflows/keeper-runtime-images.yml']
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this exact manually selected ref
+        type: boolean
+        default: false
 permissions: {contents: read, packages: write}
 env:
   EVE_TELEMETRY_DISABLED: "1"
@@ -73,7 +78,7 @@ jobs:
           context: .
           file: services/${{ matrix.role }}/Dockerfile
           target: runtime
-          push: "${{ vars.PUBLISH_IMAGES == 'true' }}"
+          push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}"
           tags: ghcr.io/heiberg-industries/lares-engine-${{ matrix.role }}-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares
   keeper:
@@ -89,9 +94,9 @@ jobs:
       - name: Verify keeper runtime imports without starting sockets or migrations
         run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/keeper/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: services/keeper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
 
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/egress-proxy/Dockerfile, load: true, tags: 'lares-squid:test'}
@@ -104,4 +109,4 @@ jobs:
           docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" --entrypoint squid lares-squid:test -k parse -f /config/squid.conf
           docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" lares-nft:test --check -f /config/rules.nft
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ vars.PUBLISH_IMAGES == 'true' }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+        with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}

@@ -74,7 +74,7 @@ beforeEach(() => {
   binDir = join(dir, "bin"); mkdirSync(binDir);
   prefix = join(dir, "root"); mkdirSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
+  for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "openssl"]) stub(name);
   // `docker` also logs whatever was piped to its stdin, but ONLY for the one invocation that
   // ever receives anything there (`exec ... psql`, matched by argv containing "psql"): every
   // other docker call here (compose version, up -d db, pg_isready) inherits the SAME stdin this

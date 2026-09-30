@@ -114,6 +114,10 @@ jobs:
       - name: Run tests
         run: pnpm -C ${{ matrix.dir }} test
 
+      - name: Check guarded restore key rotation
+        if: matrix.name == 'box'
+        run: python3 -B services/box/tests/rotate-restored-gateway-key.test.py
+
   typecheck:
     name: workspace typecheck
     runs-on: ubuntu-latest

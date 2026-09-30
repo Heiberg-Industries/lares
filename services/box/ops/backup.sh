@@ -16,11 +16,15 @@
 # those secrets are ALSO escrowed directly (done 2026-07-15), which is what lets the archive
 # be opened in the first place. See docs/runbooks/backup-and-restore.md.
 set -euo pipefail
+umask 077
 
 ENV_FILE="${AGENT_BOX_BACKUP_ENV:-/etc/agent-box/backup.env}"
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 
 # Keeper configuration includes credential references and its secrets live here.
 # A Lares installation must never report a complete backup without escrow encryption.
@@ -53,9 +57,18 @@ fi
 # failure — the dump block was skipped on every run from 2026-07-01 to 2026-07-14 while the
 # script still exited 0 and pinged the heartbeat green. Keep these in sync with how the
 # fleet actually runs.
-COMPOSE=(-f /opt/agent-box/compose.yaml -f /opt/agent-box/compose.override.yaml)
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  [ -f /opt/lares/compose.yaml ] || { echo 'backup: current-layout Compose file missing' >&2; exit 1; }
+  COMPOSE=(-f /opt/lares/compose.yaml)
+else
+  COMPOSE=(-f /opt/agent-box/compose.yaml -f /opt/agent-box/compose.override.yaml)
+fi
 DUMP=/var/backups/pg
 mkdir -p "$DUMP"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  # A failed current-layout backup must not strand plaintext database dumps.
+  trap 'rm -rf -- "$DUMP"' EXIT
+fi
 
 dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
 
@@ -79,8 +92,12 @@ dc pg_dumpall -U "$DB_USER" -l postgres --globals-only > "$DUMP/globals.sql"
 # on 2026-08-17 and this fix on 2026-08-24, and why `lares_calliope` would have gone the same
 # way. The old `[ ${#dumps[@]} -gt 0 ]` check below could not see it — one dump is "some".
 # `</dev/null` on the dump call is the belt to this braces.
-DBS=$(dc psql -U "$DB_USER" -d postgres -tAc \
-  "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'")
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false"
+else
+  DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'"
+fi
+DBS=$(dc psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY")
 [ -n "$DBS" ] || { echo "backup: postgres returned NO databases — refusing an empty snapshot" >&2; exit 1; }
 
 EXPECTED=0
@@ -119,8 +136,14 @@ done
 if [ -n "${AGE_SECRETS_RECIPIENT:-}" ]; then
   command -v age >/dev/null || { echo "backup: AGE_SECRETS_RECIPIENT set but 'age' not installed" >&2; exit 1; }
   mkdir -p "$DUMP/secrets"
-  SECRET_PATHS=(etc/agent-box opt/agent-box/.env)
-  [ ! -d /etc/lares ] || SECRET_PATHS+=(etc/lares)
+  if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+    # Current installations keep all host configuration under /etc/lares.
+    # Only its age ciphertext enters restic; the identity stays off-box.
+    SECRET_PATHS=(etc/lares)
+  else
+    SECRET_PATHS=(etc/agent-box opt/agent-box/.env)
+    [ ! -d /etc/lares ] || SECRET_PATHS+=(etc/lares)
+  fi
   tar -C / -cf - "${SECRET_PATHS[@]}" \
     | age -r "$AGE_SECRETS_RECIPIENT" -o "$DUMP/secrets/agent-box-secrets.tar.age"
   [ -s "$DUMP/secrets/agent-box-secrets.tar.age" ] || { echo "backup: secrets bundle empty" >&2; exit 1; }
@@ -147,11 +170,32 @@ fi
 #    anywhere else. None of the three is a cache; none is reconstructible.
 #    tests/backup-coverage.test.ts now asserts this list against compose.yaml's bind mounts,
 #    so the next rename fails a test instead of a restore.
-PATHS=("$DUMP" /opt/agent-box)
-for p in /srv/brain /srv/brain.git /srv/atlas /srv/atlas.git /srv/network /srv/saga-state \
-         /srv/agent /srv/taste /srv/eve-marcel /srv/marcel /srv/lares; do
-  [ -d "$p" ] && PATHS+=("$p")
-done
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  # /srv/lares also contains live plaintext gateway/OAuth secrets. Never add
+  # that parent to a snapshot, even with a restic exclude pattern: keep the
+  # source list explicit and refuse a missing portable store.
+  PATHS=("$DUMP")
+  for p in /srv/lares/agents /srv/lares/retired /srv/taste; do
+    [ -d "$p" ] || { echo "backup: required portable store missing: $p" >&2; exit 1; }
+    secret_hits=$(find "$p" \( -name .env -o -name secrets -o -name '*-key' -o -name '*-secret' \) -print)
+    [ -z "$secret_hits" ] || { echo "backup: portable store contains a secret path: $p" >&2; exit 1; }
+    PATHS+=("$p")
+  done
+  # Refuse an unclassified new top-level store rather than silently omitting it.
+  for p in /srv/lares/*; do
+    [ -e "$p" ] || continue
+    case "$p" in
+      /srv/lares/agents|/srv/lares/retired|/srv/lares/backup|/srv/lares/egress|/srv/lares/secrets|/srv/lares/compose.lares-agents.yaml) ;;
+      *) echo "backup: unclassified Lares store: $p" >&2; exit 1 ;;
+    esac
+  done
+else
+  PATHS=("$DUMP" /opt/agent-box)
+  for p in /srv/brain /srv/brain.git /srv/atlas /srv/atlas.git /srv/network /srv/saga-state \
+           /srv/agent /srv/taste /srv/eve-marcel /srv/marcel /srv/lares; do
+    [ -d "$p" ] && PATHS+=("$p")
+  done
+fi
 # Retained Eve file/blob volumes are separate from the PostgreSQL workflow stores.
 # Enumerate exact installation-owned names in backup.env; never archive dbdata live.
 for volume in ${LARES_WORKFLOW_VOLUMES:-}; do

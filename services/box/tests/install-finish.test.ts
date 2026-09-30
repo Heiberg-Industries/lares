@@ -7,7 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -73,7 +73,7 @@ beforeEach(() => {
 
   for (const name of [
     "docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl",
-    "pnpm", "openssl", "lares-doctor", "sleep",
+    "node", "pnpm", "openssl", "lares-doctor", "sleep",
   ]) stub(name);
   stub("id", "echo 0");
   stub("uname", "echo Linux");
@@ -103,7 +103,7 @@ describe("how the install ends", () => {
     stub("curl", 'case "$*" in *"http://127.0.0.1:4000/health/liveliness"*) exit 0 ;; esac\nexit 7');
     mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
     writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
-      "GOOGLE_CLIENT_ID_CONSOLE=fixture-id\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
+      "GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
     const result = runWithStdin([], answers);
     expect(result.code, result.stderr).toBe(75);
     expect(result.stderr).toMatch(/did not come up/i);
@@ -118,6 +118,18 @@ describe("how the install ends", () => {
     expect(result.stderr).toContain("console-oauth.env");
     expect(result.stderr).toContain("GOOGLE_CLIENT_ID_CONSOLE");
   }, 20_000);
+
+  it("refuses a client ID copied with an adjacent JSON field before changing the box", () => {
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
+      'GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com","project_id\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n');
+    const result = runWithStdin([], answers);
+    expect(result.code).toBe(78);
+    expect(result.stderr).toMatch(/client ID.*malformed/);
+    expect(result.stderr).not.toContain("fixture-secret");
+    expect(existsSync(join(prefix, "etc", "lares", "secrets"))).toBe(false);
+    expect(readFileSync(log, "utf8")).not.toMatch(/curl|docker compose .*up/);
+  });
 
   it("says honestly what remains, and does not ask about it now", () => {
     stub("curl", "exit 0");
@@ -139,10 +151,13 @@ describe("how the install ends", () => {
 
   it("does not tell an existing installation to create its first agent or set up its first backup", () => {
     mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
+    mkdirSync(join(prefix, "etc", "lares"), { recursive: true });
+    writeFileSync(join(prefix, "etc", "lares", "console-oauth.env"),
+      "GOOGLE_CLIENT_ID_CONSOLE=12345-fixture.apps.googleusercontent.com\nGOOGLE_CLIENT_SECRET_CONSOLE=fixture-secret\n");
     stub("curl", "exit 0");
     const result = runWithStdin([], answers);
     const printed = result.stdout.trim().split("\n").filter((line) => line.includes("https://"));
-    expect(result.code).toBe(0);
+    expect(result.code, result.stderr).toBe(0);
     expect(printed).toEqual(["install: https://lares.example.invalid/"]);
     expect(result.stdout).toMatch(/repair run is finished/i);
     expect(result.stdout).not.toMatch(/create your first agent|Nothing is backed up yet/i);

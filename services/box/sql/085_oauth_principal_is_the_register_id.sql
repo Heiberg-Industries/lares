@@ -12,6 +12,19 @@
 -- rewritten" is superseded by this file; that file is left byte-for-byte as it was, because its
 -- checksum is recorded in `schema_migrations` on every box that has applied it.
 --
+-- AND THE KEEPER'S COPY OF THE SAME VALUE (LAR-97). On a keeper-managed box a third place holds
+-- the principal of a Google mailbox: the agent's EMAIL row in `agent_door_connections`
+-- (044_agent_door_connections.sql) — in its `principal` column and again inside the
+-- `applied_connection` JSON the keeper writes when it last applied the row
+-- (`services/keeper/lib/lifecycle.ts`, `reconcile`). The keeper looks `oauth_tokens` up BY that
+-- value (`connections()` in the same file) and refuses to start an agent's email door when no
+-- token row answers to it. Renaming the token and not this row would therefore switch the mail
+-- off, so both move here, in the same transaction, under the same register rule.
+-- ONLY `kind = 'email'` rows. A Slack or Telegram row's `principal` is that door's own user id
+-- — it is what the door's allow-list is built from, and it is very often ALSO registered as an
+-- alias of the owner. Renaming it would lock the owner out of that door. Those rows are never
+-- read, renamed or reported by this file.
+--
 -- SAFE BECAUSE THE PRINCIPAL IS A LOOKUP KEY, NOT KEY MATERIAL. This is the finding the owner's
 -- ruling rests on, and it is checkable in four lines of code:
 --   * `services/box/lib/crypto.ts` encrypts with `aes-256-gcm`; the key is `keyBuf(keyHex)` —
@@ -40,6 +53,9 @@
 --     done. That one row is left, reported by name and count, and every other row still moves.
 --     Deciding which of two rows for the same mailbox survives is a judgement about the owner's
 --     Google access, not something a migration may make.
+--     (`agent_door_connections` cannot collide: its key is (agent, kind) and the principal is
+--     not part of it. When a token row was left behind by a collision, the canonical id already
+--     holds a token for that mailbox — so the keeper's row, renamed, still finds one.)
 --   * Nothing is deleted, nothing is inserted, no ciphertext byte is touched.
 --
 -- ON A NEW INSTALLATION THIS IS A NO-OP. A box that never had a legacy spelling has principals
@@ -51,7 +67,7 @@
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
 -- FIRST, A DRY RUN. Paste the SELECT between the two markers below into psql on the box and
 -- read its output aloud before applying anything. It writes nothing. It lists every distinct
--- principal in both tables, how many rows carry it, and what this file would do with it. A
+-- principal in these tables, how many rows carry it, and what this file would do with it. A
 -- `LEFT ALONE` line is a person the register has never been told about, a spelling two people
 -- claim, or a row that would collide — none of those will be touched.
 -- (`services/box/tests/oauth-principal-rename.test.ts` greps this SELECT out of this file and
@@ -79,6 +95,14 @@
 --                     WHERE r2.spelling = t.principal
 --                       AND x.watcher = t.watcher AND x.email_address = t.email_address)
 --       FROM email_watch_cursors t
+--     UNION ALL
+--     SELECT 'agent_door_connections', t.principal, false
+--       FROM agent_door_connections t
+--      WHERE t.kind = 'email' AND t.principal IS NOT NULL
+--     UNION ALL
+--     SELECT 'agent_door_connections.applied_connection', t.applied_connection->>'principal', false
+--       FROM agent_door_connections t
+--      WHERE t.kind = 'email' AND t.applied_connection->>'principal' IS NOT NULL
 --   ),
 --   grouped AS (
 --     SELECT table_name, value, collides, count(*) AS row_count
@@ -98,19 +122,21 @@
 --
 -- The dry run reads `users` and `user_aliases`; on a box without 014_identity.sql it errors
 -- rather than answering, which is the honest result — there is no register to resolve against,
--- and this file would rename nothing there either.
+-- and this file would rename nothing there either. It also reads `agent_door_connections`
+-- (044); on a box that has not applied 044 delete the last two `UNION ALL` branches before
+-- pasting. The migration itself needs no such edit — it skips a table that is not there.
 -- ─────────────────────────────────────────────────────────────────────────────────────────────
 --
 -- AND IF IT HAS TO GO BACK. This rename is NOT reversible by guesswork — the old spelling is
 -- gone from the row the moment it is renamed. It is reversible BY RECORD: the `user_aliases`
 -- rows that carry the old spellings are deliberately NOT removed by this file. They are what
 -- the resolver uses to find a row this migration missed, and what the statements below read to
--- put the old spelling back. The pair between the markers restores, per person, the ONE alias
+-- put the old spelling back. The statements between the markers restore, per person, the ONE alias
 -- registered under the named system — `'google'`, the system 014_identity.sql registers an
 -- enrolment spelling under. Two things to check before pasting it:
 --   * if the spelling a reader actually used lives under a different alias system (a
---     case-divergent watcher spelling is usually registered under `'legacy'`), change the two
---     `system = 'google'` lines to that system, or run the pair once per system;
+--     case-divergent watcher spelling is usually registered under `'legacy'`), change every
+--     `system = 'google'` line to that system, or run the block once per system;
 --   * a person with SEVERAL aliases in the named system is skipped entirely rather than being
 --     given an arbitrary one of them — for those, name the alias literally:
 --       UPDATE oauth_tokens SET principal = '<the old spelling>' WHERE principal = '<the register id>';
@@ -140,27 +166,47 @@
 --    AND NOT EXISTS (SELECT 1 FROM email_watch_cursors x
 --                     WHERE x.principal = a.alias AND x.watcher = t.watcher
 --                       AND x.email_address = t.email_address);
+-- WITH one_alias AS (
+--   SELECT user_id, min(alias) AS alias FROM user_aliases
+--    WHERE system = 'google' GROUP BY user_id HAVING count(*) = 1
+-- )
+-- UPDATE agent_door_connections t
+--    SET principal = a.alias
+--   FROM one_alias a
+--  WHERE t.kind = 'email' AND t.principal = a.user_id;
+-- WITH one_alias AS (
+--   SELECT user_id, min(alias) AS alias FROM user_aliases
+--    WHERE system = 'google' GROUP BY user_id HAVING count(*) = 1
+-- )
+-- UPDATE agent_door_connections t
+--    SET applied_connection = jsonb_set(t.applied_connection, '{principal}', to_jsonb(a.alias))
+--   FROM one_alias a
+--  WHERE t.kind = 'email' AND t.applied_connection->>'principal' = a.user_id;
 -- COMMIT;
 -- ROLLBACK — END
 --
 -- FOUR READERS SUPPLY THE OLD STRING, AND THEY CHANGE IN THE SAME MAINTENANCE WINDOW. Applying
 -- this file alone, without moving the three environment values with it, leaves each reader
 -- looking under a spelling no row has any more — and a token lookup that finds nothing reads as
--- "no account connected", not as an error. See `docs/runbooks/2026-09-19-oauth-principal-rename.md`
+-- "no account connected", not as an error. A keeper-managed box has one more:
+-- `runtime.google.principal` in the keeper's own configuration file must equal the email row's
+-- principal, or the keeper refuses the email door. See `docs/runbooks/2026-09-19-oauth-principal-rename.md`
 -- for the order. The engine now says so once, loudly, in the log when a lookup finds no token:
 -- `services/box/lib/oauth-tokens.ts` and `packages/agent-kit/src/google-auth.ts`.
 --
 -- EVERY STATEMENT IS GUARDED BY `to_regclass`. A box without one of these tables, or without the
 -- register, gets a no-op and a line in the report rather than an error. That is not only
 -- tidiness: the CI image probe (`services/keeper/tests/runtime-image.probe.py`) builds a
--- database from 039 upward plus a handful of older files, and it has NEITHER of these tables
--- (006, 012) NOR the register (014) — so on the probe this file does nothing at all, and the
--- fixture test is the real proof.
+-- database from 039 upward plus a handful of older files. It has `agent_door_connections` (044)
+-- but NEITHER of the other two tables (006, 012) NOR the register (014) — so on the probe this
+-- file does nothing at all, and the fixture tests are the real proof.
 --
 -- WHAT IT ALTERS, AND WHICH FILE CREATES IT:
 --   oauth_tokens          006_oauth_tokens.sql (uniqueness key replaced by
 --                         010_oauth_tokens_multi_account.sql)
 --   email_watch_cursors   012_email_watch_cursors.sql
+--   agent_door_connections  044_agent_door_connections.sql (`kind = 'email'` rows only:
+--                         `principal`, and the `principal` inside `applied_connection`)
 -- It reads `users` and `user_aliases` (014_identity.sql) and writes neither.
 
 BEGIN;
@@ -180,6 +226,9 @@ DECLARE
   spec         text;
   tbl          text;
   col          text;
+  readx        text;
+  setx         text;
+  filt         text;
   keycol       text;
   key_pred     text;
   changed      bigint;
@@ -195,14 +244,22 @@ BEGIN
     RAISE NOTICE '085: no identity register in this database - no principal was renamed.';
   END IF;
 
-  -- table : column : the other columns its uniqueness key is made of. A rename that would make
-  -- two rows equal on THAT key is the one case this file refuses, per row.
+  -- table | what the report calls the column | how to READ the value | how to SET it to the
+  -- register's id | which rows are in scope | the other columns its uniqueness key is made of.
+  -- A rename that would make two rows equal on THAT key is the one case this file refuses, per
+  -- row; a table whose key does not include the principal (the last field empty) cannot collide.
+  -- The fragments are constants written here, never data, so they go into the statements as-is.
   FOREACH spec IN ARRAY ARRAY[
-    'oauth_tokens:principal:provider,email_address',
-    'email_watch_cursors:principal:watcher,email_address'
+    'oauth_tokens|principal|t.principal|principal = r.person|TRUE|provider,email_address',
+    'email_watch_cursors|principal|t.principal|principal = r.person|TRUE|watcher,email_address',
+    $s$agent_door_connections|principal|t.principal|principal = r.person|t.kind = 'email'|$s$,
+    $s$agent_door_connections|applied_connection.principal|t.applied_connection->>'principal'|applied_connection = jsonb_set(t.applied_connection, '{principal}', to_jsonb(r.person))|t.kind = 'email'|$s$
   ] LOOP
-    tbl := split_part(spec, ':', 1);
-    col := split_part(spec, ':', 2);
+    tbl   := split_part(spec, '|', 1);
+    col   := split_part(spec, '|', 2);
+    readx := split_part(spec, '|', 3);
+    setx  := split_part(spec, '|', 4);
+    filt  := split_part(spec, '|', 5);
 
     IF to_regclass(tbl) IS NULL THEN
       INSERT INTO migration_085_findings (table_name, column_name, value, row_count, finding)
@@ -211,11 +268,16 @@ BEGIN
       CONTINUE;
     END IF;
 
-    -- ` AND x.<k> = t.<k>` for each key column, built from quoted identifiers.
+    -- ` AND x.<k> = t.<k>` for each key column, built from quoted identifiers, wrapped into the
+    -- whole no-collision predicate — or nothing at all for a table that cannot collide.
     key_pred := '';
-    FOREACH keycol IN ARRAY string_to_array(split_part(spec, ':', 3), ',') LOOP
-      key_pred := key_pred || format(' AND x.%1$I = t.%1$I', keycol);
-    END LOOP;
+    IF split_part(spec, '|', 6) <> '' THEN
+      FOREACH keycol IN ARRAY string_to_array(split_part(spec, '|', 6), ',') LOOP
+        key_pred := key_pred || format(' AND x.%1$I = t.%1$I', keycol);
+      END LOOP;
+      key_pred := format(' AND NOT EXISTS (SELECT 1 FROM %1$I x WHERE x.principal = r.person%2$s)',
+                         tbl, key_pred);
+    END IF;
 
     IF has_register THEN
       -- ── 1. Rename what exactly one person in the register answers to ──────────────────────
@@ -243,12 +305,13 @@ BEGIN
               FROM register GROUP BY spelling HAVING count(DISTINCT person) = 1
           )
           UPDATE %1$I t
-             SET %2$I = r.person
+             SET %3$s
             FROM resolved r
-           WHERE t.%2$I = r.spelling
-             AND t.%2$I <> r.person
-             AND NOT EXISTS (SELECT 1 FROM %1$I x WHERE x.%2$I = r.person %3$s)
-        $rename$, tbl, col, key_pred);
+           WHERE %2$s = r.spelling
+             AND %2$s <> r.person
+             AND %4$s
+             %5$s
+        $rename$, tbl, readx, setx, filt, key_pred);
         GET DIAGNOSTICS changed = ROW_COUNT;
         IF changed > 0 THEN
           INSERT INTO migration_085_findings (table_name, column_name, value, row_count, finding)
@@ -282,7 +345,8 @@ BEGIN
             FROM register GROUP BY spelling HAVING count(DISTINCT person) = 1
         ),
         vals AS (
-          SELECT t.%2$I AS value, count(*) AS row_count FROM %1$I t WHERE t.%2$I IS NOT NULL GROUP BY 1
+          SELECT %3$s AS value, count(*) AS row_count FROM %1$I t
+           WHERE %3$s IS NOT NULL AND %4$s GROUP BY 1
         ),
         judged AS (
           SELECT v.value,
@@ -308,7 +372,7 @@ BEGIN
         )
         INSERT INTO migration_085_findings (table_name, column_name, value, row_count, finding)
         SELECT %1$L, %2$L, j.value, j.row_count, j.finding FROM judged j WHERE j.finding IS NOT NULL
-      $report$, tbl, col);
+      $report$, tbl, col, readx, filt);
     END IF;
   END LOOP;
 END

@@ -37,8 +37,11 @@ fi
 # DRILL_RESTORE_PATHS comment): an empty bash array expanded with "${arr[@]}" under
 # `set -u` is an unbound-variable error on bash 3.2 (macOS's default), so anything that
 # could plausibly be empty is a plain word-split string here instead.
-EXPORT_VAULT_PATHS="${EXPORT_VAULT_PATHS:-/srv/brain.git /srv/atlas.git}"
-EXPORT_DATA_PATHS="${EXPORT_DATA_PATHS:-/srv/lares /srv/taste}"
+EXPORT_VAULT_PATHS="${EXPORT_VAULT_PATHS-}"
+# The current installer keeps credential files in /srv/lares/secrets. Export only
+# portable definition directories by default; database dumps are handled below.
+EXPORT_DATA_PATHS="${EXPORT_DATA_PATHS-/srv/lares/agents /srv/lares/retired /srv/taste}"
+EXPORT_COMPOSE_FILE="${EXPORT_COMPOSE_FILE:-/opt/lares/compose.yaml}"
 EXPORT_DIR="${EXPORT_DIR:-/var/backups/export}"
 # Never /tmp — restore-drill.sh's own comment on DRILL_SCRATCH_ROOT applies exactly as
 # much here: /tmp can be a small tmpfs, and this script's work dir holds full database
@@ -67,7 +70,7 @@ refuse_secret_path() {
   done
   base=$(basename -- "$p")
   case "$base" in
-    .env)
+    .env|secrets)
       echo "export: refusing — '$p' is named .env, which never leaves this box" >&2
       exit 1
       ;;
@@ -86,7 +89,7 @@ refuse_secret_path() {
 # skipped a database). Nothing is exported until the tree is proven clean.
 check_no_nested_secrets() {
   local dir="$1" hits
-  hits=$(find "$dir" \( -name '.env' -o -name '*.age' \) -print 2>/dev/null || true)
+  hits=$(find "$dir" \( -name '.env' -o -name '*.age' -o -name 'secrets' -o -name '*-key' -o -name '*-secret' \) -print 2>/dev/null || true)
   if [ -n "$hits" ]; then
     echo "export: refusing — $dir contains a secret file that must never leave this box:" >&2
     printf '%s\n' "$hits" >&2
@@ -103,8 +106,10 @@ for p in $EXPORT_DATA_PATHS; do refuse_secret_path "$p"; done
 # same shape as restore-drill.sh's SCRATCH/remove_scratch, so a trap that fires before
 # mktemp ever runs (a bad EXPORT_WORKDIR_ROOT, say) has nothing to remove.
 WORKDIR=""
+TEMP_ARCHIVE=""
 cleanup() {
   local rc=$?
+  [ -z "$TEMP_ARCHIVE" ] || rm -f "$TEMP_ARCHIVE"
   [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"
   exit "$rc"
 }
@@ -117,7 +122,7 @@ echo "export: working in $WORKDIR" >&2
 # --- 1. Postgres: roles + every database, through the db container -----------------------
 # Exactly backup.sh:49-94's technique, copied rather than shared: read the database
 # list first, dump each one with </dev/null, and assert every dump landed non-empty.
-COMPOSE=(-f /opt/agent-box/compose.yaml -f /opt/agent-box/compose.override.yaml)
+COMPOSE=(-f "$EXPORT_COMPOSE_FILE")
 dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
 
 # The role this installation uses. Same overridable name ops/install.sh, ops/update.sh and
@@ -134,7 +139,7 @@ dc pg_dumpall -U "$DB_USER" -l postgres --globals-only > "$WORKDIR/globals.sql"
 # would dump only the first database and silently skip the rest (backup.sh:70-76's own
 # incident). `</dev/null` on the dump call is the belt to that braces.
 DBS=$(dc psql -U "$DB_USER" -d postgres -tAc \
-  "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'")
+  "SELECT datname FROM pg_database WHERE datistemplate=false")
 [ -n "$DBS" ] || { echo "export: postgres returned NO databases — refusing an incomplete export" >&2; exit 1; }
 
 EXPECTED=0
@@ -208,11 +213,22 @@ MANIFEST="$WORKDIR/manifest.json"
 mkdir -p "$EXPORT_DIR"
 FINAL_DATE=$(date -u +%Y-%m-%d)
 FINAL="$EXPORT_DIR/lares-export-${FINAL_DATE}.tar"
-tar -C "$WORKDIR" -cf "$FINAL" .
+TEMP_ARCHIVE=$(mktemp "$EXPORT_DIR/.lares-export.XXXXXX")
+tar -C "$WORKDIR" -cf "$TEMP_ARCHIVE" .
+# Publish only a complete archive. A second export on the same day must preserve
+# the first one: hard-linking refuses an existing name atomically on this filesystem.
+suffix=1
+while ! ln "$TEMP_ARCHIVE" "$FINAL" 2>/dev/null; do
+  [ -e "$FINAL" ] || { echo "export: could not publish archive at $FINAL" >&2; exit 1; }
+  suffix=$((suffix + 1))
+  FINAL="$EXPORT_DIR/lares-export-${FINAL_DATE}-${suffix}.tar"
+done
+rm -f "$TEMP_ARCHIVE"
+TEMP_ARCHIVE=""
 
 echo "export: wrote $FINAL" >&2
 echo "export: it holds every database, these vaults: $EXPORT_VAULT_PATHS" >&2
 echo "export: and these data directories: $EXPORT_DATA_PATHS" >&2
 echo "export: a directory that is not in those two lists was NOT exported — compare them with what your backup covers (EXPORT_VAULT_PATHS, EXPORT_DATA_PATHS)." >&2
-echo "export: no secret is inside. Saved sign-ins are in the dumps in encrypted form only; the key that opens them is not." >&2
+echo "export: credential files are excluded, but database dumps and agent definitions are sensitive; protect this archive and encrypt it before off-box transfer. The token encryption key is not included." >&2
 # cleanup (the EXIT trap) removes WORKDIR here, on the way out — success or failure.

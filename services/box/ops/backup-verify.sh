@@ -66,6 +66,9 @@ ENV_FILE="${AGENT_BOX_BACKUP_ENV:-/etc/agent-box/backup.env}"
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 
 MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-24}"
 # The dumps are the store with no upstream source of truth and the one whose absence
@@ -79,7 +82,13 @@ MIN_DUMP_BYTES="${BACKUP_MIN_DUMP_BYTES:-4096}"
 # down there is required, so a new store is covered by default and a store that is
 # deliberately excluded has to say so out loud, here, in writing.
 BACKUP_IGNORED_PATHS="${BACKUP_IGNORED_PATHS:-}"
-DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/agent-box}"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/lares}"
+  COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml")
+else
+  DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/agent-box}"
+  COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml")
+fi
 # The database and role this installation uses. Same overridable names ops/install.sh,
 # ops/update.sh and lib/db.ts read, with the same defaults — an installation that kept the
 # installation-specific database and role names sets PGDATABASE and PGUSER in this script's
@@ -147,14 +156,14 @@ SQL
   # Bounded to 20s when `timeout` exists (the server has it; some Mac dev shells do
   # not) — a hung docker/db must never hang the script itself, only this bookkeeping.
   if command -v timeout >/dev/null 2>&1; then
-    if printf '%s\n' "$sql" | timeout 20 docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+    if printf '%s\n' "$sql" | timeout 20 docker compose "${COMPOSE[@]}" \
           exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
     fi
   else
-    if printf '%s\n' "$sql" | docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+    if printf '%s\n' "$sql" | docker compose "${COMPOSE[@]}" \
           exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
@@ -255,22 +264,47 @@ esac
 # the old /srv/marcel and the backup skipped the missing one without a word. Reading
 # /srv on the box makes the NEXT rename fail here instead of during a restore.
 MISSING_PATHS=""
-for d in "${BACKUP_SRV_ROOT:-/srv}"/*; do
-  [ -d "$d" ] || continue
-  case " $BACKUP_IGNORED_PATHS " in *" $d "*) continue ;; esac
-  case "$SNAP_OBJ" in
-    *"\"$d\""*) : ;;
-    *) MISSING_PATHS="$MISSING_PATHS $d" ;;
-  esac
-done
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  SRV_ROOT="${BACKUP_SRV_ROOT:-/srv}"
+  for d in "$SRV_ROOT/lares/agents" "$SRV_ROOT/lares/retired" "$SRV_ROOT/taste"; do
+    [ -d "$d" ] || fail "required portable store missing: $d"
+    case "$SNAP_OBJ" in *"\"$d\""*) : ;; *) MISSING_PATHS="$MISSING_PATHS $d" ;; esac
+  done
+  for d in "$SRV_ROOT"/lares/*; do
+    [ -d "$d" ] || continue
+    case "$d" in
+      "$SRV_ROOT"/lares/agents|"$SRV_ROOT"/lares/retired|"$SRV_ROOT"/lares/backup|"$SRV_ROOT"/lares/egress|"$SRV_ROOT"/lares/secrets) ;;
+      *) fail "unclassified Lares store: $d" ;;
+    esac
+  done
+  for d in "$SRV_ROOT"/*; do
+    [ -d "$d" ] || continue
+    case "$d" in "$SRV_ROOT"/lares|"$SRV_ROOT"/taste) continue ;; esac
+    case " $BACKUP_IGNORED_PATHS " in *" $d "*) continue ;; esac
+    case "$SNAP_OBJ" in *"\"$d\""*) : ;; *) MISSING_PATHS="$MISSING_PATHS $d" ;; esac
+  done
+else
+  for d in "${BACKUP_SRV_ROOT:-/srv}"/*; do
+    [ -d "$d" ] || continue
+    case " $BACKUP_IGNORED_PATHS " in *" $d "*) continue ;; esac
+    case "$SNAP_OBJ" in
+      *"\"$d\""*) : ;;
+      *) MISSING_PATHS="$MISSING_PATHS $d" ;;
+    esac
+  done
+fi
 [ -z "$MISSING_PATHS" ] || fail "the newest nightly snapshot ($SNAP_ID) does not cover:${MISSING_PATHS} — these directories exist on the box and are in no backup. This is ORB-151's failure exactly: a store that was renamed or newly created, and a path list that did not follow. Either add them to backup.sh's PATHS, or, if they are genuinely disposable, name them in BACKUP_IGNORED_PATHS with a reason."
 
 # --- 3. Database coverage -----------------------------------------------------------
 # An unreadable check is a FAILING check. If we cannot ask Postgres what databases it
 # has, we cannot claim the backup covers them, and claiming it anyway is the whole bug.
-DBS=$(docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
-        exec -T db psql -U "$DB_USER" -d postgres -tAc \
-        "SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'" 2>/dev/null \
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false"
+else
+  DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'"
+fi
+DBS=$(docker compose "${COMPOSE[@]}" \
+        exec -T db psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY" 2>/dev/null \
       | tr -d '\r' | sed '/^$/d') \
   || DBS=""
 [ -n "$DBS" ] || fail "could not ask Postgres which databases exist, so the snapshot's database coverage cannot be verified — treat an unreadable check as failing, never as passing. Is the db container up?"
@@ -285,13 +319,24 @@ DUMP_SIZES=$(printf '%s' "$DUMP_LS" \
 
 printf '%s' "$DUMP_SIZES" | grep -q '^globals\.sql ' \
   || fail "snapshot $SNAP_ID has no globals.sql under $REQUIRED_PATH — the roles and grants are missing, so a restore comes back with no users"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  SECRET_LS=$("${RESTIC[@]}" ls --json "$SNAP_ID" "$REQUIRED_PATH/secrets/agent-box-secrets.tar.age" 2>&1) \
+    || fail "cannot read the encrypted Lares configuration bundle from snapshot $SNAP_ID"
+  printf '%s' "$SECRET_LS" | grep -q '"name":"agent-box-secrets.tar.age"' \
+    || fail "snapshot $SNAP_ID has no encrypted Lares configuration bundle"
+fi
 
 MISSING_DBS="" SMALL_DBS=""
 for db in $DBS; do
   size=$(printf '%s' "$DUMP_SIZES" | sed -n "s/^${db}\.dump //p" | head -1)
+  floor=$((MIN_DUMP_BYTES - 1))
+  # The built-in postgres database can legitimately have no user tables. Its
+  # custom-format dump on the LAR-50 server is 1078 bytes, above backup.sh's
+  # 1024-byte write floor but below the application-database plausibility floor.
+  if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ] && [ "$db" = postgres ]; then floor=1024; fi
   if [ -z "$size" ]; then
     MISSING_DBS="$MISSING_DBS $db"
-  elif [ "$size" -lt "$MIN_DUMP_BYTES" ]; then
+  elif [ "$size" -le "$floor" ]; then
     SMALL_DBS="$SMALL_DBS ${db}(${size}B)"
   fi
 done
@@ -338,10 +383,10 @@ fi
 # day one rather than reading as instantly overdue.
 DRILL_ROW_SQL="SELECT ok, (last_pass_at IS NULL), floor(extract(epoch from now() - coalesce(last_pass_at, created_at)) / 86400)::bigint FROM backup_status WHERE check_name = 'drill';"
 if command -v timeout >/dev/null 2>&1; then
-  DRILL_ROW=$(timeout 20 docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+  DRILL_ROW=$(timeout 20 docker compose "${COMPOSE[@]}" \
         exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>/dev/null) || DRILL_ROW=""
 else
-  DRILL_ROW=$(docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+  DRILL_ROW=$(docker compose "${COMPOSE[@]}" \
         exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>/dev/null) || DRILL_ROW=""
 fi
 DRILL_ROW=$(printf '%s' "$DRILL_ROW" | tr -d '\r' | sed '/^$/d')
@@ -370,7 +415,12 @@ else
 fi
 
 DB_COUNT=$(printf '%s\n' "$DBS" | wc -l | tr -d ' ')
-OK_MSG="OK — nightly snapshot $SNAP_ID ${AGE_HOURS}h old (${AGE_MIN}m); carries $REQUIRED_PATH with globals.sql + all $DB_COUNT database dumps, and every directory under /srv; $DRILL_NOTE"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  COVERAGE_NOTE="the three portable Lares stores and encrypted configuration"
+else
+  COVERAGE_NOTE="every directory under /srv"
+fi
+OK_MSG="OK — nightly snapshot $SNAP_ID ${AGE_HOURS}h old (${AGE_MIN}m); carries $REQUIRED_PATH with globals.sql + all $DB_COUNT database dumps, and $COVERAGE_NOTE; $DRILL_NOTE"
 echo "backup-verify: $OK_MSG"
 curl -fsS -m 15 --retry 3 "$HC_URL" >/dev/null
 record_status true "$OK_MSG"
