@@ -88,20 +88,24 @@ Google-principal repair, or image publication guard since `7e6f810`. This
 does not add a live run of the final PR head: the disposable server was
 deleted after testing the earlier pinned console image.
 
-The repository's manual runtime-image probe was not run after migration 089
-was added, so the 18 PR checks alone do not satisfy its pre-merge gate.
-This review also found that a manual run of that workflow could inherit an
-unreadable organization-wide `PUBLISH_IMAGES` setting. The branch now makes
-manual publication an explicit, default-off input for all its image builds.
-Run the manual image probe from this pushed branch before merging; record the
-run result here. Production publication and deployment remain separate.
+This review found that a manual run of the runtime-image workflow could
+inherit an unreadable organization-wide `PUBLISH_IMAGES` setting. The branch
+now makes manual publication an explicit, default-off input for all its
+image builds. At exact source `8b5c97e3b1c7de2a1e04e6cbcad1f4129ee74cc3`,
+[manual run 36676470383](https://github.com/Heiberg-Industries/lares/actions/runs/36676470383)
+passed Keeper and all three role jobs, including the Chief of Staff runtime
+probe that applies migration 089. Its job log showed `push: false`.
+[PR tests run 36676623699](https://github.com/Heiberg-Industries/lares/actions/runs/36676623699)
+also passed at that same source. This record update adds no runtime change.
+Production publication and deployment remain separate.
 
 LAR-50 is Done with the owner's accepted brief heartbeat substitution and
 restore proof spanning two disposable installations. The exact observations
 and their limits are in the [run ledger](../runbooks/golden-path-runs.md).
 PR #20's head `c5ae62e` and PR #29's head `c63c316` are both ancestors of
 PR #32's head, with no separate reviews or comments, so they carry no unique
-code to merge ahead of #32. The retained `lares.heiberg.co` A record remains
+code to merge ahead of #32. Both duplicate drafts were closed as superseded
+without merging. The retained `lares.heiberg.co` A record remains
 unchanged by owner decision; it points to the released test IPv4 and must be
 repointed before reuse.
 
