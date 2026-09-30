@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 30 September 2026, against `main` at `ac23bcb`.
+Last checked: 30 September 2026, against `main` at `d07a537`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -45,12 +45,15 @@ page, this page is newer.
   [`releases/2026-09-30-rc.1.json`](../releases/2026-09-30-rc.1.json) pins the
   images built from one commit, `ac23bcb`. It has not been installed or
   rehearsed anywhere. The other files in `releases/` are test manifests.
+  Publishing the first release and the console's "update available" notice
+  are tracked in LAR-101.
 - **A production rollout still needs** a migration and rollback plan (rolling
   back the schema after `089` has not been rehearsed) and a separate approval.
 - **A strict docs-only install is unobserved.** The test install needed a
-  model-key entry repair and resumed from saved answers.
+  model-key entry repair and resumed from saved answers. Tracked in LAR-102.
 - **Deferred in the console:** mobile layouts and the populated Preferences
-  styling.
+  styling. Tracked in LAR-103, with the owner's sign-off on an installed
+  console.
 - **The test hostname's DNS record still points at the released test address**
   and must be repointed before reuse.
 
@@ -60,7 +63,13 @@ page, this page is newer.
   and #34 were closed; #37 replaced the ones that mattered.
 - The switch on the existing server has not been rehearsed (LAR-98).
 - One installer test fails at random on GitHub (LAR-100).
-- Several Linear tickets lag behind the merged work and need a status review.
+- The Linear board was reviewed against `main` on 30 September. "In Review"
+  now means one thing: the code is on `main` and only a live check in LAR-74
+  section 7 remains. Ten tickets are in that state (LAR-5, 16, 17, 22, 28, 54,
+  59, 67, 73, 93). LAR-6, LAR-7 and LAR-10 were closed and their remainders
+  moved to LAR-101, LAR-102 and LAR-103. Still in progress with work left:
+  LAR-11 (the website, in its private repository), LAR-13, LAR-21, LAR-60 and
+  LAR-72. The review read the code; it ran no tests and touched no server.
 
 ## Where the detail lives
 
