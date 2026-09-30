@@ -10,6 +10,10 @@ overrides:
   qs@<6.16.0: 6.16.0
   baseline-browser-mapping@<2.11.0: 2.11.0
   testcontainers@10.28.0>undici: 6.28.1
+  undici@>=7.0.0 <7.29.1: 7.29.1
+  undici@>=8.0.0 <8.10.2: 8.10.2
+  brace-expansion@>=2.0.0 <2.1.7: 2.1.7
+  brace-expansion@>=5.0.0 <5.0.12: 5.0.12
   nanoid@3.3.12: 3.3.19
   postcss@8.5.14: 8.5.23
   vite@<6.4.3: 6.4.3
@@ -66,8 +70,8 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
       undici:
-        specifier: ^7
-        version: 7.29.0
+        specifier: 7.29.1
+        version: 7.29.1
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -232,8 +236,8 @@ importers:
         specifier: ^12.1.0
         version: 12.1.0
       undici:
-        specifier: ^7.29.0
-        version: 7.29.0
+        specifier: ^7.29.1
+        version: 7.29.1
     devDependencies:
       '@testcontainers/postgresql':
         specifier: ^10.13.2
@@ -345,8 +349,8 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
       undici:
-        specifier: ^7
-        version: 7.29.0
+        specifier: 7.29.1
+        version: 7.29.1
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -443,8 +447,8 @@ importers:
         specifier: 26.1.0
         version: 26.1.0
       postcss:
-        specifier: 8.5.6
-        version: 8.5.6
+        specifier: 8.5.23
+        version: 8.5.23
       tailwindcss:
         specifier: 4.1.18
         version: 4.1.18
@@ -497,8 +501,8 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
       undici:
-        specifier: ^7
-        version: 7.29.0
+        specifier: 7.29.1
+        version: 7.29.1
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -612,8 +616,8 @@ importers:
         specifier: ^29.0.0
         version: 29.1.1(@noble/hashes@2.4.0)
       undici:
-        specifier: ^8.0.0
-        version: 8.9.0
+        specifier: 8.10.2
+        version: 8.10.2
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -679,8 +683,8 @@ importers:
         specifier: ^8.21.0
         version: 8.21.0
       undici:
-        specifier: ^7
-        version: 7.29.0
+        specifier: 7.29.1
+        version: 7.29.1
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -3267,11 +3271,11 @@ packages:
   bluebird@3.4.7:
     resolution: {integrity: sha512-iD3898SR7sWVRHbiQv+sHUtHnMvC1o3nW5rAcqnq3uOn07DSAppZYUkIGslDz6gXC7HfunPe7YVBgoEJASPcHA==}
 
-  brace-expansion@2.1.4:
-    resolution: {integrity: sha512-hGfVzPxthbf3+2yjg/RBs60cB0FhqBS/zvdV/4wn4/BmN0bNMMHPc4V/BbFieqf1TKAGGAHnY4eSjajCl0f2Xg==}
+  brace-expansion@2.1.7:
+    resolution: {integrity: sha512-uZbew1NqdmPDTMJ8ah1y+b+9QEJrfkXFk3RcTQw3X0jW/xRUvFKsg1CfQdSYGdTbXZWExtU3J3ccxtnfw1Fi0g==}
 
-  brace-expansion@5.0.9:
-    resolution: {integrity: sha512-ScQ4IuvIEF1TMlP7Zt+vjJ//9zlPb2SDcxWxM3bk8s6t6GGdJ7KO1dCcTidOPJKePW30LE/2cT7wCyPho9/Wxg==}
+  brace-expansion@5.0.12:
+    resolution: {integrity: sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==}
     engines: {node: 20 || >=22}
 
   braces@3.0.3:
@@ -4607,10 +4611,6 @@ packages:
     resolution: {integrity: sha512-g50586zr4bZmwFiTlflMu8E0bDTb5I5gertgwAKmsdUlTQIhZtunzUlD1WSzwcVWPoAVpsrA6vlfCD7oXvRwgg==}
     engines: {node: ^10 || ^12 || >=14}
 
-  postcss@8.5.6:
-    resolution: {integrity: sha512-3Ybi1tAuwAP9s0r1UQ2J4n5Y0G05bJkpUIO0/bI9MhwmD70S5aTWbXGBwxHrelT+XM1k6dM0pk+SwNkpTRN7Pg==}
-    engines: {node: ^10 || ^12 || >=14}
-
   postgres-array@2.0.0:
     resolution: {integrity: sha512-VpZrUqU5A69eQyW2c5CA1jtLecCsN2U/bD6VilrFDWq5+5UIEVO7nazS3TEcHf1zuPYO/sqGvUvW62g86RXZuA==}
     engines: {node: '>=4'}
@@ -5182,12 +5182,12 @@ packages:
     resolution: {integrity: sha512-zWpdTVD54H48CIybL0rWQ3ukpb9d23wM7eH5RtfdmeP70cWHNjtfo7P4vZX+5CoDcO53J4Pu5uXp7lNfjc6DRA==}
     engines: {node: '>=18.17'}
 
-  undici@7.29.0:
-    resolution: {integrity: sha512-IDxfleLmmbSskfWSUATiN1nfn2rDuvnMOqb5CWR92iIfojA0Ud+ulOAAEQ57LPr9rWmsreUyf5lwyao+7GNNVw==}
+  undici@7.29.1:
+    resolution: {integrity: sha512-RYONW2MeafgYlkVOKYKkA/Ag7BmXqgIWCa8t1m0JcxrQg9pI9lEqRhAOruOBCbAohOa/gkCF+iPi9hrgvTzu6Q==}
     engines: {node: '>=20.18.1'}
 
-  undici@8.9.0:
-    resolution: {integrity: sha512-aWZpUj7XoGonMClx4gdDRfgBjqeA+F473aDmROQQbM9n6PRfK/u1q/a0X4wMTgcHfT8H6fpbt98PFuDUwFg2YA==}
+  undici@8.10.2:
+    resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
     engines: {node: '>=22.19.0'}
 
   unenv@2.0.0-rc.24:
@@ -5499,7 +5499,7 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
-      undici: 7.29.0
+      undici: 7.29.1
       zod: 4.5.4
 
   '@ai-sdk/provider-utils@5.0.44(zod@4.5.4)':
@@ -5508,7 +5508,7 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
-      undici: 7.29.0
+      undici: 7.29.1
       zod: 4.5.4
 
   '@ai-sdk/provider-utils@5.0.45(zod@4.5.4)':
@@ -5517,7 +5517,7 @@ snapshots:
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.0
-      undici: 7.29.0
+      undici: 7.29.1
       zod: 4.5.4
 
   '@ai-sdk/provider@4.0.17':
@@ -7611,7 +7611,7 @@ snapshots:
       async-sema: 3.1.1
       proper-lockfile: 4.1.2
       ulid: 3.0.2
-      undici: 7.29.0
+      undici: 7.29.1
       zod: 4.5.4
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
@@ -7830,11 +7830,11 @@ snapshots:
 
   bluebird@3.4.7: {}
 
-  brace-expansion@2.1.4:
+  brace-expansion@2.1.7:
     dependencies:
       balanced-match: 1.0.2
 
-  brace-expansion@5.0.9:
+  brace-expansion@5.0.12:
     dependencies:
       balanced-match: 4.0.4
 
@@ -8283,7 +8283,7 @@ snapshots:
     dependencies:
       ai: 7.0.106(zod@4.5.4)
       nitro: 3.0.260903-beta
-      undici: 8.9.0
+      undici: 8.10.2
     optionalDependencies:
       '@opentelemetry/api': 1.9.1
       just-bash: 3.3.0
@@ -8717,7 +8717,7 @@ snapshots:
       saxes: 6.0.0
       symbol-tree: 3.2.4
       tough-cookie: 6.0.2
-      undici: 7.29.0
+      undici: 7.29.1
       w3c-xmlserializer: 5.0.0
       webidl-conversions: 8.0.1
       whatwg-mimetype: 5.0.0
@@ -8759,7 +8759,7 @@ snapshots:
       sprintf-js: 1.1.3
       sql.js: 1.14.2
       turndown: 7.2.4
-      undici: 7.29.0
+      undici: 7.29.1
       yaml: 2.9.0
     optionalDependencies:
       '@mongodb-js/zstd': 7.0.0
@@ -8948,15 +8948,15 @@ snapshots:
 
   minimatch@10.2.5:
     dependencies:
-      brace-expansion: 5.0.9
+      brace-expansion: 5.0.12
 
   minimatch@5.1.9:
     dependencies:
-      brace-expansion: 2.1.4
+      brace-expansion: 2.1.7
 
   minimatch@9.0.9:
     dependencies:
-      brace-expansion: 2.1.4
+      brace-expansion: 2.1.7
 
   minimist@1.2.8: {}
 
@@ -9201,12 +9201,6 @@ snapshots:
     optional: true
 
   postcss@8.5.23:
-    dependencies:
-      nanoid: 3.3.19
-      picocolors: 1.1.1
-      source-map-js: 1.2.1
-
-  postcss@8.5.6:
     dependencies:
       nanoid: 3.3.19
       picocolors: 1.1.1
@@ -9951,9 +9945,9 @@ snapshots:
 
   undici@6.28.1: {}
 
-  undici@7.29.0: {}
+  undici@7.29.1: {}
 
-  undici@8.9.0: {}
+  undici@8.10.2: {}
 
   unenv@2.0.0-rc.24:
     dependencies:
