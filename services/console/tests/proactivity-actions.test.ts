@@ -7,7 +7,7 @@ vi.mock("../lib/db", () => ({
   pool: {
     query: vi.fn(async (sql: string, params: unknown[]) => {
       queries.push({ sql, params });
-      // The door-scope check (`readDoors`) is the only read these actions make.
+      if (/FROM agent_definitions/i.test(sql)) return { rows: [{ name: "marcel" }] };
       if (/FROM initiations/i.test(sql)) return { rows: knownDoors.map((door) => ({ door })) };
       return { rows: [] };
     }),

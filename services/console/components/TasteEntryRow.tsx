@@ -1,5 +1,6 @@
 "use client";
 import { useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
 
 import { removeEntry } from "../app/actions/taste";
 import { FreshBadge } from "./FreshBadge";
@@ -29,22 +30,24 @@ export function TasteEntryRow({
         {name}
         {badge && <> <FreshBadge badge={badge} /></>}
         {broken && (
-          <span style={{ color: "var(--bad)", fontSize: 12 }}> · uleselig fil: {broken}</span>
+          <span style={{ color: "var(--bad)", fontSize: 12 }}> · unreadable file: {broken}</span>
         )}
       </td>
       <td style={{ color: "var(--mist)", fontSize: 12 }}>{detail}</td>
       <td style={{ color: "var(--mist)", fontSize: 12 }}>{file}</td>
       <td>
-        <button
+        <Button
+          variant="outline"
+          size="sm"
           disabled={pending}
-          onClick={() => start(async () => { await removeEntry({ domain, file }); })}
-          style={{
-            padding: "2px 8px", fontSize: 12, border: "1px solid var(--rule)", borderRadius: 3,
-            background: "transparent", color: "var(--mist)", cursor: "pointer",
+          onClick={() => {
+            if (window.confirm(`Permanently remove ${name} from preferences?`)) {
+              start(async () => { await removeEntry({ domain, file }); });
+            }
           }}
         >
-          Slett
-        </button>
+          Delete
+        </Button>
       </td>
     </tr>
   );

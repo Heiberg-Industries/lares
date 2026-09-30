@@ -11,6 +11,7 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
 import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps } from "../lib/chat-proxy";
+import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
 const PASSWORD = "disposable-fixture-only";
 
@@ -40,7 +41,7 @@ const deps = (
   fetch: vi.fn<typeof fetch>(async () =>
     new Response('{"ok":true,"sessionId":"wrun_A","status":"accepted"}', {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "x-eve-session-id": "wrun_A" },
     }),
   ),
   routePassword: vi.fn<ChatDeps["routePassword"]>(() => password ?? undefined),
@@ -53,6 +54,16 @@ const post = (body = '{"message":"hello"}', signal?: AbortSignal) =>
     body,
     headers: { "content-type": "application/json", cookie: "lares_session=abc", authorization: "Basic forged" },
     ...(signal ? { signal } : {}),
+  });
+
+const capability = (member = "owner@example.invalid", agent = "helper", incarnation = row.incarnation) =>
+  chatSessionCapabilityCookie(post(), PASSWORD, member, agent, incarnation, "wrun_A").split(";")[0]!;
+
+const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
+  new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
+    method,
+    headers: { cookie: `lares_session=abc; ${cookie}` },
+    ...(method === "POST" ? { body: '{"message":"hello"}' } : {}),
   });
 
 describe("the console's chat proxy", () => {
@@ -85,7 +96,9 @@ describe("the console's chat proxy", () => {
     const response = await forwardChat(post(), "helper", "eve/v1/session", d);
     expect(await response.text()).not.toContain(PASSWORD);
     expect(response.headers.has("www-authenticate")).toBe(false);
-    expect(response.headers.has("set-cookie")).toBe(false);
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(response.headers.get("set-cookie")).toContain("Path=/api/chat/helper/eve/v1/session/wrun_A");
+    expect(response.headers.get("set-cookie")).not.toContain(PASSWORD);
   });
 
   it("does not echo the agent's own challenge or cookie when the agent refuses the credential", async () => {
@@ -105,6 +118,34 @@ describe("the console's chat proxy", () => {
     expect(response.headers.has("www-authenticate")).toBe(false);
     expect(response.headers.has("set-cookie")).toBe(false);
     expect(await response.text()).not.toContain(PASSWORD);
+  });
+
+  it("refuses an existing conversation without its signed capability before calling the agent", async () => {
+    const d = deps();
+    const path = "eve/v1/session/wrun_A/stream";
+    const response = await forwardChat(new Request(`https://console.example.invalid/api/chat/helper/${path}`), "helper", path, d);
+    expect(response.status).toBe(403);
+    expect(d.fetch).not.toHaveBeenCalled();
+  });
+
+  it("binds a conversation to its signed-in member and agent incarnation", async () => {
+    const path = "eve/v1/session/wrun_A/stream";
+    const otherMember = deps(row, PASSWORD, "other@example.invalid");
+    expect((await forwardChat(sessionRequest(path), "helper", path, otherMember)).status).toBe(403);
+    expect(otherMember.fetch).not.toHaveBeenCalled();
+
+    const newIncarnation = { ...row, incarnation: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", runtime_control_token: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" };
+    const replacement = deps(newIncarnation);
+    expect((await forwardChat(sessionRequest(path), "helper", path, replacement)).status).toBe(403);
+    expect(replacement.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a created session when Eve omits its ID header", async () => {
+    const d = deps();
+    d.fetch.mockResolvedValue(new Response('{"sessionId":"wrun_A"}', { status: 202 }));
+    const response = await forwardChat(post(), "helper", "eve/v1/session", d);
+    expect(response.status).toBe(502);
+    expect(response.headers.has("set-cookie")).toBe(false);
   });
 
   it("reports a failed upstream call without repeating what it was carrying", async () => {
@@ -134,7 +175,7 @@ describe("the console's chat proxy", () => {
         { status: 200, headers: { "content-type": "application/x-ndjson" } },
       ),
     );
-    const get = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A/stream");
+    const get = sessionRequest("eve/v1/session/wrun_A/stream");
     const response = await forwardChat(get, "helper", "eve/v1/session/wrun_A/stream", d);
     expect(response.body).not.toBeNull();
     expect(response.headers.get("content-type")).toBe("application/x-ndjson");
@@ -155,7 +196,7 @@ describe("the console's chat proxy", () => {
         { status: 200, headers: { "content-type": "application/x-ndjson" } },
       ),
     );
-    const get = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A/stream");
+    const get = sessionRequest("eve/v1/session/wrun_A/stream");
     const response = await forwardChat(get, "helper", "eve/v1/session/wrun_A/stream", d);
     push('{"type":"first"}\n');
     const first = await response.body!.getReader().read();
@@ -168,6 +209,7 @@ describe("the console's chat proxy", () => {
     const controller = new AbortController();
     const get = new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A/stream", {
       signal: controller.signal,
+      headers: { cookie: `lares_session=abc; ${capability()}` },
     });
     await forwardChat(get, "helper", "eve/v1/session/wrun_A/stream", d);
     const [, init] = d.fetch.mock.calls[0]!;
@@ -181,6 +223,7 @@ describe("the console's chat proxy", () => {
     const get = new Request(
       "https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A/stream" +
         "?startIndex=12&includeTailIndex=1&streamControlVersion=1&host=evil.example.invalid&startIndex2=x",
+      { headers: { cookie: `lares_session=abc; ${capability()}` } },
     );
     await forwardChat(get, "helper", "eve/v1/session/wrun_A/stream", d);
     const [url] = d.fetch.mock.calls[0]!;
@@ -257,9 +300,9 @@ describe("the console's chat proxy", () => {
     }
     for (const verb of ["cancel", "clear", "compact", "reset"]) {
       const path = `eve/v1/session/wrun_A/${verb}`;
-      expect((await forwardChat(post(), "helper", path, d)).status).toBe(200);
+      expect((await forwardChat(sessionRequest(path, "POST"), "helper", path, d)).status).toBe(200);
     }
-    expect((await forwardChat(post(), "helper", "eve/v1/session/wrun_A", d)).status).toBe(200);
+    expect((await forwardChat(sessionRequest("eve/v1/session/wrun_A", "POST"), "helper", "eve/v1/session/wrun_A", d)).status).toBe(200);
   });
 
   it.each([

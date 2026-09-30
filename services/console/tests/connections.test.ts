@@ -120,9 +120,18 @@ describe("buildConnectionRows", () => {
     expect(rows.find((r) => r.instanceId === "heiberg")!.status).toBe("partial");
   });
 
-  it("reports a Google org with no client at all as missing", () => {
+  it("omits catalogue-only workspaces that do not exist on this installation", () => {
     const rows = buildConnectionRows({ ...base, configuredOrgs: ["heiberg"] });
-    expect(rows.find((r) => r.instanceId === "zero7")!.status).toBe("missing");
+    expect(rows.find((r) => r.connectionId === "google" && r.instanceId === "zero7")).toBeUndefined();
+    expect(rows.find((r) => r.connectionId === "google")!.label).toContain("heiberg");
+  });
+
+  it("shows one honest missing Google connection before any client is configured", () => {
+    const rows = buildConnectionRows({ ...base, configuredOrgs: [] });
+    const google = rows.filter((r) => r.connectionId === "google");
+    expect(google).toHaveLength(1);
+    expect(google[0]).toMatchObject({ instanceId: "unconfigured", status: "missing", detail: "no client" });
+    expect(google[0].label).not.toContain("Workspace");
   });
 
   // Minor B (final review): the accounts.length > 0 branch used to fire before the configured
@@ -200,19 +209,20 @@ describe("buildConnectionRows", () => {
     expect(rows.find((r) => r.connectionId === "google")!.lastUsed).toBeNull();
   });
 
-  it("derives agent consumers from grants and adds the declared services", () => {
+  it("separates actual agent grants from catalogue service declarations", () => {
     const twenty = buildConnectionRows(base).find((r) => r.connectionId === "twenty")!;
     expect(twenty.usedBy).toContain("saga");
-    expect(twenty.usedBy).toContain("notion-sync");
+    expect(twenty.usedBy).not.toContain("notion-sync");
+    expect(twenty.declaredFor).toContain("notion-sync");
   });
 
   it("attributes a declared instance-specific consumer to that instance only", () => {
     // `marcel` declares `gateway:marcel` (declaredConsumers in agent-runtime's connections.ts),
     // an instance-qualified ref — so it must appear on that instance and NOT on its sibling.
     const rows = buildConnectionRows(base);
-    expect(rows.find((r) => r.connectionId === "gateway" && r.instanceId === "marcel")!.usedBy)
+    expect(rows.find((r) => r.connectionId === "gateway" && r.instanceId === "marcel")!.declaredFor)
       .toContain("marcel");
-    expect(rows.find((r) => r.connectionId === "gateway" && r.instanceId === "shared")!.usedBy)
+    expect(rows.find((r) => r.connectionId === "gateway" && r.instanceId === "shared")!.declaredFor)
       .not.toContain("marcel");
   });
 });

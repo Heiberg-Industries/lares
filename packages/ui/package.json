@@ -4,7 +4,26 @@
   "version": "0.1.0",
   "type": "module",
   "exports": {
-    "./theme.css": "./src/theme.css"
+    "./theme.css": "./src/theme.css",
+    "./primitives/*": "./src/primitives/*.tsx",
+    "./patterns": "./src/patterns.tsx",
+    "./icons": "./src/icons.ts",
+    "./console.css": "./src/console.css"
   },
-  "license": "AGPL-3.0-only"
+  "license": "AGPL-3.0-only",
+  "dependencies": {
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "lucide-react": "0.468.0",
+    "radix-ui": "1.4.3",
+    "tailwind-merge": "3.3.1"
+  },
+  "peerDependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  }
 }

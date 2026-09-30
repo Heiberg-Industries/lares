@@ -33,8 +33,10 @@
 }
 
 :root {
-  --font-sans: "Instrument Sans Variable", sans-serif;
-  --font-mono: "DM Mono", monospace;
+  --font-lares-sans: "Instrument Sans Variable", sans-serif;
+  --font-sans: var(--font-lares-sans);
+  --font-lares-mono: "DM Mono", monospace;
+  --font-mono: var(--font-lares-mono);
   /* semantic, light */
   --background: oklch(0.988 0.004 175);
   --foreground: oklch(0.20 0.03 185);
@@ -69,6 +71,14 @@
   --chart-5: oklch(0.54 0.14 32);
   --radius: 0.25rem;
 
+  --lares-control-radius: 10px;
+  --lares-control-height: 42px;
+  --lares-sidebar-width: 232px;
+  --lares-page-width: 1120px;
+  --lares-dialog-width: 560px;
+  --lares-avatar-size: 36px;
+  --lares-overlay: oklch(0.15 0.025 185 / 0.4);
+  --lares-hover: color-mix(in oklch, var(--sidebar-accent) 45%, transparent);
   /* component (project-specific) */
   --lares-attention: var(--accent);               /* "needs the owner" — aliases --accent */
   --lares-attention-foreground: var(--accent-foreground);
@@ -253,8 +263,8 @@
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 2px);
   --radius-xl: calc(var(--radius) + 6px);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-mono);
+  --font-sans: var(--font-lares-sans);
+  --font-mono: var(--font-lares-mono);
 }
 
 /* motion: arrivals fade and settle; the mark's nodes light in sequence. Nothing bounces. */

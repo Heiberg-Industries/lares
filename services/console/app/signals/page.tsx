@@ -1,46 +1,50 @@
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
+import { Notice, PageHeader } from "@lares/ui/patterns";
+import { Button } from "@lares/ui/primitives/button";
 
 export const dynamic = "force-dynamic";
-const ICON = { error: "🔴", warn: "🟠", info: "⚪" } as const;
 const isHttpUrl = (u: string) => /^https?:\/\//i.test(u);
 
 export default async function SignalsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const q = await searchParams;
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (
-    <>
-      <h1 className="mono" style={{ fontSize: 18 }}>Signals</h1>
-      <p className="mono" style={{ fontSize: 12, marginTop: 4 }}>
-        <Link href="/signals">Recent</Link> · <Link href="/signals/rules">Routes</Link> · <Link href="/signals/catalogue">Catalogue</Link>
-      </p>
-      <form method="get" className="mono" style={{ marginTop: 12, display: "flex", gap: 8, fontSize: 12 }}>
-        <select name="severity" defaultValue={q.severity ?? ""}><option value="">any severity</option><option>error</option><option>warn</option><option>info</option></select>
-        <select name="kind" defaultValue={q.kind ?? ""}><option value="">any kind</option><option>alert</option><option>event</option><option>report</option></select>
-        <select name="state" defaultValue={q.state ?? ""}><option value="">any state</option><option>open</option><option>recovered</option><option>closed</option></select>
-        <input name="project" placeholder="project" defaultValue={q.project ?? ""} />
-        <button type="submit">filter</button>
-      </form>
+    <div className="lares-page lares-operational">
+      <PageHeader title="Signals" description="Recent recorded alerts, events and reports." />
+      <nav className="lares-operational-nav" aria-label="Signals sections">
+        <Link href="/signals" aria-current="page">Recent</Link>
+        <Link href="/signals/rules">Routes</Link>
+        <Link href="/signals/catalogue">Catalogue</Link>
+      </nav>
       {"unavailable" in r ? (
-        <p className="mono" style={{ marginTop: 12, color: "var(--bad)" }}>Spine unavailable — the record could not be read.</p>
-      ) : r.signals.length === 0 ? (
-        <p className="mono" style={{ marginTop: 12, color: "var(--mist)" }}>Nothing in this window.</p>
+        <Notice error>Signals could not be loaded because the record service is unavailable. Check its service status, then reload this page. Routes and catalogue remain available above.</Notice>
+      ) : <>
+      <form method="get" className="lares-inline-form lares-operational-filter">
+        <label className="lares-field-label">Severity<select className="lares-field" name="severity" defaultValue={q.severity ?? ""}><option value="">Any severity</option><option>error</option><option>warn</option><option>info</option></select></label>
+        <label className="lares-field-label">Kind<select className="lares-field" name="kind" defaultValue={q.kind ?? ""}><option value="">Any kind</option><option>alert</option><option>event</option><option>report</option></select></label>
+        <label className="lares-field-label">State<select className="lares-field" name="state" defaultValue={q.state ?? ""}><option value="">Any state</option><option>open</option><option>recovered</option><option>closed</option></select></label>
+        <label className="lares-field-label">Project<input className="lares-field" name="project" placeholder="All projects" defaultValue={q.project ?? ""} /></label>
+        <Button type="submit" variant="outline">Filter</Button>
+      </form>
+      {r.signals.length === 0 ? (
+        <Notice>Nothing recorded for these filters.</Notice>
       ) : (
-        <table className="mono" style={{ marginTop: 12, fontSize: 12, borderCollapse: "collapse", width: "100%" }}>
+        <div className="lares-table-scroll"><table className="card lares-operational-table">
           <thead><tr><th align="left">when</th><th align="left">what</th><th align="left">count</th><th align="left">state</th><th align="left">source</th></tr></thead>
           <tbody>
             {r.signals.map((s) => (
-              <tr key={`${s.fingerprint}:${s.occurrence}`} style={{ borderTop: "1px solid var(--rule)" }}>
+              <tr key={`${s.fingerprint}:${s.occurrence}`}>
                 <td>{s.lastSeen.slice(0, 16).replace("T", " ")}</td>
-                <td>{s.kind === "report" ? "🔵" : s.state === "recovered" ? "🟢" : s.kind === "event" ? "⚪" : ICON[s.severity]} <b>{s.project}</b> · {s.title}
-                  {s.description && <div style={{ color: "var(--mist)" }}>{s.description}</div>}
+                <td><span className={s.severity === "error" ? "lares-status-error" : s.severity === "warn" ? "lares-status-warning" : "lares-status-muted"}>{s.severity}</span> · <b>{s.project}</b> · {s.title}
+                  {s.description && <div className="lares-status-muted">{s.description}</div>}
                   {s.url && isHttpUrl(s.url) && <> · <a href={s.url} rel="noopener noreferrer">details</a></>}{s.linearRef && <> · {s.linearRef}</>}</td>
-                <td>{s.count}</td><td>{s.state}</td><td>{s.source} · {s.type}</td>
+                <td>{s.count}</td><td><span className={s.state === "recovered" ? "lares-status-success" : s.severity === "error" ? "lares-status-error" : s.severity === "warn" ? "lares-status-warning" : undefined}>{s.state}</span></td><td>{s.source} · {s.type}</td>
               </tr>
             ))}
           </tbody>
-        </table>
-      )}
-    </>
+        </table></div>
+      )}</>}
+    </div>
   );
 }

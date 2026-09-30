@@ -104,6 +104,7 @@ beforeEach(() => {
   writeFileSync(
     restic,
     `#!/usr/bin/env bash\n` +
+      `if [ "\${LARES_CURRENT_LAYOUT:-0}" = 1 ] && { [ -z "\${AWS_ACCESS_KEY_ID:-}" ] || [ -z "\${AWS_SECRET_ACCESS_KEY:-}" ]; }; then exit 1; fi\n` +
       // LAR-54-s6: log every call's argv (one call per "---"-separated block) so tests
       // can assert what restic was actually invoked with -- in particular, whether
       // RESTIC_REPOSITORY produced "-r <value>" with no rclone option at all.
@@ -172,6 +173,8 @@ beforeEach(() => {
       "STORAGEBOX_SSH_KEY=/dev/null",
       "RESTIC_REPO_PATH=box-backup",
       "RESTIC_PASSWORD_FILE=/dev/null",
+      "AWS_ACCESS_KEY_ID=TESTACCESSKEY",
+      "AWS_SECRET_ACCESS_KEY=TESTSECRETKEY",
       "HC_URL=https://hc-ping.com/test-uuid",
       "",
     ].join("\n"),
@@ -261,6 +264,42 @@ const recordedStdin = () => (existsSync(dockerStdinLog) ? readFileSync(dockerStd
 const sequence = () => (existsSync(sequenceLog) ? readFileSync(sequenceLog, "utf8").trim().split("\n") : []);
 
 describe("backup-verify.sh", () => {
+  it("verifies current-layout portable stores without requiring the plaintext secrets parent", () => {
+    rmSync(srvSubdir, { recursive: true });
+    for (const path of ["lares/agents", "lares/retired", "lares/secrets", "lares/backup", "lares/egress", "taste"])
+      mkdirSync(join(srvRoot, path), { recursive: true });
+    stageSnapshot({ paths: ["/var/backups/pg", join(srvRoot, "lares/agents"), join(srvRoot, "lares/retired"), join(srvRoot, "taste")] });
+    stageDatabases(["app", "postgres"]);
+    stageDumps([{ name: "globals.sql", size: 5000 }, { name: "app.dump", size: 32000 }, { name: "postgres.dump", size: 1078 }, { name: "agent-box-secrets.tar.age", size: 10000 }]);
+    const r = run({ LARES_CURRENT_LAYOUT: "1" });
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("OK");
+    expect(recordedArgs()).toContain("/opt/lares/compose.yaml");
+    expect(recordedArgs()).not.toContain("compose.override.yaml");
+  });
+
+  it("fails current-layout verification when Preferences is absent from the snapshot", () => {
+    rmSync(srvSubdir, { recursive: true });
+    for (const path of ["lares/agents", "lares/retired", "taste"])
+      mkdirSync(join(srvRoot, path), { recursive: true });
+    stageSnapshot({ paths: ["/var/backups/pg", join(srvRoot, "lares/agents"), join(srvRoot, "lares/retired")] });
+    const r = run({ LARES_CURRENT_LAYOUT: "1" });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(join(srvRoot, "taste"));
+    expect(pinged()).toContain("/fail");
+  });
+
+  it("fails current-layout verification when encrypted configuration is absent", () => {
+    rmSync(srvSubdir, { recursive: true });
+    for (const path of ["lares/agents", "lares/retired", "taste"])
+      mkdirSync(join(srvRoot, path), { recursive: true });
+    stageSnapshot({ paths: ["/var/backups/pg", join(srvRoot, "lares/agents"), join(srvRoot, "lares/retired"), join(srvRoot, "taste")] });
+    const r = run({ LARES_CURRENT_LAYOUT: "1" });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("encrypted Lares configuration bundle");
+    expect(pinged()).toContain("/fail");
+  });
+
   it("pings the heartbeat when a recent nightly snapshot is in the repository", () => {
     stageSnapshot({ ageHours: 2 });
     const r = run();

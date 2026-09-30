@@ -176,6 +176,8 @@ describe("the stack the installer brings up", () => {
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.image).toBe(D("console"));
     expect(doc.services.console.volumes).toContain(`${join(prefix, "run", "lares")}:/run/lares`);
+    expect(doc.services.console.volumes).toContain(`${join(prefix, "srv", "taste")}:/srv/taste`);
+    expect(calls()).toContain(`chown 10001:10001 ${join(prefix, "srv", "taste")}`);
   });
 
   it("writes the release's own stack file where run_database looks for it", () => {
@@ -212,6 +214,7 @@ describe("the stack the installer brings up", () => {
   it("installs the committed gateway start script where the compose entrypoint executes it", () => {
     expect(run(["--release", releaseFile]).code).toBe(0);
     const doc = parse(readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8")) as any;
+    expect(doc.services.console.environment.AGENT_OWNER_USER_ID).toBe("owner");
     const gateway = doc.services["lares-gateway"];
     const mount = (gateway.volumes as string[]).find((v) => v.startsWith(`${join(prefix, "etc", "lares", "gateway-start.sh")}:`));
     expect(mount, "the compose file mounts no start script into the gateway").toBeTruthy();

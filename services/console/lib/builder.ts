@@ -76,9 +76,10 @@ export async function builderData(name?: string) {
   if(!name) return {startingPoints:points,aliases,capacity,timing};
   const entry=list.find(a=>a.name===name);
   if(!entry) throw new Error('Agent definition not found.');
-  const [saved,permissions]=await Promise.all([
+  const [saved,permissions,avatar]=await Promise.all([
     keeper<{definition:string;duties:string;voice:string;runtime?:RuntimeState}>('definition.get',{name},email),
     getBoardRows(),
+    pool.query<{version:string}>("SELECT extract(epoch from updated_at)::text version FROM agent_avatars WHERE name=$1",[name]).then(result=>result.rows[0]?.version).catch(()=>undefined),
   ]);
-  return {publicDoorOrigin:process.env.LARES_PUBLIC_DOOR_ORIGIN??'',startingPoints:points,aliases,capacity,timing,initial:{...saved,definition:JSON.parse(saved.definition) as AgentDefinition,hash:entry.hash,status:entry.status},permissions:permissions.filter(p=>p.agent===name)};
+  return {publicDoorOrigin:process.env.LARES_PUBLIC_DOOR_ORIGIN??'',startingPoints:points,aliases,capacity,timing,initial:{...saved,definition:JSON.parse(saved.definition) as AgentDefinition,hash:entry.hash,status:entry.status,avatarVersion:avatar},permissions:permissions.filter(p=>p.agent===name)};
 }

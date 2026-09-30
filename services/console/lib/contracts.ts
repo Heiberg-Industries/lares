@@ -71,7 +71,10 @@ export interface ConnectionRowDTO {
   detail: string;
   /** ISO timestamp, or null when unknown or unattributable. */
   lastUsed: string | null;
+  /** Agents on this installation with a grant for the connection. */
   usedBy: string[];
+  /** Static service declarations from the catalogue, not proof that they are running. */
+  declaredFor: string[];
   /** Enrolled mailboxes — console-custody rows only; empty for every other row. */
   accounts: GoogleAccountDTO[];
 }
@@ -88,21 +91,6 @@ export interface VoiceCardDTO {
 }
 export interface VoiceExampleDTO { id: string; lang: "en" | "no"; snippet: string; included: boolean }
 
-/**
- * The exact command that resolves a frozen notion-sync row, ON THE BOX.
- *
- * The console shows it verbatim rather than the friendlier `notion-sync resolve
- * <path> --keep md|notion`, because that commander CLI does not exist where the
- * sync runs: the box has no lares checkout and the shared image ships
- * services/notion-sync alone, so the entrypoint's `--resolve` flag is the only
- * runnable form (final review, I1). `<path>` is the one part a human substitutes.
- *
- * Quiesce first, like every other one-shot: `exec` starts a SECOND process in the
- * container and the daemon's don't-re-enter guard is process-local, so a tick
- * firing into a resolve would be two engines on the same row. See
- * docs/runbooks/notion-sync.md §"Go live".
- */
-export const NOTION_RESOLVE_COMMAND =
-  "docker compose -f /opt/agent-box/compose.yaml exec -T notion-sync " +
-  "/app/node_modules/.bin/tsx services/notion-sync/bin/notion-sync.ts " +
-  "--resolve <path> --keep md|notion";
+/** The console has no proof of which host compose file contains notion-sync. */
+export const NOTION_RESOLVE_GUIDANCE =
+  "Have an operator stop the sync daemon and follow this installation's Notion sync runbook to resolve the frozen document.";

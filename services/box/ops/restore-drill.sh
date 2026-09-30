@@ -39,8 +39,9 @@
 # the pass date where the owner can see it" is this slice; "a drill that has not passed
 # in 45 days is a DOWN" is the next one.
 #
-# Deploy: copy to /opt/agent-box/restore-drill.sh (chmod 0750, root) alongside
-# agent-box-restore-drill.service/.timer. Runs monthly at 03:40 UTC — after that
+# Deploy on the legacy box under /opt/agent-box with agent-box-restore-drill
+# units, or on a current-layout box under /opt/lares with lares-restore-drill
+# units. Runs monthly at 03:40 UTC — after that
 # night's backup (03:00) has normally finished and before verify (05:00), hours
 # before anyone is awake (06:00 UTC lands in the morning brief's own hour in Oslo
 # summer time, and this script loads dumps into live Postgres right alongside it).
@@ -55,8 +56,19 @@ ENV_FILE="${AGENT_BOX_BACKUP_ENV:-/etc/agent-box/backup.env}"
 # shellcheck source=/dev/null
 source "$ENV_FILE"
 export RESTIC_PASSWORD_FILE
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+fi
 
-DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/agent-box}"
+if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
+  DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/lares}"
+  COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml")
+  DEFAULT_RESTORE_PATHS='/srv/lares/agents /srv/lares/retired /srv/taste'
+else
+  DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/agent-box}"
+  COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml")
+  DEFAULT_RESTORE_PATHS='/srv/lares /opt/agent-box'
+fi
 # The database and role this installation uses. Same overridable names ops/install.sh,
 # ops/update.sh and lib/db.ts read, with the same defaults — an installation that kept the
 # installation-specific database and role names sets PGDATABASE and PGUSER in this script's
@@ -70,7 +82,7 @@ REQUIRED_PATH="${BACKUP_REQUIRED_PATH:-/var/backups/pg}"
 # separated, same idiom as LARES_WORKFLOW_VOLUMES/BACKUP_IGNORED_PATHS elsewhere in
 # this family of scripts — deliberately not an array, so an empty value never trips
 # the "empty array under `set -u`" trap on macOS's bash 3.2.
-DRILL_RESTORE_PATHS="${DRILL_RESTORE_PATHS:-/srv/lares /opt/agent-box}"
+DRILL_RESTORE_PATHS="${DRILL_RESTORE_PATHS:-$DEFAULT_RESTORE_PATHS}"
 # A restored database is allowed to be a LITTLE smaller than live — a table created
 # seconds after last night's dump is not a broken restore — but not dramatically
 # smaller. 90% is a deliberately loose floor; it exists to catch "the dump restored to
@@ -136,7 +148,7 @@ drill_db_name() {
 
 psql_exec_c() {
   local dbname="$1" sql="$2"
-  docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+  docker compose "${COMPOSE[@]}" \
     exec -T db psql -U "$DB_USER" -d "$dbname" -v ON_ERROR_STOP=1 -c "$sql"
 }
 
@@ -244,14 +256,14 @@ SQL
   )
   local recorded=1
   if command -v timeout >/dev/null 2>&1; then
-    if printf '%s\n' "$sql" | timeout 20 docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+    if printf '%s\n' "$sql" | timeout 20 docker compose "${COMPOSE[@]}" \
           exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
     fi
   else
-    if printf '%s\n' "$sql" | docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+    if printf '%s\n' "$sql" | docker compose "${COMPOSE[@]}" \
           exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
@@ -322,10 +334,8 @@ SNAP_ID=$(printf '%s' "$SNAP_OBJ" | grep -o '"short_id":"[^"]*"' | head -1 | cut
 [ -n "$SNAP_ID" ] || fail "no nightly snapshot in the repository at all — there is nothing to rehearse a restore from"
 
 # --- 2. Restore into the scratch directory -------------------------------------------
-# ASSUMPTION (unconfirmed without a live run): `restic restore <id> --target DIR
-# --include /a --include /b` recreates each included path in full under DIR (e.g. the
-# dumps land at "$SCRATCH/var/backups/pg/..."), the way `restic restore` documents
-# itself as doing. Everything below reads from that assumed layout.
+# The 29 September current-layout live drill confirmed that `restic restore`
+# recreates included paths under the scratch target.
 RESTORE_INCLUDES=("$REQUIRED_PATH")
 for p in $DRILL_RESTORE_PATHS; do
   RESTORE_INCLUDES+=("$p")
@@ -353,7 +363,14 @@ dumps=("$DUMP_DIR"/*.dump)
 MISSING_DIRS=""
 for p in $DRILL_RESTORE_PATHS; do
   target_dir="$SCRATCH$p"
-  if [ ! -d "$target_dir" ] || [ -z "$(ls -A "$target_dir" 2>/dev/null)" ]; then
+  # A fresh installation can have empty portable stores (notably /srv/taste).
+  # Still require the directory itself in the snapshot, and reject an empty
+  # restore when the current-layout live directory has since gained data.
+  if [ ! -d "$target_dir" ]; then
+    MISSING_DIRS="$MISSING_DIRS $p"
+  elif [ -z "$(ls -A "$target_dir" 2>/dev/null)" ] && \
+       [ "$p" != /srv/lares/retired ] && \
+       { [ "${LARES_CURRENT_LAYOUT:-0}" != 1 ] || [ ! -d "$p" ] || [ -n "$(ls -A "$p" 2>/dev/null)" ]; }; then
     MISSING_DIRS="$MISSING_DIRS $p"
   fi
 done
@@ -365,7 +382,7 @@ done
 # write. `pg_tables` (not information_schema.tables) so views never inflate the count.
 table_count() {
   local dbname="$1"
-  docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+  docker compose "${COMPOSE[@]}" \
     exec -T db psql -U "$DB_USER" -d "$dbname" -tAc \
     "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')" \
     2>/dev/null | tr -d '\r' | tr -d ' '
@@ -381,10 +398,9 @@ for dumpfile in "${dumps[@]}"; do
   create_drill_db "$drill_db" \
     || fail "could not create scratch database $drill_db for $db — the restore drill cannot proceed (or the computed name failed the drill_ safety check)"
 
-  # ASSUMPTION (unconfirmed without a live run): pg_restore, run through the db
-  # container with no filename argument, reads the custom-format dump from its own
-  # stdin the way its documentation says it does for "no input file name specified".
-  docker compose -f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml" \
+  # The 29 September current-layout drill confirmed that pg_restore reads
+  # custom-format dumps from stdin through the database container.
+  docker compose "${COMPOSE[@]}" \
       exec -T db pg_restore --no-owner -U "$DB_USER" -d "$drill_db" < "$dumpfile" \
     || fail "pg_restore into $drill_db failed for $dumpfile — the archived dump for $db does not restore cleanly"
 
@@ -398,8 +414,12 @@ for dumpfile in "${dumps[@]}"; do
     ''|*[!0-9]*) fail "live database $db returned a non-numeric table count ('$live_count') — treat an unreadable check as failing, never as passing" ;;
   esac
 
-  [ "$drill_count" -ge 1 ] \
-    || fail "restored database $drill_db (from dump $db) has 0 tables — the dump restored to nothing"
+  # Current-layout installations include intentionally empty workflow and
+  # agent databases. Zero is valid only when the corresponding live DB is zero.
+  if [ "$live_count" -gt 0 ]; then
+    [ "$drill_count" -ge 1 ] \
+      || fail "restored database $drill_db (from dump $db) has 0 tables — the dump restored to nothing"
+  fi
 
   threshold=$(( live_count * DRILL_TABLE_TOLERANCE_PCT / 100 ))
   [ "$drill_count" -ge "$threshold" ] \
@@ -408,6 +428,6 @@ done
 
 # --- 5. Record the verdict ------------------------------------------------------------
 DUMP_COUNT=${#dumps[@]}
-OK_MSG="OK — snapshot $SNAP_ID restored into scratch; $DUMP_COUNT database dump(s) loaded and within ${DRILL_TABLE_TOLERANCE_PCT}% of live table counts; $DRILL_RESTORE_PATHS restored non-empty"
+OK_MSG="OK — snapshot $SNAP_ID restored into scratch; $DUMP_COUNT database dump(s) loaded and within ${DRILL_TABLE_TOLERANCE_PCT}% of live table counts; $DRILL_RESTORE_PATHS restored"
 echo "restore-drill: $OK_MSG"
 record_status true "$OK_MSG"

@@ -20,6 +20,8 @@ Lares is an experimental alpha under active development. It is not a promise of 
 
 Use Node.js 24 and pnpm 9.15.0. From the repository root, run `pnpm install --frozen-lockfile`, then `pnpm typecheck`. The test suites use disposable PostgreSQL containers, so Docker must be running. See [PR CI coverage and exclusions](docs/pr-ci.md) before interpreting a green result. Image builds and runtime probes run in CI; build and deployment are separate operations.
 
+The draft [blank Ubuntu install candidate](docs/runbooks/blank-ubuntu-install-candidate.md) is the LAR-50 disposable test procedure. It records the current source and release pin, private credential steps, and gaps that still need proof before distribution as a release install command.
+
 The remaining setup limitations include legacy integration instance bindings and an unproved
 fresh-install conversation path. See the migration runbook before upgrading.
 

@@ -63,7 +63,7 @@ beforeEach(() => {
   binDir = join(dir, "bin"); mkdirSync(binDir);
   prefix = join(dir, "root"); mkdirSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "pnpm", "openssl"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
   stub("id", "echo 0");                                   // running as root
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
@@ -161,9 +161,11 @@ describe("screen one: start fresh, or restore from a backup", () => {
 
   it("asks before anything else, and both answers are on screen one", () => {
     const r = run(["--dry-run"], { LARES_ASSUME_YES: "" });
+    expect(r.code).toBe(0);
     const firstScreen = r.stdout.split("\n").slice(0, 12).join("\n");
     expect(firstScreen).toMatch(/start fresh/i);
     expect(firstScreen).toMatch(/restore/i);
+    expect(readdirSync(prefix)).toEqual([]);
   });
 
   it("refuses a restore it cannot read, and never half-restores", () => {

@@ -17,11 +17,24 @@ function row(status: ConnectionRowDTO["status"]): ConnectionRowDTO {
     detail: "detail",
     lastUsed: null,
     usedBy: [],
+    declaredFor: [],
     accounts: [],
   };
 }
 
 describe("ConnectionsTable render path", () => {
+  it("does not present catalogue consumers as running users of a fresh installation", () => {
+    const html = renderToStaticMarkup(<ConnectionsTable rows={[{
+      ...row("live"),
+      usedBy: ["console-proof"],
+      declaredFor: ["email-watcher", "notion-sync"],
+    }]} />);
+    expect(html).toContain("Agent access: console-proof");
+    expect(html).toContain("Built-in consumers in the catalogue: email-watcher, notion-sync");
+    expect(html).toContain("This does not confirm they are running here.");
+    expect(html).not.toContain("Used by email-watcher");
+  });
+
   it("renders the raw 'live' label for a live row, and never the job-vocabulary word 'done'", () => {
     const html = renderToStaticMarkup(<ConnectionsTable rows={[row("live")]} />);
     expect(html).toContain("live");

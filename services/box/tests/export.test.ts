@@ -181,6 +181,24 @@ it("removes the work dir after a successful export", () => {
   expect(readdirSync(workdirRoot)).toEqual([]);
 });
 
+it("keeps a verified export when another export runs on the same day", () => {
+  writeDockerStub(["dbone"]);
+  const first = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(first.status).toBe(0);
+  const firstPath = join(exportDir, `lares-export-${todayUTC()}.tar`);
+  const firstBytes = readFileSync(firstPath);
+
+  writeFileSync(join(dataTaste, "notes.txt"), "newer preferences");
+  const second = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(second.status).toBe(0);
+  const secondPath = join(exportDir, `lares-export-${todayUTC()}-2.tar`);
+  expect(readFileSync(firstPath)).toEqual(firstBytes);
+  expect(existsSync(secondPath)).toBe(true);
+  expect(readFileSync(secondPath)).not.toEqual(firstBytes);
+  expect(readdirSync(exportDir).sort()).toEqual([firstPath, secondPath].map((path) => path.split("/").at(-1)!).sort());
+  expect(readdirSync(workdirRoot)).toEqual([]);
+});
+
 it("fails loudly when a database dump fails, and leaves no archive or work dir behind", () => {
   writeDockerStub(["dbone", "dbtwo"], "dbtwo");
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
@@ -234,9 +252,20 @@ it("refuses a nested *.age file found deeper inside a data path, without exporti
   expect(readdirSync(workdirRoot)).toEqual([]);
 });
 
+it("refuses a nested secrets directory on the current installation layout", () => {
+  writeDockerStub(["dbone"]);
+  mkdirSync(join(dataLares, "secrets"));
+  writeFileSync(join(dataLares, "secrets", "agent-gateway-key"), "fixture-only");
+  const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
+  expect(result.status).not.toBe(0);
+  expect(result.stderr).toContain("secrets");
+  expect(existsSync(exportDir) ? readdirSync(exportDir) : []).toEqual([]);
+});
+
 it("contains no network call and no push", () => {
   const script = readFileSync(SCRIPT, "utf8");
   expect(/curl|wget|git\s+push|scp|rsync/.test(script)).toBe(false);
+  expect(script).not.toContain("datname<>'postgres'");
 });
 
 // "lares" is the engine's own Postgres role name (used the same way throughout

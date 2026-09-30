@@ -37,14 +37,14 @@ export function DerivePlaceNames() {
           })
         }
       >
-        {pending ? "Fyller inn …" : "Fyll inn by og land"}
+        {pending ? "Filling in…" : "Fill in city and country"}
       </button>
       {error && <p className="mono" style={{ color: "var(--bad)", fontSize: 12, marginTop: 8 }}>{error}</p>}
       {result && (
         <p className="mono" style={{ fontSize: 12, marginTop: 8, color: "var(--ok)" }}>
-          {result.named} fikk by og land
-          {result.alreadyNamed > 0 && `, ${result.alreadyNamed} hadde det alt`}
-          {result.noPin > 0 && `, ${result.noPin} mangler koordinater`}.
+          {result.named} received a city and country
+          {result.alreadyNamed > 0 && `, ${result.alreadyNamed} already had them`}
+          {result.noPin > 0 && `, ${result.noPin} have no coordinates`}.
         </p>
       )}
     </div>

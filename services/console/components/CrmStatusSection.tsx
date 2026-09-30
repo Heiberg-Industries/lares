@@ -59,7 +59,7 @@ export function CrmStatusSection({ status }: { status: CrmStatusDTO }) {
   const now = new Date();
   return (
     <>
-      <h2 className="mono" style={{ fontSize: 14, marginTop: 24 }}>
+      <h2 className="lares-section-title">
         CRM mailbox sync
         {!status.unavailable && status.at && (
           <span style={{ color: "var(--mist)", fontWeight: 400 }}>

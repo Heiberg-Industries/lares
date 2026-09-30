@@ -146,9 +146,9 @@ export function settledSay(part: Extract<EveMessagePart, { type: "dynamic-tool" 
 
 const cardStyle = {
   border: "1px solid var(--rule)",
-  borderRadius: 4,
+  borderRadius: 12,
   background: "var(--card)",
-  padding: 12,
+  padding: 20,
   margin: "8px 0",
 } as const;
 
@@ -254,6 +254,15 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState) {
       />
     );
   }
+  if (part.type === "dynamic-tool") {
+    const outcome = part.state === "output-error" ? " failed"
+      : part.state === "output-available" ? " completed" : " is running…";
+    return (
+      <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 12, margin: "4px 0" }}>
+        {part.toolName}{outcome}
+      </p>
+    );
+  }
   return (
     <p key={key} className="mono" style={{ color: "var(--mist)", fontSize: 13, margin: "4px 0" }}>
       {UNSUPPORTED_PART}
@@ -264,7 +273,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState) {
 function TranscriptMessage({ message, cards }: { message: EveMessage; cards: CardState }) {
   const who = message.role === "user" ? "You" : "Agent";
   return (
-    <article style={{ marginBottom: 16 }}>
+    <article className={`lares-message ${message.role === "user" ? "lares-message-user" : "lares-message-agent"}`}>
       <div
         className="mono"
         style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--mist)", marginBottom: 4 }}
@@ -283,7 +292,13 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
   return (
     <div>
       {messages.length === 0 ? (
-        <p style={{ color: "var(--mist)" }}>Say something to start.</p>
+        <p style={{ color: "var(--mist)" }}>
+          {status === "resuming"
+            ? "Reconnecting to this conversation…"
+            : status === "error"
+              ? "This conversation could not be reopened. Start a new chat to continue."
+              : "Say something to start."}
+        </p>
       ) : (
         messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} />)
       )}

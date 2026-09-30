@@ -12,14 +12,14 @@ describe("PermissionsBoard (agent page)", () => {
     <PermissionsBoard detail={{ name: "helper", role: "assistant", status: "idle", capabilities: [{ name: "atlas", scope, defaultLevel: "gated" }] }} />,
   );
   it("a write-with-confirm integration gets the switch", () => {
-    expect(html("write-with-confirm")).toContain("✋");
+    expect(html("write-with-confirm")).toContain('aria-label="atlas permission"');
   });
   it("a plain-write integration gets no switch, and says it acts without asking", () => {
-    expect(html("write")).not.toContain("✋");
+    expect(html("write")).not.toContain('aria-label="atlas permission"');
     expect(html("write")).toContain("acts without asking — its definition grants a plain write");
   });
   it("a read integration gets no switch, and says reads are allowed while granted", () => {
-    expect(html("read")).not.toContain("✋");
+    expect(html("read")).not.toContain('aria-label="atlas permission"');
     expect(html("read")).toContain("reads — allowed while granted");
   });
 });

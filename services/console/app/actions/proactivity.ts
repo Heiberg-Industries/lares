@@ -24,7 +24,7 @@ import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { pool } from "../../lib/db";
 import { verify } from "../../lib/auth";
-import { AGENTS, checkCeilings, ownerId, readDoors, validateQuietHours } from "../../lib/proactivity";
+import { checkCeilings, ownerId, readDoors, readProactiveAgents, validateQuietHours } from "../../lib/proactivity";
 import type { Ceilings } from "../../lib/proactivity";
 import { isBriefLanguageCode } from "../../lib/brief-settings";
 import { isOwnerFacingSchedule, validateHours } from "../../lib/schedule-settings";
@@ -36,8 +36,6 @@ async function requireUser(): Promise<string> {
   if (!email) throw new Error("unauthenticated");
   return email;
 }
-
-const AGENT_SCOPES: readonly string[] = ["*", ...AGENTS];
 
 /** A door scope must be `*` or a door this install has actually used. The gate matches `door`
  *  EXACTLY (`telegram:<chatId>`), so a typed-in door nobody speaks through would be a knob that
@@ -57,7 +55,7 @@ async function requireDoor(owner: string, door: string): Promise<SaveResult> {
  */
 export async function saveDnd(input: { agent: string; dnd: boolean }): Promise<SaveResult> {
   const email = await requireUser();
-  if (!AGENT_SCOPES.includes(input.agent)) {
+  if (input.agent !== "*" && !(await readProactiveAgents()).includes(input.agent)) {
     return { ok: false, message: `Unknown agent scope ${JSON.stringify(input.agent)}.` };
   }
   if (typeof input.dnd !== "boolean") return { ok: false, message: "Do not disturb must be on or off." };

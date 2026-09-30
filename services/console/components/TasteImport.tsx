@@ -1,5 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useTransition } from "react";
+import { Button } from "@lares/ui/primitives/button";
+import { Input } from "@lares/ui/primitives/input";
 
 import {
   commitPaste,
@@ -11,26 +13,6 @@ import {
   type ListPreview,
   type UploadedList,
 } from "../app/actions/taste";
-
-const label = { display: "block", fontSize: 12, color: "var(--mist)", marginBottom: 4 } as const;
-const field = {
-  width: "100%",
-  padding: "6px 8px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-} as const;
-const button = {
-  padding: "6px 12px",
-  fontSize: 13,
-  border: "1px solid var(--rule)",
-  borderRadius: 3,
-  background: "transparent",
-  color: "var(--ink)",
-  cursor: "pointer",
-} as const;
 
 /**
  * Google Maps saved lists. A re-upload is a DIFF of that list — added, updated, removed — shown
@@ -82,33 +64,33 @@ export function TakeoutImport() {
   return (
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div>
-        <label style={label} htmlFor="taste-csv">Takeout-CSV (flere om gangen går fint)</label>
-        <input
+        <label className="lares-field-label" htmlFor="taste-csv">Google Takeout CSV files</label>
+        <Input
           id="taste-csv"
           type="file"
           accept=".csv,text/csv"
           multiple
-          style={{ ...field, padding: 4 }}
+          className="lares-field"
           onChange={(e) => void onFiles(e.target.files)}
         />
       </div>
 
       {lists.length > 0 && (
         <table className="card" style={{ marginTop: 8 }}>
-          <thead><tr><th>Listenavn</th><th>By (valgfritt)</th><th>Land (valgfritt)</th><th></th></tr></thead>
+          <thead><tr><th>List name</th><th>City (optional)</th><th>Country (optional)</th><th></th></tr></thead>
           <tbody>
             {lists.map((l, i) => (
               <tr key={i}>
-                <td><input style={field} value={l.listName} onChange={(e) => edit(i, { listName: e.target.value })} /></td>
+                <td><Input className="lares-field" value={l.listName} onChange={(e) => edit(i, { listName: e.target.value })} /></td>
                 <td>
-                  <input style={field} value={l.city ?? ""} placeholder="New York"
+                  <Input className="lares-field" value={l.city ?? ""} placeholder="New York"
                     onChange={(e) => edit(i, { city: e.target.value })} />
                 </td>
                 <td>
-                  <input style={field} value={l.country ?? ""} placeholder="USA"
+                  <Input className="lares-field" value={l.country ?? ""} placeholder="USA"
                     onChange={(e) => edit(i, { country: e.target.value })} />
                 </td>
-                <td style={{ color: "var(--mist)", fontSize: 12 }}>{l.csvText.split("\n").length - 1} rader</td>
+                <td style={{ color: "var(--mist)", fontSize: 12 }}>{l.csvText.split("\n").length - 1} rows</td>
               </tr>
             ))}
           </tbody>
@@ -116,10 +98,10 @@ export function TakeoutImport() {
       )}
 
       {lists.length > 0 && (
-        <button style={{ ...button, marginTop: 8 }} disabled={pending}
+        <Button  disabled={pending}
           onClick={() => run(async () => setPreview(await previewTakeout({ lists })))}>
-          Vis hva som endres
-        </button>
+          Preview changes
+        </Button>
       )}
 
       {error && <p className="mono" style={{ marginTop: 8, fontSize: 12, color: "var(--bad)" }}>✕ {error}</p>}
@@ -127,7 +109,7 @@ export function TakeoutImport() {
       {preview && (
         <div style={{ marginTop: 12 }}>
           <table className="card">
-            <thead><tr><th>Liste</th><th>+ nye</th><th>~ endret</th><th>− fjernet</th><th>Koordinater</th></tr></thead>
+            <thead><tr><th>List</th><th>+ added</th><th>~ updated</th><th>− removed</th><th>Coordinates</th></tr></thead>
             <tbody>
               {preview.map((p) => (
                 <tr key={p.listName}>
@@ -136,9 +118,9 @@ export function TakeoutImport() {
                   <td>{p.updated}</td>
                   <td style={p.removed > 0 ? { color: "var(--bad)" } : undefined}>{p.removed}</td>
                   <td style={{ color: "var(--mist)", fontSize: 12 }}>
-                    {p.withCoords} fra fila
-                    {p.keepsCoords > 0 && `, ${p.keepsCoords} beholdes`}
-                    {p.needsLookup > 0 && `, ${p.needsLookup} må slås opp`}
+                    {p.withCoords} from file
+                    {p.keepsCoords > 0 && `, ${p.keepsCoords} retained`}
+                    {p.needsLookup > 0 && `, ${p.needsLookup} need lookup`}
                   </td>
                 </tr>
               ))}
@@ -146,14 +128,14 @@ export function TakeoutImport() {
           </table>
           {removedNames.length > 0 && (
             <p style={{ fontSize: 12, marginTop: 8, color: "var(--bad)" }}>
-              Fjernes helt: {removedNames.slice(0, 12).join(", ")}
+              Removed from these lists: {removedNames.slice(0, 12).join(", ")}
               {removedNames.length > 12 && ` … (+${removedNames.length - 12})`}
             </p>
           )}
-          <button style={{ ...button, marginTop: 8 }} disabled={pending}
+          <Button  disabled={pending}
             onClick={() => run(async () => { setResults(await commitTakeout({ lists })); setPreview(null); })}>
-            Lagre endringene
-          </button>
+            Save changes
+          </Button>
         </div>
       )}
 
@@ -185,20 +167,19 @@ export function ListCountry({ lists }: { lists: string[] }) {
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div style={{ minWidth: 220 }}>
-          <label style={label} htmlFor="country-list">Liste</label>
-          <select id="country-list" style={field} value={listName}
+          <label className="lares-field-label" htmlFor="country-list">List</label>
+          <select id="country-list" className="lares-field" value={listName}
             onChange={(e) => { setListName(e.target.value); setResult(null); }}>
-            <option value="">velg en liste</option>
+            <option value="">Choose a list</option>
             {lists.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
         </div>
         <div style={{ minWidth: 160 }}>
-          <label style={label} htmlFor="country-value">Land</label>
-          <input id="country-value" style={field} value={country} placeholder="Danmark"
+          <label className="lares-field-label" htmlFor="country-value">Country</label>
+          <Input id="country-value" className="lares-field" value={country} placeholder="Denmark"
             onChange={(e) => { setCountry(e.target.value); setResult(null); }} />
         </div>
-        <button
-          style={button}
+        <Button
           disabled={pending || listName === "" || country.trim() === ""}
           onClick={() => {
             setError("");
@@ -212,14 +193,14 @@ export function ListCountry({ lists }: { lists: string[] }) {
             });
           }}
         >
-          Sett land
-        </button>
+          Set country
+        </Button>
         {error && <span className="mono" style={{ fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
         {result && (
           <span className="mono" style={{ fontSize: 12, color: "var(--ok)" }}>
-            ✓ {result.listName}: {result.changed} oppdatert
-            {result.alreadySet > 0 && `, ${result.alreadySet} hadde det alt`}
-            {result.changed === 0 && result.alreadySet === 0 && " — listen har ingen oppføringer"}
+            ✓ {result.listName}: {result.changed} updated
+            {result.alreadySet > 0 && `, ${result.alreadySet} already set`}
+            {result.changed === 0 && result.alreadySet === 0 && " — this list has no entries"}
           </span>
         )}
       </div>
@@ -245,7 +226,7 @@ export function PasteImport() {
     start(async () => {
       try {
         const r = await commitPaste({ domain, name, text, city, country });
-        setMessage(`${r.added} nye, ${r.replaced} oppdatert`);
+        setMessage(`${r.added} added, ${r.replaced} updated`);
         setText("");
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -257,49 +238,49 @@ export function PasteImport() {
     <div className="card" style={{ padding: 12, marginTop: 8 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div>
-          <label style={label} htmlFor="paste-domain">Hvor</label>
-          <select id="paste-domain" style={field} value={domain} onChange={(e) => setDomain(e.target.value)}>
-            <option value="music">music — spillelister, spor</option>
-            <option value="food">food — retter, matnotater</option>
-            <option value="notes">notes — alt annet</option>
-            <option value="places">places — steder (én per linje)</option>
+          <label className="lares-field-label" htmlFor="paste-domain">Category</label>
+          <select id="paste-domain" className="lares-field" value={domain} onChange={(e) => setDomain(e.target.value)}>
+            <option value="music">music — playlists and tracks</option>
+            <option value="food">food — dishes and notes</option>
+            <option value="notes">notes — everything else</option>
+            <option value="places">places — one place per line</option>
           </select>
         </div>
         <div style={{ minWidth: 200 }}>
-          <label style={label} htmlFor="paste-name">Listenavn</label>
-          <input id="paste-name" style={field} value={name} placeholder="Sommer 2026"
+          <label className="lares-field-label" htmlFor="paste-name">List name</label>
+          <Input id="paste-name" className="lares-field" value={name} placeholder="Summer 2026"
             onChange={(e) => setName(e.target.value)} />
         </div>
         {domain === "places" && (
           <div style={{ minWidth: 160 }}>
-            <label style={label} htmlFor="paste-city">By (valgfritt)</label>
-            <input id="paste-city" style={field} value={city} placeholder="New York"
+            <label className="lares-field-label" htmlFor="paste-city">City (optional)</label>
+            <Input id="paste-city" className="lares-field" value={city} placeholder="New York"
               onChange={(e) => setCity(e.target.value)} />
           </div>
         )}
         {domain === "places" && (
           <div style={{ minWidth: 140 }}>
-            <label style={label} htmlFor="paste-country">Land (valgfritt)</label>
-            <input id="paste-country" style={field} value={country} placeholder="USA"
+            <label className="lares-field-label" htmlFor="paste-country">Country (optional)</label>
+            <Input id="paste-country" className="lares-field" value={country} placeholder="USA"
               onChange={(e) => setCountry(e.target.value)} />
           </div>
         )}
       </div>
       {domain === "places" && (
         <p style={{ color: "var(--mist)", fontSize: 12, marginTop: 8 }}>
-          Limte steder blir én oppføring hver, uten koordinater — sett by, så finner Marcel dem på turen.
+          Each pasted place becomes one entry without coordinates. Add a city to help your agents find it later.
         </p>
       )}
       <textarea
-        style={{ ...field, marginTop: 8, minHeight: 120, fontFamily: "inherit" }}
+        className="lares-field lares-preferences-paste"
         value={text}
         placeholder={"- Nick Drake — Pink Moon\n- Alice Coltrane — Turiya and Ramakrishna"}
         onChange={(e) => setText(e.target.value)}
       />
       <div style={{ marginTop: 8 }}>
-        <button style={button} disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
-          Lagre
-        </button>
+        <Button  disabled={pending || text.trim() === "" || name.trim() === ""} onClick={onSave}>
+          Save
+        </Button>
         {error && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--bad)" }}>✕ {error}</span>}
         {message && <span className="mono" style={{ marginLeft: 12, fontSize: 12, color: "var(--good, #2a7)" }}>✓ {message}</span>}
       </div>
@@ -328,47 +309,38 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
   const [showApprox, setShowApprox] = useState(false);
 
   return (
-    <div
-      ref={ref}
-      style={{
-        marginTop: 12,
-        padding: "10px 12px",
-        border: "1px solid var(--ok)",
-        borderRadius: 3,
-        background: "color-mix(in srgb, var(--ok) 8%, transparent)",
-      }}
-    >
+    <div ref={ref} className="lares-result-card">
       <p className="mono" style={{ fontSize: 13, color: "var(--ok)" }}>
-        ✓ Lagret {results.length} {results.length === 1 ? "liste" : "lister"}: +{sum((r) => r.added)} nye,{" "}
-        ~{sum((r) => r.changed)} endret, −{sum((r) => r.removed)} fjernet
-        {sum((r) => r.geocoded) > 0 && `, ${sum((r) => r.geocoded)} slått opp`}
-        {approximate.length > 0 && `, ${approximate.length} omtrentlige`}
-        {unresolved.length > 0 && `, ${unresolved.length} uten koordinater`}
+        ✓ Saved {results.length} {results.length === 1 ? "list" : "lists"}: +{sum((r) => r.added)} added,{" "}
+        ~{sum((r) => r.changed)} changed, −{sum((r) => r.removed)} removed
+        {sum((r) => r.geocoded) > 0 && `, ${sum((r) => r.geocoded)} located`}
+        {approximate.length > 0 && `, ${approximate.length} approximate`}
+        {unresolved.length > 0 && `, ${unresolved.length} without coordinates`}
       </p>
 
       {results.map((r) => (
         <p key={r.listName} className="mono" style={{ fontSize: 12, marginTop: 4, color: "var(--mist)" }}>
           {r.listName}: +{r.added} ~{r.updated} −{r.removed}
           {r.updated > 0 && (r.changed > 0
-            ? ` · ${r.changed} av ${r.updated} var faktisk endret`
-            : ` · ingen av de ${r.updated} var endret`)}
-          {r.keptCoordinates > 0 && ` · ${r.keptCoordinates} beholdt koordinater`}
-          {r.geocoded > 0 && ` · ${r.geocoded} slått opp`}
+            ? ` · ${r.changed} of ${r.updated} actually changed`
+            : ` · none of the ${r.updated} changed`)}
+          {r.keptCoordinates > 0 && ` · ${r.keptCoordinates} retained coordinates`}
+          {r.geocoded > 0 && ` · ${r.geocoded} located`}
         </p>
       ))}
 
       {approximate.length > 0 && (
         <div style={{ marginTop: 6 }}>
-          <button
+          <Button
             type="button"
             onClick={() => setShowApprox((v) => !v)}
-            style={{ ...button, padding: "2px 8px", fontSize: 12 }}
+            size="sm" variant="outline"
           >
-            {showApprox ? "Skjul" : "Vis"} de {approximate.length} omtrentlige
-          </button>
+            {showApprox ? "Hide" : "Show"} {approximate.length} approximate locations
+          </Button>
           {showApprox && (
             <p style={{ fontSize: 12, marginTop: 4, color: "var(--mist)" }}>
-              Plassert fra lenken sin egen posisjon, ikke bekreftet med treff:{" "}
+              Placed from the link location without a confirmed match:{" "}
               {approximate.map((u) => `${u.name} (${u.reason})`).join(", ")}
             </p>
           )}
@@ -377,7 +349,7 @@ function CommitSummary({ results }: { results: CommitResult[] }) {
 
       {unresolved.length > 0 && (
         <p style={{ fontSize: 12, marginTop: 6, color: "var(--mist)" }}>
-          Uten koordinater i det hele tatt (gjettes aldri):{" "}
+          No coordinates available (never guessed):{" "}
           {unresolved.slice(0, 12).map((u) => `${u.name} (${u.reason})`).join(", ")}
           {unresolved.length > 12 && ` … (+${unresolved.length - 12})`}
         </p>

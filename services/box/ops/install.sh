@@ -452,13 +452,28 @@ esac
 # --- 4. Docker ---------------------------------------------------------------------------
 if ! command -v docker >/dev/null 2>&1; then
   problem "docker is not installed." \
-    "install it from your distribution's own packages (on Ubuntu: apt-get install -y docker.io docker-compose-plugin), then run this again."
+    "install it from your distribution's own packages (on Ubuntu 24.04: apt-get install -y docker.io docker-compose-v2), then run this again."
 elif ! docker compose version >/dev/null 2>&1; then
   problem "'docker compose' is not available (docker is installed, but the compose plugin is not)." \
-    "install the compose plugin (apt-get install -y docker-compose-plugin), then run this again."
+    "install the Compose v2 package (apt-get install -y docker-compose-v2), then run this again."
 fi
 
-# --- 5. ports 80 and 443 ------------------------------------------------------------------
+# --- 5. host tools used later by the real install -----------------------------------------
+# render-stack, migrations and first-owner run from this checkout through pnpm. Check them
+# during the dry run, before generating secrets or starting containers.
+if ! command -v node >/dev/null 2>&1; then
+  problem "Node.js is not installed; this installer needs Node.js 24 on the host." \
+    "install Node.js 24, then run pnpm install --frozen-lockfile in the Lares checkout and retry."
+fi
+if ! command -v pnpm >/dev/null 2>&1; then
+  problem "pnpm is not installed; this installer needs pnpm 9.15.0 on the host." \
+    "install pnpm 9.15.0, run pnpm install --frozen-lockfile in the Lares checkout, and retry."
+elif [ ! -x "$BOX_DIR/node_modules/.bin/tsx" ]; then
+  problem "the Lares checkout's box dependencies are not installed." \
+    "run pnpm install --frozen-lockfile from the Lares repository root, then retry."
+fi
+
+# --- 6. ports 80 and 443 ------------------------------------------------------------------
 SS_OUT=$(ss -ltn 2>/dev/null) || SS_OUT=""
 BLOCKED=$(printf '%s\n' "$SS_OUT" | awk '{ print $4 }' | grep -E ':(80|443)$' | tr '\n' ' ') || BLOCKED=""
 if [ -n "$BLOCKED" ]; then
@@ -474,7 +489,7 @@ if [ -n "$BLOCKED" ]; then
   fi
 fi
 
-# --- 6. an existing installation ----------------------------------------------------------
+# --- 7. an existing installation ----------------------------------------------------------
 # Found, not fixed: a partial install is reported as what it is, never silently repaired
 # by this slice.
 REPAIR_MODE=0
@@ -489,7 +504,7 @@ if [ "$REPAIR_MODE" -eq 0 ]; then
   say "this box has nothing here yet. Lares can start fresh, or check a backup archive first (docs/runbooks/export-and-teardown.md) so you can restore it by hand."
   say "  1) start fresh (the default)"
   say "  2) check a backup archive — or pass --restore <archive> next time to skip this question"
-  if [ "$ASSUME_YES" != "1" ]; then
+  if [ "$ASSUME_YES" != "1" ] && [ "$DRY_RUN" -eq 0 ]; then
     if [ -t 0 ]; then
       printf 'install: start fresh, or check a backup archive? [F/r] ' >&2
       IFS= read -r SCREEN_ONE_ANSWER || SCREEN_ONE_ANSWER=""
@@ -507,6 +522,13 @@ if [ "$REPAIR_MODE" -eq 0 ]; then
       die "this needs to know whether to start fresh or check a backup archive before doing anything else, and there is no terminal to ask. Run again with --yes to start fresh, or --restore <archive> to check a backup." "$EX_USAGE"
     fi
   fi
+fi
+
+# The owner may have saved OAuth credentials before running this installer. Validate the
+# public client ID while preflight can still refuse without writing installation secrets.
+if [ "$DRY_RUN" -eq 0 ] && [ -f "$PREFIX/etc/lares/console-oauth.env" ] && \
+   ! grep -Eq '^GOOGLE_CLIENT_ID_CONSOLE=[0-9]+-[A-Za-z0-9_-]+[.]apps[.]googleusercontent[.]com$' "$PREFIX/etc/lares/console-oauth.env"; then
+  problem "the Google console client ID is malformed" "save only the client_id value ending in .apps.googleusercontent.com in $PREFIX/etc/lares/console-oauth.env, without quotes or adjacent JSON fields"
 fi
 
 # --- report --------------------------------------------------------------------------------
@@ -806,7 +828,9 @@ validate_name() {
 validate_model_key() {
   local v="$1"
   [ -n "$v" ] || return 1
-  case "$v" in *[[:space:]]*) return 1 ;; esac
+  # Browser consoles can insert ESC before pasted characters. Those bytes are
+  # invisible at this prompt but make the upstream HTTP auth header invalid.
+  case "$v" in *[[:space:]]*|*[[:cntrl:]]*) return 1 ;; esac
   return 0
 }
 
@@ -936,6 +960,14 @@ wizard_already_done() {
 # later run would mistake for a finished one.
 write_installation_env() {
   local tmp="$INSTALL_ENV.partial"
+  local owner_id
+  if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+    [ -n "$OWNER_ID_FLAG" ] || die "--owner-id was given as an empty id. Nothing else was changed." "$EX_USAGE"
+    owner_id="$OWNER_ID_FLAG"
+  else
+    owner_id=$(derive_owner_id "$LARES_OWNER_EMAIL")
+    [ -n "$owner_id" ] || die "could not derive an owner id from '$LARES_OWNER_EMAIL'; use --owner-id. Nothing else was changed." "$EX_USAGE"
+  fi
   do_or_say mkdir -p "$(dirname "$INSTALL_ENV")"
   rm -f "$tmp"
   {
@@ -945,6 +977,7 @@ write_installation_env() {
     env_line LARES_DOMAIN "$LARES_DOMAIN"
     env_line LARES_OWNER_EMAIL "$LARES_OWNER_EMAIL"
     env_line LARES_OWNER_NAME "$LARES_OWNER_NAME"
+    env_line LARES_OWNER_ID "$owner_id"
     env_line OWNER_HOME_TZ "$OWNER_HOME_TZ"
     printf '%s\n' "# CONSOLE_ALLOWED_EMAILS is comma-separated; add more addresses by editing"
     printf '%s\n' "# this file and rerunning the installer — Lares never assumes there is only"
@@ -985,7 +1018,7 @@ capture_model_key() {
     key=$(cat "$MODEL_KEY_FILE_FLAG")
     if ! validate_model_key "$key"; then
       key=""
-      die "the file given with --model-key-file does not hold a usable key: it must be one line, non-empty, with no spaces or tabs inside it." "$EX_USAGE"
+      die "the file given with --model-key-file does not hold a usable key: it must be one line, non-empty, with no whitespace or control characters inside it." "$EX_USAGE"
     fi
   else
     while :; do
@@ -1010,7 +1043,7 @@ capture_model_key() {
         break
       fi
       key=""
-      say "that does not look like a key: it must be one line, non-empty, with no spaces or tabs inside it. Try again."
+      say "that does not look like a key: it must be one line, non-empty, with no whitespace or control characters inside it. Try again."
     done
   fi
 
@@ -1045,11 +1078,13 @@ run_wizard() {
 
     # Time zone (owner decision C4): read from the server, never asked.
     OWNER_HOME_TZ=""
-    if [ -r /etc/timezone ]; then
-      OWNER_HOME_TZ=$(cat /etc/timezone 2>/dev/null | tr -d '[:space:]') || OWNER_HOME_TZ=""
-    fi
-    if [ -z "$OWNER_HOME_TZ" ] && command -v timedatectl >/dev/null 2>&1; then
+    # timedatectl follows the active /etc/localtime link. On Ubuntu, /etc/timezone can
+    # remain stale after set-timezone, so consult it only when timedatectl is unavailable.
+    if command -v timedatectl >/dev/null 2>&1; then
       OWNER_HOME_TZ=$(timedatectl show -p Timezone --value 2>/dev/null) || OWNER_HOME_TZ=""
+    fi
+    if [ -z "$OWNER_HOME_TZ" ] && [ -r /etc/timezone ]; then
+      OWNER_HOME_TZ=$(cat /etc/timezone 2>/dev/null | tr -d '[:space:]') || OWNER_HOME_TZ=""
     fi
 
     write_installation_env
@@ -1094,15 +1129,26 @@ run_stack() {
   local gateway_start="$PREFIX/etc/lares/gateway-start.sh"
   local caddy_data="$PREFIX/var/lib/lares/caddy"
   local db_data="$PREFIX/var/lib/lares/postgres"
+  local taste_dir="$PREFIX/srv/taste"
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
-  local domain allowed_emails model_alias provider_model tmp tries=0 existing
+  local domain allowed_emails model_alias provider_model owner_id owner_home_tz tmp tries=0 existing
 
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the stack cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
   allowed_emails=$(read_setting CONSOLE_ALLOWED_EMAILS "$INSTALL_ENV")
   [ -n "$allowed_emails" ] || die "the console allowed e-mails are not written down in $INSTALL_ENV, so access cannot be restricted. Nothing has been brought up." "$EX_REFUSED"
+  owner_id=$(read_setting LARES_OWNER_ID "$INSTALL_ENV")
+  if [ -z "$owner_id" ]; then
+    if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+      owner_id="$OWNER_ID_FLAG"
+    else
+      owner_id=$(derive_owner_id "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")")
+    fi
+  fi
+  [ -n "$owner_id" ] || die "the owner's id cannot be resolved, so the console cannot be configured. Nothing has been brought up." "$EX_REFUSED"
+  owner_home_tz=$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")
 
   # F7a-2: the two values the gateway's own config is rendered from (lib/gateway-config.ts),
   # read back exactly as LARES_DOMAIN is above — never re-derived, never defaulted here.
@@ -1112,6 +1158,10 @@ run_stack() {
   [ -n "$provider_model" ] || die "the model is not written down in $INSTALL_ENV, so the gateway's configuration cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
 
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
+  [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
+  do_or_say mkdir -p "$taste_dir"
+  do_or_say chown 10001:10001 "$taste_dir"
+  do_or_say chmod 0750 "$taste_dir"
 
   # Rendered to a NEIGHBOURING name and moved into place, the same discipline every other file
   # this script writes gets: an interrupted run leaves a .partial the next run overwrites,
@@ -1121,7 +1171,7 @@ run_stack() {
   if ! pnpm -C "$BOX_DIR" render-stack \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares"; then
+      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1429,7 +1479,10 @@ run_first_owner() {
   owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
   owner_name=$(read_setting LARES_OWNER_NAME "$INSTALL_ENV")
 
-  if [ "$OWNER_ID_GIVEN" -eq 1 ]; then
+  owner_id=$(read_setting LARES_OWNER_ID "$INSTALL_ENV")
+  if [ -n "$owner_id" ]; then
+    : # The wizard recorded the exact identity before the stack was rendered.
+  elif [ "$OWNER_ID_GIVEN" -eq 1 ]; then
     if [ -z "$OWNER_ID_FLAG" ]; then
       die "--owner-id was given as an empty id. Name one, or leave the flag out to have it derived from the e-mail address. Nothing else was changed." "$EX_USAGE"
     fi
