@@ -1,5 +1,9 @@
 # Console / LAR-50 handoff — 29 September 2026
 
+> **Superseded, 30 September 2026.** PR #32 was merged as `1f555f8`, LAR-50 is
+> Done and the disposable test server was removed. This document is kept as a
+> record; [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md) has the current state.
+
 ## Post-rebuild continuation
 
 The closing checkpoint below is historical. The owner approved and completed
