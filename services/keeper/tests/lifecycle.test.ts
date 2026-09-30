@@ -354,3 +354,31 @@ it('owned retire/delete/recreate rotates runtime control while ordinary reconcil
   expect(attachSession).not.toHaveBeenCalled();
  }finally{vi.unstubAllEnvs();}
 });
+// LAR-104 — CURRENT BEHAVIOUR, pinned on purpose (not a statement of what is wanted). Three agents
+// hold retired capability names; converting ONE of them to the new name fails the shared allow-list
+// rebuild on ANOTHER agent's grant, and the catch in saved() stops the agent being saved. When the
+// fix lands (see LAR-104), flip the two marked expectations; the rest stays.
+it('LAR-104 current behaviour: re-saving one of three old-style agents marks it pending and stops it',async()=>{
+ const names=['bookkeeper','ledger','scribe'];
+ config.runtime.gatewayKeys={bookkeeper:join(root,'secrets','key'),ledger:join(root,'secrets','key-ledger'),scribe:join(root,'secrets','key-scribe')};
+ const make=(name:string,grants:any[])=>({...definition,name,grants});
+ const l=lifecycle();
+ for(const n of names){
+  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'test',$2::jsonb,now(),'valid') ON CONFLICT(name) DO NOTHING",[n,JSON.stringify(make(n,[]))]);
+  await l.create(n,make(n,[]));
+ }
+ // The server as it is on the deploy night: every stored definition still spells a retired name.
+ for(const [n,cap] of [['bookkeeper','brain'],['ledger','atlas'],['scribe','memory']])
+  await pool.query("UPDATE agent_definitions SET definition=$2::jsonb WHERE name=$1",[n,JSON.stringify(make(n,[{capability:cap,scope:'read'}]))]);
+ events=[];
+ // The owner converts bookkeeper to the new name; ledger and scribe are still old-style.
+ const converted=make('bookkeeper',[{capability:'vault',scope:'read',areas:['shared']}]);
+ await expect(l.saved('bookkeeper',converted)).rejects.toThrow('Unknown egress capability: atlas');
+ // EXPECTATION 1 (today): the agent is stopped. Wanted after the fix: no stop, or refused before anything changes.
+ expect(events).toEqual(['stop:bookkeeper']);
+ // EXPECTATION 2 (today): it is left marked pending with no network rule published. The keeper's
+ // own "Definition published" step (definitions.ts save) has already written the new definition by now.
+ expect(await l.status('bookkeeper')).toMatchObject({pending:true,reason:'Egress reconciliation in progress'});
+ // The old-style neighbours were never touched by the failed save.
+ expect(events).not.toContain('stop:ledger');expect(events).not.toContain('stop:scribe');
+});
