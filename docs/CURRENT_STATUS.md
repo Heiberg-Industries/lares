@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 30 September 2026, against `main` at `1f555f8`.
+Last checked: 30 September 2026, against `main` at `0da2e05`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -17,6 +17,13 @@ page, this page is newer.
   controls, real agent and connection data, agent avatars (database change
   `089_agent_avatars.sql`), guarded agent lifecycle actions, and web chat that
   survives a page reload.
+- **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
+  #36). The keeper's own settings file and three sign-in settings still change
+  by hand in the same window; LAR-74 says which.
+- **The dependency updates that run in production are in** (#37: `undici`,
+  `brace-expansion`, `postcss`; and #25). GitHub still lists 18 warnings, all
+  in test tooling (`vitest`, `@vitest/mocker`, `esbuild`, `uuid`) and none in
+  an image that runs on a server. They are tracked in LAR-99.
 - **The marketing website has left this repository.** It lives in a private
   repository; see [`website-repository.md`](website-repository.md).
 - **The fresh-install test (LAR-50) is closed.** A blank Ubuntu install, first
@@ -44,12 +51,9 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- Five dependency-update pull requests are open (#2, #23, #25, #33, #34); the
-  checks on #2 and #34 failed.
-- Three local branches carry commits that are not on `main`:
-  `codex/design-release-review`, `codex/marketing-docs-booking` and
-  `codex/lares-console-structure`. Confirm their website work reached the
-  website repository before deleting them.
+- No pull requests are open. The automatic update pull requests #2, #23, #33
+  and #34 were closed; #37 replaced the ones that mattered.
+- The switch on the existing server has not been rehearsed (LAR-98).
 - Several Linear tickets lag behind the merged work and need a status review.
 
 ## Where the detail lives
