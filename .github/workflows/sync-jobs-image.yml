@@ -23,6 +23,11 @@ on:
       - "package.json"
       - ".github/workflows/sync-jobs-image.yml"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this exact manually selected ref
+        type: boolean
+        default: false
 
 concurrency:
   group: sync-jobs-image
@@ -66,7 +71,7 @@ jobs:
           context: .
           file: services/sync-jobs/Dockerfile
           platforms: linux/amd64
-          push: "${{ vars.PUBLISH_IMAGES == 'true' }}"
+          push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}"
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -76,9 +81,9 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
-            echo "## sync-jobs image pushed"
+            echo "## sync-jobs image build"
             echo ''
-            echo "Pin this digest on BOTH notion-sync and atlas-sync in services/box/compose.yaml:"
+            echo "Build digest (a build-only run does not publish it). Pin it on BOTH notion-sync and atlas-sync in services/box/compose.yaml:"
             echo '```'
             echo "ghcr.io/heiberg-industries/lares-sync-jobs@$DIGEST"
             echo '```'

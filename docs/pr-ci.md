@@ -15,5 +15,7 @@ Image publishing workflows retain their existing triggers. Repository instructio
 PR checks run automatically. Image workflows can be dispatched manually; automatic image
 builds require the repository variable `BUILD_IMAGES=true`. Publishing images additionally
 requires `PUBLISH_IMAGES=true` and explicit GHCR package access for this repository.
+A manual run of the console, sync-jobs, or keeper and neutral runtime workflows publishes
+only when its `publish` box is ticked, whatever `PUBLISH_IMAGES` says.
 Both variables are unset at the public source launch. Builds do not deploy services.
 A public source repository does not imply that existing private container packages are public.
