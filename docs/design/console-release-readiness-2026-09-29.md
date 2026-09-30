@@ -1,5 +1,10 @@
 # PR #32 release-readiness review — 29 September 2026
 
+> **Update, 30 September 2026.** PR #32 was merged as `1f555f8` after this
+> review. Statements below that it is a draft or should stay one are
+> historical. The production gates named at the end still apply;
+> [`../CURRENT_STATUS.md`](../CURRENT_STATUS.md) has the current state.
+
 ## Exact checkpoint
 
 - [Draft PR #32](https://github.com/Heiberg-Industries/lares/pull/32) was open and mergeable at source `26cc76ff3bd0a2d46d9d037e7e27935518f6ed77` before this review's source-only fixes. Its base was `166613e4`; 165 files changed. There were no submitted reviews or inline review threads. [Tests run 36531506658](https://github.com/Heiberg-Industries/lares/actions/runs/36531506658) completed successfully for that head. The fixes were pushed at `7e6f8107668c15941dd2a5c62707f4d85417285b`; [tests run 36532606100](https://github.com/Heiberg-Industries/lares/actions/runs/36532606100) completed successfully for that exact head. Recheck the head and checks again before merge.
