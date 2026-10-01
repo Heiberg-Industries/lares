@@ -1,0 +1,20 @@
+{
+  "release": "2026-10-01-rc.3",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:c8dcdb6436bf3a21a8abe028e809d2010d1a9a1186d893188bc358ed21d75325",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:d295634e09c648dcdb72c4cc2dd226f5fb87823a73e88cbbed6f205e4deb044b",
+    "caddy": "docker.io/library/caddy@sha256:6aeddd44c3078b0f9a35206472a11420648a79c184603ef95957d0a20044cb2b",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:417a6cd6cd0c3b18c8d8846e366c09da49e292a395e62c465e434ec4e78d502e",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:7c672a094cf0430d20a04202dfafe06443b000c0d3fbe250172346ffee44df38",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:715aa6ddbc248337a3af1fe2cab6134f1b74827bc3206afc135366fbca9a23aa",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:dccb326e952ec825d1caf5447c5d81322e96a16a03328047673c86cee0c985df",
+    "travel": "ghcr.io/heiberg-industries/lares-engine-travel-runtime@sha256:10650ef85c946169ffb482109986588a632b8ed1eb42cff21ccd95b236f448d7",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:f50af27a76b95d5fa2f69863324d762f3a06248ed934482ac914763a7f0e95a9",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:f0e23ae21a177de6fe859b79e16de1f4a5a90eda56678ef123d1c935d36a9263"
+  },
+  "migrations": {
+    "box": "089_agent_avatars.sql"
+  },
+  "breaking": []
+}

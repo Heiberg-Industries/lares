@@ -12,6 +12,11 @@ pending approval cards, made-up unfinished conversations), then the release cand
 chief-of-staff image started against it. All data is made up. Nothing touched the server. It is
 **not** a substitute for the real rehearsal; the list of what is still open is at the end.
 
+**Which candidate.** Use `releases/2026-10-01-rc.3.json` (keeper and agent images built from
+`d95f358`). The rehearsal ran rc.1's chief-of-staff image, before LAR-104, LAR-105 and LAR-106 were
+fixed. Where rc.3 behaves differently, the line says so; none of those differences has been seen
+with an image yet.
+
 ## How to read the evidence marks
 
 Every line below ends with one of three marks. Trust them in this order.
@@ -35,19 +40,28 @@ and was left out entirely.
    definition has already been written by then, so the first two saves report an error but are
    stored; the third save goes through. *[seen via code run, not via image]* This is an engine
    fault, described at the end. **Fixed by LAR-104 (pull request #44). The keeper in
-   `releases/2026-10-01-rc.2.json` (built from `4bbe03d`) has the fix; the one in rc.1 does not:**
+   `releases/2026-10-01-rc.3.json` (built from `d95f358`) has the fix, as did rc.2's; the one in rc.1
+   does not:**
    with a keeper built after that fix, another agent's old name opens
    no network hosts and blocks nothing, and an agent's own old name is refused before anything is
    stored or stopped. *[keeper tests only, not via image]* Step 5 describes both keepers.
 2. **"Healthy" does not mean "answering".** An agent with an unusable definition and no stored
    last-valid copy starts, answers its health address within about 20 seconds, and then fails every
    chat message. The keeper's one-minute health wait would call it healthy. Always send one
-   message. *[seen locally (made-up data)]*
+   message. *[seen locally (made-up data)]* **Fixed by LAR-105 (#47), in rc.3's agent images:**
+   such an agent now stops before its health address opens, the keeper reports "did not become
+   healthy", and the console says "The agent did not start within a minute. Its log says why; often
+   it has no usable definition." Still send one message. *[agent-kit and keeper tests only, not via
+   image]*
 3. **An agent whose stored definition is old-style does not refuse to start; it limps.** With an
    old-style stored copy it runs on that copy, logs one line "running on the last valid
    definition … capability "brain" is not in KNOWN_CAPABILITIES", answers, but has no note or
    fact tools and logs an error about the missing "brain" description at every conversation.
-   *[seen locally (made-up data)]*
+   *[seen locally (made-up data)]* **Fixed by LAR-106 (#50), in rc.3's agent images:** the stored
+   copy is re-checked by today's rules first; an old-style one is refused, and the agent stops as in
+   point 2. Its log says why the folder was refused and why the stored copy was. So on rc.3 an agent
+   whose folder and stored copy are both old-style does not start at all, which is why step 5
+   comes before step 6. *[agent-kit tests only, not via image]*
 4. **Script 088 needs one extra step for the way back** (put the owner default back on the
    meeting follow-up table), and it works. *[seen locally (made-up data)]*
 
@@ -150,7 +164,7 @@ regenerated `001-eve-workflow.sql`.
 
 - **Do:** save the chief of staff, the creative agent and the travel agent in turn through the
   console, each with its `vault` grant (areas as in LAR-74 section 5).
-- **With a keeper built after LAR-104 (#44), such as rc.2's:** each save goes through and no agent is stopped. The
+- **With a keeper built after LAR-104 (#44), such as rc.3's:** each save goes through and no agent is stopped. The
   keeper logs one line per agent that is still old-style ("still grants atlas; it opens no network
   hosts until the agent is saved in the new style"). The old names never opened any hosts, so a
   not-yet-converted agent loses nothing. *[keeper tests only, not via image]*
@@ -183,6 +197,10 @@ regenerated `001-eve-workflow.sql`.
   attempts in the log ("Event type 'run_started' not supported for legacy runs"); the agent was
   unaffected. The real 216 may behave differently. *[seen locally (made-up data)]* The travel and
   creative images were not started.
+- **If an agent "did not start within a minute":** on rc.3 that is what an unusable definition
+  looks like (LAR-105, LAR-106). Read that agent's log; the line starts "[definition] this agent
+  has no usable definition". Most likely step 5 was missed for it: save it in the new style and
+  apply again. *[agent-kit and keeper tests only, not via image]*
 - **Way back:** for the software, put the old fingerprints back in the keeper's configuration and
   apply again. That also needs the old-style definitions (step 5) and, if 088 has been applied,
   its extra step (step 2). The database is only undone by the backup.
@@ -204,9 +222,10 @@ regenerated `001-eve-workflow.sql`.
 - **What does an agent on the new image do at first start with an old-style stored definition
   and no last-valid copy?** It starts and reports healthy, then fails every chat message, with the
   cause only in its log. With an old-style last-valid copy it runs degraded (see "Four things").
-  *[seen locally (made-up data)]*
+  *[seen locally (made-up data)]* On rc.3 it stops in both cases instead (LAR-105, LAR-106).
+  *[agent-kit tests only, not via image]*
 
-## Engine faults found (not fixed here; each wants its own ticket)
+## Engine faults found (each has since been fixed in its own ticket)
 
 1. **One old-style definition blocks every other agent's save, and a failed save stops the
    agent.** `services/keeper/lib/egress.ts:85` (and `packages/agent-kit/src/persona/capability-docs.ts:890`)
@@ -218,9 +237,11 @@ regenerated `001-eve-workflow.sql`.
 2. **An agent with no usable definition reports healthy.** (LAR-105) `services/chief-of-staff/agent/instrumentation.ts:73`
    logs "agent not registered" and carries on; `packages/agent-kit/src/definition-cache.ts:121-125`
    then throws at each conversation. Reproduce: `scripts/rehearsal/first-start.py --no-last-valid`.
+   Ticket LAR-105, fixed by pull request #47.
 3. **The stored "last valid" definition is not re-checked against today's rules.** (LAR-106)
    `definition-cache.ts:121-133` reuses an old-style copy; it then fails to describe its own
    capabilities (`capability-docs.ts:884`). Reproduce: `first-start.py` with the old-style definition.
+   Ticket LAR-106, fixed by pull request #50.
 
 ## Still needs the real rehearsal
 
@@ -228,6 +249,8 @@ regenerated `001-eve-workflow.sql`.
   (here: 19 to 29 seconds, made-up conversations, emulated chip).
 - The real data, the real old conversation-store layout, and the server's own settings files
   (`keeper.json`, the compose files, the secrets folder).
+- rc.3's agent images against the rehearsal database: an old-style stored copy and a missing
+  one should now both stop the agent (LAR-105, LAR-106). Not yet seen with an image.
 - The release candidate's keeper, console, firewall helper and egress proxy images actually
   started, with the real firewall privileges and the real allow-list; the travel and creative
   agent images; the sync-jobs image (private, not touched).
