@@ -34,7 +34,10 @@ and was left out entirely.
    capability: atlas" (or `memory`, `brain`) on an old name belonging to *any* agent. The new
    definition has already been written by then, so the first two saves report an error but are
    stored; the third save goes through. *[seen via code run, not via image]* This is an engine
-   fault, described at the end; the order below works around it.
+   fault, described at the end. **Fixed by LAR-104 (pull request #44), which is not in the
+   release candidate images:** with a keeper built after that fix, another agent's old name opens
+   no network hosts and blocks nothing, and an agent's own old name is refused before anything is
+   stored or stopped. *[keeper tests only, not via image]* Step 5 describes both keepers.
 2. **"Healthy" does not mean "answering".** An agent with an unusable definition and no stored
    last-valid copy starts, answers its health address within about 20 seconds, and then fails every
    chat message. The keeper's one-minute health wait would call it healthy. Always send one
@@ -145,7 +148,12 @@ regenerated `001-eve-workflow.sql`.
 ### Step 5. Re-save the three definitions in the new style (`vault`)
 
 - **Do:** save the chief of staff, the creative agent and the travel agent in turn through the
-  console, each with its `vault` grant (areas as in LAR-74 section 5). **Expect the first two saves
+  console, each with its `vault` grant (areas as in LAR-74 section 5).
+- **With a keeper built after LAR-104 (#44):** each save goes through and no agent is stopped. The
+  keeper logs one line per agent that is still old-style ("still grants atlas; it opens no network
+  hosts until the agent is saved in the new style"). The old names never opened any hosts, so a
+  not-yet-converted agent loses nothing. *[keeper tests only, not via image]*
+- **With the release candidate keeper (`ac23bcb`, before the fix): expect the first two saves
   to show an error.** The keeper has by then written each definition, and the stored copy is
   already new-style; the error comes from the shared allow-list step, and it leaves that agent
   stopped and marked "pending". The third save, made when the other two are already new-style,
@@ -204,11 +212,12 @@ regenerated `001-eve-workflow.sql`.
    throw on an unknown capability in *any* agent's grants; `services/keeper/lib/lifecycle.ts:226-228`
    stops the agent when that happens, and `lifecycle.ts:255` stops the agent *before* the same step
    during an apply. The operator sees only "keeper: action failed" in the rehearsal harness.
-   Reproduce: `services/keeper/tests/old-definitions.rehearsal.mts`.
-2. **An agent with no usable definition reports healthy.** `services/chief-of-staff/agent/instrumentation.ts:73`
+   Reproduce: `services/keeper/tests/old-definitions.rehearsal.mts`. Ticket LAR-104, fixed by
+   pull request #44.
+2. **An agent with no usable definition reports healthy.** (LAR-105) `services/chief-of-staff/agent/instrumentation.ts:73`
    logs "agent not registered" and carries on; `packages/agent-kit/src/definition-cache.ts:121-125`
    then throws at each conversation. Reproduce: `scripts/rehearsal/first-start.py --no-last-valid`.
-3. **The stored "last valid" definition is not re-checked against today's rules.**
+3. **The stored "last valid" definition is not re-checked against today's rules.** (LAR-106)
    `definition-cache.ts:121-133` reuses an old-style copy; it then fails to describe its own
    capabilities (`capability-docs.ts:884`). Reproduce: `first-start.py` with the old-style definition.
 
