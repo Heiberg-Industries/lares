@@ -3,6 +3,7 @@ import { lstatSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync
 import { join } from 'node:path';
 import type { Pool } from 'pg';
 import { doorsOf, definitionSchema, type AgentDefinition } from '@lares/agent-kit/definition';
+import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
 import type { DockerBoundary } from './docker.js';
@@ -126,15 +127,38 @@ export class AgentLifecycle {
         }
         return { defs, agents };
     }
-    private async seal(override?: {
+    /** The agent being saved may not grant a retired capability: refuse by name, before anything is stored. */
+    private refuseUnknownGrants(name: string, d: AgentDefinition) {
+        const old = d.grants.find(g => !Object.hasOwn(CAPABILITY_DOCS, g.capability));
+        if (old)
+            throw new KeeperRefusedError(`Agent ${name} grants ${old.capability}, which this version no longer has; remove or replace it before saving`);
+    }
+    /** Side-effect-free: builds the whole allow-list or throws, BEFORE anything is stored, marked or stopped.
+     * Other agents' retired grants give them no hosts (logged); the saved agent's own grants stay strict. */
+    private async plan(override?: {
         name: string;
         definition: AgentDefinition;
     }, omit?: string) {
+        if (override)
+            this.refuseUnknownGrants(override.name, override.definition);
         const { agents, defs } = await this.render(override, omit), c = this.config;
         const e = generateEgress(agents.map(a => ({ name: a.name, address: a.address, grants: defs.get(a.name)!.grants, doors: a.doors.filter(d => d.kind === 'slack' || d.kind === 'telegram') as {
                 kind: 'slack' | 'telegram';
                 enabled: boolean;
-            }[], infrastructureHosts: c.egress.infrastructureHosts })), c.egress);
+            }[], infrastructureHosts: c.egress.infrastructureHosts })),
+            { ...c.egress, tolerateUnknownGrantsFor: new Set(agents.map(a => a.name).filter(n => n !== override?.name)) });
+        for (const s of e.skipped)
+            console.warn(`keeper: agent ${s.agent} still grants ${s.capability}; it opens no network hosts until the agent is saved in the new style`);
+        return e;
+    }
+    private async seal(override?: {
+        name: string;
+        definition: AgentDefinition;
+    }, omit?: string) {
+        await this.apply(await this.plan(override, omit));
+    }
+    private async apply(e: ReturnType<typeof generateEgress>) {
+        const c = this.config;
         const stage = randomUUID();
         writeFileSync(join(c.egressDir, `${stage}.squid`), e.squid, { flag: 'wx', mode: 0o644 });
         writeFileSync(join(c.egressDir, `${stage}.nft`), e.nft, { flag: 'wx', mode: 0o644 });
@@ -205,6 +229,8 @@ export class AgentLifecycle {
         const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d);
         verifyBindingSources(candidate.bindings);
         if(doorsOf(d).some(x=>x.kind==='email'&&x.enabled))await this.connections(candidate,true);
+        // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
+        if (create) this.refuseUnknownGrants(name, d); else await this.plan({ name, definition: d });
     }
     async create(name: string, d: AgentDefinition) {
         const c = this.config, rows = await this.rows();
@@ -218,10 +244,15 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Migrate this existing agent runtime control before saving');
         refusePendingRetirement(row);
         await this.ensureGatewayKey(name);
+        // Before any stop: a list that cannot be built changes no rule, so the agent keeps running its applied definition.
+        const plan = await this.plan({ name, definition: d }).catch(async error => {
+            if (!(error instanceof KeeperRefusedError)) await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Egress list could not be built; nothing was changed']);
+            throw error;
+        });
         const pending = row.pending || !row.applied_definition || fingerprint(row.applied_definition) !== fingerprint(d) || row.state === 'provisioning';
         await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, true, 'Egress reconciliation in progress']);
         try {
-            await this.seal({ name, definition: d });
+            await this.apply(plan);
         }
         catch (error) {
             await this.docker.stop(name);
@@ -241,6 +272,7 @@ export class AgentLifecycle {
             row = await this.storage.provision(name, String(row.address).split('/')[0]);
         if (row.state !== 'ready')
             throw new KeeperRefusedError('Only active resources can reconcile');
+        const plan = await this.plan({ name, definition: d }); // Before pending, publish and stop: an unbuildable list must not take the agent down.
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Runtime reconciliation in progress',updated_at=now() WHERE name=$1", [name]);
         const a = await this.connections(this.container(row, d),true);
         verifyBindingSources(a.bindings);
@@ -253,7 +285,7 @@ export class AgentLifecycle {
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
-        await this.seal({ name, definition: d });
+        await this.apply(plan);
         await this.docker.start(name, a.address);
         await this.pool.query(`UPDATE agent_door_connections SET applied_revision=revision,applied_connection=jsonb_build_object('kind',kind,'principal',principal,'revision',revision,'owner_email',owner_email,'org',org,'mailbox',mailbox) WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[name,row.ownership_token]);
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);

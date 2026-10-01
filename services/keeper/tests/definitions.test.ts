@@ -228,3 +228,16 @@ it('reports post-publication door hook errors as failed partial outcomes, never 
  expect((await pool.query("SELECT secret_set_at FROM agent_doors WHERE agent='bookkeeper' AND kind='slack'")).rows[0].secret_set_at).toBeTruthy();
  expect(c.audit.mock.calls.at(-1)?.[0]).toMatchObject({outcome:'failed'});
 });
+it('LAR-104: a save the lifecycle refuses in prepare stores nothing and leaves the files and table as they were',async()=>{
+ await create();
+ const {KeeperRefusedError}=await import('../lib/actions.js');
+ const before=readFileSync(join(agentsDir,'bookkeeper','agent.json'),'utf8'),row=(await pool.query("SELECT hash FROM agent_definitions WHERE name='bookkeeper'")).rows[0];
+ const saved=vi.fn(async()=>({pending:false,reason:null}));
+ Object.assign(compose,{prepare:vi.fn(async()=>{throw new KeeperRefusedError('Agent ledger grants atlas, which this version no longer has; remove or replace it before saving');}),saved});
+ register();
+ await expect(runAction('definition.save',save('bookkeeper',{duties:'Changed duties'}),ctx())).rejects.toThrow('grants atlas');
+ expect(readFileSync(join(agentsDir,'bookkeeper','agent.json'),'utf8')).toBe(before);
+ expect(readFileSync(join(agentsDir,'bookkeeper','duties.md'),'utf8')).not.toBe('Changed duties');
+ expect((await pool.query("SELECT hash FROM agent_definitions WHERE name='bookkeeper'")).rows[0]).toEqual(row);
+ expect(saved).not.toHaveBeenCalled();expect(compose.stop).not.toHaveBeenCalled();
+});

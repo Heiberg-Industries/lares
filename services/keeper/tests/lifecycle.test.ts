@@ -210,7 +210,7 @@ it.each(['missing','invalid'])('refuses publication for a ready resource with %s
  const before=readdirSync(config.egressDir).sort().map(n=>[n,readFileSync(join(config.egressDir,n),'utf8')]);
  const compose=readFileSync(config.composeFile,'utf8');events=[];
  await expect(l.saved('bookkeeper',definition)).rejects.toThrow('definition');
- expect(events).toEqual(['stop:bookkeeper']);
+ expect(events).toEqual([]);expect(await l.status('bookkeeper')).toMatchObject({pending:true});
  expect(readdirSync(config.egressDir).sort().map(n=>[n,readFileSync(join(config.egressDir,n),'utf8')])).toEqual(before);
  events=[];await expect(l.reconcile('bookkeeper',definition)).rejects.toThrow('definition');expect(events).toEqual([]);
  expect(readFileSync(config.composeFile,'utf8')).toBe(compose);
@@ -353,4 +353,51 @@ it('owned retire/delete/recreate rotates runtime control while ordinary reconcil
   expect((await conversationResetRoute(request(newSecret),{attachSession})).status).toBe(400);
   expect(attachSession).not.toHaveBeenCalled();
  }finally{vi.unstubAllEnvs();}
+});
+// LAR-104: three agents on a server whose stored definitions still spell retired capability names.
+async function oldStyleServer(){
+ const names=['bookkeeper','ledger','scribe'];
+ config.runtime.gatewayKeys={bookkeeper:join(root,'secrets','key'),ledger:join(root,'secrets','key-ledger'),scribe:join(root,'secrets','key-scribe')};
+ const make=(name:string,grants:any[])=>({...definition,name,grants});
+ const l=lifecycle();
+ for(const n of names){
+  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'test',$2::jsonb,now(),'valid') ON CONFLICT(name) DO NOTHING",[n,JSON.stringify(make(n,[]))]);
+  await l.create(n,make(n,[]));
+ }
+ for(const [n,cap] of [['bookkeeper','brain'],['ledger','atlas'],['scribe','memory']])
+  await pool.query("UPDATE agent_definitions SET definition=$2::jsonb WHERE name=$1",[n,JSON.stringify(make(n,[{capability:cap,scope:'read'}]))]);
+ events=[];
+ return {l,make};
+}
+it('LAR-104: converting one of three old-style agents succeeds without stopping anyone and opens nothing for the old names',async()=>{
+ const {l,make}=await oldStyleServer();const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ try{
+  const converted=make('bookkeeper',[{capability:'vault',scope:'read',areas:['shared']}]);
+  await l.saved('bookkeeper',converted);
+  expect(events).toEqual(['parse-squid','parse-nft','apply-nft','reload-squid']);
+  expect(warn.mock.calls.map(c=>String(c[0]))).toEqual([expect.stringContaining('ledger still grants atlas'),expect.stringContaining('scribe still grants memory')]);
+  const squid=readFileSync(join(config.egressDir,'squid.conf'),'utf8');
+  for(const n of ['bookkeeper','ledger','scribe'])expect(squid).toContain(`src_${n}`);
+  for(const n of ['ledger','scribe'])expect(squid).toContain(`acl dst_${n} dstdomain brain.example.com\n`); // the infrastructure host only; nothing from the old names
+ }finally{warn.mockRestore();}
+});
+it('LAR-104: an agent that grants a retired name itself is refused before anything is marked or stopped, on save and on apply',async()=>{
+ const {l,make}=await oldStyleServer();const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ try{
+  const before=await l.status('ledger');
+  await expect(l.saved('ledger',make('ledger',[{capability:'atlas',scope:'read'}]))).rejects.toThrow('Agent ledger grants atlas');
+  await expect(l.reconcile('ledger',make('ledger',[{capability:'atlas',scope:'read'}]))).rejects.toThrow('Agent ledger grants atlas');
+  await expect(l.prepare('ledger',make('ledger',[{capability:'atlas',scope:'read'}]),false)).rejects.toThrow('Agent ledger grants atlas');
+  config.runtime.gatewayKeys.newcomer=join(root,'secrets','key-newcomer');
+  await expect(l.prepare('newcomer',make('newcomer',[{capability:'memory',scope:'read'}]),true)).rejects.toThrow('Agent newcomer grants memory');
+  expect(events).toEqual([]);expect(await l.status('ledger')).toEqual(before);
+ }finally{warn.mockRestore();}
+});
+it('LAR-104: a real reload failure after a good plan still stops the agent',async()=>{
+ const {l,make}=await oldStyleServer();const warn=vi.spyOn(console,'warn').mockImplementation(()=>{});
+ try{
+  const converted=make('bookkeeper',[{capability:'vault',scope:'read',areas:['shared']}]);
+  fail='reload-squid';await expect(l.saved('bookkeeper',converted)).rejects.toThrow('injected');
+  expect(events.at(-1)).toBe('stop:bookkeeper');expect((await l.status('bookkeeper')).pending).toBe(true);
+ }finally{warn.mockRestore();}
 });
