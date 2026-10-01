@@ -28,6 +28,10 @@ export interface EgressOptions {
   legacyConsumers?: readonly { name: string; address: string; hosts: readonly string[] }[];
   internalNetworks?: readonly string[];
   directDestinations?: readonly string[];
+  /** Agents whose grants of a capability this engine no longer knows (`brain`, `atlas`, `memory`)
+   * contribute NO hosts instead of failing the whole rebuild, and are reported in `skipped`.
+   * Never put the agent being saved here: its own unknown grant is refused. Nothing is added. */
+  tolerateUnknownGrantsFor?: ReadonlySet<string>;
 }
 const DOOR_HOSTS = { slack: ['.slack.com', '.slack-files.com'], telegram: ['api.telegram.org'] } as const;
 const EXISTING_SUFFIXES = new Set(['.googleapis.com', '.slack.com', '.slack-files.com']);
@@ -63,12 +67,13 @@ function endpointHost(value: string): string {
 }
 
 export function generateEgress(agents: readonly EgressAgent[], options: EgressOptions = {}): {
-  squid: string; nft: string; perAgent: Record<string, string[]>;
+  squid: string; nft: string; perAgent: Record<string, string[]>; skipped: { agent: string; capability: string }[];
 } {
   const names = new Set<string>();
   const addresses = new Set<string>();
   const consumers: { name: string; address: string; hosts: string[] }[] = [];
   const perAgent: Record<string, string[]> = {};
+  const skipped: { agent: string; capability: string }[] = [];
   const add = (name: string, ip: string, hosts: readonly string[]) => {
     if (!/^[a-z][a-z0-9-]{0,62}$/.test(name) || names.has(name)) throw new Error(`Invalid or duplicate egress name: ${name}`);
     address(ip);
@@ -82,7 +87,10 @@ export function generateEgress(agents: readonly EgressAgent[], options: EgressOp
     const hosts: string[] = [...(agent.infrastructureHosts ?? [])];
     const grants = new Set<string>();
     for (const grant of agent.grants) {
-      if (!Object.hasOwn(CAPABILITY_DOCS, grant.capability)) throw new Error(`Unknown egress capability: ${grant.capability}`);
+      if (!Object.hasOwn(CAPABILITY_DOCS, grant.capability)) {
+        if (options.tolerateUnknownGrantsFor?.has(agent.name)) { skipped.push({ agent: agent.name, capability: grant.capability }); continue; }
+        throw new Error(`Unknown egress capability: ${grant.capability} (granted by ${agent.name})`);
+      }
       const doc = docFor(grant.capability);
       if (!SCOPES.some(scope => scope === grant.scope) || grants.has(grant.capability)) throw new Error(`Invalid or duplicate egress grant: ${grant.capability}`);
       grants.add(grant.capability);
@@ -121,5 +129,5 @@ export function generateEgress(agents: readonly EgressAgent[], options: EgressOp
       '    udp dport 53 accept', '    tcp dport 53 accept', '    counter drop');
   }
   nft.push('  }', '}');
-  return { squid: squid.join('\n') + '\n', nft: nft.join('\n') + '\n', perAgent };
+  return { squid: squid.join('\n') + '\n', nft: nft.join('\n') + '\n', perAgent, skipped };
 }
