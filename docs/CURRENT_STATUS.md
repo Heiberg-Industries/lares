@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 30 September 2026, against `main` at `d07a537`.
+Last checked: 1 October 2026, against `main` at `0ad52ec`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -28,7 +28,17 @@ page, this page is newer.
   `ac23bcb`: console, keeper, firewall helper, egress proxy, the three agent
   runtimes and sync-jobs. The sync-jobs package is private, so its fingerprint
   comes from the build's own record and a server needs registry sign-in to
-  pull it.
+  pull it. **The keeper image in it is now out of date** (see below).
+- **The switch on the existing server has a written order** (LAR-98, #43):
+  [`runbooks/keeper-managed-switch.md`](runbooks/keeper-managed-switch.md),
+  from a local dry rehearsal with made-up data. Every step says whether it was
+  seen or only read from the code, and what still needs the real rehearsal.
+- **Converting the agents one at a time no longer stops them** (LAR-104, #44).
+  The rehearsal found that while any agent still had an old-style definition,
+  the keeper refused every other agent's save and stopped the agent it was
+  saving. Now another agent's old capability opens no network hosts and blocks
+  nothing, and an agent's own old capability is refused before anything is
+  stored or stopped.
 - **The marketing website has left this repository.** It lives in a private
   repository; see [`website-repository.md`](website-repository.md).
 - **The fresh-install test (LAR-50) is closed.** A blank Ubuntu install, first
@@ -44,7 +54,9 @@ page, this page is newer.
 - **No release is published.** A release candidate exists:
   [`releases/2026-09-30-rc.1.json`](../releases/2026-09-30-rc.1.json) pins the
   images built from one commit, `ac23bcb`. It has not been installed or
-  rehearsed anywhere. The other files in `releases/` are test manifests.
+  rehearsed anywhere. Its keeper predates the LAR-104 fix, so the keeper must
+  be rebuilt from current `main` and pinned in a new candidate before the
+  night. The other files in `releases/` are test manifests.
   Publishing the first release and the console's "update available" notice
   are tracked in LAR-101.
 - **A production rollout still needs** a migration and rollback plan (rolling
@@ -59,9 +71,14 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- No pull requests are open. The automatic update pull requests #2, #23, #33
-  and #34 were closed; #37 replaced the ones that mattered.
-- The switch on the existing server has had a local dry rehearsal with made-up data (LAR-98): the order, what success looks like and the way back are in [`runbooks/keeper-managed-switch.md`](runbooks/keeper-managed-switch.md), which also lists three engine faults it found and what still needs the real rehearsal.
+- No other pull requests are open.
+- The real rehearsal of the switch, on a throwaway server with a copy of the
+  real data, has not been done (LAR-98; needs the owner's go-ahead).
+- Two engine faults from the dry rehearsal are open: an agent with no usable
+  definition still reports healthy (LAR-105), and an old-style "last valid"
+  definition is reused without re-checking (LAR-106). Until they are fixed,
+  send one message to each agent after the switch; health alone proves
+  nothing.
 - One installer test fails at random on GitHub (LAR-100).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
