@@ -61,7 +61,7 @@ page, this page is newer.
 
 - No pull requests are open. The automatic update pull requests #2, #23, #33
   and #34 were closed; #37 replaced the ones that mattered.
-- The switch on the existing server has not been rehearsed (LAR-98).
+- The switch on the existing server has had a local dry rehearsal with made-up data (LAR-98): the order, what success looks like and the way back are in [`runbooks/keeper-managed-switch.md`](runbooks/keeper-managed-switch.md), which also lists three engine faults it found and what still needs the real rehearsal.
 - One installer test fails at random on GitHub (LAR-100).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
