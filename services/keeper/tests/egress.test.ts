@@ -54,3 +54,14 @@ it('canonicalizes overlapping domains inside each Squid ACL without losing metad
   expect(domains).not.toContain('maps.googleapis.com');
   expect(domains).toContain('api.entur.io');
 });
+it('LAR-104: another agent\'s retired grant gives it no hosts and never widens anything; the named agent stays strict', () => {
+  const old: EgressAgent = { name: 'beta', address: '172.18.0.41', grants: [{ capability: 'atlas', scope: 'read' }, { capability: 'notion', scope: 'read' }] };
+  const bare = generateEgress([agent, { ...old, grants: [{ capability: 'notion', scope: 'read' }] }]);
+  const out = generateEgress([agent, old], { tolerateUnknownGrantsFor: new Set(['beta']) });
+  expect(out.skipped).toEqual([{ agent: 'beta', capability: 'atlas' }]);
+  expect(out.perAgent).toEqual(bare.perAgent);
+  expect(out.squid).toBe(bare.squid);
+  expect(out.nft).toBe(bare.nft);
+  expect(() => generateEgress([agent, old])).toThrow('Unknown egress capability: atlas (granted by beta)');
+  expect(() => generateEgress([agent, old], { tolerateUnknownGrantsFor: new Set(['alpha']) })).toThrow('Unknown egress capability: atlas (granted by beta)');
+});
