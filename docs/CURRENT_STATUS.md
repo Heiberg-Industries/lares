@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 1 October 2026, against `main` at `0ad52ec`.
+Last checked: 1 October 2026, against `main` at `4bbe03d`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -24,11 +24,16 @@ page, this page is newer.
   `brace-expansion`, `postcss`; and #25). GitHub still lists 18 warnings, all
   in test tooling (`vitest`, `@vitest/mocker`, `esbuild`, `uuid`) and none in
   an image that runs on a server. They are tracked in LAR-99.
-- **Release candidate images are built and pinned** (30 September), all from
-  `ac23bcb`: console, keeper, firewall helper, egress proxy, the three agent
-  runtimes and sync-jobs. The sync-jobs package is private, so its fingerprint
-  comes from the build's own record and a server needs registry sign-in to
-  pull it. **The keeper image in it is now out of date** (see below).
+- **Release candidate images are built and pinned.** The second candidate,
+  [`releases/2026-10-01-rc.2.json`](../releases/2026-10-01-rc.2.json), replaces
+  only the keeper: it was rebuilt on 1 October from `4bbe03d`, so it carries
+  the LAR-104 fix (build run 36829803833; the fingerprint was looked up in the
+  registry and the image's keeper files match `main`). Everything else is
+  unchanged from rc.1 and was built on 30 September from `ac23bcb`: console,
+  firewall helper, egress proxy, the three agent runtimes and sync-jobs. No
+  code for those changed between the two commits. The sync-jobs package is
+  private, so its fingerprint comes from the build's own record and a server
+  needs registry sign-in to pull it.
 - **The switch on the existing server has a written order** (LAR-98, #43):
   [`runbooks/keeper-managed-switch.md`](runbooks/keeper-managed-switch.md),
   from a local dry rehearsal with made-up data. Every step says whether it was
@@ -51,12 +56,11 @@ page, this page is newer.
 ## Not done
 
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
-- **No release is published.** A release candidate exists:
-  [`releases/2026-09-30-rc.1.json`](../releases/2026-09-30-rc.1.json) pins the
-  images built from one commit, `ac23bcb`. It has not been installed or
-  rehearsed anywhere. Its keeper predates the LAR-104 fix, so the keeper must
-  be rebuilt from current `main` and pinned in a new candidate before the
-  night. The other files in `releases/` are test manifests.
+- **No release is published.** The newest release candidate is
+  [`releases/2026-10-01-rc.2.json`](../releases/2026-10-01-rc.2.json). It has
+  not been installed or rehearsed anywhere. `2026-09-30-rc.1` is kept as a
+  record; its keeper predates the LAR-104 fix and should not be used. The other
+  files in `releases/` are test manifests.
   Publishing the first release and the console's "update available" notice
   are tracked in LAR-101.
 - **A production rollout still needs** a migration and rollback plan (rolling

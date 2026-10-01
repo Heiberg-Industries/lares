@@ -1,4 +1,4 @@
-# Runbook: switching a keeper-managed server to the 2026-09-30 release candidate
+# Runbook: switching a keeper-managed server to the 2026-10-01 release candidate
 
 **What this is.** The order of the switch for a server whose agents are run by the keeper on
 older engine images (the existing installation), written down after a local dry rehearsal on
@@ -34,8 +34,9 @@ and was left out entirely.
    capability: atlas" (or `memory`, `brain`) on an old name belonging to *any* agent. The new
    definition has already been written by then, so the first two saves report an error but are
    stored; the third save goes through. *[seen via code run, not via image]* This is an engine
-   fault, described at the end. **Fixed by LAR-104 (pull request #44), which is not in the
-   release candidate images:** with a keeper built after that fix, another agent's old name opens
+   fault, described at the end. **Fixed by LAR-104 (pull request #44). The keeper in
+   `releases/2026-10-01-rc.2.json` (built from `4bbe03d`) has the fix; the one in rc.1 does not:**
+   with a keeper built after that fix, another agent's old name opens
    no network hosts and blocks nothing, and an agent's own old name is refused before anything is
    stored or stopped. *[keeper tests only, not via image]* Step 5 describes both keepers.
 2. **"Healthy" does not mean "answering".** An agent with an unusable definition and no stored
@@ -149,11 +150,11 @@ regenerated `001-eve-workflow.sql`.
 
 - **Do:** save the chief of staff, the creative agent and the travel agent in turn through the
   console, each with its `vault` grant (areas as in LAR-74 section 5).
-- **With a keeper built after LAR-104 (#44):** each save goes through and no agent is stopped. The
+- **With a keeper built after LAR-104 (#44), such as rc.2's:** each save goes through and no agent is stopped. The
   keeper logs one line per agent that is still old-style ("still grants atlas; it opens no network
   hosts until the agent is saved in the new style"). The old names never opened any hosts, so a
   not-yet-converted agent loses nothing. *[keeper tests only, not via image]*
-- **With the release candidate keeper (`ac23bcb`, before the fix): expect the first two saves
+- **With the rc.1 keeper (`ac23bcb`, before the fix): expect the first two saves
   to show an error.** The keeper has by then written each definition, and the stored copy is
   already new-style; the error comes from the shared allow-list step, and it leaves that agent
   stopped and marked "pending". The third save, made when the other two are already new-style,
