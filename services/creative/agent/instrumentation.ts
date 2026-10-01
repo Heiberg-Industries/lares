@@ -45,6 +45,7 @@ import { registerAgent } from "@lares/agent-kit/agent-registry";
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
 import { releaseStaleWorkflowLocks, workflowDatabaseUrl } from "@lares/agent-kit/release-stale-workflow-locks";
 import { CATALOGUE } from "../catalogue/index.js";
+import { bootDefinitionOrStop } from "@lares/agent-kit/boot-definition";
 import { BOOT, thisAgent } from "../lib/definition.js";
 
 // LAR-73: before anything else, free the workflow jobs a previous, dead process of this agent left
@@ -56,6 +57,12 @@ import { BOOT, thisAgent } from "../lib/definition.js";
 // can lock its first job. Bounded to a few seconds and never throws (the module's own header has
 // the full argument). Only where a workflow database exists — never at `eve build`.
 if (workflowDatabaseUrl()) await releaseStaleWorkflowLocks();
+
+// LAR-105: with no usable definition (and no last valid one to fall back to) this agent stops here,
+// before its health address opens, so a restart loop shows instead of a healthy agent that fails
+// every conversation. Same module-level placement and reason as the unlock above; the helper's
+// header has the argument. Only where a database exists — never at `eve build`.
+const boot = process.env.DATABASE_URL ? await bootDefinitionOrStop(() => thisAgent(BOOT)) : null;
 
 export default defineInstrumentation({
   setup: ({ agentName }) => {
@@ -73,14 +80,14 @@ export default defineInstrumentation({
     // instrumentation's `setup` as a non-ALS callback with no session context, and what the
     // agent BOOTED on is genuinely a process-lifetime fact. Passed explicitly so this cannot be
     // confused with a resolver that simply failed to find its session (lib/definition.ts).
-    // NEVER allowed to stop the agent (agent-registry.ts's own first line). Two ways it could,
-    // both closed here: `thisAgent()` does all of its I/O inside the promise, so a missing role
-    // template in the image cannot throw synchronously out of this unguarded `setup()` and skip
-    // everything below it; and the `.catch` keeps a rejected resolve — a broken mounted
-    // definition with no last-valid row — from becoming an unhandled rejection that Node 24
-    // turns into process exit. Registration failing is a console line, never a dead agent.
-    if (process.env.DATABASE_URL) {
-      void thisAgent(BOOT)
+    // Registration is NEVER allowed to stop the agent (agent-registry.ts's own first line): the
+    // definition was already resolved at module level, so nothing here can throw synchronously out
+    // of this unguarded `setup()`, and the `.catch` keeps a failed registration from becoming an
+    // unhandled rejection that Node 24 turns into process exit. Registration failing is a console
+    // line, never a dead agent; only having no definition at all stops it, at module level above
+    // (LAR-105).
+    if (boot) {
+      void Promise.resolve(boot)
         // ORB-278 step 2, Task 7: her tools are a POOL now, picked from at session start, so the
         // compiled manifest lists the resolver and none of its entries. The console would show
         // three tools where she has nine unless the granted names are handed over here —

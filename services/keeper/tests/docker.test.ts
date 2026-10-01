@@ -1,7 +1,7 @@
 import { vi,it,expect } from 'vitest';
 const calls=vi.hoisted(()=>[] as string[][]);
 vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
-import { ownedDocker } from '../lib/docker.js';
+import { AgentNotHealthyError, ownedDocker } from '../lib/docker.js';
 const image='example/image@sha256:'+'a'.repeat(64);
 it('uses fixed execFile arrays, only owned compose file, digest helpers, host nft namespace and no broad cleanup',async()=>{
  let healthAttempts=0;
@@ -24,4 +24,5 @@ it('leaves an unhealthy started container for explicit reconciliation and says s
  const d=ownedDocker({project:'test',dir:'/owned',composeFile:'/owned/compose.lares-agents.yaml',egressDir:'/owned/egress',proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image},health as typeof fetch,async()=>{});
  await expect(d.start('bookkeeper','172.18.0.24')).rejects.toThrow('reconciliation required');
  expect(health).toHaveBeenCalledTimes(30);
+ await expect(d.start('bookkeeper','172.18.0.24')).rejects.toBeInstanceOf(AgentNotHealthyError);
 });

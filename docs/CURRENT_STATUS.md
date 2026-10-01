@@ -78,11 +78,13 @@ page, this page is newer.
 - No other pull requests are open.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
-- Two engine faults from the dry rehearsal are open: an agent with no usable
-  definition still reports healthy (LAR-105), and an old-style "last valid"
-  definition is reused without re-checking (LAR-106). Until they are fixed,
-  send one message to each agent after the switch; health alone proves
-  nothing.
+- Two engine faults from the dry rehearsal. LAR-105 is fixed on `main`: an
+  agent with no usable definition now stops before its health address opens,
+  so the keeper reports it as not healthy and the console says why in plain
+  words. The fix is not in the rc.2 agent images; it needs a new candidate.
+  LAR-106 is still open: an old-style "last valid" definition is reused
+  without re-checking. Until both are in the images, send one message to each
+  agent after the switch; health alone proves nothing.
 - One installer test fails at random on GitHub (LAR-100).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
