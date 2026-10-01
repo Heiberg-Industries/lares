@@ -6,8 +6,8 @@
 // definition that actually validated is kept in Postgres, and a session that finds a broken
 // folder runs on that, loudly.
 //
-// THE ONE CASE THAT THROWS: a broken folder with no remembered valid one. There is nothing safe
-// to run, so the agent does not start. That is the correct failure — a stranger's first
+// THE ONE CASE THAT THROWS: a broken folder with no remembered valid one — or one that today's
+// checks refuse (LAR-106). There is nothing safe to run, so the agent does not start. That is the correct failure — a stranger's first
 // definition being wrong should stop the container, not boot a nameless agent.
 //
 // THE AGENT'S IDENTITY IS AN INPUT, NEVER INFERRED. A file that failed to parse or to validate
@@ -122,6 +122,21 @@ export async function resolveDefinition(opts: ResolveOptions): Promise<Resolved>
   if (!previous) {
     // Nothing safe to run on. Fail closed, loudly, and let the container restart loop be visible.
     throw new Error(`definition at ${mounted} is unusable and there is no last valid one to fall back to:\n${reason}`);
+  }
+  // LAR-106: "valid" meant valid under the engine that stored it. A row from an older engine
+  // (`brain`, `atlas`, `memory`) runs as an agent with no note or fact tools that cannot describe
+  // itself — degraded and silent. Re-checked by today's rules; failing them is "nothing safe to
+  // run on", the same throw as above, so LAR-105's boot stop makes it visible.
+  try {
+    if (previous.definition.name !== opts.agentName) {
+      throw new Error(`it declares agent "${previous.definition.name}", not "${opts.agentName}"`);
+    }
+    assertDefinitionValid({ definition: previous.definition, roleMd: opts.roleMd, deployedTools: opts.deployedTools });
+  } catch (err) {
+    const stale = err instanceof Error ? err.message : String(err);
+    const both = `${reason}\nThe last valid one (${previous.hash.slice(0, 12)}) no longer passes this engine's checks:\n${stale}`;
+    await markInvalid(pool, opts.agentName, both);
+    throw new Error(`definition at ${mounted} is unusable, and so is the last valid one:\n${both}`);
   }
   await markInvalid(pool, opts.agentName, reason!);
   opts.onInvalid?.(opts.agentName, reason!);

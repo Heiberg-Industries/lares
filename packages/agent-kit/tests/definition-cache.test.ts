@@ -124,6 +124,54 @@ describe("resolveDefinition", () => {
       .rejects.toThrow(/no last valid one to fall back to/);
   });
 
+  // LAR-106: the remembered row passed the rules of the engine that stored it, not necessarily
+  // today's. On the existing server those rows are old-style (`brain`, `atlas`, `memory`): run on,
+  // they gave an agent with no note or fact tools that failed to describe itself every turn.
+  // Through a variable, as in the keeper's LAR-104 tests: this is old DATA, which one-name.test.ts's
+  // tripwire is not about.
+  const RETIRED = "brain";
+  it("does not run on a remembered row that fails today's rules — it throws with both reasons", async () => {
+    const agentName = "oldstyle";
+    const old = { ...GOOD, name: agentName, grants: [{ capability: RETIRED, scope: "read" }], autonomy: {} };
+    // Written as the old engine stored it: straight into the table, never through today's checks.
+    await pool.query(
+      `INSERT INTO agent_definitions (name, definition, duties, voice, hash, status, valid_at, checked_at)
+       VALUES ($1, $2::jsonb, '', 'Dry.\n', 'oldhash', 'valid', now(), now())`,
+      [agentName, JSON.stringify(old)],
+    );
+    const reasons: string[] = [];
+    const err = await resolveDefinition(opts(folder("{ not json"), agentName, (_a, why) => reasons.push(why)))
+      .then(() => null, (e: unknown) => e as Error);
+    expect(err?.message).toMatch(/not valid JSON/);
+    expect(err?.message).toMatch(/last valid one.*no longer passes.*brain/s);
+    expect(reasons).toHaveLength(0);
+    const { rows } = await pool.query("SELECT status, status_reason FROM agent_definitions WHERE name = $1", [agentName]);
+    expect(rows[0].status).toBe("invalid");
+    expect(rows[0].status_reason).toMatch(/not valid JSON.*brain/s);
+  });
+
+  it("stops at boot on an old-style remembered row instead of starting degraded", async () => {
+    const agentName = "oldstyle-boot";
+    const old = { ...GOOD, name: agentName, grants: [{ capability: RETIRED, scope: "read" }], autonomy: {} };
+    await pool.query(
+      `INSERT INTO agent_definitions (name, definition, duties, voice, hash, status, valid_at, checked_at)
+       VALUES ($1, $2::jsonb, '', 'Dry.\n', 'oldhash', 'valid', now(), now())`,
+      [agentName, JSON.stringify(old)],
+    );
+    let code: number | null = null;
+    const original = console.error;
+    console.error = () => {};
+    try {
+      await bootDefinitionOrStop(() => resolveDefinition(opts(folder("{ not json"), agentName)), (c): never => {
+        code = c;
+        throw new Error("stopped");
+      }).catch(() => {});
+    } finally {
+      console.error = original;
+    }
+    expect(code).toBe(UNUSABLE_DEFINITION_EXIT);
+  });
+
   it("does not consult the database at all when LARES_DEFINITION_DIR is unset", async () => {
     const svc = new URL("../../../services/creative", import.meta.url).pathname;
     const r = await resolveDefinition({ serviceDir: svc, roleMd: ROLE, deployedTools: [], agentName: "creative", pool: undefined, env: {} });
