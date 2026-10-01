@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 1 October 2026, against `main` at `4bbe03d`.
+Last checked: 1 October 2026, against `main` at `e501be0`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -44,6 +44,10 @@ page, this page is newer.
   saving. Now another agent's old capability opens no network hosts and blocks
   nothing, and an agent's own old capability is refused before anything is
   stored or stopped.
+- **An agent with no usable definition no longer looks healthy** (LAR-105,
+  #47). It stops before its health address opens, so the keeper reports it as
+  not healthy, and the console says why in plain words. Not in any image yet;
+  see "Not done".
 - **The marketing website has left this repository.** It lives in a private
   repository; see [`website-repository.md`](website-repository.md).
 - **The fresh-install test (LAR-50) is closed.** A blank Ubuntu install, first
@@ -56,6 +60,8 @@ page, this page is newer.
 ## Not done
 
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
+- **A new release candidate is needed** for LAR-105 (agent images and keeper)
+  and, once fixed, LAR-106. rc.2's agent images and keeper predate #47.
 - **No release is published.** The newest release candidate is
   [`releases/2026-10-01-rc.2.json`](../releases/2026-10-01-rc.2.json). It has
   not been installed or rehearsed anywhere. `2026-09-30-rc.1` is kept as a
