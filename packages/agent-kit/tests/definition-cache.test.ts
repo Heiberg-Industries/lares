@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { bootDefinitionOrStop, UNUSABLE_DEFINITION_EXIT } from "../src/boot-definition.js";
 import { lastValid, rememberValid, resolveDefinition } from "../src/definition-cache.js";
 import { loadDefinition } from "../src/definition.js";
 
@@ -128,5 +129,40 @@ describe("resolveDefinition", () => {
     const r = await resolveDefinition({ serviceDir: svc, roleMd: ROLE, deployedTools: [], agentName: "creative", pool: undefined, env: {} });
     expect(r.usedFallback).toBe(false);
     expect(r.loaded.source).toBe("service");
+  });
+});
+
+// LAR-105: the fail-closed throw above must reach the process, not a log line. Each role's
+// instrumentation awaits `bootDefinitionOrStop(() => thisAgent(BOOT))` before its port opens.
+describe("bootDefinitionOrStop", () => {
+  class Stopped extends Error { constructor(readonly code: number) { super(`stopped ${code}`); } }
+  const stop = (code: number): never => { throw new Stopped(code); };
+
+  it("stops with EX_CONFIG when the folder is broken and there is no last valid one", async () => {
+    const said: string[] = [];
+    const original = console.error;
+    console.error = (line: string) => { said.push(line); };
+    try {
+      const err = await bootDefinitionOrStop(() => resolveDefinition(opts(folder("{ not json"), "never-booted")), stop)
+        .then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(Stopped);
+      expect((err as Stopped).code).toBe(UNUSABLE_DEFINITION_EXIT);
+      expect(UNUSABLE_DEFINITION_EXIT).toBe(78);
+    } finally {
+      console.error = original;
+    }
+    expect(said).toHaveLength(1);
+    expect(said[0]).toMatch(/^\[definition\] this agent has no usable definition, so it is not starting: .*no last valid one to fall back to/s);
+  });
+
+  it("starts on the last valid one when there is one — a fallback is not a stop", async () => {
+    await rememberValid(pool, await loadDefinition({ serviceDir: "/nowhere", env: { LARES_DEFINITION_DIR: folder({ ...GOOD, name: "fallback-boot" }) } }));
+    const r = await bootDefinitionOrStop(() => resolveDefinition(opts(folder("{ not json"), "fallback-boot")), stop);
+    expect(r.usedFallback).toBe(true);
+  });
+
+  it("stops on a synchronous throw from the resolver too", async () => {
+    const err = await bootDefinitionOrStop(() => { throw new Error("no role template"); }, stop).then(() => null, (e: unknown) => e);
+    expect((err as Stopped).code).toBe(78);
   });
 });

@@ -35,6 +35,11 @@ export interface OwnedDockerConfig {
     firewallImage: string;
     egressDir: string;
 }
+/** The started container never answered its health address in the fixed window (LAR-105). Its own
+ *  log has the reason; the keeper cannot see inside it. */
+export class AgentNotHealthyError extends Error {
+    constructor() { super('keeper: agent did not become healthy; reconciliation required'); }
+}
 const wait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
 function privateIpv4(address: string): boolean {
     if (isIP(address) !== 4) return false;
@@ -75,7 +80,7 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
                 catch { /* The container may still be starting; retry within the fixed window. */ }
                 if (attempt < 29) await pause(1000);
             }
-            throw new Error('keeper: agent did not become healthy; reconciliation required');
+            throw new AgentNotHealthyError();
         },
         stop: async (name) => { await compose(['stop', `lares-${agentName(name)}`]); },
         remove: async (name) => {

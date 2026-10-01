@@ -4,10 +4,10 @@ import { join,resolve } from 'node:path';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { beforeAll,afterAll,beforeEach,it,expect,vi } from 'vitest';
-import { AgentLifecycle } from '../lib/lifecycle.js';
+import { AGENT_NOT_HEALTHY, AgentLifecycle } from '../lib/lifecycle.js';
 import { WorkflowStorage } from '../lib/workflow-storage.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
-import type { DockerBoundary } from '../lib/docker.js';
+import { AgentNotHealthyError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
 let pg:StartedPostgreSqlContainer,pool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
@@ -116,6 +116,14 @@ it('does not start an unsealed agent, persists pending failure, and permits expl
  const l=lifecycle();fail='parse-nft';await expect(l.create('bookkeeper',definition)).rejects.toThrow('injected');
  expect(events).not.toContain('apply-nft');expect(events).not.toContain('start:bookkeeper');expect((await l.status('bookkeeper')).pending).toBe(true);
  fail=undefined;await l.reconcile('bookkeeper',definition);expect((await l.status('bookkeeper')).pending).toBe(false);
+});
+it('says in plain words when a started agent never answers its health address (LAR-105)',async()=>{
+ const unhealthy:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);throw new AgentNotHealthyError();}};
+ const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},unhealthy,()=>{},()=>{});
+ await expect(l.create('bookkeeper',definition)).rejects.toBeInstanceOf(AgentNotHealthyError);
+ expect(await l.status('bookkeeper')).toEqual({pending:true,reason:AGENT_NOT_HEALTHY});
+ events=[];await lifecycle().reconcile('bookkeeper',definition);
+ expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
 });
 it('keeps a started-but-unhealthy agent pending until explicit reconciliation succeeds',async()=>{
  const l=lifecycle();fail='start:bookkeeper';await expect(l.create('bookkeeper',definition)).rejects.toThrow('injected');

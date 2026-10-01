@@ -69,6 +69,7 @@
     "./definition": "./src/definition.ts",
     "./language": "./src/language.ts",
     "./definition-validate": "./src/definition-validate.ts",
+    "./boot-definition": "./src/boot-definition.ts",
     "./definition-cache": "./src/definition-cache.ts",
     "./write-shape-lint": "./src/write-shape-lint.ts",
     "./learning": "./src/learning/index.ts",

@@ -6,7 +6,7 @@ import { doorsOf, definitionSchema, type AgentDefinition } from '@lares/agent-ki
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
 import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentContainer } from './compose-agents.js';
-import type { DockerBoundary } from './docker.js';
+import { AgentNotHealthyError, type DockerBoundary } from './docker.js';
 import type { LifecycleConfig } from './lifecycle-config.js';
 import { WorkflowStorage } from './workflow-storage.js';
 import { KeeperRefusedError } from './actions.js';
@@ -31,6 +31,8 @@ function runtimeControlled(row: any): boolean { return !!row?.runtime_control_to
 function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d) })).digest('hex'); }
 /** All callers run within the audited definition action AND namespace advisory lock.
  * Partial failures leave resources and pending state for an explicit reconcile; never auto replay. */
+/** Plain words for the console when a started agent never answers its health address (LAR-105). */
+export const AGENT_NOT_HEALTHY = 'The agent did not start within a minute. Its log says why; often it has no usable definition. Fix that, then apply connection changes again.';
 export class AgentLifecycle {
     readonly storage: WorkflowStorage;
     constructor(private pool: Pool, admin: Pool, private config: LifecycleConfig, private paths: {
@@ -286,7 +288,12 @@ export class AgentLifecycle {
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
         await this.apply(plan);
-        await this.docker.start(name, a.address);
+        try { await this.docker.start(name, a.address); }
+        catch (error) {
+            // LAR-105: the console shows this sentence; "reconciliation in progress" hid a dead agent.
+            if (error instanceof AgentNotHealthyError) await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, AGENT_NOT_HEALTHY]);
+            throw error;
+        }
         await this.pool.query(`UPDATE agent_door_connections SET applied_revision=revision,applied_connection=jsonb_build_object('kind',kind,'principal',principal,'revision',revision,'owner_email',owner_email,'org',org,'mailbox',mailbox) WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[name,row.ownership_token]);
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
         return { pending: false, reason: null };
