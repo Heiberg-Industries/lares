@@ -23,8 +23,8 @@
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.13.2",
-    "@types/pg": "^8.11.10",
-    "pg": "^8.21.0"
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.1"
   },
   "license": "AGPL-3.0-only"
 }

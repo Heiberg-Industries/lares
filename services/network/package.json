@@ -1,7 +1,7 @@
 {
   "name": "@lares/network",
   "version": "0.1.0",
-  "description": "Local relationship intelligence: LinkedIn + Contacts + iMessage + calls \u2192 Pulse. Runs on the Mac only; never deployed.",
+  "description": "Local relationship intelligence: LinkedIn + Contacts + iMessage + calls → Pulse. Runs on the Mac only; never deployed.",
   "private": true,
   "type": "module",
   "main": "./lib/index.ts",
@@ -20,12 +20,12 @@
     "@lares/strength": "workspace:*",
     "better-sqlite3": "^11.7.0",
     "commander": "^12.1.0",
-    "csv-parse": "^7.0.2"
+    "csv-parse": "^7.0.3"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.10.2",
-    "tsx": "^4.19.2",
+    "tsx": "^4.23.15",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
   },
