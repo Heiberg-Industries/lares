@@ -16,7 +16,7 @@
 # Build context = the REPO ROOT: `-f services/sync-jobs/Dockerfile .`
 
 # ---- deps: install the two jobs' workspace closure ---------------------------------------
-FROM node:22-bookworm AS deps
+FROM node:24-bookworm AS deps
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 WORKDIR /app
@@ -51,7 +51,7 @@ COPY packages/junk            packages/junk
 COPY packages/vault-format    packages/vault-format
 
 # ---- runtime: slim, non-root --------------------------------------------------------------
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
     HOME=/tmp
