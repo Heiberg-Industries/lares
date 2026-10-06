@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -31,7 +32,7 @@ describe("schedule-heartbeat (ORB-175)", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     // The old runtime's row, as the box has it today: the migration must carry its age over.
     await pool.query("create table heartbeat (agent text primary key, updated_at timestamptz not null default now())");
     await pool.query("insert into heartbeat values ('saga-digest', now() - interval '3 hours'), ('calliope', now() - interval '10 days')");
@@ -91,7 +92,7 @@ describe("schedule-heartbeat (ORB-175)", () => {
 
   it("a failing database never throws into the schedule — it warns, names the consequence, resolves false", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const dead = new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" });
+    const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
     try {
       expect(await recordSchedulePass(dead, "saga/reminders")).toBe(false);
       expect(await recordScheduleTick(dead, "saga/dream")).toBe(false);

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { enrolFirstOrganisation } from "../lib/first-organisation.js";
 
@@ -9,7 +10,7 @@ let pool: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   for (const name of ["014_identity.sql", "028_orgs.sql", "029_cross_member.sql", "032_org_domains.sql"]) {
     await pool.query(readFileSync(new URL(`../sql/${name}`, import.meta.url), "utf8"));
   }

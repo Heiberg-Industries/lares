@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -16,7 +17,7 @@ describe("meeting-followup-store", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    db = new Pool({ connectionString: container.getConnectionUri() });
+    db = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     // LAR-28: 027 creates the table, 048 adds `summary_hash` and the `denied` outcome — applied
     // in order, exactly as the box will apply them by hand.
     for (const file of ["../../box/sql/027_meeting_followup.sql", "../../box/sql/048_meeting_followup_denied.sql"]) {
@@ -368,7 +369,7 @@ describe("makeFollowupTick against the real store (ORB-156 fix round 3)", () => 
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    db = new Pool({ connectionString: container.getConnectionUri() });
+    db = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     for (const file of ["../../box/sql/027_meeting_followup.sql", "../../box/sql/048_meeting_followup_denied.sql"]) {
       await db.query(readFileSync(join(import.meta.dirname, file), "utf8"));
     }

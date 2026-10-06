@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { claimMeeting, recordSent, recordOutcome, getOutcome } from "../lib/meeting-followup-store.js";
 import { KitRatchet } from "@lares/agent-kit/ratchet";
 import meetingFollowupRedraft from "../catalogue/meeting_followup_redraft.js";
@@ -32,7 +33,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   process.env["DATABASE_URL"] = container.getConnectionUri();
   process.env["SLACK_ALLOWED_USER_IDS"] = BENDIK;
-  const pool = getPool();
+  const pool = quiet(getPool());
   await pool.query(sql("027_meeting_followup.sql"));
   await pool.query(sql("048_meeting_followup_denied.sql"));
   await pool.query(sql("008_ratchet.sql")); // `KitRatchet` reads/writes this table

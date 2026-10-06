@@ -10,6 +10,7 @@ import type { ToolContext } from "eve/tools";
 import { openDb } from "@lares/network/lib/db.js";
 import { NetworkUnavailableError } from "../lib/network-client.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { IdentityUnavailableError } from "../lib/identity-client.js";
 import { StoreUnhealthyError } from "@lares/agent-kit/notes-store";
 import { ReadabilityNoContentError } from "@lares/agent-kit/readability-client";
@@ -167,7 +168,7 @@ describe("identity_my_addresses and digest_run", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
-    const pool = getPool();
+    const pool = quiet(getPool());
     await pool.query(`
       CREATE TABLE users (
         id text PRIMARY KEY,
@@ -232,7 +233,7 @@ describe("identity_my_addresses and digest_run", () => {
     await expect(identityMyAddresses.execute({}, ctx)).rejects.toThrow(IdentityUnavailableError);
 
     await closePool();
-    getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv); // restore for later tests
+    quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv)); // restore for later tests
   });
 
   it("digest_run inserts exactly one queue row the untouched saga-digest schema expects", async () => {

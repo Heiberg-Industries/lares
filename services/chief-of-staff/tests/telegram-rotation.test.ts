@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { closePool } from "@lares/agent-kit/db";
@@ -38,7 +39,7 @@ describe("telegram-rotation", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     const migration = readFileSync(
       join(import.meta.dirname, "../../box/sql/020_telegram_session_rotation.sql"), "utf8",
     );

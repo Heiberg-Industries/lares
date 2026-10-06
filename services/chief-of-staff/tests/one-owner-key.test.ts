@@ -7,6 +7,7 @@ import { join } from "node:path";
 import type { Pool } from "pg";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { openRepairs } from "@lares/agent-kit/repairs";
 import {
   configuredOwnerId,
@@ -41,7 +42,7 @@ describe("one owner key, not two that agree by luck", () => {
       container = await new PostgreSqlContainer("postgres:16-alpine").start();
       dbUrl = container.getConnectionUri();
       process.env["DATABASE_URL"] = dbUrl;
-      pool = getPool();
+      pool = quiet(getPool());
       // The identity register's real shape (services/box/sql/014_identity.sql), WITHOUT its
       // seed data — a test asserts on a fixture id, never the real installation's row
       // (BUILDER.md: "a test that needs an owner id uses 'fixture-owner'").

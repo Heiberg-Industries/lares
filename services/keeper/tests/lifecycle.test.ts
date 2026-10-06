@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+import { quiet } from './helpers/quiet-pool.js';
 import { beforeAll,afterAll,beforeEach,it,expect,vi } from 'vitest';
 import { AGENT_NOT_HEALTHY, AgentLifecycle } from '../lib/lifecycle.js';
 import { WorkflowStorage } from '../lib/workflow-storage.js';
@@ -16,10 +17,10 @@ const step=async(s:string)=>{events.push(s);if(fail===s)throw new Error('injecte
 const docker:DockerBoundary={inventory:async()=>['172.18.0.1','172.18.0.20','172.18.0.21'],config:()=>step('config'),start:(n,address)=>{started.push(address);return step('start:'+n);},stop:n=>step('stop:'+n),remove:n=>step('remove:'+n),validateSquid:()=>step('parse-squid'),reloadSquid:()=>step('reload-squid'),firewall:(_s,check)=>step(check?'parse-nft':'apply-nft')};
 const lifecycle=()=>new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{});
 beforeAll(async()=>{
- pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=new Pool({connectionString:pg.getConnectionUri()});
+ pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:pg.getConnectionUri()}));
  for(const f of ['001_init.sql','003_digest.sql','005_workflow_jobs.sql','008_ratchet.sql','031_schedule_heartbeat.sql','035_proactivity.sql','038_permissions_board.sql','039_agent_definitions.sql','040_keeper.sql','041_definition_retirement.sql','042_agent_resources.sql','043_agent_conversations.sql','044_agent_door_connections.sql','045_agent_runtime_control.sql'])await pool.query(readFileSync(join(repo,'services/box/sql',f),'utf8'));
  await pool.query('CREATE DATABASE empty_workflow');
- const template=new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')});
+ const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
  await template.query('CREATE SCHEMA workflow; CREATE TABLE workflow.memory(value text)');await template.end();
  await pool.query("CREATE TABLE standing_facts(value text); INSERT INTO standing_facts VALUES ('shared-owner')");
 });
@@ -37,7 +38,7 @@ beforeEach(async()=>{
 it('clones an owned workflow database, seals before starting and reserves the whole network inventory',async()=>{
  const l=lifecycle();await l.create('bookkeeper',definition);
  const row=await l.storage.row('bookkeeper');expect(row.address).toBe('172.18.0.24');expect(row.workflow_database).toMatch(/^lares_[a-f0-9]{32}$/);
- const own=new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,`/${row.workflow_database}`)});
+ const own=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,`/${row.workflow_database}`)}));
  await own.query("INSERT INTO workflow.memory VALUES ('owned')");expect((await own.query('SELECT * FROM workflow.memory')).rows).toEqual([{value:'owned'}]);await own.end();
  expect(events).toEqual(['config','stop:bookkeeper','parse-squid','parse-nft','apply-nft','reload-squid','start:bookkeeper']);
  expect(started).toEqual(['172.18.0.24']);
@@ -49,7 +50,7 @@ it('clones an owned workflow database, seals before starting and reserves the wh
  expect(readFileSync(join(config.egressDir,'squid.conf'),'utf8')).toContain('src_sync');
  expect(await l.status('bookkeeper')).toEqual({pending:false,reason:null});
  await l.stop('bookkeeper');expect((await pool.query('SELECT * FROM standing_facts')).rows).toEqual([{value:'shared-owner'}]);
- const retained=new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,`/${row.workflow_database}`)});expect((await retained.query('SELECT * FROM workflow.memory')).rows).toEqual([{value:'owned'}]);await retained.end();
+ const retained=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,`/${row.workflow_database}`)}));expect((await retained.query('SELECT * FROM workflow.memory')).rows).toEqual([{value:'owned'}]);await retained.end();
  await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal)VALUES('bookkeeper','slack',$1,$1,'owner@example.test','U_OWNER')`,[row.ownership_token]);
  await pool.query(`INSERT INTO agent_door_claim_audit(agent,kind,incarnation,principal)VALUES('bookkeeper','slack',$1,'U_OWNER')`,[row.ownership_token]);
  const plan=await l.prepareDelete('bookkeeper');await plan.delete();await plan.delete();

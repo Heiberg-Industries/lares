@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -22,7 +23,7 @@ describe("050_brief_settings.sql / brief-settings", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(migration);
   }, 120_000);
 

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -31,7 +32,7 @@ describe("markets read stores against real Postgres", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(sql("037_tyche.sql"));
 
     await pool.query(

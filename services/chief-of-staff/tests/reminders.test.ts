@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
 import {
   createReminder,
@@ -41,7 +42,7 @@ describe("reminders-store", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(`
       CREATE TABLE reminders (

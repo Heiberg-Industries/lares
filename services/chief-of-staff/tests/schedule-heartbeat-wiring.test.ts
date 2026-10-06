@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
@@ -223,7 +224,7 @@ async function runSchedule(c: (typeof CASES)[number], live: boolean): Promise<vo
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(MIGRATION);
   // ORB-193 — `saga/owner-clock`'s seed lives in a LATER migration (035_proactivity.sql:54), which
   // this file deliberately does not apply (its premise is "only the heartbeat table exists"). Seeded

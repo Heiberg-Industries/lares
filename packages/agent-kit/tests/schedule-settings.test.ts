@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -82,7 +83,7 @@ describe("schedule_settings (sql/065) and readScheduleHours", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(MIGRATION);
   }, 120_000);
 
@@ -149,7 +150,7 @@ describe("schedule_settings (sql/065) and readScheduleHours", () => {
 
   it("readScheduleHours: a broken database reads as the default, with one warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const dead = new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" });
+    const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
     try {
       expect(await readScheduleHours(dead, "bendik", "weekly-summary")).toEqual([9]);
       expect(warn).toHaveBeenCalledTimes(1);

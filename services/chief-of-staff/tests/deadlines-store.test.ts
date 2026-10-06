@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { configuredOwnerId } from "../lib/identity-client.js";
 import {
   createDeadline,
@@ -53,7 +54,7 @@ let container: StartedPostgreSqlContainer;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
-  const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+  const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await pool.query(sql("031_schedule_heartbeat.sql"));
   await pool.query(sql("036_deadlines.sql"));
