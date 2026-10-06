@@ -75,6 +75,9 @@ beforeEach(() => {
     "docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl",
     "node", "pnpm", "openssl", "lares-doctor", "sleep",
   ]) stub(name);
+  // CREATE DATABASE is piped into docker. Drain that tiny SQL input before exiting, as a real
+  // psql does, so the writer cannot hit a closed pipe and trip the installer's pipefail (LAR-100).
+  stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
   stub("id", "echo 0");
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
