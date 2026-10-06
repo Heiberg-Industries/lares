@@ -16,17 +16,17 @@
     "regen:eve-sql:check": "tsx ../../packages/agent-kit/bin/regen-eve-workflow-sql.ts --service . --check"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "4.0.37",
+    "@ai-sdk/anthropic": "4.0.72",
     "@lares/agent-kit": "workspace:*",
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
     "@opentelemetry/resources": "2.11.0",
     "@opentelemetry/sdk-node": "0.222.0",
-    "@opentelemetry/semantic-conventions": "1.39.0",
+    "@opentelemetry/semantic-conventions": "1.43.0",
     "@workflow/world-postgres": "5.0.0-beta.42",
-    "ai": "^7.0.105",
+    "ai": "^7.0.128",
     "eve": "0.60.1",
     "https-proxy-agent": "7.0.6",
-    "just-bash": "^3.3.0",
+    "just-bash": "^3.6.0",
     "pg": "^8.23.1",
     "undici": "^7",
     "zod": "4.5.4"
