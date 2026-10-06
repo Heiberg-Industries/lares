@@ -23,6 +23,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
 import type { Observation } from "../lib/dream/reflect.js";
 
@@ -40,7 +41,7 @@ describe("origin on dream rows", () => {
   });
 
   it("ensureDreamTables adds origin to both tables, idempotently", async () => {
-    const pool = getPool();
+    const pool = quiet(getPool());
     await ensureDreamTables(pool);
     await ensureDreamTables(pool);
     for (const t of ["dream_observations", "dream_preferences"]) {

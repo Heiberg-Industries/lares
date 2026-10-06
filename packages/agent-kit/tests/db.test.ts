@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "../src/db.js";
+import { quiet } from "./helpers/quiet-pool.js";
 
 /**
  * ORB-45 lesson (binding, per the task brief): a fake/mocked `Pool` that never executes
@@ -23,7 +24,7 @@ describe("getPool", () => {
   });
 
   it("executes real SQL against a real Postgres", async () => {
-    const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     const res = await pool.query("SELECT 1 + 1 AS sum");
     expect(res.rows[0]).toEqual({ sum: 2 });
   });
@@ -46,13 +47,13 @@ describe("getPool", () => {
     await closePool();
     expect(() => getPool({} as NodeJS.ProcessEnv)).toThrow(/DATABASE_URL/);
     // Restore the singleton for any tests that run after this one.
-    getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
   });
 
   it("closePool lets a subsequent getPool() build a genuinely fresh Pool", async () => {
     const before = getPool();
     await closePool();
-    const after = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    const after = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     expect(after).not.toBe(before);
     const res = await after.query("SELECT 1 AS ok");
     expect(res.rows[0]).toEqual({ ok: 1 });

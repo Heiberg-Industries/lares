@@ -678,6 +678,7 @@ describe("refreshWatchlist is a JOB, not an initiation", () => {
 // because the point is the key space, not the network.
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { beforeAll, beforeEach, afterAll } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -737,7 +738,7 @@ describe("refreshWatchlist round-trips through real Postgres — what it writes,
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(sql("037_tyche.sql"));
   }, 180_000);
 

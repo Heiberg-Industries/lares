@@ -1,5 +1,6 @@
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { CrossMemberDeniedError, hasStandingGrant, readWithGrant, recordCrossMemberRead } from "../src/cross-member.js";
 
@@ -9,7 +10,7 @@ describe("cross-member grants — tier 2 of the access model", () => {
 
   beforeAll(async () => {
     const c = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: c.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: c.getConnectionUri() }));
     stop = async () => { await pool.end(); await c.stop(); };
     await pool.query(`
       CREATE TABLE users (id text PRIMARY KEY);

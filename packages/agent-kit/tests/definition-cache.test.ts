@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { bootDefinitionOrStop, UNUSABLE_DEFINITION_EXIT } from "../src/boot-definition.js";
 import { lastValid, rememberValid, resolveDefinition } from "../src/definition-cache.js";
@@ -15,7 +16,7 @@ let c: StartedPostgreSqlContainer;
 let pool: Pool;
 beforeAll(async () => {
   c = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: c.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: c.getConnectionUri() }));
   await pool.query(sql("039_agent_definitions.sql"));
 }, 120_000);
 afterAll(async () => {

@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { KitRatchet, recordApprovalEvent } from "../src/ratchet.js";
 
@@ -11,7 +12,7 @@ let c: StartedPostgreSqlContainer;
 let pool: Pool;
 beforeAll(async () => {
   c = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: c.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: c.getConnectionUri() }));
   await pool.query(sql("008_ratchet.sql"));
   await pool.query(sql("038_permissions_board.sql"));
 }, 120_000);
@@ -48,7 +49,7 @@ describe("the ratchet, for the board", () => {
   it("deletes audit the actor who deleted — lares.actor when set, unknown otherwise", async () => {
     const r = new KitRatchet(pool);
     // Insert a row with a dedicated client and delete it with lares.actor set
-    const client = new Pool({ connectionString: pool.options.connectionString ?? c.getConnectionUri() });
+    const client = quiet(new Pool({ connectionString: pool.options.connectionString ?? c.getConnectionUri() }));
     try {
       await client.query("INSERT INTO ratchet (agent, capability, action, level, updated_by) VALUES ($1, $2, $3, $4, $5)",
         ["deleter", "track", "", "autonomous", "setup"]);
@@ -61,7 +62,7 @@ describe("the ratchet, for the board", () => {
 
     // Delete another row through a fresh client without setting lares.actor
     await r.setLevel("deleter", "report", "gated", undefined, "setup");
-    const client2 = new Pool({ connectionString: pool.options.connectionString ?? c.getConnectionUri() });
+    const client2 = quiet(new Pool({ connectionString: pool.options.connectionString ?? c.getConnectionUri() }));
     try {
       await client2.query("DELETE FROM ratchet WHERE agent = $1 AND capability = $2",
         ["deleter", "report"]);
@@ -101,7 +102,7 @@ describe("the ratchet, for the board", () => {
     await recordApprovalEvent(pool, { agent: "saga", capability: "gmail", tool: "gmail_send", decision: "locked", reason: "first contact" });
     const { rows } = await pool.query("SELECT decision, reason FROM approval_events");
     expect(rows).toEqual([{ decision: "locked", reason: "first contact" }]);
-    const broken = new Pool({ connectionString: "postgres://nobody@127.0.0.1:1/none", connectionTimeoutMillis: 200 });
+    const broken = quiet(new Pool({ connectionString: "postgres://nobody@127.0.0.1:1/none", connectionTimeoutMillis: 200 }));
     await expect(recordApprovalEvent(broken, { agent: "a", capability: "b", tool: "c", decision: "asked" })).resolves.toBeUndefined();
     await broken.end();
   });

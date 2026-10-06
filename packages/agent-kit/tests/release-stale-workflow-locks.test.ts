@@ -2,6 +2,7 @@ import { createRequire } from "node:module";
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 
 import { releaseStaleWorkflowLocks, workflowDatabaseUrl } from "../src/release-stale-workflow-locks.js";
 
@@ -72,7 +73,7 @@ describe("releaseStaleWorkflowLocks", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     url = container.getConnectionUri();
-    pool = new Pool({ connectionString: url });
+    pool = quiet(new Pool({ connectionString: url }));
     await graphile.runMigrations({ connectionString: url });
   }, 120_000);
 

@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { recordUse } from "../lib/dream/store.js";
 
 describe("the usage clock", () => {
@@ -22,7 +23,7 @@ describe("the usage clock", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     dbUrl = container.getConnectionUri();
     process.env["DATABASE_URL"] = dbUrl;
-    await getPool().query(readFileSync(join(import.meta.dirname, "../../box/sql/073_memory_use.sql"), "utf8"));
+    await quiet(getPool()).query(readFileSync(join(import.meta.dirname, "../../box/sql/073_memory_use.sql"), "utf8"));
   }, 120_000);
 
   afterAll(async () => {

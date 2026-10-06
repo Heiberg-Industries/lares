@@ -6,6 +6,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { recordRead, resetReadWarningForTests, READ_KINDS } from "../lib/memory-reads.js";
@@ -15,7 +16,7 @@ let db: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
-  db = new Pool({ connectionString: container.getConnectionUri() });
+  db = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await db.query(readFileSync(join(__dirname, "../../box/sql/075_memory_reads.sql"), "utf8"));
 }, 120_000);
 

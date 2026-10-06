@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { ownerId } from "../lib/principals.js";
 import { createDeadline, advanceRung, getDeadline, upsertCandidate } from "../lib/deadlines-store.js";
 
@@ -43,7 +44,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   process.env["DATABASE_URL"] = container.getConnectionUri();
   process.env["SLACK_ALLOWED_USER_IDS"] = BENDIK;
-  const pool = getPool();
+  const pool = quiet(getPool());
   await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
   await pool.query(sql("031_schedule_heartbeat.sql"));
   await pool.query(sql("036_deadlines.sql"));

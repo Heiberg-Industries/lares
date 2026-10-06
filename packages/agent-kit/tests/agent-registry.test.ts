@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readResolvedTools, registerAgent } from "../src/agent-registry.js";
 
@@ -40,7 +41,7 @@ describe("compiled tool discovery", () => {
 describe("agent registry", () => {
   beforeAll(async () => {
     c = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-    pool = new Pool({ connectionString: c.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: c.getConnectionUri() }));
     for (const f of ["008_ratchet.sql", "038_permissions_board.sql"]) {
       await pool.query(readFileSync(join(here, "../../../services/box/sql", f), "utf8"));
     }
@@ -71,7 +72,7 @@ describe("agent registry", () => {
     expect(rows[0].doors).toEqual([{ kind: "slack", enabled: true }, { kind: "telegram", enabled: false }]);
   });
   it("never throws when the database is unreachable", async () => {
-    const broken = new Pool({ connectionString: "postgres://x@127.0.0.1:1/x", connectionTimeoutMillis: 200 });
+    const broken = quiet(new Pool({ connectionString: "postgres://x@127.0.0.1:1/x", connectionTimeoutMillis: 200 }));
     await expect(registerAgent({ manifest, serviceDir: fakeService(), pool: broken })).resolves.toBeUndefined();
     await broken.end();
   });

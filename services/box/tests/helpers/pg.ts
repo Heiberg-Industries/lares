@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./quiet-pool.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const sqlDir = join(here, "..", "..", "sql");
@@ -40,7 +41,7 @@ export async function startTestDb(): Promise<TestDb> {
     "pgvector/pgvector:pg16",
   ).start();
   const connectionString = container.getConnectionUri();
-  const pool = new Pool({ connectionString });
+  const pool = quiet(new Pool({ connectionString }));
   await pool.query(initSql);
   await pool.query(taskStateSql);
   await pool.query(digestSql);

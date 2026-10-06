@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { claimMeeting, recordSent, recordOutcome, getOutcome } from "../lib/meeting-followup-store.js";
 import meetingFollowupRecordDenial from "../catalogue/meeting_followup_record_denial.js";
 
@@ -29,7 +30,7 @@ let container: StartedPostgreSqlContainer;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   process.env["DATABASE_URL"] = container.getConnectionUri();
-  const pool = getPool();
+  const pool = quiet(getPool());
   await pool.query(sql("027_meeting_followup.sql"));
   await pool.query(sql("048_meeting_followup_denied.sql"));
 }, 120_000);

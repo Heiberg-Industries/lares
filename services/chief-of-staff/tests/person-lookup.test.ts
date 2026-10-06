@@ -16,6 +16,7 @@ import { renderDossier } from "../lib/person/render.js";
 import { NotApplicableError } from "../lib/person/types.js";
 import { __setTestGmailApiFactory, __setTestCalendarApiFactory } from "../lib/google.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 
 /**
  * Task 8 — two halves:
@@ -440,7 +441,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
-    await getPool().query(`
+    await quiet(getPool()).query(`
       CREATE TABLE oauth_tokens (
         id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         principal          text        NOT NULL,

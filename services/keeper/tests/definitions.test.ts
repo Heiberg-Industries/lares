@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+import { quiet } from './helpers/quiet-pool.js';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { loadDefinition } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
@@ -32,7 +33,7 @@ function register(ceiling = 2, storage = true) {
 }
 beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     for (const f of ['039_agent_definitions.sql', '040_keeper.sql', '041_definition_retirement.sql'])
         await pool.query(readFileSync(join(repo, 'services/box/sql', f), 'utf8'));
     await pool.query('CREATE TABLE owned_memory(agent text, value text); CREATE TABLE standing_facts(user_id text, fact text)');
