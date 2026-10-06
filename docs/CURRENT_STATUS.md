@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 1 October 2026, against `main` at `d95f358`.
+Last checked: 6 October 2026, against `main` at `ed9df89`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -87,17 +87,16 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- No other pull requests are open.
+- No other pull requests are open apart from #49 (below).
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
-- Two engine faults from the dry rehearsal. LAR-105 is fixed on `main`: an
-  agent with no usable definition now stops before its health address opens,
-  so the keeper reports it as not healthy and the console says why in plain
-  words. The fix is not in the rc.2 agent images; it needs a new candidate.
-  LAR-106 is still open: an old-style "last valid" definition is reused
-  without re-checking. Until both are in the images, send one message to each
-  agent after the switch; health alone proves nothing.
+- The two engine faults from the dry rehearsal, LAR-105 and LAR-106, are
+  fixed on `main` and in the rc.3 images. Only servers running rc.3 or later
+  have them; on an older image, send one message to each agent after the
+  switch, because health alone proves nothing there.
 - One installer test fails at random on GitHub (LAR-100).
+- A newer `next` update from Dependabot is open (#49); it is folded into the
+  dependency sweep (LAR-69, LAR-99).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
   section 7 remains. Ten tickets are in that state (LAR-5, 16, 17, 22, 28, 54,
