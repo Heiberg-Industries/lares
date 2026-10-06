@@ -20,11 +20,16 @@ page, this page is newer.
 - **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
   #36). The keeper's own settings file and three sign-in settings still change
   by hand in the same window; LAR-74 says which.
+- **Dependency sweep batches 1–2 done** (LAR-69): batch 1 removed `pg-boss` and
+  atlas's unused `commander` (#62); batch 2 (this PR) moved `tsx`, `yaml`, `pg`,
+  `@types/pg`, `sharp`, `csv-parse` and the console's testing-library to their
+  latest same-major versions, which clears the `esbuild` warning.
 - **Security warnings are down to two** (6 October): `next` 16.3.6 (#49),
   `grpc-js`, `smol-toml`, `source-map-js` and `uuid` (#57, #58), and vitest
   4.1.11 in every package (#59, LAR-99). Left: `sprintf-js` (medium, no fixed
-  release; judged not reachable, see #58) and `esbuild` (low, development
-  only; clears in the dependency sweep). The console image in rc.3 predates
+  release; judged not reachable, see #58) and `braces` (high, development
+  only; clears with `vitest` 5 and `vite` 8 in batch 13). The `esbuild`
+  warning cleared with batch 2. The console image in rc.3 predates
   the `next` fix, so the next candidate must rebuild the console too.
 - **The tests no longer fail at random on GitHub** (6 October): LAR-91 (#53),
   LAR-100 (#54), LAR-83 (#55, every database test file guarded, with a check
@@ -98,7 +103,7 @@ page, this page is newer.
 
 ## Next
 
-1. **The dependency sweep, batches 1–13** of the plan, in its order, one
+1. **The dependency sweep, batches 3–13** of the plan, in its order, one
    builder at a time, one pull request each. Batches 8–10 (`googleapis`,
    `better-sqlite3`, `undici`) are the risky ones and need the image runs and
    hand-run live probes the plan names. `eve` 0.71 is its own track afterwards.

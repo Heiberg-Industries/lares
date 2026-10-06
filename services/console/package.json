@@ -19,17 +19,17 @@
     "googleapis": "^173.0.0",
     "jose": "^6.2.12",
     "next": "^16.3.6",
-    "pg": "^8.21.0",
+    "pg": "^8.23.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "sharp": "0.35.4"
+    "sharp": "0.35.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "4.1.18",
-    "@testing-library/react": "16.3.0",
-    "@testing-library/user-event": "14.6.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
     "@types/node": "^26.0.0",
-    "@types/pg": "^8.11.10",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "jsdom": "26.1.0",

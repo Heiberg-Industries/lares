@@ -9,14 +9,14 @@
   },
   "dependencies": {
     "@lares/agent-kit": "workspace:*",
-    "pg": "^8.21.0",
-    "yaml": "^2.6.0",
-    "zod": "4.5.4",
-    "tsx": "^4.19.0"
+    "pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "yaml": "^2.9.1",
+    "zod": "4.5.4"
   },
   "devDependencies": {
-    "@types/pg": "^8.11.10",
-    "@testcontainers/postgresql": "^10.13.2"
+    "@testcontainers/postgresql": "^10.13.2",
+    "@types/pg": "^8.23.1"
   },
   "license": "AGPL-3.0-only"
 }
