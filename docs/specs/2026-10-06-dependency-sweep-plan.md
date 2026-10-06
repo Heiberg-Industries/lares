@@ -36,7 +36,7 @@
 13. `vitest` plus `vite` (L, mechanical)
 14. `eve` 0.71 plus its paired workflow library (L, own design note first)
 
-**Decisions needed from you:** (a) delete `pg-boss` instead of upgrading it; (b) `@types/node` at 24 (what the servers run) rather than 26; (c) move the readability and sync-jobs images to Node 24; (d) eve goes as its own track after this sweep, not inside it; (e) go on `vitest` 5 now, even though 4.1.11 only landed last week. Details in section 6.
+**Decided 6 October (all as recommended):** (a) delete `pg-boss` instead of upgrading it; (b) `@types/node` at 24 (what the servers run) rather than 26; (c) move the readability and sync-jobs images to Node 24; (d) eve goes as its own track after this sweep, not inside it; (e) go on `vitest` 5 now, even though 4.1.11 only landed last week. Details in section 6.
 
 ## 2. What is out of date today
 
@@ -200,3 +200,7 @@ Order reasoning: 1 to 3 shrink the surface for free and clear the `esbuild` aler
 - **(c) Move the readability and sync-jobs images from Node 22 to 24?** Recommend yes: several new majors already want 22.19 to 22.22, and Node 22 ends in April 2027. Costs one image rebuild and one live run each.
 - **(d) Is `eve` inside this sweep or its own track?** Recommend its own track, last, under ADR-0021, so a conversation reset does not get tangled with 13 library bumps.
 - **(e) `vitest` 5 right now?** You finished 4.1.11 last week (LAR-99). Recommend yes, because it is the only route to clear the `braces` "high" alert and the old `esbuild` alert for good, and it is dev only.
+
+### Decided (Bendik, 6 October 2026)
+
+All five as recommended: (a) delete `pg-boss`, after a read-only check that no server holds jobs in a `pgboss` schema; (b) `@types/node` 24; (c) readability and sync-jobs images move to Node 24; (d) `eve` is its own track, after this sweep, under ADR-0021; (e) `vitest` 5, in its turn as batch 13.
