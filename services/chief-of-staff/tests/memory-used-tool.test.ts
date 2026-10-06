@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 
 describe("memory_used — the answer on a door", () => {
   let container: StartedPostgreSqlContainer;
@@ -20,7 +21,7 @@ describe("memory_used — the answer on a door", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     dbUrl = container.getConnectionUri();
     process.env["DATABASE_URL"] = dbUrl;
-    await getPool().query(readFileSync(migrationPath, "utf8"));
+    await quiet(getPool()).query(readFileSync(migrationPath, "utf8"));
   }, 120_000);
 
   afterAll(async () => {

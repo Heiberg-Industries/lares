@@ -11,6 +11,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import {
   FORGET_REASONS,
   FORGOTTEN_KINDS,
@@ -43,7 +44,7 @@ let db: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  db = new Pool({ connectionString: container.getConnectionUri() });
+  db = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await db.query(FORGET_LEDGER_SQL);
 }, 120_000);
 

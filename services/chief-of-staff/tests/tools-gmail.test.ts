@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { __setTestGmailApiFactory, wrapGmailApi } from "../lib/google.js";
 import { UnauthorizedApproverError } from "../lib/approvals.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";
 
 /**
@@ -89,7 +90,7 @@ let testKeyHex: string;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   process.env["DATABASE_URL"] = container.getConnectionUri();
-  await getPool().query(`
+  await quiet(getPool()).query(`
     CREATE TABLE oauth_tokens (
       id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
       principal          text        NOT NULL,

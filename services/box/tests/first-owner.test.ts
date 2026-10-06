@@ -7,6 +7,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { runMigrations } from "../lib/migration-runner.js";
 import { ensureLedger } from "../lib/migration-ledger.js";
 import { createFirstOwner, isUntouchedEngineSeed, readEngineSeed } from "../lib/first-owner.js";
@@ -17,7 +18,7 @@ let container: StartedPostgreSqlContainer, pool: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await ensureLedger(pool);
   await runMigrations(pool, sqlDir);
 }, 300_000);

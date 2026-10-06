@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import type { ThreadMessage } from "../lib/google.js";
 import {
   isInstitutionalDueNotice,
@@ -39,7 +40,7 @@ describe("lib/obligations-store.ts", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     await ensureObligationsTable(getPool());
   }, 120_000);
 

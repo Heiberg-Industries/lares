@@ -97,7 +97,11 @@ describe("the marker file", () => {
   });
 
   it("never throws when the data root cannot be written", () => {
-    expect(() => writeSweepMarker("/proc/nonexistent/nope", NOW)).not.toThrow();
+    // A directory "inside" a regular file can never be created (ENOTDIR). Not a /proc path:
+    // on Linux, Node's recursive mkdir spins forever there (LAR-81).
+    const aFile = path.join(root, "not-a-directory");
+    fs.writeFileSync(aFile, "x");
+    expect(() => writeSweepMarker(path.join(aFile, "nope"), NOW)).not.toThrow();
   });
 });
 

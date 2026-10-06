@@ -6,6 +6,7 @@ import type { ToolContext } from "eve/tools";
 
 import voiceGuide from "../catalogue/voice_guide.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 
 const ctx = {} as ToolContext;
 
@@ -22,7 +23,7 @@ describe("voice_guide", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
     const migration = readFileSync(join(import.meta.dirname, "../../box/sql/013_voice.sql"), "utf8");
-    await getPool().query(migration);
+    await quiet(getPool()).query(migration);
   }, 120_000);
 
   afterAll(async () => {

@@ -13,6 +13,7 @@ import type { ToolContext } from "eve/tools";
 import type { DynamicResolveContext } from "eve/instructions";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { taintTurn, resetTaintForTests } from "@lares/agent-kit/origin-taint";
 import { recordForgotten } from "@lares/agent-kit/forget-ledger";
 import { withTimeout } from "../lib/timeout.js";
@@ -134,7 +135,7 @@ describe("standing facts", () => {
     process.env["DATABASE_URL"] = dbUrl;
     process.env["SLACK_ALLOWED_USER_IDS"] = BENDIK_SLACK;
     process.env["TELEGRAM_PRINCIPAL_ID"] = BENDIK_TELEGRAM;
-    await getPool().query(readFileSync(join(import.meta.dirname, "../sql/002-standing-facts.sql"), "utf8"));
+    await quiet(getPool()).query(readFileSync(join(import.meta.dirname, "../sql/002-standing-facts.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/003-facts-owner.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/004-standing-facts-origin.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/005-standing-facts-validity.sql"), "utf8"));

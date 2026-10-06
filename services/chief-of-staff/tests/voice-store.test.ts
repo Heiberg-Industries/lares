@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -17,7 +18,7 @@ describe("voice-store", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     for (const file of ["../../box/sql/013_voice.sql", "../../box/sql/026_voice_per_mailbox.sql"]) {
       await pool.query(readFileSync(join(import.meta.dirname, file), "utf8"));
     }

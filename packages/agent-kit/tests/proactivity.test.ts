@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -186,7 +187,7 @@ describe("the ledger, against a real Postgres", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(sql("031_schedule_heartbeat.sql")); // 035 seeds a heartbeat row
     await pool.query(sql("035_proactivity.sql"));
   }, 180_000);
@@ -650,7 +651,7 @@ describe("the ledger, against a real Postgres", () => {
   describe("a dead ledger fails OPEN for sending", () => {
     it("gateInitiation resolves send and warns, naming the consequence; confirm() never throws", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const dead = new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" });
+      const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
       try {
         const d = await gateInitiation(dead, base);
         expect(d).toMatchObject({ verdict: "send" });
@@ -664,7 +665,7 @@ describe("the ledger, against a real Postgres", () => {
 
     it("gatedSend still sends when the ledger is unreachable", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
-      const dead = new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" });
+      const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
       const send = vi.fn(async () => {});
       try {
         expect(await gatedSend(dead, base, send)).toEqual({ verdict: "send" });
@@ -674,7 +675,7 @@ describe("the ledger, against a real Postgres", () => {
 
     it("wouldSend also fails open to send, and warns the same way", async () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      const dead = new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" });
+      const dead = quiet(new Pool({ connectionString: "postgres://x:y@127.0.0.1:1/nope" }));
       try {
         expect(await wouldSend(dead, base)).toEqual({ verdict: "send" });
       } finally { await dead.end(); }

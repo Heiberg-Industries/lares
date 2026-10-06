@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 1 October 2026, against `main` at `4bbe03d`.
+Last checked: 6 October 2026, against `main` at `ed9df89`.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -24,16 +24,18 @@ page, this page is newer.
   `brace-expansion`, `postcss`; and #25). GitHub still lists 18 warnings, all
   in test tooling (`vitest`, `@vitest/mocker`, `esbuild`, `uuid`) and none in
   an image that runs on a server. They are tracked in LAR-99.
-- **Release candidate images are built and pinned.** The second candidate,
-  [`releases/2026-10-01-rc.2.json`](../releases/2026-10-01-rc.2.json), replaces
-  only the keeper: it was rebuilt on 1 October from `4bbe03d`, so it carries
-  the LAR-104 fix (build run 36829803833; the fingerprint was looked up in the
-  registry and the image's keeper files match `main`). Everything else is
-  unchanged from rc.1 and was built on 30 September from `ac23bcb`: console,
-  firewall helper, egress proxy, the three agent runtimes and sync-jobs. No
-  code for those changed between the two commits. The sync-jobs package is
-  private, so its fingerprint comes from the build's own record and a server
-  needs registry sign-in to pull it.
+- **Release candidate images are built and pinned.** The third candidate,
+  [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json), replaces
+  the keeper and the three agent runtimes: they were rebuilt on 1 October from
+  `d95f358`, so they carry LAR-104, LAR-105 and LAR-106 (build run
+  36894781507; each fingerprint was looked up in the registry and matches the
+  build log, the keeper's files match `main`, and each agent image's compiled
+  server contains both fixes). Everything else is unchanged from rc.1 and was
+  built on 30 September from `ac23bcb`: console, firewall helper, egress proxy
+  and sync-jobs. No code those images run changed since (the console carries
+  the shared agent kit but does not use the two changed files). The sync-jobs
+  package is private, so its fingerprint comes from the build's own record and
+  a server needs registry sign-in to pull it.
 - **The switch on the existing server has a written order** (LAR-98, #43):
   [`runbooks/keeper-managed-switch.md`](runbooks/keeper-managed-switch.md),
   from a local dry rehearsal with made-up data. Every step says whether it was
@@ -44,6 +46,14 @@ page, this page is newer.
   saving. Now another agent's old capability opens no network hosts and blocks
   nothing, and an agent's own old capability is refused before anything is
   stored or stopped.
+- **An agent with no usable definition no longer looks healthy** (LAR-105,
+  #47). It stops before its health address opens, so the keeper reports it as
+  not healthy, and the console says why in plain words. In rc.3.
+- **An agent no longer runs on an outdated "last valid" definition** (LAR-106,
+  #50). When its folder is unusable, the copy remembered in the database is
+  re-checked by today's rules first. An old-style copy (`brain`, `atlas`,
+  `memory`) is refused, and the agent stops as in LAR-105 instead of running
+  without its note and fact tools. In rc.3.
 - **The marketing website has left this repository.** It lives in a private
   repository; see [`website-repository.md`](website-repository.md).
 - **The fresh-install test (LAR-50) is closed.** A blank Ubuntu install, first
@@ -57,9 +67,11 @@ page, this page is newer.
 
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
 - **No release is published.** The newest release candidate is
-  [`releases/2026-10-01-rc.2.json`](../releases/2026-10-01-rc.2.json). It has
-  not been installed or rehearsed anywhere. `2026-09-30-rc.1` is kept as a
-  record; its keeper predates the LAR-104 fix and should not be used. The other
+  [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json). It has
+  not been installed or rehearsed anywhere. `2026-09-30-rc.1` and
+  `2026-10-01-rc.2` are kept as records and should not be used: rc.1's keeper
+  predates LAR-104, and rc.2's keeper and agent images predate LAR-105 and
+  LAR-106. The other
   files in `releases/` are test manifests.
   Publishing the first release and the console's "update available" notice
   are tracked in LAR-101.
@@ -75,17 +87,16 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- No other pull requests are open.
+- No other pull requests are open apart from #49 (below).
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
-- Two engine faults from the dry rehearsal. LAR-105 is fixed on `main`: an
-  agent with no usable definition now stops before its health address opens,
-  so the keeper reports it as not healthy and the console says why in plain
-  words. The fix is not in the rc.2 agent images; it needs a new candidate.
-  LAR-106 is still open: an old-style "last valid" definition is reused
-  without re-checking. Until both are in the images, send one message to each
-  agent after the switch; health alone proves nothing.
+- The two engine faults from the dry rehearsal, LAR-105 and LAR-106, are
+  fixed on `main` and in the rc.3 images. Only servers running rc.3 or later
+  have them; on an older image, send one message to each agent after the
+  switch, because health alone proves nothing there.
 - One installer test fails at random on GitHub (LAR-100).
+- A newer `next` update from Dependabot is open (#49); it is folded into the
+  dependency sweep (LAR-69, LAR-99).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
   section 7 remains. Ten tickets are in that state (LAR-5, 16, 17, 22, 28, 54,

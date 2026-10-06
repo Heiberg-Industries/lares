@@ -9,6 +9,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = join(here, "..", "sql");
@@ -19,7 +20,7 @@ let pool: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(sql("031_schedule_heartbeat.sql"));
   await pool.query(sql("049_backup_status.sql"));
 }, 120_000);

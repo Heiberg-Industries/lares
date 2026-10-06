@@ -9,12 +9,6 @@ name: tests
 #     evals against a real model — no credential for that exists in CI).
 #   - services/slack-relay, services/sync-jobs: no package.json — not pnpm workspace
 #     members (Dockerfile/nginx-config only), so `pnpm -C <dir> test` has nothing to run.
-#   - services/travel: hangs on this hosted runner — the worker's event loop is
-#     genuinely CPU-bound (State R, wchan 0, empty kernel stack, CPU time climbing
-#     continuously across two independent forked workers at once — proven via /proc
-#     introspection, not a lock/child-process/stdin wait), never locally, and not yet
-#     isolated to one file or line despite extensive bisection. Tracked in LAR-81 — it comes back into
-#     the matrix when that is fixed; do not "fix" it by raising a timeout.
 #
 # Nothing here needs a live credential: every package below either has no external
 # dependency (packages/compose-contract, junk, memory-evals, strength, taste,
@@ -75,6 +69,7 @@ jobs:
           - { name: network, dir: services/network, timeout: 10 }
           - { name: notion-sync, dir: services/notion-sync, timeout: 10 }
           - { name: readability, dir: services/readability, timeout: 10 }
+          - { name: travel, dir: services/travel, timeout: 10 }
     steps:
       - uses: actions/checkout@v4
         with:

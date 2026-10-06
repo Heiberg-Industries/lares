@@ -17,6 +17,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testconta
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 
 import { resetTaintForTests, taintTurn } from "@lares/agent-kit/origin-taint";
 import { makeConversationRecord } from "@lares/agent-kit/conversation-record";
@@ -95,7 +96,7 @@ describe("captureTurn writes the conversation record — real Postgres, real mig
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     await pool.query(migrationSql);
   }, 120_000);
 

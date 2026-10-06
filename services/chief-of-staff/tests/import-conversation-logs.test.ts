@@ -12,6 +12,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 
 import { makeConversationRecord } from "@lares/agent-kit/conversation-record";
 import { importConversationLogs, deriveImportKey } from "../bin/import-conversation-logs.js";
@@ -24,7 +25,7 @@ let pool: Pool;
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(migration);
 }, 120_000);
 

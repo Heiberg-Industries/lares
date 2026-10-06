@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { taintTurn, resetTaintForTests } from "@lares/agent-kit/origin-taint";
 import { addNote, notesForSession, NOTES_SURFACED_PER_SESSION, type AgentNote } from "../lib/agent-notes.js";
 import { buildFactsCorrection } from "../lib/standing-facts.js";
@@ -20,7 +21,7 @@ describe("agent notes are add-only and stamped", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     dbUrl = container.getConnectionUri();
     process.env["DATABASE_URL"] = dbUrl;
-    await getPool().query(readFileSync(join(import.meta.dirname, "../sql/002-standing-facts.sql"), "utf8"));
+    await quiet(getPool()).query(readFileSync(join(import.meta.dirname, "../sql/002-standing-facts.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/003-facts-owner.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/004-standing-facts-origin.sql"), "utf8"));
     await getPool().query(readFileSync(join(import.meta.dirname, "../sql/005-standing-facts-validity.sql"), "utf8"));

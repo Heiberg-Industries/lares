@@ -16,6 +16,7 @@ import {
 } from "../lib/google.js";
 import { GoogleConfigError, type DecryptedGoogleToken } from "@lares/agent-kit/google-auth";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 
 /**
  * Task 4 — the Gmail readonly client. Per the task brief:
@@ -80,7 +81,7 @@ describe("gmailClient", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
-    await getPool().query(`
+    await quiet(getPool()).query(`
       CREATE TABLE oauth_tokens (
         id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         principal          text        NOT NULL,

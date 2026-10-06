@@ -24,6 +24,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 
 import { ensureDreamTables, makeDreamStore, labelExistingDreamRows } from "../lib/dream/store.js";
 import type { Observation } from "../lib/dream/reflect.js";
@@ -37,7 +38,7 @@ describe("the dream tables' owner column (box 084, ruling D5)", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     // Minimal stand-in for services/box/sql/014_identity.sql's `users` table — only the shape
     // `labelExistingDreamRows` reads (id, and enough to count rows).
     await pool.query(`CREATE TABLE users (id text PRIMARY KEY, display_name text NOT NULL)`);
