@@ -45,6 +45,7 @@
 - **fix** — Saga's inbox digest now arrives as a deduplicated spine report with the items needing a home and the filed breakdown, while retaining direct Slack delivery if the spine is unavailable. ([LAR-39](https://linear.app/heiberg-industries/issue/LAR-39/sagas-scheduled-digest-posts-as-a-spine-report-the-block-kit-view-it), [#7](https://github.com/Heiberg-Industries/lares/pull/7))
 - **fix** — Approval cards now show the full text being approved in Slack and Telegram and use the real Approve/Cancel controls; Gmail drafts are created directly while sends and calendar changes still ask first. ([LAR-2](https://linear.app/heiberg-industries/issue/LAR-2/approval-cards-show-the-text-being-approved-on-slack-and-telegram-say), [#4](https://github.com/Heiberg-Industries/lares/pull/4))
 - **fix** — Separately-booked weekly meetings now keep a stable follow-up series identity after their first occurrence, so they can be reviewed and later opted into auto-send safely ([LAR-57](https://linear.app/heiberg-industries/issue/LAR-57/meeting-follow-ups-derive-a-series-key-for-standing-meetings-booked-as), [#3](https://github.com/Heiberg-Industries/lares/pull/3)).
+- **fix** — Security patch updates inside the images: `@grpc/grpc-js` 1.14.4 → 1.14.5, `smol-toml` 1.8.0 → 1.9.0 and `source-map-js` 1.2.1 → 1.2.2 (resolved within existing ranges), and a root override lifts `uuid` 10.0.0 → 11.1.1 (a test-only dependency of the Docker client). No behaviour change. `sprintf-js` has no patched release; the PR explains why it is not exposed.
 
 ## v0.3.0-rc.1 — 2026-09-16
 
