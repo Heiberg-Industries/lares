@@ -4,7 +4,7 @@
 // their own client from env, so the only seam a test has is `fetch` — and two
 // hand-rolled fakes of the same API would be free to disagree about the one thing
 // these tests are proving.
-import { vi } from "vitest";
+import { vi, type Mock } from "vitest";
 
 export interface FakeQueryRow {
   pageId: string;
@@ -48,7 +48,7 @@ export interface FakeNotionState {
 }
 
 export function makeNotionFetch(state: FakeNotionState): {
-  impl: ReturnType<typeof vi.fn>;
+  impl: Mock<(url: string, init?: RequestInit) => Promise<Response>>;
   requests: RecordedRequest[];
 } {
   const requests: RecordedRequest[] = [];

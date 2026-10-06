@@ -134,7 +134,7 @@
     "@types/pg": "^8.11.10",
     "eve": "0.60.1",
     "typescript": "^5.7.2",
-    "vitest": "^3.2.7"
+    "vitest": "^4.1.11"
   },
   "peerDependencies": {
     "eve": "*"

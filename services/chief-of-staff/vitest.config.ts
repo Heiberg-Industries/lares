@@ -39,8 +39,7 @@ export default defineConfig({
     // flakes (confirmed: multiple container-backed test files timed out in a full concurrent
     // run, not just `tests/person-lookup.test.ts`). Capping concurrency trades some wall-clock
     // time for a suite that is reliably green rather than green-most-of-the-time.
-    poolOptions: {
-      forks: { minForks: 1, maxForks: 2 },
-    },
+    // Vitest 4 replaced `poolOptions.forks.maxForks` with the top-level `maxWorkers`.
+    maxWorkers: 2,
   },
 });
