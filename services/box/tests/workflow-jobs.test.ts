@@ -55,15 +55,14 @@ describe("workflow-jobs: transitions", () => {
     expect(got?.stepIndex).toBe(1);
     expect(got?.status).toBe("pending");
     expect(got?.state).toEqual({ a: 1 });
-    // advanceJob uses PostgreSQL now(), so assert due-ness against that clock.
-    // JS dates also truncate PostgreSQL microseconds; round the read horizon up
-    // after asserting the exact SQL comparison rather than adding an arbitrary sleep.
-    const { rows: [clock] } = await db.query<{ due: boolean; now: Date }>(
-      "SELECT due_at <= clock_timestamp() AS due, clock_timestamp() AS now FROM workflow_jobs WHERE id=$1",
-      [job.id],
-    );
-    expect(clock!.due).toBe(true);
-    expect((await dueJobs(db, new Date(clock!.now.getTime() + 1), "nora")).map((j) => j.id)).toContain(job.id);
+    // advanceJob stamps due_at with the database clock. Use that stored value as the one
+    // reference clock (never this process's new Date(), which can sit behind the database's
+    // clock). Node truncates the database's microseconds to milliseconds, so look one
+    // millisecond past it.
+    const { rows: [row] } = await db.query<{ due_at: Date }>("SELECT due_at FROM workflow_jobs WHERE id=$1", [job.id]);
+    const ref = new Date(row!.due_at.getTime() + 1);
+    expect((await dueJobs(db, ref, "nora")).map((j) => j.id)).toContain(job.id);
+    expect((await dueJobs(db, new Date(row!.due_at.getTime() - 1000), "nora")).map((j) => j.id)).not.toContain(job.id);
   });
 
   it("waitJob suspends until its resumeAt time", async () => {
