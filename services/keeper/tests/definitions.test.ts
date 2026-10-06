@@ -182,7 +182,7 @@ it('enforces capacity across two independent keeper processes sharing the databa
     const actions = new URL('../lib/actions.ts', import.meta.url).href;
     const run = (name: string) => {
         const script = `import {Pool} from 'pg';import {registerDefinitionActions} from ${JSON.stringify(module)};import {runAction} from ${JSON.stringify(actions)};
-          const pool=quiet(new Pool({connectionString:process.env.TEST_DATABASE_URL,application_name:'keeper-capacity-test'}));
+          const pool=new Pool({connectionString:process.env.TEST_DATABASE_URL,application_name:'keeper-capacity-test'});
           registerDefinitionActions({pool,agentsDir:${JSON.stringify(agentsDir)},retiredDir:${JSON.stringify(retiredDir)},secretsDir:${JSON.stringify(secretsDir)},ceiling:async()=>1,
           compose:{stop:async()=>{},create:async()=>{}},backup:{commit:async()=>{}},roleInfo:()=>(${JSON.stringify({roleMd:readFileSync(join(repo,'packages/agent-kit/templates/creative/role.md'),'utf8'),deployedTools:deployedToolsFor(join(repo,'services/creative'))})})});
           try{await runAction('definition.create',${JSON.stringify({...save(name),startingPoint:role})},{actor:'test',audit:async()=>{}});console.log('created');}
