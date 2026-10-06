@@ -34,7 +34,7 @@
     "better-sqlite3": "^11.7.0",
     "eve": "0.60.1",
     "googleapis": "^173.0.0",
-    "https-proxy-agent": "7.0.6",
+    "https-proxy-agent": "9.1.0",
     "just-bash": "^3.6.0",
     "mammoth": "^1.13.0",
     "pg": "^8.23.1",
