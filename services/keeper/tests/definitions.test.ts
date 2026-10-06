@@ -4,22 +4,24 @@ import { join, resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
 import { quiet } from './helpers/quiet-pool.js';
-import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { loadDefinition } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
 import { registerDefinitionActions } from '../lib/definitions.js';
 import { resetActions, runAction } from '../lib/actions.js';
+// Vitest 4 types a bare `vi.fn()` as an unusable Procedure | Constructable union, so the fakes are typed as plain mocks.
+type AnyMock = Mock<(...args: any[]) => any>;
 const repo = resolve('../..');
 const role = 'creative';
 const GOOD = { ...JSON.parse(readFileSync(join(repo, 'packages/agent-kit/templates/creative/agent.json'), 'utf8')), name: 'bookkeeper', role, model: 'test-writer' };
 let container: StartedPostgreSqlContainer, pool: Pool, root: string, agentsDir: string, retiredDir: string, secretsDir: string;
 let backup: {
-    commit: ReturnType<typeof vi.fn>;
+    commit: AnyMock;
 }, compose: {
-    stop: ReturnType<typeof vi.fn>;
-    create: ReturnType<typeof vi.fn>;
-    prepareSecretChange?:ReturnType<typeof vi.fn>;secretChanged?:ReturnType<typeof vi.fn>;
-    ownedSecrets?:ReturnType<typeof vi.fn>;
+    stop: AnyMock;
+    create: AnyMock;
+    prepareSecretChange?:AnyMock;secretChanged?:AnyMock;
+    ownedSecrets?:AnyMock;
 };
 const ctx = () => ({ actor: 'owner@example.com', audit: vi.fn(async (_record: unknown) => { }) });
 const save = (name = 'bookkeeper', extra = {}) => ({ name, definition: { ...GOOD, name }, duties: 'Books.\n', voice: 'Dry.\n', ...extra });

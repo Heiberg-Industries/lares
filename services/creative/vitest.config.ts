@@ -8,8 +8,7 @@ export default defineConfig({
     // this box); once the studio port lands its container-backed tests, an uncapped run
     // starts up to ten disposable Postgres containers at once and the resulting
     // Docker-daemon contention genuinely trips hook timeouts rather than merely flaking.
-    poolOptions: {
-      forks: { minForks: 1, maxForks: 2 },
-    },
+    // Vitest 4 replaced `poolOptions.forks.maxForks` with the top-level `maxWorkers`.
+    maxWorkers: 2,
   },
 });
