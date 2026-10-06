@@ -31,7 +31,6 @@
     "@opentelemetry/semantic-conventions": "1.43.0",
     "@workflow/world-postgres": "5.0.0-beta.42",
     "ai": "^7.0.128",
-    "better-sqlite3": "^11.7.0",
     "eve": "0.60.1",
     "googleapis": "^183.0.0",
     "https-proxy-agent": "9.1.0",
@@ -44,7 +43,6 @@
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.13.2",
-    "@types/better-sqlite3": "^7.6.12",
     "@types/node": "24.x",
     "@types/pg": "^8.23.1",
     "tsx": "^4.23.15",
