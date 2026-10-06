@@ -93,7 +93,11 @@ describe("the position file", () => {
   });
 
   it("never throws when the root cannot be written", () => {
-    expect(() => writePosition("/proc/nope/nope", { ...KATZ, at: 1, expiresAt: 2 })).not.toThrow();
+    // A directory "inside" a regular file can never be created (ENOTDIR). Not a /proc path:
+    // on Linux, Node's recursive mkdir spins forever there (LAR-81).
+    const aFile = path.join(root, "not-a-directory");
+    fs.writeFileSync(aFile, "x");
+    expect(() => writePosition(path.join(aFile, "nope"), { ...KATZ, at: 1, expiresAt: 2 })).not.toThrow();
   });
 });
 
