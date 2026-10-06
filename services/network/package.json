@@ -19,7 +19,7 @@
     "@lares/junk": "workspace:*",
     "@lares/strength": "workspace:*",
     "better-sqlite3": "^11.7.0",
-    "commander": "^12.1.0",
+    "commander": "15.0.0",
     "csv-parse": "^7.0.3"
   },
   "devDependencies": {
