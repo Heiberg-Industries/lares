@@ -36,7 +36,7 @@
 // coordinated by a person across several places at once, and a push that fails halfway leaves a
 // worse state than a local commit somebody sends deliberately. The CLI prints the push command.
 //
-// THE FRONTMATTER PARSE IS LOCAL, AND WHY. `services/box` depends on `pg`, `pg-boss`,
+// THE FRONTMATTER PARSE IS LOCAL, AND WHY. `services/box` depends on `pg`,
 // `better-sqlite3` and `@lares/network` — not on `@lares/agent-kit`, where `noteScope` lives, and
 // not on `@lares/vault-format`. Adding a dependency to reach one 20-line parse would put the whole
 // agent kit into the box image. So the parse below is written here, following `noteScope`'s CRLF
