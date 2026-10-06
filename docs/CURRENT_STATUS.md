@@ -20,7 +20,7 @@ page, this page is newer.
 - **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
   #36). The keeper's own settings file and three sign-in settings still change
   by hand in the same window; LAR-74 says which.
-- **Dependency sweep batches 1–5 done** (LAR-69): batch 1 removed `pg-boss` and
+- **Dependency sweep batches 1–7 done** (LAR-69): batch 1 removed `pg-boss` and
   atlas's unused `commander` (#62); batch 2 (#63) moved `tsx`, `yaml`, `pg`,
   `@types/pg`, `sharp`, `csv-parse` and the console's testing-library to their
   latest same-major versions, which clears the `esbuild` warning. Batch 3 (#64) put TypeScript 7.0.2 in every
@@ -30,6 +30,10 @@ page, this page is newer.
   (gateway lanes, gateway completion, key info, Langfuse), and the Anthropic one
   showed prompt caching working through the gateway (useful for LAR-85). Batch 5
   moved `next`, `react`, `radix-ui`, the Tailwind packages and `tailwind-merge`.
+  Batch 6 (#67, #68, #69) moved `https-proxy-agent` 9, `commander` 15 and
+  `lucide-react` 1. Batch 7 (#70) moved the readability and sync-jobs images to
+  Node 24. Not provable until a server runs this build: Langfuse traces through
+  the egress proxy (6a).
 - **Security warnings are down to two** (6 October): `next` 16.3.6 (#49),
   `grpc-js`, `smol-toml`, `source-map-js` and `uuid` (#57, #58), and vitest
   4.1.11 in every package (#59, LAR-99). Left: `sprintf-js` (medium, no fixed
@@ -109,7 +113,7 @@ page, this page is newer.
 
 ## Next
 
-1. **The dependency sweep, batches 6–13** of the plan, in its order, one
+1. **The dependency sweep, batches 8–13** of the plan, in its order, one
    builder at a time, one pull request each. Batches 8–10 (`googleapis`,
    `better-sqlite3`, `undici`) are the risky ones and need the image runs and
    hand-run live probes the plan names. `eve` 0.71 is its own track afterwards.
