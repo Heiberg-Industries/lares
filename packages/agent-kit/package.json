@@ -121,7 +121,7 @@
     "@lares/vault-format": "workspace:*",
     "ai": "^7.0.128",
     "googleapis-common": "^8.0.2",
-    "https-proxy-agent": "7.0.6",
+    "https-proxy-agent": "9.1.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
     "pg": "^8.23.1",
