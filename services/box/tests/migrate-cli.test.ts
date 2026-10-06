@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { parseArgs, main } from "../migrate.js";
 
 const tempDirs: string[] = [];
@@ -23,7 +24,7 @@ let container: StartedPostgreSqlContainer;
 let pool: Pool;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
 }, 180_000);
 afterAll(async () => {
   await pool?.end();

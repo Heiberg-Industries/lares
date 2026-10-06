@@ -15,6 +15,7 @@ import {
   readTokenEncKey,
 } from "../src/google-auth.js";
 import { getPool, closePool } from "../src/db.js";
+import { quiet } from "./helpers/quiet-pool.js";
 
 /**
  * ORB-142 Step D — the Google auth PLUMBING, shared by eve-saga and eve-marcel.
@@ -216,7 +217,7 @@ describe("oauth_tokens reads", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
-    await getPool().query(`
+    await quiet(getPool()).query(`
       CREATE TABLE oauth_tokens (
         id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         principal          text        NOT NULL,

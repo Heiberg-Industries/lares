@@ -6,6 +6,7 @@ import type { ToolContext } from "eve/tools";
 
 import outreachTrack from "../catalogue/outreach_track.js";
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 
 const ctx = {} as ToolContext;
 
@@ -17,7 +18,7 @@ describe("outreach_track", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
     const migration = readFileSync(join(import.meta.dirname, "../../box/sql/021_outreach_threads.sql"), "utf8");
-    await getPool().query(migration);
+    await quiet(getPool()).query(migration);
     // Schema guard retrofit (023_schema_principal_scoping.sql) — applied inline since that
     // migration also touches telegram_* tables, which don't exist in this test's schema.
     await getPool().query(`ALTER TABLE outreach_threads ADD COLUMN principal text NOT NULL DEFAULT 'bendik';`);

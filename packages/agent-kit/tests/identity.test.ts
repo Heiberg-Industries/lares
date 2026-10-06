@@ -1,5 +1,6 @@
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { IdentityUnavailableError, resolveUser } from "../src/identity.js";
 
@@ -9,7 +10,7 @@ describe("resolveUser — channel address to canonical org member", () => {
 
   beforeAll(async () => {
     const container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     stop = async () => { await pool.end(); await container.stop(); };
     // Minimal live shape: 014 + 028, seeded like the box.
     await pool.query(`
@@ -38,7 +39,7 @@ describe("resolveUser — channel address to canonical org member", () => {
   });
 
   it("throws IdentityUnavailableError when the query fails — infra failure must never read as stranger", async () => {
-    const dead = new Pool({ connectionString: "postgresql://nobody:nope@127.0.0.1:1/none", connectionTimeoutMillis: 300 });
+    const dead = quiet(new Pool({ connectionString: "postgresql://nobody:nope@127.0.0.1:1/none", connectionTimeoutMillis: 300 }));
     await expect(resolveUser(dead, "slack", "U_EXAMPLE_OWNER")).rejects.toBeInstanceOf(IdentityUnavailableError);
     await dead.end();
   });

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -12,7 +13,7 @@ describe("outreach-store", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     const migration = readFileSync(join(import.meta.dirname, "../../box/sql/021_outreach_threads.sql"), "utf8");
     await pool.query(migration);
     // Schema guard retrofit (023_schema_principal_scoping.sql) — applied inline since that

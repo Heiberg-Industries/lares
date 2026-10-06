@@ -8,6 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { adoptMigrations, looksAlreadyMigrated, runMigrations } from "../lib/migration-runner.js";
 import { ensureLedger, listApplied, recordApplied } from "../lib/migration-ledger.js";
 import { startTestDb, type TestDb } from "./helpers/pg.js";
@@ -45,7 +46,7 @@ describe("adopting an already-migrated database", () => {
     // so an empty database is made here directly rather than by parameterising that helper —
     // this slice must NOT change startTestDb's signature or any existing caller's behaviour.
     const empty = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-    const pool = new Pool({ connectionString: empty.getConnectionUri() });
+    const pool = quiet(new Pool({ connectionString: empty.getConnectionUri() }));
     try {
       expect(await looksAlreadyMigrated(pool)).toBe(false);
       await ensureLedger(pool);

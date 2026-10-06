@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } 
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
+import { quiet } from "./helpers/quiet-pool.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../lib/route-store.js";
 import { makeRouteClassifier, type RouteActivity, type OpenOpportunity } from "../lib/route-classify.js";
 import { makeRouteEngine, decideProposalMode, LOW_CONFIDENCE, type RouteProposal } from "../lib/route-engine.js";
@@ -38,7 +39,7 @@ describe("route-store", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
+    const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await ensureRouteTables(pool);
   }, 120_000);

@@ -197,7 +197,8 @@ describe("claimRelearnRequest — the console's button must not be decoration", 
     const { join } = await import("node:path");
 
     const container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    const pool = new Pool({ connectionString: container.getConnectionUri() });
+    const { quiet } = await import("./helpers/quiet-pool.js");
+    const pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     try {
       await pool.query(readFileSync(join(import.meta.dirname, "../../box/sql/013_voice.sql"), "utf8"));
 

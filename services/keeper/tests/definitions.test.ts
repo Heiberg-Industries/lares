@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
+import { quiet } from './helpers/quiet-pool.js';
 import { afterAll, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { loadDefinition } from '@lares/agent-kit/definition';
 import { deployedToolsFor } from '@lares/agent-kit/persona';
@@ -32,7 +33,7 @@ function register(ceiling = 2, storage = true) {
 }
 beforeAll(async () => {
     container = await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
-    pool = new Pool({ connectionString: container.getConnectionUri() });
+    pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     for (const f of ['039_agent_definitions.sql', '040_keeper.sql', '041_definition_retirement.sql'])
         await pool.query(readFileSync(join(repo, 'services/box/sql', f), 'utf8'));
     await pool.query('CREATE TABLE owned_memory(agent text, value text); CREATE TABLE standing_facts(user_id text, fact text)');
@@ -181,7 +182,7 @@ it('enforces capacity across two independent keeper processes sharing the databa
     const actions = new URL('../lib/actions.ts', import.meta.url).href;
     const run = (name: string) => {
         const script = `import {Pool} from 'pg';import {registerDefinitionActions} from ${JSON.stringify(module)};import {runAction} from ${JSON.stringify(actions)};
-          const pool=new Pool({connectionString:process.env.TEST_DATABASE_URL,application_name:'keeper-capacity-test'});
+          const pool=quiet(new Pool({connectionString:process.env.TEST_DATABASE_URL,application_name:'keeper-capacity-test'}));
           registerDefinitionActions({pool,agentsDir:${JSON.stringify(agentsDir)},retiredDir:${JSON.stringify(retiredDir)},secretsDir:${JSON.stringify(secretsDir)},ceiling:async()=>1,
           compose:{stop:async()=>{},create:async()=>{}},backup:{commit:async()=>{}},roleInfo:()=>(${JSON.stringify({roleMd:readFileSync(join(repo,'packages/agent-kit/templates/creative/role.md'),'utf8'),deployedTools:deployedToolsFor(join(repo,'services/creative'))})})});
           try{await runAction('definition.create',${JSON.stringify({...save(name),startingPoint:role})},{actor:'test',audit:async()=>{}});console.log('created');}

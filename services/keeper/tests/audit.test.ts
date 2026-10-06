@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { quiet } from "./helpers/quiet-pool.js";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { auditor, writeAudit } from "../lib/audit.js";
 import { readSetting, writeSetting } from "../lib/settings.js";
@@ -11,7 +12,7 @@ let container: StartedPostgreSqlContainer;
 let pool: Pool;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
-  pool = new Pool({ connectionString: container.getConnectionUri() });
+  pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   const sql = readFileSync(new URL("../../box/sql/040_keeper.sql", import.meta.url), "utf8");
   await pool.query(sql);
   await pool.query(sql);
