@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 6 October 2026, against `main` at `ed9df89`.
+Last checked: 6 October 2026, against `main` after #59 (vitest 4).
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -20,10 +20,21 @@ page, this page is newer.
 - **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
   #36). The keeper's own settings file and three sign-in settings still change
   by hand in the same window; LAR-74 says which.
-- **The dependency updates that run in production are in** (#37: `undici`,
-  `brace-expansion`, `postcss`; and #25). GitHub still lists 18 warnings, all
-  in test tooling (`vitest`, `@vitest/mocker`, `esbuild`, `uuid`) and none in
-  an image that runs on a server. They are tracked in LAR-99.
+- **Security warnings are down to two** (6 October): `next` 16.3.6 (#49),
+  `grpc-js`, `smol-toml`, `source-map-js` and `uuid` (#57, #58), and vitest
+  4.1.11 in every package (#59, LAR-99). Left: `sprintf-js` (medium, no fixed
+  release; judged not reachable, see #58) and `esbuild` (low, development
+  only; clears in the dependency sweep). The console image in rc.3 predates
+  the `next` fix, so the next candidate must rebuild the console too.
+- **The tests no longer fail at random on GitHub** (6 October): LAR-91 (#53),
+  LAR-100 (#54), LAR-83 (#55, every database test file guarded, with a check
+  that new files cannot forget) and LAR-81 (#56). The travel tests run on
+  GitHub again; the cause was a `/proc` test path, see
+  [`solutions/2026-10-06-a-test-path-under-proc-hung-linux-ci.md`](solutions/2026-10-06-a-test-path-under-proc-hung-linux-ci.md).
+- **The dependency sweep has an agreed plan** (LAR-69, #60):
+  [`specs/2026-10-06-dependency-sweep-plan.md`](specs/2026-10-06-dependency-sweep-plan.md).
+  Bendik took all five recommendations on 6 October. A read-only check found
+  no `pg-boss` tables on the production server, so batch 1 may delete it.
 - **Release candidate images are built and pinned.** The third candidate,
   [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json), replaces
   the keeper and the three agent runtimes: they were rebuilt on 1 October from
@@ -85,18 +96,28 @@ page, this page is newer.
 - **The test hostname's DNS record still points at the released test address**
   and must be repointed before reuse.
 
+## Next
+
+1. **The dependency sweep, batches 1–13** of the plan, in its order, one
+   builder at a time, one pull request each. Batches 8–10 (`googleapis`,
+   `better-sqlite3`, `undici`) are the risky ones and need the image runs and
+   hand-run live probes the plan names. `eve` 0.71 is its own track afterwards.
+2. **Failures that look like success:** LAR-86, LAR-89, LAR-75, LAR-90.
+   LAR-86 and LAR-90 change what runs on the server, so they need a branch run
+   of the image workflows first.
+3. **The AI bill:** LAR-85 (ask for prompt caching), LAR-79, LAR-80. LAR-85
+   needs a live probe against the provider.
+4. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
+
 ## Open housekeeping
 
-- No other pull requests are open apart from #49 (below).
+- No pull requests are open.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
 - The two engine faults from the dry rehearsal, LAR-105 and LAR-106, are
   fixed on `main` and in the rc.3 images. Only servers running rc.3 or later
   have them; on an older image, send one message to each agent after the
   switch, because health alone proves nothing there.
-- One installer test fails at random on GitHub (LAR-100).
-- A newer `next` update from Dependabot is open (#49); it is folded into the
-  dependency sweep (LAR-69, LAR-99).
 - The Linear board was reviewed against `main` on 30 September. "In Review"
   now means one thing: the code is on `main` and only a live check in LAR-74
   section 7 remains. Ten tickets are in that state (LAR-5, 16, 17, 22, 28, 54,
