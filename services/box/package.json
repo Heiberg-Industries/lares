@@ -1,7 +1,7 @@
 {
   "name": "@lares/agent-box",
   "version": "0.1.0",
-  "description": "The private agent box's state store: Postgres + pgvector + pg-boss. Schema, Compose stack, and a typed data layer (sessions, confirmations, reminders, schedules, audit). Deployed to lares-agent-1; never built on the box.",
+  "description": "The private agent box's state store: Postgres + pgvector. Schema, Compose stack, and a typed data layer (sessions, confirmations, reminders, schedules, audit). Deployed to lares-agent-1; never built on the box.",
   "private": true,
   "type": "module",
   "main": "./lib/index.ts",
@@ -32,8 +32,7 @@
     "@lares/network": "workspace:^",
     "@lares/vault-format": "workspace:^",
     "better-sqlite3": "^11.7.0",
-    "pg": "^8.21.0",
-    "pg-boss": "^10.1.5"
+    "pg": "^8.21.0"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^10.13.2",

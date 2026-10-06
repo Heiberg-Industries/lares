@@ -67,7 +67,7 @@ export function poolFromEnv(overrides: PoolConfig = {}, env: NodeJS.ProcessEnv =
   });
 }
 
-/** Build a Pool from a single connection string (used by tests + pg-boss). */
+/** Build a Pool from a single connection string (used by tests). */
 export function poolFromUrl(connectionString: string): Pool {
   return new Pool({ connectionString });
 }

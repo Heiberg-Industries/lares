@@ -1,6 +1,6 @@
 # @lares/agent-box
 
-The private agent box's **state store** — Postgres 16 + pgvector + pg-boss — and a
+The private agent box's **state store** — Postgres 16 + pgvector — and a
 small typed data layer over it. This is Stage 2 of the agent-box build
 ([spec](../../docs/superpowers/specs/2026-06-16-agent-box-knowledge-store-design.md),
 [plan](../../docs/superpowers/plans/2026-06-16-agent-box-stage2-postgres.md)).
@@ -18,9 +18,8 @@ digest-pinned and pulled; the Node code is small enough to ship as source.
 | `.env.example` | Non-secret connection config (`PGHOST` etc.). Copy to `.env` (gitignored). The DB password is never an env value. |
 | `lib/db.ts` | Pool helpers. Reads the password from `DATABASE_PASSWORD_FILE` (default `/run/secrets/database-password`), falling back to `/run/secrets/db_password` for one older installation, then to `PGPASSWORD` for local use. |
 | `lib/reminders.ts` | Typed reminders data layer (`createReminder`, `dueReminders`, `markDelivered`) — closes Saga's reminder gap. The Stage 3 daemon consumes it. |
-| `lib/boss.ts` | pg-boss bootstrap (the Postgres-native job queue; no Redis). |
 | `migrate.ts` | Manual first-apply runner for the SQL (the Compose init mount is the normal path). |
-| `tests/` | Vitest tests that spin up a real `pgvector:pg16` container (Testcontainers), apply the real schema, and verify the data layer + the `pgboss` schema. No mocks. |
+| `tests/` | Vitest tests that spin up a real `pgvector:pg16` container (Testcontainers), apply the real schema, and verify the data layer. No mocks. |
 
 ## Develop / test (on the Mac)
 

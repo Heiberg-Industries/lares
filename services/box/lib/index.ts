@@ -1,6 +1,5 @@
 // @lares/agent-box — the box's state-store data layer.
 export { poolFromEnv, poolFromUrl } from "./db.js";
-export { startBoss } from "./boss.js";
 export {
   createReminder,
   dueReminders,
