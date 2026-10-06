@@ -26,7 +26,7 @@
     "@workflow/world-postgres": "5.0.0-beta.42",
     "ai": "^7.0.128",
     "eve": "0.60.1",
-    "googleapis": "^173.0.0",
+    "googleapis": "^183.0.0",
     "https-proxy-agent": "9.1.0",
     "just-bash": "^3.6.0",
     "pg": "^8.23.1",
