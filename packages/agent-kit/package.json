@@ -120,7 +120,7 @@
     "@ai-sdk/openai-compatible": "3.0.63",
     "@lares/vault-format": "workspace:*",
     "ai": "^7.0.128",
-    "googleapis-common": "^8.0.2",
+    "googleapis-common": "^9.1.0",
     "https-proxy-agent": "9.1.0",
     "jszip": "^3.10.2",
     "mammoth": "^1.13.0",
