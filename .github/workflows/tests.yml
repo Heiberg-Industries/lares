@@ -21,6 +21,9 @@ name: tests
 on:
   pull_request:
     branches: [main]
+  # Merge queue (ruleset "Lares main", 2026-10-07): GitHub builds a temporary branch per queued PR and needs
+  # this trigger to run the required "CI passed" check there; without it every queued PR times out.
+  merge_group:
   push:
     branches: [main]
   workflow_dispatch:
