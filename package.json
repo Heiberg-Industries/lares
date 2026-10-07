@@ -22,7 +22,6 @@
       "protobufjs@<7.6.5": "7.6.5",
       "qs@<6.16.0": "6.16.0",
       "baseline-browser-mapping@<2.11.0": "2.11.0",
-      "testcontainers@10.28.0>undici": "6.28.1",
       "undici@>=7.0.0 <7.29.1": "7.29.1",
       "undici@>=8.0.0 <8.10.2": "8.10.2",
       "brace-expansion@>=2.0.0 <2.1.7": "2.1.7",
