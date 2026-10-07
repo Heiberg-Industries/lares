@@ -20,7 +20,7 @@ page, this page is newer.
 - **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
   #36). The keeper's own settings file and three sign-in settings still change
   by hand in the same window; LAR-74 says which.
-- **Dependency sweep batches 1–9 done** (LAR-69): batch 1 removed `pg-boss` and
+- **Dependency sweep batches 1–13 done; only eve is left** (LAR-69): batch 1 removed `pg-boss` and
   atlas's unused `commander` (#62); batch 2 (#63) moved `tsx`, `yaml`, `pg`,
   `@types/pg`, `sharp`, `csv-parse` and the console's testing-library to their
   latest same-major versions, which clears the `esbuild` warning. Batch 3 (#64) put TypeScript 7.0.2 in every
@@ -33,22 +33,33 @@ page, this page is newer.
   Batch 6 (#67, #68, #69) moved `https-proxy-agent` 9, `commander` 15 and
   `lucide-react` 1. Batch 7 (#70) moved the readability and sync-jobs images to
   Node 24. Batch 8 (#72) moved `googleapis` to 183 and `googleapis-common` to 9;
-  the workspace now holds one `google-auth-library` (11.1.0) instead of two, and
-  all three image builds passed on the branch. Not provable until a server runs
-  this build, so both are to run on the next release candidate: Langfuse traces
-  through the egress proxy (6a) and the five Google live probes in
-  `services/chief-of-staff/tests/live/` (8). Batch 9 (#74) moved `better-sqlite3`
-  to 13 in box and network and dropped chief-of-staff's unused direct dependency
-  (it reads with `node:sqlite`). Branch image builds are not published, so the
-  built images were not started; 13 was seen loading on a plain
-  `node:24-bookworm-slim`. Start each new image once on the next release
-  candidate. Next: batch 10, `undici` 8.
-- **Security warnings are down to two** (6 October): `next` 16.3.6 (#49),
+  the workspace now holds one `google-auth-library` (11.1.0) instead of two.
+  Batch 9 (#74) moved `better-sqlite3` to 13 in box and network and dropped
+  chief-of-staff's unused direct dependency (it reads with `node:sqlite`).
+  Batch 10 (#77) moved `undici` to 8 in five packages; Node's built-in fetch
+  still picks up the Slack router (new probe
+  `packages/agent-kit/tests/live/slack-dispatcher.live.mts`, passed from a
+  laptop), and `telegram-fetch.ts` now asks for `proxyTunnel` because undici 8
+  stopped tunnelling `http://` targets. Both `undici` overrides stay (eve pins
+  8.9.0). Batch 11 (#78) moved `jsdom` to 30 and lifted the console's 26.1.0
+  pin. Batch 12 (#79) moved `@testcontainers/postgresql` to 12. Batch 13 (#80)
+  moved `vitest` to 5 and the console's `vite` to 8, and added a `sass` override
+  (see the security line). Batch 14, `eve` 0.71, is its own track under
+  ADR-0021.
+  **On the next release candidate, on the server** (none of these can be proven
+  before a server runs the build; branch image builds are not published):
+  Langfuse traces through the egress proxy (6a); the five Google live probes in
+  `services/chief-of-staff/tests/live/` (8); start the console, sync-jobs and
+  chief-of-staff images once and open a database (9); `slack-dispatcher.live.mts`
+  inside an agent container with `SLACK_PROXY_URL` set, `slack-user-tz.live.mts`
+  and `telegram-approval-tap.live.mts` (10).
+- **Security warnings are down to one** (7 October): `next` 16.3.6 (#49),
   `grpc-js`, `smol-toml`, `source-map-js` and `uuid` (#57, #58), and vitest
-  4.1.11 in every package (#59, LAR-99). Left: `sprintf-js` (medium, no fixed
-  release; judged not reachable, see #58) and `braces` (high, development
-  only; clears with `vitest` 5 and `vite` 8 in batch 13). The `esbuild`
-  warning cleared with batch 2. The console image in rc.3 predates
+  4.1.11 in every package (#59, LAR-99). `braces` (high) cleared with batch 13:
+  vite 8 alone did not remove it, because it came through `sass` 1.77.4, which
+  pnpm installs for optional peers of `next` and `vite`; a `sass@<1.79.0`
+  override lifts it to 1.105.1. Left: `sprintf-js` (medium, no fixed release;
+  judged not reachable, see #58). The `esbuild` warning cleared with batch 2. The console image in rc.3 predates
   the `next` fix, so the next candidate must rebuild the console too.
 - **The tests no longer fail at random on GitHub** (6 October): LAR-91 (#53),
   LAR-100 (#54), LAR-83 (#55, every database test file guarded, with a check
