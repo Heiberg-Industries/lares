@@ -129,7 +129,7 @@
     "zod": "4.5.4"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^10.13.2",
+    "@testcontainers/postgresql": "^12.2.0",
     "@types/node": "24.x",
     "@types/pg": "^8.23.1",
     "eve": "0.60.1",

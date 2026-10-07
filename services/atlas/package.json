@@ -20,7 +20,7 @@
     "undici": "^8.11.2"
   },
   "devDependencies": {
-    "@testcontainers/postgresql": "^10.13.2",
+    "@testcontainers/postgresql": "^12.2.0",
     "@types/pg": "^8.23.1",
     "pg": "^8.23.1"
   },
