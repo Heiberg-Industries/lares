@@ -30,7 +30,7 @@
     "https-proxy-agent": "9.1.0",
     "just-bash": "^3.6.0",
     "pg": "^8.23.1",
-    "undici": "^7",
+    "undici": "^8.11.2",
     "unpdf": "^1.8.1",
     "zod": "4.5.4"
   },
