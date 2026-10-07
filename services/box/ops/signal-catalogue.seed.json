@@ -46,5 +46,11 @@
     "type": "deploy-failed",
     "key": "",
     "description": "A Cloud Build pipeline failed, so whatever it was going to deploy is not deployed; the card turns green when that same pipeline next succeeds."
+  },
+  {
+    "source": "registry",
+    "type": "vulnerable-dependency",
+    "key": "",
+    "description": "A library this project depends on has a published security advisory; the fix is to merge Dependabot's PR for it or bump the version by hand, and the card turns green when GitHub marks the alert fixed."
   }
 ]
