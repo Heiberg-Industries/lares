@@ -20,7 +20,7 @@ page, this page is newer.
 - **Script 085 also moves the keeper's saved mailbox connection** (LAR-97,
   #36). The keeper's own settings file and three sign-in settings still change
   by hand in the same window; LAR-74 says which.
-- **Dependency sweep batches 1–8 done** (LAR-69): batch 1 removed `pg-boss` and
+- **Dependency sweep batches 1–9 done** (LAR-69): batch 1 removed `pg-boss` and
   atlas's unused `commander` (#62); batch 2 (#63) moved `tsx`, `yaml`, `pg`,
   `@types/pg`, `sharp`, `csv-parse` and the console's testing-library to their
   latest same-major versions, which clears the `esbuild` warning. Batch 3 (#64) put TypeScript 7.0.2 in every
@@ -37,7 +37,12 @@ page, this page is newer.
   all three image builds passed on the branch. Not provable until a server runs
   this build, so both are to run on the next release candidate: Langfuse traces
   through the egress proxy (6a) and the five Google live probes in
-  `services/chief-of-staff/tests/live/` (8). Next: batch 9, `better-sqlite3` 13.
+  `services/chief-of-staff/tests/live/` (8). Batch 9 (#74) moved `better-sqlite3`
+  to 13 in box and network and dropped chief-of-staff's unused direct dependency
+  (it reads with `node:sqlite`). Branch image builds are not published, so the
+  built images were not started; 13 was seen loading on a plain
+  `node:24-bookworm-slim`. Start each new image once on the next release
+  candidate. Next: batch 10, `undici` 8.
 - **Security warnings are down to two** (6 October): `next` 16.3.6 (#49),
   `grpc-js`, `smol-toml`, `source-map-js` and `uuid` (#57, #58), and vitest
   4.1.11 in every package (#59, LAR-99). Left: `sprintf-js` (medium, no fixed
