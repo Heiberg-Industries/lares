@@ -46,7 +46,9 @@ export function createTelegramFetch(opts?: TelegramFetchOptions): typeof fetch {
     process.env["TELEGRAM_PROXY_URL"] ??
     process.env["SLACK_PROXY_URL"] ??
     DEFAULT_PROXY_URL;
-  const dispatcher = opts?.dispatcher ?? new ProxyAgent(proxyUrl);
+  // `proxyTunnel: true` keeps http:// targets on CONNECT too. undici 8 sends them as plain
+  // forward-proxy requests by default, a shape squid's tunnel allow-list never saw (LAR-69).
+  const dispatcher = opts?.dispatcher ?? new ProxyAgent({ uri: proxyUrl, proxyTunnel: true });
   const bound = (input: RequestInfo | URL, init?: RequestInit) =>
     undiciFetch(input as never, { ...(init ?? {}), dispatcher } as never);
   return bound as unknown as typeof fetch;

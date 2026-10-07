@@ -71,8 +71,8 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
       undici:
-        specifier: 7.29.1
-        version: 7.29.1
+        specifier: ^8.11.2
+        version: 8.11.2
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -234,8 +234,8 @@ importers:
         specifier: workspace:*
         version: link:../../packages/vault-format
       undici:
-        specifier: ^7.29.1
-        version: 7.29.1
+        specifier: ^8.11.2
+        version: 8.11.2
     devDependencies:
       '@testcontainers/postgresql':
         specifier: ^10.13.2
@@ -341,8 +341,8 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
       undici:
-        specifier: 7.29.1
-        version: 7.29.1
+        specifier: ^8.11.2
+        version: 8.11.2
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -490,8 +490,8 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
       undici:
-        specifier: 7.29.1
-        version: 7.29.1
+        specifier: ^8.11.2
+        version: 8.11.2
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -672,8 +672,8 @@ importers:
         specifier: ^8.23.1
         version: 8.23.1
       undici:
-        specifier: 7.29.1
-        version: 7.29.1
+        specifier: ^8.11.2
+        version: 8.11.2
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -4980,6 +4980,10 @@ packages:
 
   undici@8.10.2:
     resolution: {integrity: sha512-/y4/bH9YNU5hi9NIrpOuvGXFcxrj3CMrV+/AYpowAYTpHn8gX/XPFjNy766FPoYY0miQhdW977JFWKGNhBdwyQ==}
+    engines: {node: '>=22.19.0'}
+
+  undici@8.11.2:
+    resolution: {integrity: sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ==}
     engines: {node: '>=22.19.0'}
 
   unenv@2.0.0-rc.24:
@@ -9511,6 +9515,8 @@ snapshots:
   undici@7.29.1: {}
 
   undici@8.10.2: {}
+
+  undici@8.11.2: {}
 
   unenv@2.0.0-rc.24:
     dependencies:
