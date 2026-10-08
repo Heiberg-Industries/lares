@@ -15,6 +15,7 @@ import { runtimeSecret, verifySecretRoot } from './secret-permissions.js';
 import { bindingsFor, verifyBindingSources } from './runtime-bindings.js';
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
+import type { CredentialRecord } from './credential-state.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
     fsyncSync(fd);
@@ -35,6 +36,12 @@ function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JS
 export const AGENT_NOT_HEALTHY = 'The agent did not start within a minute. Its log says why; often it has no usable definition. Fix that, then apply connection changes again.';
 export class AgentLifecycle {
     readonly storage: WorkflowStorage;
+    private credentialState?: () => Promise<CredentialRecord>;
+    setCredentialState(read: () => Promise<CredentialRecord>): void { this.credentialState = read; }
+    private async notionRevision(): Promise<string | null | undefined> {
+        const credential = await this.credentialState?.();
+        return credential ? credential.effectiveRevision === undefined ? credential.activeRevision : credential.effectiveRevision : undefined;
+    }
     constructor(private pool: Pool, admin: Pool, private config: LifecycleConfig, private paths: {
         agentsDir: string;
         secretsDir: string;
@@ -88,7 +95,7 @@ export class AgentLifecycle {
         return new Map((await this.pool.query("SELECT name,definition FROM agent_definitions ")).rows.map(r => [r.name, r.definition]));
     }
     private async rows() { return (await this.pool.query("SELECT * FROM agent_resources WHERE state<>'deleting' ORDER BY name")).rows; }
-    private container(row: any, d: AgentDefinition): AgentContainer {
+    private container(row: any, d: AgentDefinition, notionRevision?: string | null): AgentContainer {
         const c = this.config, r = c.runtime;
         const url = new URL(r.workflowServer);
         url.pathname = `/${row.workflow_database}`;
@@ -97,8 +104,13 @@ export class AgentLifecycle {
         const roleDefault = role === 'chief-of-staff' || role === 'travel' || role === 'creative'
             ? c.defaultBindings?.[role]
             : undefined;
-        const binding = c.bindings?.[row.name] ?? roleDefault;
-        return { name: row.name, incarnation: row.ownership_token, role, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, endpoints: c.egress.endpoints } };
+        let binding = c.bindings?.[row.name] ?? roleDefault;
+        const managedRevision = binding?.secrets.NOTION_TOKEN_FILE ? notionRevision : undefined;
+        if (binding?.secrets.NOTION_TOKEN_FILE && notionRevision === null) {
+            const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
+            binding = { ...binding, secrets };
+        }
+        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, endpoints: c.egress.endpoints } };
     }
     private async render(override?: {
         name: string;
@@ -108,6 +120,7 @@ export class AgentLifecycle {
         if (override)
             defs.set(override.name, override.definition);
         const agents: AgentContainer[] = [];
+        const notionRevision = await this.notionRevision();
         const rows = await this.rows();
         const active = (await this.pool.query("SELECT name FROM agent_definitions WHERE status<>'retired'")).rows;
         if (active.some(r => r.name !== omit && !rows.some(owned => owned.name === r.name)))
@@ -125,7 +138,7 @@ export class AgentLifecycle {
             if (row.name === omit || (!includeRetired && row.state === 'retired'))
                 continue;
             if (d && (!runtimeOnly || runtimeControlled(row)))
-                agents.push(this.container(row, d));
+                agents.push(this.container(row, d, notionRevision));
         }
         return { defs, agents };
     }
@@ -196,7 +209,7 @@ export class AgentLifecycle {
         for (let i = 0; i < agents.length; i++) {
             const row = rows.find(r => r.name === agents[i].name);
             if (row.applied_definition && agents[i].name !== override?.name)
-                agents[i] = this.container(row, row.applied_definition);
+                agents[i] = this.container(row, row.applied_definition, agents[i]!.notionRevision);
         }
         for (let i=0;i<agents.length;i++) agents[i]=await this.connections(agents[i],agents[i].name===override?.name);
         atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, ...this.paths }));
@@ -228,7 +241,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Migrate existing resource ownership before saving');
         if (create && row)
             throw new KeeperRefusedError('Prior resources require reconciliation before name reuse');
-        const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d);
+        const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision());
         verifyBindingSources(candidate.bindings);
         if(doorsOf(d).some(x=>x.kind==='email'&&x.enabled))await this.connections(candidate,true);
         // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
@@ -276,7 +289,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Only active resources can reconcile');
         const plan = await this.plan({ name, definition: d }); // Before pending, publish and stop: an unbuildable list must not take the agent down.
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Runtime reconciliation in progress',updated_at=now() WHERE name=$1", [name]);
-        const a = await this.connections(this.container(row, d),true);
+        const a = await this.connections(this.container(row, d, await this.notionRevision()),true);
         verifyBindingSources(a.bindings);
         this.verifySecrets(this.paths.secretsDir);
         const controlSecret = join(this.paths.secretsDir, `${name}-runtime-control`);
@@ -297,6 +310,39 @@ export class AgentLifecycle {
         await this.pool.query(`UPDATE agent_door_connections SET applied_revision=revision,applied_connection=jsonb_build_object('kind',kind,'principal',principal,'revision',revision,'owner_email',owner_email,'org',org,'mailbox',mailbox) WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[name,row.ownership_token]);
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
         return { pending: false, reason: null };
+    }
+    /** No provisioning, provider access, claim application or definition writes. Uses the
+     * existing compose, seals and private health route for one already-owned ready runtime. */
+    async credentialPreflight(names: string[]): Promise<void> {
+        await this.plan();
+        this.verifySecrets(this.paths.secretsDir);
+        for (const name of names) {
+            const row = await this.storage.row(name);
+            if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
+                throw new KeeperRefusedError('Ready applied runtime required');
+            this.refuseUnknownGrants(name, row.applied_definition);
+            const a = await this.connections(this.container(row, row.applied_definition, null), false);
+            verifyBindingSources(a.bindings);
+            for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
+                ...Object.values(a.bindings?.secrets ?? {}), ...(a.email ? [a.email.tokenKeyFile, a.email.clientIdFile, a.email.clientSecretFile] : []),
+                ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`)))]) {
+                const st = lstatSync(path);
+                if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || !st.size) throw new KeeperRefusedError('Existing runtime secrets unavailable');
+            }
+        }
+    }
+    async reconcileCredential(name: string, revision: string | null): Promise<void> {
+        const record = await this.credentialState?.();
+        if (!record?.activationIntent || record.effectiveRevision !== revision) throw new KeeperRefusedError('Credential activation intent required');
+        const row = await this.storage.row(name);
+        if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
+            throw new KeeperRefusedError('Ready applied runtime required');
+        const plan = await this.plan();
+        if (revision) this.provisionSecret(join(this.paths.secretsDir, 'notion-token'));
+        await this.publishCompose();
+        await this.docker.stop(name);
+        await this.apply(plan);
+        await this.docker.start(name, String(row.address).split('/')[0], true);
     }
     async stop(name: string) {
         const row = await this.storage.row(name);

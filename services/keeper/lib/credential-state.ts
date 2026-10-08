@@ -20,6 +20,11 @@ const consumer = z.object({
   incarnation: revision,
 }).strict();
 const progress = z.object({ name, revision, state: z.enum(['pending', 'complete', 'failed']) }).strict();
+export const credentialCustodySchema = z.object({ device: z.string(), inode: z.string(), size: z.number().int(), modified: z.string(), changed: z.string() }).strict();
+const activationIntent = z.object({
+  previousRevision: revision, targetRevision: revision, inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  prepared: z.boolean(), finishing: z.boolean(),
+}).strict();
 const test = z.object({
   revision: z.uuid(), outcome: z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']),
   at: z.iso.datetime(),
@@ -28,12 +33,24 @@ const test = z.object({
 export const credentialRecordSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT), version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   activeRevision: revision, candidateRevision: revision, rollbackRevision: revision,
-  phase: z.enum(['not-configured', 'staging', 'testing', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
+  phase: z.enum(['not-configured', 'staging', 'testing', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'disconnecting', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
   operation: z.object({ id: z.uuid(), kind: z.enum(['stage', 'test', 'discard', 'apply', 'disconnect', 'recover']) }).strict().nullable(),
   test: test.nullable(), consumers: z.array(consumer).max(200),
   activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
+  // Internal custody/activation data never appears in the socket DTO.
+  testedCustody: credentialCustodySchema.optional(),
+  effectiveRevision: revision.optional(), activationIntent: activationIntent.nullable().optional(),
 }).strict().superRefine((r, ctx) => {
   const invalid = (message: string) => ctx.addIssue({code:'custom',message});
+  if (r.activationIntent) {
+    const i = r.activationIntent;
+    if (!['applying', 'disconnecting', 'rolling-back', 'recovery-required'].includes(r.phase) ||
+      !['apply', 'disconnect'].includes(r.operation?.kind ?? '') || r.rollbackRevision !== i.previousRevision ||
+      r.operation?.kind === 'apply' && i.targetRevision !== r.candidateRevision ||
+      r.operation?.kind === 'disconnect' && i.targetRevision !== null ||
+      r.effectiveRevision !== undefined && ![i.previousRevision, i.targetRevision].includes(r.effectiveRevision))
+      invalid('Activation intent contradicts retained custody');
+  } else if (r.effectiveRevision !== undefined && r.effectiveRevision !== r.activeRevision) invalid('Effective binding must agree with completed custody');
   if (r.test?.identity && r.test.outcome !== 'passed') invalid('Only passed tests retain identity evidence');
   if (r.phase === 'testing' && (r.operation?.kind !== 'test' || r.test || r.rollbackRevision || !(r.candidateRevision || r.activeRevision)))
     invalid('Testing requires retained custody and cleared evidence');
@@ -71,12 +88,13 @@ export const initialCredentialRecord = (): CredentialRecord => ({
 });
 export const credentialStatusSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT),
-  state: z.enum(['unavailable', 'not-configured', 'host-administration-required', 'pending-test', 'test-failed', 'pending-apply', 'applying', 'applied', 'disconnected', 'recovery-required']),
+  state: z.enum(['unavailable', 'not-configured', 'host-administration-required', 'pending-test', 'test-failed', 'pending-apply', 'applying', 'disconnecting', 'applied', 'disconnected', 'recovery-required']),
   guidance: z.enum(['configure-administrator', 'prepare-managed-slot', 'prepare-writable-storage', 'review-consumers', 'inspect-journal', 'status-unavailable']).nullable(),
   revision: z.number().int().min(0).nullable(), activeRevision: revision, candidateRevision: revision,
   phase: credentialRecordSchema.shape.phase.nullable(), test: test.nullable(),
   consumers: z.array(consumer).max(200), activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
+  inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
 }).strict();
 export type CredentialStatus = z.infer<typeof credentialStatusSchema>;
 export const interruptedCredential = (r: CredentialRecord): boolean =>
-  ['staging', 'testing', 'discarding', 'applying', 'rolling-back', 'recovery-required'].includes(r.phase);
+  ['staging', 'testing', 'discarding', 'applying', 'disconnecting', 'rolling-back', 'recovery-required'].includes(r.phase);

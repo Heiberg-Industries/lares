@@ -11,7 +11,7 @@ export function doorOrigin(value:string):string {
   const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw new Error('Explicit HTTPS public door origin required');return u.origin;
 }
 /** Caller-supplied names cannot choose URLs, secret paths, platform methods or transports. */
-export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;emailPrincipal?:string;googleOrgs?:string[];fetch?:typeof fetch}) {
+export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;emailPrincipal?:string;googleOrgs?:string[];fetch?:typeof fetch;namespaceGuard?():Promise<void>}) {
  const query=o.pool.query.bind(o.pool);
  async function resource(name:string,kind:string,db:Pick<Pool,'query'>=o.pool) {
   const {rows}=await db.query(`SELECT r.*,d.definition,d.status FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1`,[name]);
@@ -30,7 +30,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
  registerAction({name:'door.claim_issue',input:z.strictObject({name:z.string().regex(NAME),kind:z.enum(['slack','telegram'])}),run:async({name,kind},ctx)=>{
   const client=await o.pool.connect();
   try {
-   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');
+   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
    const row=await resource(name,kind,client);const code=randomBytes(12).toString('hex').toUpperCase();
    const inserted=await client.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,code_hash,expires_at)
       VALUES($1,$2,$3,$4,$5,$6,now()+interval '10 minutes')
@@ -48,7 +48,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
   if(!token.rows.length)throw new KeeperRefusedError('Complete the real Google OAuth connection first');
   const client=await o.pool.connect();
   try {
-   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');
+   await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
    const current=await client.query("SELECT 1 FROM agent_resources WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token AND state='ready' FOR UPDATE",[input.name,input.incarnation]);
    if(!current.rows.length)throw new KeeperRefusedError('Agent incarnation changed');
    const saved=await client.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox,claimed_at)
@@ -62,7 +62,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
  registerAction({name:'telegram.webhook_set',input:z.strictObject({name:z.string().regex(NAME)}),run:async({name})=>{
   const client=await o.pool.connect();
   try {
-  await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');
+  await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
   const row=await resource(name,'telegram',client);
   if(row.pending||!row.applied_definition?.doors?.some((d:any)=>d.kind==='telegram'&&d.enabled))throw new KeeperRefusedError('Apply the Telegram connection changes before registering its webhook');
   if(!o.publicOrigin)throw new KeeperRefusedError('Configure the public door origin and reviewed public routing first');

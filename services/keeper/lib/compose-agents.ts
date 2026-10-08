@@ -18,6 +18,7 @@ export interface AgentContainer {
     role: string;
     address: string;
     incarnation?: string;
+    notionRevision?: string | null;
     bindings?: RuntimeBindings;
     email?: {principal:string;org:string;mailbox:string;revision:string;owner:string;tokenKeyFile:string;clientIdFile:string;clientSecretFile:string};
     claims?: {kind:'slack'|'telegram';principal:string;revision:string;owner:string}[];
@@ -153,7 +154,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             `/app/services/${a.role}/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m`,
             '/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m',
             ...(bindings?.legacySandboxRoots ?? []).map(path => `${path}:uid=10001,gid=10001,mode=0700,size=256m`)];
-        services[`lares-${a.name}`] = { image: pinnedImage(opts.imageByRole[a.role]), ...(a.incarnation ? { labels: { 'lares.incarnation': a.incarnation } } : {}), read_only: true, user: '10001:10001', restart: 'unless-stopped', cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'], environment, volumes: dataMounts, tmpfs, secrets: mounts, networks: { [opts.network]: { ipv4_address: a.address } } };
+        services[`lares-${a.name}`] = { image: pinnedImage(opts.imageByRole[a.role]), ...(a.incarnation ? { labels: { 'lares.incarnation': a.incarnation, ...(a.notionRevision !== undefined ? { 'lares.notion-revision': a.notionRevision ?? 'disconnected' } : {}) } } : {}), read_only: true, user: '10001:10001', restart: 'unless-stopped', cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'], environment, volumes: dataMounts, tmpfs, secrets: mounts, networks: { [opts.network]: { ipv4_address: a.address } } };
     }
     return stringify({ services, secrets, ...(Object.keys(volumes).length ? {volumes} : {}), networks: { [opts.network]: { external: true } } });
 }

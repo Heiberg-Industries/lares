@@ -4,18 +4,19 @@ import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interr
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
 import { CredentialFiles, newCredentialRevision } from './credential-files.js';
 import type { NotionCredentialTester } from './notion-credential.js';
+import type { CredentialActivation, CredentialActivationInput } from './credential-activation.js';
 
 export const credentialSlotInput = z.object({ slot: z.literal(CREDENTIAL_SLOT) }).strict();
 export const credentialRevisionInput = credentialSlotInput.extend({ expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict();
 const token = z.string().min(1).max(8192).refine(v => Buffer.byteLength(v, 'utf8') <= 8192 && !/[\s\x00-\x1f\x7f]/.test(v));
 
 /** Explicit tests share the foundation's lock and custody. Status and discard never test.
- * No Docker/activation dependency: pending keys cannot affect running consumers.
+ * Only explicit Apply/disconnect enter the owned runtime activation boundary.
  */
 export class Credentials {
   constructor(private config: CredentialConfig | undefined, private store: CredentialStore,
     private files: CredentialFiles, private consumers: () => Promise<CredentialConsumer[]>,
-    private tester?: NotionCredentialTester) {}
+    private tester?: NotionCredentialTester, private activation?: CredentialActivation) {}
   private authorize(ctx: ActionContext): void {
     if (ctx.host) return;
     if (!this.config?.administrator) throw new KeeperRefusedError('Configure one credential administrator on the host');
@@ -33,6 +34,7 @@ export class Credentials {
     catch { return this.dto(r, 'host-administration-required', 'prepare-writable-storage'); }
     try {
       const active = this.files.activeExists();
+      if (interruptedCredential(r)) return this.dto(r, 'recovery-required', 'inspect-journal');
       if (active !== !!r.activeRevision) return this.dto(r, 'host-administration-required', 'prepare-managed-slot');
       if (interruptedCredential(r) || this.files.unexpectedFiles(r.candidateRevision, r.rollbackRevision) ||
           r.candidateRevision && !this.files.candidateExists(r.candidateRevision) ||
@@ -45,7 +47,12 @@ export class Credentials {
     catch { return this.dto(r, 'unavailable', 'status-unavailable'); }
     if (!this.config.inventoryComplete || consumers.some(c => c.category !== 'owned-agent'))
       return this.dto(r, 'host-administration-required', 'review-consumers', consumers);
-    return this.dto(r, r.phase as CredentialStatus['state'], null, consumers);
+    const status = this.dto(r, r.phase as CredentialStatus['state'], null, consumers);
+    if (this.activation) {
+      try { status.inventoryRevision = (await this.activation.snapshot(r)).revision; }
+      catch { return this.dto(r, 'host-administration-required', 'review-consumers', consumers); }
+    }
+    return status;
   }
   async status(ctx: ActionContext): Promise<CredentialStatus> {
     this.authorize(ctx);
@@ -82,11 +89,12 @@ export class Credentials {
     const revision = intent.candidateRevision ?? intent.activeRevision!;
     const read = () => intent.candidateRevision ? this.files.readCandidate(revision) : this.files.readActive();
     const value = read();
+    const custody = intent.candidateRevision ? this.files.candidateCustody(revision) : undefined;
     const evidence = await this.tester!.test({ kind: 'api_key', integration: 'notion',
       secretFile: intent.candidateRevision ? `.notion-${revision}.candidate` : this.files.activePath }, () => value);
     // Root file/configuration changes or consumers changing during the provider read invalidate
     // the result. Leave durable testing intent; never certify different bytes/inventory.
-    if (read() !== value || this.files.unexpectedFiles(intent.candidateRevision, intent.rollbackRevision))
+    if (read() !== value || custody && JSON.stringify(custody) !== JSON.stringify(this.files.candidateCustody(revision)) || this.files.unexpectedFiles(intent.candidateRevision, intent.rollbackRevision))
       throw new KeeperOutcomeUncertainError();
     const consumers = await this.consumers();
     const inventory = (items: CredentialConsumer[]) => JSON.stringify([...items].sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category)));
@@ -94,7 +102,7 @@ export class Credentials {
       throw new KeeperOutcomeUncertainError();
     const next: CredentialRecord = credentialRecordSchema.parse({ ...intent, version: intent.version + 1,
       phase: intent.candidateRevision ? evidence.outcome === 'passed' ? 'pending-apply' : 'test-failed' : 'applied',
-      test: { revision, ...evidence, at: new Date().toISOString() },
+      test: { revision, ...evidence, at: new Date().toISOString() }, testedCustody: custody,
     });
     const result = this.dto(next, next.phase as CredentialStatus['state'], null);
     // Complete the provider-test audit BEFORE publishing tested evidence. A failed audit or
@@ -175,12 +183,26 @@ export class Credentials {
       });
     });
   }
-  /** Host-only, explicit cleanup of stage/test/discard intent. Never retries a provider call. */
+  async change(kind: 'apply' | 'disconnect', expectedRevision: number, input: CredentialActivationInput, ctx: ActionContext): Promise<CredentialStatus> {
+    this.authorize(ctx);
+    if (!this.activation) throw new KeeperRefusedError('Prepare owned credential runtime activation on the host');
+    return this.store.locked(async journal => {
+      const old = await this.current(journal, expectedRevision);
+      await this.prepared(old);
+      const saved = await this.activation!.change(journal, old, input, kind, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null));
+      return this.dto(saved, saved.phase as CredentialStatus['state'], null);
+    });
+  }
+  /** Host-only recovery. Never retries a provider call. */
   async recover(expectedRevision: number, ctx: ActionContext): Promise<CredentialStatus> {
     if (!ctx.host) throw new KeeperRefusedError('Reachable only from the host command');
     return this.store.locked(async journal => {
       const old = credentialRecordSchema.parse(await journal.read());
       if (old.version !== expectedRevision) throw new KeeperRefusedError('Credential revision changed; refresh status');
+      if (old.activationIntent && this.activation) {
+        const saved = await this.activation.recover(journal, old);
+        return this.dto(saved, saved.phase as CredentialStatus['state'], null);
+      }
       if (!['staging', 'testing', 'discarding'].includes(old.phase) || !(old.candidateRevision || old.phase === 'testing' && old.activeRevision) || old.rollbackRevision)
         throw new KeeperRefusedError('Host inspection required; activation recovery is not available in this release');
       if (this.files.unexpectedFiles(old.candidateRevision, null, true))
@@ -208,5 +230,9 @@ export function registerCredentialActions(credentials: Credentials): void {
   registerAction({ name: 'credential.test_pending', input: credentialRevisionInput,
     run: (input, ctx) => credentials.testExisting('pending', input.expectedRevision, ctx), successDetail });
   registerAction({ name: 'credential.discard', input: credentialRevisionInput, run: (input, ctx) => credentials.discard(input.expectedRevision, ctx) });
+  const activationInput = credentialRevisionInput.extend({ expectedActiveRevision: z.uuid().nullable(), inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmRestart: z.literal(true) }).strict();
+  for (const kind of ['apply', 'disconnect'] as const)
+    registerAction({ name: `credential.${kind}`, input: activationInput,
+      run: (input, ctx) => credentials.change(kind, input.expectedRevision, input, ctx) });
   registerAction({ name: 'credential.recover', input: credentialRevisionInput, hostOnly: true, run: (input, ctx) => credentials.recover(input.expectedRevision, ctx) });
 }

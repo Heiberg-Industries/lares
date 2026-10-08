@@ -19,7 +19,10 @@ export interface DockerBoundary {
     inventory(network: string): Promise<string[]>;
     config(): Promise<void>;
     /** Start one owned runtime and return only after its private Eve health route is ready. */
-    start(name: string, address: string): Promise<void>;
+    start(name: string, address: string, forceRecreate?: boolean): Promise<void>;
+    inspect?(name: string): Promise<{ id: string; running: boolean; incarnation: string | null; notionRevision: string | null; image: string; mounts: { source: string; destination: string }[]; addresses: string[] }>;
+    credentialMounts?(activePath: string): Promise<{ name: string | null; incarnation: string | null; owned: boolean }[]>;
+    healthy?(address: string): Promise<boolean>;
     stop(name: string): Promise<void>;
     remove(name: string): Promise<void>;
     validateSquid(stage: string): Promise<void>;
@@ -64,9 +67,41 @@ export function ownedDocker(c: OwnedDockerConfig, request: typeof fetch = global
         inventory: async (network) => { const entries = JSON.parse(await run(['network', 'inspect', network])); if (entries.length !== 1)
             throw new Error('Network unavailable'); return Object.values(entries[0].Containers ?? {}).map((v: any) => String(v.IPv4Address).split('/')[0]).concat((entries[0].IPAM?.Config ?? []).map((v: any) => v.Gateway).filter(Boolean)); },
         config: async () => { await compose(['config', '--quiet']); },
-        start: async (name, address) => {
+        credentialMounts: async activePath => {
+            const ids = (await run(['ps', '--all', '--quiet'])).trim().split(/\s+/).filter(Boolean);
+            if (ids.length > 2000 || ids.some(id => !/^[a-f0-9]{12,64}$/.test(id))) throw new Error('Credential mount inventory unavailable');
+            const result: { name: string | null; incarnation: string | null; owned: boolean }[] = [];
+            for (const id of ids) {
+                const [mounts, labels] = (await run(['inspect', '--format', '{{json .Mounts}}|{{json .Config.Labels}}', id])).trim().split('|').map(v => JSON.parse(v));
+                if (!Array.isArray(mounts)) throw new Error('Credential mount inventory unavailable');
+                if (mounts.some((m: any) => m.Type === 'bind' && (m.Source === activePath || activePath.startsWith(String(m.Source).replace(/\/$/, '') + '/'))))
+                    result.push({ name: typeof labels?.['com.docker.compose.service'] === 'string' ? labels['com.docker.compose.service'].replace(/^lares-/, '') : null,
+                        incarnation: labels?.['lares.incarnation'] ?? null, owned: labels?.['com.docker.compose.project'] === c.project && /^lares-[a-z][a-z0-9-]{1,30}$/.test(labels?.['com.docker.compose.service'] ?? '') });
+            }
+            return result;
+        },
+        healthy: async address => {
+            if (!privateIpv4(address)) return false;
+            try {
+                const response = await request(`http://${address}:3000/eve/v1/health`, { method: 'GET', signal: AbortSignal.timeout(1000), redirect: 'error' });
+                return response.ok && (await response.json() as { ok?: unknown })?.ok === true;
+            } catch { return false; }
+        },
+        inspect: async name => {
+            const service = `lares-${agentName(name)}`;
+            const ids = (await run(['ps', '--all', '--quiet', '--filter', `label=com.docker.compose.project=${c.project}`, '--filter', `label=com.docker.compose.service=${service}`])).trim().split(/\s+/).filter(Boolean);
+            if (ids.length !== 1 || !/^[a-f0-9]{12,64}$/.test(ids[0]!)) throw new Error('Owned runtime inventory unavailable');
+            // Select only ownership/mount facts. Never return environment or container logs.
+            const format = '{{json .Id}}|{{json .State.Running}}|{{json .Config.Labels}}|{{json .Config.Image}}|{{json .Mounts}}|{{json .NetworkSettings.Networks}}';
+            const parts = (await run(['inspect', '--format', format, ids[0]!])).trim().split('|').map(v => JSON.parse(v));
+            const [id, running, labels, image, mounts, networks] = parts;
+            if (labels?.['com.docker.compose.project'] !== c.project || labels?.['com.docker.compose.service'] !== service) throw new Error('Owned runtime required');
+            return { id, running: running === true, incarnation: labels['lares.incarnation'] ?? null, notionRevision: labels['lares.notion-revision'] ?? null,
+                image, mounts: mounts.map((m: any) => ({ source: m.Source, destination: m.Destination })), addresses: Object.values(networks).map((n: any) => n.IPAddress) };
+        },
+        start: async (name, address, forceRecreate = false) => {
             if (!privateIpv4(address)) throw new Error('keeper: agent health address was refused');
-            await compose(['up', '-d', '--no-deps', `lares-${agentName(name)}`]);
+            await compose(['up', '-d', '--no-deps', ...(forceRecreate ? ['--force-recreate'] : []), `lares-${agentName(name)}`]);
             // At most about one minute: 30 one-second probes with one-second gaps. This covers
             // the shipped gateway/runtime startup window without making a Console save hang.
             for (let attempt = 0; attempt < 30; attempt++) {

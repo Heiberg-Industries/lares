@@ -39,6 +39,7 @@ export interface DefinitionStorage {
     }>;
 }
 export interface DefinitionOptions {
+    namespaceGuard?(): Promise<void>;
     pool: Pool;
     agentsDir: string;
     retiredDir: string;
@@ -82,6 +83,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
             try {
                 await client.query('SELECT pg_advisory_lock(1279349317,12)');
                 roots();
+                await o.namespaceGuard?.();
                 return await connection.run(client, fn);
             }
             finally {
