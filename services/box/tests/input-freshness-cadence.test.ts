@@ -144,6 +144,7 @@ beforeEach(() => {
       `if [ "$1" = "inspect" ]; then exit 0; fi\n` +
       `query=""; for a in "$@"; do query="$a"; done\n` +
       `printf '%s\\n' "$query" >> "${queryLog}"\n` +
+      `if [ -n "\${STUB_DB_FAIL:-}" ]; then echo 'psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: Connection refused' >&2; exit 1; fi\n` +
       `case "$query" in\n` +
       `  *"from schedule_settings"*)\n` +
       `    if [ -n "\${STUB_SETTINGS_FAIL:-}" ]; then echo 'ERROR:  relation "schedule_settings" does not exist' >&2; exit 1; fi\n` +
@@ -376,5 +377,39 @@ describe("input-freshness.sh: settings it cannot use fall back to the table, out
     const t = thresholds();
     expect(t.digest).toBe(TABLE.passes[DIGEST]);
     expect(warnings(t.run)).toHaveLength(1);
+  });
+});
+
+// LAR-86: `psql_one` used to throw psql's stderr away, so "the database said no rows" and "the
+// database could not be reached" were the same empty answer. Both still FAIL (an unreadable
+// check is never a passing one) — but each now says which it was, and the unreachable one names
+// the database and role it tried, plus psql's own last words.
+describe("input-freshness.sh: a database it cannot reach is a failed check that says so", () => {
+  it("every database-backed check names the database, the role and psql's own words", () => {
+    const r = run({ STUB_DB_FAIL: "1" });
+    expect(r.status).toBe(1);
+    for (const name of ["reminder-delivery", "digest-queue", "saga/schedules"]) {
+      const line = r.lines.find((l) => l.startsWith(`STALE ${name} `));
+      expect(line, `STALE line for ${name} in:\n${r.stdout}`).toBeDefined();
+      expect(line).toContain("could not reach database lares_state as role lares");
+      expect(line).toContain("Connection refused");
+    }
+    expect(r.lines.some((l) => l.startsWith("OK    saga/") || l.startsWith("OK    marcel/"))).toBe(false);
+  });
+
+  it("honours PGDATABASE and PGUSER in that sentence, so a renamed installation reads its own names", () => {
+    const r = run({ STUB_DB_FAIL: "1", PGDATABASE: "orbis_state", PGUSER: "orbis" });
+    expect(r.status).toBe(1);
+    expect(r.stdout).toContain("could not reach database orbis_state as role orbis");
+  });
+
+  it("an empty heartbeat table is reported as missing seed rows, not as an unreachable database", () => {
+    writeFileSync(heartbeatFile, "");
+    const r = run();
+    expect(r.status).toBe(1);
+    const line = r.lines.find((l) => l.startsWith("STALE saga/schedules "));
+    expect(line).toBeDefined();
+    expect(line).toContain("sql/031");
+    expect(line).not.toContain("could not reach");
   });
 });

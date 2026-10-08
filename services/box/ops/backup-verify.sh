@@ -95,6 +95,17 @@ fi
 # environment. See LAR-74 §3.
 DB_USER="${PGUSER:-lares}"
 DB_NAME="${PGDATABASE:-lares_state}"
+
+# A database this script cannot reach is a FAILED check, and the failure names what it
+# tried (LAR-86). Both psql reads below used to discard stderr and the exit code, so an
+# unreachable server — or a wrong PGDATABASE/PGUSER — read as "no rows", which the drill
+# check blamed on a missing migration. psql's last words go to this file and into the report.
+DB_ERR_FILE="${TMPDIR:-/tmp}/backup-verify.db-err.$$"
+trap 'rm -f "$DB_ERR_FILE"' EXIT
+db_unreachable_msg() { # <database> -> the sentence, with psql's own words
+  printf 'could not reach database %s as role %s through the db container (%s) — postgres unreachable' \
+    "$1" "$DB_USER" "$(tail -n 2 "$DB_ERR_FILE" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+}
 # LAR-54-s4: how many days a restore drill (sql/049's 'drill' row, written by
 # restore-drill.sh) may go without a pass before it counts as stale. The drill runs
 # monthly, so 45 gives it a full cycle plus real slack before this pages anyone.
@@ -303,11 +314,12 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
 else
   DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'"
 fi
-DBS=$(docker compose "${COMPOSE[@]}" \
-        exec -T db psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY" 2>/dev/null \
-      | tr -d '\r' | sed '/^$/d') \
-  || DBS=""
-[ -n "$DBS" ] || fail "could not ask Postgres which databases exist, so the snapshot's database coverage cannot be verified — treat an unreadable check as failing, never as passing. Is the db container up?"
+if DBS=$(docker compose "${COMPOSE[@]}" exec -T db psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY" 2>"$DB_ERR_FILE"); then
+  DBS=$(printf '%s' "$DBS" | tr -d '\r' | sed '/^$/d')
+else
+  fail "$(db_unreachable_msg postgres), so the snapshot's database coverage cannot be verified — treat an unreachable check as failing, never as passing"
+fi
+[ -n "$DBS" ] || fail "Postgres answered but listed no databases, so the snapshot's database coverage cannot be verified — treat an unreadable check as failing, never as passing"
 
 DUMP_LS=$("${RESTIC[@]}" ls --json "$SNAP_ID" "$REQUIRED_PATH" 2>&1) \
   || fail "could not list $REQUIRED_PATH inside snapshot $SNAP_ID: $(printf '%s' "$DUMP_LS" | tail -3 | tr '\n' ' ')"
@@ -382,17 +394,21 @@ fi
 # sql/049 seeds the row at install, so a fresh installation gets a grace period from
 # day one rather than reading as instantly overdue.
 DRILL_ROW_SQL="SELECT ok, (last_pass_at IS NULL), floor(extract(epoch from now() - coalesce(last_pass_at, created_at)) / 86400)::bigint FROM backup_status WHERE check_name = 'drill';"
+# Two branches rather than an optional-argument array: bash 3.2 on the Mac treats an empty
+# array as unbound under `set -u`.
 if command -v timeout >/dev/null 2>&1; then
   DRILL_ROW=$(timeout 20 docker compose "${COMPOSE[@]}" \
-        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>/dev/null) || DRILL_ROW=""
+        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
+    || fail "$(db_unreachable_msg "$DB_NAME") while reading the restore-drill status — treat an unreachable check as failing, never as passing"
 else
   DRILL_ROW=$(docker compose "${COMPOSE[@]}" \
-        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>/dev/null) || DRILL_ROW=""
+        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
+    || fail "$(db_unreachable_msg "$DB_NAME") while reading the restore-drill status — treat an unreachable check as failing, never as passing"
 fi
 DRILL_ROW=$(printf '%s' "$DRILL_ROW" | tr -d '\r' | sed '/^$/d')
 
 [ -n "$DRILL_ROW" ] \
-  || fail "could not read the restore-drill status (backup_status row 'drill') — treat an unreadable check as failing, never as passing. If sql/049_backup_status.sql has not been applied on this box yet, that is why: apply it and this check clears on its own."
+  || fail "the database answered but has no restore-drill status (backup_status row 'drill') — treat an unreadable check as failing, never as passing. If sql/049_backup_status.sql has not been applied on this box yet, that is why: apply it and this check clears on its own."
 
 DRILL_OK=$(printf '%s' "$DRILL_ROW" | cut -d'|' -f1)
 DRILL_NEVER_PASSED=$(printf '%s' "$DRILL_ROW" | cut -d'|' -f2)

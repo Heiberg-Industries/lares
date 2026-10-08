@@ -135,7 +135,7 @@ beforeEach(() => {
       `  if [ "$a" = "-tAc" ]; then has_tac=1; fi\n` +
       `done\n` +
       `if [ "$has_lares_state" = "1" ] && [ "$has_tac" = "1" ]; then\n` +
-      `  if [ -n "\${STUB_DRILL_ROW_FAIL:-}" ]; then exit 1; fi\n` +
+      `  if [ -n "\${STUB_DRILL_ROW_FAIL:-}" ]; then echo 'psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: Connection refused' >&2; exit 1; fi\n` +
       `  cat "${drillRowFile}"\n` +
       `  exit 0\n` +
       `fi\n` +
@@ -146,6 +146,7 @@ beforeEach(() => {
       `  if [ -n "\${STUB_RECORD_STATUS_FAIL:-}" ]; then exit 1; fi\n` +
       `  exit 0\n` +
       `fi\n` +
+      `if [ -n "\${STUB_DB_LIST_FAIL:-}" ]; then echo 'psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: Connection refused' >&2; exit 1; fi\n` +
       `for a in "$@"; do if [ "$a" = "psql" ]; then cat "${dbNamesFile}"; exit 0; fi; done\n` +
       `exit 0\n`,
   );
@@ -461,12 +462,37 @@ describe("backup-verify.sh", () => {
     expect(pinged()).not.toContain("/fail");
   });
 
-  it("fails when the drill row cannot be read at all, and names sql/049 as the likely cause", () => {
+  // LAR-86: "the database said no rows" and "the database could not be reached" used to be the
+  // same empty answer (stderr thrown away, exit code discarded). Both still FAIL — but each now
+  // says which it was, and the unreachable one names what it tried.
+  it("fails when the database cannot be reached for the drill row, naming the database, the role and psql's own words", () => {
     stageSnapshot({ ageHours: 2 });
     const r = run({ STUB_DRILL_ROW_FAIL: "1" });
     expect(r.code).toBe(1);
+    expect(r.out).toContain("could not reach database lares_state as role lares");
+    expect(r.out).toContain("Connection refused");
+    expect(r.out).toMatch(/drill/i);
+    expect(r.out).not.toContain("sql/049");
+    expect(pinged()).toContain("/fail");
+  });
+
+  it("fails when the database answers but has no drill row, and names sql/049 as the likely cause", () => {
+    stageSnapshot({ ageHours: 2 });
+    writeFileSync(drillRowFile, "");
+    const r = run();
+    expect(r.code).toBe(1);
     expect(r.out).toMatch(/drill/i);
     expect(r.out).toContain("sql/049");
+    expect(r.out).not.toContain("could not reach");
+    expect(pinged()).toContain("/fail");
+  });
+
+  it("fails when the database cannot be reached for the database list, naming the database and the role", () => {
+    stageSnapshot({ ageHours: 2 });
+    const r = run({ STUB_DB_LIST_FAIL: "1" });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("could not reach database postgres as role lares");
+    expect(r.out).toContain("Connection refused");
     expect(pinged()).toContain("/fail");
   });
 

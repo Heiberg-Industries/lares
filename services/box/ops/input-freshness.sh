@@ -97,6 +97,7 @@ push() { # status msg [ping]
 REPORTED=0
 on_exit() {
   local rc=$?
+  [ -n "${PSQL_ERR_FILE:-}" ] && rm -f "$PSQL_ERR_FILE"
   [ "$REPORTED" -eq 1 ] && return
   echo "input-freshness: the check itself died (exit $rc) before it could report — it verified NOTHING this run" >&2
   push down "input-freshness on $(hostname): THE CHECK ITSELF DIED (exit $rc) before reporting — it verified nothing. journalctl -u input-freshness.service -n 30"
@@ -147,8 +148,26 @@ fail() {
 HAVE_DB=0
 if command -v docker >/dev/null 2>&1 && docker inspect "$DB_CONTAINER" >/dev/null 2>&1; then HAVE_DB=1; fi
 
+# A read that fails is NOT an empty answer (LAR-86). `psql_one` used to throw psql's stderr
+# away and discard its exit code, so "the database said no rows" and "the database could not
+# be reached" looked identical — and a wrong PGDATABASE/PGUSER silently turned every check
+# below into a check that had stopped checking. Now a failed read prints one line starting
+# `ERR:` carrying psql's own last words; callers ask `db_unreachable` before reading a value.
+PSQL_ERR_FILE="${TMPDIR:-/tmp}/input-freshness.psql-err.$$"
 psql_one() {
-  docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>/dev/null | tr -d ' '
+  local out
+  if out=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>"$PSQL_ERR_FILE"); then
+    printf '%s' "$out" | tr -d ' '
+  else
+    printf 'ERR:%s' "$(tail -n 2 "$PSQL_ERR_FILE" 2>/dev/null | tr '\n' ' ' | sed 's/ *$//')"
+  fi
+}
+db_unreachable() { case "$1" in ERR:*) return 0 ;; *) return 1 ;; esac; }
+# The one sentence every unreachable read reports — naming what it tried, the way backup.sh
+# and export.sh refuse ("postgres unreachable") before they dump anything.
+unreachable_msg() {
+  printf 'could not reach database %s as role %s in %s (%s) — postgres unreachable; treat an unreachable check as failing, never as passing' \
+    "$DB_NAME" "$DB_USER" "$DB_CONTAINER" "${1#ERR:}"
 }
 
 # GNU stat on the box, BSD stat on the Mac. This script runs in BOTH places on purpose.
@@ -220,6 +239,8 @@ else
 fi
 if [ "$OVERDUE" = "skip" ]; then
   :
+elif db_unreachable "$OVERDUE"; then
+  fail "reminder-delivery" "$(unreachable_msg "$OVERDUE")"
 elif [ -z "$OVERDUE" ]; then
   fail "reminder-delivery" "could not query reminders (is $DB_CONTAINER up?) — treat an unreadable check as failing, never as passing"
 elif [ "$OVERDUE" -gt 0 ]; then
@@ -240,6 +261,8 @@ else
 fi
 if [ "$STUCK" = "skip" ]; then
   :
+elif db_unreachable "$STUCK"; then
+  fail "digest-queue" "$(unreachable_msg "$STUCK")"
 elif [ -z "$STUCK" ]; then
   fail "digest-queue" "could not query digest_requests"
 elif [ "$STUCK" -gt 0 ]; then
@@ -312,8 +335,10 @@ else
   # One query for every row; lines of `key=age_hours`. Looked up with sed below — bash 3.2 on the
   # Mac has no associative arrays, and this script runs there too.
   HB_ROWS=$(psql_one "select agent || '=' || floor(extract(epoch from (now() - updated_at))/3600) from heartbeat where agent like 'saga/%' or agent like 'marcel/%'")
-  if [ -z "$HB_ROWS" ]; then
-    fail "saga/schedules" "could not read heartbeat rows (is $DB_CONTAINER up? was sql/031_schedule_heartbeat.sql / sql/046_marcel_schedule_heartbeat.sql applied?) — an unreadable check is failing, never passing"
+  if db_unreachable "$HB_ROWS"; then
+    fail "saga/schedules" "$(unreachable_msg "$HB_ROWS")"
+  elif [ -z "$HB_ROWS" ]; then
+    fail "saga/schedules" "the database answered but holds no heartbeat rows (was sql/031_schedule_heartbeat.sql / sql/046_marcel_schedule_heartbeat.sql applied?) — an unreadable check is failing, never passing"
   else
     hb_age() { printf '%s\n' "$HB_ROWS" | sed -n "s#^$1=##p" | head -1; }
 
@@ -378,8 +403,10 @@ EOF
         if [ -n "$CADENCE_UNUSABLE" ]; then
           LINES+=("WARN  schedule-cadence — the stored hours in schedule_settings for:${CADENCE_UNUSABLE} are not whole hours 0-23 — keeping the table's threshold for those; the freshness check itself still ran")
         fi ;;
+      ERR:*)
+        LINES+=("WARN  schedule-cadence — $(unreachable_msg "$CADENCE_ROWS") — the digest and crm-routing thresholds stay at the table's numbers, which assume the default hours; the freshness check itself still ran") ;;
       *)
-        LINES+=("WARN  schedule-cadence — could not read schedule_settings (sql/065_schedule_settings.sql not applied yet, or a database error) — the digest and crm-routing thresholds stay at the table's numbers, which assume the default hours; the freshness check itself still ran") ;;
+        LINES+=("WARN  schedule-cadence — the database answered but schedule_settings could not be read (sql/065_schedule_settings.sql not applied yet?) — the digest and crm-routing thresholds stay at the table's numbers, which assume the default hours; the freshness check itself still ran") ;;
     esac
     # bare schedule name -> the largest threshold its settings rows give; "" = keep the table's.
     cadence_hours() {
