@@ -537,7 +537,7 @@ describe("LAR-82 — dayTimezone: which calendar day an event is on, on the owne
   // a documented choice, not an accident; the brief's own timezone validation is the guard.
   it("an invalid day timezone costs this pass its findings, never throws", () => {
     const events = pair("+12:00", ["07:30", "08:30"], ["08:00", "09:00"]);
-    expect(kinds(events, { dayTimezone: "Pacific/Auckland" })).toContain("double_booking");
+    expect(kinds(events, { dayTimezone: "Pacific/Auckland" })).toEqual(["double-booked"]);
     expect(() => kinds(events, { dayTimezone: "Not/AZone" })).not.toThrow();
     expect(kinds(events, { dayTimezone: "Not/AZone" })).toEqual([]);
   });
