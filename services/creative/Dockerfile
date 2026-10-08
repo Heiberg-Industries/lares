@@ -108,6 +108,9 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-reco
 RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 COPY --from=compiled-runtime /app /app
+# Native TypeScript declaration compilation is a CI build step, never runtime
+# work. Preserve package/link layout and JS helpers; omit only its compiler.
+RUN find /app/node_modules/.pnpm -type f -path '*/node_modules/@typescript/typescript-linux-x64/lib/tsc' -delete
 COPY images/agent-runtime/start.sh /usr/local/bin/lares-start
 # Generated from SETTINGS — the startup guard lares-start runs. Same COPY layer as lares-start, so
 # it cannot be missing at runtime; the image has no TypeScript loader before `eve start`, so the

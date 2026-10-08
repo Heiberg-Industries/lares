@@ -70,6 +70,9 @@ WORKDIR /app
 # The whole tree, layout preserved: pnpm's node_modules are RELATIVE symlinks into the
 # workspace-root store, so copying one service alone breaks every import.
 COPY --from=deps /app /app
+# Native TypeScript declaration compilation is a CI build step, never runtime
+# work. Preserve package/link layout and JS helpers; omit only its compiler.
+RUN find /app/node_modules/.pnpm -type f -path '*/node_modules/@typescript/typescript-linux-x64/lib/tsc' -delete
 USER 10001:10001
 
 # tsx DIRECTLY (hoisted binary), never `pnpm exec` — corepack would try to fetch pnpm from npm

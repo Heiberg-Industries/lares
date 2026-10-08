@@ -26,4 +26,7 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 COPY --from=build /app /app
+# Native TypeScript declaration compilation is a CI build step, never runtime
+# work. Preserve package/link layout and JS helpers; omit only its compiler.
+RUN find /app/node_modules/.pnpm -type f -path '*/node_modules/@typescript/typescript-linux-x64/lib/tsc' -delete
 CMD ["/app/services/keeper/node_modules/.bin/tsx", "/app/services/keeper/bin/keeper.ts", "serve"]
