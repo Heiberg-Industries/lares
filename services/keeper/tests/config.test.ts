@@ -20,12 +20,43 @@ it("loads overlay and rendered configs without installation defaults", () => {
     expect(loadKeeperConfig(f.file)).toEqual({ ...f.config, mode });
   }
 });
-it("rejects incomplete, invalid and secret-bearing configs without echoing input", () => {
+// LAR-89: the keeper used to replace every failure with "invalid or unreadable configuration",
+// so the owner could not see which field in the boot file was wrong. Each failure now says
+// what it is and where — and still never repeats a value from the file.
+it("a missing file is reported as missing, with its path and the system's reason", () => {
   const f = fixture();
-  for (const config of [{ ...f.config, project: "secret;rm" }, { ...f.config, db: { ...f.config.db, password: "secret" } }, { ...f.config, agentsDir: "relative" }]) {
-    writeFileSync(f.file, JSON.stringify(config));
-    expect(() => loadKeeperConfig(f.file)).toThrow("invalid or unreadable configuration");
-  }
+  expect(() => loadKeeperConfig(f.file)).toThrow(`keeper: configuration file ${f.file} is missing or unreadable (ENOENT)`);
+});
+it("a file that is not JSON is reported as such, without quoting its text", () => {
+  const f = fixture();
+  writeFileSync(f.file, '{ "db": { "password": "hunter2-the-secret" }');
+  const error = catchError(() => loadKeeperConfig(f.file));
+  expect(error.message).toBe(`keeper: configuration file ${f.file} is not valid JSON`);
+  expect(error.message).not.toContain("hunter2");
+});
+it("a schema failure names the field's path and the reason, for top-level and nested fields alike", () => {
+  const f = fixture();
+  writeFileSync(f.file, JSON.stringify({ ...f.config, project: "secret;rm", db: { ...f.config.db, port: "5432" } }));
+  const error = catchError(() => loadKeeperConfig(f.file));
+  expect(error.message).toContain(`keeper: invalid configuration in ${f.file}:`);
+  expect(error.message).toMatch(/\bproject: /);
+  expect(error.message).toMatch(/\bdb\.port: .*expected number/);
+  expect(error.message).not.toContain("secret;rm");
+  expect(error.message).not.toContain("5432");
+});
+it("names an unrecognized key but never the value stored under it", () => {
+  const f = fixture();
+  writeFileSync(f.file, JSON.stringify({ ...f.config, db: { ...f.config.db, password: "hunter2-the-secret" } }));
+  const error = catchError(() => loadKeeperConfig(f.file));
+  expect(error.message).toMatch(/\bdb: .*password/);
+  expect(error.message).not.toContain("hunter2");
+});
+it("a relative directory is refused with the field named, not the path echoed", () => {
+  const f = fixture();
+  writeFileSync(f.file, JSON.stringify({ ...f.config, agentsDir: "relative/agents-of-hunter2" }));
+  const error = catchError(() => loadKeeperConfig(f.file));
+  expect(error.message).toMatch(/\bagentsDir: /);
+  expect(error.message).not.toContain("hunter2");
 });
 it("reads the password only when creating a pool", async () => {
   const f = fixture();
@@ -37,3 +68,12 @@ it("reads the password only when creating a pool", async () => {
   rmSync(f.config.db.passwordFile);
   expect(() => keeperPool(f.config.db)).toThrow("credentials unavailable");
 });
+function catchError(fn: () => unknown): Error {
+  try {
+    fn();
+  }
+  catch (err) {
+    return err as Error;
+  }
+  throw new Error("expected the call to throw");
+}
