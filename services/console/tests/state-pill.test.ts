@@ -29,7 +29,20 @@ describe("StatePill vocabulary", () => {
     expect(STATE_COLOURS["syncing"]!.c).toBe("var(--ok)");
   });
 
-  it("labels every mapped state with its own name", () => {
-    for (const [state, m] of Object.entries(STATE_COLOURS)) expect(m.label).toBe(state);
+  it("keeps each domain's vocabulary and gives lifecycle codes plain-language labels", () => {
+    const lifecycleLabels: Record<string, string> = {
+      "not-configured": "Not configured",
+      "host-administration-required": "Host administration required",
+      "pending-test": "Pending test",
+      "test-failed": "Test failed",
+      "pending-apply": "Pending Apply",
+      applying: "Applying",
+      disconnecting: "Disconnecting locally",
+      applied: "Applied",
+      disconnected: "Disconnected locally",
+      "recovery-required": "Recovery required",
+    };
+    for (const [state, m] of Object.entries(STATE_COLOURS))
+      expect(m.label).toBe(lifecycleLabels[state] ?? state);
   });
 });
