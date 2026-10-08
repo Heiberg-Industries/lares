@@ -531,8 +531,14 @@ describe("LAR-82 — dayTimezone: which calendar day an event is on, on the owne
     expect(kinds(events, { dayTimezone: "America/New_York" })).toEqual(["double-booked"]);
   });
 
+  // The file's standing rule, now reachable from the brief's owner-clock setting: an unknown
+  // zone makes `wallClock` return nothing, every timed event drops out of the window, and the
+  // pass reports NO clashes rather than throwing into the brief. Pinned here so the silence is
+  // a documented choice, not an accident; the brief's own timezone validation is the guard.
   it("an invalid day timezone costs this pass its findings, never throws", () => {
     const events = pair("+12:00", ["07:30", "08:30"], ["08:00", "09:00"]);
+    expect(kinds(events, { dayTimezone: "Pacific/Auckland" })).toContain("double_booking");
     expect(() => kinds(events, { dayTimezone: "Not/AZone" })).not.toThrow();
+    expect(kinds(events, { dayTimezone: "Not/AZone" })).toEqual([]);
   });
 });
