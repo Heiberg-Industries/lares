@@ -1,15 +1,35 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 
 // lib/accounts imports @lares/agent-box (native deps) + lib/db at module load — mock both so the
 // pure helpers under test load hermetically.
-vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: async () => [] }));
+vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: vi.fn().mockResolvedValue([]) }));
 vi.mock("../lib/db", () => ({ pool: {} }));
 
-import { toGoogleAccountDTO, googleOrgClientConfig, googleOrgs, GOOGLE_SCOPES } from "../lib/accounts";
+import { listTokens } from "@lares/agent-box/lib/oauth-tokens.js";
+import { listGoogleAccounts, toGoogleAccountDTO, googleOrgClientConfig, googleOrgs, GOOGLE_SCOPES } from "../lib/accounts";
 import { readSecret } from "../lib/secrets";
 
 describe("accounts data layer", () => {
   const origEnv = { ...process.env };
+  beforeEach(() => { vi.mocked(listTokens).mockReset().mockResolvedValue([]); });
+
+  it("distinguishes a successful empty account read from a failed read", async () => {
+    expect(await listGoogleAccounts()).toEqual({ accounts: [], unavailable: false });
+    vi.mocked(listTokens).mockRejectedValue(new Error("private SQL and credentials"));
+    expect(await listGoogleAccounts()).toEqual({ accounts: [], unavailable: true });
+  });
+
+  it("returns stored account facts without secrets on a successful read", async () => {
+    vi.mocked(listTokens).mockResolvedValue([{
+      id: "token", principal: "owner", provider: "google", orgId: "acme",
+      emailAddress: "owner@acme.example", scopes: ["read"],
+      createdAt: new Date("2026-10-08T10:00:00Z"), updatedAt: new Date("2026-10-08T10:00:00Z"),
+    }]);
+    expect(await listGoogleAccounts()).toEqual({ unavailable: false, accounts: [{
+      principal: "owner", email: "owner@acme.example", org: "acme",
+      scopeCount: 1, connectedAt: "2026-10-08",
+    }] });
+  });
   afterEach(() => { process.env = { ...origEnv }; });
 
   it("maps a StoredOAuthToken to a display DTO (no secret leaks)", () => {

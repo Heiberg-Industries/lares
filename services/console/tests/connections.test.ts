@@ -1,5 +1,14 @@
-import { describe, it, expect } from "vitest";
-import { buildConnectionRows, lastUsedByConnection, lastUsedByInstance, isEvidenceOfUse } from "../lib/connections";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+vi.mock("../lib/db", () => ({ pool: { query: vi.fn() } }));
+vi.mock("../lib/agents", () => ({ listAgents: vi.fn() }));
+vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: vi.fn() }));
+import { pool } from "../lib/db";
+import { listAgents } from "../lib/agents";
+import { listTokens } from "@lares/agent-box/lib/oauth-tokens.js";
+import { renderToStaticMarkup } from "react-dom/server";
+import { createElement } from "react";
+import { ConnectionsTable } from "../components/ConnectionsTable";
+import { getConnectionRows, buildConnectionRows, lastUsedByConnection, lastUsedByInstance, isEvidenceOfUse } from "../lib/connections";
 import { connectionsByCapability } from "@lares/agent-kit/connections";
 
 const agents = [
@@ -100,24 +109,31 @@ describe("isEvidenceOfUse", () => {
 
 describe("buildConnectionRows", () => {
   const base = {
-    agents, accounts: [], configuredOrgs: ["heiberg", "zero7"],
+    agents, accounts: [], accountsUnavailable: false, usageUnavailable: false, configuredOrgs: ["heiberg", "zero7"],
     lastUsed: new Map(), instanceLastUsed: new Map(), connectionsByCapability,
   };
 
-  it("reports a Google org with an enrolled mailbox as live", () => {
+  it("reports a Google org with an enrolled mailbox without claiming tested health", () => {
     const rows = buildConnectionRows({
       ...base,
       accounts: [{ principal: "U_bendik", email: "owner@project.example", org: "zero7", scopeCount: 4, connectedAt: "2026-08-06" }],
     });
     const zero7 = rows.find((r) => r.connectionId === "google" && r.instanceId === "zero7")!;
-    expect(zero7.status).toBe("live");
-    expect(zero7.detail).toBe("1 mailbox · 4 scopes");
+    expect(zero7.status).toBe("enrolled");
+    expect(zero7.detail).toBe("1 mailbox · 4 scopes · provider health not tested");
     expect(zero7.accounts.map((a) => a.email)).toEqual(["owner@project.example"]);
   });
 
   it("reports a configured Google client with no mailbox as partial, not missing", () => {
     const rows = buildConnectionRows(base);
     expect(rows.find((r) => r.instanceId === "heiberg")!.status).toBe("partial");
+  });
+
+  it("keeps the blank Google row visible when account evidence is unavailable", () => {
+    const rows = buildConnectionRows({ ...base, configuredOrgs: [], accountsUnavailable: true });
+    expect(rows.find((r) => r.connectionId === "google")).toMatchObject({
+      status: "unavailable", detail: "no client configured · accounts unavailable",
+    });
   });
 
   it("omits catalogue-only workspaces that do not exist on this installation", () => {
@@ -157,7 +173,7 @@ describe("buildConnectionRows", () => {
       ],
     });
     const zero7 = rows.find((r) => r.connectionId === "google" && r.instanceId === "zero7")!;
-    expect(zero7.detail).toBe("2 mailboxes · 3 scopes");
+    expect(zero7.detail).toBe("2 mailboxes · 3 scopes · provider health not tested");
   });
 
   // Important 3 (final review): an org can exist only because someone set
@@ -171,7 +187,7 @@ describe("buildConnectionRows", () => {
     });
     const acme = rows.find((r) => r.connectionId === "google" && r.instanceId === "acme");
     expect(acme).toBeDefined();
-    expect(acme!.status).toBe("live");
+    expect(acme!.status).toBe("enrolled");
     expect(acme!.accounts.map((a) => a.email)).toEqual(["x@acme.com"]);
   });
 
@@ -224,5 +240,93 @@ describe("buildConnectionRows", () => {
       .toContain("marcel");
     expect(rows.find((r) => r.connectionId === "gateway" && r.instanceId === "shared")!.declaredFor)
       .not.toContain("marcel");
+  });
+});
+
+describe("connection read failures through the rendered table", () => {
+  beforeEach(() => {
+    vi.mocked(listAgents).mockResolvedValue(agents.map((agent) => ({
+      ...agent, name: "assistant", displayName: "Assistant",
+    })));
+    vi.mocked(listTokens).mockResolvedValue([]);
+    vi.mocked(pool.query).mockResolvedValue({ rows: [] } as never);
+    vi.stubEnv("GOOGLE_CLIENT_ID_ACME", "client");
+    vi.stubEnv("GOOGLE_CLIENT_SECRET_ACME", "secret");
+  });
+  afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); });
+
+  const googleRow = (rows: Awaited<ReturnType<typeof getConnectionRows>>) =>
+    rows.find((r) => r.connectionId === "google" && r.instanceId === "acme")!;
+  const storedAccount = {
+    id: "token", principal: "owner", provider: "google", orgId: "acme",
+    emailAddress: "owner@acme.example", scopes: ["read"],
+    createdAt: new Date("2026-10-08T10:00:00Z"), updatedAt: new Date("2026-10-08T10:00:00Z"),
+  };
+
+  it("keeps successful empty reads unconfigured and offers setup", async () => {
+    const rows = await getConnectionRows();
+    expect(googleRow(rows)).toMatchObject({
+      status: "partial", detail: "client configured, no mailbox",
+      accountsUnavailable: false, usageUnavailable: false,
+    });
+    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
+    expect(html).toContain("client configured, no mailbox");
+    expect(html).toContain("Connect a Google account");
+    expect(html).not.toContain("unavailable");
+  });
+
+  it("keeps client, grant and successful usage facts when account reads fail", async () => {
+    vi.mocked(listTokens).mockRejectedValue(new Error("private credential token SQL"));
+    vi.mocked(pool.query).mockResolvedValue({ rows: [
+      { capability: "twenty", argsSummary: "looked up a contact", at: new Date("2026-10-08T10:00:00Z") },
+    ] } as never);
+    const rows = await getConnectionRows();
+    expect(googleRow(rows)).toMatchObject({
+      status: "unavailable", detail: "client configured · accounts unavailable",
+      accountsUnavailable: true, usageUnavailable: false, usedBy: ["assistant"],
+    });
+    expect(rows.find((r) => r.connectionId === "twenty")).toMatchObject({
+      status: "live", lastUsed: "2026-10-08T10:00:00.000Z", usedBy: ["assistant"],
+    });
+    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
+    expect(html).toContain("Accounts unavailable");
+    expect(html).toContain("client configured");
+    expect(html).not.toContain("no mailbox");
+    expect(html).not.toContain("private credential token SQL");
+  });
+
+  it("preserves enrollment, removal controls and grants when usage reads fail", async () => {
+    vi.mocked(listTokens).mockResolvedValue([storedAccount]);
+    vi.mocked(pool.query).mockRejectedValue(new Error("private audit SQL"));
+    const rows = await getConnectionRows();
+    expect(googleRow(rows)).toMatchObject({
+      status: "enrolled", accountsUnavailable: false, usageUnavailable: true,
+      accounts: [expect.objectContaining({ email: "owner@acme.example" })], usedBy: ["assistant"],
+    });
+    expect(rows.find((r) => r.connectionId === "twenty")).toMatchObject({
+      status: "unavailable", detail: "usage unavailable", lastUsed: null, usedBy: ["assistant"],
+    });
+    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
+    expect(html).toContain("Usage unavailable");
+    expect(html).toContain("owner@acme.example");
+    expect(html).toContain("Remove");
+    expect(html).toContain("provider health not tested");
+    expect(html).not.toContain("no recorded use");
+    expect(html).not.toContain("Last use recorded here: none");
+    expect(html).not.toContain("private audit SQL");
+  });
+
+  it("shows both unavailable sections without claiming accounts are missing", async () => {
+    vi.mocked(listTokens).mockRejectedValue(new Error("private account error"));
+    vi.mocked(pool.query).mockRejectedValue(new Error("private usage error"));
+    const rows = await getConnectionRows();
+    const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
+    expect(html).toContain("Accounts unavailable");
+    expect(html).toContain("Usage unavailable");
+    expect(html).toContain("Agent access: assistant");
+    expect(html).not.toContain("no mailbox");
+    expect(html).not.toContain("no recorded use");
+    expect(html).not.toContain("private account error");
+    expect(html).not.toContain("private usage error");
   });
 });

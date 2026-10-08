@@ -67,15 +67,18 @@ export interface ConnectionRowDTO {
   /** "google · zero7" — what the row is called on screen. */
   label: string;
   custody: "console" | "host" | "foreign";
-  status: "live" | "partial" | "missing" | "unknown";
+  status: "live" | "enrolled" | "partial" | "missing" | "unknown" | "unavailable";
   detail: string;
+  /** Failed reads must remain distinguishable from successful empty results. */
+  accountsUnavailable: boolean;
+  usageUnavailable: boolean;
   /** ISO timestamp, or null when unknown or unattributable. */
   lastUsed: string | null;
   /** Agents on this installation with a grant for the connection. */
   usedBy: string[];
   /** Static service declarations from the catalogue, not proof that they are running. */
   declaredFor: string[];
-  /** Enrolled mailboxes — console-custody rows only; empty for every other row. */
+  /** Enrolled mailboxes — console-custody rows only. Empty is inconclusive when accountsUnavailable. */
   accounts: GoogleAccountDTO[];
 }
 

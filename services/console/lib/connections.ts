@@ -79,6 +79,8 @@ export function lastUsedByInstance(
 export interface BuildInput {
   agents: AgentFolder[];
   accounts: GoogleAccountDTO[];
+  accountsUnavailable: boolean;
+  usageUnavailable: boolean;
   /** Google orgs with a resolvable client pair on this host. */
   configuredOrgs: string[];
   lastUsed: Map<string, Date>;
@@ -129,14 +131,20 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
       let detail: string;
       if (def.custody === "console") {
         const configured = input.configuredOrgs.includes(inst.id);
-        if (accounts.length > 0 && configured) {
-          status = "live";
+        if (input.accountsUnavailable) {
+          status = "unavailable";
+          detail = configured
+            ? "client configured · accounts unavailable"
+            : "no client configured · accounts unavailable";
+        } else if (accounts.length > 0 && configured) {
+          // Stored consent is enrollment, not a current provider health check.
+          status = "enrolled";
           // The HONEST aggregate across mailboxes is the minimum, not the maximum: a 4-scope
           // and a 3-scope mailbox is "3 scopes" of guaranteed coverage, not 4 — Math.max here
           // hid exactly the under-scoped mailbox that silently broke calendar writes before
           // (see GOOGLE_SCOPES's comment in accounts.ts).
           const scopes = Math.min(...accounts.map((a) => a.scopeCount));
-          detail = `${accounts.length} mailbox${accounts.length === 1 ? "" : "es"} · ${scopes} scopes`;
+          detail = `${accounts.length} mailbox${accounts.length === 1 ? "" : "es"} · ${scopes} scopes · provider health not tested`;
         } else if (accounts.length > 0) {
           // A mailbox is enrolled but this host has no client pair for its org — the client
           // may have been rotated out, or never matched this org in the first place. Without
@@ -150,6 +158,9 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
           status = "missing";
           detail = "no client";
         }
+      } else if (input.usageUnavailable) {
+        status = "unavailable";
+        detail = "usage unavailable";
       } else if (instanceUsed) {
         status = "live";
         detail = "in use";
@@ -168,7 +179,9 @@ export function buildConnectionRows(input: BuildInput): ConnectionRowDTO[] {
         custody: def.custody,
         status,
         detail,
-        lastUsed: single && used ? used.toISOString() : null,
+        accountsUnavailable: def.custody === "console" && input.accountsUnavailable,
+        usageUnavailable: input.usageUnavailable,
+        lastUsed: !input.usageUnavailable && single && used ? used.toISOString() : null,
         usedBy,
         declaredFor,
         accounts,
@@ -217,7 +230,7 @@ function matches(ref: string, connectionId: string, instanceId: string): boolean
 }
 
 export async function getConnectionRows(): Promise<ConnectionRowDTO[]> {
-  const [agents, accounts, uses] = await Promise.all([
+  const [agents, accounts, usage] = await Promise.all([
     listAgents(),
     listGoogleAccounts(),
     pool
@@ -233,19 +246,21 @@ export async function getConnectionRows(): Promise<ConnectionRowDTO[]> {
          FROM audit
          WHERE at > now() - interval '90 days'`,
       )
-      .then((r) => r.rows)
-      .catch(() => [] as AuditUse[]),
+      .then((r) => ({ rows: r.rows, unavailable: false }))
+      .catch(() => ({ rows: [] as AuditUse[], unavailable: true })),
   ]);
   return buildConnectionRows({
     agents,
-    accounts,
+    accounts: accounts.accounts,
+    accountsUnavailable: accounts.unavailable,
+    usageUnavailable: usage.unavailable,
     // "Known org" is not "has a client on this host" — googleOrgClientConfig is the function
     // that actually resolves the secret pair, so it (not the static org list) decides whether
     // "missing" can fire. Without this filter every known org reads as "configured", even one
     // whose client secrets were never mounted.
     configuredOrgs: googleOrgs().map((o) => o.id).filter((id) => googleOrgClientConfig(id) !== null),
-    lastUsed: lastUsedByConnection(uses, connectionsByCapability),
-    instanceLastUsed: lastUsedByInstance(uses, connectionsByCapability),
+    lastUsed: lastUsedByConnection(usage.rows, connectionsByCapability),
+    instanceLastUsed: lastUsedByInstance(usage.rows, connectionsByCapability),
     connectionsByCapability,
   });
 }
