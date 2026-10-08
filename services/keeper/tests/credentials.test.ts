@@ -8,6 +8,8 @@ import { CredentialFiles } from '../lib/credential-files.js';
 import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, initialCredentialRecord, type CredentialRecord, type CredentialConfig } from '../lib/credential-state.js';
 import type { CredentialJournal, CredentialStore } from '../lib/credential-store.js';
 import { resetActions, runAction, type AuditRecord } from '../lib/actions.js';
+import type { NotionCredentialTester } from '../lib/notion-credential.js';
+import { CredentialActivation, type CredentialRuntime } from '../lib/credential-activation.js';
 
 class MemoryStore implements CredentialStore {
   record = initialCredentialRecord();
@@ -33,14 +35,145 @@ const config: CredentialConfig = { administrator: admin.actor, slot: CREDENTIAL_
 const secret = 'synthetic-secret-only';
 let dir: string, files: CredentialFiles, store: MemoryStore, service: Credentials;
 const inventory = vi.fn(async () => []);
-function build(conf: CredentialConfig | undefined = config) { return new Credentials(conf, store, files, inventory); }
+const tester: NotionCredentialTester = { ready: vi.fn(() => true), test: vi.fn<NotionCredentialTester['test']>() };
+function build(conf: CredentialConfig | undefined = config) { return new Credentials(conf, store, files, inventory, tester); }
 beforeEach(() => {
   dir = realpathSync(mkdtempSync(join(tmpdir(), 'credential-test-')));
   chmodSync(dir, 0o700);
   files = new CredentialFiles(dir, { uid: process.getuid!(), gid: process.getgid!() });
   store = new MemoryStore();
   inventory.mockReset(); inventory.mockResolvedValue([]);
+  vi.mocked(tester.ready).mockReset().mockReturnValue(true);
+  vi.mocked(tester.test).mockReset().mockResolvedValue({ outcome: 'passed', identity: { kind: 'internal-bot', botId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } });
   service = build(); resetActions(); registerCredentialActions(service);
+});
+
+const testInput = (revision: number) => ({ slot: CREDENTIAL_SLOT, expectedRevision: revision });
+function active() {
+  store.record = { ...initialCredentialRecord(), version: 1, phase: 'applied', activeRevision: randomUUID() };
+  writeFileSync(files.activePath, secret, { mode: 0o600 });
+}
+it('returns the complete consumer list and its confirmation digest from one activation snapshot', async () => {
+  active();
+  const first = { name: 'first', category: 'owned-agent' as const, incarnation: randomUUID() };
+  const added = { name: 'added', category: 'owned-agent' as const, incarnation: randomUUID() };
+  inventory.mockResolvedValue([first] as never);
+  const snapshot = vi.fn(async () => ({ revision: 'b'.repeat(64), consumers: [first, added] }));
+  const runtime: CredentialRuntime = { snapshot, locked: work => work(), quiesce: async () => {}, reconcile: async () => {}, verify: async () => {} };
+  service = new Credentials(config, store, files, inventory, tester, new CredentialActivation(files, runtime));
+  expect(await service.status(admin)).toMatchObject({ consumers: [first, added], inventoryRevision: 'b'.repeat(64) });
+  expect(snapshot).toHaveBeenCalledOnce();
+  expect(store.writes).toBe(0);
+});
+it('test/save keeps the exact tested protected candidate pending without changing active bytes or consumers', async () => {
+  active(); const before = store.record.activeRevision;
+  const audit: AuditRecord[] = [];
+  const result = await runAction('credential.test_save', { ...testInput(1), token: 'replacement-without-prefix' }, { ...admin, audit: async r => { audit.push(r); } });
+  expect(result).toMatchObject({ state: 'pending-apply', revision: 4, activeRevision: before,
+    test: { outcome: 'passed', identity: { kind: 'internal-bot' } }, activation: [], rollback: [] });
+  expect(store.record.test?.revision).toBe(store.record.candidateRevision);
+  expect(files.readCandidate(store.record.candidateRevision!)).toBe('replacement-without-prefix');
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
+  expect(tester.test).toHaveBeenCalledTimes(1);
+  expect(tester.test).toHaveBeenCalledWith(expect.objectContaining({ kind: 'api_key', integration: 'notion', secretFile: expect.stringMatching(/\.candidate$/) }), expect.any(Function));
+  expect(audit.map(r => r.outcome)).toEqual(['pending', 'ok']);
+  expect(JSON.stringify(audit)).not.toContain('replacement-without-prefix');
+  expect(JSON.stringify(result)).not.toContain(dir);
+  expect(audit[1].detail).toContain(store.record.candidateRevision!);
+  const calls = vi.mocked(tester.test).mock.calls.length;
+  await service.status(admin); await service.status(admin);
+  expect(tester.test).toHaveBeenCalledTimes(calls);
+});
+it.each(['refused', 'rate-limited', 'unavailable', 'unexpected'] as const)('failed candidate %s leaves active key untouched and cannot become pending apply', async outcome => {
+  active(); vi.mocked(tester.test).mockResolvedValue({ outcome });
+  const result = await runAction('credential.test_save', { ...testInput(1), token: 'new-value' }, admin);
+  expect(result).toMatchObject({ state: 'test-failed', test: { outcome } });
+  expect(store.record.test?.revision).toBe(store.record.candidateRevision);
+  expect(store.record.test?.identity).toBeUndefined();
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
+});
+it('test/save rejects non-admin, malformed/stale inputs, missing proxy and unsupported inventory before staging or requests', async () => {
+  active();
+  const input = { ...testInput(1), token: 'new-value' };
+  await expect(runAction('credential.test_save', input, { ...admin, actor: 'member@example.invalid' })).rejects.toThrow('administrator required');
+  for (const value of ['', 'a b', 'a'.repeat(8193), 'é'.repeat(5000), 'line\nsecret'])
+    await expect(runAction('credential.test_save', { ...input, token: value }, admin)).rejects.toThrow('invalid input');
+  await expect(runAction('credential.test_save', { ...input, path: files.activePath }, admin)).rejects.toThrow('invalid input');
+  await expect(runAction('credential.test_save', { ...input, expectedRevision: 0 }, admin)).rejects.toThrow('revision changed');
+  vi.mocked(tester.ready).mockReturnValue(false);
+  await expect(runAction('credential.test_save', input, admin)).rejects.toThrow('egress proxy');
+  vi.mocked(tester.ready).mockReturnValue(true);
+  inventory.mockResolvedValue([{ name: 'retained-sync', category: 'unmanaged-service', incarnation: null }] as never);
+  await expect(runAction('credential.test_save', input, admin)).rejects.toThrow('unsupported credential consumers');
+  expect(tester.test).not.toHaveBeenCalled(); expect(store.writes).toBe(0);
+  expect(readdirSync(dir)).toEqual(['notion-token']);
+});
+it('initial audit failure prevents all work; final audit failure keeps untested recoverable intent', async () => {
+  active(); const input = { ...testInput(1), token: 'new-value' };
+  await expect(runAction('credential.test_save', input, { ...admin, audit: async () => { throw new Error(secret); } })).rejects.toThrow('action not run');
+  expect(tester.test).not.toHaveBeenCalled(); expect(store.writes).toBe(0);
+  let audits = 0;
+  await expect(runAction('credential.test_save', input, { ...admin, audit: async () => { if (++audits === 2) throw new Error(secret); } })).rejects.toThrow('outcome uncertain');
+  expect(await service.status(admin)).toMatchObject({ state: 'recovery-required', phase: 'testing', test: null });
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
+  await expect(runAction('credential.test_pending', testInput(store.record.version), admin)).rejects.toThrow('recovery required');
+  expect(await service.recover(store.record.version, host)).toMatchObject({ state: 'applied', test: null, candidateRevision: null });
+  expect(tester.test).toHaveBeenCalledTimes(1);
+});
+it.each([1, 2, 3])('journal failure at test/save write %s leaves no reusable test and preserves old bytes', async failAt => {
+  active(); store.failAt = failAt;
+  await expect(runAction('credential.test_save', { ...testInput(1), token: 'new-value' }, admin)).rejects.toThrow('outcome uncertain');
+  expect(store.record.test).toBeNull(); expect(store.record.phase).not.toBe('pending-apply');
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
+  expect(tester.test).toHaveBeenCalledTimes(failAt === 3 ? 1 : 0);
+});
+it('retesting clears evidence durably before a request, holds the slot lock and invalidates stale/discarded revisions', async () => {
+  await runAction('credential.test_save', { ...testInput(0), token: secret }, admin);
+  const old = structuredClone(store.record);
+  let finish!: (result: { outcome: 'unavailable' }) => void;
+  vi.mocked(tester.test).mockImplementation(async (_credential, read) => {
+    expect(read()).toBe(secret);
+    expect(store.record).toMatchObject({ phase: 'testing', test: null });
+    return new Promise(resolve => { finish = resolve; });
+  });
+  const retest = runAction('credential.test_pending', testInput(old.version), admin);
+  await vi.waitFor(() => expect(finish).toBeDefined());
+  expect(await service.status(admin)).toMatchObject({ state: 'recovery-required', test: null });
+  await expect(runAction('credential.discard', testInput(old.version), admin)).rejects.toThrow();
+  finish({ outcome: 'unavailable' });
+  expect(await retest).toMatchObject({ state: 'test-failed', test: { outcome: 'unavailable' } });
+  await expect(runAction('credential.test_pending', testInput(old.version), admin)).rejects.toThrow('revision changed');
+  await service.discard(store.record.version, admin);
+  await expect(runAction('credential.test_pending', testInput(store.record.version), admin)).rejects.toThrow('No pending');
+});
+it('current-key tests keep activation facts independent from provider results and bind evidence to active revision', async () => {
+  await expect(runAction('credential.test_current', testInput(0), admin)).rejects.toThrow('active key');
+  active();
+  expect(await runAction('credential.test_current', testInput(1), admin)).toMatchObject({ state: 'applied', candidateRevision: null, test: { revision: store.record.activeRevision, outcome: 'passed' } });
+  vi.mocked(tester.test).mockResolvedValue({ outcome: 'refused' });
+  expect(await runAction('credential.test_current', testInput(store.record.version), admin)).toMatchObject({ state: 'applied', test: { outcome: 'refused' } });
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
+  await service.stage('replacement', store.record.version, admin);
+  await expect(runAction('credential.test_current', testInput(store.record.version), admin)).rejects.toThrow('discard the pending change');
+});
+it('failed audit while testing current clears old evidence and host cleanup neither deletes active nor retries provider', async () => {
+  active(); await runAction('credential.test_current', testInput(1), admin);
+  let audits = 0;
+  await expect(runAction('credential.test_current', testInput(store.record.version), { ...admin, audit: async () => { if (++audits === 2) throw new Error(secret); } })).rejects.toThrow('outcome uncertain');
+  expect(await service.status(admin)).toMatchObject({ state: 'recovery-required', test: null });
+  expect(await service.recover(store.record.version, host)).toMatchObject({ state: 'applied', candidateRevision: null, test: null });
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret); expect(tester.test).toHaveBeenCalledTimes(2);
+});
+it.each(['file', 'inventory'] as const)('%s changes during test leave recovery required instead of testing different custody', async change => {
+  active();
+  vi.mocked(tester.test).mockImplementation(async () => {
+    if (change === 'file') writeFileSync(join(dir, `.notion-${store.record.candidateRevision}.candidate`), 'changed-by-host', { mode: 0o600 });
+    else inventory.mockResolvedValue([{ name: 'new-consumer', category: 'owned-agent', incarnation: randomUUID() }] as never);
+    return { outcome: 'passed', identity: { kind: 'internal-bot', botId: randomUUID() } };
+  });
+  await expect(runAction('credential.test_save', { ...testInput(1), token: 'new-value' }, admin)).rejects.toThrow('outcome uncertain');
+  expect(await service.status(admin)).toMatchObject({ state: 'recovery-required', test: null });
+  expect(readFileSync(files.activePath, 'utf8')).toBe(secret);
 });
 afterEach(() => { resetActions(); rmSync(dir, { recursive: true, force: true }); });
 

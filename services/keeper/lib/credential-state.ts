@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const CREDENTIAL_SLOT = 'notion:shared' as const;
+import { CREDENTIAL_SLOT, credentialConsumerSchema as consumer, credentialProgressSchema as progress, credentialTestSchema as test, credentialPhaseSchema } from '@lares/agent-kit/credential-lifecycle';
+export { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus, type CredentialConsumer } from '@lares/agent-kit/credential-lifecycle';
 const revision = z.uuid().nullable();
 const name = z.string().regex(/^[a-z][a-z0-9-]{1,63}$/);
 export const credentialConfigSchema = z.object({
@@ -15,24 +16,35 @@ export const credentialConfigSchema = z.object({
   }).strict()).max(100),
 }).strict();
 export type CredentialConfig = z.infer<typeof credentialConfigSchema>;
-const consumer = z.object({
-  name, category: z.enum(['owned-agent', 'unmanaged-service', 'external-binding', 'runtime-not-ready']),
-  incarnation: revision,
-}).strict();
-const progress = z.object({ name, revision, state: z.enum(['pending', 'complete', 'failed']) }).strict();
-const test = z.object({
-  revision: z.uuid(), outcome: z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']),
-  at: z.iso.datetime(),
+export const credentialCustodySchema = z.object({ device: z.string(), inode: z.string(), size: z.number().int(), modified: z.string(), changed: z.string() }).strict();
+const activationIntent = z.object({
+  previousRevision: revision, targetRevision: revision, inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  prepared: z.boolean(), finishing: z.boolean(),
 }).strict();
 export const credentialRecordSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT), version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   activeRevision: revision, candidateRevision: revision, rollbackRevision: revision,
-  phase: z.enum(['not-configured', 'staging', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
+  phase: credentialPhaseSchema,
   operation: z.object({ id: z.uuid(), kind: z.enum(['stage', 'test', 'discard', 'apply', 'disconnect', 'recover']) }).strict().nullable(),
   test: test.nullable(), consumers: z.array(consumer).max(200),
   activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
+  // Internal custody/activation data never appears in the socket DTO.
+  testedCustody: credentialCustodySchema.optional(),
+  effectiveRevision: revision.optional(), activationIntent: activationIntent.nullable().optional(),
 }).strict().superRefine((r, ctx) => {
   const invalid = (message: string) => ctx.addIssue({code:'custom',message});
+  if (r.activationIntent) {
+    const i = r.activationIntent;
+    if (!['applying', 'disconnecting', 'rolling-back', 'recovery-required'].includes(r.phase) ||
+      !['apply', 'disconnect'].includes(r.operation?.kind ?? '') || r.rollbackRevision !== i.previousRevision ||
+      r.operation?.kind === 'apply' && i.targetRevision !== r.candidateRevision ||
+      r.operation?.kind === 'disconnect' && i.targetRevision !== null ||
+      r.effectiveRevision !== undefined && ![i.previousRevision, i.targetRevision].includes(r.effectiveRevision))
+      invalid('Activation intent contradicts retained custody');
+  } else if (r.effectiveRevision !== undefined && r.effectiveRevision !== r.activeRevision) invalid('Effective binding must agree with completed custody');
+  if (r.test?.identity && r.test.outcome !== 'passed') invalid('Only passed tests retain identity evidence');
+  if (r.phase === 'testing' && (r.operation?.kind !== 'test' || r.test || r.rollbackRevision || !(r.candidateRevision || r.activeRevision)))
+    invalid('Testing requires retained custody and cleared evidence');
   if (['not-configured', 'disconnected'].includes(r.phase) && (r.activeRevision || r.candidateRevision || r.rollbackRevision || r.test))
     invalid('Empty state must have no credential custody or test evidence');
   if (r.candidateRevision && r.candidateRevision === r.activeRevision) invalid('Candidate must have a new revision');
@@ -60,19 +72,9 @@ export const credentialRecordSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Active revision required' });
 });
 export type CredentialRecord = z.infer<typeof credentialRecordSchema>;
-export type CredentialConsumer = z.infer<typeof consumer>;
 export const initialCredentialRecord = (): CredentialRecord => ({
   slot: CREDENTIAL_SLOT, version: 0, activeRevision: null, candidateRevision: null, rollbackRevision: null,
   phase: 'not-configured', operation: null, test: null, consumers: [], activation: [], rollback: [],
 });
-export const credentialStatusSchema = z.object({
-  slot: z.literal(CREDENTIAL_SLOT),
-  state: z.enum(['unavailable', 'not-configured', 'host-administration-required', 'pending-test', 'test-failed', 'pending-apply', 'applying', 'applied', 'disconnected', 'recovery-required']),
-  guidance: z.enum(['configure-administrator', 'prepare-managed-slot', 'prepare-writable-storage', 'review-consumers', 'inspect-journal', 'status-unavailable']).nullable(),
-  revision: z.number().int().min(0).nullable(), activeRevision: revision, candidateRevision: revision,
-  phase: credentialRecordSchema.shape.phase.nullable(), test: test.nullable(),
-  consumers: z.array(consumer).max(200), activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
-}).strict();
-export type CredentialStatus = z.infer<typeof credentialStatusSchema>;
 export const interruptedCredential = (r: CredentialRecord): boolean =>
-  ['staging', 'discarding', 'applying', 'rolling-back', 'recovery-required'].includes(r.phase);
+  ['staging', 'testing', 'discarding', 'applying', 'disconnecting', 'rolling-back', 'recovery-required'].includes(r.phase);

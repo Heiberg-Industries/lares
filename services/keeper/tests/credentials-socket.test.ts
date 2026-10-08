@@ -31,11 +31,12 @@ function request(path:string,input:unknown):Promise<{ok:boolean;error?:string;re
 }
 it('independently enforces admin metadata access and mutations on the actual app socket',async()=>{
   const f=await fixture();
-  for(const action of ['credential.status','credential.discard']) {
-    const response=await request(join(f.dir,'app/keeper.sock'),{action,input:{slot:'notion:shared',...(action.endsWith('discard')?{expectedRevision:0}:{})},actor:'member@example.invalid'});
+  for(const action of ['credential.status','credential.discard','credential.test_save','credential.test_current','credential.test_pending']) {
+    const response=await request(join(f.dir,'app/keeper.sock'),{action,input:{slot:'notion:shared',...(action==='credential.status'?{}:{expectedRevision:0}),...(action==='credential.test_save'?{token:'synthetic-secret'}:{})},actor:'member@example.invalid'});
     expect(response).toEqual({ok:false,error:'Credential administrator required'});
   }
   expect(f.read).not.toHaveBeenCalled();expect(f.locked).not.toHaveBeenCalled();
+  expect(JSON.stringify(f.audit)).not.toContain('synthetic-secret');
   expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.status',input:{slot:'notion:shared'},actor:'owner@example.invalid'})).toMatchObject({ok:true,result:{state:'host-administration-required',guidance:'prepare-managed-slot'}});
   expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.status',input:{slot:'notion:shared'},actor:'host'})).toMatchObject({ok:false});
 });

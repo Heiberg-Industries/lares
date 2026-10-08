@@ -51,6 +51,52 @@ export class CredentialFiles {
     if (value === null) throw new Error('Credential candidate unavailable');
     return value;
   }
+  readActive(): string {
+    this.verifyRoot();
+    const value = this.read(this.activePath, true);
+    if (value === null) throw new Error('Active credential unavailable');
+    return value;
+  }
+  candidateCustody(revision: string) {
+    this.readCandidate(revision);
+    const st = lstatSync(this.path(revision, 'candidate'), { bigint: true });
+    return { device: String(st.dev), inode: String(st.ino), size: Number(st.size), modified: String(st.mtimeNs), changed: String(st.ctimeNs) };
+  }
+  /** Copy to a fresh inode: a running bind mount keeps its old inode until recreation. */
+  private publish(value: string): void {
+    this.verifyRoot();
+    this.activeExists(); // Refuse an unsafe existing leaf, including a link.
+    const temp = join(this.root, '.notion-publish.partial');
+    this.removeProtected(temp);
+    const fd = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      fchownSync(fd, this.ownership.uid, this.ownership.gid);
+      fchmodSync(fd, 0o600); writeFileSync(fd, value); fsyncSync(fd);
+    } finally { closeSync(fd); }
+    renameSync(temp, this.activePath); this.syncRoot();
+  }
+  publishCandidate(revision: string): void { this.publish(this.readCandidate(revision)); }
+  restoreActive(revision: string): void {
+    this.verifyRoot();
+    const value = this.read(this.path(revision, 'rollback'));
+    if (value === null) throw new Error('Credential rollback unavailable');
+    this.publish(value);
+  }
+  removeActive(): void { this.verifyRoot(); this.activeExists(); this.removeProtected(this.activePath, true); this.syncRoot(); }
+  private removeProtected(path: string, active = false): void {
+    let st;
+    try { st = lstatSync(path); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
+    if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || st.uid !== this.ownership.uid ||
+      !((st.mode & 0o777) === 0o600 && st.gid === this.ownership.gid || active && (st.mode & 0o777) === 0o440 && st.gid === 10001))
+      throw new Error('Credential file unavailable');
+    unlinkSync(path);
+  }
+  removeRollback(revision: string): void {
+    this.verifyRoot();
+    for (const partial of [false, true]) this.removeProtected(this.path(revision, 'rollback', partial));
+    this.syncRoot();
+  }
+  clearPublication(): void { this.verifyRoot(); this.removeProtected(join(this.root, '.notion-publish.partial')); this.syncRoot(); }
   private syncRoot(): void {
     const fd = openSync(this.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }
@@ -101,7 +147,8 @@ export class CredentialFiles {
     this.verifyRoot();
     const permitted = new Set([
       ...(candidate ? [this.path(candidate, 'candidate'), ...(interrupted ? [this.path(candidate, 'candidate', true)] : [])] : []),
-      ...(rollback ? [this.path(rollback, 'rollback')] : []),
+      ...(rollback ? [this.path(rollback, 'rollback'), ...(interrupted ? [this.path(rollback, 'rollback', true)] : [])] : []),
+      ...(interrupted ? [join(this.root, '.notion-publish.partial')] : []),
     ]);
     return readdirSync(this.root).some(name => name.startsWith('.notion-') && !permitted.has(join(this.root, name)));
   }

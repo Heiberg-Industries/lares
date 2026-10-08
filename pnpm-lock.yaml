@@ -516,12 +516,18 @@ importers:
       '@lares/agent-kit':
         specifier: workspace:*
         version: link:../../packages/agent-kit
+      '@notionhq/client':
+        specifier: 5.27.0
+        version: 5.27.0
       pg:
         specifier: ^8.23.1
         version: 8.23.1
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
+      undici:
+        specifier: ^8.11.2
+        version: 8.11.2
       yaml:
         specifier: ^2.9.1
         version: 2.9.1
@@ -1285,6 +1291,10 @@ packages:
 
   '@nodable/entities@3.1.0':
     resolution: {integrity: sha512-LsS/DjHr+uDM647Gru/cA8+J3a3HfhttwCKLyuoyN7yXTFCxKBtSgMQBvrW9yNPa2/zDRUNuGPaH5QUFoa4arQ==}
+
+  '@notionhq/client@5.27.0':
+    resolution: {integrity: sha512-JnkLtAzSDrEnvtZ8dQ5L4KO+xyL5g01xK5qmKTmhJ5KFY8LWsMyFG033vHCj0mFcsz9thAMjfcAQz/SWxiexag==}
+    engines: {node: '>=18'}
 
   '@opentelemetry/api-logs@0.222.0':
     resolution: {integrity: sha512-9mb1If+IF6u0ZVXkHQ6ogEae5HwA6ajIVUgpSDQyRASxft6BSXHvBvPooRle3yFN/fKnCdSOnuu0OC3PLcF6+g==}
@@ -5339,6 +5349,8 @@ snapshots:
     optional: true
 
   '@nodable/entities@3.1.0': {}
+
+  '@notionhq/client@5.27.0': {}
 
   '@opentelemetry/api-logs@0.222.0':
     dependencies:

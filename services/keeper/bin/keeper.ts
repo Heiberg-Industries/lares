@@ -2,6 +2,10 @@ import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
 import { PgCredentialStore } from "../lib/credential-store.js";
 import { credentialConsumers } from "../lib/credential-consumers.js";
+import { notionCredentialTester } from "../lib/notion-credential.js";
+import { CredentialActivation } from '../lib/credential-activation.js';
+import { OwnedCredentialRuntime } from '../lib/credential-runtime.js';
+import { KeeperRefusedError } from '../lib/actions.js';
 import {registerDoorActions} from '../lib/doors.js';
 import {registerConversationActions,runtimeReset} from "../lib/conversations.js";
 import { readFileSync, existsSync } from "node:fs";
@@ -21,11 +25,21 @@ async function main(): Promise<void> {
     const config = loadKeeperConfig();
     const pool = keeperPool(config.db);
     const admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
-    const lifecycle=config.lifecycle&&admin?new AgentLifecycle(pool,admin,config.lifecycle,config,ownedDocker({...config.lifecycle,project:config.project,dir:config.dir})):undefined;
+    const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
+    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,config,docker):undefined;
+    const credentialStore = new PgCredentialStore(pool);
+    const credentialFiles = new CredentialFiles(config.secretsDir);
+    const managed = config.credentials?.prepared === true;
+    if (managed) lifecycle?.setCredentialState(() => credentialStore.read());
+    const namespaceGuard = async () => {
+        if (managed && (await credentialStore.read()).activationIntent)
+            throw new KeeperRefusedError('Credential recovery required before changing agents or connections');
+    };
     const context = { actor: "host", audit: auditor(pool) };
     const stops: Array<() => Promise<void>> = [];
     try {
         registerDefinitionActions({
+            namespaceGuard,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
             ceiling: async () => { const value = await readSetting(pool, "agents.ceiling"); return typeof value === "number" ? value : NaN; },
             compose: lifecycle ?? {stop:async()=>{throw new Error("Lifecycle configuration required");}},
@@ -45,8 +59,9 @@ async function main(): Promise<void> {
                 },
             }),
         });
-        registerCredentialActions(new Credentials(config.credentials, new PgCredentialStore(pool), new CredentialFiles(config.secretsDir), () => credentialConsumers(pool, config)));
-        registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{})});
+        registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, () => credentialConsumers(pool, config), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
+            managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined));
+        registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{}),namespaceGuard});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));

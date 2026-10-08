@@ -1,0 +1,136 @@
+import { randomUUID } from 'node:crypto';
+import { chmodSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync, lstatSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { CredentialActivation, type CredentialRuntime } from '../lib/credential-activation.js';
+import { CredentialFiles } from '../lib/credential-files.js';
+import { Credentials, registerCredentialActions } from '../lib/credentials.js';
+import { credentialRecordSchema, initialCredentialRecord, type CredentialRecord } from '../lib/credential-state.js';
+import type { CredentialJournal, CredentialStore } from '../lib/credential-store.js';
+import { resetActions, runAction } from '../lib/actions.js';
+
+class Store implements CredentialStore {
+  record = initialCredentialRecord(); writes = 0; crashAt = 0; dead = false;
+  async read() { if (this.dead) throw new Error('lost connection'); return structuredClone(this.record); }
+  async locked<T>(work: (j: CredentialJournal) => Promise<T>) {
+    return work({ read: () => this.read(), save: async (old, next) => {
+      if (this.dead) throw new Error('lost connection');
+      this.record = credentialRecordSchema.parse({ ...next, version: old.version + 1 });
+      if (++this.writes === this.crashAt) { this.dead = true; throw new Error('process death after commit'); }
+      return structuredClone(this.record);
+    } });
+  }
+}
+const actor = { actor: 'admin@example.invalid', audit: async () => {} };
+const host = { ...actor, host: true };
+const consumers = [{ name: 'example-one', category: 'owned-agent' as const, incarnation: randomUUID() }, { name: 'example-two', category: 'owned-agent' as const, incarnation: randomUUID() }];
+const inventoryRevision = 'a'.repeat(64);
+let dir: string, files: CredentialFiles, store: Store, credentials: Credentials, runtime: CredentialRuntime;
+let running: Map<string, string | null>, events: string[], oldRevision: string;
+beforeEach(() => {
+  resetActions();
+  dir = realpathSync(mkdtempSync(join(tmpdir(), 'credential-activation-'))); chmodSync(dir, 0o700);
+  files = new CredentialFiles(dir, { uid: process.getuid!(), gid: process.getgid!() }); store = new Store();
+  oldRevision = randomUUID();
+  store.record = { ...initialCredentialRecord(), version: 1, phase: 'applied', activeRevision: oldRevision, consumers };
+  writeFileSync(files.activePath, 'old-synthetic', { mode: 0o600 });
+  running = new Map(consumers.map(c => [c.name, oldRevision])); events = [];
+  runtime = {
+    locked: async work => work(), snapshot: vi.fn(async () => ({ revision: inventoryRevision, consumers })),
+    quiesce: vi.fn(async name => { events.push(`stop:${name}`); running.delete(name); }),
+    reconcile: vi.fn(async (name, revision) => { events.push(`recreate:${name}`); expect(store.record.effectiveRevision).toBe(revision); running.set(name, revision); }),
+    verify: vi.fn(async (name, _, revision) => { if (!running.has(name) || running.get(name) !== revision) throw new Error('health or revision mismatch'); }),
+  };
+  credentials = new Credentials({ slot: 'notion:shared', binding: 'NOTION_TOKEN_FILE', administrator: actor.actor, prepared: true, inventoryComplete: true, retainedConsumers: [] },
+    store, files, async () => consumers, { ready: () => true, test: async () => ({ outcome: 'passed' }) }, new CredentialActivation(files, runtime));
+  registerCredentialActions(credentials);
+});
+afterEach(() => { resetActions(); rmSync(dir, { recursive: true, force: true }); });
+const input = () => ({ slot: 'notion:shared', expectedRevision: store.record.version, expectedActiveRevision: store.record.activeRevision, inventoryRevision, confirmRestart: true });
+const stage = () => runAction('credential.test_save', { slot: 'notion:shared', expectedRevision: store.record.version, token: 'new-synthetic' }, actor);
+it('publishes a fresh inode and marks applied only after every confirmed consumer agrees', async () => {
+  const inode = lstatSync(files.activePath).ino;
+  await stage(); expect(events).toEqual([]); const candidate = store.record.candidateRevision;
+  expect(await runAction('credential.apply', input(), actor)).toMatchObject({ state: 'applied', activeRevision: candidate, candidateRevision: null, activation: [{ state: 'complete' }, { state: 'complete' }] });
+  expect(files.readActive()).toBe('new-synthetic'); expect(lstatSync(files.activePath).ino).not.toBe(inode);
+  expect(events.slice(0, 2)).toEqual(consumers.map(c => `stop:${c.name}`));
+  expect([...running.values()]).toEqual([candidate, candidate]); expect(files.unexpectedFiles(null, null)).toBe(false);
+  expect(JSON.stringify(await credentials.status(actor))).not.toContain('testedCustody');
+});
+it('requires exact candidate custody, active revision, confirmed inventory and administrator before effects', async () => {
+  await stage(); const request = input();
+  for (const change of [{ expectedActiveRevision: randomUUID() }, { inventoryRevision: 'b'.repeat(64) }, { confirmRestart: false }, { path: dir }])
+    await expect(runAction('credential.apply', { ...request, ...change }, actor)).rejects.toThrow();
+  await expect(runAction('credential.apply', request, { ...actor, actor: 'member@example.invalid' })).rejects.toThrow('administrator');
+  writeFileSync(join(dir, `.notion-${store.record.candidateRevision}.candidate`), 'new-synthetic', { mode: 0o600 });
+  await expect(runAction('credential.apply', request, actor)).rejects.toThrow('unchanged');
+  expect(events).toEqual([]); expect(files.readActive()).toBe('old-synthetic');
+});
+it.each(['publish', 'recreate', 'health', 'audit'] as const)('restores old bytes and observes every old runtime after %s failure', async failure => {
+  await stage(); let once = true;
+  if (failure === 'publish') vi.spyOn(files, 'publishCandidate').mockImplementationOnce(() => { throw new Error('file failure'); });
+  if (failure === 'recreate') vi.mocked(runtime.reconcile).mockImplementation(async (name, revision) => { if (revision !== oldRevision && once) { once = false; throw new Error('start failed'); } running.set(name, revision); });
+  if (failure === 'health') vi.mocked(runtime.verify).mockImplementation(async (name, _, revision) => { if (revision !== oldRevision && once) { once = false; throw new Error('not healthy'); } expect(running.get(name)).toBe(revision); });
+  let audits = 0;
+  const ctx = failure === 'audit' ? { ...actor, audit: async () => { if (++audits === 2) throw new Error('audit failed'); } } : actor;
+  await expect(runAction('credential.apply', input(), ctx)).rejects.toThrow('outcome uncertain');
+  expect(files.readActive()).toBe('old-synthetic'); expect([...running.values()]).toEqual([oldRevision, oldRevision]);
+  expect(store.record.phase).toBe('applied'); expect(store.record.rollback.every(p => p.state === 'complete')).toBe(true);
+});
+it('retains protected custody and failed progress when rollback cannot restore a runtime', async () => {
+  await stage(); vi.mocked(runtime.reconcile).mockRejectedValue(new Error('runtime refused'));
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow('outcome uncertain');
+  expect(await credentials.status(actor)).toMatchObject({ state: 'recovery-required', rollback: [{ state: 'failed' }, { state: 'pending' }] });
+  expect(files.rollbackExists(oldRevision)).toBe(true); expect(files.readActive()).toBe('old-synthetic');
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow('recovery required');
+  vi.mocked(runtime.reconcile).mockImplementation(async (name, revision) => { running.set(name, revision); });
+  expect(await credentials.recover(store.record.version, host)).toMatchObject({ state: 'applied' });
+});
+it.each([1, 2, 3, 4, 5, 6])('explicit host recovery resolves process death at durable boundary %i without provider replay', async boundary => {
+  await stage(); store.writes = 0; store.crashAt = boundary;
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow('outcome uncertain');
+  store.dead = false; store.crashAt = 0;
+  expect(await credentials.status(actor)).toMatchObject({ state: 'recovery-required' });
+  const finishing = store.record.activationIntent?.finishing;
+  expect(await credentials.recover(store.record.version, host)).toMatchObject({ state: 'applied' });
+  expect(files.readActive()).toBe(finishing ? 'new-synthetic' : 'old-synthetic');
+  expect(files.unexpectedFiles(null, null)).toBe(false);
+});
+it('a lost response after final commit is inspected as applied rather than replayed', async () => {
+  await stage(); store.writes = 0; store.crashAt = 7;
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow('outcome uncertain');
+  store.dead = false;
+  expect(await credentials.status(actor)).toMatchObject({ state: 'applied' });
+  expect(files.readActive()).toBe('new-synthetic');
+  await expect(credentials.recover(store.record.version, host)).rejects.toThrow('Host inspection');
+});
+it('disconnect recreates all consumers without Notion before deleting values and keeps unrelated custody', async () => {
+  await stage(); writeFileSync(join(dir, 'unrelated-key'), 'unrelated', { mode: 0o600 });
+  const remove = vi.spyOn(files, 'removeActive');
+  remove.mockImplementation(() => { expect([...running.values()]).toEqual([null, null]); rmSync(files.activePath); });
+  expect(await runAction('credential.disconnect', input(), actor)).toMatchObject({ state: 'disconnected', test: null, candidateRevision: null, activeRevision: null });
+  expect(files.activeExists()).toBe(false); expect(readFileSync(join(dir, 'unrelated-key'), 'utf8')).toBe('unrelated');
+  expect(store.record.effectiveRevision).toBeNull();
+});
+it('disconnect failure restores the old effective binding and bytes', async () => {
+  vi.mocked(runtime.reconcile).mockImplementation(async (name, revision) => { if (revision === null) throw new Error('failed'); running.set(name, revision); });
+  await expect(runAction('credential.disconnect', input(), actor)).rejects.toThrow('outcome uncertain');
+  expect(files.readActive()).toBe('old-synthetic'); expect(store.record.effectiveRevision).toBe(oldRevision);
+  expect([...running.values()]).toEqual([oldRevision, oldRevision]);
+});
+it('refuses changed grants/inventory during recovery without claiming restored consumers', async () => {
+  await stage(); store.crashAt = store.writes + 3;
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow(); store.dead = false;
+  vi.mocked(runtime.snapshot).mockResolvedValue({ revision: 'b'.repeat(64), consumers });
+  await expect(credentials.recover(store.record.version, host)).rejects.toThrow('outcome uncertain');
+  expect(store.record.activationIntent).toBeTruthy();
+});
+it('rechecks complete inventory after finishing intent before recovery can delete custody', async () => {
+  await stage(); store.writes = 0; store.crashAt = 6;
+  await expect(runAction('credential.apply', input(), actor)).rejects.toThrow(); store.dead = false; store.crashAt = 0;
+  expect(store.record.activationIntent?.finishing).toBe(true);
+  vi.mocked(runtime.snapshot).mockResolvedValue({ revision: 'b'.repeat(64), consumers });
+  await expect(credentials.recover(store.record.version, host)).rejects.toThrow('outcome uncertain');
+  expect(files.rollbackExists(oldRevision)).toBe(true); expect(store.record.activationIntent).toBeTruthy();
+});

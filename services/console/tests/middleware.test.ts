@@ -21,7 +21,7 @@ function request(path: string, method = "POST", from: string | null = origin, he
 afterEach(() => vi.unstubAllEnvs());
 
 describe("console mutation origin boundary", () => {
-  it.each(["/api/notion-proposals", "/api/accounts/google/start", "/api/chat/example/eve/v1/session/one", "/agents/example/edit"])("allows authenticated public-origin requests behind the proxy: %s", async path => {
+  it.each(["/api/notion-proposals", "/api/credentials/notion", "/api/accounts/google/start", "/api/chat/example/eve/v1/session/one", "/agents/example/edit"])("allows authenticated public-origin requests behind the proxy: %s", async path => {
     const middleware = await guard();
     expect((await middleware(request(path))).headers.get("x-middleware-next")).toBe("1");
     expect(verify).toHaveBeenCalledWith("synthetic");

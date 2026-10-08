@@ -9,8 +9,10 @@
   },
   "dependencies": {
     "@lares/agent-kit": "workspace:*",
+    "@notionhq/client": "5.27.0",
     "pg": "^8.23.1",
     "tsx": "^4.23.15",
+    "undici": "^8.11.2",
     "yaml": "^2.9.1",
     "zod": "4.5.4"
   },
