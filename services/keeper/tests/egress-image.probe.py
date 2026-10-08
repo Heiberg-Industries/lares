@@ -60,23 +60,25 @@ def request(payload, source=None):
     # Wait for a complete header and the dummy destination's greeting for 200.
     # A non-200 response is enough to prove refusal; errors/timeouts fail callers.
     script = r"""const net=require('node:net');
-      const s=net.createConnection({host:PROXY,port:8888});let data=Buffer.alloc(0),done=false;
+      const s=net.createConnection({host:__PROXY_ADDRESS__,port:8888});let data=Buffer.alloc(0),done=false;
       function finish(error){if(done)return;done=true;
         const match=data.toString().match(/^HTTP\/\d\.\d (\d+)/);
         console.log(JSON.stringify({status:match?Number(match[1]):null,
           greeting:data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')),error:error||null}));s.destroy();}
-      s.on('connect',()=>s.write(Buffer.from(PAYLOAD,'base64')));
+      s.on('connect',()=>s.write(Buffer.from(__PAYLOAD_BASE64__,'base64')));
       s.on('data',chunk=>{data=Buffer.concat([data,chunk]);
         if(data.length>65536)return finish('oversized');
         if(data.includes(Buffer.from('\r\n\r\n'))){
           if(!/^HTTP\/\d\.\d 200/.test(data.toString())||data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')))finish();}});
       s.on('error',e=>finish(e.code));s.on('end',()=>finish());
       s.setTimeout(5000,()=>finish('timeout'));
-    """.replace('PROXY', json.dumps(proxy_ip)).replace('PAYLOAD', json.dumps(
+    """.replace('__PROXY_ADDRESS__', json.dumps(proxy_ip)).replace('__PAYLOAD_BASE64__', json.dumps(
         base64.b64encode(payload.encode()).decode()))
-    return json.loads(cmd('docker', 'run', '--rm', '--network', name, '--ip', source or allowed_ip,
+    result = json.loads(cmd('docker', 'run', '--rm', '--network', name, '--ip', source or allowed_ip,
                          '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
                          '--entrypoint', 'node', client_image, '-e', script))
+    report['last_response'] = result
+    return result
 
 
 def connect(host='allowed.example', port=443):
