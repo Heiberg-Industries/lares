@@ -1,4 +1,4 @@
-<!-- The shared process above the marker is generated (agent kit v0.5.0) and
+<!-- The shared process above the marker is generated (agent kit v0.5.3) and
      kept in step by the maintainer. Edit only below the marker. -->
 
 # AGENTS.md
@@ -79,7 +79,7 @@ rejected and why, what are you least confident about?
 After significant F2 or F3 work, always, without asking:
 
 1. Update the project's status docs (`docs/HANDOFF.md`, `docs/CURRENT_STATUS.md`) where
-   they exist.
+   they exist. Not when you work unattended from a ticket (see below).
 2. Write `docs/solutions/<date>-<slug>.md` for any non-trivial problem solved.
 3. Record gotchas or patterns discovered where the project keeps them.
 4. Propose a new checklist if the work revealed a pattern worth enforcing.
@@ -89,6 +89,13 @@ After significant F2 or F3 work, always, without asking:
 Several people and agents may work in the same repo at once. Never `git add -A`; add
 explicit paths. Before trusting a locally modified doc, compare it with the main branch on
 the remote; a local copy can be older than main.
+
+An agent working unattended from a ticket (started by the tracker, not by a person) never edits
+`docs/HANDOFF.md`, `docs/CURRENT_STATUS.md` or `docs/SESSION_CONTEXT.md`. Every session writes
+at their top, so such an edit conflicts with main, and a conflicted PR gets no CI. Put the
+handoff note in the PR description; put a lesson future sessions need in a new
+`docs/solutions/<date>-<slug>.md` file. The owner's sessions fold the results into the
+status docs.
 
 <!-- Project section: hand-owned. Everything below this line is kept as written. -->
 
