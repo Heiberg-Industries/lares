@@ -3,9 +3,11 @@ import { isAbsolute } from "node:path";
 import { Pool } from "pg";
 import { z } from "zod";
 import { lifecycleSchema } from "./lifecycle-config.js";
+import { credentialConfigSchema } from "./credential-state.js";
 const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
+  credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),
   mode: z.enum(["overlay", "rendered"]), project: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
   dir: absolute, files: z.array(z.string().min(1).refine(s => !s.includes("\u0000"))).min(1),
@@ -43,7 +45,9 @@ export function loadKeeperConfig(path = "/etc/lares/keeper.json"): KeeperConfig 
   const parsed = configSchema.safeParse(data);
   if (parsed.success)
     return parsed.data;
-  const problems = parsed.error.issues.slice(0, 10).map(issue => `${issue.path.length ? issue.path.map(String).join(".") : "(top level)"}: ${issue.message}`);
+  const problems = parsed.error.issues.slice(0, 10).map(issue => issue.path[0] === "credentials"
+    ? "credentials: invalid credential preparation; review the named slot, administrator and consumer inventory"
+    : `${issue.path.length ? issue.path.map(String).join(".") : "(top level)"}: ${issue.message}`);
   const more = parsed.error.issues.length > 10 ? `; and ${parsed.error.issues.length - 10} more` : "";
   throw new Error(`keeper: invalid configuration in ${path}: ${problems.join("; ")}${more}`);
 }

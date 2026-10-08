@@ -69,6 +69,8 @@ export interface KeeperConfigOptions {
   readonly gatewayUrl: string;
   /** The id `run_first_owner` just wrote into the identity register. */
   readonly ownerId: string;
+  /** Console login identity, separate from the register id. Missing means no app authority. */
+  readonly credentialAdministrator?: string;
 }
 
 /** Refuses (throws `ReleaseManifestInvalid`, re-thrown from `imageFor`) when the release names
@@ -101,6 +103,12 @@ export function renderKeeperConfig(
     // under its writable same-path root; installer-owned inputs remain under opts.secretsDir and
     // are mounted read-only into the keeper.
     secretsDir: managedSecretsDir,
+    // Preparation is an explicit host step. Never adopt an external token or widen mounts.
+    credentials: {
+      ...(opts.credentialAdministrator ? { administrator: opts.credentialAdministrator } : {}),
+      slot: "notion:shared", binding: "NOTION_TOKEN_FILE", prepared: false,
+      inventoryComplete: false, retainedConsumers: [],
+    },
     rolesDir: KEEPER_ROLES_DIR,
     templatesDir: KEEPER_TEMPLATES_DIR,
     backupDir: opts.backupDir,

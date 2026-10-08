@@ -99,6 +99,8 @@ try:
  # never applied here, and nothing said so) fails the image build instead of skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql') and int(q.name[:3])>=39}
  assert set(applied)==on_disk,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
+ # Standalone credential journal migration: no older-table prerequisites.
+ sql("DO $$ BEGIN IF to_regclass('keeper_credentials') IS NULL THEN RAISE EXCEPTION 'Credential journal migration missing'; END IF; END $$")
  sql("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,runtime_control_token,pending) VALUES('canary','172.30.0.99','proof','owned','11111111-1111-4111-8111-111111111111','ready','11111111-1111-4111-8111-111111111111',false)")
  env={'DATABASE_URL':'postgres://proof@proof-db/proof','WORKFLOW_POSTGRES_URL':'postgres://proof@proof-db/proof','DATABASE_PASSWORD_FILE':'/secrets/password','GATEWAY_URL':'http://host.docker.internal:'+str(server.server_port),'GATEWAY_KEY_FILE':'/secrets/gateway','EVE_SAGA_ROUTE_PASSWORD_FILE':'/secrets/route','LARES_AGENT_NAME':'canary','LARES_DEFINITION_DIR':'/definition','LARES_AGENT_INCARNATION':'11111111-1111-4111-8111-111111111111','LARES_RUNTIME_CONTROL_SECRET_FILE':'/secrets/control','AGENT_OWNER_USER_ID':'fixture-owner','EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0'}
  # W8A-s4: the image refuses BEFORE it serves anything when a required setting is missing. One

@@ -1,3 +1,7 @@
+import { Credentials, registerCredentialActions } from "../lib/credentials.js";
+import { CredentialFiles } from "../lib/credential-files.js";
+import { PgCredentialStore } from "../lib/credential-store.js";
+import { credentialConsumers } from "../lib/credential-consumers.js";
 import {registerDoorActions} from '../lib/doors.js';
 import {registerConversationActions,runtimeReset} from "../lib/conversations.js";
 import { readFileSync, existsSync } from "node:fs";
@@ -41,6 +45,7 @@ async function main(): Promise<void> {
                 },
             }),
         });
+        registerCredentialActions(new Credentials(config.credentials, new PgCredentialStore(pool), new CredentialFiles(config.secretsDir), () => credentialConsumers(pool, config)));
         registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{})});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));

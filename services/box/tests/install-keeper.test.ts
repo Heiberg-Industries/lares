@@ -166,7 +166,9 @@ describe("the keeper the installer configures and starts", () => {
     expect(config.lifecycle.reservedAddresses).toEqual(["172.30.0.254"]);
     expect(readFileSync(join(prefix, "srv", "lares", "egress", "squid.conf"), "utf8"))
       .toBe("http_port 8888\nhttp_access deny all\n");
+    expect(config.credentials).toEqual({ administrator: "owner@example.invalid", slot: "notion:shared", binding: "NOTION_TOKEN_FILE", prepared: false, inventoryComplete: false, retainedConsumers: [] });
     expect(config.secretsDir).toBe(join(prefix, "srv", "lares", "secrets"));
+    expect(existsSync(join(config.secretsDir, "notion-token"))).toBe(false);
     expect(config.agentsDir).toBe(join(prefix, "srv", "lares", "agents"));
   });
 

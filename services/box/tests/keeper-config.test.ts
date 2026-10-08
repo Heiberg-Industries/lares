@@ -15,6 +15,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadKeeperConfig } from "../../keeper/lib/config.js";
+import { main as renderConfigCommand } from "../bin/render-keeper-config.js";
 import { renderKeeperConfig, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
 import type { KeeperConfigOptions } from "../lib/keeper-config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
@@ -188,4 +189,27 @@ describe("the generated keeper configuration", () => {
     expect(config.lifecycle!.reservedAddresses).toEqual(["172.30.0.2"]);
     expect(config.lifecycle!.egress.internalNetworks).toEqual(["172.30.0.0/24"]);
   });
+});
+
+it("exposes an explicit administrator and unprepared Notion slot without adopting an external token", () => {
+  const config = renderKeeperConfig(MANIFEST, { ...OPTS, credentialAdministrator: "owner@example.invalid" });
+  expect(loadAsKeeperWould(config).credentials).toEqual({
+    administrator: "owner@example.invalid", slot: "notion:shared", binding: "NOTION_TOKEN_FILE",
+    prepared: false, inventoryComplete: false, retainedConsumers: [],
+  });
+  expect(config.secretsDir).toBe("/srv/lares/secrets");
+  expect(Object.values(config.lifecycle!.defaultBindings!).every(b => !b!.secrets.NOTION_TOKEN_FILE)).toBe(true);
+  expect(renderKeeperConfig(MANIFEST, OPTS).credentials!.administrator).toBeUndefined();
+});
+
+it("renderer rejects ambiguous or malformed administrator emails before writing files", () => {
+  for (const administrator of ["a..b@example.com", ".a@example.com", "one@example.invalid,two@example.invalid", ""]) {
+    const f=mkdtempSync(join(tmpdir(),"keeper-admin-render-"));dirs.push(f);
+    const out=join(f,"keeper.json"),env=join(f,"keeper.env");
+    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares","lares_state","fixture-owner",administrator];
+    const messages:string[]=[];
+    expect(renderConfigCommand(args,message=>messages.push(message))).toBe(1);
+    expect(messages).toEqual(["Configure one credential administrator email; nothing was written"]);
+    // The unreadable release would throw if validation happened after writing began.
+  }
 });
