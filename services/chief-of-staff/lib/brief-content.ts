@@ -1806,12 +1806,8 @@ export function conflictTrips(travel: BriefTravel | undefined): ConflictTrip[] {
  * travel wiring passes no trips and gets the home clock, exactly as the radar's own default.
  *
  * ONE `today` for both halves, so a brief never lists one day's meetings beside another day's
- * clashes. KNOWN LIMIT, left alone on purpose: the radar is a home-clock module by its own
- * contract (`lib/calendar-conflicts.ts` reads every timed event's date on the HOME zone, because
- * its timezone-trap class needs "home" to mean home). So on the rare morning the two dates
- * differ — only far east of home, where 08:00 is still yesterday evening at home — the radar
- * bounds the owner's date as the home clock sees it, which begins some hours into his day.
- * Meetings are unaffected; giving the radar a day-zone of its own is a change to that module.
+ * clashes. The radar is handed the owner's clock as `dayTimezone` (LAR-82), so it decides which
+ * day an event is on the way the meetings do; its timezone-trap class still reads "home" as home.
  */
 export async function listTodayCalendar(
   deps: CalendarSourceDeps, now: Date, opts: { trips?: readonly ConflictTrip[]; tz?: string } = {},
@@ -1825,6 +1821,7 @@ export async function listTodayCalendar(
     meetings: meetingsFromEvents(events, today, mine, tz),
     conflicts: detectCalendarConflicts(events, {
       days: [today],
+      dayTimezone: tz,
       ...(opts.trips ? { trips: opts.trips } : {}),
     }),
   };
