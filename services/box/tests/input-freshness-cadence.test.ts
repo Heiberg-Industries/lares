@@ -398,9 +398,9 @@ describe("input-freshness.sh: a database it cannot reach is a failed check that 
   });
 
   it("honours PGDATABASE and PGUSER in that sentence, so a renamed installation reads its own names", () => {
-    const r = run({ STUB_DB_FAIL: "1", PGDATABASE: "orbis_state", PGUSER: "orbis" });
+    const r = run({ STUB_DB_FAIL: "1", PGDATABASE: "example_state", PGUSER: "example" });
     expect(r.status).toBe(1);
-    expect(r.stdout).toContain("could not reach database orbis_state as role orbis");
+    expect(r.stdout).toContain("could not reach database example_state as role example");
   });
 
   it("an empty heartbeat table is reported as missing seed rows, not as an unreachable database", () => {
