@@ -18,6 +18,7 @@
 //      `--env-file` carries the whole set and `docker compose` has nothing left to guess.
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
+import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
 import { readFileSync, writeFileSync, chmodSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
@@ -46,6 +47,7 @@ const ARGUMENTS = [
   "pgUser",
   "pgDatabase",
   "ownerId",
+  "credentialAdministrator",
 ] as const;
 
 const HELP_TEXT = [
@@ -56,6 +58,10 @@ const HELP_TEXT = [
   "to <envOutFile>. Refuses, naming what is wrong, when the release file is not readable, is",
   "not a release, names an image by anything but a digest, or names no image for the keeper,",
   "its egress proxy, its firewall helper or one of the three roles.",
+  "",
+  "The Notion slot starts unprepared. A host administrator must prepare keeper-only storage,",
+  "review all shared consumers and set prepared/inventoryComplete in root-owned keeper.json.",
+  "Existing external token files are never adopted; the installation secret mount stays read-only.",
   "",
   "Exit codes:",
   "  0  both files were written",
@@ -75,6 +81,10 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   }
   const at = (name: (typeof ARGUMENTS)[number]): string => argv[ARGUMENTS.indexOf(name)]!;
 
+  if (!credentialConfigSchema.shape.administrator.safeParse(at("credentialAdministrator")).success) {
+    out("Configure one credential administrator email; nothing was written");
+    return 1;
+  }
   const manifest = parseReleaseManifest(readFileSync(at("releaseFile"), "utf8"));
   const config = renderKeeperConfig(manifest, {
     project: at("project"),
@@ -91,6 +101,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     pgDatabase: at("pgDatabase"),
     gatewayUrl: at("gatewayUrl"),
     ownerId: at("ownerId"),
+    credentialAdministrator: at("credentialAdministrator"),
   });
 
   // Looked up BEFORE the first byte is written: a release missing the keeper's own image or

@@ -37,8 +37,16 @@ function safeRefusal(error: KeeperRefusedError, input: unknown, fields: readonly
   return new KeeperRefusedError(scrub(error.message), error.findings?.map(f => ({check: scrub(f.check), message: scrub(f.message)})));
 }
 
+/** A fixed, secret-free result for a durable operation that may have crossed a side-effect
+ * boundary. Callers must inspect its journal; the transport must never resubmit it. */
+export class KeeperOutcomeUncertainError extends Error {
+  constructor() { super("keeper: outcome uncertain; inspect credential status; do not retry automatically"); }
+}
+
 export interface ActionContext {
   actor: string;
+  /** Set by runAction from the trusted transport, never from actor text. */
+  host?: boolean;
   audit(record: AuditRecord): Promise<void>;
 }
 export interface Action<I = unknown, O = unknown> {
@@ -114,20 +122,23 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
   let result: unknown;
   let failed = false;
   let refusal: KeeperRefusedError | undefined;
+  let uncertain: KeeperOutcomeUncertainError | undefined;
   try {
-    result = await action.run(parsed.data as never, ctx);
+    result = await action.run(parsed.data as never, { ...ctx, host: opts.host === true });
   }
   catch (error) {
     failed = true;
+    if (error instanceof KeeperOutcomeUncertainError) uncertain = error;
     if (error instanceof KeeperRefusedError) refusal = safeRefusal(error, rawInput, action.secretFields ?? []);
   }
   try {
-    await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
+    await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? uncertain?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
   }
   catch {
     throw new Error("keeper: outcome uncertain; audit finalization failed; do not retry automatically");
   }
   if (refusal) throw refusal;
+  if (uncertain) throw uncertain;
   if (failed)
     throw new Error("keeper: action failed");
   return result;

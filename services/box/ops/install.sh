@@ -1627,7 +1627,7 @@ run_keeper() {
       "$LARES_PROJECT" "$root" "$agents_dir" "$retired_dir" "$backup_dir" "$egress_dir" \
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
-      "$db_user" "$db_name" "$OWNER_ID"; then
+      "$db_user" "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")"; then
     rm -f "$tmp" "$env_tmp"
     die "the release file '$RELEASE_FILE' was refused (the reason is printed above). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi

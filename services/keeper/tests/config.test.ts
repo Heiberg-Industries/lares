@@ -77,3 +77,16 @@ function catchError(fn: () => unknown): Error {
   }
   throw new Error("expected the call to throw");
 }
+
+it("accepts only the named generated slot and one explicit administrator", () => {
+  const f = fixture();
+  const credentials = { administrator: "owner@example.invalid", slot: "notion:shared", binding: "NOTION_TOKEN_FILE", prepared: false, inventoryComplete: false, retainedConsumers: [] };
+  writeFileSync(f.file, JSON.stringify({ ...f.config, credentials }));
+  expect(loadKeeperConfig(f.file).credentials).toEqual(credentials);
+  for (const invalid of [{...credentials, administrator: ["one@example.invalid", "two@example.invalid"]}, {...credentials, administrator: "one@example.invalid,two@example.invalid"}, {...credentials, slot: "gateway:master"}, {...credentials, binding: "TOKEN_ENC_KEY_FILE"}, {...credentials, path: "/tmp/key"}, {...credentials, token: "synthetic-secret"}]) {
+    writeFileSync(f.file, JSON.stringify({ ...f.config, credentials: invalid }));
+    const error = catchError(() => loadKeeperConfig(f.file));
+    expect(error.message).toContain("invalid configuration");
+    expect(error.message).not.toContain("synthetic-secret");
+  }
+});
