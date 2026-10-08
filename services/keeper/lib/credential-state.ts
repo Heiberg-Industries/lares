@@ -23,16 +23,20 @@ const progress = z.object({ name, revision, state: z.enum(['pending', 'complete'
 const test = z.object({
   revision: z.uuid(), outcome: z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']),
   at: z.iso.datetime(),
+  identity: z.object({ kind: z.literal('internal-bot'), botId: z.uuid() }).strict().optional(),
 }).strict();
 export const credentialRecordSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT), version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   activeRevision: revision, candidateRevision: revision, rollbackRevision: revision,
-  phase: z.enum(['not-configured', 'staging', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
+  phase: z.enum(['not-configured', 'staging', 'testing', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
   operation: z.object({ id: z.uuid(), kind: z.enum(['stage', 'test', 'discard', 'apply', 'disconnect', 'recover']) }).strict().nullable(),
   test: test.nullable(), consumers: z.array(consumer).max(200),
   activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
 }).strict().superRefine((r, ctx) => {
   const invalid = (message: string) => ctx.addIssue({code:'custom',message});
+  if (r.test?.identity && r.test.outcome !== 'passed') invalid('Only passed tests retain identity evidence');
+  if (r.phase === 'testing' && (r.operation?.kind !== 'test' || r.test || r.rollbackRevision || !(r.candidateRevision || r.activeRevision)))
+    invalid('Testing requires retained custody and cleared evidence');
   if (['not-configured', 'disconnected'].includes(r.phase) && (r.activeRevision || r.candidateRevision || r.rollbackRevision || r.test))
     invalid('Empty state must have no credential custody or test evidence');
   if (r.candidateRevision && r.candidateRevision === r.activeRevision) invalid('Candidate must have a new revision');
@@ -75,4 +79,4 @@ export const credentialStatusSchema = z.object({
 }).strict();
 export type CredentialStatus = z.infer<typeof credentialStatusSchema>;
 export const interruptedCredential = (r: CredentialRecord): boolean =>
-  ['staging', 'discarding', 'applying', 'rolling-back', 'recovery-required'].includes(r.phase);
+  ['staging', 'testing', 'discarding', 'applying', 'rolling-back', 'recovery-required'].includes(r.phase);

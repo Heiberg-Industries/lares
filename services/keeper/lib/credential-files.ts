@@ -51,6 +51,12 @@ export class CredentialFiles {
     if (value === null) throw new Error('Credential candidate unavailable');
     return value;
   }
+  readActive(): string {
+    this.verifyRoot();
+    const value = this.read(this.activePath, true);
+    if (value === null) throw new Error('Active credential unavailable');
+    return value;
+  }
   private syncRoot(): void {
     const fd = openSync(this.root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try { fsyncSync(fd); } finally { closeSync(fd); }

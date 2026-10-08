@@ -48,6 +48,9 @@ export interface ActionContext {
   /** Set by runAction from the trusted transport, never from actor text. */
   host?: boolean;
   audit(record: AuditRecord): Promise<void>;
+  /** Close this action's audit before publishing durable success evidence. Only runAction
+   * supplies this callback; failures leave the action's journal incomplete and inspectable. */
+  finalizeAudit?: (result: unknown) => Promise<void>;
 }
 export interface Action<I = unknown, O = unknown> {
   name: string;
@@ -123,8 +126,15 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
   let failed = false;
   let refusal: KeeperRefusedError | undefined;
   let uncertain: KeeperOutcomeUncertainError | undefined;
+  let auditFinalized = false;
   try {
-    result = await action.run(parsed.data as never, { ...ctx, host: opts.host === true });
+    result = await action.run(parsed.data as never, { ...ctx, host: opts.host === true, finalizeAudit: async result => {
+      if (auditFinalized) throw new KeeperOutcomeUncertainError();
+      auditFinalized = true;
+      try {
+        await ctx.audit({ ...record, outcome: 'ok', ...(action.successDetail ? { detail: action.successDetail(result) } : {}) });
+      } catch { throw new KeeperOutcomeUncertainError(); }
+    } });
   }
   catch (error) {
     failed = true;
@@ -132,7 +142,7 @@ export async function runAction(name: string, rawInput: unknown, ctx: ActionCont
     if (error instanceof KeeperRefusedError) refusal = safeRefusal(error, rawInput, action.secretFields ?? []);
   }
   try {
-    await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? uncertain?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
+    if (!auditFinalized) await ctx.audit({ ...record, outcome: refusal ? "refused" : failed ? "failed" : "ok", ...(failed ? { detail: refusal?.message ?? uncertain?.message ?? "action failed" } : action.successDetail ? { detail: action.successDetail(result) } : {}) });
   }
   catch {
     throw new Error("keeper: outcome uncertain; audit finalization failed; do not retry automatically");
