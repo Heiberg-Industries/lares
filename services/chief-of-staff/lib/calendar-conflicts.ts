@@ -152,6 +152,9 @@ export interface ConflictContext {
   readonly trips?: readonly ConflictTrip[];
   /** Defaults to {@link DEFAULT_HOME_TIMEZONE}. */
   readonly homeTimezone?: string;
+  /** The clock `days` are dates on, used ONLY to decide which calendar day an event falls on.
+   *  The timezone-trap check keeps meaning `homeTimezone`. Absent means the home clock. */
+  readonly dayTimezone?: string;
   /** Defaults to {@link MAX_CONFLICT_EVENTS}. */
   readonly maxEvents?: number;
 }
@@ -581,13 +584,13 @@ export function detectCalendarConflicts(
   events: readonly CalendarEvent[],
   ctx: ConflictContext,
 ): CalendarConflict[] {
-  const home = ctx.homeTimezone ?? DEFAULT_HOME_TIMEZONE;
+  const dayZone = ctx.dayTimezone ?? ctx.homeTimezone ?? DEFAULT_HOME_TIMEZONE;
   const days = new Set(ctx.days);
   if (days.size === 0) return [];
 
   const inWindow = dedupeEvents(events)
     .filter((e) => {
-      const covered = coveredDays(e, home);
+      const covered = coveredDays(e, dayZone);
       if (!covered) return false;
       return daySpan(covered.first, covered.last).some((d) => days.has(d));
     })
@@ -595,7 +598,7 @@ export function detectCalendarConflicts(
 
   const found = [
     ...doubleBookings(inWindow),
-    ...overlappingStays(inWindow, home, days),
+    ...overlappingStays(inWindow, dayZone, days),
     ...timezoneTraps(inWindow, ctx),
   ];
 

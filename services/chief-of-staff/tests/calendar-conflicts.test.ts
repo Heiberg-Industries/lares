@@ -494,3 +494,45 @@ describe("LAR-59-s1 — account and calendar identity on conflict refs", () => {
     expect(withIdentity[0]!.severity).toBe(plain[0]!.severity);
   });
 });
+
+describe("LAR-82 — dayTimezone: which calendar day an event is on, on the owner's clock", () => {
+  const pair = (offset: string, a: [string, string], b: [string, string]): CalendarEvent[] => [
+    { id: "d1", summary: "Standup", start: `${DAY}T${a[0]}:00${offset}`, end: `${DAY}T${a[1]}:00${offset}` },
+    { id: "d2", summary: "Call", start: `${DAY}T${b[0]}:00${offset}`, end: `${DAY}T${b[1]}:00${offset}` },
+  ];
+
+  it("Auckland: a 07:30 double-booking on the owner's day is found on that day", () => {
+    const events = pair("+12:00", ["07:30", "08:30"], ["08:00", "09:00"]);
+    // On the home clock these sit on the evening of the 25th, so without the day clock they are missed.
+    expect(kinds(events)).toEqual([]);
+    expect(kinds(events, { dayTimezone: "Pacific/Auckland" })).toEqual(["double-booked"]);
+  });
+
+  it("Tokyo: an early-morning double-booking on the owner's day is found on that day", () => {
+    const events = pair("+09:00", ["05:30", "06:30"], ["06:00", "06:45"]);
+    expect(kinds(events)).toEqual([]);
+    expect(kinds(events, { dayTimezone: "Asia/Tokyo" })).toEqual(["double-booked"]);
+  });
+
+  it("an all-day entry is read straight off its date string, whatever the day clock", () => {
+    const stays = [
+      allDay({ summary: "Hotel Aoyama", start: DAY, end: "2026-08-28" }),
+      allDay({ summary: "Airbnb Shibuya", start: "2026-08-27", end: "2026-08-29" }),
+    ];
+    const withClock = detectCalendarConflicts(stays, { days: ["2026-08-27"], dayTimezone: "Asia/Tokyo" });
+    const without = detectCalendarConflicts(stays, { days: ["2026-08-27"] });
+    expect(withClock.length).toBeGreaterThan(0);
+    expect(withClock).toEqual(without);
+  });
+
+  it("New York is unchanged: the day clock and the home clock agree west of home", () => {
+    const events = pair("-04:00", ["09:00", "10:00"], ["09:30", "10:30"]);
+    expect(kinds(events, { dayTimezone: "America/New_York" })).toEqual(kinds(events));
+    expect(kinds(events, { dayTimezone: "America/New_York" })).toEqual(["double-booked"]);
+  });
+
+  it("an invalid day timezone costs this pass its findings, never throws", () => {
+    const events = pair("+12:00", ["07:30", "08:30"], ["08:00", "09:00"]);
+    expect(() => kinds(events, { dayTimezone: "Not/AZone" })).not.toThrow();
+  });
+});
