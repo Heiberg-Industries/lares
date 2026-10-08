@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const CREDENTIAL_SLOT = 'notion:shared' as const;
+import { CREDENTIAL_SLOT, credentialConsumerSchema as consumer, credentialProgressSchema as progress, credentialTestSchema as test, credentialPhaseSchema } from '@lares/agent-kit/credential-lifecycle';
+export { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus, type CredentialConsumer } from '@lares/agent-kit/credential-lifecycle';
 const revision = z.uuid().nullable();
 const name = z.string().regex(/^[a-z][a-z0-9-]{1,63}$/);
 export const credentialConfigSchema = z.object({
@@ -15,25 +16,15 @@ export const credentialConfigSchema = z.object({
   }).strict()).max(100),
 }).strict();
 export type CredentialConfig = z.infer<typeof credentialConfigSchema>;
-const consumer = z.object({
-  name, category: z.enum(['owned-agent', 'unmanaged-service', 'external-binding', 'runtime-not-ready']),
-  incarnation: revision,
-}).strict();
-const progress = z.object({ name, revision, state: z.enum(['pending', 'complete', 'failed']) }).strict();
 export const credentialCustodySchema = z.object({ device: z.string(), inode: z.string(), size: z.number().int(), modified: z.string(), changed: z.string() }).strict();
 const activationIntent = z.object({
   previousRevision: revision, targetRevision: revision, inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/),
   prepared: z.boolean(), finishing: z.boolean(),
 }).strict();
-const test = z.object({
-  revision: z.uuid(), outcome: z.enum(['passed', 'refused', 'rate-limited', 'unavailable', 'unexpected']),
-  at: z.iso.datetime(),
-  identity: z.object({ kind: z.literal('internal-bot'), botId: z.uuid() }).strict().optional(),
-}).strict();
 export const credentialRecordSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT), version: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
   activeRevision: revision, candidateRevision: revision, rollbackRevision: revision,
-  phase: z.enum(['not-configured', 'staging', 'testing', 'pending-test', 'test-failed', 'pending-apply', 'discarding', 'applying', 'disconnecting', 'applied', 'disconnected', 'rolling-back', 'recovery-required']),
+  phase: credentialPhaseSchema,
   operation: z.object({ id: z.uuid(), kind: z.enum(['stage', 'test', 'discard', 'apply', 'disconnect', 'recover']) }).strict().nullable(),
   test: test.nullable(), consumers: z.array(consumer).max(200),
   activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
@@ -81,20 +72,9 @@ export const credentialRecordSchema = z.object({
     ctx.addIssue({ code: 'custom', message: 'Active revision required' });
 });
 export type CredentialRecord = z.infer<typeof credentialRecordSchema>;
-export type CredentialConsumer = z.infer<typeof consumer>;
 export const initialCredentialRecord = (): CredentialRecord => ({
   slot: CREDENTIAL_SLOT, version: 0, activeRevision: null, candidateRevision: null, rollbackRevision: null,
   phase: 'not-configured', operation: null, test: null, consumers: [], activation: [], rollback: [],
 });
-export const credentialStatusSchema = z.object({
-  slot: z.literal(CREDENTIAL_SLOT),
-  state: z.enum(['unavailable', 'not-configured', 'host-administration-required', 'pending-test', 'test-failed', 'pending-apply', 'applying', 'disconnecting', 'applied', 'disconnected', 'recovery-required']),
-  guidance: z.enum(['configure-administrator', 'prepare-managed-slot', 'prepare-writable-storage', 'review-consumers', 'inspect-journal', 'status-unavailable']).nullable(),
-  revision: z.number().int().min(0).nullable(), activeRevision: revision, candidateRevision: revision,
-  phase: credentialRecordSchema.shape.phase.nullable(), test: test.nullable(),
-  consumers: z.array(consumer).max(200), activation: z.array(progress).max(200), rollback: z.array(progress).max(200),
-  inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
-}).strict();
-export type CredentialStatus = z.infer<typeof credentialStatusSchema>;
 export const interruptedCredential = (r: CredentialRecord): boolean =>
   ['staging', 'testing', 'discarding', 'applying', 'disconnecting', 'rolling-back', 'recovery-required'].includes(r.phase);

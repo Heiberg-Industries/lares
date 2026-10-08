@@ -21,6 +21,16 @@ export const STATE_COLOURS: Record<string, { c: string; label: string }> = {
   live: { c: "var(--ok)", label: "live" },
   partial: { c: "var(--warn)", label: "partial" },
   missing: { c: "var(--bad)", label: "missing" },
+  'not-configured': { c: 'var(--mist)', label: 'Not configured' },
+  'host-administration-required': { c: 'var(--warn)', label: 'Host administration required' },
+  'pending-test': { c: 'var(--warn)', label: 'Pending test' },
+  'test-failed': { c: 'var(--bad)', label: 'Test failed' },
+  'pending-apply': { c: 'var(--warn)', label: 'Pending Apply' },
+  applying: { c: 'var(--warn)', label: 'Applying' },
+  disconnecting: { c: 'var(--warn)', label: 'Disconnecting locally' },
+  applied: { c: 'var(--ok)', label: 'Applied' },
+  disconnected: { c: 'var(--mist)', label: 'Disconnected locally' },
+  'recovery-required': { c: 'var(--bad)', label: 'Recovery required' },
   // CRM mailbox sync (CrmChannelState). `paused` is red, not amber: the pause is deliberate and
   // protective, but the consequence — no mail reaching the CRM, no recovery without a human — is
   // identical to a failure, and amber would imply it heals itself.

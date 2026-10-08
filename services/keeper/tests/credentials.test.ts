@@ -9,6 +9,7 @@ import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, initia
 import type { CredentialJournal, CredentialStore } from '../lib/credential-store.js';
 import { resetActions, runAction, type AuditRecord } from '../lib/actions.js';
 import type { NotionCredentialTester } from '../lib/notion-credential.js';
+import { CredentialActivation, type CredentialRuntime } from '../lib/credential-activation.js';
 
 class MemoryStore implements CredentialStore {
   record = initialCredentialRecord();
@@ -52,6 +53,18 @@ function active() {
   store.record = { ...initialCredentialRecord(), version: 1, phase: 'applied', activeRevision: randomUUID() };
   writeFileSync(files.activePath, secret, { mode: 0o600 });
 }
+it('returns the complete consumer list and its confirmation digest from one activation snapshot', async () => {
+  active();
+  const first = { name: 'first', category: 'owned-agent' as const, incarnation: randomUUID() };
+  const added = { name: 'added', category: 'owned-agent' as const, incarnation: randomUUID() };
+  inventory.mockResolvedValue([first] as never);
+  const snapshot = vi.fn(async () => ({ revision: 'b'.repeat(64), consumers: [first, added] }));
+  const runtime: CredentialRuntime = { snapshot, locked: work => work(), quiesce: async () => {}, reconcile: async () => {}, verify: async () => {} };
+  service = new Credentials(config, store, files, inventory, tester, new CredentialActivation(files, runtime));
+  expect(await service.status(admin)).toMatchObject({ consumers: [first, added], inventoryRevision: 'b'.repeat(64) });
+  expect(snapshot).toHaveBeenCalledOnce();
+  expect(store.writes).toBe(0);
+});
 it('test/save keeps the exact tested protected candidate pending without changing active bytes or consumers', async () => {
   active(); const before = store.record.activeRevision;
   const audit: AuditRecord[] = [];

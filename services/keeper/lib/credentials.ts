@@ -1,14 +1,10 @@
-import { z } from 'zod';
+import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialTokenInput as token } from '@lares/agent-kit/credential-lifecycle';
 import { KeeperRefusedError, KeeperOutcomeUncertainError, registerAction, type ActionContext } from './actions.js';
 import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, type CredentialConfig, type CredentialConsumer, type CredentialRecord, type CredentialStatus } from './credential-state.js';
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
 import { CredentialFiles, newCredentialRevision } from './credential-files.js';
 import type { NotionCredentialTester } from './notion-credential.js';
 import type { CredentialActivation, CredentialActivationInput } from './credential-activation.js';
-
-export const credentialSlotInput = z.object({ slot: z.literal(CREDENTIAL_SLOT) }).strict();
-export const credentialRevisionInput = credentialSlotInput.extend({ expectedRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }).strict();
-const token = z.string().min(1).max(8192).refine(v => Buffer.byteLength(v, 'utf8') <= 8192 && !/[\s\x00-\x1f\x7f]/.test(v));
 
 /** Explicit tests share the foundation's lock and custody. Status and discard never test.
  * Only explicit Apply/disconnect enter the owned runtime activation boundary.
@@ -49,7 +45,11 @@ export class Credentials {
       return this.dto(r, 'host-administration-required', 'review-consumers', consumers);
     const status = this.dto(r, r.phase as CredentialStatus['state'], null, consumers);
     if (this.activation) {
-      try { status.inventoryRevision = (await this.activation.snapshot(r)).revision; }
+      try {
+        const snapshot = await this.activation.snapshot(r);
+        status.consumers = snapshot.consumers;
+        status.inventoryRevision = snapshot.revision;
+      }
       catch { return this.dto(r, 'host-administration-required', 'review-consumers', consumers); }
     }
     return status;
@@ -230,7 +230,7 @@ export function registerCredentialActions(credentials: Credentials): void {
   registerAction({ name: 'credential.test_pending', input: credentialRevisionInput,
     run: (input, ctx) => credentials.testExisting('pending', input.expectedRevision, ctx), successDetail });
   registerAction({ name: 'credential.discard', input: credentialRevisionInput, run: (input, ctx) => credentials.discard(input.expectedRevision, ctx) });
-  const activationInput = credentialRevisionInput.extend({ expectedActiveRevision: z.uuid().nullable(), inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmRestart: z.literal(true) }).strict();
+  const activationInput = credentialActivationInput;
   for (const kind of ['apply', 'disconnect'] as const)
     registerAction({ name: `credential.${kind}`, input: activationInput,
       run: (input, ctx) => credentials.change(kind, input.expectedRevision, input, ctx) });

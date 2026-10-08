@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 vi.mock("../lib/connections", () => ({ getConnectionRows: vi.fn() }));
+vi.mock("../lib/credentials", () => ({ getCredentialView: async () => ({ kind: 'unavailable' }) }));
 vi.mock("../lib/board", () => ({ getBoardRows: async () => [] }));
 vi.mock("../lib/queries", () => ({ getNotionSyncStatus: async () => ({
   lastRunAt: "2026-10-08T10:00:00Z", synced: 7, needsYou: 0, retrying: 0, unmatched: 0,
@@ -92,6 +93,7 @@ describe("Integrations page partial evidence", () => {
     expect(html).toContain("Agent access: assistant");
     expect(html).toContain("Connect a Google account");
     expect(html).toContain("7 synced");
+    expect(html).toContain("Credential status unavailable");
     expect(html).toContain("Agent permissions");
     expect(html).not.toContain("no mailbox");
     expect(html).not.toContain("Last use recorded here: none");
