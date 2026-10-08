@@ -6,7 +6,7 @@
  * IT RETURNS A WHOLE `KeeperConfig`, NOT A `LifecycleConfig`. `services/keeper/lib/config.ts`'s
  * `loadKeeperConfig` parses that path with a `.strict()` schema in which `lifecycle` is one
  * OPTIONAL nested field among twelve; a bare lifecycle block written there is refused with
- * "keeper: invalid or unreadable configuration" and the keeper does not start. The type below
+ * "keeper: invalid configuration in <path>: <field>: <reason>" and the keeper does not start. The type below
  * is that schema's own, imported by type only — nothing of the keeper's runtime (zod, pg) is
  * loaded into the installer by this file.
  *
