@@ -7,6 +7,18 @@ something below changes. Older dated documents under `design/` and `runbooks/`
 are records of what was observed on their date; where they disagree with this
 page, this page is newer.
 
+## Browser mutation protection — pending delivery
+
+The console now requires the configured public Origin for state-changing browser requests.
+Missing or mismatched origins are rejected before route handling; exact platform webhook POSTs
+retain their separate authentication path. This closes a reproduced same-site cross-origin
+proposal approval. OAuth GET callbacks and normal same-origin approvals remain available.
+
+Validation: 123 focused tests and console typecheck passed; the isolated browser/database
+reproduction now leaves the hostile-origin proposal pending. Independent review found no blockers.
+See [configuration and verification](solutions/2026-10-08-console-mutation-origin.md).
+This change is not yet merged or deployed; private-member authorisation remains separate.
+
 ## Done and on `main`
 
 - **The repository is public** (since 24 September 2026).

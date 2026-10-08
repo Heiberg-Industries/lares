@@ -17,14 +17,10 @@
  * so the agent cannot set a cookie in the console's origin or make the browser prompt for the
  * agent's own credential. This proxy alone may issue its own signed chat-session cookie.
  *
- * CSRF: this route is protected exactly the way every other state-changing route in this console is
- * — the `lares_session` cookie is `SameSite=Lax` (app/api/auth/[...route]/route.ts), so a cross-site
- * POST never carries it and step 1 refuses; and the session is re-checked here rather than trusted
- * from middleware (the reason app/api/notion-proposals/route.ts gives). There is no token scheme in
- * this console and this slice does not invent one. Answering an approval (W8B-s5) is one of those
- * state-changing POSTs — `POST eve/v1/session/<id>` with `inputResponses` — and is covered by the
- * same two facts: a cross-site form POST arrives without the cookie, and a cross-site GET cannot
- * reach it at all, because `eve/v1/session/<id>` is POST-only in the allow-list below.
+ * CSRF: middleware requires the configured console Origin on state-changing requests, including
+ * approval POSTs. SameSite=Lax cookies provide an additional cross-site boundary, but do not block
+ * other origins on the same site. This handler also re-checks the session. A GET cannot answer an
+ * approval because `eve/v1/session/<id>` is POST-only in the allow-list below.
  *
  * Structure copied from lib/door-forwarder.ts, which guards the other lane. The differences are the
  * three the plan names: it ADDS a credential instead of stripping one, it does not require a
