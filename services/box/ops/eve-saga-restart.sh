@@ -35,10 +35,23 @@ echo "back up, healthy (started $STARTED)"
 # Give the fresh worker a moment to register before we look for stale locks.
 sleep 3
 
-DEAD=$(docker exec "$DB" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+# A query that fails is NOT "no wedged turns" (LAR-86). These reads used to discard psql's
+# stderr and exit code, so an unreachable database — or a wrong PGDATABASE/PGUSER — printed
+# "nothing to reclaim" and exited 0 over a turn that stayed wedged. Now the read refuses
+# loudly, the way backup.sh does, and the script exits 2: the restart itself DID happen.
+read_locks() { # <sql> -> the trimmed answer, or a refusal on stderr and exit 2
+  local out
+  if ! out=$(docker exec "$DB" psql -U "$DB_USER" -d "$DB_NAME" -tAc "$1" 2>&1); then
+    echo "eve-saga-restart: could not reach database $DB_NAME as role $DB_USER in $DB ($(printf '%s' "$out" | tail -n 2 | tr '\n' ' ' | sed 's/ *$//')) — postgres unreachable; the container was restarted, but whether a turn is still wedged is UNKNOWN and nothing was reclaimed" >&2
+    return 2
+  fi
+  printf '%s' "$out" | tr -d ' '
+}
+
+DEAD=$(read_locks \
   "select coalesce(string_agg(distinct quote_literal(locked_by), ','), '')
      from graphile_worker.jobs
-    where locked_by is not null and locked_at < '$STARTED'::timestamptz" 2>/dev/null | tr -d ' ')
+    where locked_by is not null and locked_at < '$STARTED'::timestamptz") || exit 2
 
 if [ -z "$DEAD" ]; then
   echo "no turns were wedged by the restart — nothing to reclaim"
@@ -49,6 +62,6 @@ echo "reclaiming jobs from dead worker(s): $DEAD"
 docker exec "$DB" psql -U "$DB_USER" -d "$DB_NAME" -q -c \
   "select graphile_worker.force_unlock_workers(array[$DEAD])" >/dev/null
 
-LEFT=$(docker exec "$DB" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
-  "select count(*) from graphile_worker.jobs where locked_by is not null and locked_at < '$STARTED'::timestamptz" 2>/dev/null | tr -d ' ')
+LEFT=$(read_locks \
+  "select count(*) from graphile_worker.jobs where locked_by is not null and locked_at < '$STARTED'::timestamptz") || exit 2
 echo "stale locks remaining: $LEFT (0 = all reclaimed; the worker repolls within ~500ms)"
