@@ -17,6 +17,7 @@ on:
       - "patches/**"
       - "pnpm-workspace.yaml"
       - "package.json"
+      - "scripts/scan-image.sh"
   workflow_dispatch:
     inputs:
       publish:
@@ -81,6 +82,27 @@ jobs:
           tags: |
             type=ref,event=tag
             type=sha,prefix=sha-
+
+      - name: Build final image for security evidence
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/console/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          load: true
+          tags: lares-console:test
+          cache-from: type=gha
+      - name: Verify final console runtime without credentials
+        run: docker run --rm --network none --entrypoint sh lares-console:test -c 'test "$(id -u)" = 10001 && test -f services/console/server.js && ! command -v npm && ! command -v corepack'
+      - name: Scan final image
+        run: scripts/scan-image.sh lares-console:test "$RUNNER_TEMP/image-scans/console"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: console-image-scan
+          path: ${{ runner.temp }}/image-scans
+          if-no-files-found: error
 
       - name: Build and push (linux/amd64, digest-pinned)
         id: build

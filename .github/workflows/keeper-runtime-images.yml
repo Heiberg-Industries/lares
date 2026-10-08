@@ -2,7 +2,7 @@ name: keeper and neutral runtime images
 on:
   push:
     branches: [main]
-    paths: ['services/**', 'packages/**', 'images/**', 'patches/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', '.github/workflows/keeper-runtime-images.yml']
+    paths: ['services/**', 'packages/**', 'images/**', 'patches/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'package.json', 'scripts/scan-image.sh', '.github/workflows/keeper-runtime-images.yml']
   workflow_dispatch:
     inputs:
       publish:
@@ -30,11 +30,20 @@ jobs:
           context: .
           file: services/${{ matrix.role }}/Dockerfile
           target: runtime
+          pull: true
           load: true
           tags: lares-runtime:test
+      - name: Scan final runtime image
+        run: scripts/scan-image.sh lares-runtime:test "$RUNNER_TEMP/image-scans/runtime"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtime-${{ matrix.role }}-image-scan
+          path: ${{ runner.temp }}/image-scans
+          if-no-files-found: error
       - name: Verify compiled executable and unprivileged runtime
         run: |
-          docker run --rm --network none --entrypoint sh lares-runtime:test -c 'test "$(id -u)" = 10001 && test -f .output/server/index.mjs && test -x ./node_modules/.bin/eve && ./node_modules/.bin/eve --version'
+          docker run --rm --network none --entrypoint sh lares-runtime:test -c 'test "$(id -u)" = 10001 && test -f .output/server/index.mjs && test -x ./node_modules/.bin/eve && ! command -v npm && ! command -v corepack && ./node_modules/.bin/eve --version'
       - name: Exercise compiled runtime, mounted persona and gateway selection across restart
         if: matrix.role == 'chief-of-staff'
         run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
@@ -90,23 +99,44 @@ jobs:
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: services/keeper/Dockerfile, load: true, tags: 'lares-keeper:test'}
+        with: {context: ., file: services/keeper/Dockerfile, pull: true, load: true, tags: 'lares-keeper:test'}
+      - name: Scan final keeper image
+        run: scripts/scan-image.sh lares-keeper:test "$RUNNER_TEMP/image-scans/keeper"
       - name: Verify keeper runtime imports without starting sockets or migrations
         run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
-      - uses: docker/build-push-action@v6
-        with: {context: ., file: services/keeper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
-      - uses: docker/build-push-action@v6
-        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
 
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/egress-proxy/Dockerfile, load: true, tags: 'lares-squid:test'}
+        with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
       - uses: docker/build-push-action@v6
-        with: {context: ., file: images/firewall-helper/Dockerfile, load: true, tags: 'lares-nft:test'}
+        with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
+      - name: Scan final network helper images
+        run: |
+          scripts/scan-image.sh lares-squid:test "$RUNNER_TEMP/image-scans/egress"
+          scripts/scan-image.sh lares-nft:test "$RUNNER_TEMP/image-scans/firewall"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keeper-and-network-image-scans
+          path: ${{ runner.temp }}/image-scans
+          if-no-files-found: error
+      - name: Verify keeper runtime Docker tools and Compose parser
+        run: |
+          docker run --rm --network none --entrypoint sh lares-keeper:test -c 'docker --version && docker compose version && ! command -v npm && ! command -v pnpm && ! command -v corepack'
+          # Read-only negotiation with the disposable CI daemon, never an installation.
+          docker run --rm --network none --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock --entrypoint docker lares-keeper:test version
+          docker run --rm --network none --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock --entrypoint docker lares-keeper:test network inspect bridge --format '{{json .IPAM.Config}}'
+          mkdir -p "$RUNNER_TEMP/keeper-compose"
+          printf 'services:\n  example:\n    image: example.invalid/runtime@sha256:%064d\n' 0 > "$RUNNER_TEMP/keeper-compose/compose.yaml"
+          docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/keeper-compose,dst=/config,readonly" --entrypoint docker lares-keeper:test compose -f /config/compose.yaml config --quiet
       - name: Generate representative configs and validate with native target parsers
         run: |
           mkdir -p "$RUNNER_TEMP/lares-parser"
           docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/output" --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/egress.ts').then(({generateEgress})=>{const fs=require('node:fs');const e=generateEgress([{name:'example',address:'172.18.0.24',grants:[{capability:'notion',scope:'read'}],doors:[{kind:'slack',enabled:true}]}],{legacyConsumers:[{name:'sync',address:'172.18.0.10',hosts:['api.notion.com']}],internalNetworks:['172.18.0.0/16'],directDestinations:['192.0.2.1']});fs.writeFileSync('/output/squid.conf',e.squid);fs.writeFileSync('/output/rules.nft',e.nft)})"
           docker run --rm --network none --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" --entrypoint squid lares-squid:test -k parse -f /config/squid.conf
           docker run --rm --network none --cap-drop ALL --cap-add NET_ADMIN --mount "type=bind,src=$RUNNER_TEMP/lares-parser,dst=/config,readonly" lares-nft:test --check -f /config/rules.nft
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: services/keeper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-keeper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
+      - uses: docker/build-push-action@v6
+        with: {context: ., file: images/firewall-helper/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-firewall-helper:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/egress-proxy/Dockerfile, push: "${{ (github.event_name == 'workflow_dispatch' && inputs.publish) || (github.event_name != 'workflow_dispatch' && vars.PUBLISH_IMAGES == 'true') }}", tags: 'ghcr.io/heiberg-industries/lares-engine-egress-proxy:sha-${{ github.sha }}', labels: 'org.opencontainers.image.source=https://github.com/Heiberg-Industries/lares'}

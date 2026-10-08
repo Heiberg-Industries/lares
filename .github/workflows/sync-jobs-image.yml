@@ -21,6 +21,7 @@ on:
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
       - "package.json"
+      - "scripts/scan-image.sh"
       - ".github/workflows/sync-jobs-image.yml"
   workflow_dispatch:
     inputs:
@@ -64,6 +65,35 @@ jobs:
       # Build context is the REPO ROOT, not services/sync-jobs: sync-jobs is a pnpm workspace
       # member with no lockfile of its own, so the install needs the root pnpm-workspace.yaml
       # and pnpm-lock.yaml. Same convention as eve-marcel's and eve-saga's image workflows.
+      - name: Build final image for security evidence
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: services/sync-jobs/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          load: true
+          tags: lares-sync-jobs:test
+          cache-from: type=gha
+      - name: Scan final image
+        run: scripts/scan-image.sh lares-sync-jobs:test "$RUNNER_TEMP/image-scans/sync-jobs"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sync-jobs-image-scan
+          path: ${{ runner.temp }}/image-scans
+          if-no-files-found: error
+      - name: Verify both scheduled-job entrypoints without providers
+        run: |
+          docker run --rm --network none --entrypoint sh lares-sync-jobs:test -c 'test "$(id -u)" = 10001 && ! command -v npm && ! command -v pnpm && ! command -v corepack'
+          docker run --rm --network none -e NOTION_SYNC_LIVE=0 --entrypoint /app/node_modules/.bin/tsx lares-sync-jobs:test services/notion-sync/bin/notion-sync.ts
+          # Atlas has no help mode: prove imports reach its argument guard, before
+          # configuration, stores, credentials or any provider could be touched.
+          if docker run --rm --network none --entrypoint /app/node_modules/.bin/tsx lares-sync-jobs:test services/atlas/bin/atlas-sync.ts --image-probe > "$RUNNER_TEMP/atlas-entrypoint.log" 2>&1; then
+            echo 'Atlas should refuse the probe argument'; exit 1
+          fi
+          grep -F 'atlas: unknown argument "--image-probe"' "$RUNNER_TEMP/atlas-entrypoint.log"
+
       - name: Build and push (linux/amd64, digest-pinned)
         id: build
         uses: docker/build-push-action@v6
