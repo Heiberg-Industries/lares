@@ -18,12 +18,16 @@ if [[ ! -x "$scanner/trivy" ]]; then
   echo "$checksum  $scanner/trivy.tar.gz" | sha256sum --check --strict
   tar -xzf "$scanner/trivy.tar.gz" -C "$scanner" trivy
 fi
+# Prove the build-only native compiler is absent from this actual final image.
+# Override every image entrypoint; no application, daemon, credentials or network.
+docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
+  --entrypoint sh "$image" -c 'if [ -d /app/node_modules/.pnpm ]; then test -z "$(find /app/node_modules/.pnpm -type f -path "*/node_modules/@typescript/typescript-linux-x64/lib/tsc")"; fi'
 # Retain image ID/layers/platform without serializing environment or secrets.
 docker image inspect "$image" --format '{{json .}}' | python3 -c '
 import json, os, sys, datetime
 image=json.load(sys.stdin)
 assert image["Os"] == "linux" and image["Architecture"] == "amd64"
-json.dump({"source":os.environ["GITHUB_SHA"], "scanned_at":datetime.datetime.now(datetime.timezone.utc).isoformat(), "image_id":image["Id"], "os":image["Os"], "architecture":image["Architecture"], "layers":image["RootFS"]["Layers"]},sys.stdout,indent=2)
+json.dump({"source":os.environ["GITHUB_SHA"], "scanned_at":datetime.datetime.now(datetime.timezone.utc).isoformat(), "image_id":image["Id"], "os":image["Os"], "architecture":image["Architecture"], "native_compiler_absent":True, "layers":image["RootFS"]["Layers"]},sys.stdout,indent=2)
 ' > "$output/image.json"
 # No secret scan, ignore list or severity suppression. Preserve every match for review.
 "$scanner/trivy" image --image-src docker --scanners vuln --list-all-pkgs \
