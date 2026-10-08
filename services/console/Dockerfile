@@ -83,6 +83,11 @@ RUN pnpm --filter @lares/console build
 # Same tag as `deps`/`build` (see `deps`' comment) — the standalone output can trace in
 # native addons built under that Node ABI.
 FROM node:24-bookworm-slim AS run
+RUN apt-get update && apt-get upgrade -y && rm -rf /var/lib/apt/lists/*
+# Installation hosts run prepared code, never a package installer. Keep workspace
+# dependencies intact; remove only the base image's unused build/package managers.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000 NEXT_TELEMETRY_DISABLED=1 EVE_TELEMETRY_DISABLED=1
 

@@ -53,16 +53,19 @@ COPY packages/vault-format    packages/vault-format
 # ---- runtime: slim, non-root --------------------------------------------------------------
 FROM node:24-bookworm-slim AS runtime
 ENV NODE_ENV=production \
-    PNPM_HOME=/pnpm PATH=/pnpm:$PATH \
     HOME=/tmp
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate \
+RUN apt-get update && apt-get upgrade -y \
     # git: both jobs commit into bind-mounted repos (/srv/brain, /srv/atlas).
-    && apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+    && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     # UID/GID 10001 — the box's shared non-root id (secret files are root:saga(10001) 440;
     # /srv/brain and /srv/atlas are writable by that group). The in-container NAME is
     # irrelevant, the NUMBER is load-bearing.
     && groupadd -g 10001 jobs && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin jobs
+# Installation hosts run prepared code, never a package installer. Keep workspace
+# dependencies intact; remove only the base image's unused build/package managers.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 # The whole tree, layout preserved: pnpm's node_modules are RELATIVE symlinks into the
 # workspace-root store, so copying one service alone breaks every import.
