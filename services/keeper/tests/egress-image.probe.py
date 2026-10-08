@@ -103,6 +103,10 @@ try:
     cmd('docker', 'network', 'create', '--internal', name)
     config = json.loads(cmd('docker', 'network', 'inspect', name, '--format', '{{json .IPAM.Config}}'))
     subnet = ipaddress.ip_network(config[0]['Subnet'])
+    # Docker permits fixed client addresses only on an explicitly configured
+    # subnet. Reuse its free selection rather than assuming a shared CI range.
+    cmd('docker', 'network', 'rm', name)
+    cmd('docker', 'network', 'create', '--internal', '--subnet', str(subnet), name)
     allowed_ip, denied_ip, target_ip, proxy_ip = [str(subnet.network_address + n) for n in (10, 11, 12, 13)]
     endpoint = """const net=require('node:net');
       for(const port of [443,444])net.createServer(s=>{
