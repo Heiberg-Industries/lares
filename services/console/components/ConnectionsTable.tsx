@@ -17,6 +17,8 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
   // One form beneath the table matches what it actually does. The per-mailbox Remove button
   // stays inside each row's expando — that action genuinely is row-specific.
   const hasConsoleCustody = rows.some((r) => r.custody === "console");
+  const accountsUnavailable = rows.some((r) => r.accountsUnavailable);
+  const usageUnavailable = rows.some((r) => r.usageUnavailable);
   const active = rows.filter((r) => r.status !== "unknown" || r.usedBy.length > 0 || r.accounts.length > 0);
   const other = rows.filter((r) => !active.includes(r));
   const cards = (items: ConnectionRowDTO[]) => (
@@ -29,7 +31,7 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
           <p className="lares-muted">Agent access: {r.usedBy.join(", ") || "none granted"}</p>
           <details>
             <summary>Connection details</summary>
-            <p className="lares-muted">Credentials held by {r.custody}. Last use recorded here: {r.lastUsed ? ago(r.lastUsed) : "none"}.</p>
+            <p className="lares-muted">Credentials held by {r.custody}. Last use recorded here: {r.usageUnavailable ? "usage unavailable" : r.lastUsed ? ago(r.lastUsed) : "none"}.</p>
             {r.declaredFor.length > 0 && (
               <p className="lares-muted">Built-in consumers in the catalogue: {r.declaredFor.join(", ")}. This does not confirm they are running here.</p>
             )}
@@ -47,6 +49,8 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
   );
   return (
     <>
+      {accountsUnavailable && <p className="lares-muted" role="status">Accounts unavailable. Stored mailboxes could not be read; configured clients and agent access are shown where known.</p>}
+      {usageUnavailable && <p className="lares-muted" role="status">Usage unavailable. Recorded connection activity could not be read.</p>}
       {active.length > 0 ? cards(active) : <p className="lares-muted">No connected accounts or granted agent access recorded.</p>}
       {other.length > 0 && (
         <details className="lares-disclosure">

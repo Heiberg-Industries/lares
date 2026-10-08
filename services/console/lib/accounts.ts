@@ -113,9 +113,19 @@ export function toGoogleAccountDTO(t: StoredOAuthToken): GoogleAccountDTO {
   };
 }
 
-export async function listGoogleAccounts(): Promise<GoogleAccountDTO[]> {
-  const rows = await listTokens(pool, "google").catch(() => [] as StoredOAuthToken[]);
-  return rows.map(toGoogleAccountDTO);
+export interface GoogleAccountsView {
+  accounts: GoogleAccountDTO[];
+  unavailable: boolean;
+}
+
+export async function listGoogleAccounts(): Promise<GoogleAccountsView> {
+  try {
+    const rows = await listTokens(pool, "google");
+    return { accounts: rows.map(toGoogleAccountDTO), unavailable: false };
+  } catch {
+    // Match the console's unavailable-view pattern; never expose token-store errors.
+    return { accounts: [], unavailable: true };
+  }
 }
 
 /** The AES key the runtime uses to encrypt refresh tokens. Console must store with the SAME key. */
