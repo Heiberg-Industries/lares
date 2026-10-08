@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 6 October 2026, against `main` after #59 (vitest 4).
+Last checked: 8 October 2026, against `main` at #83 (agent rules in AGENTS.md).
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -133,20 +133,32 @@ page, this page is newer.
 
 ## Next
 
-1. **The dependency sweep, batches 8–13** of the plan, in its order, one
-   builder at a time, one pull request each. Batches 8–10 (`googleapis`,
-   `better-sqlite3`, `undici`) are the risky ones and need the image runs and
-   hand-run live probes the plan names. `eve` 0.71 is its own track afterwards.
-2. **Failures that look like success:** LAR-86, LAR-89, LAR-75, LAR-90.
-   LAR-86 and LAR-90 change what runs on the server, so they need a branch run
-   of the image workflows first.
-3. **The AI bill:** LAR-85 (ask for prompt caching), LAR-79, LAR-80. LAR-85
-   needs a live probe against the provider.
-4. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
+1. **Merge the three open pull requests** (#84, #85, #86 below), one at a time through
+   the merge queue.
+2. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
+   (`docs/plans/2026-10-08-lar-49-injection-suite.md`) splits it into three slices and
+   needs the owner's yes on slice 1, which adds one standing sentence under every prompt
+   block that carries outside text.
+3. **Failures that look like success, the rest:** LAR-75 (three decisions in the ticket
+   first).
+4. **The AI bill:** LAR-85 (ask for prompt caching; the 6 October probe showed caching
+   works through the gateway, so one of its three unknowns is answered), LAR-79, LAR-80.
+5. **Owner decisions waiting:** LAR-65 (approvals that go silent), LAR-76 (one truth for
+   secrets), whether the audit register's duplicate-code items (LAR-70 B and C) count as
+   planned work. A note comparing Lares with a published "agent from scratch" recipe was
+   written outside the repo for a planning session on a leaner shape and drop-in
+   integrations (ADR-0019, LAR-46).
+6. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
 
 ## Open housekeeping
 
-- No pull requests are open.
+- **Three pull requests are open (8 October), all from the agreed build queue:**
+  #84 (LAR-86: the nightly backup check, the freshness alarm and the restart helper
+  report a database they cannot reach as a failed check that names the database and
+  role), #85 (LAR-89: the keeper says which field in `keeper.json` is wrong, without
+  echoing values), #86 (LAR-82: the calendar-clash check buckets events by the owner's
+  clock when travelling east). LAR-90 turned out to be fixed since PR #13 (the installer
+  seeds a deny-all proxy config) and moved to In Review for one live observation.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
 - The two engine faults from the dry rehearsal, LAR-105 and LAR-106, are
