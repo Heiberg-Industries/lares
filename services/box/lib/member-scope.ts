@@ -718,6 +718,17 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "compose file or an env dump.",
   },
 
+  // ── 090_keeper_credentials.sql ───────────────────────────────────────────────────────────
+  {
+    table: "keeper_credentials",
+    scope: "operational",
+    createdBy: `${BOX}/090_keeper_credentials.sql`,
+    reason:
+      "Installation credential operation metadata: named slot, opaque revisions, fixed test " +
+      "outcomes and runtime consumer progress. No credential values, member identities or " +
+      "person-authored content; actor attribution remains in keeper_audit.",
+  },
+
   // ── Not created by any services/box/sql migration — box 084 (W5I-s6) gave both an `owner`
   // column, so they are `member`/`registry` from here on, not `resolved` any more. The column is
   // NULLABLE and carries no default (`services/chief-of-staff/lib/dream/store.ts`'s

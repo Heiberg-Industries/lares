@@ -46,6 +46,7 @@ describe("member-scope inventory", () => {
     expect(scopeOf("notion_sync_docs")).toMatchObject({ scope: "resolved" });
     expect(scopeOf("atlas_notes")).toMatchObject({ scope: "resolved" });
     expect(scopeOf("agent_conversations")).toMatchObject({ scope: "operational" });
+    expect(scopeOf("keeper_credentials")).toMatchObject({ scope: "operational", createdBy: "services/box/sql/090_keeper_credentials.sql" });
   });
 
   it("records the tables that are NOT created by a numbered migration, so nobody thinks they are covered", () => {
