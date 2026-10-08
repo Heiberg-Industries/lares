@@ -22,6 +22,33 @@ fi
 # Override every image entrypoint; no application, daemon, credentials or network.
 docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
   --entrypoint sh "$image" -c 'if [ -d /app/node_modules/.pnpm ]; then test -z "$(find /app/node_modules/.pnpm -type f -path "*/node_modules/@typescript/typescript-linux-x64/lib/tsc")"; fi'
+# Record the actual executable files relevant to component-scoped vendor
+# advisories. Libraries from a source package do not prove its daemon is shipped.
+# Search executable locations and vendor helper directories, never execute them.
+docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
+  --security-opt no-new-privileges:true --entrypoint sh "$image" -c '
+  set -eu
+  for name in sshd systemd-homed systemd-homework homectl curl infocmp; do
+    path=$(command -v "$name" || true)
+    if [ -n "$path" ]; then printf "%s\t%s\n" "$name" "$path"; fi
+    for directory in /bin /sbin /usr /lib; do
+      if [ -d "$directory" ]; then
+        matches=$(find "$directory" -name "$name" \( -type f -o -type l \) -print)
+        printf "%s\n" "$matches" |
+          while IFS= read -r path; do
+            if [ -x "$path" ]; then printf "%s\t%s\n" "$name" "$path"; fi
+          done
+      fi
+    done
+  done' | python3 -c '
+import json, sys
+names=("sshd","systemd-homed","systemd-homework","homectl","curl","infocmp")
+paths={name:set() for name in names}
+for line in sys.stdin:
+    name,path=line.rstrip("\n").split("\t",1)
+    paths[name].add(path)
+json.dump({name:{"present":bool(paths[name]),"paths":sorted(paths[name])} for name in names},sys.stdout,indent=2)
+' > "$output/executables.json"
 # Retain image ID/layers/platform without serializing environment or secrets.
 docker image inspect "$image" --format '{{json .}}' | python3 -c '
 import json, os, sys, datetime
