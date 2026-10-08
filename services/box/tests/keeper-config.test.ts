@@ -90,7 +90,7 @@ describe("the generated keeper configuration", () => {
   it("refuses a role default stored under a different role key", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
     config.lifecycle!.defaultBindings!.creative!.role = "travel";
-    expect(() => loadAsKeeperWould(config)).toThrow("keeper: invalid or unreadable configuration");
+    expect(() => loadAsKeeperWould(config)).toThrow(/keeper: invalid configuration in .*lifecycle\.defaultBindings\.creative/);
   });
 
   it("binds an arbitrary first-agent name to the real owner and shared route password by role", () => {
