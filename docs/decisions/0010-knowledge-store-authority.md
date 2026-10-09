@@ -90,3 +90,7 @@ boundaries, so it cannot live inside Brain.
   revisit after Atlas Part B has run stably for a few weeks.
 - Whether the Clips DB (ORB-40) needs a `canonical_sources` prefix of its own or
   rides under `notion:` — resolve when the clipper work resumes.
+
+## Amendment 2026-10-09 — Notion's Articles database is a capture place and a mirror, not the owner
+
+For articles (the Clips DB named in §4, now the Notion "Articles" database), the Vault note is the canonical store, as §1 requires. This amends §4, which named Notion the owner of that table. For articles, Notion does two jobs. It is a place to capture them, where a new row becomes a new note. It is also a mirror: Lares writes every article back to its row. Three fields on a mirrored row are also an input channel. When a person edits Status, For or the highlights, Lares treats the edit as owner input: it applies the change to the Vault note and mirrors it back, exactly as if the owner had said the same thing in chat. The note's origin stamp is not changed by it (ADR-0017 §9). Edits made by Lares's own integration, by Notion Agents or by any other editor that is not a person are never captured as owner input. Every other Notion edit to a mirrored row is ignored and overwritten by the next mirror. Lares always captures before it writes, so a stale mirror never overwrites a person's edit. Pages Lares creates are recorded in its ledger when they are created, so they are never imported back as new captures.
