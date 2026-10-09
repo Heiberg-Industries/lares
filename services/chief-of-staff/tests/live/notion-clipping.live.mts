@@ -17,6 +17,7 @@
  * printed or stored. Optional, to cover more shapes:
  *
  *   NOTION_CLIPPING_DATA_SOURCE_ID    when the database has more than one data source
+ *   NOTION_CLIPPING_MISSING_PAGE_ID   a page id that does not exist (default: a made-up id)
  *   NOTION_CLIPPING_TRASHED_PAGE_ID   a row you moved to the trash from this database (id of the
  *                                     page; open it from Notion's trash to copy the link)
  *
@@ -43,7 +44,7 @@ import { Client } from "@notionhq/client";
 
 import {
   NOTION_API_VERSION, RETRY, REQUEST_TIMEOUT_MS, checkSchema, classifyNotionError, makeNotionClient,
-  queryChangedPages, ClippingFailure,
+  queryChangedPages, isPageGone, ClippingFailure,
 } from "../../lib/clipping/notion-reader.js";
 import { mapPageToClip, type ClipSource } from "../../lib/clipping/record.js";
 
@@ -82,6 +83,7 @@ try {
   const db = (await client.databases.retrieve({ database_id: idOf(databaseId) })) as { data_sources?: { id: string }[] };
   const list = db.data_sources ?? [];
   check("databases.retrieve lists data_sources[] with ids", list.length > 0 && list.every((d) => typeof d.id === "string"), `${list.length} data source(s)`);
+  info(`data source id(s), the value the clipping_sources row needs:\n  ${list.map((d) => d.id).join("\n  ")}`);
   if (list.length > 1) info("more than one data source: set NOTION_CLIPPING_DATA_SOURCE_ID (the import refuses to guess)");
   if (!dataSourceId) dataSourceId = list[0]?.id ?? "";
 } catch (e) {
@@ -218,6 +220,24 @@ if (trashedId) {
   }
 } else {
   skip("set NOTION_CLIPPING_TRASHED_PAGE_ID to a row you moved to the trash, to check the trash shapes");
+}
+
+// 6b. a page that does not exist: pages.retrieve answers 404, and the import treats that as a
+// deletion (it removes the still-unfiled inbox note), so this shape must be proven live.
+{
+  const missing = process.env["NOTION_CLIPPING_MISSING_PAGE_ID"] ?? "00000000-0000-4000-8000-0000000000aa";
+  try {
+    await client.pages.retrieve({ page_id: idOf(missing) });
+    check("pages.retrieve on a page that does not exist is a 404", false, "it answered");
+  } catch (e) {
+    const f = classifyNotionError(e);
+    check("pages.retrieve 404 maps to not-shared", f.outcome === "not-shared", f.outcome);
+  }
+  try {
+    check("isPageGone treats that 404 as gone", (await isPageGone(client, idOf(missing))) === true);
+  } catch (e) {
+    check("isPageGone treats that 404 as gone", false, classifyNotionError(e).outcome);
+  }
 }
 
 // 7. errors

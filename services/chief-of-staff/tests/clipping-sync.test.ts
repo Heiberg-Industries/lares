@@ -45,8 +45,8 @@ let inbox: ReturnType<typeof memInbox>;
 
 async function addSource(o: { owner?: string; visibility?: string } = {}): Promise<string> {
   const { rows } = await db.query(
-    `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id, owner, visibility)
-     VALUES ('notion', 'ds-1', 'u1', 'n1', 't1', $1, $2) RETURNING id`,
+    `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id, owner, visibility, import_since)
+     VALUES ('notion', 'ds-1', 'u1', 'n1', 't1', $1, $2, '2000-01-01T00:00:00Z') RETURNING id`,
     [o.owner ?? "organisation", o.visibility ?? "shared"],
   );
   return rows[0].id as string;
@@ -59,8 +59,12 @@ beforeEach(async () => {
   inbox = memInbox();
 });
 
+function passWith(token: () => import("../lib/clipping/notion-reader.js").KeyState) {
+  return clippingPass({ db, inbox, token, makeClient: async () => fake.client() });
+}
+
 function pass(o: { pageSize?: number; maxPages?: number; maxTrashChecks?: number } = {}) {
-  return clippingPass({ db, inbox, token: () => "t", makeClient: async () => fake.client(), ...o });
+  return clippingPass({ db, inbox, token: () => ({ kind: "key", token: "t" }), makeClient: async () => fake.client(), ...o });
 }
 
 const stateRow = async () =>
@@ -120,16 +124,47 @@ describe("import and idempotent re-import", () => {
     let failOnce = true;
     const flaky = {
       query: (text: string, params?: unknown[]) => {
-        if (failOnce && /INSERT INTO clipping_items/.test(text)) { failOnce = false; return Promise.reject(new Error("db down")); }
+        if (failOnce && /INSERT INTO clipping_items/.test(text)) { failOnce = false; return Promise.reject(Object.assign(new Error("db down"), { code: "08006" })); }
         return db.query(text, params);
       },
     };
-    const first = await clippingPass({ db: flaky as never, inbox, token: () => "t", makeClient: async () => fake.client() });
-    expect(first.outcome).not.toBe("ok");
+    const first = await clippingPass({ db: flaky as never, inbox, token: () => ({ kind: "key", token: "t" }), makeClient: async () => fake.client() });
+    expect(first.outcome).toBe("local-error");
     expect(first.notices).toHaveLength(1);
     const second = await pass();
     expect(second).toMatchObject({ outcome: "ok", imported: 1 });
     expect(inbox.files.size).toBe(1);
+  });
+});
+
+describe("the first pass does not import the backlog", () => {
+  it("3 old rows and 2 new rows: only the 2 rows edited since import_since are imported", async () => {
+    await db.query(`UPDATE clipping_sources SET import_since = '2026-10-05T00:00:00Z' WHERE id = $1`, [sourceId]);
+    fake.setPages([
+      mkPage(1, { edited: "2026-09-01T10:00:00.000Z" }),
+      mkPage(2, { edited: "2026-09-10T10:00:00.000Z" }),
+      mkPage(3, { edited: "2026-10-04T23:59:00.000Z" }),
+      mkPage(4, { edited: "2026-10-06T10:00:00.000Z" }),
+      mkPage(5, { edited: "2026-10-07T10:00:00.000Z" }),
+    ]);
+    const r = await pass();
+    expect(r.imported).toBe(2);
+    expect([...inbox.files.keys()].sort()).toEqual([
+      clipInboxPath(sourceId, pageId(4)), clipInboxPath(sourceId, pageId(5)),
+    ].sort());
+    expect((await db.query(`SELECT count(*)::int AS n FROM clipping_items`)).rows[0].n).toBe(2);
+  });
+
+  it("import_since is required, with no default", async () => {
+    await expect(db.query(
+      `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, owner, visibility) VALUES ('notion', 'x', 'u', 'organisation', 'shared')`,
+    )).rejects.toThrow(/import_since/);
+  });
+
+  it("owner and visibility have no implicit defaults", async () => {
+    await expect(db.query(
+      `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, import_since) VALUES ('notion', 'x', 'u', now())`,
+    )).rejects.toThrow(/null value/);
   });
 });
 

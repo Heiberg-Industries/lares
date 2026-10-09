@@ -18,7 +18,7 @@ import { writeRawNote } from "@lares/agent-kit/vault-raw";
 
 import {
   ClippingFailure, STEP_BUDGET_MS, classifyNotionError, withBudget,
-  type ClippingOutcome, type NotionLike,
+  type ClippingOutcome, type KeyState, type NotionLike,
 } from "./notion-reader.js";
 import { loadNotionSources, recordSourceState, type Queryable, type SourceRow } from "./store.js";
 import { runClippingSync, type InboxPort } from "./sync.js";
@@ -28,8 +28,8 @@ export const REPAIR_KIND = "clipping";
 export interface ClippingStepDeps {
   db: Queryable;
   inbox: InboxPort;
-  /** The keeper-delivered Notion key, or null when there is none. */
-  token(): string | null;
+  /** The keeper-delivered Notion key: none, delivered but unreadable, or the key. */
+  token(): KeyState;
   makeClient(token: string): Promise<NotionLike>;
   budgetMs?: number;
   log?(m: string): void;
@@ -96,12 +96,21 @@ export async function clippingPass(deps: ClippingStepDeps): Promise<ClippingStep
     return { outcome: "unsupported-source", imported: 0, notices: [...new Set(notices)].slice(0, 1) };
   }
 
-  const token = deps.token();
-  if (!token) {
+  const key = deps.token();
+  if (key.kind === "none") {
+    // Nothing delivers a key to this agent. Not a failure, and it must never close a repair
+    // that a real failure opened.
     await recordSourceState(deps.db, source.id, { outcome: "not-configured", detail: "No Notion key is connected." });
-    await resolveRepair(deps.db, REPAIR_KIND, source.id);
     return { outcome: "not-configured", imported: 0, notices: [] };
   }
+  if (key.kind === "unreadable") {
+    const f = new ClippingFailure(
+      "key-unreadable", "The Notion key is delivered but cannot be read.",
+      "Check the Notion connection on the Integrations page and apply the key again.",
+    );
+    return { outcome: f.outcome, imported: 0, notices: [await fail(deps, source, f)] };
+  }
+  const token = key.token;
 
   try {
     const result = await withBudget(deps.budgetMs ?? STEP_BUDGET_MS, async () => {

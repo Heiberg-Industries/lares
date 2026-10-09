@@ -9,7 +9,8 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type { Pool } from "pg";
@@ -17,7 +18,7 @@ import type { Pool } from "pg";
 import { quietPool } from "./helpers/quiet-pool.js";
 import { fakeNotion, memInbox, mkPage, type Fault } from "./helpers/fake-notion.js";
 import { clippingPass } from "../lib/clipping/step.js";
-import { makeNotionClient } from "../lib/clipping/notion-reader.js";
+import { classifyNotionError, makeNotionClient, readNotionToken, type KeyState } from "../lib/clipping/notion-reader.js";
 import { renderDigest } from "../lib/digest/format.js";
 import { runDigest } from "../lib/digest/runner.js";
 import * as llm from "../lib/llm-complete.js";
@@ -42,17 +43,17 @@ afterAll(async () => { await db?.end(); await container?.stop(); });
 beforeEach(async () => {
   await db.query(`TRUNCATE clipping_items, clipping_sources, repairs CASCADE`);
   sourceId = (await db.query(
-    `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id)
-     VALUES ('notion', 'ds-1', 'u1', 'n1', 't1') RETURNING id`,
+    `INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id, owner, visibility, import_since)
+     VALUES ('notion', 'ds-1', 'u1', 'n1', 't1', 'organisation', 'shared', '2000-01-01T00:00:00Z') RETURNING id`,
   )).rows[0].id as string;
   fake = fakeNotion();
   inbox = memInbox();
 });
 
-const run = (o: { timeoutMs?: number; budgetMs?: number; token?: string | null; maxRetries?: number } = {}) =>
+const run = (o: { timeoutMs?: number; budgetMs?: number; key?: KeyState; maxRetries?: number } = {}) =>
   clippingPass({
     db, inbox,
-    token: () => (o.token === undefined ? "t" : o.token),
+    token: () => o.key ?? { kind: "key", token: "t" },
     makeClient: async () => fake.client({ timeoutMs: o.timeoutMs, maxRetries: o.maxRetries }),
     budgetMs: o.budgetMs,
   });
@@ -181,14 +182,48 @@ describe("not configured, and unsupported setups", () => {
   });
 
   it("a source row but no key: the state says not-configured and Notion is never called", async () => {
-    const r = await run({ token: null });
+    const r = await run({ key: { kind: "none" } });
     expect(r).toMatchObject({ outcome: "not-configured", notices: [] });
     expect((await stateRow()).outcome).toBe("not-configured");
     expect(fake.world.requests).toHaveLength(0);
   });
 
+  it("not-configured never closes a repair that a real failure opened", async () => {
+    fake.world.faults.push({ match: /data_sources/, status: 500 });
+    await run();
+    expect((await repair()).resolved_at).toBeNull();
+    await run({ key: { kind: "none" } });
+    expect((await repair()).resolved_at).toBeNull();
+  });
+
+  it("a key that is delivered but unreadable is a failure: outcome, repair, digest line", async () => {
+    const r = await run({ key: { kind: "unreadable" } });
+    expect(r.outcome).toBe("key-unreadable");
+    expect(r.notices).toHaveLength(1);
+    expect((await stateRow()).outcome).toBe("key-unreadable");
+    expect((await repair()).resolved_at).toBeNull();
+    expect(fake.world.requests).toHaveLength(0);
+  });
+
+  it("readNotionToken tells unset, unreadable and empty apart", () => {
+    expect(readNotionToken({})).toEqual({ kind: "none" });
+    expect(readNotionToken({ NOTION_TOKEN_FILE: "/nonexistent/key" })).toEqual({ kind: "unreadable" });
+    const f = join(tmpdir(), `clip-key-${process.pid}`);
+    writeFileSync(f, "  \n");
+    expect(readNotionToken({ NOTION_TOKEN_FILE: f })).toEqual({ kind: "unreadable" });
+    writeFileSync(f, "secret\n");
+    expect(readNotionToken({ NOTION_TOKEN_FILE: f })).toEqual({ kind: "key", token: "secret" });
+    expect(readNotionToken({ NOTION_TOKEN: "env-key" })).toEqual({ kind: "key", token: "env-key" });
+  });
+
+  it("a local database or disk error is its own outcome, not Notion being unavailable", () => {
+    expect(classifyNotionError(Object.assign(new Error("x"), { code: "08006" })).outcome).toBe("local-error");
+    expect(classifyNotionError(Object.assign(new Error("x"), { code: "ENOSPC" })).outcome).toBe("local-error");
+    expect(classifyNotionError(new TypeError("fetch failed")).outcome).toBe("unavailable");
+  });
+
   it("more than one source is refused with a plain reason, and none is read", async () => {
-    await db.query(`INSERT INTO clipping_sources (kind, data_source_id, url_property_id) VALUES ('notion', 'ds-2', 'u1')`);
+    await db.query(`INSERT INTO clipping_sources (kind, data_source_id, url_property_id, owner, visibility, import_since) VALUES ('notion', 'ds-2', 'u1', 'organisation', 'shared', now())`);
     const r = await run();
     expect(r.outcome).toBe("unsupported-source");
     expect(r.notices).toHaveLength(1);

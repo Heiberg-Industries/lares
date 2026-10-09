@@ -32,8 +32,12 @@ CREATE TABLE IF NOT EXISTS clipping_sources (
   tags_property_id    text,
   saved_property_id   text,
   credential_ref      text        NOT NULL DEFAULT 'notion:shared',
-  owner               text        NOT NULL DEFAULT 'organisation',
-  visibility          text        NOT NULL DEFAULT 'shared',
+  -- No defaults for owner or visibility (box 088): every insert says whose clips these are.
+  owner               text        NOT NULL,
+  visibility          text        NOT NULL,
+  -- Where a first pass starts. Older rows are a backlog; importing one is an explicit later
+  -- opt-in (set this earlier by hand), never the default.
+  import_since        timestamptz NOT NULL,
   -- State, one row per source (read by the console; unreadable there means "unavailable").
   watermark           timestamptz,
   watermark_capped    boolean     NOT NULL DEFAULT false,
@@ -49,7 +53,8 @@ CREATE TABLE IF NOT EXISTS clipping_sources (
   CONSTRAINT clipping_sources_owner_not_empty CHECK (length(btrim(owner)) > 0),
   CONSTRAINT clipping_sources_outcome_check CHECK (outcome IS NULL OR outcome IN (
     'ok', 'not-configured', 'unsupported-source', 'refused', 'not-shared',
-    'schema-mismatch', 'rate-limited', 'unavailable', 'timeout', 'incomplete'
+    'schema-mismatch', 'rate-limited', 'unavailable', 'timeout', 'incomplete',
+    'key-unreadable', 'local-error'
   )),
   -- A one-line owner sentence, never a vendor body or a token.
   CONSTRAINT clipping_sources_detail_short CHECK (outcome_detail IS NULL OR length(outcome_detail) <= 400)

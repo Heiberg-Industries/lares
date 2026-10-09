@@ -182,7 +182,7 @@ async function clippingStep(log: (m: string) => void): Promise<string[]> {
     return result.notices;
   } catch (e) {
     // Migration 091 not applied yet: nothing can be configured, so this is "not configured".
-    if ((e as { code?: string })?.code === "42P01") {
+    if ((e as { code?: string })?.code === "42P01" && /clipping_(sources|items)/.test(String((e as Error).message))) {
       log("clipping: the clipping tables are not there yet (apply box migration 091); skipped");
       return [];
     }

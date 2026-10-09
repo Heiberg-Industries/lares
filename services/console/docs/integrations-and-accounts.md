@@ -110,13 +110,18 @@ the connection, key refused, column changed, rate limit, timeout) the digest mes
 line, a repair entry is opened, and the last good fetch time is kept; it never shows a quiet "0 new".
 This first slice supports exactly one organisation-wide source using the Notion key the keeper
 manages (the chief of staff must be bound to it), has no console page yet (child (b) adds the source
-choice, column pickers and test button), and does not move existing Karakeep bookmarks. Until then
+choice, column pickers and test button), and does not move existing Karakeep bookmarks. It imports only rows saved or edited after the source's
+`import_since` (now(), in the command below), so the first pass never pulls in the database's history;
+importing a backlog is a separate, explicit later step. A link saved in Notion first and in Karakeep
+later still lands twice in this slice (only the Notion side checks for the other). Until then
 the source is one row added on the box after migration 091, with the column ids the live probe
 `services/chief-of-staff/tests/live/notion-clipping.live.mts` prints:
 
 ```sql
-INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id)
-VALUES ('notion', '<data source id>', '<URL column id>', '<note column id or NULL>', '<tags column id or NULL>');
+INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id,
+                              owner, visibility, import_since)
+VALUES ('notion', '<data source id>', '<URL column id>', '<note column id or NULL>', '<tags column id or NULL>',
+        'organisation', 'shared', now());
 ```
 
 ## Follow-ups

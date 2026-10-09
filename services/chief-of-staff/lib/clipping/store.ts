@@ -17,6 +17,7 @@ export interface Queryable {
 /** A source plus its state, as one row. */
 export interface SourceRow extends ClipSource {
   credentialRef: string;
+  importSince: Date;
   watermark: Date | null;
   watermarkCapped: boolean;
   lastAttemptAt: Date | null;
@@ -67,6 +68,7 @@ function toSource(r: Row): SourceRow {
     owner: String(r["owner"]),
     visibility: r["visibility"] as "shared" | "private",
     credentialRef: String(r["credential_ref"]),
+    importSince: r["import_since"] as Date,
     watermark: (r["watermark"] as Date | null) ?? null,
     watermarkCapped: r["watermark_capped"] === true,
     lastAttemptAt: (r["last_attempt_at"] as Date | null) ?? null,
@@ -216,8 +218,8 @@ export async function recordKarakeepImport(
   db: Queryable, w: { bookmarkId: string; urlKey: string; inboxPath: string },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, credential_ref)
-     VALUES ('karakeep', 'karakeep', 'karakeep', 'karakeep', 'karakeep')
+    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, credential_ref, owner, visibility, import_since)
+     VALUES ('karakeep', 'karakeep', 'karakeep', 'karakeep', 'karakeep', 'organisation', 'shared', now())
      ON CONFLICT (id) DO NOTHING`,
   );
   await putItem(db, {

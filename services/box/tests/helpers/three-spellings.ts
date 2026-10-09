@@ -329,12 +329,12 @@ const SEED_ROWS: SeedRow[] = [
   // ── 091_clipping.sql — a source per person, then one ledger item under each (the ledger's
   //    foreign key needs its source first). ──────────────────────────────────────────────────
   row("clipping_sources", "owner", FIXTURE_OWNER,
-    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner)
-     VALUES ('fixture-clip-source-1', 'notion', 'fixture-data-source', 'u1', $1)`,
+    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner, visibility, import_since)
+     VALUES ('fixture-clip-source-1', 'notion', 'fixture-data-source', 'u1', $1, 'shared', now())`,
     [FIXTURE_OWNER]),
   row("clipping_sources", "owner", FIXTURE_SECOND,
-    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner)
-     VALUES ('fixture-clip-source-2', 'notion', 'fixture-data-source', 'u1', $1)`,
+    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner, visibility, import_since)
+     VALUES ('fixture-clip-source-2', 'notion', 'fixture-data-source', 'u1', $1, 'shared', now())`,
     [FIXTURE_SECOND]),
   row("clipping_items", "owner", FIXTURE_OWNER,
     `INSERT INTO clipping_items (source_id, source_item_id, source_container, owner, visibility, state)

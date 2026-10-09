@@ -30,11 +30,12 @@ export const MAX_TRASH_CHECKS = 50;
 
 export type ClippingOutcome =
   | "ok" | "not-configured" | "unsupported-source" | "refused" | "not-shared"
-  | "schema-mismatch" | "rate-limited" | "unavailable" | "timeout" | "incomplete";
+  | "schema-mismatch" | "rate-limited" | "unavailable" | "timeout" | "incomplete"
+  | "key-unreadable" | "local-error";
 
 export const FAILURE_OUTCOMES: readonly ClippingOutcome[] = [
   "unsupported-source", "refused", "not-shared", "schema-mismatch",
-  "rate-limited", "unavailable", "timeout", "incomplete",
+  "rate-limited", "unavailable", "timeout", "incomplete", "key-unreadable", "local-error",
 ];
 
 /** A failure with its outcome and a sentence the owner can read. Never a vendor body or a token. */
@@ -81,6 +82,11 @@ export function classifyNotionError(e: unknown): ClippingFailure {
     }
     return new ClippingFailure("unavailable", `Notion answered with an unexpected error (${s}).`, FIX.later);
   }
+  // A database or disk error on our side (SQLSTATE or an fs errno), not Notion being unreachable.
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && (/^[0-9A-Z]{5}$/.test(code) || /^E(NOENT|ACCES|PERM|NOSPC|ROFS|IO|DQUOT|MFILE)$/.test(code))) {
+    return new ClippingFailure("local-error", "Lares could not read or write its own records.", "Ask for help if this continues.", e);
+  }
   return new ClippingFailure("unavailable", "Lares could not complete the Notion fetch.", FIX.later, e);
 }
 
@@ -95,12 +101,21 @@ export interface NotionLike {
   };
 }
 
-export function readNotionToken(env: NodeJS.ProcessEnv = process.env): string | null {
+/** `none`: no key is delivered at all. `unreadable`: one is delivered but cannot be read or is empty. */
+export type KeyState = { kind: "none" } | { kind: "unreadable" } | { kind: "key"; token: string };
+
+export function readNotionToken(env: NodeJS.ProcessEnv = process.env): KeyState {
   const file = env["NOTION_TOKEN_FILE"];
-  try {
-    if (file) return readFileSync(file, "utf8").trim() || null;
-  } catch { /* unreadable key file: treated as no key */ }
-  return env["NOTION_TOKEN"]?.trim() || null;
+  if (file) {
+    try {
+      const token = readFileSync(file, "utf8").trim();
+      return token ? { kind: "key", token } : { kind: "unreadable" };
+    } catch {
+      return { kind: "unreadable" };
+    }
+  }
+  const token = env["NOTION_TOKEN"]?.trim();
+  return token ? { kind: "key", token } : { kind: "none" };
 }
 
 type SdkFetch = NonNullable<ConstructorParameters<typeof Client>[0]>["fetch"];

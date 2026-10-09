@@ -164,9 +164,11 @@ export async function runClippingSync(deps: SyncDeps): Promise<SyncResult> {
 
   // A pass that was cut short resumes exactly at the watermark; a complete one re-reads a little
   // behind it so an edit that landed late is not missed.
+  // With no watermark yet, start at the source's import_since: older rows are a backlog, and a
+  // backlog import is an explicit later opt-in, never the default.
   const since = source.watermark
     ? new Date(source.watermark.getTime() - (source.watermarkCapped ? 0 : OVERLAP_MS))
-    : null;
+    : source.importSince;
 
   const { pages, capped } = await queryChangedPages(client, source, since, {
     maxPages: deps.maxPages, pageSize: deps.pageSize,
