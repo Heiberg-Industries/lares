@@ -1,26 +1,47 @@
 # Current status
 
-Last checked: 8 October 2026, end of day, against `main` after #87.
+Last checked: 9 October 2026, against `main` after #95.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
 are records of what was observed on their date; where they disagree with this
 page, this page is newer.
 
-## Browser mutation protection — pending delivery
-
-The console now requires the configured public Origin for state-changing browser requests.
-Missing or mismatched origins are rejected before route handling; exact platform webhook POSTs
-retain their separate authentication path. This closes a reproduced same-site cross-origin
-proposal approval. OAuth GET callbacks and normal same-origin approvals remain available.
-
-Validation: 123 focused tests and console typecheck passed; the isolated browser/database
-reproduction now leaves the hostile-origin proposal pending. Independent review found no blockers.
-See [configuration and verification](solutions/2026-10-08-console-mutation-origin.md).
-This change is not yet merged or deployed; private-member authorisation remains separate.
-
 ## Done and on `main`
 
+- **The 8 October security and Notion-credential merges are on `main`** (#90 to #95); none
+  is in a published image yet (see Not done).
+  - **Browser mutation protection** (#90). The console rejects state-changing browser
+    requests that do not carry the configured public Origin, before route handling.
+    Signed webhook POSTs and OAuth GET callbacks keep their own paths, and normal
+    same-origin approvals work. This closes a reproduced same-site cross-origin proposal
+    approval. The browser reproduction ran in local development; deployed HTTPS and
+    reverse-proxy acceptance, and private-member authorisation, remain separate. See
+    [configuration and verification](solutions/2026-10-08-console-mutation-origin.md).
+  - **Connections no longer shows a failed read as empty** (#91). When the account or
+    audit reads fail, the page says the evidence is unavailable instead of showing no
+    accounts or "no usage". Known configuration, enrolled mailboxes and agent grants stay
+    visible, and raw storage errors are never shown.
+  - **Managed Notion credential custody** (#92). A keeper-managed Notion credential slot,
+    an installation administrator and durable operation state, so an interrupted write
+    leaves the active key untouched. Database change `090_keeper_credentials.sql`
+    (standalone). The slot stays unprepared until host storage and the full list of
+    consumers are reviewed.
+  - **Managed Notion credential lifecycle** (#93). Owners test and save a pending Notion
+    internal-connection key in Connections, then separately Apply (restarts the affected
+    agents, with rollback) or Disconnect locally (does not revoke the token at Notion).
+    The live probe `services/keeper/tests/live/notion-credential.live.mts` was run by hand
+    once: one success and one refusal of an invalid value. Rate-limit, timeout and
+    malformed-response cases are tested against fixtures only.
+  - **Smaller runtime images, with scan reports kept** (#94). Runtime images drop unused
+    installers and build caches, the keeper pins its Docker client tools to 29.8.2, and the
+    image workflows retain vulnerability scan reports for the built images, including
+    build-only runs. No application code or lockfile changed. Unpatched base-package
+    findings remain a release risk.
+  - **Egress proxy refreshed and its policy checked in CI** (#95). The proxy moves to
+    Alpine 3.24.2 with Squid 7.6-r0, which fixes an HTTP framing flaw in Squid 5.7. A
+    CI-only probe exercises allowed and refused requests and an atomic configuration
+    reload.
 - **The repository is public** (since 24 September 2026).
 - **The 8 October build queue is on `main`** (#84, #85, #86, #87): the nightly backup
   check, the freshness alarm and the restart helper report a database they cannot reach
@@ -131,6 +152,10 @@ This change is not yet merged or deployed; private-member authorisation remains 
 
 ## Not done
 
+- **None of #90 to #95 is in any published image.** The image workflows on `main` run with
+  publication off. Build-only runs on the branches passed, with scan reports retained. The
+  newest manifest is still rc.3, and its sync-jobs digest cannot be retrieved from the
+  registry, so a new candidate manifest is required before any deployment (LAR-114).
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
 - **No release is published.** The newest release candidate is
   [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json). It has
@@ -153,20 +178,21 @@ This change is not yet merged or deployed; private-member authorisation remains 
 
 ## Next
 
-1. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
+1. **Publish images from current `main` and write an rc.4 manifest** (LAR-114).
+2. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
    (`docs/plans/2026-10-08-lar-49-injection-suite.md`) splits it into three slices and
    needs the owner's yes on slice 1, which adds one standing sentence under every prompt
    block that carries outside text.
-2. **Failures that look like success, the rest:** LAR-75 (three decisions in the ticket
+3. **Failures that look like success, the rest:** LAR-75 (three decisions in the ticket
    first).
-3. **The AI bill:** LAR-85 (ask for prompt caching; the 6 October probe showed caching
+4. **The AI bill:** LAR-85 (ask for prompt caching; the 6 October probe showed caching
    works through the gateway, so one of its three unknowns is answered), LAR-79, LAR-80.
-4. **Owner decisions waiting:** LAR-65 (approvals that go silent), LAR-76 (one truth for
+5. **Owner decisions waiting:** LAR-65 (approvals that go silent), LAR-76 (one truth for
    secrets), whether the audit register's duplicate-code items (LAR-70 B and C) count as
    planned work. A note comparing Lares with a published "agent from scratch" recipe was
    written outside the repo for a planning session on a leaner shape and drop-in
    integrations (ADR-0019, LAR-46).
-5. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
+6. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
 
 ## Open housekeeping
 
