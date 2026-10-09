@@ -17,7 +17,11 @@
  * write comes first, and a crash between the two leaves a filed article plus an inbox note that
  * the next pass recognises (same link, already filed), files nothing again, and retires. A failed
  * push throws `VaultPushFailedError`, like every other vault write: the local commit is durable,
- * the item is reported, and it is retried next pass.
+ * the item is reported, and it is retried next pass. The shared push publishes only when everything
+ * not yet published in the shared clone is inside `articles/` (`pushArticlesOnly`); if another
+ * writer's unpublished commit goes beyond it, nothing is pushed, the article stays committed
+ * locally, and the hold is reported like a push failure after filing (the inbox note is retired and
+ * the article recorded).
  *
  * ALREADY FILED. The file name comes from the page title. If `articles/<name>.md` exists for the
  * same link (compared after `normaliseUrl`) nothing is written and no model call is made; the
@@ -138,6 +142,64 @@ function pushOrThrow(root: string, commit: string): void {
   }
 }
 
+/** A path the standing approval covers: a file directly inside `articles/`. */
+function isArticleFile(path: string): boolean {
+  try {
+    assertSharedWritesInArticles([path]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The shared clone has other writers, and `git push` publishes every local commit that is ahead of
+ * the remote, not only ours. The standing approval covers `articles/` alone, so a commit that is
+ * held back here is left in place, for the shared area's own writer to publish.
+ */
+class SharedPushHeldError extends VaultPushFailedError {
+  constructor(commit: string, outside: readonly string[]) {
+    super(commit, new Error("held"));
+    this.message =
+      `the article is committed in the shared area (${commit}) but was NOT pushed: other commits ` +
+      `there that are not yet published change files outside articles/ (${outside.slice(0, 5).join(", ")}` +
+      `${outside.length > 5 ? ", ..." : ""}), and the digest only publishes articles. They stay local until the ` +
+      `shared area's own writer publishes them.`;
+  }
+}
+
+/**
+ * The paths changed by commits in `root` that the remote does not have yet, or null when that
+ * cannot be told (no remote-tracking branch, detached HEAD): then nothing is assumed to be safe.
+ */
+function unpublishedPaths(root: string): string[] | null {
+  try {
+    const branch = gitIn(root, "symbolic-ref", "--short", "-q", "HEAD").trim();
+    const upstream = `refs/remotes/origin/${branch}`;
+    gitIn(root, "rev-parse", "--verify", "-q", upstream);
+    return gitIn(root, "diff", "--name-only", `${upstream}..HEAD`).split("\n").filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Publish the shared clone, but only when everything not yet published is inside `articles/`.
+ * `ours` are the paths this article occupies. Nothing of ours unpublished: nothing to do (and
+ * nothing of anybody else's is pushed on our account). Something outside `articles/` unpublished:
+ * no push, and the held report is RETURNED, like a push failure after filing, so the article is
+ * still recorded and the inbox note retired (the next pass sees the same link as already filed and
+ * does not make a second model call). A real push failure still THROWS.
+ */
+function pushArticlesOnly(root: string, ours: readonly string[]): SharedPushHeldError | undefined {
+  const unpublished = unpublishedPaths(root);
+  if (unpublished !== null && !ours.some((p) => unpublished.includes(p))) return undefined;
+  const outside = unpublished === null ? ["(cannot tell what is unpublished)"] : unpublished.filter((p) => !isArticleFile(p));
+  if (outside.length > 0) return new SharedPushHeldError(shortHead(root), outside);
+  pushOrThrow(root, shortHead(root));
+  return undefined;
+}
+
 /** Whether the index holds a change for this path. */
 function hasStaged(root: string, path: string): boolean {
   try {
@@ -250,7 +312,7 @@ export function makeArticleFiler(opts: {
   const nowFn = opts.now ?? (() => new Date());
 
   return async (input) => {
-    const clip = parseInboxClip(input.inboxBody);
+    const clip = parseInboxClip(input.inboxBody, input.article.url);
     const link = clip.url ?? input.article.url;
     const urlKey = normaliseUrl(link);
     if (urlKey === null) throw new Error("not a web link; nothing to file");
@@ -285,14 +347,17 @@ export function makeArticleFiler(opts: {
 
     if (duplicate) {
       // A shared commit made earlier may never have reached the remote (a failed push); try again
-      // now, so retiring the inbox note below never strands it. This one THROWS: the inbox note
-      // is still there, so the item stays in the inbox and is retried next pass.
+      // now, so retiring the inbox note below never strands it. A real push failure THROWS: the
+      // inbox note is still there, so the item stays in the inbox and is retried next pass. A push
+      // held back because other unpublished commits go beyond articles/ is returned instead (see
+      // `pushArticlesOnly`): the inbox note is retired and the report repeats for this link only.
+      let held: SharedPushHeldError | undefined;
       if (area === "shared") {
-        await withNoteLock(root, destPath, async () => {
-          pushOrThrow(root, shortHead(root));
-        });
+        held = await withNoteLock(root, destPath, async () =>
+          pushArticlesOnly(root, [destPath, destPath.replace(/\.md$/, ".txt")]));
       }
-      const pushFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      const retireFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      const pushFailure = held ?? retireFailure;
       return { title: base, area, destPath, duplicate: true, fellBack, ...(pushFailure ? { pushFailure } : {}) };
     }
 
@@ -314,7 +379,7 @@ export function makeArticleFiler(opts: {
 
     if (area === "shared") {
       assertSharedWritesInArticles(paths);
-      await withNoteLock(root, built.notePath, async () => {
+      const held = await withNoteLock(root, built.notePath, async () => {
         writeFiles(root, files);
         try {
           gitIn(root, "add", "--", ...paths);
@@ -325,10 +390,13 @@ export function makeArticleFiler(opts: {
           undoWrites(root, paths);
           throw err;
         }
-        // Throws: the inbox note is still there, so the next pass finds the article and retries.
-        pushOrThrow(root, shortHead(root));
+        // A real push failure throws: the inbox note is still there, so the next pass finds the
+        // article and retries. A push held back (other unpublished commits beyond articles/) is
+        // returned, and handled like a push failure after filing.
+        return pushArticlesOnly(root, paths);
       });
-      const pushFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      const retireFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      const pushFailure = held ?? retireFailure;
       return {
         title: built.title, area, destPath: built.notePath, duplicate: false, fellBack,
         ...(pushFailure ? { pushFailure } : {}),

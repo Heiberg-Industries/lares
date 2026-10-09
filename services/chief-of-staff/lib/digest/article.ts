@@ -55,17 +55,28 @@ const OWNER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/;
 const ID_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const ORGANISATION = "organisation";
 
-export function parseInboxClip(raw: string): InboxClip {
+/**
+ * `fetchedUrl` is the address the reader actually opened. A note an agent saved from a chat has no
+ * `url:` in its frontmatter (the link sits in the body), so a body line that is just that link is
+ * dropped as well; the owner's own words are what is left.
+ */
+export function parseInboxClip(raw: string, fetchedUrl?: string): InboxClip {
   const fm = parseFrontmatter(raw);
   const url = fm["url"];
-  const urlKey = url ? normaliseUrl(url) : null;
+  const urlKeys = new Set<string>();
+  for (const candidate of [url, fetchedUrl]) {
+    const key = candidate ? normaliseUrl(candidate) : null;
+    if (key !== null) urlKeys.add(key);
+  }
   const note = stripFrontmatter(raw)
     .split("\n")
     .filter((line) => {
       const t = line.trim();
       if (t === "") return true;
       if (url !== undefined && t === url) return false;
-      return !(urlKey !== null && normaliseUrl(t) === urlKey && /^\S+$/.test(t));
+      if (!/^\S+$/.test(t)) return true;
+      const key = normaliseUrl(t);
+      return !(key !== null && urlKeys.has(key));
     })
     .join("\n")
     .trim();
@@ -280,7 +291,7 @@ const q = (s: string): string => JSON.stringify(s);
 
 export function buildArticle(input: BuildArticleInput): BuiltArticle {
   const { article, classification, area, base } = input;
-  const clip = parseInboxClip(input.inboxBody);
+  const clip = parseInboxClip(input.inboxBody, input.article.url);
   const owner = sourceOwner(clip);
   const companionName = `${base}.txt`;
   const title = articleTitle({ readabilityTitle: article.title, clipTitle: clip.title, url: article.url });

@@ -253,6 +253,23 @@ describe("areas, owners and scopes", () => {
   });
 });
 
+describe("the owner's note from a chat-saved clip", () => {
+  const raw = "---\ntitle: A\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []\n---\n\nhttps://example.com/a?utm_source=x\n\nWorth reading before Friday.\n";
+
+  it("drops the bare link line from the body when the fetched page's address is given, though the frontmatter has no url", () => {
+    expect(parseInboxClip(raw, "https://example.com/a").note).toBe("Worth reading before Friday.");
+  });
+
+  it("matches the link after normalising, and only a line that is the link on its own", () => {
+    const withText = raw.replace("Worth reading before Friday.", "See https://example.com/a for the details.");
+    expect(parseInboxClip(withText, "https://example.com/a").note).toBe("See https://example.com/a for the details.");
+  });
+
+  it("keeps everything when no address is given (nothing to compare with)", () => {
+    expect(parseInboxClip(raw).note).toContain("https://example.com/a?utm_source=x");
+  });
+});
+
 describe("origin rules", () => {
   // An article note holds a model's summary and quotes from a fetched web page, so it is never
   // more trusted than third_party, whatever the clip said about itself. The clip's own provenance

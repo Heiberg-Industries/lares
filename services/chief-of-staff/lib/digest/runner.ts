@@ -103,7 +103,7 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
           classify: async ({ area }) => {
             modelCalls += 1;
             const decision = await classifyArticle(
-              { title: article.title, url: article.url, ownerNote: parseInboxClip(item.body).note, text: article.text },
+              { title: article.title, url: article.url, ownerNote: parseInboxClip(item.body, article.url).note, text: article.text },
               // Names of private notes never go into the request for an article that will be shared.
               { noteNames: area === "shared" ? [] : noteNames },
               deps.llm,

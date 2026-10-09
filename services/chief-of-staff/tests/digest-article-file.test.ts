@@ -484,6 +484,89 @@ describe("when the push fails", () => {
   });
 });
 
+/** A commit made in the shared clone by another writer and NOT pushed. */
+function unpushedCommit(path: string, text = "x\n"): void {
+  mkdirSync(join(sharedRoot, path, ".."), { recursive: true });
+  writeFileSync(join(sharedRoot, path), text);
+  git(sharedRoot, "add", "--", path);
+  git(sharedRoot, "commit", "-q", "-m", `other writer: ${path}`);
+}
+const onRemote = (): string => git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD");
+
+describe("the standing approval covers articles/ only: nothing else is ever pushed", () => {
+  it("only articles ahead of the remote: pushes them all, as before", async () => {
+    unpushedCommit("articles/earlier.md");
+    const out = await run(filer(), inbox("clip-a", clip(), true)).promise;
+
+    expect(out.pushFailure).toBeUndefined();
+    expect(onRemote()).toContain("articles/earlier.md");
+    expect(onRemote()).toContain("articles/how-pricing-pages-convert.md");
+  });
+
+  it("an unrelated commit ahead of the remote: nothing is pushed, the article is still reported as filed, with a held-push report", async () => {
+    unpushedCommit("notes/plan.md");
+    const item = inbox("clip-a", clip(), true);
+
+    const out = await run(filer(), item).promise;
+
+    expect(out).toMatchObject({ area: "shared", duplicate: false, destPath: "articles/how-pricing-pages-convert.md" });
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(out.pushFailure!.message).toMatch(/not pushed|held/i);
+    expect(out.pushFailure!.message).toContain("notes/plan.md");
+    // Nothing reached the remote, not even the article; the commits stay local for their own writer.
+    expect(onRemote()).not.toContain("notes/plan.md");
+    expect(onRemote()).not.toContain("articles/how-pricing-pages-convert");
+    expect(existsSync(join(sharedRoot, "articles/how-pricing-pages-convert.md"))).toBe(true);
+    expect(git(sharedRoot, "log", "--format=%s", "-3")).toContain("other writer: notes/plan.md");
+    // The inbox note is retired, as for a push failure that happens after filing.
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+
+  it("a second pass over the same link makes no model call, loses nothing and does not loop: the inbox note goes, the report repeats", async () => {
+    unpushedCommit("notes/plan.md");
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+
+    const again = inbox("clip-b", clip(), true);
+    const r = run(filer(), again);
+    const out = await r.promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(r.calls()).toBe(0);
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(existsSync(join(privateRoot, again.path))).toBe(false);
+    expect(onRemote()).not.toContain("notes/plan.md");
+  });
+
+  it("once the other writer has published its commit, the next pass pushes the article too", async () => {
+    unpushedCommit("notes/plan.md");
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+    git(sharedRoot, "push", "-q", "origin", "HEAD"); // the shared area's own writer publishes (articles included)
+
+    const out = await run(filer(), inbox("clip-b", clip(), true)).promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(out.pushFailure).toBeUndefined();
+  });
+
+  it("a duplicate whose article is already published says nothing about someone else's unpushed commit and pushes nothing", async () => {
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+    unpushedCommit("notes/plan.md");
+
+    const out = await run(filer(), inbox("clip-b", clip(), true)).promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(out.pushFailure).toBeUndefined();
+    expect(onRemote()).not.toContain("notes/plan.md");
+  });
+
+  it("an unrelated commit that changes a file in a subfolder of articles/ is also not pushed", async () => {
+    unpushedCommit("articles/sub/deep.md");
+    const out = await run(filer(), inbox("clip-a", clip(), true)).promise;
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(onRemote()).not.toContain("articles/sub/deep.md");
+  });
+});
+
 describe("a link that cannot be filed", () => {
   it("refuses an inbox note whose link is not a web link, before any model call or write", async () => {
     const body = "---\nurl: ftp://example.com/file\ntitle: Not a page\n---\n\n";
