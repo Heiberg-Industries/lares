@@ -11,11 +11,11 @@ page, this page is newer.
 
 - **The 9 October merges are on `main`** (#97 to #101). The code changes (#97, #100,
   #101) are in no image yet (see Not done).
-  - **Release candidate rc.4 is published but not deployed** (#99). The manifest is
+  - **Release candidate rc.4 is published but not deployed** (#99, LAR-114). The manifest is
     [`releases/2026-10-09-rc.4.json`](../releases/2026-10-09-rc.4.json): the eight
-    first-party images were built and published from `0e53c9d` (main after #95), with the
-    gateway on LiteLLM v1.101.6 and Caddy at 2.11.7; the database image is unchanged. The
-    scan and compatibility record is
+    first-party images were built and published from `0e53c9d` (main after #95);
+    the manifest pins the gateway at LiteLLM v1.101.6 and Caddy at 2.11.7, and the database
+    image is unchanged. The scan and compatibility record is
     [`runbooks/release-scans/2026-10-09-rc.4.md`](runbooks/release-scans/2026-10-09-rc.4.md).
     Deployment waits on the real rehearsal of the switch (LAR-98) and the owner's go-ahead;
     LAR-74 is the checklist. Not verified: a real console sign-in through the new Caddy,
@@ -118,7 +118,7 @@ page, this page is newer.
   moved `vitest` to 5 and the console's `vite` to 8, and added a `sass` override
   (see the security line). Batch 14, `eve` 0.71, is its own track under
   ADR-0021.
-  **On the next release candidate, on the server** (none of these can be proven
+  **On rc.4, on the server** (none of these can be proven
   before a server runs the build; branch image builds are not published):
   Langfuse traces through the egress proxy (6a); the five Google live probes in
   `services/chief-of-staff/tests/live/` (8); start the console, sync-jobs and
@@ -131,8 +131,8 @@ page, this page is newer.
   vite 8 alone did not remove it, because it came through `sass` 1.77.4, which
   pnpm installs for optional peers of `next` and `vite`; a `sass@<1.79.0`
   override lifts it to 1.105.1. Left: `sprintf-js` (medium, no fixed release;
-  judged not reachable, see #58). The `esbuild` warning cleared with batch 2. The console image in rc.3 predates
-  the `next` fix, so the next candidate must rebuild the console too.
+  judged not reachable, see #58). The `esbuild` warning cleared with batch 2. rc.3's console predated
+  the `next` fix; rc.4 rebuilt it.
 - **The tests no longer fail at random on GitHub** (6 October): LAR-91 (#53),
   LAR-100 (#54), LAR-83 (#55, every database test file guarded, with a check
   that new files cannot forget) and LAR-81 (#56). The travel tests run on
@@ -142,7 +142,7 @@ page, this page is newer.
   [`specs/2026-10-06-dependency-sweep-plan.md`](specs/2026-10-06-dependency-sweep-plan.md).
   Bendik took all five recommendations on 6 October. A read-only check found
   no `pg-boss` tables on the production server, so batch 1 may delete it.
-- **Release candidate images are built and pinned.** The third candidate,
+- **Superseded by rc.4:** release candidate images are built and pinned. The third candidate,
   [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json), replaces
   the keeper and the three agent runtimes: they were rebuilt on 1 October from
   `d95f358`, so they carry LAR-104, LAR-105 and LAR-106 (build run
@@ -183,17 +183,21 @@ page, this page is newer.
 
 ## Not done
 
-- **#97 and later are in no image.** rc.4 was built from the state after #95 (#90 to #95 are
-  in it; #96 and #97 are not). The image workflows on `main` run with publication off.
+- **Nothing merged after #95 is in an image.** rc.4 was built from main after #95; of #96 to
+  #101, only #97, #100 and #101 change code. The image workflows on `main` run with
+  publication off.
+- **Remaining critical and high base-image findings in the first-party images (LAR-114).**
+  rc.4 gives the scan evidence (the gateway and Caddy findings cleared; the keeper image, for
+  example, still shows 2 critical and 62 high), and the remediation is still open.
 - **The sync-jobs image's GitHub package is still private, so making it public is a
   prerequisite for installs.** Anonymous pulls of the rc.4 sync-jobs digest fail (403) until
   then; the other seven first-party images and the three third-party images pull anonymously.
 - **The gateway status page (#97) has not met a real gateway.** Its live probe,
-  `services/keeper/tests/live/litellm-gateway-status.live.mts`, is written but has not been
-  run, so the response shapes it reads are unverified. Run it by hand before trusting the
+  `services/keeper/tests/live/litellm-gateway-status.live.mts`, is written but is not recorded
+  as run, so the response shapes it reads are unverified. Run it by hand before trusting the
   Models section on an installation.
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
-- **No release is announced.** The newest release candidate is
+- **No final release exists yet**, only release candidates. The newest release candidate is
   [`releases/2026-10-09-rc.4.json`](../releases/2026-10-09-rc.4.json), published but not
   installed or rehearsed anywhere. `2026-10-01-rc.3` is superseded and kept as a record.
   `2026-09-30-rc.1` and `2026-10-01-rc.2` are kept as records and should not be used: rc.1's
@@ -229,11 +233,10 @@ page, this page is newer.
    planned work. A note comparing Lares with a published "agent from scratch" recipe was
    written outside the repo for a planning session on a leaner shape and drop-in
    integrations (ADR-0019, LAR-46).
-6. Still waiting on the owner: the real rehearsal of the switch (LAR-98).
 
 ## Open housekeeping
 
-- No pull requests are open. The branch `lar-49-injection-suite` holds only the LAR-49 plan
+- No other pull requests are open. The branch `lar-49-injection-suite` holds only the LAR-49 plan
   and waits for the owner's decision on slice 1.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
