@@ -2,7 +2,7 @@
  * The digest's readability seam — the chief of staff's own worker client, shaped to `ReadabilityClient`.
  *
  * Replaces the old runtime's `makeReadabilityClient` (`lib/adapters/digest/enrich.ts`), which
- * was a second HTTP client for the same worker. the chief of staff already owns that contract in
+ * was a second HTTP client for the same worker. The chief of staff already owns that contract in
  * `@lares/agent-kit/readability-client`: auth, the error taxonomy, and egress through squid. Two clients
  * would be two places to keep all three correct.
  *

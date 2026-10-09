@@ -3,7 +3,7 @@
  * private store at run time, and the model prompt names nobody.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -115,6 +115,36 @@ describe("listTranscriptProjects reads the private store", () => {
     mkdirSync(join(root, "file-not-folder"));
     writeFileSync(join(root, "file-not-folder", "transcripts"), "a file, not a folder");
     expect(listTranscriptProjects(root)).toEqual(["project-a", "project-b"]);
+  });
+
+  it("leaves out symlinked project folders and symlinked transcripts folders", () => {
+    const outside = mkdtempSync(join(tmpdir(), "digest-projects-outside-"));
+    try {
+      mkdirSync(join(outside, "transcripts"));
+      mkdirSync(join(root, "real/transcripts"), { recursive: true });
+      symlinkSync(outside, join(root, "escape"));
+      symlinkSync(join(root, "real"), join(root, "alias"));
+      mkdirSync(join(root, "linked-transcripts"));
+      symlinkSync(join(outside, "transcripts"), join(root, "linked-transcripts", "transcripts"));
+      expect(listTranscriptProjects(root)).toEqual(["real"]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves out a folder name with a comma, since the prompt lists projects separated by commas", () => {
+    mkdirSync(join(root, "a, b/transcripts"), { recursive: true });
+    mkdirSync(join(root, "project-a/transcripts"), { recursive: true });
+    expect(listTranscriptProjects(root)).toEqual(["project-a"]);
+  });
+
+  it("keeps a project name with a space, and files a transcript under it", async () => {
+    mkdirSync(join(root, "Project B/transcripts"), { recursive: true });
+    const projects = listTranscriptProjects(root);
+    expect(projects).toEqual(["Project B"]);
+    const d = await classifyItem({ path: "_inbox/x.md", body: "b" }, ctx({ projects }), async () => reply({ project: "Project B" }));
+    expect(d.route).toBe("file");
+    expect(d.destination).toBe("Project B/transcripts");
   });
 
   it("an empty or missing store gives an empty list", () => {
