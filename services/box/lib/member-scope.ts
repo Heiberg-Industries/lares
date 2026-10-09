@@ -729,6 +729,28 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "person-authored content; actor attribution remains in keeper_audit.",
   },
 
+  // ── 091_clipping.sql ──────────────────────────────────────────────────────────────────────
+  {
+    table: "clipping_sources",
+    scope: "member",
+    column: "owner",
+    idKind: "registry",
+    createdBy: `${BOX}/091_clipping.sql`,
+    reason:
+      "`owner` is the organisation (the literal 'organisation', slice 1's only value) or one " +
+      "member's register id; a member's own source and its state are erased with them.",
+  },
+  {
+    table: "clipping_items",
+    scope: "member",
+    column: "owner",
+    idKind: "registry",
+    createdBy: `${BOX}/091_clipping.sql`,
+    reason:
+      "Metadata only (a normalised link key, never the link or any text); `owner` is the " +
+      "organisation or one member's register id, copied from the source, never from a page.",
+  },
+
   // ── Not created by any services/box/sql migration — box 084 (W5I-s6) gave both an `owner`
   // column, so they are `member`/`registry` from here on, not `resolved` any more. The column is
   // NULLABLE and carries no default (`services/chief-of-staff/lib/dream/store.ts`'s

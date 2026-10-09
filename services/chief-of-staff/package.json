@@ -25,6 +25,7 @@
     "@lares/compose-contract": "workspace:*",
     "@lares/junk": "workspace:*",
     "@lares/network": "workspace:^",
+    "@notionhq/client": "5.27.0",
     "@opentelemetry/exporter-trace-otlp-http": "0.222.0",
     "@opentelemetry/resources": "2.11.0",
     "@opentelemetry/sdk-node": "0.222.0",
