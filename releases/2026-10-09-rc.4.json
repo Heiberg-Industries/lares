@@ -1,0 +1,25 @@
+{
+  "release": "2026-10-09-rc.4",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:001ae14cbb82c738ade4689b9422b7db0d420d5b29d806a695928988822f4069",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:a77ce065ef17a38a137907f98b598026fe1d2d915e4a28ace7cabae12c07bbaf",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:95ee336c791231e226f78b7bbae40076310c8b2e01f13264272b855b6e1ccc78",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:84553d03e25a3348ab2c5a56f60f836d24e348497eb23a5ff7528a6eb3484c29",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:4e7ac1c919c866dd3e058c68def3c8e6867f41ba80cb995a3754a9b53ccad458",
+    "travel": "ghcr.io/heiberg-industries/lares-engine-travel-runtime@sha256:faffb8ab6a7ce1eae7c3fa36b8ff0a5af24e1c1182f89293fced4d87638f8a32",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:c52752feb88f4a95b2ef193ff9b9a21702bd0522e866faaa3e0e6296571165c1",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:c0b9fbf4fe060ac5811eaaee0488e581963dc737b2d46b7e4ba42b39d099fde1"
+  },
+  "migrations": {
+    "box": "090_keeper_credentials.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "The console now refuses changes made from a browser unless the request comes from the installation's configured public address (its Origin). Open the console at that address, not by IP or another hostname (#90).",
+    "Caddy 2.11.7 caps request headers at 16 KiB (larger requests get 431 or a dropped HTTP/2 connection) and drops request header names that contain a dot. Anything that sends very large cookies or dotted header names through Caddy must change.",
+    "The keeper image no longer contains corepack, npm, pnpm or yarn. Nothing in the engine runs them inside the keeper; a local script that did must run elsewhere."
+  ]
+}
