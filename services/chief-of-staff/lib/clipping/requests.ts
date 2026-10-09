@@ -211,7 +211,36 @@ async function runTest(
     wouldImport++;
     if (linkOrigin(page as never, source) === "column") fromUrlColumn++; else fromTitle++;
   }
-  return { wouldImport, fromUrlColumn, fromTitle, withoutLink, alreadyImported, more: capped, warnings };
+  return { wouldImport, fromUrlColumn, fromTitle, withoutLink, alreadyImported, more: capped, warnings,
+    recent: await recentLinkOrigins(client, source) };
+}
+
+/** Test also needs to say which column the clipper fills even when nothing is newer than the start
+ *  point (a mapping saved a minute ago): look at the most recently edited rows, whatever their age. */
+const RECENT_SAMPLE = 20;
+async function recentLinkOrigins(
+  client: NotionLike, source: ClipSource,
+): Promise<{ checked: number; fromUrlColumn: number; fromTitle: number; withoutLink: number }> {
+  let res: { results?: unknown[] };
+  try {
+    res = (await client.dataSources.query({
+      data_source_id: source.dataSourceId, page_size: RECENT_SAMPLE,
+      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+    })) as typeof res;
+  } catch (e) {
+    throw classifyNotionError(e);
+  }
+  const recent = { checked: 0, fromUrlColumn: 0, fromTitle: 0, withoutLink: 0 };
+  for (const page of res.results ?? []) {
+    if ((page as { object?: string })?.object !== "page") continue;
+    const mapped = mapPageToClip(page as never, source);
+    if (mapped.kind === "trashed") continue;
+    recent.checked++;
+    if (mapped.kind === "skip") recent.withoutLink++;
+    else if (linkOrigin(page as never, source) === "column") recent.fromUrlColumn++;
+    else recent.fromTitle++;
+  }
+  return recent;
 }
 
 // --- import ----------------------------------------------------------------------------------

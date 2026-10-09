@@ -273,6 +273,7 @@ describe("test", () => {
     expect(row).toMatchObject({ status: "done", outcome: "ok" });
     expect(row.result).toEqual({
       wouldImport: 3, fromUrlColumn: 2, fromTitle: 1, withoutLink: 1, alreadyImported: 0, more: false, warnings: [],
+      recent: { checked: 4, fromUrlColumn: 2, fromTitle: 1, withoutLink: 1 },
     });
     // Writes nothing: no inbox file, no ledger row, no state change on the source.
     expect(inbox.files.size).toBe(0);
@@ -307,6 +308,8 @@ describe("test", () => {
     const proposal = { dataSourceId: "ds-1", urlPropertyId: "u1" };
     const none = await answer("test", proposal);
     expect(none).toMatchObject({ status: "done", result: { wouldImport: 0 } }); // nothing is older than 'now'
+    // ...but Test still says which column the clipper fills, from the most recent rows.
+    expect(none.result).toMatchObject({ recent: { checked: 1, fromUrlColumn: 1, fromTitle: 0, withoutLink: 0 } });
     fake.put(mkPage(2, { edited: new Date(Date.now() + 60_000).toISOString() }));
     const some = await answer("test", proposal);
     expect(some.result).toMatchObject({ wouldImport: 1, fromUrlColumn: 1 });

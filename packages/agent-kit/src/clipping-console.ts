@@ -41,6 +41,8 @@ export type ClippingSchemaResult = z.infer<typeof clippingSchemaResult>;
 export const clippingTestResult = z.object({
   wouldImport: count, fromUrlColumn: count, fromTitle: count, withoutLink: count, alreadyImported: count,
   more: z.boolean(), warnings: z.array(z.string().max(500)).max(10).optional(),
+  // The most recently edited rows, whatever their age: which column the clipper fills.
+  recent: z.object({ checked: count, fromUrlColumn: count, fromTitle: count, withoutLink: count }).optional(),
 });
 export type ClippingTestResult = z.infer<typeof clippingTestResult>;
 

@@ -12,6 +12,7 @@ import type {
 } from '../lib/clipping';
 import { Button } from '@lares/ui/primitives/button';
 import { Input } from '@lares/ui/primitives/input';
+import { NOTION_CREDENTIAL_CHANGED } from './NotionCredential';
 
 const when = (iso: string | null) => (iso ? `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC` : 'never');
 
@@ -85,6 +86,9 @@ export function testSentence(r: ClippingTestResult): string {
     r.withoutLink > 0 ? `${r.withoutLink} row${r.withoutLink === 1 ? ' has' : 's have'} no link and would be skipped.` : '',
     r.alreadyImported > 0 ? `${r.alreadyImported} already imported.` : '',
     r.more ? 'There are more rows than this test read.' : '',
+    r.recent && r.recent.checked > 0
+      ? `Of the ${r.recent.checked} most recently edited row${r.recent.checked === 1 ? '' : 's'}: ${r.recent.fromUrlColumn} with the link in the URL column, ${r.recent.fromTitle} with the link only in the title, ${r.recent.withoutLink} without a link.`
+      : '',
     ...(r.warnings ?? []),
   ].filter(Boolean);
   return [lead, ...extra].join(' ');
@@ -166,7 +170,9 @@ export function ClippingCard({ initial, credential }: { initial: ClippingView; c
         setCredMessage(messages[code]!); return false;
       }
       setCred({ kind: 'status', status: parsed.data });
-      setCredMessage('Operation recorded. The Notion key card above updates when you reload the page.');
+      setCredMessage('Operation recorded. Review the result below.');
+      // The Notion key card above holds its own copy of this status; tell it to read it again.
+      window.dispatchEvent(new Event(NOTION_CREDENTIAL_CHANGED));
       return true;
     } catch { setCredMessage(messages['outcome-unknown']!); return false; }
     finally { inFlight.current = false; setBusy(false); }

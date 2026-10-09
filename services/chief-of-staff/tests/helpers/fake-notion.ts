@@ -114,6 +114,8 @@ export function fakeNotion() {
       let rows = [...world.pages.values()].filter((p) => world.queryIncludesTrashed || !p.in_trash);
       if (since) rows = rows.filter((p) => p.last_edited_time >= since);
       rows.sort((a, b) => a.last_edited_time.localeCompare(b.last_edited_time) || a.id.localeCompare(b.id));
+      const sorts = body?.["sorts"] as { direction?: string }[] | undefined;
+      if (sorts?.[0]?.direction === "descending") rows.reverse();
       const size = Number(body?.["page_size"] ?? 100);
       const start = Number(body?.["start_cursor"] ?? 0);
       const slice = rows.slice(start, start + size);

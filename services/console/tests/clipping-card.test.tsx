@@ -141,6 +141,8 @@ describe('every state has its own sentence', () => {
       expect(text(view({ requests: { test: request('test', { result: { ...base, wouldImport: 3, fromUrlColumn: 2, fromTitle: 1 } }) } })))
         .toContain('Would import 3 links (2 from the URL column, 1 from the title).');
       expect(testSentence({ ...base, wouldImport: 1, fromUrlColumn: 1 })).toBe('Would import 1 link (1 from the URL column, 0 from the title).');
+      expect(testSentence({ ...base, recent: { checked: 5, fromUrlColumn: 4, fromTitle: 0, withoutLink: 1 } }))
+        .toBe('Would import nothing new. Of the 5 most recently edited rows: 4 with the link in the URL column, 0 with the link only in the title, 1 without a link.');
     });
     it('would import nothing new', () => {
       expect(text(view({ requests: { test: request('test', { result: base }) } }))).toContain('Would import nothing new.');

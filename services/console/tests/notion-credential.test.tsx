@@ -2,7 +2,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { NotionCredential } from '../components/NotionCredential';
+import { NOTION_CREDENTIAL_CHANGED, NotionCredential } from '../components/NotionCredential';
 import type { CredentialStatus } from '@lares/agent-kit/credential-lifecycle';
 const active = '11111111-1111-4111-8111-111111111111', candidate = '22222222-2222-4222-8222-222222222222';
 function status(change: Partial<CredentialStatus> = {}): CredentialStatus {
@@ -58,4 +58,12 @@ it.each(['prepare-managed-slot', 'review-consumers', 'inspect-journal'] as const
 it('renders unavailable status as unavailable, never as empty configured evidence', () => {
   const html = renderToStaticMarkup(<NotionCredential initial={{ kind: 'unavailable' }} />);
   expect(html).toContain('Credential status unavailable'); expect(html).not.toContain('none stored'); expect(html).not.toContain('none pending');
+});
+it('reads its status again when another card says it changed the credential (a clipping switch)', async () => {
+  const request = vi.fn().mockResolvedValue(Response.json({ ok: true, status: status({ revision: 2, grants: [{ agent: 'example', purposes: ['clipping'] }] }) }));
+  vi.stubGlobal('fetch', request); render(<NotionCredential initial={{ kind: 'status', status: status() }} />);
+  expect(request).not.toHaveBeenCalled();
+  window.dispatchEvent(new Event(NOTION_CREDENTIAL_CHANGED));
+  await waitFor(() => expect(screen.getByText('Status refreshed.')).toBeTruthy());
+  expect(request).toHaveBeenCalledOnce(); expect(request.mock.calls[0][1].method).toBeUndefined();
 });
