@@ -25,6 +25,7 @@ const DETAILS: Record<Exclude<GatewayStatus["details"]["state"], "ok">, string> 
   unavailable: "Details unavailable: the gateway did not answer.",
   "key-unreadable": "Details unavailable: Lares could not read its gateway key.",
   "not-managed": "Managed outside Lares. Model details are not checked.",
+  "aliases-unknown": "Details unavailable: Lares could not read its own alias settings.",
 };
 const WHOLE = {
   "keeper-unavailable": "Gateway status unavailable: Lares's server helper did not answer.",
@@ -60,7 +61,7 @@ function Body({ status, usage }: { status: GatewayStatus; usage: Record<string, 
       </div>
       <div className="lares-setting-row">
         <div>Is it answering?<p>{r.text}</p></div>
-        <StatusBadge tone={r.tone}>{status.reachability === "reachable" ? "Reachable" : status.reachability === "unreachable" ? "Not reachable" : status.reachability === "not-configured" ? "Not configured" : "Not ready"}</StatusBadge>
+        <StatusBadge tone={status.reachability === "readiness-unreadable" ? "quiet" : r.tone}>{status.reachability === "reachable" ? "Reachable" : status.reachability === "unreachable" ? "Not reachable" : status.reachability === "not-configured" ? "Not configured" : status.reachability === "readiness-unreadable" ? "Readiness unclear" : "Not ready"}</StatusBadge>
       </div>
       {status.details.state !== "ok" && <Notice error={status.details.state === "refused" || status.details.state === "invalid"}>{DETAILS[status.details.state]}</Notice>}
       {status.purposes.map(p => (
@@ -77,7 +78,7 @@ function Body({ status, usage }: { status: GatewayStatus; usage: Record<string, 
         </div>
       ))}
       {status.details.state === "ok" && status.details.others.length > 0 && (
-        <p className="lares-muted">Other models on this gateway: <span className="mono">{status.details.others.join(", ")}</span></p>
+        <p className="lares-muted">Other models on this gateway: <span className="mono">{status.details.others.join(", ")}</span>{status.details.othersTotal > status.details.others.length ? ` and ${status.details.othersTotal - status.details.others.length} more` : ""}</p>
       )}
     </>
   );

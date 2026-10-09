@@ -53,7 +53,7 @@ export class GatewayAdmin {
     let response: Response;
     try { response = await this.call(GATEWAY_ROUTES.readiness); } catch { return { kind: "unreachable" }; }
     if (response.status === 503) return { kind: "not-ready" };
-    if (response.status !== 200) return { kind: "unreachable" };
+    if (response.status !== 200) return { kind: "unreadable" };
     try {
       const body: unknown = await response.json();
       if (!isRecord(body) || typeof body.status !== "string" || typeof body.db !== "string") return { kind: "unreadable" };

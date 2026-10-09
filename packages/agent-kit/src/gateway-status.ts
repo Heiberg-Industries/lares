@@ -14,8 +14,8 @@ export const gatewayPurposeSchema = z.object({
   target: gatewayTargetSchema.optional(),
 }).strict();
 export const gatewayDetailsSchema = z.discriminatedUnion('state', [
-  z.object({ state: z.literal('ok'), others: z.array(text).max(200) }).strict(),
-  z.object({ state: z.enum(['refused', 'invalid', 'unavailable', 'key-unreadable', 'not-managed']) }).strict(),
+  z.object({ state: z.literal('ok'), others: z.array(text).max(200), othersTotal: z.number().int().min(0) }).strict(),
+  z.object({ state: z.enum(['refused', 'invalid', 'unavailable', 'key-unreadable', 'not-managed', 'aliases-unknown']) }).strict(),
 ]);
 export const gatewayStatusSchema = z.object({
   mode: z.enum(['managed', 'external']).nullable(),

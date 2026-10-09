@@ -50,7 +50,7 @@ export class GatewayStatusReader {
     const endpoint = new URL(this.cfg.gatewayUrl).origin;
     const aliases = await this.aliases();
     const result = (reachability: GatewayStatus["reachability"], details: GatewayStatus["details"], models: GatewayModel[] | null = null) =>
-      gatewayStatusSchema.parse({ ...base, mode, endpoint, reachability, details: aliases ? details : { state: "unavailable" }, purposes: this.purposes(aliases, models) });
+      gatewayStatusSchema.parse({ ...base, mode, endpoint, reachability, details: aliases ? details : { state: "aliases-unknown" }, purposes: this.purposes(aliases, models) });
 
     if ((await this.cfg.admin.liveliness()).kind !== "ok") return result("unreachable", { state: "unavailable" });
     const readiness = await this.cfg.admin.readiness();
@@ -63,7 +63,8 @@ export class GatewayStatusReader {
     const info = await this.cfg.admin.modelInfo(key);
     if (info.kind !== "ok") return result(reachability, { state: info.kind });
     const names = new Set(aliases ?? []);
-    return result(reachability, { state: "ok", others: info.models.map(m => m.alias).filter(a => !names.has(a)) }, info.models);
+    const others = info.models.map(m => m.alias).filter(a => !names.has(a));
+    return result(reachability, { state: "ok", others: others.slice(0, 200), othersTotal: others.length }, info.models);
   }
 }
 

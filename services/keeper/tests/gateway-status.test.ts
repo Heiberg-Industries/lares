@@ -33,7 +33,7 @@ describe("gateway status", () => {
     const { r } = reader({ modelInfo: { kind: "ok", models: [{ alias: "lares-brain", target: { provider: "anthropic", model: "claude-x" } }, { alias: "stray", target: null }] } });
     const s = await r.read();
     expect(gatewayStatusSchema.parse(s)).toEqual(s);
-    expect(s).toMatchObject({ mode: "managed", endpoint: "http://lares-gateway:4000", checkedAt: NOW.toISOString(), reachability: "reachable", providerTested: false, details: { state: "ok", others: ["stray"] } });
+    expect(s).toMatchObject({ mode: "managed", endpoint: "http://lares-gateway:4000", checkedAt: NOW.toISOString(), reachability: "reachable", providerTested: false, details: { state: "ok", others: ["stray"], othersTotal: 1 } });
     expect(states(s)).toEqual({ brain: "served", writer: "not-served", utility: "not-served", gate: "not-served", embed: "not-served" });
     expect(s.purposes[0]).toMatchObject({ alias: "lares-brain", target: { provider: "anthropic", model: "claude-x" } });
   });
@@ -79,8 +79,14 @@ describe("gateway status", () => {
   it("unusable alias prefix leaves purposes empty and details unavailable", async () => {
     for (const prefix of [async () => { throw new Error("db"); }, async () => undefined, async () => "Bad Prefix"]) {
       const s = await reader({}, { prefix }).r.read();
-      expect(s.purposes).toEqual([]); expect(s.details).toEqual({ state: "unavailable" });
+      expect(s.purposes).toEqual([]); expect(s.details).toEqual({ state: "aliases-unknown" });
     }
+  });
+  it("truncates other models to 200 and carries the total", async () => {
+    const models = Array.from({ length: 250 }, (_, i) => ({ alias: `extra-${i}`, target: null }));
+    const s = await reader({ modelInfo: { kind: "ok", models } }).r.read();
+    expect(s.details.state === "ok" && s.details.others.length).toBe(200);
+    expect(s.details.state === "ok" && s.details.othersTotal).toBe(250);
   });
   it("never carries the key", async () => expect(JSON.stringify(await reader().r.read())).not.toContain(CANARY));
 });

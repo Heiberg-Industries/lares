@@ -53,7 +53,7 @@ describe("readiness", () => {
     expect(await admin(async () => json([1])).gw.readiness()).toEqual({ kind: "unreadable" });
   });
   it("unreachable on network error", async () => expect(await admin(async () => { throw new Error("x"); }).gw.readiness()).toEqual({ kind: "unreachable" }));
-  it("unreachable on other statuses", async () => expect(await admin(async () => new Response("", { status: 502 })).gw.readiness()).toEqual({ kind: "unreachable" }));
+  it.each([404, 500, 502])("unreadable (not unreachable) when the gateway answered %s", async s => expect(await admin(async () => new Response("", { status: s })).gw.readiness()).toEqual({ kind: "unreadable" }));
 });
 
 describe("model info", () => {

@@ -13,7 +13,7 @@ const purposes = (state: string, brain?: object) => ["brain", "writer", "utility
   purpose, alias: `lares-${purpose}`, state: i === 0 && brain ? "served" : state, ...(i === 0 && brain ? { target: brain } : {}) }));
 const status = (over: Partial<GatewayStatus> = {}): GatewayStatus => ({
   mode: "managed", endpoint: "http://lares-gateway:4000", checkedAt: "2026-10-09T10:00:00.000Z", reachability: "reachable",
-  details: { state: "ok", others: [] }, purposes: purposes("not-served", { provider: "anthropic", model: "claude-x" }) as GatewayStatus["purposes"],
+  details: { state: "ok", others: [], othersTotal: 0 }, purposes: purposes("not-served", { provider: "anthropic", model: "claude-x" }) as GatewayStatus["purposes"],
   providerTested: false, ...over });
 const html = (view: GatewayStatusView) => renderToStaticMarkup(<ModelsSection view={view} />);
 const text = (view: GatewayStatusView) => html(view).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
@@ -72,7 +72,7 @@ describe("Models section", () => {
     add("keeper", { kind: "keeper-unavailable" }); add("refusedKeeper", { kind: "refused" }); add("wholeInvalid", { kind: "invalid" });
     add("notready", view(status({ reachability: "not-ready" }))); add("unreadable", view(status({ reachability: "readiness-unreadable" })));
     add("notconf", view(status({ mode: null, endpoint: null, reachability: "not-configured", details: { state: "unavailable" }, purposes: [] })));
-    for (const s of ["refused", "invalid", "unavailable", "key-unreadable", "not-managed"] as const)
+    for (const s of ["refused", "invalid", "unavailable", "key-unreadable", "not-managed", "aliases-unknown"] as const)
       add(s, view(status({ details: { state: s }, purposes: purposes("unknown") as GatewayStatus["purposes"] })));
     expect(words.get("keeper")).toContain("Gateway status unavailable"); expect(words.get("keeper")).toContain("server helper did not answer");
     expect(words.get("notready")).toContain("Running but not ready");
@@ -81,6 +81,7 @@ describe("Models section", () => {
     expect(words.get("wholeInvalid")).toContain("Gateway status could not be read");
     expect(words.get("not-managed")).toContain("Managed outside Lares");
     expect(words.get("key-unreadable")).toContain("key");
+    expect(words.get("aliases-unknown")).toContain("could not read its own alias settings");
     expect(new Set(words.values()).size).toBe(words.size);
   });
   it("usage unavailable is stated, not shown as no agents", () => {
@@ -88,9 +89,17 @@ describe("Models section", () => {
     expect(text(view(status(), {}))).toContain("No agent uses it");
   });
   it("hidden target and other models", () => {
-    const s = status({ details: { state: "ok", others: ["stray-model"] }, purposes: purposes("served-target-hidden") as GatewayStatus["purposes"] });
+    const s = status({ details: { state: "ok", others: ["stray-model"], othersTotal: 1 }, purposes: purposes("served-target-hidden") as GatewayStatus["purposes"] });
     const t = text(view(s));
     expect(t).toContain("Served, model not shown by the gateway"); expect(t).toContain("stray-model");
+  });
+  it("says how many more other models there are", () => {
+    const others = Array.from({ length: 200 }, (_, i) => `m${i}`);
+    expect(text(view(status({ details: { state: "ok", others, othersTotal: 250 } })))).toContain("and 50 more");
+  });
+  it("readiness-unreadable gets a neutral badge, not Not ready", () => {
+    const t = text(view(status({ reachability: "readiness-unreadable" })));
+    expect(t).toContain("Readiness unclear"); expect(t).not.toContain("Not ready");
   });
   it("is read-only: a plain link to reload, no form, no button", () => {
     const h = html(view(status()));
