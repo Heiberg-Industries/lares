@@ -19,6 +19,8 @@ import { AgentLifecycle } from "../lib/lifecycle.js";
 import { keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
+import { GatewayAdmin } from "../lib/gateway-admin.js";
+import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
@@ -61,6 +63,9 @@ async function main(): Promise<void> {
         });
         registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, () => credentialConsumers(pool, config), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
             managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined));
+        const gatewayUrl = config.lifecycle?.runtime.gatewayUrl;
+        registerGatewayStatusAction(new GatewayStatusReader({ gatewayUrl, masterKeyFile: config.lifecycle?.runtime.gatewayMasterKeyFile,
+            aliasPrefix: () => readSetting(pool, "models.alias_prefix"), admin: new GatewayAdmin(gatewayUrl ?? "http://unconfigured.invalid") }));
         registerDoorActions({pool,secretsDir:config.secretsDir,publicOrigin:config.publicDoorOrigin,emailPrincipal:config.lifecycle?.runtime.google?.principal,googleOrgs:Object.keys(config.lifecycle?.runtime.google?.clients??{}),namespaceGuard});
         registerConversationActions(pool,(name,incarnation,id)=>runtimeReset(config.project,name,incarnation,id));
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
