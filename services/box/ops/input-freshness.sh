@@ -312,6 +312,7 @@ saga/voice-learn:192:Sundays 04:00 Oslo
 saga/weekly-summary:192:Sundays
 saga/crm-routing:20:09/13/17 Oslo
 saga/deadlines:2:every 30 min
+saga/clipping-requests:2:every minute
 saga/email-triage:2:every minute
 saga/meeting-followup:2:every 5 min
 saga/outreach-reply-watch:2:every 15 min

@@ -92,13 +92,45 @@ export function classifyNotionError(e: unknown): ClippingFailure {
 
 /** The slice of the SDK the reader calls. The real `Client` satisfies it; tests pass a fake. */
 export interface NotionLike {
+  databases: {
+    retrieve(args: { database_id: string }): Promise<unknown>;
+  };
   dataSources: {
     retrieve(args: { data_source_id: string }): Promise<unknown>;
     query(args: Record<string, unknown>): Promise<unknown>;
+    /** Used by the "add Status / For / Origin" request only; the import never writes. */
+    update(args: Record<string, unknown>): Promise<unknown>;
   };
   pages: {
     retrieve(args: { page_id: string }): Promise<unknown>;
   };
+}
+
+const DASHED_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const dashed = (hex32: string): string =>
+  `${hex32.slice(0, 8)}-${hex32.slice(8, 12)}-${hex32.slice(12, 16)}-${hex32.slice(16, 20)}-${hex32.slice(20)}`.toLowerCase();
+
+/**
+ * The database id from whatever the owner pasted: a 32-character id, a dashed uuid, or a
+ * notion.so / notion.site link whose path ends in `-<32 hex>` or `<32 hex>` (the `?v=` view id
+ * and any fragment are ignored). Returns the dashed lower-case uuid, or null when it is none of
+ * those. Pure; reads nothing and calls nothing.
+ */
+export function parseDatabaseRef(linkOrId: string): string | null {
+  const raw = linkOrId.trim();
+  if (!raw || raw.length > 2048) return null;
+  if (DASHED_UUID.test(raw)) return raw.toLowerCase();
+  if (/^[0-9a-f]{32}$/i.test(raw)) return dashed(raw);
+  let url: URL;
+  try { url = new URL(raw); } catch { return null; }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  const host = url.hostname.toLowerCase();
+  if (!(host === "notion.so" || host.endsWith(".notion.so") || host === "notion.site" || host.endsWith(".notion.site"))) return null;
+  let last = url.pathname.replace(/\/+$/, "").split("/").pop() ?? "";
+  try { last = decodeURIComponent(last); } catch { return null; }
+  if (DASHED_UUID.test(last)) return last.toLowerCase();
+  const m = /(?:^|-)([0-9a-f]{32})$/i.exec(last);
+  return m ? dashed(m[1]!) : null;
 }
 
 /** `none`: no key is delivered at all. `unreadable`: one is delivered but cannot be read or is empty. */

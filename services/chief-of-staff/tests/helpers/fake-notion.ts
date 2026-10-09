@@ -25,6 +25,9 @@ export const SCHEMA_PROPERTIES = {
   Tags: { id: "t1", name: "Tags", type: "multi_select" },
 };
 
+/** The database id the fake shares by default (a dashed uuid, as `parseDatabaseRef` returns). */
+export const DATABASE_ID = "11111111-2222-4333-8444-555555555555";
+
 export function pageId(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 }
@@ -62,6 +65,8 @@ export interface Fault {
 export function fakeNotion() {
   const world = {
     properties: { ...SCHEMA_PROPERTIES } as Record<string, unknown>,
+    /** Databases shared with the connection (any other id answers 404, as Notion does). */
+    databases: new Map<string, { id: string; name: string }[]>([[DATABASE_ID, [{ id: "ds-1", name: "Clips" }]]]),
     pages: new Map<string, FakePage>(),
     faults: [] as Fault[],
     requests: [] as { key: string; version: string | null; body: Record<string, unknown> | null }[],
@@ -87,6 +92,19 @@ export function fakeNotion() {
     }
 
     let m: RegExpMatchArray | null;
+    if ((m = u.pathname.match(/^\/v1\/databases\/([^/]+)$/)) && method === "GET") {
+      const list = world.databases.get(m[1]!);
+      if (!list) return json(404, { object: "error", status: 404, code: "object_not_found", message: "Could not find database" });
+      return json(200, { object: "database", id: m[1], data_sources: list });
+    }
+    if ((m = u.pathname.match(/^\/v1\/data_sources\/([^/]+)$/)) && method === "PATCH") {
+      // Adds the properties named in the body (a null value would delete one; not modelled).
+      for (const [name, def] of Object.entries((body?.["properties"] ?? {}) as Record<string, Record<string, unknown>>)) {
+        const type = Object.keys(def).find((k) => k === "select" || k === "multi_select") ?? "rich_text";
+        world.properties[name] = { id: `p-${name.toLowerCase()}`, name, type };
+      }
+      return json(200, { object: "data_source", id: m[1], properties: world.properties });
+    }
     if ((m = u.pathname.match(/^\/v1\/data_sources\/([^/]+)$/)) && method === "GET") {
       return json(200, { object: "data_source", id: m[1], properties: world.properties });
     }

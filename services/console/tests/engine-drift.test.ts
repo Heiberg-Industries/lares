@@ -5,6 +5,7 @@ import { describe, it, expect } from "vitest";
 import { DEFAULT_HOME_TZ, ENGINE } from "../lib/proactivity";
 import { DEADLINE_SOURCES, MENTION_DAYS_MIRROR, STATUTORY_RULES_MIRROR, mintYearFromMirror, nextDueDate } from "../lib/deadlines";
 import { MARKETS_ENGINE } from "../lib/markets";
+import { CLIPPING_OUTCOMES, CLIPPING_REQUEST_KINDS, MAPPING_COLUMN_TYPES, REQUEST_STALE_MS } from "../lib/clipping";
 import { BRIEF_LANGUAGES_MIRROR } from "../lib/brief-settings";
 import { OWNER_FACING_SCHEDULES, SCHEDULE_HOUR_DEFAULTS, SINGLE_SLOT, validateHours } from "../lib/schedule-hours";
 import { APPROVAL_LIFETIME_MS } from "../components/ChatTranscript";
@@ -376,5 +377,70 @@ describe("the console's schedule-hours mirror has not drifted from the kit's sch
     expect(validateHours("digest", [17, 9])).toEqual({ ok: false, message: "Hours must be sorted, lowest to highest." });
     expect(validateHours("digest", [1, 2, 3, 4, 5, 6, 7])).toEqual({ ok: false, message: "At most 6 hours a day are allowed." });
     expect(validateHours("sleep-schedule", [9])).toEqual({ ok: false, message: '"sleep-schedule" is not a known schedule.' });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// LAR-113 child b — the Clipping card's mirrors of the chief of staff's clipping engine
+// (`services/chief-of-staff/lib/clipping/`), read as text for the same reason as the markets
+// engine above: a separate package, a separate build, no import. The outcome list is also the
+// CHECK list in box/sql 091 (sources) and 092 (requests), so all four places are compared.
+// ---------------------------------------------------------------------------------------------
+
+const BOX_SQL = path.join(import.meta.dirname, "..", "..", "box", "sql");
+const quoted = (s: string): string[] => [...s.matchAll(/"([^"]+)"|'([^']+)'/gu)].map((m) => m[1] ?? m[2]!);
+
+describe("the console's clipping mirrors have not drifted from the chief of staff's engine", () => {
+  it("CLIPPING_OUTCOMES is exactly the engine's ClippingOutcome, and the CHECK lists in 091 and 092", () => {
+    const p = path.join(EVE_SAGA_LIB, "clipping", "notion-reader.ts");
+    const src = fs.readFileSync(p, "utf8");
+    expect(src.length, `${p} is empty`).toBeGreaterThan(0);
+    const m = /export type ClippingOutcome =([^;]+);/u.exec(src);
+    expect(m, "`export type ClippingOutcome = … ;` not found in the engine's notion-reader.ts").toBeDefined();
+    const engine = quoted(m![1]!);
+    expect(engine.length, "no outcomes parsed out of the engine's ClippingOutcome").toBeGreaterThan(0);
+    expect([...CLIPPING_OUTCOMES]).toEqual(engine);
+    for (const file of ["091_clipping.sql", "092_clipping_requests.sql"]) {
+      const sql = fs.readFileSync(path.join(BOX_SQL, file), "utf8");
+      const c = /outcome IS NULL OR outcome IN \(([^)]+)\)/u.exec(sql);
+      expect(c, `the outcome CHECK was not found in ${file}`).toBeDefined();
+      expect(quoted(c![1]!), file).toEqual(engine);
+    }
+  });
+
+  it("CLIPPING_REQUEST_KINDS is exactly the engine's RequestKind and the CHECK list in 092", () => {
+    const src = fs.readFileSync(path.join(EVE_SAGA_LIB, "clipping", "requests.ts"), "utf8");
+    const m = /export type RequestKind =([^;]+);/u.exec(src);
+    expect(m, "`export type RequestKind = … ;` not found in the engine's requests.ts").toBeDefined();
+    const engine = quoted(m![1]!);
+    expect(engine.length).toBeGreaterThan(0);
+    expect([...CLIPPING_REQUEST_KINDS]).toEqual(engine);
+    const sql = fs.readFileSync(path.join(BOX_SQL, "092_clipping_requests.sql"), "utf8");
+    const c = /kind IN \(([^)]+)\)/u.exec(sql);
+    expect(c, "the kind CHECK was not found in 092").toBeDefined();
+    expect(quoted(c![1]!)).toEqual(engine);
+  });
+
+  it("REQUEST_STALE_MS is the engine's CLAIM_STALE_MS, and both are ten minutes", () => {
+    const src = fs.readFileSync(path.join(EVE_SAGA_LIB, "clipping", "requests.ts"), "utf8");
+    const m = /export const CLAIM_STALE_MS = ([0-9_ *]+);/u.exec(src);
+    expect(m, "`export const CLAIM_STALE_MS = … ;` not found in the engine's requests.ts").toBeDefined();
+    const ms = m![1]!.split("*").map((part) => Number(part.trim().replaceAll("_", ""))).reduce((a, b) => a * b, 1);
+    expect(REQUEST_STALE_MS).toBe(ms);
+    expect(REQUEST_STALE_MS).toBe(10 * 60_000);
+  });
+
+  it("the column types each mapped role accepts are the engine's checkSchema rules", () => {
+    const src = fs.readFileSync(path.join(EVE_SAGA_LIB, "clipping", "notion-reader.ts"), "utf8");
+    const set = (name: string): string[] => {
+      const m = new RegExp(`const ${name} = new Set\\(\\[([^\\]]+)\\]\\);`, "u").exec(src);
+      expect(m, `\`const ${name} = new Set([ … ]);\` not found in the engine's notion-reader.ts`).toBeDefined();
+      return quoted(m![1]!);
+    };
+    expect([...MAPPING_COLUMN_TYPES.note]).toEqual(set("NOTE_TYPES"));
+    expect([...MAPPING_COLUMN_TYPES.tags]).toEqual(set("TAG_TYPES"));
+    expect([...MAPPING_COLUMN_TYPES.saved]).toEqual(set("SAVED_TYPES"));
+    expect(src).toMatch(/!url \|\| url\.type !== "url"/u);
+    expect([...MAPPING_COLUMN_TYPES.url]).toEqual(["url"]);
   });
 });

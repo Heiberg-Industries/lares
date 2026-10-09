@@ -138,6 +138,17 @@ function savedOf(page: RawPage, p: RawProperty | undefined): string {
   return page.created_time;
 }
 
+/**
+ * Where a page's link would come from: the mapped URL column, the title (when it is a single
+ * link), or nowhere. Used by "Test" to say how many links the URL column supplied.
+ */
+export function linkOrigin(page: RawPage, source: ClipSource): "column" | "title" | null {
+  const urlProp = byId(page, source.urlPropertyId);
+  const col = urlProp?.type === "url" ? ((urlProp["url"] as string | null) ?? "").trim() : "";
+  if (col && normaliseUrl(col)) return "column";
+  return pickLink(null, titleOf(page)) ? "title" : null;
+}
+
 /** Map one Notion page to a clip, a counted skip (no link) or a trashed marker. */
 export function mapPageToClip(page: RawPage, source: ClipSource): MappedPage {
   const rev = page.last_edited_time;

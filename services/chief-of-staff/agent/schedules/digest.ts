@@ -55,7 +55,7 @@ import { makeKarakeepClient, makePgSeenStore, syncKarakeep } from "../../lib/kar
 import { clippingPass, makeVaultInbox } from "../../lib/clipping/step.js";
 import { makeNotionClient, readNotionToken } from "../../lib/clipping/notion-reader.js";
 import { normaliseUrl } from "../../lib/clipping/record.js";
-import { recordKarakeepImport } from "../../lib/clipping/store.js";
+import { readClippingChoice, recordKarakeepImport } from "../../lib/clipping/store.js";
 import { parseFrontmatter } from "../../lib/digest/extract.js";
 import { runDigest } from "../../lib/digest/runner.js";
 import { dueScheduledSlot } from "../../lib/digest/schedule.js";
@@ -204,12 +204,25 @@ export async function runDigestPass(
   const log = (m: string) => console.log(`digest: ${m}`);
   const root = vaultRoot();
 
+  // LAR-113: the owner's choice of source (Clipping card). No row, or a box without migration 092,
+  // is today's behaviour: each source runs if it is set up. `notion` skips Karakeep; `karakeep`
+  // skips the Notion step; `both` is the changeover and runs both.
+  const choice = await readClippingChoice(db).catch((e) => {
+    log(`could not read the clipping source choice (${String(e)}); running every source that is set up`);
+    return null;
+  });
+
   // Best-effort: a Karakeep hiccup must never block the digest itself.
-  try { await karakeepPass(log); }
-  catch (e) { console.error("digest: karakeep sync failed (continuing):", e); }
+  if (choice === "notion") log("karakeep: skipped (clipping is set to Notion)");
+  else {
+    try { await karakeepPass(log); }
+    catch (e) { console.error("digest: karakeep sync failed (continuing):", e); }
+  }
 
   // Best-effort for the digest, never silent for the owner: a failure becomes a notice below.
-  const notices = await clippingStep(log);
+  let notices: string[] = [];
+  if (choice === "karakeep") log("clipping: skipped (clipping is set to Karakeep)");
+  else notices = await clippingStep(log);
 
   const summary = await runDigest({
     agent: AGENT,

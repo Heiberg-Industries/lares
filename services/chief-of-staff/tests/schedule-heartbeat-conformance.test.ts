@@ -50,9 +50,9 @@ export function scheduleSources(): Map<string, string> {
 describe("schedule heartbeat keys are pinned to the schedule files (ORB-175)", () => {
   const sources = scheduleSources();
 
-  it("there are exactly the 18 schedules the inventory names", () => {
+  it("there are exactly the 19 schedules the inventory names", () => {
     expect([...sources.keys()]).toEqual([
-      "conversation-prune", "crm-routing", "deadlines", "digest", "dream", "email-triage",
+      "clipping-requests", "conversation-prune", "crm-routing", "deadlines", "digest", "dream", "email-triage",
       "evening-brief", "market-refresh", "meeting-followup", "morning-brief",
       "outreach-reply-watch", "owner-clock", "proposals-watch", "reminders", "reping",
       "telegram-handover", "voice-learn", "weekly-summary",
@@ -121,6 +121,7 @@ const OPS_SCRIPT = join(here, "..", "..", "box", "ops", "input-freshness.sh");
 const SEED_MIGRATIONS = [
   "031_schedule_heartbeat.sql", "035_proactivity.sql", "036_deadlines.sql",
   "070_conversation_prune_heartbeat.sql", "082_telegram_handover_heartbeat.sql",
+  "093_clipping_requests_heartbeat.sql",
 ];
 
 /**
@@ -143,7 +144,7 @@ const AGREED_THRESHOLDS: Record<string, number> = {
   "saga/voice-learn": 192, "saga/weekly-summary": 192, "saga/crm-routing": 20,
   "saga/email-triage": 2, "saga/meeting-followup": 2, "saga/outreach-reply-watch": 2,
   "saga/proposals-watch": 2, "saga/reminders": 2, "saga/reping": 2, "saga/owner-clock": 2,
-  "saga/deadlines": 2, "saga/market-refresh": 26,
+  "saga/deadlines": 2, "saga/market-refresh": 26, "saga/clipping-requests": 2,
 };
 
 /**
