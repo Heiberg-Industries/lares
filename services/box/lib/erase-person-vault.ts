@@ -57,7 +57,7 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
-import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/okf";
+import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
 /** One vault file that names the person, and why we think so. */
 export interface VaultHit {

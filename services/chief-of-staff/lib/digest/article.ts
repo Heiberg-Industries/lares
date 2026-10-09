@@ -22,7 +22,7 @@
  */
 import { createHash } from "node:crypto";
 
-import { ARTICLE_FULL_TEXT_KEY, ARTICLE_READING_KEY } from "@lares/agent-kit/okf";
+import { ARTICLE_FULL_TEXT_KEY, ARTICLE_READING_KEY } from "@lares/agent-kit/article";
 import { isOrigin, type Origin } from "@lares/agent-kit/origin";
 
 import { normaliseUrl } from "../clipping/record.js";

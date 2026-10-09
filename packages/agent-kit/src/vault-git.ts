@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 
 import { resolveInStore } from "./notes-store.js";
 import { withNoteLock } from "./note-lock.js";
-import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "./okf.js";
+import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
 /**
  * The git mechanics behind the vault write tools (`vault_write`, `vault_file`, `vault_drop`

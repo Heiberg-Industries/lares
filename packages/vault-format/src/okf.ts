@@ -33,27 +33,15 @@ export const OKF_CORE_TYPES = ["venture", "index", "reference", "profile", "note
 /** The taste store's additions (packages/taste/src/index.ts:22). */
 export const OKF_TASTE_TYPES = ["place", "track", "playlist", "dish", "note"] as const;
 
-/** The article area's addition: one saved web page, its summary and provenance. */
-export const OKF_ARTICLE_TYPES = ["article"] as const;
-
-/** Reading state of an article. Not `status` — see the header (OKF §5.4). */
-export const ARTICLE_READING_KEY = "reading";
-export const ARTICLE_READING_STATES = ["to-read", "read", "used", "dropped", "suggested"] as const;
-
-/** Frontmatter key naming the plain-text companion that holds an article's full text. */
-export const ARTICLE_FULL_TEXT_KEY = "full_text";
-
-/**
- * Where an article's text companion lives, from the note's store-relative path and the
- * `full_text` value. Only a bare `<name>.txt` beside the note is accepted; anything that could
- * point elsewhere (a path, `..`, a dot-file, a non-`.txt` name) returns null, so a hand-edited
- * note cannot make a move, delete or erasure touch another file.
- */
-export function articleCompanionPath(notePath: string, fullText: string): string | null {
-  if (!/^[^/\\\0]+\.txt$/.test(fullText) || fullText.startsWith(".")) return null;
-  const slash = notePath.lastIndexOf("/");
-  return slash === -1 ? fullText : `${notePath.slice(0, slash + 1)}${fullText}`;
-}
+// The article vocabulary lives in ./article.ts (no relative imports, so the agent extension build
+// can load it); it is re-exported here so this module's consumers see one OKF surface.
+export {
+  OKF_ARTICLE_TYPES,
+  ARTICLE_READING_KEY,
+  ARTICLE_READING_STATES,
+  ARTICLE_FULL_TEXT_KEY,
+  articleCompanionPath,
+} from "./article.js";
 
 export const OKF_OPTIONAL_FAMILIES = ["sources", "generated", "verified", "stale_after"] as const;
 

@@ -38,6 +38,7 @@
     "./proactivity": "./src/proactivity.ts",
     "./deadlines": "./src/deadlines.ts",
     "./okf": "./src/okf.ts",
+    "./article": "./src/article.ts",
     "./origin": "./src/origin.ts",
     "./origin-taint": "./src/origin-taint.ts",
     "./tainted-approval": "./src/tainted-approval.ts",
