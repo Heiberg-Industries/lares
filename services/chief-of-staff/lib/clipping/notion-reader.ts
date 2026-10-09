@@ -260,6 +260,7 @@ export async function queryChangedPages(
     } catch (e) {
       throw classifyNotionError(e);
     }
+    // An absent request_status means complete (the live API at 2026-03-11 sends none); only an explicit "incomplete" fails.
     if (res.request_status?.type === "incomplete") {
       throw new ClippingFailure(
         "incomplete",
