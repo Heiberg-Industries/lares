@@ -15,16 +15,27 @@ const noAttachments = async () => Buffer.alloc(0);
 const article = (n = MIN_ARTICLE_CHARS + 50) => "x".repeat(n);
 
 describe("makeEnrich dispatch", () => {
-  it("replaces a bare-URL body with the fetched article text", async () => {
+  it("keeps the saved note as it was and hands the fetched page back beside it", async () => {
     const enrich = makeEnrich({
       readability: async () => ({ title: "Real Title", text: article() }),
       readFile: noAttachments,
     });
     const out = await enrich({ path: "_inbox/clip.md", body: "https://example.com/post" });
     expect(out.enriched).toBe(true);
-    expect(out.body).toContain("x".repeat(100));
-    // The provenance comment is how a filed note still points at where it came from.
-    expect(out.body).toContain("<!-- source: https://example.com/post -->");
+    // The owner's own clip note is no longer replaced by the page text.
+    expect(out.body).toBe("https://example.com/post");
+    expect(out.article).toEqual({ url: "https://example.com/post", title: "Real Title", text: article() });
+  });
+
+  it("an attachment still replaces the body and carries no article", async () => {
+    const enrich = makeEnrich({
+      readability: async () => ({ title: "t", text: article() }),
+      readFile: async () => Buffer.from("plain"),
+    });
+    const out = await enrich({ path: "_inbox/a.md", body: "---\nattachment: files/a.png\n---\n" });
+    expect(out.enriched).toBe(true);
+    expect(out.body).toMatch(/image, no text yet/);
+    expect(out.article).toBeUndefined();
   });
 
   it("prefers the URL in frontmatter over one found in the body", async () => {

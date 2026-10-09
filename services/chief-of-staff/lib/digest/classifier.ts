@@ -101,3 +101,96 @@ export async function classifyItem(
 
   return { route: route as DigestDecision["route"], type, project, destination, title, summary, links, reason };
 }
+
+// ── Saved web links: one call per article ──────────────────────────────────────────────────
+// A saved link the reader can open is always an `article`, and always filed: the model is asked
+// only for a summary, a few topics, up to three passages worth quoting and links to existing
+// notes. Code checks every one of those afterwards (`lib/digest/article.ts`); a reply that cannot
+// be read still files the article, with nothing proposed.
+
+export interface ArticleClassification {
+  summary: string;
+  /** At most six, unchecked; `normaliseTopics` decides which survive. */
+  topics: string[];
+  /** At most three, unchecked; `filterExcerpts` keeps only those found word for word. */
+  excerpts: string[];
+  /** Wikilinks to real note names only. */
+  links: string[];
+  /** True when the model's reply could not be read (nothing was proposed). */
+  unreadable?: boolean;
+}
+
+export interface ArticleDecision extends ArticleClassification {
+  type: "article";
+  route: "file";
+}
+
+export interface ArticleInput {
+  title: string;
+  url: string;
+  /** The owner's own words saved with the link; empty when there are none. */
+  ownerNote: string;
+  /** The page's full text; only the start is sent. */
+  text: string;
+}
+
+export interface ArticleContext {
+  /** Basenames (no .md) the model may link to. */
+  noteNames: string[];
+}
+
+const MAX_ARTICLE_TOPICS = 6;
+const MAX_ARTICLE_EXCERPTS = 3;
+
+function buildArticlePrompt(item: ArticleInput, ctx: ArticleContext): string {
+  return [
+    "You read a saved web article for a small business's knowledge base.",
+    "Write a short summary and propose a few topic labels and a few passages worth quoting.",
+    "",
+    "- summary: 2 to 4 plain sentences about what the article says. No opinions of your own.",
+    "- topics: up to 6 short labels (one to three words each, lowercase, no punctuation).",
+    "- excerpts: up to 3 passages COPIED EXACTLY from the article text below, each between 40 and 400",
+    "  characters. Copy them word for word; do not shorten, rephrase or combine. Leave the list empty",
+    "  if nothing is worth quoting.",
+    `- links: names of existing notes this article clearly relates to, chosen only from: ${ctx.noteNames.join(", ") || "(none)"}.`,
+    "",
+    groundingClause(),
+    "",
+    labeledContext([
+      { label: "Note from the person who saved this link", content: item.ownerNote ? `"${item.ownerNote}"` : "", note: "their own words; use as context" },
+      { label: "Title and link", content: `${item.title}\n${item.url}` },
+      { label: "ARTICLE TEXT (start of the page)", content: item.text.slice(0, BODY_CHARS_FOR_CLASSIFY), thirdParty: true },
+    ]),
+    "",
+    "Respond with ONLY a JSON object, no prose:",
+    '{"summary":"<text>","topics":["<label>", ...],"excerpts":["<exact passage>", ...],"links":["<note name>", ...]}',
+  ].join("\n");
+}
+
+function stringList(value: unknown, max: number): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === "string").slice(0, max);
+}
+
+export async function classifyArticle(
+  item: ArticleInput,
+  ctx: ArticleContext,
+  llm: DigestLlm,
+): Promise<ArticleDecision> {
+  const j = parse(await llm(buildArticlePrompt(item, ctx)));
+  if (!j) {
+    return { type: "article", route: "file", summary: "", topics: [], excerpts: [], links: [], unreadable: true };
+  }
+  const valid = new Set(ctx.noteNames.map((n) => n.toLowerCase()));
+  return {
+    type: "article",
+    route: "file",
+    summary: typeof j.summary === "string" ? j.summary.trim() : "",
+    topics: stringList(j.topics, MAX_ARTICLE_TOPICS),
+    excerpts: stringList(j.excerpts, MAX_ARTICLE_EXCERPTS),
+    links: stringList(j.links, 20)
+      .map((l) => l.replace(/^\[\[|\]\]$/g, "").trim())
+      .filter((l) => valid.has(l.toLowerCase()))
+      .map((l) => `[[${l}]]`),
+  };
+}
