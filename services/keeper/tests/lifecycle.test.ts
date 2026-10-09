@@ -42,6 +42,38 @@ it('credential reconciliation preserves applied definitions, grants, unrelated b
  expect((await l.storage.row('bookkeeper')).applied_definition).toEqual(before.applied_definition);
  expect(readFileSync(other,'utf8')).toBe('unrelated'); start.mockRestore();
 });
+it('mounts the managed key only into a granted chief of staff, only when a key revision exists, and never invents a binding',async()=>{
+ const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[]};
+ const notion=join(root,'secrets/notion-token'); writeFileSync(notion,'synthetic-notion');
+ writeFileSync(config.runtime.passwordFile,'synthetic-db');writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'synthetic-gateway');
+ const revision='22222222-2222-4222-8222-222222222222';
+ const record=(over:any)=>({...initialCredentialRecord(),phase:'applied',activeRevision:revision,...over});
+ const grants=[{agent:'bookkeeper',purposes:['clipping']}];
+ const compose=()=>parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ // No base binding at all: refuse rather than invent one.
+ let l=lifecycle(); l.setCredentialState(async()=>record({grants}));
+ await expect(l.create('bookkeeper',chief)).rejects.toThrow('runtime binding');
+ await pool.query('UPDATE agent_definitions SET definition=$1::jsonb WHERE name=$2',[JSON.stringify(chief),'bookkeeper']);
+ config.bindings={bookkeeper:{role:'chief-of-staff',environment:{},mounts:[],secrets:{}}};
+ // Not granted: no key.
+ l=lifecycle(); l.setCredentialState(async()=>record({})); await l.create('bookkeeper',chief);
+ expect(compose().environment.NOTION_TOKEN_FILE).toBeUndefined();
+ // Granted with a revision: the managed active file is mounted.
+ l=lifecycle(); l.setCredentialState(async()=>record({grants,effectiveRevision:revision}));
+ await l.reconcile('bookkeeper',chief);
+ expect(compose().environment.NOTION_TOKEN_FILE).toBe('/run/secrets/notion-token'); expect(compose().labels['lares.notion-revision']).toBe(revision);
+ // The effective view wins during a change: effectiveGrants empty means no key even though grants say yes.
+ l=lifecycle(); l.setCredentialState(async()=>record({grants,effectiveGrants:[],activationIntent:{previousRevision:revision,targetRevision:revision,inventoryRevision:'a'.repeat(64),prepared:true,finishing:false,grantChange:{agent:'bookkeeper',purpose:'clipping',to:false},grantsBefore:grants,grantsAfter:[]}}));
+ await l.reconcile('bookkeeper',chief); expect(compose().environment.NOTION_TOKEN_FILE).toBeUndefined();
+ // Granted but no key revision (disconnected): nothing to mount.
+ l=lifecycle(); l.setCredentialState(async()=>record({grants,phase:'disconnected',activeRevision:null,effectiveRevision:null}));
+ await l.reconcile('bookkeeper',chief); expect(compose().environment.NOTION_TOKEN_FILE).toBeUndefined();
+ // Installation configuration wins and is never removed by a missing grant.
+ config.bindings={bookkeeper:{role:'chief-of-staff',environment:{},mounts:[],secrets:{NOTION_TOKEN_FILE:notion}}};
+ l=lifecycle(); l.setCredentialState(async()=>record({effectiveRevision:revision}));
+ await l.reconcile('bookkeeper',chief); expect(compose().environment.NOTION_TOKEN_FILE).toBe('/run/secrets/notion-token');
+ expect(l.installationBindsNotion('bookkeeper')).toBe(true);
+});
 beforeAll(async()=>{
  pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:pg.getConnectionUri()}));
  for(const f of ['001_init.sql','003_digest.sql','005_workflow_jobs.sql','008_ratchet.sql','031_schedule_heartbeat.sql','035_proactivity.sql','038_permissions_board.sql','039_agent_definitions.sql','040_keeper.sql','041_definition_retirement.sql','042_agent_resources.sql','043_agent_conversations.sql','044_agent_door_connections.sql','045_agent_runtime_control.sql'])await pool.query(readFileSync(join(repo,'services/box/sql',f),'utf8'));

@@ -1,17 +1,17 @@
-import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialTokenInput as token } from '@lares/agent-kit/credential-lifecycle';
+import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialGrantInput, credentialTokenInput as token } from '@lares/agent-kit/credential-lifecycle';
 import { KeeperRefusedError, KeeperOutcomeUncertainError, registerAction, type ActionContext } from './actions.js';
-import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, type CredentialConfig, type CredentialConsumer, type CredentialRecord, type CredentialStatus } from './credential-state.js';
+import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, inventoryGrants, type CredentialConfig, type CredentialConsumer, type CredentialGrant, type CredentialRecord, type CredentialStatus } from './credential-state.js';
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
 import { CredentialFiles, newCredentialRevision } from './credential-files.js';
 import type { NotionCredentialTester } from './notion-credential.js';
-import type { CredentialActivation, CredentialActivationInput } from './credential-activation.js';
+import type { CredentialActivation, CredentialActivationInput, CredentialGrantRequest } from './credential-activation.js';
 
 /** Explicit tests share the foundation's lock and custody. Status and discard never test.
  * Only explicit Apply/disconnect enter the owned runtime activation boundary.
  */
 export class Credentials {
   constructor(private config: CredentialConfig | undefined, private store: CredentialStore,
-    private files: CredentialFiles, private consumers: () => Promise<CredentialConsumer[]>,
+    private files: CredentialFiles, private consumers: (grants: CredentialGrant[]) => Promise<CredentialConsumer[]>,
     private tester?: NotionCredentialTester, private activation?: CredentialActivation) {}
   private authorize(ctx: ActionContext): void {
     if (ctx.host) return;
@@ -21,7 +21,7 @@ export class Credentials {
   private dto(r: CredentialRecord | null, state: CredentialStatus['state'], guidance: CredentialStatus['guidance'], consumers = r?.consumers ?? []): CredentialStatus {
     return credentialStatusSchema.parse({ slot: CREDENTIAL_SLOT, state, guidance, revision: r?.version ?? null,
       activeRevision: r?.activeRevision ?? null, candidateRevision: r?.candidateRevision ?? null,
-      phase: r?.phase ?? null, test: r?.test ?? null, consumers, activation: r?.activation ?? [], rollback: r?.rollback ?? [] });
+      phase: r?.phase ?? null, test: r?.test ?? null, consumers, activation: r?.activation ?? [], rollback: r?.rollback ?? [], grants: r?.grants ?? [] });
   }
   private async inspect(r: CredentialRecord): Promise<CredentialStatus> {
     if (!this.config?.administrator) return this.dto(r, 'host-administration-required', 'configure-administrator');
@@ -39,7 +39,7 @@ export class Credentials {
     } catch { return this.dto(r, 'recovery-required', 'inspect-journal'); }
     if (!this.config.inventoryComplete) return this.dto(r, 'host-administration-required', 'review-consumers', this.config.retainedConsumers.map(c => ({ ...c, incarnation: null })));
     let consumers: CredentialConsumer[];
-    try { consumers = await this.consumers(); }
+    try { consumers = await this.consumers(inventoryGrants(r)); }
     catch { return this.dto(r, 'unavailable', 'status-unavailable'); }
     if (!this.config.inventoryComplete || consumers.some(c => c.category !== 'owned-agent'))
       return this.dto(r, 'host-administration-required', 'review-consumers', consumers);
@@ -96,7 +96,7 @@ export class Credentials {
     // the result. Leave durable testing intent; never certify different bytes/inventory.
     if (read() !== value || custody && JSON.stringify(custody) !== JSON.stringify(this.files.candidateCustody(revision)) || this.files.unexpectedFiles(intent.candidateRevision, intent.rollbackRevision))
       throw new KeeperOutcomeUncertainError();
-    const consumers = await this.consumers();
+    const consumers = await this.consumers(inventoryGrants(intent));
     const inventory = (items: CredentialConsumer[]) => JSON.stringify([...items].sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category)));
     if (!this.config?.inventoryComplete || consumers.some(c => c.category !== 'owned-agent') || inventory(consumers) !== inventory(intent.consumers))
       throw new KeeperOutcomeUncertainError();
@@ -183,15 +183,23 @@ export class Credentials {
       });
     });
   }
-  async change(kind: 'apply' | 'disconnect', expectedRevision: number, input: CredentialActivationInput, ctx: ActionContext): Promise<CredentialStatus> {
+  async change(kind: 'apply' | 'disconnect' | 'grant' | 'revoke', expectedRevision: number, input: CredentialActivationInput, ctx: ActionContext,
+    grant?: CredentialGrantRequest): Promise<CredentialStatus> {
     this.authorize(ctx);
     if (!this.activation) throw new KeeperRefusedError('Prepare owned credential runtime activation on the host');
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       await this.prepared(old);
-      const saved = await this.activation!.change(journal, old, input, kind, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null));
+      const saved = await this.activation!.change(journal, old, input, kind, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null), grant);
       return this.dto(saved, saved.phase as CredentialStatus['state'], null);
     });
+  }
+  /** Owner switch: give or take away the managed key for one purpose. Same guards as Apply. */
+  grant(expectedRevision: number, input: CredentialActivationInput & CredentialGrantRequest, ctx: ActionContext): Promise<CredentialStatus> {
+    return this.change('grant', expectedRevision, input, ctx, { agent: input.agent, purpose: input.purpose });
+  }
+  revoke(expectedRevision: number, input: CredentialActivationInput & CredentialGrantRequest, ctx: ActionContext): Promise<CredentialStatus> {
+    return this.change('revoke', expectedRevision, input, ctx, { agent: input.agent, purpose: input.purpose });
   }
   /** Host-only recovery. Never retries a provider call. */
   async recover(expectedRevision: number, ctx: ActionContext): Promise<CredentialStatus> {
@@ -234,5 +242,7 @@ export function registerCredentialActions(credentials: Credentials): void {
   for (const kind of ['apply', 'disconnect'] as const)
     registerAction({ name: `credential.${kind}`, input: activationInput,
       run: (input, ctx) => credentials.change(kind, input.expectedRevision, input, ctx) });
+  registerAction({ name: 'credential.grant', input: credentialGrantInput, run: (input, ctx) => credentials.grant(input.expectedRevision, input, ctx) });
+  registerAction({ name: 'credential.revoke', input: credentialGrantInput, run: (input, ctx) => credentials.revoke(input.expectedRevision, input, ctx) });
   registerAction({ name: 'credential.recover', input: credentialRevisionInput, hostOnly: true, run: (input, ctx) => credentials.recover(input.expectedRevision, ctx) });
 }

@@ -56,3 +56,12 @@ it('reads corrupted metadata as failure rather than returning unknown keys to a 
   await pool.query('UPDATE keeper_credentials SET record=$1 WHERE slot=$2', [saved, CREDENTIAL_SLOT]);
   await store.locked(async j => { await expect(j.save(saved, { ...saved, token: 'synthetic-value' } as never)).rejects.toThrow(); });
 });
+it('keeps grants in the same jsonb record, and a record stored without them still reads', async () => {
+  const stored = (await pool.query('SELECT record FROM keeper_credentials')).rows[0].record;
+  expect(stored.grants).toBeUndefined();
+  await store.locked(async journal => {
+    const r = await journal.read();
+    const saved = await journal.save(r, { ...r, grants: [{ agent: 'chief', purposes: ['clipping'] }] });
+    expect((await new PgCredentialStore(pool).read()).grants).toEqual(saved.grants);
+  });
+});

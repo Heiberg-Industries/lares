@@ -61,7 +61,7 @@ async function main(): Promise<void> {
                 },
             }),
         });
-        registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, () => credentialConsumers(pool, config), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
+        registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, grants => credentialConsumers(pool, config, grants), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
             managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined));
         const gatewayUrl = config.lifecycle?.runtime.gatewayUrl;
         registerGatewayStatusAction(new GatewayStatusReader({ gatewayUrl, masterKeyFile: config.lifecycle?.runtime.gatewayMasterKeyFile,
