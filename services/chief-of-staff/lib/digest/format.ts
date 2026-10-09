@@ -26,8 +26,8 @@ function filedBreakdown(filed: DigestSummary["filed"]): string {
 }
 
 /**
- * Render a digest summary the way Bendik reads it: a one-line headline, then ONLY the
- * decisions that need him (each with the model's suggested destination + reason). Filed
+ * Render a digest summary the way the owner reads it: a one-line headline, then ONLY the
+ * decisions that need the owner (each with the model's suggested destination + reason). Filed
  * notes collapse to a count; error paths go to a thread reply, never inline.
  */
 export function renderDigest(s: DigestSummary): DigestView {

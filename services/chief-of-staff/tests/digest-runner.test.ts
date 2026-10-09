@@ -45,6 +45,7 @@ function setup(over: Partial<RunnerDeps> = {}) {
     listInbox: async () => [],
     alreadySkipped: async () => [],
     noteNames: async () => ["some-note"],
+    projects: async () => ["project-a"],
     llm: async (prompt) => {
       log.llm.push(prompt);
       return prompt.includes("saved web article")

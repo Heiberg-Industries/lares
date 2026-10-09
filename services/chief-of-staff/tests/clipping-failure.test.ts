@@ -250,7 +250,7 @@ describe("the digest line", () => {
     const posted: string[] = [];
     const summary = await runDigest({
       agent: "a", mode: "scheduled", capturedAt: "2026-10-09", notices,
-      listInbox: async () => [], alreadySkipped: async () => [], noteNames: async () => [],
+      listInbox: async () => [], alreadySkipped: async () => [], noteNames: async () => [], projects: async () => [],
       llm: async () => "", fileNote: async () => undefined as never, recordSkip: async () => undefined,
       post: async (v) => { posted.push(v.text); },
     });
@@ -263,7 +263,7 @@ describe("the digest line", () => {
     const posted: string[] = [];
     await runDigest({
       agent: "a", mode: "scheduled", capturedAt: "2026-10-09", notices: [],
-      listInbox: async () => [], alreadySkipped: async () => [], noteNames: async () => [],
+      listInbox: async () => [], alreadySkipped: async () => [], noteNames: async () => [], projects: async () => [],
       llm: async () => "", fileNote: async () => undefined as never, recordSkip: async () => undefined,
       post: async (v) => { posted.push(v.text); },
     });

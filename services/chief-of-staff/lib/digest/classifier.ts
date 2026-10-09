@@ -1,6 +1,6 @@
 import { basename } from "node:path";
 import {
-  PROJECTS, DESTINATIONS, BODY_CHARS_FOR_CLASSIFY,
+  DESTINATIONS, BODY_CHARS_FOR_CLASSIFY,
   type DigestDecision, type DigestType,
 } from "./types.js";
 import { groundingClause, labeledContext } from "@lares/compose-contract";
@@ -10,7 +10,7 @@ export type DigestLlm = (prompt: string) => Promise<string>;
 export interface ClassifyContext {
   projects: string[];
   noteNames: string[];     // basenames (no .md) the model may link to
-  contextNote?: string;    // optional note Bendik attached to the capture
+  contextNote?: string;    // optional note the owner attached to the capture
 }
 
 const VALID_TYPES: DigestType[] = ["transcript", "inspiration", "writing-seed", "reference", "person-signal"];
@@ -18,16 +18,18 @@ const VALID_TYPES: DigestType[] = ["transcript", "inspiration", "writing-seed", 
 function buildPrompt(item: { path: string; body: string }, ctx: ClassifyContext): string {
   const head = item.body.slice(0, BODY_CHARS_FOR_CLASSIFY);
   return [
-    "You categorise a captured note for Bendik's knowledge base (the Brain).",
+    "You categorise a captured note for the owner's private notes.",
     "Classify it into ONE type and decide where it belongs.",
     "",
     "Types and destinations:",
     "- transcript: a meeting/call transcript or transcribed voice note → goes to a project's transcripts/ folder.",
-    `  The project MUST be one of: ${ctx.projects.join(", ")}.`,
+    ctx.projects.length > 0
+      ? `  The project MUST be one of: ${ctx.projects.join(", ")}.`
+      : '  No project has a transcripts/ folder yet, so leave the project empty and choose route="ask".',
     "- inspiration: an article/reference kept for taste/inspiration, not to act on → inspiration/.",
-    "- writing-seed: a starting point for Bendik's OWN writing → writing-seeds/.",
+    "- writing-seed: a starting point for the owner's OWN writing → writing-seeds/.",
     "- reference: generally useful knowledge with no clearer home → reads/.",
-    "- person-signal: primarily about a specific person/company in his network.",
+    "- person-signal: primarily about a specific person/company in the owner's network.",
     "",
     'Choose route="file" ONLY when you are clearly sure of the type AND (for a transcript) the project.',
     'When genuinely unsure between two homes, choose route="ask" and explain the choice in `reason`.',
@@ -36,7 +38,7 @@ function buildPrompt(item: { path: string; body: string }, ctx: ClassifyContext)
     groundingClause(),
     "",
     labeledContext([
-      { label: "Context note from Bendik", content: ctx.contextNote ? `"${ctx.contextNote}"` : "", note: "this OVERRIDES your guess" },
+      { label: "Context note from the owner", content: ctx.contextNote ? `"${ctx.contextNote}"` : "", note: "this OVERRIDES your guess" },
     ]),
     "",
     `Existing note names you MAY reference as links (use exact names, omit if none fit): ${ctx.noteNames.join(", ")}`,
@@ -90,7 +92,7 @@ export async function classifyItem(
     route = "ask"; destination = ""; reason = reasonIn || "person/company signal — handled separately";
   } else if (type === "transcript") {
     project = String(j.project ?? "").trim();
-    if (!PROJECTS.includes(project as (typeof PROJECTS)[number])) {
+    if (!ctx.projects.includes(project)) {
       route = "ask"; reason = reasonIn || `transcript but project unclear (got "${project || "none"}")`;
     } else {
       destination = `${project}/transcripts`;

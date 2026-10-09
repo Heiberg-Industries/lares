@@ -32,7 +32,7 @@ describe("digestGate — fails closed, and is independent of the service-wide ga
   });
 
   // The whole point of the second gate: it must be possible to ship the code to the box with
-  // schedules already live, and still have the digest dark until saga-digest is stopped.
+  // schedules already live, and still have the digest dark until the old digest container is stopped.
   it("stays off when the service gate is off but its own is on", () => {
     process.env["EVE_SCHEDULES_LIVE"] = "0";
     process.env["EVE_DIGEST_LIVE"] = "1";
@@ -40,7 +40,7 @@ describe("digestGate — fails closed, and is independent of the service-wide ga
   });
 });
 
-describe("chooseTarget — a scheduled pass DMs Bendik; an on-demand pass replies where it was asked", () => {
+describe("chooseTarget — a scheduled pass DMs the owner; an on-demand pass replies where it was asked", () => {
   const req = (threadRef: string) => ({ id: "r", door: "slack", threadRef });
 
   it("a scheduled pass goes to the DM, ignoring any request that rode along in the same tick", () => {

@@ -15,7 +15,7 @@
  *
  * PROACTIVITY (ORB-193): the SCHEDULED pass's Slack summary passes `@lares/agent-kit`'s gate as a
  * `scheduled` initiation keyed on the slot. An ON-DEMAND pass (`digest_run`) does NOT — it is a
- * reply to something Bendik just asked for, and a reply is not an initiation. Everything else in
+ * reply to something the owner just asked for, and a reply is not an initiation. Everything else in
  * a held-back pass still happens: the Karakeep pull, the filing, the skip rows and the heartbeat.
  * Only the message is withheld, and the morning brief's held-back line names it.
  *
@@ -58,6 +58,7 @@ import { normaliseUrl } from "../../lib/clipping/record.js";
 import { readClippingChoice, recordKarakeepImport } from "../../lib/clipping/store.js";
 import { parseFrontmatter } from "../../lib/digest/extract.js";
 import { runDigest } from "../../lib/digest/runner.js";
+import { listTranscriptProjects } from "../../lib/digest/filer.js";
 import { dueScheduledSlot } from "../../lib/digest/schedule.js";
 import { doorId } from "../../lib/principals.js";
 import { initiate } from "../../lib/initiation.js";
@@ -79,7 +80,7 @@ export function digestGate(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
- * A scheduled pass ALWAYS goes to Bendik's DM; a purely on-demand pass replies in the thread
+ * A scheduled pass ALWAYS goes to the owner's DM; a purely on-demand pass replies in the thread
  * that asked for it. Ported from `bin/digest.ts:122`.
  */
 export function chooseTarget(
@@ -110,7 +111,7 @@ function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
-/** The digest's Slack DM target — Bendik's own id, from the fail-closed allowlist. */
+/** The digest's Slack DM target — the owner's own id, from the fail-closed allowlist. */
 function dmTarget(): string | undefined {
   return process.env["DIGEST_SLACK_TARGET"] || allowedSlackUserIds()[0];
 }
@@ -231,6 +232,8 @@ export async function runDigestPass(
     listInbox: async () => listInboxFiles(),
     alreadySkipped: () => listSkippedPaths(db, AGENT),
     noteNames: async () => listNotes(root).map((p) => basename(p, ".md")),
+    // Read from the private store each pass: the folders that hold a transcripts/ folder.
+    projects: async () => listTranscriptProjects(root),
     llm: (prompt: string) => gatewayComplete(prompt),
     fileNote: makeDigestFileNote(root),
     recordSkip: (path, reason) => recordDigestSkip(db, { agent: AGENT, path, reason }),

@@ -13,8 +13,9 @@ export interface DigestDecision {
   reason: string;         // one line, for the audit/ask
 }
 
-/** Projects that have a transcripts/ folder (a transcript must map to one of these). */
-export const PROJECTS = ["zero7", "murmur", "orakel", "Heiberg Industries"] as const;
+// The engine ships no project names. The projects a transcript may be filed under are the
+// private store's top-level folders that hold a `transcripts/` folder, read at run time
+// (`listTranscriptProjects` in ./filer.ts) and passed in through `ClassifyContext.projects`.
 
 /** type → destination folder. transcript is special (per-project); others are fixed. */
 export const DESTINATIONS: Record<Exclude<DigestType, "transcript" | "person-signal">, string> = {

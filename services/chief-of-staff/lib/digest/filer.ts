@@ -1,3 +1,5 @@
+import { readdirSync, statSync } from "node:fs";
+import { join } from "node:path";
 import type { DigestDecision } from "./types.js";
 
 export type FileNoteFn = (opts: {
@@ -35,4 +37,20 @@ export async function fileDecision(
   const note = buildNote(decision, source.body, source.capturedAt);
   const { commit } = await fileNote({ ...note, sourcePath: source.path });
   return { commit, destPath: note.destPath };
+}
+
+/**
+ * The projects a transcript may be filed under: the top-level folders of the private store
+ * that have a `transcripts/` folder inside (a transcript is filed at `<project>/transcripts/`).
+ * Folders starting with "." or "_" (the inbox, metadata, git) are never projects. Sorted, so the
+ * model sees the same list every pass. An unreadable or empty store gives an empty list.
+ */
+export function listTranscriptProjects(root: string): string[] {
+  const isDir = (p: string): boolean => { try { return statSync(p).isDirectory(); } catch { return false; } };
+  let names: string[] = [];
+  try { names = readdirSync(root); } catch { return []; }
+  return names
+    .filter((n) => !n.startsWith(".") && !n.startsWith("_"))
+    .filter((n) => isDir(join(root, n)) && isDir(join(root, n, "transcripts")))
+    .sort();
 }
