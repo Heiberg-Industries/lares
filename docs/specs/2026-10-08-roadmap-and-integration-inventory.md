@@ -1,9 +1,10 @@
 # Roadmap and integration inventory
 
-**Date:** 8 October 2026. **Status:** planning document, published 9 October 2026, not an approved delivery schedule. The private security review it draws on is not in this repository. Planning inventory and proposed sequencing. Existing code means found in this checkout (local `main` at `d8d1177`; remote `main` independently checked through `c38ae50d`), not verified on an installation.
+**Date:** 8 October 2026. **Status:** planning document, published 9 October 2026, not an approved delivery schedule. The private security review it draws on is not in this repository. Planning inventory and proposed sequencing. Existing code means found in this checkout, checked against `main` at `e380090` on 9 October 2026, not verified on an installation. The latest release candidate (rc.4) is published, not deployed.
 
 Lares is an open-source, self-hosted engine with a chief of staff as its default experience.
 Private is the default; organisation sharing is an explicit choice once the boundaries work.
+Two exceptions are decided: articles that come from an organisation source default to the shared area, and personal data stays private by default.
 Other agents and personal templates remain possible without becoming required onboarding work.
 The roadmap should reduce maintenance and unnecessary model calls while preserving useful extension points.
 
@@ -15,6 +16,15 @@ asks what the user wants help with and recommends editable templates and connect
 staff remains the suggested starting point, not a mandatory role. Travel, taste and coaching are
 valid personal uses; users can choose one agent or several. Paid setup services configure the same
 engine for each client's needs. Do not create a separate coach application or fork by default.
+
+### Organisation model
+
+An organisation has one shared agent, typically in Slack, with read and write access to the shared
+area. Which agent that is stays the installation's choice, expressed through the agents' vault
+grants; the default is the chief of staff. Each member has one or more personal agents with their
+own private area. Personal agents read the shared area and write there only where a grant says so.
+There is one Vault per installation, divided into areas, and an installation may give the private
+and shared folders its own names.
 
 Use case and audience are independent: personal/business/mixed describes the work; private/shared
 describes who can access it. Business context can be private. Choosing a business template must
@@ -53,11 +63,11 @@ describe their date and can disagree with current code.
 | Google Drive, Docs, Sheets and Slides | Read supplied links through Drive export/download | `services/chief-of-staff/lib/google-drive.ts`, `google-doc.ts`. Sheets export is the first sheet; this is not a general editing suite or continuous Drive knowledge sync. |
 | Slack | Conversation channel, approval interactions, selected source reads and relationship import | `services/*/agent/channels/slack.ts`, chief-of-staff `lib/slack-source.ts`, network importers. Channel access and source access are separate grants. |
 | Telegram | Conversation channel, messages and approval interactions | Chief-of-staff/travel channel implementations. Audio handling is separate planned work. |
-| Notion | Document and meeting-transcript synchronisation, proposals and follow-up inputs | `services/notion-sync`, chief-of-staff Notion helpers and `services/atlas/lib/adapters/notion-source.ts`. A neutral transcript contract is still planned. |
+| Notion | Document and meeting-transcript synchronisation, proposals and follow-up inputs | `services/notion-sync`, chief-of-staff Notion helpers and `services/atlas/lib/adapters/notion-source.ts`. A neutral transcript contract is still planned. Saved-link import into the inbox is merged ([PR 100](https://github.com/Heiberg-Industries/lares/pull/100), [PR 101](https://github.com/Heiberg-Industries/lares/pull/101), [PR 104](https://github.com/Heiberg-Industries/lares/pull/104)) but not deployed. A mirror of articles into a Notion Articles database is planned (ADR-0010 amendment of 9 October). |
 | Twenty CRM | People/company lookup, notes, opportunities/stages and communication state | Chief-of-staff `catalogue/twenty_*.ts`, network sync. Current API-key wiring is distinct from planned per-user OAuth. |
 | Orakel | Business search and organisation/domain enrichment | `packages/agent-kit/src/orakel-client.ts` and catalogue tools; requires the installation's own account/access. |
 | GitHub repository sources | Read repository content as business-knowledge input | `services/atlas/lib/adapters/github-source.ts`. Not a general issue/PR/code-writing agent integration. |
-| Karakeep | Bookmark input to digest work; optional Notion clipping is planned as a replacement | Connection registry and chief-of-staff digest code. Keep working until an optional Notion replacement, where adopted, is verified. |
+| Karakeep | Bookmark input to digest work; optional Notion clipping is the replacement | Connection registry and chief-of-staff digest code. The Notion import is merged, not deployed. The bookmark tool is retired only after the pilot proof of the replacement. |
 | Web pages | URL reading through the readability service | `packages/agent-kit/src/readability-client.ts`, `read_url` tools. URL reading is not a general web-search integration. |
 | Mac Contacts, iMessage and call history | Local import into the relationship graph | `services/network/lib/importers/`. Generic importers exist; Mac scheduling, permissions and transfer onboarding need packaging. Message history import is not an iMessage sending channel. |
 | LinkedIn, Facebook and Instagram exports | File-based relationship/history imports | Network `linkedin.ts`, `meta.ts`. Not live account APIs or publishing. Replica content policy lives in `services/network/lib/replica.ts`. |
@@ -294,15 +304,16 @@ lanes are Foundation, First useful assistant, Expansion, Experiment and Optional
 | Install and release | Docs-only install ending in a delivered brief; first public release/update notice; migration/restart/recovery; public images and fork-friendly builds | Foundation; observed end-to-end acceptance |
 | Runtime maintenance | eve upgrade, patch reduction/upstreaming, dependency/security maintenance, restart/resume reliability, measured memory footprint and capacity limits | Foundation; preserve approval and tool behaviour |
 | Integration foundation | Manifest coverage, shared clients/credentials, neutral concepts, MCP, contributor scaffold, repairs and connection states | Foundation; sequence above |
-| Ownership and privacy | Members/roles, private/shared/participants scope, account ownership, per-member imports, approvals and budgets; retention, export and erasure | Foundation before shared use |
+| Ownership and privacy | Members/roles, private/shared/participants scope, account ownership, per-member imports, approvals and budgets; retention, export and erasure; the one-shared-agent organisation model above | Foundation before shared use |
 | Security and recovery | Injection tests, sealed network access, no implicit external reporting, backup/restore rehearsal, trustworthy health and failure signals | Foundation |
 | Agent setup | Templates, identity, providers/settings, permissions, channels, save/start and developer preview | First useful assistant; existing builder amendment |
 | Clipping | Optional Notion capture and digest input that can replace a bookmark service; console connection/destination setup; verify transition | **High priority — confirmed**; reusable engine capability, no installation-specific fork |
+| Articles and radar | Articles as `article` notes with a reading state and a full-text companion file, filed in the shared area for organisation sources and in the member's private area for their own; a Notion Articles database as capture, mirror and owner-input channel, mirrored only to the database of the source an article came from; a rebuilt radar whose sources are settings, with a daily crawl that uses no model and one batched model call a week | Expansion on top of clipping; order in the delivery section below |
 | Daily usefulness | Briefs/digests, schedules/quiet hours, language/timezone, deadlines/renewals, obligations, meeting follow-ups and calendar conflict resolution | First useful assistant; source freshness and delivery evidence |
 | Email and writing | Show and revise drafts, owner instructions, relationship context, examples, draft/final capture, reviewed learning and later long-form writing | First useful assistant; baseline before learning expansion |
 | Approvals | See exact proposed content, revise/cancel while waiting, acknowledge queued messages, reliable delivery when an agent is down | First useful assistant; durable execution |
 | Chat and attachments | Persistent transcripts, documents/images/links across channels, clear unsupported formats, mobile console and agent-page refinement | First useful assistant |
-| Models and spending | Gateway console, caps, activity/cost view, provider health, tested recommendations and explicit fallback | First useful assistant; truthful scope of limits |
+| Models and spending | Gateway console, caps, activity/cost view, provider health, tested recommendations and explicit fallback. Radar: one batched model call a week capped at $0.50 a week (a setting), at most 10 finds a week, widened only after four weeks at a hit rate of 30% or more | First useful assistant; truthful scope of limits |
 | Cost reduction | Deterministic gates, skip unchanged inputs, cache measurement, prompt stability, bounded tool output and incremental context | Foundation and measured optimisation |
 | Knowledge and learning | Vault recall, currentness, source origin, reviewable learning batches, forgetting, skills/procedure proposals and portable knowledge | Core improvement; preserve one authoritative home per fact |
 | Retrieval/routing experiments | Jev direct retrieval, reusable attributes, embeddings comparison, compaction, tool selection and routing | Experiment; separate decision per measured result |
@@ -359,7 +370,7 @@ implement. This review does not independently reproduce those live checks.
 | Configuration errors identify invalid fields without echoing secrets | [PR 85](https://github.com/Heiberg-Industries/lares/pull/85) merged 8 October. |
 | Calendar clash detection uses the owner's day clock in briefs | [PR 86](https://github.com/Heiberg-Industries/lares/pull/86) merged 8 October. Conversational-tool clock parity and visible invalid-timezone reporting remain separate possible follow-ups. |
 | Stable deny-all proxy before first-agent creation | Existing [PR 13](https://github.com/Heiberg-Industries/lares/pull/13), merged. An unobserved pre-agent container-state check remains; retain it in fresh-install acceptance. |
-| Dependency sweep and flaky-test fixes | Batches 1–13 completed; eve 0.71 remains a separate track. Existing release candidate images predate later fixes and are not current-main delivery evidence. |
+| Dependency sweep and flaky-test fixes | Batches 1–13 completed; eve 0.71 remains a separate track. The latest candidate (rc.4) is published, not deployed; it predates later changes on `main` and is not delivery evidence for them. |
 | Injection suite | Branch plan read: corpus/block delimiting and flags, raw-text prompt restructuring, then a separately budgeted live test. Planned, not implemented. Approval status remains with that workstream. |
 | Jev pilot | Historical preparation exists outside this repository. Public `lares/pull/15` is a keeper-socket fix, not the Jev pilot. Reconcile and port the prepared experiment before execution; do not merge historical private Git history into the public repository, and do not infer a live benchmark from offline preparation. |
 
@@ -370,8 +381,8 @@ with old runtime paths need current-code verification before they become build t
 
 | Item | Disposition and roadmap home |
 | --- | --- |
-| Article, podcast and newsletter discovery/extraction | Explicit content-intake work, separate from publishing and simple URL reading. Evaluate open-source capture/extraction tools against real inputs. |
-| Browser/mobile clipping: bookmark service → Notion | **High priority, confirmed 8 October.** Implement Notion clipping as a reusable Lares capability, as an optional replacement for a bookmark service such as Karakeep. Include browser/mobile capture, source links and captured content, incremental ingestion, duplicate handling and use in briefs/digests. Select the destination and connect the account in the console. Decide existing-bookmark import scope before implementation; verify the replacement before the old path is retired. Notion stays optional. |
+| Article, podcast and newsletter discovery/extraction | Explicit content-intake work, separate from publishing and simple URL reading. Decided design: articles are notes in the Vault (ADR-0017 amendment of 9 October) with the chat use layer, fetch on request and newsletter extraction built in the engine, in the order in the delivery section below. A research scan through an outside tool is build-later. |
+| Browser/mobile clipping: bookmark service → Notion | **High priority, confirmed 8 October.** Implement Notion clipping as a reusable Lares capability, as an optional replacement for a bookmark service such as Karakeep. Include browser/mobile capture, source links and captured content, incremental ingestion, duplicate handling and use in briefs/digests. Select the destination and connect the account in the console. Existing-bookmark import is decided: a one-off, opt-in, preview-first engine command converts old saved-link notes and an earlier bookmark tool's backlog into articles and mirrors them to Notion; it comes after the Notion mirror in the order below. Verify the replacement before the old path is retired. Notion stays optional. |
 | Task-system deadlines in briefs | Read unfinished/overdue tasks from the chosen task source, initially the historical Notion candidate. Distinct from legal deadlines and inferred email obligations; no second task database by default. |
 | Travel mail labelled after receipt | Historical ingestion correctness/quota issue: detect newly applied labels, not merely newly received mail; dedupe and compare request volume. Re-verify against the current travel pipeline. |
 | Persistent contact identity corrections | Remember explicitly confirmed aliases/merges, preferably in the authoritative contact source. Reversible correction and conflict handling; do not infer identity from similarity alone. |
@@ -552,16 +563,34 @@ not silently passed against new code.
 | 1 | Exact-origin checks for raw authenticated mutations | Security sweep | Hostile same-site request cannot mutate; legitimate console and signed webhook flows work; document deployment assumptions |
 | 1 | Pinned artifact availability and advisory triage | Security/dependency/release acceptance | Every digest retrieves; exact images scanned; reachable issues fixed or disposition justified; package/source/image status stated separately |
 | 2 | Private-owner setup, credentials, gateway and honest failure states | Connections, gateway, cost/activity and builder work | Users enter/connect/revoke/test their own external credentials; internal material generated by Lares; all settings reachable in console; setup/help docs match behaviour |
-| 2 | Notion clipping | Existing capture/integration work; explicit new clipping slice if absent | Bounded requests; reuse existing capture surface and client; destination test in console; verify replacement before retiring prior path; decide historical import separately |
+| 2 | Notion clipping | Existing capture/integration work; explicit new clipping slice if absent | Bounded requests; reuse existing capture surface and client; destination test in console; verify replacement before retiring prior path; historical import is the one-off backfill command, placed in the articles order below |
 | 3 | Injection and writing quality | Existing injection, persona-eval and writing-learning work | Real tool/approval/restart provenance; factuality plus blind voice review; dated model/provider evidence visible beside console choices; deterministic operations avoid LLM calls |
-| 4 | Shared/private members | Existing members/roles and per-member memory lanes | Resource and credential isolation proven before enabling private multiuser claims; shared onboarding explains visibility |
+| 4 | Shared/private members | Existing members/roles and per-member memory lanes; the organisation model above | Resource and credential isolation proven before enabling private multiuser claims; shared onboarding explains visibility |
 | Alongside affected work | Neutral defaults / SDK reuse / runtime simplification | Integration foundation and architecture sweep | Small independent changes; preserve egress, auth, retry bounds and approvals; measure before consolidating runtime |
 | Alongside releases | Update notices, docs and marketing | Existing release notification and website/docs work | Honest availability/version state, guidance first; one-click only after recovery gates; publish tested capabilities and current screenshots |
-| Deferred | Install/update/restore remedies and rehearsal | Existing lifecycle/recovery work | Findings retained; revisit timing explicitly; do not use this deferral to promise proven one-click recovery |
+| Deferred | Install/update/restore remedies and rehearsal | Existing lifecycle/recovery work | Findings retained; revisit timing explicitly; do not use this deferral to promise proven one-click recovery. The switch rehearsal is not part of this deferral (see below) |
+
+The switch rehearsal, which runs the move of the existing server to the keeper-managed layout on a
+throwaway copy of the real data, is a deployment gate for the current release candidate. It is not
+part of the deferred install/update rehearsal above.
+
+### Articles and radar order (9 October)
+
+1. Articles 1b: digest wiring and the article-area setting.
+2. Articles 2: the Notion mirror and capture-back.
+3. The one-off backfill command for old saved-link notes and an earlier bookmark tool's backlog.
+4. Articles 3: the chat use layer.
+5. Articles 4: fetch on request and newsletter extraction.
+6. Articles 5: the weekly roundup.
+7. Radar crawl: sources as settings, a daily crawl without a model.
+8. Radar model filter and pilot: one batched call a week, capped at $0.50 a week, at most 10 finds a week.
+9. Wider radar, gated on the pilot: only after four weeks at a hit rate of 30% or more.
+
+A research scan through an outside tool is build-later and has no place in this order.
 
 Every delivery slice must include its console controls/status, failure messages, user documentation
 and any changed marketing claims. Personal and business use remain two presentations of one engine;
 optional coaching/travel/taste templates do not require a second runtime. Accounting remains paused.
 No review finding authorises a rewrite, deployment, provider change or a previously deferred feature.
 
-The next artifact work is scoped in the [release-image remediation plan](2026-10-08-release-image-remediation-plan.md): rebuild current fixes first, then target residual toolchain/upstream findings, and verify final published digests before a new candidate manifest. Publication and deployment remain separate gates.
+The latest release candidate (rc.4) is published, not deployed. The next artifact work is scoped in the [release-image remediation plan](2026-10-08-release-image-remediation-plan.md): rebuild current fixes first, then target residual toolchain/upstream findings, and verify final published digests before a new candidate manifest. Publication and deployment remain separate gates.

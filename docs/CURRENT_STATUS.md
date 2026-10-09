@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 9 October 2026, end of day, against `main` after #101.
+Last checked: 9 October 2026, end of day, against `main` after #105 (`e380090`).
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -9,8 +9,21 @@ page, this page is newer.
 
 ## Done and on `main`
 
-- **The 9 October merges are on `main`** (#97 to #101). The code changes (#97, #100,
-  #101) are in no image yet (see Not done).
+- **The 9 October merges are on `main`** (#97 to #105). The code changes (#97, #100,
+  #101, #104, #105) are in no image yet (see Not done).
+  - **Articles child 1a** (#105): article notes with a text companion file beside them,
+    filed by the digest. Nothing is switched on: no article is filed until a later change
+    turns it on.
+  - **The console's Clipping card** (#104, LAR-113 child b): the console can now set up the
+    Notion saved-link source, map its columns, test the mapping without importing, and
+    run an import. Database changes `092_clipping_requests.sql`
+    and `093_clipping_requests_heartbeat.sql`. The additions to the Notion live probe are
+    written but not yet run. The two browser checks and the clipping key grant and revoke wait
+    for the next deployed image.
+  - **ADR-0010 amendment** (#103): Notion's Articles database is a place to capture articles
+    and a mirror, not the owner of them; the Vault note stays the canonical copy.
+  - **Pull request #106 is open, not merged:** review fixes for articles child 1a (safe
+    rollback, scoped commits, a filed-link check).
   - **Release candidate rc.4 is published but not deployed** (#99, LAR-114). The manifest is
     [`releases/2026-10-09-rc.4.json`](../releases/2026-10-09-rc.4.json): the eight
     first-party images were built and published from `0e53c9d` (main after #95);
@@ -25,9 +38,8 @@ page, this page is newer.
     one Notion database come into the existing inbox at each digest pass and are read and
     filed like Karakeep links; saving a link twice never makes a second copy. Every failure
     is named in the digest and opens a repair entry; it never reads as a quiet "0 new".
-    Database change `091_clipping.sql` (two new tables). **The import exists but has no
-    console controls until the console child (LAR-113 child b) lands**; it cannot be
-    switched on from the console yet.
+    Database change `091_clipping.sql` (two new tables). The console controls came with #104
+    (above).
   - **Notion's live API sends no completeness flag** (#101). The live probe, run by hand
     once on 9 October against Notion API version 2026-03-11, showed no `request_status` on
     queries. The reader already treats its absence as complete; the probe and the test
@@ -184,8 +196,10 @@ page, this page is newer.
 ## Not done
 
 - **Nothing merged after #95 is in an image.** rc.4 was built from main after #95; of #96 to
-  #101, only #97, #100 and #101 change code. The image workflows on `main` run with
+  #105, only #97, #100, #101, #104 and #105 change code. The image workflows on `main` run with
   publication off.
+- **The chief of staff's digest prompt named one installation.** It is being fixed in a
+  separate pull request; the engine must not carry any installation's name.
 - **Remaining critical and high base-image findings in the first-party images (LAR-114).**
   rc.4 gives the scan evidence (the gateway and Caddy findings cleared; the keeper image, for
   example, still shows 2 critical and 62 high), and the remediation is still open.
@@ -219,7 +233,7 @@ page, this page is newer.
 ## Next
 
 1. **Make the sync-jobs package public**, then rehearse the switch (LAR-98) against rc.4.
-   After that, the console controls for the Notion import (LAR-113 child b).
+   After that, articles 1b: the digest wiring and the setting for which area articles go in.
 2. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
    (`docs/plans/2026-10-08-lar-49-injection-suite.md`) splits it into three slices and
    needs the owner's yes on slice 1, which adds one standing sentence under every prompt
@@ -236,8 +250,9 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- No other pull requests are open. The branch `lar-49-injection-suite` holds only the LAR-49 plan
-  and waits for the owner's decision on slice 1.
+- Open pull requests: #106 (review fixes for articles 1a), this documentation change, and a
+  separate fix for the digest prompt (being built). The branch `lar-49-injection-suite` holds only the
+  LAR-49 plan and waits for the owner's decision on slice 1.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).
 - The two engine faults from the dry rehearsal, LAR-105 and LAR-106, are
