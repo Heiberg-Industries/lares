@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CredentialActivation, type CredentialRuntime } from '../lib/credential-activation.js';
 import { CredentialFiles } from '../lib/credential-files.js';
 import { Credentials, registerCredentialActions } from '../lib/credentials.js';
-import { credentialRecordSchema, initialCredentialRecord, type CredentialRecord } from '../lib/credential-state.js';
+import { credentialRecordSchema, initialCredentialRecord, inventoryGrants, type CredentialRecord } from '../lib/credential-state.js';
 import type { CredentialJournal, CredentialStore } from '../lib/credential-store.js';
 import { resetActions, runAction } from '../lib/actions.js';
 
@@ -240,4 +240,64 @@ it('a lost response after the final grant commit is inspected as applied with th
   await expect(runAction('credential.grant', grantInput(), actor)).rejects.toThrow('outcome uncertain');
   store.dead = false;
   expect(await credentials.status(actor)).toMatchObject({ state: 'applied', grants: granted });
+});
+
+// ---- preview of a grant, and a deleted agent's stale grant ----
+const previewInput = (over: object = {}) => ({ slot: 'notion:shared', agent: 'example-one', purpose: 'clipping', ...over });
+const afterGrant = 'c'.repeat(64);
+it('preview returns the post-grant inventory revision, writes nothing, and a grant confirming it succeeds', async () => {
+  modelMounts(); running.set('example-one', null);
+  vi.mocked(runtime.snapshot).mockImplementation(async r => ({ revision: inventoryGrants(r).length ? afterGrant : inventoryRevision, consumers }));
+  const version = store.record.version, writes = store.writes;
+  const preview = await runAction('credential.preview_grant', previewInput(), actor);
+  expect(preview).toEqual({ agent: 'example-one', purpose: 'clipping', inventoryRevision: afterGrant, consumers });
+  expect(store.record.version).toBe(version); expect(store.writes).toBe(writes); expect(events).toEqual([]);
+  await expect(runAction('credential.grant', grantInput(), actor)).rejects.toThrow('consumers changed');
+  expect(await runAction('credential.grant', grantInput({ inventoryRevision: (preview as { inventoryRevision: string }).inventoryRevision }), actor)).toMatchObject({ state: 'applied', grants: granted });
+});
+it('preview refuses without an applied key, when already granted, for a non-chief agent, and for non-administrators', async () => {
+  modelMounts();
+  await expect(runAction('credential.preview_grant', previewInput({ agent: 'someone-else' }), actor)).rejects.toThrow('chief-of-staff');
+  await expect(runAction('credential.preview_grant', previewInput(), { ...actor, actor: 'member@example.invalid' })).rejects.toThrow('administrator');
+  await expect(runAction('credential.preview_grant', previewInput({ purpose: 'email' }), actor)).rejects.toThrow();
+  store.record = { ...store.record, grants: granted };
+  await expect(runAction('credential.preview_grant', previewInput(), actor)).rejects.toThrow('already');
+  store.record = { ...store.record, grants: undefined };
+  await stage();
+  await expect(runAction('credential.preview_grant', previewInput(), actor)).rejects.toThrow('Apply a tested key');
+  expect(events).toEqual([]);
+});
+function withDeleted(gone: string[]) {
+  resetActions();
+  credentials = new Credentials({ slot: 'notion:shared', binding: 'NOTION_TOKEN_FILE', administrator: actor.actor, prepared: true, inventoryComplete: true, retainedConsumers: [] },
+    store, files, async () => consumers, { ready: () => true, test: async () => ({ outcome: 'passed' }) }, new CredentialActivation(files, runtime),
+    async names => new Set(names.filter(n => gone.includes(n))));
+  registerCredentialActions(credentials);
+}
+const staleGrant = [{ agent: 'deleted-one', purposes: ['clipping' as const] }];
+it('a grant for a deleted agent is marked stale, does not block anything, and is revoked without any runtime call', async () => {
+  withDeleted(['deleted-one']); store.record = { ...store.record, grants: [...granted, ...staleGrant] };
+  const status = await credentials.status(actor);
+  expect(status).toMatchObject({ state: 'applied', guidance: null });
+  expect(status.grants).toContainEqual({ agent: 'deleted-one', purposes: ['clipping'], stale: true });
+  expect(status.grants!.find(g => g.agent === 'example-one')).not.toHaveProperty('stale');
+  // Apply is not blocked by it.
+  await stage();
+  expect(await runAction('credential.apply', input(), actor)).toMatchObject({ state: 'applied' });
+  // Revoke is journal-only.
+  vi.mocked(runtime.quiesce).mockClear(); vi.mocked(runtime.reconcile).mockClear(); vi.mocked(runtime.verify).mockClear();
+  const audits: unknown[] = [];
+  const result = await runAction('credential.revoke', grantInput({ agent: 'deleted-one' }), { ...actor, audit: async (...a: unknown[]) => { audits.push(a); } });
+  expect(result).toMatchObject({ state: 'applied', grants: granted });
+  expect(runtime.quiesce).not.toHaveBeenCalled(); expect(runtime.reconcile).not.toHaveBeenCalled(); expect(runtime.verify).not.toHaveBeenCalled();
+  expect(events.filter(e => e.startsWith('recreate'))).toHaveLength(2); // only the earlier apply
+  expect(store.record).toMatchObject({ grants: granted, phase: 'applied', activationIntent: null });
+  expect(audits.length).toBeGreaterThan(0);
+});
+it('a deleted agent does not block Disconnect, and revoke of a stale grant still checks revisions', async () => {
+  withDeleted(['deleted-one']); store.record = { ...store.record, grants: staleGrant };
+  await expect(runAction('credential.revoke', grantInput({ agent: 'deleted-one', inventoryRevision: 'b'.repeat(64) }), actor)).rejects.toThrow('consumers changed');
+  await expect(runAction('credential.revoke', grantInput({ agent: 'deleted-one', expectedActiveRevision: randomUUID() }), actor)).rejects.toThrow('revision changed');
+  expect(store.record.grants).toEqual(staleGrant);
+  expect(await runAction('credential.disconnect', input(), actor)).toMatchObject({ state: 'disconnected' });
 });

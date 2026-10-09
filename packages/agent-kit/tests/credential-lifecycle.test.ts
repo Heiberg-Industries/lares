@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { credentialMutationInput, credentialStatusSchema } from '../src/credential-lifecycle.js';
+import { credentialGrantPreviewInput, credentialGrantPreviewSchema, credentialMutationInput, credentialStatusSchema } from '../src/credential-lifecycle.js';
 it('accepts only the named slot and strict generated revision commands', () => {
   const command = { operation: 'test_save', slot: 'notion:shared', expectedRevision: 0, token: 'synthetic-only' };
   expect(credentialMutationInput.safeParse(command).success).toBe(true);
@@ -24,4 +24,19 @@ it('status carries secret-free grants, one entry per agent', () => {
   expect(credentialStatusSchema.safeParse({ ...status, grants: [{ agent: 'chief', purposes: ['clipping'] }] }).success).toBe(true);
   expect(credentialStatusSchema.safeParse({ ...status, grants: [{ agent: 'chief', purposes: ['clipping'] }, { agent: 'chief', purposes: ['clipping'] }] }).success).toBe(false);
   expect(credentialStatusSchema.safeParse({ ...status, grants: [{ agent: 'chief', purposes: [] }] }).success).toBe(false);
+});
+it('status marks a grant whose agent is gone as stale, and stale is the only extra field', () => {
+  const status = { slot: 'notion:shared', state: 'applied', guidance: null, revision: 1, activeRevision: null, candidateRevision: null, phase: 'applied', test: null, consumers: [], activation: [], rollback: [] };
+  expect(credentialStatusSchema.safeParse({ ...status, grants: [{ agent: 'chief', purposes: ['clipping'], stale: true }] }).success).toBe(true);
+  for (const bad of [{ stale: false }, { stale: 'yes' }, { path: '/x' }])
+    expect(credentialStatusSchema.safeParse({ ...status, grants: [{ agent: 'chief', purposes: ['clipping'], ...bad }] }).success).toBe(false);
+});
+it('grant preview takes a strict slot, agent and purpose and returns a secret-free inventory', () => {
+  const input = { slot: 'notion:shared', agent: 'chief', purpose: 'clipping' };
+  expect(credentialGrantPreviewInput.safeParse(input).success).toBe(true);
+  for (const change of [{ purpose: 'email' }, { slot: 'x' }, { path: '/x' }, { agent: undefined }])
+    expect(credentialGrantPreviewInput.safeParse({ ...input, ...change }).success).toBe(false);
+  const reply = { agent: 'chief', purpose: 'clipping', inventoryRevision: 'a'.repeat(64), consumers: [{ name: 'chief', category: 'owned-agent', incarnation: null }] };
+  expect(credentialGrantPreviewSchema.safeParse(reply).success).toBe(true);
+  expect(credentialGrantPreviewSchema.safeParse({ ...reply, token: 'x' }).success).toBe(false);
 });

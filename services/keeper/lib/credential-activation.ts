@@ -37,20 +37,8 @@ export class CredentialActivation {
       let snapshot = await this.runtime.snapshot(old);
       let grantsAfter: CredentialGrant[] | undefined;
       if (grant) {
-        if (old.phase !== 'applied' || !old.activeRevision || old.candidateRevision || old.rollbackRevision)
-          throw new KeeperRefusedError('Apply a tested key before switching this on or off');
-        const before = old.grants ?? [];
-        const present = before.some(g => g.agent === grant.agent && g.purposes.includes(grant.purpose));
-        if (kind === 'grant' ? present : !present)
-          throw new KeeperRefusedError(kind === 'grant' ? 'This agent already has the key for this purpose' : 'This agent does not have the key for this purpose');
-        grantsAfter = kind === 'grant'
-          ? [...before.filter(g => g.agent !== grant.agent), { agent: grant.agent, purposes: [grant.purpose] }].sort((x, y) => x.agent.localeCompare(y.agent))
-          : before.filter(g => g.agent !== grant.agent);
-        // The inventory the owner confirms is the one AFTER a grant (the agent that will restart is in it)
-        // and the current one for a revoke. The agent does not hold the mount yet, so check it loosely.
-        if (kind === 'grant') snapshot = await this.runtime.snapshot({ ...old, grants: grantsAfter }, true);
-        if (!snapshot.consumers.some(c => c.name === grant.agent && c.category === 'owned-agent'))
-          throw new KeeperRefusedError('Only a ready chief-of-staff agent can be given this key');
+        const plan = await this.planGrant(old, grant, kind === 'grant', snapshot);
+        snapshot = plan.snapshot; grantsAfter = plan.grantsAfter;
       }
       if (snapshot.revision !== input.inventoryRevision || kind === 'apply' && JSON.stringify(snapshot.consumers) !== JSON.stringify(old.consumers))
         throw new KeeperRefusedError('Affected consumers changed; refresh and confirm the complete list');
@@ -94,6 +82,55 @@ export class CredentialActivation {
         } catch { /* Retain intent and protected rollback for explicit host recovery. */ }
         throw new KeeperOutcomeUncertainError();
       }
+    });
+  }
+  /** The checks a grant or revoke runs before any journal write, and the inventory the owner confirms: the one
+   * AFTER a grant (the agent that will restart is in it) and the current one for a revoke, which is why the
+   * console confirms a revoke with the current status's inventoryRevision. Shared with the read-only preview so
+   * the two cannot drift. The agent does not hold the mount yet, so the post-grant snapshot is loose. */
+  private async planGrant(old: CredentialRecord, grant: CredentialGrantRequest, to: boolean, current: Awaited<ReturnType<CredentialRuntime['snapshot']>>) {
+    if (old.phase !== 'applied' || !old.activeRevision || old.candidateRevision || old.rollbackRevision)
+      throw new KeeperRefusedError('Apply a tested key before switching this on or off');
+    const before = old.grants ?? [];
+    const present = before.some(g => g.agent === grant.agent && g.purposes.includes(grant.purpose));
+    if (to ? present : !present)
+      throw new KeeperRefusedError(to ? 'This agent already has the key for this purpose' : 'This agent does not have the key for this purpose');
+    const grantsAfter: CredentialGrant[] = to
+      ? [...before.filter(g => g.agent !== grant.agent), { agent: grant.agent, purposes: [grant.purpose] }].sort((x, y) => x.agent.localeCompare(y.agent))
+      : before.filter(g => g.agent !== grant.agent);
+    const snapshot = to ? await this.runtime.snapshot({ ...old, grants: grantsAfter }, true) : current;
+    if (!snapshot.consumers.some(c => c.name === grant.agent && c.category === 'owned-agent'))
+      throw new KeeperRefusedError('Only a ready chief-of-staff agent can be given this key');
+    return { grantsAfter, snapshot };
+  }
+  /** Read-only: the inventory a grant would produce. Writes no journal row and restarts nothing. */
+  async previewGrant(old: CredentialRecord, grant: CredentialGrantRequest) {
+    return this.runtime.locked(async () => {
+      if (old.activationIntent) throw new KeeperRefusedError('Credential revision changed; refresh status');
+      const { snapshot } = await this.planGrant(old, grant, true, await this.runtime.snapshot(old));
+      return { agent: grant.agent, purpose: grant.purpose, inventoryRevision: snapshot.revision, consumers: snapshot.consumers };
+    });
+  }
+  /** Revoke a grant whose agent no longer exists. No runtime holds the key, so nothing is quiesced or
+   * reconciled: only the journal changes, audited before it is saved. */
+  async dropStaleGrant(journal: CredentialJournal, old: CredentialRecord, input: CredentialActivationInput,
+    grant: CredentialGrantRequest, ctx: ActionContext, result: (r: CredentialRecord) => unknown): Promise<CredentialRecord> {
+    if (!ctx.finalizeAudit) throw new KeeperRefusedError('Use an audited credential action');
+    return this.runtime.locked(async () => {
+      if (old.activationIntent || old.activeRevision !== input.expectedActiveRevision)
+        throw new KeeperRefusedError('Credential revision changed; refresh status');
+      if (old.phase !== 'applied' || !old.activeRevision || old.candidateRevision || old.rollbackRevision)
+        throw new KeeperRefusedError('Apply a tested key before switching this on or off');
+      if (!(old.grants ?? []).some(g => g.agent === grant.agent && g.purposes.includes(grant.purpose)))
+        throw new KeeperRefusedError('This agent does not have the key for this purpose');
+      if ((await this.runtime.snapshot(old)).revision !== input.inventoryRevision)
+        throw new KeeperRefusedError('Affected consumers changed; refresh and confirm the complete list');
+      try {
+        const next = credentialRecordSchema.parse({ ...old, operation: { id: newCredentialRevision(), kind: 'revoke' },
+          grants: (old.grants ?? []).filter(g => g.agent !== grant.agent) });
+        await ctx.finalizeAudit!(result(next));
+        return await journal.save(old, next);
+      } catch { throw new KeeperOutcomeUncertainError(); }
     });
   }
   /** The mount revision this consumer must hold at the end of the step. In a grant change only the named

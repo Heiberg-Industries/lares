@@ -22,6 +22,9 @@ export const credentialGrantSchema = z.object({
 export const credentialGrantsSchema = z.array(credentialGrantSchema).max(20)
   .refine(grants => new Set(grants.map(g => g.agent)).size === grants.length, 'One grant entry per agent');
 export type CredentialGrant = z.infer<typeof credentialGrantSchema>;
+/** A grant as the status reports it: `stale` marks a grant whose agent has been deleted (it mounts nothing). */
+export const credentialStatusGrantsSchema = z.array(credentialGrantSchema.extend({ stale: z.literal(true).optional() }).strict()).max(20)
+  .refine(grants => new Set(grants.map(g => g.agent)).size === grants.length, 'One grant entry per agent');
 export const credentialStatusSchema = z.object({
   slot: z.literal(CREDENTIAL_SLOT),
   state: z.enum(['unavailable', 'not-configured', 'host-administration-required', 'pending-test', 'test-failed', 'pending-apply', 'applying', 'disconnecting', 'applied', 'disconnected', 'recovery-required']),
@@ -31,7 +34,7 @@ export const credentialStatusSchema = z.object({
   consumers: z.array(credentialConsumerSchema).max(200), activation: z.array(credentialProgressSchema).max(200), rollback: z.array(credentialProgressSchema).max(200),
   inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
   // Who was switched on to receive the managed key, by purpose. Names only; never secret.
-  grants: credentialGrantsSchema.optional(),
+  grants: credentialStatusGrantsSchema.optional(),
 }).strict();
 export type CredentialStatus = z.infer<typeof credentialStatusSchema>;
 
@@ -41,6 +44,13 @@ export const credentialRevisionInput = credentialSlotInput.extend({ expectedRevi
 export const credentialTokenInput = z.string().min(1).max(8192).refine(v => new TextEncoder().encode(v).length <= 8192 && !/[\s\x00-\x1f\x7f]/.test(v));
 export const credentialActivationInput = credentialRevisionInput.extend({ expectedActiveRevision: z.uuid().nullable(), inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/), confirmRestart: z.literal(true) }).strict();
 export const credentialGrantInput = credentialActivationInput.extend({ agent: name, purpose: credentialPurposeSchema }).strict();
+/** Read-only: what a grant would change, so the console can confirm the inventory revision AFTER it. */
+export const credentialGrantPreviewInput = credentialSlotInput.extend({ agent: name, purpose: credentialPurposeSchema }).strict();
+export const credentialGrantPreviewSchema = z.object({
+  agent: name, purpose: credentialPurposeSchema, inventoryRevision: z.string().regex(/^[a-f0-9]{64}$/),
+  consumers: z.array(credentialConsumerSchema).max(200),
+}).strict();
+export type CredentialGrantPreview = z.infer<typeof credentialGrantPreviewSchema>;
 export const credentialMutationInput = z.discriminatedUnion('operation', [
   credentialRevisionInput.extend({ operation: z.literal('test_save'), token: credentialTokenInput }).strict(),
   ...(['test_current', 'test_pending', 'discard'] as const).map(operation => credentialRevisionInput.extend({ operation: z.literal(operation) }).strict()),

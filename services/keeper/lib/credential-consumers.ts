@@ -65,11 +65,20 @@ export async function credentialConsumers(pool: Pool, config: CredentialConsumer
       : 'owned-agent';
     result.push({ name, category, incarnation });
   }
+  // A granted agent with no definition and no resource row is fully deleted: it can mount nothing (lifecycle
+  // renders only resource rows), so its grant is stale and must not freeze the key. An agent that still
+  // has either row but is not a ready chief of staff is listed above, never silent.
   // Unregistered named bindings must not be missed simply because the join found no agent.
-  for (const name of granted) if (!rows.some(row => row.name === name)) result.push({ name, category: 'runtime-not-ready', incarnation: null });
   for (const [name, binding] of Object.entries(config.lifecycle.bindings ?? {})) {
     if (binding.secrets.NOTION_TOKEN_FILE && !rows.some(row => row.name === name))
       result.push({ name, category: 'runtime-not-ready', incarnation: null });
   }
   return result.sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category));
+}
+/** Which of these agents have neither a definition nor a resource row (fully deleted). */
+export async function deletedAgents(pool: Pool, names: string[]): Promise<Set<string>> {
+  if (!names.length) return new Set();
+  const { rows } = await pool.query('SELECT name FROM agent_definitions WHERE name = ANY($1) UNION SELECT name FROM agent_resources WHERE name = ANY($1)', [names]);
+  const known = new Set(rows.map((r: { name: string }) => r.name));
+  return new Set(names.filter(n => !known.has(n)));
 }

@@ -60,10 +60,15 @@ it('counts a granted chief of staff as an owned consumer, and nothing else witho
 it('lists a grant it cannot honour instead of ignoring it', async () => {
   // Not a chief of staff: listed as not ready even though a creative key binding exists.
   expect(await credentialConsumers(pool([owned]), config(), grantFor('example'))).toMatchObject([{ name: 'example', category: 'runtime-not-ready' }]);
-  // Unknown agent.
-  expect(await credentialConsumers(pool([]), config(), grantFor('ghost'))).toEqual([{ name: 'ghost', category: 'runtime-not-ready', incarnation: null }]);
+  // Fully deleted agent (no definition, no resource row): ignored, it can mount nothing.
+  expect(await credentialConsumers(pool([]), config(), grantFor('ghost'))).toEqual([]);
   // Chief with no base binding at all: nothing is invented.
   expect(await credentialConsumers(pool([chiefRow]), config(), grantFor('chief'))).toMatchObject([{ name: 'chief', category: 'runtime-not-ready' }]);
   // Not ready runtime stays not ready.
   expect(await credentialConsumers(pool([{ ...chiefRow, state: 'provisioning' }]), chiefConfig(), grantFor('chief'))).toMatchObject([{ category: 'runtime-not-ready' }]);
+});
+it('deletedAgents names only agents with neither a definition nor a resource row', async () => {
+  const { deletedAgents } = await import('../lib/credential-consumers.js');
+  expect(await deletedAgents(pool([{ name: 'chief' }]), ['chief', 'ghost'])).toEqual(new Set(['ghost']));
+  expect(await deletedAgents(pool([]), [])).toEqual(new Set());
 });

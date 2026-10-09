@@ -1,7 +1,7 @@
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
 import { PgCredentialStore } from "../lib/credential-store.js";
-import { credentialConsumers } from "../lib/credential-consumers.js";
+import { credentialConsumers, deletedAgents } from "../lib/credential-consumers.js";
 import { notionCredentialTester } from "../lib/notion-credential.js";
 import { CredentialActivation } from '../lib/credential-activation.js';
 import { OwnedCredentialRuntime } from '../lib/credential-runtime.js';
@@ -62,7 +62,8 @@ async function main(): Promise<void> {
             }),
         });
         registerCredentialActions(new Credentials(config.credentials, credentialStore, credentialFiles, grants => credentialConsumers(pool, config, grants), notionCredentialTester(config.lifecycle?.runtime.proxyUrl),
-            managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined));
+            managed && lifecycle && docker ? new CredentialActivation(credentialFiles, new OwnedCredentialRuntime(pool, config, lifecycle, docker)) : undefined,
+            names => deletedAgents(pool, names)));
         const gatewayUrl = config.lifecycle?.runtime.gatewayUrl;
         registerGatewayStatusAction(new GatewayStatusReader({ gatewayUrl, masterKeyFile: config.lifecycle?.runtime.gatewayMasterKeyFile,
             aliasPrefix: () => readSetting(pool, "models.alias_prefix"), admin: new GatewayAdmin(gatewayUrl ?? "http://unconfigured.invalid") }));
