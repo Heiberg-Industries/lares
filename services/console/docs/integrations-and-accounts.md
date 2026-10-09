@@ -99,30 +99,52 @@ tested" means exactly that: Lares has checked that the gateway answers, not that
 it accepts a request, because testing that sends a paid request. A gateway managed elsewhere shows
 only whether it is reachable.
 
-## Saved links from Notion (first slice, no console controls yet)
+## Saved links from Notion (the Clipping card)
 
 Links saved into one Notion database you choose (phone share sheet, browser clipper, or a pasted link
 in a new row) are brought into the inbox at each digest pass and read and filed by the digest like
 any other link; the same link saved twice, or a pass that runs twice, never makes a second copy.
 Edits and trashing in Notion follow the clip only while it still waits in the inbox, never after it is
-filed. The database needs a title column and one URL column. If Lares cannot read it (not shared with
-the connection, key refused, column changed, rate limit, timeout) the digest message says so in one
-line, a repair entry is opened, and the last good fetch time is kept; it never shows a quiet "0 new".
-This first slice supports exactly one organisation-wide source using the Notion key the keeper
-manages (the chief of staff must be bound to it), has no console page yet (child (b) adds the source
-choice, column pickers and test button), and does not move existing Karakeep bookmarks. It imports only rows saved or edited after the source's
-`import_since` (now(), in the command below), so the first pass never pulls in the database's history;
-importing a backlog is a separate, explicit later step. A link saved in Notion first and in Karakeep
-later still lands twice in this slice (only the Notion side checks for the other). Until then
-the source is one row added on the box after migration 091, with the column ids the live probe
-`services/chief-of-staff/tests/live/notion-clipping.live.mts` prints:
+filed. The database needs a title column and one URL column. Only links are copied, never the pages.
 
-```sql
-INSERT INTO clipping_sources (kind, data_source_id, url_property_id, note_property_id, tags_property_id,
-                              owner, visibility, import_since)
-VALUES ('notion', '<data source id>', '<URL column id>', '<note column id or NULL>', '<tags column id or NULL>',
-        'organisation', 'shared', now());
-```
+Set it up on the Connections page, in the Clipping card under the Notion key card:
+
+1. Add the Notion key in the Notion key card above, and share the database with your Lares connection
+   in Notion (the three dots, then Connections).
+2. Paste the database's link and press Read database. The chief of staff reads it within a minute and
+   the card lists the columns it found, with the URL column already chosen when there is one clear
+   choice.
+3. Pick the columns (URL is required; note, tags and saved-at are optional) and press Save columns.
+   Saving starts the import from now: links saved before that are not imported, and changing to a
+   different database starts again from now.
+4. Optionally press Add Status, For and Origin columns. It adds only the columns that are missing and
+   never changes one that already exists; a column with the same name but another type is reported
+   and left alone.
+5. Press Test, then switch clipping on, then press Import now (or wait for the next digest).
+
+**Test** reads one page of rows and says how many links would be imported, how many came from the URL
+column and how many from the title, how many rows have no link, and how many were already imported.
+It writes nothing. **Import now** runs one import pass, the same one the digest runs; the two never
+run at the same time. **Switch clipping on** lets the chief of staff receive the Notion key (the
+keeper restarts that one agent after you confirm the list shown); **Switch clipping off** takes it
+away again. Only the installation's credential administrator sees the switch. The Source buttons
+(Notion, Karakeep, Both) choose which source the digest reads; Both is for the changeover, and nothing
+in Karakeep is deleted.
+
+The buttons that read Notion work through requests the chief of staff answers within a minute (the
+card checks every 5 seconds while one is waiting). If the chief of staff has not picked a request up,
+or not finished it, within ten minutes the card says "The chief of staff did not pick this up." or
+"The chief of staff did not finish this."; that means the agent is not running or the switch is off,
+not that Notion said no. "Clipping status unavailable." means Lares could not read its own records.
+If Notion cannot be read (not shared with the connection, key refused, column changed, rate limit,
+timeout) the card and the digest message say so in one line, a repair entry is opened, and the last
+good fetch time is kept; it never shows a quiet "0 new".
+
+This supports exactly one organisation-wide source using the Notion key the keeper manages, and does
+not move existing Karakeep bookmarks. A link saved in Notion first and in Karakeep later still lands
+twice (only the Notion side checks for the other). The live probe
+`services/chief-of-staff/tests/live/notion-clipping.live.mts` is what shows how Notion really answers;
+run it by hand when the pinned Notion API version or the SDK changes.
 
 ## Follow-ups
 

@@ -12,10 +12,10 @@ import { WorkflowStorage } from './workflow-storage.js';
 import { KeeperRefusedError } from './actions.js';
 import { verifyCurrentStateSchema, deleteAgentCurrentState } from './agent-current-state.js';
 import { runtimeSecret, verifySecretRoot } from './secret-permissions.js';
-import { bindingsFor, verifyBindingSources } from './runtime-bindings.js';
+import { bindingsFor, verifyBindingSources, INTEGRATION_SECRET_FILES } from './runtime-bindings.js';
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
-import type { CredentialRecord } from './credential-state.js';
+import { effectiveGrantedAgents, type CredentialRecord } from './credential-state.js';
 function atomic(path: string, body: string, mode = 0o600) { const temp = `${path}.${randomUUID()}`; const fd = openSync(temp, 'wx', mode); try {
     writeFileSync(fd, body);
     fsyncSync(fd);
@@ -41,6 +41,15 @@ export class AgentLifecycle {
     private async notionRevision(): Promise<string | null | undefined> {
         const credential = await this.credentialState?.();
         return credential ? credential.effectiveRevision === undefined ? credential.activeRevision : credential.effectiveRevision : undefined;
+    }
+    /** Agents the owner switched on to receive the managed key (effective view, as notionRevision). */
+    private async notionGranted(): Promise<ReadonlySet<string>> {
+        return effectiveGrantedAgents(await this.credentialState?.());
+    }
+    /** True when installation configuration alone gives this agent the key (a revoke must not unmount it). */
+    installationBindsNotion(name: string): boolean {
+        const b = this.config.bindings?.[name] ?? this.config.defaultBindings?.['chief-of-staff'];
+        return !!b?.secrets.NOTION_TOKEN_FILE;
     }
     constructor(private pool: Pool, admin: Pool, private config: LifecycleConfig, private paths: {
         agentsDir: string;
@@ -95,7 +104,7 @@ export class AgentLifecycle {
         return new Map((await this.pool.query("SELECT name,definition FROM agent_definitions ")).rows.map(r => [r.name, r.definition]));
     }
     private async rows() { return (await this.pool.query("SELECT * FROM agent_resources WHERE state<>'deleting' ORDER BY name")).rows; }
-    private container(row: any, d: AgentDefinition, notionRevision?: string | null): AgentContainer {
+    private container(row: any, d: AgentDefinition, notionRevision?: string | null, granted: ReadonlySet<string> = new Set()): AgentContainer {
         const c = this.config, r = c.runtime;
         const url = new URL(r.workflowServer);
         url.pathname = `/${row.workflow_database}`;
@@ -105,6 +114,14 @@ export class AgentLifecycle {
             ? c.defaultBindings?.[role]
             : undefined;
         let binding = c.bindings?.[row.name] ?? roleDefault;
+        // The owner's switch adds the managed key to the agent's own binding. Installation config wins:
+        // a configured key is never replaced or removed here, and a missing base binding is never invented.
+        if (granted.has(row.name) && role === 'chief-of-staff' && !binding?.secrets.NOTION_TOKEN_FILE) {
+            if (!binding)
+                throw new KeeperRefusedError('A granted agent needs an installation runtime binding');
+            if (notionRevision)
+                binding = { ...binding, secrets: { ...binding.secrets, NOTION_TOKEN_FILE: join(this.paths.secretsDir, INTEGRATION_SECRET_FILES.NOTION_TOKEN_FILE) } };
+        }
         const managedRevision = binding?.secrets.NOTION_TOKEN_FILE ? notionRevision : undefined;
         if (binding?.secrets.NOTION_TOKEN_FILE && notionRevision === null) {
             const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
@@ -121,6 +138,7 @@ export class AgentLifecycle {
             defs.set(override.name, override.definition);
         const agents: AgentContainer[] = [];
         const notionRevision = await this.notionRevision();
+        const granted = await this.notionGranted();
         const rows = await this.rows();
         const active = (await this.pool.query("SELECT name FROM agent_definitions WHERE status<>'retired'")).rows;
         if (active.some(r => r.name !== omit && !rows.some(owned => owned.name === r.name)))
@@ -138,7 +156,7 @@ export class AgentLifecycle {
             if (row.name === omit || (!includeRetired && row.state === 'retired'))
                 continue;
             if (d && (!runtimeOnly || runtimeControlled(row)))
-                agents.push(this.container(row, d, notionRevision));
+                agents.push(this.container(row, d, notionRevision, granted));
         }
         return { defs, agents };
     }
@@ -206,10 +224,11 @@ export class AgentLifecycle {
         const { agents } = await this.render(override, omit, true, true);
         // Keep applied door/role mounts for other pending agents: save must never restart them implicitly.
         const rows = await this.rows();
+        const granted = await this.notionGranted();
         for (let i = 0; i < agents.length; i++) {
             const row = rows.find(r => r.name === agents[i].name);
             if (row.applied_definition && agents[i].name !== override?.name)
-                agents[i] = this.container(row, row.applied_definition, agents[i]!.notionRevision);
+                agents[i] = this.container(row, row.applied_definition, agents[i]!.notionRevision, granted);
         }
         for (let i=0;i<agents.length;i++) agents[i]=await this.connections(agents[i],agents[i].name===override?.name);
         atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, ...this.paths }));
@@ -241,7 +260,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Migrate existing resource ownership before saving');
         if (create && row)
             throw new KeeperRefusedError('Prior resources require reconciliation before name reuse');
-        const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision());
+        const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision(), await this.notionGranted());
         verifyBindingSources(candidate.bindings);
         if(doorsOf(d).some(x=>x.kind==='email'&&x.enabled))await this.connections(candidate,true);
         // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
@@ -289,7 +308,7 @@ export class AgentLifecycle {
             throw new KeeperRefusedError('Only active resources can reconcile');
         const plan = await this.plan({ name, definition: d }); // Before pending, publish and stop: an unbuildable list must not take the agent down.
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Runtime reconciliation in progress',updated_at=now() WHERE name=$1", [name]);
-        const a = await this.connections(this.container(row, d, await this.notionRevision()),true);
+        const a = await this.connections(this.container(row, d, await this.notionRevision(), await this.notionGranted()),true);
         verifyBindingSources(a.bindings);
         this.verifySecrets(this.paths.secretsDir);
         const controlSecret = join(this.paths.secretsDir, `${name}-runtime-control`);
@@ -321,7 +340,7 @@ export class AgentLifecycle {
             if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
                 throw new KeeperRefusedError('Ready applied runtime required');
             this.refuseUnknownGrants(name, row.applied_definition);
-            const a = await this.connections(this.container(row, row.applied_definition, null), false);
+            const a = await this.connections(this.container(row, row.applied_definition, null, await this.notionGranted()), false);
             verifyBindingSources(a.bindings);
             for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
                 ...Object.values(a.bindings?.secrets ?? {}), ...(a.email ? [a.email.tokenKeyFile, a.email.clientIdFile, a.email.clientSecretFile] : []),
@@ -333,12 +352,16 @@ export class AgentLifecycle {
     }
     async reconcileCredential(name: string, revision: string | null): Promise<void> {
         const record = await this.credentialState?.();
-        if (!record?.activationIntent || record.effectiveRevision !== revision) throw new KeeperRefusedError('Credential activation intent required');
+        const grantOp = !!record?.activationIntent?.grantChange;
+        // A grant change keeps the active key and moves only who is bound; the per-agent revision is
+        // decided by container() from the effective grants the activation journaled.
+        if (!record?.activationIntent || (grantOp ? record.effectiveGrants === undefined : record.effectiveRevision !== revision))
+            throw new KeeperRefusedError('Credential activation intent required');
         const row = await this.storage.row(name);
         if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
             throw new KeeperRefusedError('Ready applied runtime required');
         const plan = await this.plan();
-        if (revision) this.provisionSecret(join(this.paths.secretsDir, 'notion-token'));
+        if (revision || grantOp && record.activeRevision) this.provisionSecret(join(this.paths.secretsDir, 'notion-token'));
         await this.publishCompose();
         await this.docker.stop(name);
         await this.apply(plan);

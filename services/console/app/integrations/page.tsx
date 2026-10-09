@@ -13,6 +13,8 @@ import { NoControl } from "../../components/PermissionsBoard";
 import { NotionProposalsCard } from "../../components/NotionProposalsCard";
 import { CrmStatusSection } from "../../components/CrmStatusSection";
 import { NotionCredential } from "../../components/NotionCredential";
+import { ClippingCard } from "../../components/ClippingCard";
+import { getClippingView } from "../../lib/clipping";
 import { getCredentialView } from "../../lib/credentials";
 
 export const dynamic = "force-dynamic";
@@ -40,7 +42,7 @@ export default async function IntegrationsPage({
   searchParams: Promise<{ added?: string; error?: string }>;
 }) {
   const params = await searchParams;
-  const [rows, board, notionSync, notionProposals, crmStatus, credential] =
+  const [rows, board, notionSync, notionProposals, crmStatus, credential, clipping] =
     await Promise.all([
       getConnectionRows(),
       getBoardRows(),
@@ -48,6 +50,7 @@ export default async function IntegrationsPage({
       getNotionProposalsView(),
       getCrmStatus(),
       getCredentialView(),
+      getClippingView(),
     ]);
   const noNotionRun = !notionSync.unavailable && notionSync.lastRunAt === null &&
     notionSync.synced === 0 && notionSync.needsYou === 0 &&
@@ -85,6 +88,7 @@ export default async function IntegrationsPage({
       </p>
       <ConnectionsTable rows={rows} />
       <NotionCredential initial={credential} />
+      <ClippingCard initial={clipping} credential={credential} />
 
       <details className="lares-disclosure">
         <summary>Service sync status and Notion proposals</summary>

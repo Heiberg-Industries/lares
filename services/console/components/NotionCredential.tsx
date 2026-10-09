@@ -1,5 +1,5 @@
 'use client';
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { CREDENTIAL_SLOT, credentialStatusSchema, type CredentialStatus, type CredentialMutation } from '@lares/agent-kit/credential-lifecycle';
 import type { CredentialView } from '../lib/credentials';
 import { Button } from '@lares/ui/primitives/button';
@@ -27,6 +27,9 @@ const messages: Record<string, string> = {
 const progress = (items: CredentialStatus['activation']) => items.length
   ? <ul>{items.map(p => <li key={p.name}>{p.name}: {p.state}</li>)}</ul> : <p className="lares-muted">No runtime progress recorded.</p>;
 
+/** Fired by another card (Clipping) after it changed this credential, so this card reads it again. */
+export const NOTION_CREDENTIAL_CHANGED = 'lares:notion-credential-changed';
+
 export function NotionCredential({ initial }: { initial: CredentialView }) {
   const [view, setView] = useState(initial), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [uncertain, setUncertain] = useState(false), [stale, setStale] = useState(false), [confirm, setConfirm] = useState<'apply' | 'disconnect' | null>(null);
@@ -44,6 +47,11 @@ export function NotionCredential({ initial }: { initial: CredentialView }) {
     } catch { setMessage(messages.unavailable); setStale(true); }
     finally { inFlight.current = false; setBusy(false); }
   }
+  useEffect(() => {
+    const onChanged = () => { void refresh(); };
+    window.addEventListener(NOTION_CREDENTIAL_CHANGED, onChanged);
+    return () => window.removeEventListener(NOTION_CREDENTIAL_CHANGED, onChanged);
+  });
   async function submit(command: CredentialMutation) {
     if (inFlight.current) return;
     inFlight.current = true; setBusy(true); setMessage(''); setConfirm(null); setConfirmed(false);

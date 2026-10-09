@@ -135,6 +135,8 @@ const CASES: Array<{ name: string; slot: string | null; env: Record<string, stri
   { name: "owner-clock",          slot: null, env: { SLACK_ALLOWED_USER_IDS: "U123456" } },   // ORB-193 — see the header
   { name: "deadlines",            slot: null, env: { TELEGRAM_PRINCIPAL_ID: "123456" } },     // ORB-180 — see below
   { name: "market-refresh",       slot: null, env: {} },                                       // ORB-214 item 1 — see below
+  // LAR-113 child b — with no `clipping_requests` here its first query throws: a failed pass.
+  { name: "clipping-requests",    slot: null, env: {} },
 ];
 
 /**
@@ -183,6 +185,7 @@ const IMPORTERS: Record<string, () => Promise<{ default: { run?: (ctx: unknown) 
   "owner-clock": () => import("../agent/schedules/owner-clock.js"),
   "deadlines": () => import("../agent/schedules/deadlines.js"),
   "market-refresh": () => import("../agent/schedules/market-refresh.js"),
+  "clipping-requests": () => import("../agent/schedules/clipping-requests.js"),
 };
 
 async function ageAll(): Promise<void> {
@@ -244,9 +247,11 @@ beforeAll(async () => {
   // likewise not applied here, and both matter for the same reason the prune's do: a missing row
   // answers -1 from `age()`, which is below every threshold, so an unseeded row would make "a
   // closed gate stamps nothing" pass without the gate doing anything.
+  // `saga/clipping-requests` is seeded by 093_clipping_requests_heartbeat.sql, likewise not applied here, for the same reason.
   for (const key of ["saga/owner-clock", "saga/deadlines", "saga/market-refresh",
                      "saga/conversation-prune", "saga/conversation-prune/tick",
-                     "saga/telegram-handover", "saga/telegram-handover/tick"]) {
+                     "saga/telegram-handover", "saga/telegram-handover/tick",
+                     "saga/clipping-requests"]) {
     await pool.query(`INSERT INTO heartbeat (agent) VALUES ($1) ON CONFLICT (agent) DO NOTHING`, [key]);
   }
 }, 120_000);

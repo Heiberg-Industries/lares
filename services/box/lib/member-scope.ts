@@ -751,6 +751,25 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "organisation or one member's register id, copied from the source, never from a page.",
   },
 
+  // ── 092_clipping_requests.sql ─────────────────────────────────────────────────────────────
+  {
+    table: "clipping_requests",
+    scope: "operational",
+    createdBy: `${BOX}/092_clipping_requests.sql`,
+    reason:
+      "A queue of console button presses (read a database, test, import, add columns) and their " +
+      "secret-free answers: ids, column names and counts. `requested_by` names the console " +
+      "administrator who pressed the button, an actor label, not a member's own content.",
+  },
+  {
+    table: "clipping_choice",
+    scope: "operational",
+    createdBy: `${BOX}/092_clipping_requests.sql`,
+    reason:
+      "One installation-wide setting row (which clipping source the digest reads). `set_by` is " +
+      "the console administrator who changed it, an actor label, not a member's own content.",
+  },
+
   // ── Not created by any services/box/sql migration — box 084 (W5I-s6) gave both an `owner`
   // column, so they are `member`/`registry` from here on, not `resolved` any more. The column is
   // NULLABLE and carries no default (`services/chief-of-staff/lib/dream/store.ts`'s

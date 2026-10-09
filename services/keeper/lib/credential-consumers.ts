@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { z } from 'zod';
 import type { KeeperConfig } from './config.js';
 import { INTEGRATION_SECRET_FILES } from './runtime-bindings.js';
-import type { CredentialConsumer } from './credential-state.js';
+import type { CredentialConsumer, CredentialGrant } from './credential-state.js';
 
 /** Root-owned retained inventory plus actual resource/definition records, not catalogue rows.
  * Missing data fails closed. Runtime activation must recheck Docker ownership in its own slice.
@@ -11,7 +11,9 @@ import type { CredentialConsumer } from './credential-state.js';
 export type CredentialConsumerConfig = Pick<KeeperConfig, 'secretsDir' | 'credentials'> & {
   lifecycle?: Pick<NonNullable<KeeperConfig['lifecycle']>, 'bindings' | 'defaultBindings'> & { egress?: Pick<NonNullable<KeeperConfig['lifecycle']>['egress'], 'legacyConsumers'> };
 };
-export async function credentialConsumers(pool: Pool, config: CredentialConsumerConfig): Promise<CredentialConsumer[]> {
+export async function credentialConsumers(pool: Pool, config: CredentialConsumerConfig, grants: CredentialGrant[] = []): Promise<CredentialConsumer[]> {
+  // A grant is only honoured for the chief of staff role; anything else is listed, never silent.
+  const granted = new Set(grants.filter(g => (g.purposes as string[]).includes('clipping')).map(g => g.agent));
   if (!config.credentials?.inventoryComplete || !config.lifecycle) throw new Error('Credential inventory unavailable');
   const result: CredentialConsumer[] = config.credentials.retainedConsumers.map(c => ({ ...c, incarnation: null }));
   const activePath = join(config.secretsDir, INTEGRATION_SECRET_FILES.NOTION_TOKEN_FILE);
@@ -45,17 +47,38 @@ export async function credentialConsumers(pool: Pool, config: CredentialConsumer
     }
     const bindings = [role, ...(appliedRole ? [appliedRole] : [])].map(role =>
       config.lifecycle!.bindings?.[name] ?? config.lifecycle!.defaultBindings?.[role]);
+    // A grant is honoured for the chief of staff only; any other named agent is listed, never silent.
+    if (granted.has(name) && (role !== 'chief-of-staff' || appliedRole !== 'chief-of-staff')) {
+      result.push({name, category:'runtime-not-ready', incarnation});
+      continue;
+    }
     const tokenBindings = bindings.filter(b => b?.secrets.NOTION_TOKEN_FILE);
-    if (!tokenBindings.length) continue;
+    if (!tokenBindings.length) {
+      if (!granted.has(name)) continue;
+      // Granted: the managed active file is added to the agent's own binding, which must already exist
+      // (nothing is invented). Same ready rules as a configured binding.
+      result.push({ name, category: bindings.every(Boolean) ? 'owned-agent' : 'runtime-not-ready', incarnation });
+      continue;
+    }
     const category = tokenBindings.some(b => b!.secrets.NOTION_TOKEN_FILE !== activePath) ? 'external-binding'
       : appliedRole !== role ? 'runtime-not-ready'
       : 'owned-agent';
     result.push({ name, category, incarnation });
   }
+  // A granted agent with no definition and no resource row is fully deleted: it can mount nothing (lifecycle
+  // renders only resource rows), so its grant is stale and must not freeze the key. An agent that still
+  // has either row but is not a ready chief of staff is listed above, never silent.
   // Unregistered named bindings must not be missed simply because the join found no agent.
   for (const [name, binding] of Object.entries(config.lifecycle.bindings ?? {})) {
     if (binding.secrets.NOTION_TOKEN_FILE && !rows.some(row => row.name === name))
       result.push({ name, category: 'runtime-not-ready', incarnation: null });
   }
   return result.sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category));
+}
+/** Which of these agents have neither a definition nor a resource row (fully deleted). */
+export async function deletedAgents(pool: Pool, names: string[]): Promise<Set<string>> {
+  if (!names.length) return new Set();
+  const { rows } = await pool.query('SELECT name FROM agent_definitions WHERE name = ANY($1) UNION SELECT name FROM agent_resources WHERE name = ANY($1)', [names]);
+  const known = new Set(rows.map((r: { name: string }) => r.name));
+  return new Set(names.filter(n => !known.has(n)));
 }

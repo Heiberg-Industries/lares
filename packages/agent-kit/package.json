@@ -30,6 +30,7 @@
     "./refresh-lock": "./src/refresh-lock.ts",
     "./credential": "./src/credential.ts",
     "./credential-lifecycle": "./src/credential-lifecycle.ts",
+    "./clipping-console": "./src/clipping-console.ts",
     "./gateway-status": "./src/gateway-status.ts",
     "./clock": "./src/clock.ts",
     "./memory-core": "./src/memory-core.ts",

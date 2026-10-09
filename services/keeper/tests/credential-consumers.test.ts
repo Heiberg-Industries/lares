@@ -50,3 +50,25 @@ it('finds alternate broad mounts and retained Notion egress consumers without tr
   c.lifecycle!.egress={legacyConsumers:[{name:'sync',address:'172.30.0.40',hosts:['api.notion.com']}]};
   expect(await credentialConsumers(pool([owned]),c)).toMatchObject([{name:'alternate-mount',category:'external-binding'},{name:'example',category:'owned-agent'},{name:'sync',category:'unmanaged-service'}]);
 });
+const chiefRow = { ...owned, name: 'chief', definition: { role: 'chief-of-staff' }, applied_definition: { role: 'chief-of-staff' } };
+const grantFor = (agent: string) => [{ agent, purposes: ['clipping' as const] }];
+const chiefConfig = () => { const c = config(); c.lifecycle!.defaultBindings!['chief-of-staff'] = { role: 'chief-of-staff', environment: {}, mounts: [], secrets: {} }; return c; };
+it('counts a granted chief of staff as an owned consumer, and nothing else without the grant', async () => {
+  expect(await credentialConsumers(pool([chiefRow]), chiefConfig())).toEqual([]);
+  expect(await credentialConsumers(pool([chiefRow]), chiefConfig(), grantFor('chief'))).toEqual([{ name: 'chief', category: 'owned-agent', incarnation }]);
+});
+it('lists a grant it cannot honour instead of ignoring it', async () => {
+  // Not a chief of staff: listed as not ready even though a creative key binding exists.
+  expect(await credentialConsumers(pool([owned]), config(), grantFor('example'))).toMatchObject([{ name: 'example', category: 'runtime-not-ready' }]);
+  // Fully deleted agent (no definition, no resource row): ignored, it can mount nothing.
+  expect(await credentialConsumers(pool([]), config(), grantFor('ghost'))).toEqual([]);
+  // Chief with no base binding at all: nothing is invented.
+  expect(await credentialConsumers(pool([chiefRow]), config(), grantFor('chief'))).toMatchObject([{ name: 'chief', category: 'runtime-not-ready' }]);
+  // Not ready runtime stays not ready.
+  expect(await credentialConsumers(pool([{ ...chiefRow, state: 'provisioning' }]), chiefConfig(), grantFor('chief'))).toMatchObject([{ category: 'runtime-not-ready' }]);
+});
+it('deletedAgents names only agents with neither a definition nor a resource row', async () => {
+  const { deletedAgents } = await import('../lib/credential-consumers.js');
+  expect(await deletedAgents(pool([{ name: 'chief' }]), ['chief', 'ghost'])).toEqual(new Set(['ghost']));
+  expect(await deletedAgents(pool([]), [])).toEqual(new Set());
+});

@@ -135,6 +135,9 @@
   "description": "",
   "doors": [],
   "schedules": {
+    "clipping-requests": {
+      "on": true
+    },
     "conversation-prune": {
       "on": false
     },

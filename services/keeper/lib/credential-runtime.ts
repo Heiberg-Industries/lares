@@ -6,7 +6,7 @@ import { assertDeclarationIntegrity } from '@lares/agent-kit/manifest';
 import { KeeperRefusedError } from './actions.js';
 import { credentialConsumers } from './credential-consumers.js';
 import type { CredentialRuntime } from './credential-activation.js';
-import type { CredentialRecord } from './credential-state.js';
+import { inventoryGrants, type CredentialRecord } from './credential-state.js';
 import type { KeeperConfig } from './config.js';
 import type { DockerBoundary } from './docker.js';
 import type { AgentLifecycle } from './lifecycle.js';
@@ -55,7 +55,7 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
     return runtime;
   }
   async snapshot(record: CredentialRecord, recovery = false) {
-    const consumers = await credentialConsumers(this.pool, this.config);
+    const consumers = await credentialConsumers(this.pool, this.config, inventoryGrants(record));
     if (consumers.some(c => c.category !== 'owned-agent' || !c.incarnation)) throw new KeeperRefusedError('Review unsupported credential consumers on the host');
     if (!this.docker.credentialMounts) throw new KeeperRefusedError('Actual credential mount inventory unavailable');
     const mounts = await this.docker.credentialMounts(join(this.config.secretsDir, 'notion-token'));
@@ -84,6 +84,7 @@ export class OwnedCredentialRuntime implements CredentialRuntime {
     await this.docker.stop(name);
     if ((await this.owned(name, incarnation)).running) throw new KeeperRefusedError('Credential consumer did not stop');
   }
+  installationBound(name: string) { return this.lifecycle.installationBindsNotion(name); }
   reconcile(name: string, revision: string | null) { return this.lifecycle.reconcileCredential(name, revision); }
   async verify(name: string, incarnation: string, revision: string | null) { await this.owned(name, incarnation, revision, true); }
 }

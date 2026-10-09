@@ -176,7 +176,7 @@ describe("not configured, and unsupported setups", () => {
   it("no source row: skipped silently, and says not-configured, not ok", async () => {
     await db.query(`DELETE FROM clipping_sources`);
     const r = await run();
-    expect(r).toEqual({ outcome: "not-configured", imported: 0, notices: [] });
+    expect(r).toEqual({ outcome: "not-configured", imported: 0, detail: "No clipping source is saved yet.", notices: [] });
     expect(fake.world.requests).toHaveLength(0);
     expect((await db.query(`SELECT count(*)::int AS n FROM repairs`)).rows[0].n).toBe(0);
   });

@@ -20,7 +20,7 @@ import {
   ClippingFailure, STEP_BUDGET_MS, classifyNotionError, withBudget,
   type ClippingOutcome, type KeyState, type NotionLike,
 } from "./notion-reader.js";
-import { loadNotionSources, recordSourceState, type Queryable, type SourceRow } from "./store.js";
+import { loadNotionSources, recordSourceState, type Counts, type Queryable, type SourceRow } from "./store.js";
 import { runClippingSync, type InboxPort } from "./sync.js";
 
 export const REPAIR_KIND = "clipping";
@@ -42,6 +42,10 @@ export interface ClippingStepDeps {
 export interface ClippingStepResult {
   outcome: ClippingOutcome;
   imported: number;
+  /** One owner sentence for the outcome (a failure, a warning, or why nothing ran); null on a clean pass. */
+  detail: string | null;
+  /** The pass's counts, on success only. */
+  counts?: Counts;
   /** Lines for the digest summary. Empty on success and when nothing is configured. */
   notices: string[];
 }
@@ -82,9 +86,28 @@ async function fail(
   return `Clipping from Notion did not run: ${f.ownerText} Last good fetch: ${when(source.lastSuccessAt)}.`;
 }
 
-export async function clippingPass(deps: ClippingStepDeps): Promise<ClippingStepResult> {
+/**
+ * One pass at a time in this process. The digest's clipping step and the request drain's
+ * "Import now" both call `clippingPass`, and two passes over one source would read the same
+ * watermark and race on the ledger. The second caller WAITS for the first (a pass is bounded by
+ * STEP_BUDGET_MS, so the wait is too) instead of being refused or skipped.
+ */
+let passTail: Promise<unknown> = Promise.resolve();
+export function withClippingLock<T>(work: () => Promise<T>): Promise<T> {
+  const run = passTail.then(work, work);
+  passTail = run.catch(() => undefined);
+  return run;
+}
+
+export function clippingPass(deps: ClippingStepDeps): Promise<ClippingStepResult> {
+  return withClippingLock(() => clippingPassUnlocked(deps));
+}
+
+async function clippingPassUnlocked(deps: ClippingStepDeps): Promise<ClippingStepResult> {
   const sources = await loadNotionSources(deps.db);
-  if (sources.length === 0) return { outcome: "not-configured", imported: 0, notices: [] };
+  if (sources.length === 0) {
+    return { outcome: "not-configured", imported: 0, detail: "No clipping source is saved yet.", notices: [] };
+  }
 
   const source = sources[0]!;
   const problem = supportedProblem(source, sources.length);
@@ -93,7 +116,7 @@ export async function clippingPass(deps: ClippingStepDeps): Promise<ClippingStep
     for (const s of sources) {
       notices.push(await fail(deps, s, new ClippingFailure("unsupported-source", problem)));
     }
-    return { outcome: "unsupported-source", imported: 0, notices: [...new Set(notices)].slice(0, 1) };
+    return { outcome: "unsupported-source", imported: 0, detail: problem, notices: [...new Set(notices)].slice(0, 1) };
   }
 
   const key = deps.token();
@@ -101,14 +124,14 @@ export async function clippingPass(deps: ClippingStepDeps): Promise<ClippingStep
     // Nothing delivers a key to this agent. Not a failure, and it must never close a repair
     // that a real failure opened.
     await recordSourceState(deps.db, source.id, { outcome: "not-configured", detail: "No Notion key is connected." });
-    return { outcome: "not-configured", imported: 0, notices: [] };
+    return { outcome: "not-configured", imported: 0, detail: "No Notion key is connected.", notices: [] };
   }
   if (key.kind === "unreadable") {
     const f = new ClippingFailure(
       "key-unreadable", "The Notion key is delivered but cannot be read.",
       "Check the Notion connection on the Integrations page and apply the key again.",
     );
-    return { outcome: f.outcome, imported: 0, notices: [await fail(deps, source, f)] };
+    return { outcome: f.outcome, imported: 0, detail: f.ownerText, notices: [await fail(deps, source, f)] };
   }
   const token = key.token;
 
@@ -132,10 +155,13 @@ export async function clippingPass(deps: ClippingStepDeps): Promise<ClippingStep
         `skipped ${c.skipped} (${c.noLink} without a link, ${c.duplicates} duplicate), ` +
         `edited after filing ${c.editedAfterFiling}`,
     );
-    return { outcome: "ok", imported: c.imported, notices: [] };
+    return {
+      outcome: "ok", imported: c.imported, counts: c,
+      detail: result.warnings.length ? result.warnings.join(" ").slice(0, 400) : null, notices: [],
+    };
   } catch (e) {
     const failure = classifyNotionError(e);
     deps.log?.(`clipping: ${failure.outcome} — ${failure.ownerText}`);
-    return { outcome: failure.outcome, imported: 0, notices: [await fail(deps, source, failure)] };
+    return { outcome: failure.outcome, imported: 0, detail: failure.ownerText, notices: [await fail(deps, source, failure)] };
   }
 }

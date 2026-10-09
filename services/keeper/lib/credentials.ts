@@ -1,18 +1,20 @@
-import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialTokenInput as token } from '@lares/agent-kit/credential-lifecycle';
+import { credentialSlotInput, credentialRevisionInput, credentialActivationInput, credentialGrantInput, credentialGrantPreviewInput, credentialGrantPreviewSchema, credentialTokenInput as token, type CredentialGrantPreview } from '@lares/agent-kit/credential-lifecycle';
 import { KeeperRefusedError, KeeperOutcomeUncertainError, registerAction, type ActionContext } from './actions.js';
-import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, type CredentialConfig, type CredentialConsumer, type CredentialRecord, type CredentialStatus } from './credential-state.js';
+import { CREDENTIAL_SLOT, credentialRecordSchema, credentialStatusSchema, interruptedCredential, inventoryGrants, type CredentialConfig, type CredentialConsumer, type CredentialGrant, type CredentialRecord, type CredentialStatus } from './credential-state.js';
 import type { CredentialJournal, CredentialStore } from './credential-store.js';
 import { CredentialFiles, newCredentialRevision } from './credential-files.js';
 import type { NotionCredentialTester } from './notion-credential.js';
-import type { CredentialActivation, CredentialActivationInput } from './credential-activation.js';
+import type { CredentialActivation, CredentialActivationInput, CredentialGrantRequest } from './credential-activation.js';
 
 /** Explicit tests share the foundation's lock and custody. Status and discard never test.
  * Only explicit Apply/disconnect enter the owned runtime activation boundary.
  */
 export class Credentials {
   constructor(private config: CredentialConfig | undefined, private store: CredentialStore,
-    private files: CredentialFiles, private consumers: () => Promise<CredentialConsumer[]>,
-    private tester?: NotionCredentialTester, private activation?: CredentialActivation) {}
+    private files: CredentialFiles, private consumers: (grants: CredentialGrant[]) => Promise<CredentialConsumer[]>,
+    private tester?: NotionCredentialTester, private activation?: CredentialActivation,
+    /** Which of these agents are fully deleted (no definition, no resource row). */
+    private deleted?: (names: string[]) => Promise<Set<string>>) {}
   private authorize(ctx: ActionContext): void {
     if (ctx.host) return;
     if (!this.config?.administrator) throw new KeeperRefusedError('Configure one credential administrator on the host');
@@ -21,7 +23,7 @@ export class Credentials {
   private dto(r: CredentialRecord | null, state: CredentialStatus['state'], guidance: CredentialStatus['guidance'], consumers = r?.consumers ?? []): CredentialStatus {
     return credentialStatusSchema.parse({ slot: CREDENTIAL_SLOT, state, guidance, revision: r?.version ?? null,
       activeRevision: r?.activeRevision ?? null, candidateRevision: r?.candidateRevision ?? null,
-      phase: r?.phase ?? null, test: r?.test ?? null, consumers, activation: r?.activation ?? [], rollback: r?.rollback ?? [] });
+      phase: r?.phase ?? null, test: r?.test ?? null, consumers, activation: r?.activation ?? [], rollback: r?.rollback ?? [], grants: r?.grants ?? [] });
   }
   private async inspect(r: CredentialRecord): Promise<CredentialStatus> {
     if (!this.config?.administrator) return this.dto(r, 'host-administration-required', 'configure-administrator');
@@ -39,7 +41,7 @@ export class Credentials {
     } catch { return this.dto(r, 'recovery-required', 'inspect-journal'); }
     if (!this.config.inventoryComplete) return this.dto(r, 'host-administration-required', 'review-consumers', this.config.retainedConsumers.map(c => ({ ...c, incarnation: null })));
     let consumers: CredentialConsumer[];
-    try { consumers = await this.consumers(); }
+    try { consumers = await this.consumers(inventoryGrants(r)); }
     catch { return this.dto(r, 'unavailable', 'status-unavailable'); }
     if (!this.config.inventoryComplete || consumers.some(c => c.category !== 'owned-agent'))
       return this.dto(r, 'host-administration-required', 'review-consumers', consumers);
@@ -56,8 +58,27 @@ export class Credentials {
   }
   async status(ctx: ActionContext): Promise<CredentialStatus> {
     this.authorize(ctx);
-    try { return await this.inspect(credentialRecordSchema.parse(await this.store.read())); }
+    try { return await this.markStale(await this.inspect(credentialRecordSchema.parse(await this.store.read()))); }
     catch { return this.dto(null, 'unavailable', 'status-unavailable'); }
+  }
+  /** Flag grants whose agent was deleted. Advisory: if the lookup fails the grants stay unflagged. */
+  private async markStale(status: CredentialStatus): Promise<CredentialStatus> {
+    if (!this.deleted || !status.grants?.length) return status;
+    try {
+      const gone = await this.deleted(status.grants.map(g => g.agent));
+      return { ...status, grants: status.grants.map(g => gone.has(g.agent) ? { ...g, stale: true as const } : g) };
+    } catch { return status; }
+  }
+  /** Read-only: the inventory a grant would produce, for the console to confirm. Never writes or restarts. */
+  async previewGrant(input: { agent: string; purpose: 'clipping' }, ctx: ActionContext): Promise<CredentialGrantPreview> {
+    this.authorize(ctx);
+    if (!this.activation) throw new KeeperRefusedError('Prepare owned credential runtime activation on the host');
+    return this.store.locked(async journal => {
+      const old = credentialRecordSchema.parse(await journal.read());
+      if (interruptedCredential(old)) throw new KeeperRefusedError('Credential recovery required; inspect status');
+      await this.prepared(old);
+      return credentialGrantPreviewSchema.parse(await this.activation!.previewGrant(old, { agent: input.agent, purpose: input.purpose }));
+    });
   }
   private async current(journal: CredentialJournal, expected: number): Promise<CredentialRecord> {
     const r = credentialRecordSchema.parse(await journal.read());
@@ -96,7 +117,7 @@ export class Credentials {
     // the result. Leave durable testing intent; never certify different bytes/inventory.
     if (read() !== value || custody && JSON.stringify(custody) !== JSON.stringify(this.files.candidateCustody(revision)) || this.files.unexpectedFiles(intent.candidateRevision, intent.rollbackRevision))
       throw new KeeperOutcomeUncertainError();
-    const consumers = await this.consumers();
+    const consumers = await this.consumers(inventoryGrants(intent));
     const inventory = (items: CredentialConsumer[]) => JSON.stringify([...items].sort((a, b) => a.name.localeCompare(b.name) || a.category.localeCompare(b.category)));
     if (!this.config?.inventoryComplete || consumers.some(c => c.category !== 'owned-agent') || inventory(consumers) !== inventory(intent.consumers))
       throw new KeeperOutcomeUncertainError();
@@ -183,13 +204,36 @@ export class Credentials {
       });
     });
   }
-  async change(kind: 'apply' | 'disconnect', expectedRevision: number, input: CredentialActivationInput, ctx: ActionContext): Promise<CredentialStatus> {
+  async change(kind: 'apply' | 'disconnect' | 'grant' | 'revoke', expectedRevision: number, input: CredentialActivationInput, ctx: ActionContext,
+    grant?: CredentialGrantRequest): Promise<CredentialStatus> {
     this.authorize(ctx);
     if (!this.activation) throw new KeeperRefusedError('Prepare owned credential runtime activation on the host');
     return this.store.locked(async journal => {
       const old = await this.current(journal, expectedRevision);
       await this.prepared(old);
-      const saved = await this.activation!.change(journal, old, input, kind, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null));
+      const saved = await this.activation!.change(journal, old, input, kind, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null), grant);
+      return this.dto(saved, saved.phase as CredentialStatus['state'], null);
+    });
+  }
+  /** Owner switch: give or take away the managed key for one purpose. Same guards as Apply. */
+  grant(expectedRevision: number, input: CredentialActivationInput & CredentialGrantRequest, ctx: ActionContext): Promise<CredentialStatus> {
+    return this.change('grant', expectedRevision, input, ctx, { agent: input.agent, purpose: input.purpose });
+  }
+  /** Revoke confirms the CURRENT status's inventoryRevision (nothing is added), unlike grant, which confirms
+   * the post-grant revision from credential.preview_grant. A grant whose agent is fully deleted is dropped
+   * from the journal alone: there is no runtime to restart. */
+  async revoke(expectedRevision: number, input: CredentialActivationInput & CredentialGrantRequest, ctx: ActionContext): Promise<CredentialStatus> {
+    const request = { agent: input.agent, purpose: input.purpose };
+    this.authorize(ctx);
+    if (!this.activation) throw new KeeperRefusedError('Prepare owned credential runtime activation on the host');
+    return this.store.locked(async journal => {
+      const old = await this.current(journal, expectedRevision);
+      await this.prepared(old);
+      const gone = (old.grants ?? []).some(g => g.agent === input.agent) && this.deleted
+        ? (await this.deleted([input.agent]).catch(() => new Set<string>())).has(input.agent) : false;
+      const saved = gone
+        ? await this.activation!.dropStaleGrant(journal, old, input, request, ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null))
+        : await this.activation!.change(journal, old, input, 'revoke', ctx, r => this.dto(r, r.phase as CredentialStatus['state'], null), request);
       return this.dto(saved, saved.phase as CredentialStatus['state'], null);
     });
   }
@@ -234,5 +278,8 @@ export function registerCredentialActions(credentials: Credentials): void {
   for (const kind of ['apply', 'disconnect'] as const)
     registerAction({ name: `credential.${kind}`, input: activationInput,
       run: (input, ctx) => credentials.change(kind, input.expectedRevision, input, ctx) });
+  registerAction({ name: 'credential.grant', input: credentialGrantInput, run: (input, ctx) => credentials.grant(input.expectedRevision, input, ctx) });
+  registerAction({ name: 'credential.revoke', input: credentialGrantInput, run: (input, ctx) => credentials.revoke(input.expectedRevision, input, ctx) });
+  registerAction({ name: 'credential.preview_grant', input: credentialGrantPreviewInput, run: (input, ctx) => credentials.previewGrant(input, ctx) });
   registerAction({ name: 'credential.recover', input: credentialRevisionInput, hostOnly: true, run: (input, ctx) => credentials.recover(input.expectedRevision, ctx) });
 }

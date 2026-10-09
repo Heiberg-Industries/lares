@@ -4,8 +4,9 @@
  * NOT part of `pnpm test`. Run by hand, by the owner, once before the import is trusted, and again
  * whenever the pinned Notion API version (lib/clipping/notion-reader.ts) or the SDK changes.
  * A fixture is what we believe Notion does; this is what it does. It is READ-ONLY: it never writes
- * to Notion, the vault or the database. It prints names, types, counts and PASS/FAIL lines, never
- * the content of a saved link.
+ * to the vault or the database, and it writes to Notion ONLY when you opt in with
+ * NOTION_CLIPPING_ALLOW_WRITE=1 (see below). It prints names, types, counts and PASS/FAIL lines,
+ * never the content of a saved link.
  *
  * USAGE (from the repository root, with the clipping database shared with your Lares connection):
  *
@@ -20,6 +21,14 @@
  *   NOTION_CLIPPING_MISSING_PAGE_ID   a page id that does not exist (default: a made-up id)
  *   NOTION_CLIPPING_TRASHED_PAGE_ID   a row you moved to the trash from this database (id of the
  *                                     page; open it from Notion's trash to copy the link)
+ *
+ *   NOTION_CLIPPING_DATABASE_LINK     the link as you copy it from Notion (Share, Copy link): checks
+ *                                     that parseDatabaseRef reads the id out of a real link and that
+ *                                     databases.retrieve answers for the id it returns
+ *   NOTION_CLIPPING_ALLOW_WRITE=1     OPT IN, WRITES TO NOTION. Adds the Status, For and Origin
+ *                                     columns to the data source (the console's "Add columns" button,
+ *                                     the same code), then runs it a second time and checks it adds
+ *                                     nothing. Use a throwaway database: the columns stay.
  *
  * BEFORE YOU RUN IT, to answer "does Notion's own clipper fill a URL column?": save one link into
  * the database from your phone's share sheet or the browser clipper, the way you really will. The
@@ -36,6 +45,9 @@
  *   6. a trashed row: omitted from the query, in_trash true on retrieve, no `archived` needed
  *   7. 404 on an id that is not shared (wrong database id), 401 on a bad key, 400 on a wrong
  *      column in the filter: each mapped to the same outcome the import reports
+ *   7b. databases.retrieve from a pasted link (opt-in by env, above)
+ *   7c. add-properties: dataSources.update adds the three columns, a re-run adds nothing, and the
+ *       shapes sent are accepted (opt-in, writes; above)
  *   8. 429 handling and timeout: Notion cannot be made to rate-limit or hang on demand, so these two
  *      run the PRODUCTION client settings against a local stub and check the wait and the bound
  *      (they take up to about 20 s and 15 s)
@@ -44,8 +56,9 @@ import { Client } from "@notionhq/client";
 
 import {
   NOTION_API_VERSION, RETRY, REQUEST_TIMEOUT_MS, checkSchema, classifyNotionError, makeNotionClient,
-  queryChangedPages, isPageGone, ClippingFailure,
+  queryChangedPages, isPageGone, ClippingFailure, parseDatabaseRef,
 } from "../../lib/clipping/notion-reader.js";
+import { addMissingProperties } from "../../lib/clipping/requests.js";
 import { mapPageToClip, type ClipSource } from "../../lib/clipping/record.js";
 
 const token = process.env["NOTION_TOKEN"];
@@ -266,6 +279,48 @@ try {
 } catch (e) {
   const f = classifyNotionError(e);
   check("a filter on a missing column maps to schema-mismatch (400 validation_error)", f.outcome === "schema-mismatch", f.outcome);
+}
+
+// 7b. a pasted link: the id parseDatabaseRef reads from it must be one databases.retrieve accepts
+{
+  const link = process.env["NOTION_CLIPPING_DATABASE_LINK"];
+  if (!link) {
+    skip("set NOTION_CLIPPING_DATABASE_LINK to the link as copied from Notion, to check the link parser against a real link");
+  } else {
+    const parsed = parseDatabaseRef(link);
+    check("parseDatabaseRef reads an id out of the pasted link", parsed !== null, parsed ? "an id" : "null");
+    check("the id from the link is the database id", parsed !== null && idOf(parsed) === idOf(databaseId), "compared without dashes");
+    if (parsed) {
+      try {
+        const d = (await client.databases.retrieve({ database_id: parsed })) as { object?: string; data_sources?: { id: string }[] };
+        check("databases.retrieve answers for the id read from the link", d.object === "database" && (d.data_sources?.length ?? 0) > 0, `${d.data_sources?.length ?? 0} data source(s)`);
+      } catch (e) {
+        check("databases.retrieve answers for the id read from the link", false, classifyNotionError(e).outcome);
+      }
+    }
+  }
+}
+
+// 7c. add-properties (opt in: this WRITES to Notion)
+if (process.env["NOTION_CLIPPING_ALLOW_WRITE"] === "1") {
+  try {
+    const first = await addMissingProperties(client, dataSourceId);
+    check("add-properties: every wanted column is now added or already present", first.added.length + first.present.length + first.conflicts.length === 3,
+      `added ${first.added.join(",") || "none"}; present ${first.present.join(",") || "none"}; conflicts ${first.conflicts.map((c) => `${c.name}(${c.found})`).join(",") || "none"}`);
+    const second = await addMissingProperties(client, dataSourceId);
+    check("add-properties: a re-run adds nothing", second.added.length === 0, `added ${second.added.join(",") || "none"}`);
+    const ds = (await client.dataSources.retrieve({ data_source_id: dataSourceId })) as { properties?: Props };
+    const byName = Object.fromEntries(Object.entries(ds.properties ?? {}).map(([n, p]) => [n.toLowerCase(), p.type]));
+    check("add-properties: Status and Origin are select, For is multi_select (where not in conflict)",
+      (first.conflicts.some((c) => c.name === "Status") || byName["status"] === "select") &&
+      (first.conflicts.some((c) => c.name === "For") || byName["for"] === "multi_select") &&
+      (first.conflicts.some((c) => c.name === "Origin") || byName["origin"] === "select"),
+      `status=${byName["status"]} for=${byName["for"]} origin=${byName["origin"]}`);
+  } catch (e) {
+    check("add-properties runs", false, (e as ClippingFailure).outcome ?? String(e));
+  }
+} else {
+  skip("set NOTION_CLIPPING_ALLOW_WRITE=1 to check add-properties (it WRITES three columns to the data source; use a throwaway database)");
 }
 
 // 8. 429 and timeout, against a local stub, with the production client settings

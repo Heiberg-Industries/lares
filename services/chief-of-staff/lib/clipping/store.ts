@@ -228,3 +228,23 @@ export async function recordKarakeepImport(
     sourceRevision: new Date().toISOString(), state: "imported", inboxPath: w.inboxPath,
   });
 }
+
+// --- which source runs (box/sql/092_clipping_requests.sql) --------------------------------
+
+export type ClippingMode = "notion" | "karakeep" | "both";
+
+/**
+ * The owner's choice of source, or null for "no choice recorded" (today's behaviour: each source
+ * runs if it is set up). A missing table (migration 092 not applied) is also null; any other
+ * error is a real fault and is thrown.
+ */
+export async function readClippingChoice(db: Queryable): Promise<ClippingMode | null> {
+  try {
+    const { rows } = await db.query(`SELECT mode FROM clipping_choice LIMIT 1`);
+    const mode = (rows[0] as { mode?: string } | undefined)?.mode;
+    return mode === "notion" || mode === "karakeep" || mode === "both" ? mode : null;
+  } catch (e) {
+    if ((e as { code?: string } | null)?.code === "42P01") return null;
+    throw e;
+  }
+}
