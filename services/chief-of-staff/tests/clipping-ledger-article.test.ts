@@ -66,9 +66,19 @@ describe("recordFiledArticle", () => {
     const inboxPath = clipInboxPath(sourceId, pageId(1));
     expect((await row(1)).state).toBe("imported");
 
-    expect(await recordFiledArticle(db, { inboxPath, filedPath: "articles/a-title.md" })).toBe(true);
+    expect(await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/a-title.md" })).toBe(true);
 
-    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "articles/a-title.md" });
+    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "shared:articles/a-title.md" });
+  });
+
+  it("keeps the area with the path, so same-named articles in the two areas stay apart", async () => {
+    fake.setPages([mkPage(1), mkPage(2)]);
+    await pass();
+    await recordFiledArticle(db, { inboxPath: clipInboxPath(sourceId, pageId(1)), area: "shared", filedPath: "articles/same.md" });
+    await recordFiledArticle(db, { inboxPath: clipInboxPath(sourceId, pageId(2)), area: "private", filedPath: "articles/same.md" });
+
+    expect((await row(1)).inbox_path).toBe("shared:articles/same.md");
+    expect((await row(2)).inbox_path).toBe("private:articles/same.md");
   });
 
   it("a clip already filed-unknown (the console's Import now race) still gets the path", async () => {
@@ -77,9 +87,9 @@ describe("recordFiledArticle", () => {
     const inboxPath = clipInboxPath(sourceId, pageId(1));
     await db.query(`UPDATE clipping_items SET state = 'filed-unknown' WHERE source_id = $1`, [sourceId]);
 
-    expect(await recordFiledArticle(db, { inboxPath, filedPath: "articles/a-title.md" })).toBe(true);
+    expect(await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/a-title.md" })).toBe(true);
 
-    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "articles/a-title.md" });
+    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "shared:articles/a-title.md" });
   });
 
   it("a path the ledger does not know changes nothing", async () => {
@@ -87,7 +97,7 @@ describe("recordFiledArticle", () => {
     await pass();
     const before = await row(1);
 
-    expect(await recordFiledArticle(db, { inboxPath: "_inbox/never-seen.md", filedPath: "articles/x.md" })).toBe(false);
+    expect(await recordFiledArticle(db, { inboxPath: "_inbox/never-seen.md", area: "shared", filedPath: "articles/x.md" })).toBe(false);
 
     expect(await row(1)).toEqual(before);
   });
@@ -98,7 +108,7 @@ describe("recordFiledArticle", () => {
     const inboxPath = clipInboxPath(sourceId, pageId(1));
     await db.query(`UPDATE clipping_items SET state = 'trashed' WHERE source_id = $1`, [sourceId]);
 
-    expect(await recordFiledArticle(db, { inboxPath, filedPath: "articles/x.md" })).toBe(false);
+    expect(await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/x.md" })).toBe(false);
 
     expect(await row(1)).toEqual({ state: "trashed", inbox_path: inboxPath });
   });
@@ -107,7 +117,7 @@ describe("recordFiledArticle", () => {
     fake.setPages([mkPage(1, { title: "Old", edited: "2026-10-01T10:01:00.000Z" })]);
     await pass();
     const inboxPath = clipInboxPath(sourceId, pageId(1));
-    await recordFiledArticle(db, { inboxPath, filedPath: "articles/old.md" });
+    await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/old.md" });
     inbox.filed(inboxPath); // the digest retired the inbox note
 
     fake.put(mkPage(1, { title: "Edited later", edited: "2026-10-01T10:20:00.000Z" }));
@@ -115,18 +125,18 @@ describe("recordFiledArticle", () => {
 
     expect(r.outcome).toBe("ok");
     expect(inbox.files.size).toBe(0);
-    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "articles/old.md" });
+    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "shared:articles/old.md" });
   });
 
   it("a second record for the same inbox path is a no-op: the path is already the article's", async () => {
     fake.setPages([mkPage(1)]);
     await pass();
     const inboxPath = clipInboxPath(sourceId, pageId(1));
-    await recordFiledArticle(db, { inboxPath, filedPath: "articles/first.md" });
+    await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/first.md" });
 
-    expect(await recordFiledArticle(db, { inboxPath, filedPath: "articles/second.md" })).toBe(false);
+    expect(await recordFiledArticle(db, { inboxPath, area: "shared", filedPath: "articles/second.md" })).toBe(false);
 
-    expect((await row(1)).inbox_path).toBe("articles/first.md");
+    expect((await row(1)).inbox_path).toBe("shared:articles/first.md");
   });
 });
 
@@ -139,7 +149,7 @@ describe("makeLedgerOnFiled: best effort, never fails the filing", () => {
 
     await makeLedgerOnFiled(db, (m) => logs.push(m))(inboxPath, { area: "private", destPath: "articles/t.md" });
 
-    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "articles/t.md" });
+    expect(await row(1)).toEqual({ state: "filed-unknown", inbox_path: "private:articles/t.md" });
     expect(logs).toEqual([]);
   });
 

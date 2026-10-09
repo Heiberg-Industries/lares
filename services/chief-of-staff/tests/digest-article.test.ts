@@ -204,18 +204,27 @@ describe("areas, owners and scopes", () => {
     expect(fm(out.noteRaw, "owner")).toBeUndefined();
   });
 
-  it("a note with no visibility and no known source (a pasted chat link) follows the article area setting", () => {
-    const raw = "---\nurl: https://example.com/a\ntitle: A\n---\n\nJust a link.\n";
+  it("a note an agent wrote in chat (vault_write's real frontmatter, source: agent) follows the article area setting", () => {
+    // Exactly what the vault_write tool writes: title, type, source, lares_origin, created, tags.
+    const raw = "---\ntitle: A\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []\n---\n\nhttps://example.com/a\n\nWorth reading.\n";
     expect(chooseArea(parseInboxClip(raw), "shared")).toBe("shared");
+    expect(chooseArea(parseInboxClip(raw), "private")).toBe("private");
+  });
+
+  it("a note with no source at all has no provenance: private, whatever the setting", () => {
+    const raw = "---\nurl: https://example.com/a\ntitle: A\n---\n\nJust a link.\n";
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
     expect(chooseArea(parseInboxClip(raw), "private")).toBe("private");
     const out = build({ inboxBody: raw, area: "private" });
     expect(fm(out.noteRaw, "scope")).toBe("private");
     expect(fm(out.noteRaw, "lares_origin")).toBe("third_party");
   });
 
-  it("a chat link that names a member owner is not widened: private, whatever the setting", () => {
-    const raw = "---\nurl: https://example.com/a\nowner: fixture-member\n---\n\n";
-    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+  it("a chat note that names a member owner, or says it is private, is not widened", () => {
+    const owned = "---\nurl: https://example.com/a\nsource: agent\nowner: fixture-member\n---\n\n";
+    expect(chooseArea(parseInboxClip(owned), "shared")).toBe("private");
+    const priv = "---\nurl: https://example.com/a\nsource: agent\nvisibility: private\n---\n\n";
+    expect(chooseArea(parseInboxClip(priv), "shared")).toBe("private");
   });
 
   it("a source we do not recognise is private, whatever the setting", () => {

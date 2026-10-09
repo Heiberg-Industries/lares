@@ -257,10 +257,12 @@ export async function readClippingChoice(db: Queryable): Promise<ClippingMode | 
  * THE CHANGED MEANING OF `inbox_path`. While a clip waits, `inbox_path` is its place in the inbox
  * (`_inbox/...`). Once the digest files it as an article, nothing reads that place any more (the
  * note has left the inbox; `sync.ts` and the waiting-clip list only look at `imported` rows), so
- * this reuses the column for the article's own path (`articles/<name>.md`, in the shared or the
- * private area, whichever it went to). That is why no migration is needed. A row whose path starts
- * with `_inbox/` is still waiting or was filed by another route; one that starts with `articles/`
- * was filed as an article. The state becomes `filed-unknown`, the state the ledger already uses for
+ * this reuses the column for the article's own place, written `<area>:<path>`: `shared:articles/x.md`
+ * or `private:articles/x.md`. The area is part of the value because the two areas are separate
+ * stores and can each hold an article of the same name, so the path alone would not say which one
+ * a row means. That is why no migration is needed. A row whose value starts with `_inbox/` is still
+ * waiting or was filed by another route; one that starts with `shared:` or `private:` was filed as
+ * an article. The state becomes `filed-unknown`, the state the ledger already uses for
  * "the digest took it", so a later edit in Notion is counted and never re-imports the clip.
  *
  * Accepts `filed-unknown` as well as `imported`: the console's "Import now" can run a sync between
@@ -270,13 +272,13 @@ export async function readClippingChoice(db: Queryable): Promise<ClippingMode | 
  * or skipped row all change nothing. Returns whether a row changed.
  */
 export async function recordFiledArticle(
-  db: Queryable, w: { inboxPath: string; filedPath: string },
+  db: Queryable, w: { inboxPath: string; area: "shared" | "private"; filedPath: string },
 ): Promise<boolean> {
   const res = await db.query(
     `UPDATE clipping_items
      SET state = 'filed-unknown', inbox_path = $2, updated_at = now()
      WHERE inbox_path = $1 AND state IN ('imported', 'filed-unknown')`,
-    [w.inboxPath, w.filedPath],
+    [w.inboxPath, `${w.area}:${w.filedPath}`],
   );
   return (res.rowCount ?? 0) > 0;
 }
@@ -292,7 +294,7 @@ export function makeLedgerOnFiled(
 ): (inboxPath: string, filed: { area: "shared" | "private"; destPath: string }) => Promise<void> {
   return async (inboxPath, filed) => {
     try {
-      await recordFiledArticle(db, { inboxPath, filedPath: filed.destPath });
+      await recordFiledArticle(db, { inboxPath, area: filed.area, filedPath: filed.destPath });
     } catch (e) {
       if ((e as { code?: string } | null)?.code === "42P01") return;
       log(`could not record in the clipping ledger where ${inboxPath} went (${String(e instanceof Error ? e.message : e)})`);

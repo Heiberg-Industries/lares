@@ -96,11 +96,13 @@ function sourceOwner(clip: InboxClip): string {
  *   - `private` sends every clip to the private area.
  *   - A clip whose source is private is never shared, whatever the setting says.
  *   - A clip an organisation source marked `shared`, a Karakeep clip (recorded as the
- *     organisation's) and a link pasted in chat (no source, no visibility, no member owner) follow
- *     the setting. A pasted link belongs to the agent that was given it, which is why it follows
- *     the same setting as the organisation's own saves.
- *   - Anything else (an owner that is not a plain id, a visibility or a source this code does not
- *     know, a chat link that names a member) is not trusted and stays private.
+ *     organisation's) and a link an agent saved from a chat (`source: agent`, which is what the
+ *     `vault_write` tool writes; no visibility, no member owner) follow the setting. A pasted link
+ *     belongs to the agent that was given it, which is why it follows the same setting as the
+ *     organisation's own saves.
+ *   - Anything else (an owner that is not a plain id, a note with no source at all, a visibility
+ *     or a source this code does not know, a chat link that names a member) is not trusted and
+ *     stays private.
  *
  * Whether the shared area can actually be written (a grant on the filing agent, a folder that is
  * mounted writable) is the filer's concern, not this function's.
@@ -110,8 +112,10 @@ export function chooseArea(clip: InboxClip, setting: ArticleArea): ArticleArea {
   if (clip.owner !== undefined && !OWNER_TOKEN.test(clip.owner)) return "private";
   if (clip.visibility === "private") return "private";
   if (clip.visibility === "shared" || clip.source === "karakeep") return "shared";
+  // The `vault_write` tool leaves every note an agent saves from a chat as `source: agent`. A note
+  // with no source at all has no provenance, so it is not trusted to follow the setting.
   const pastedInChat =
-    clip.visibility === undefined && clip.source === undefined &&
+    clip.visibility === undefined && clip.source === "agent" &&
     (clip.owner === undefined || clip.owner === ORGANISATION);
   return pastedInChat ? "shared" : "private";
 }

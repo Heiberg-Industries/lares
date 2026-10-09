@@ -187,10 +187,13 @@ describe("a private article", () => {
   });
 });
 
-/** A link pasted in chat: no source, no visibility, committed in the private inbox. */
-function chatLink(): { path: string; body: string } {
+/**
+ * A link pasted in chat, as the `vault_write` tool leaves it in the private inbox: `source: agent`,
+ * no visibility, no owner, the link in the body. `frontmatter` replaces the frontmatter lines.
+ */
+function chatLink(frontmatter = "title: Pricing pages\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []"): { path: string; body: string } {
   const path = "_inbox/chat-link.md";
-  const body = "---\nurl: https://example.com/posts/pricing-pages\ntitle: Pricing pages\n---\n\nWorth reading.\n";
+  const body = `---\n${frontmatter}\n---\n\nhttps://example.com/posts/pricing-pages\n\nWorth reading.\n`;
   mkdirSync(join(privateRoot, "_inbox"), { recursive: true });
   writeFileSync(join(privateRoot, path), body);
   git(privateRoot, "add", "--", path);
@@ -227,7 +230,12 @@ describe("the article area setting", () => {
     expect(out).toMatchObject({ area: "private", fellBack: true });
   });
 
-  it("a link pasted in chat (no source) follows the setting: shared when shared", async () => {
+  it("a note with no source at all is private whatever the setting, and that is not a fall-back", async () => {
+    const out = await run(filer(sharedRoot, "shared"), chatLink("title: Pricing pages")).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("a link pasted in chat (source: agent) follows the setting: shared when shared", async () => {
     const out = await run(filer(sharedRoot, "shared"), chatLink()).promise;
     expect(out).toMatchObject({ area: "shared", fellBack: false });
   });
