@@ -198,8 +198,8 @@ page, this page is newer.
 - **Nothing merged after #95 is in an image.** rc.4 was built from main after #95; of #96 to
   #105, only #97, #100, #101, #104 and #105 change code. The image workflows on `main` run with
   publication off.
-- **The chief of staff's digest prompt named one installation.** It is being fixed in a
-  separate pull request; the engine must not carry any installation's name.
+- **The chief of staff's digest prompt named one installation.** It is being fixed in
+  #108 (open); the engine must not carry any installation's name.
 - **Remaining critical and high base-image findings in the first-party images (LAR-114).**
   rc.4 gives the scan evidence (the gateway and Caddy findings cleared; the keeper image, for
   example, still shows 2 critical and 62 high), and the remediation is still open.
@@ -233,7 +233,7 @@ page, this page is newer.
 ## Next
 
 1. **Make the sync-jobs package public**, then rehearse the switch (LAR-98) against rc.4.
-   After that, articles 1b: the digest wiring and the setting for which area articles go in.
+   After that, articles 1b, after #106 merges: the digest wiring and the setting for which area articles go in.
 2. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
    (`docs/plans/2026-10-08-lar-49-injection-suite.md`) splits it into three slices and
    needs the owner's yes on slice 1, which adds one standing sentence under every prompt
@@ -250,8 +250,8 @@ page, this page is newer.
 
 ## Open housekeeping
 
-- Open pull requests: #106 (review fixes for articles 1a), this documentation change, and a
-  separate fix for the digest prompt (being built). The branch `lar-49-injection-suite` holds only the
+- Open pull requests: #106 (review fixes for articles 1a) and #108 (digest prompt without
+  installation names). The branch `lar-49-injection-suite` holds only the
   LAR-49 plan and waits for the owner's decision on slice 1.
 - The real rehearsal of the switch, on a throwaway server with a copy of the
   real data, has not been done (LAR-98; needs the owner's go-ahead).

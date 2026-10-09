@@ -4,7 +4,7 @@
 
 Lares is an open-source, self-hosted engine with a chief of staff as its default experience.
 Private is the default; organisation sharing is an explicit choice once the boundaries work.
-Two exceptions are decided: articles that come from an organisation source default to the shared area, and personal data stays private by default.
+One exception is decided: articles that come from an organisation source default to the shared area. Personal data stays private by default.
 Other agents and personal templates remain possible without becoming required onboarding work.
 The roadmap should reduce maintenance and unnecessary model calls while preserving useful extension points.
 
@@ -307,8 +307,8 @@ lanes are Foundation, First useful assistant, Expansion, Experiment and Optional
 | Ownership and privacy | Members/roles, private/shared/participants scope, account ownership, per-member imports, approvals and budgets; retention, export and erasure; the one-shared-agent organisation model above | Foundation before shared use |
 | Security and recovery | Injection tests, sealed network access, no implicit external reporting, backup/restore rehearsal, trustworthy health and failure signals | Foundation |
 | Agent setup | Templates, identity, providers/settings, permissions, channels, save/start and developer preview | First useful assistant; existing builder amendment |
-| Clipping | Optional Notion capture and digest input that can replace a bookmark service; console connection/destination setup; verify transition | **High priority — confirmed**; reusable engine capability, no installation-specific fork |
-| Articles and radar | Articles as `article` notes with a reading state and a full-text companion file, filed in the shared area for organisation sources and in the member's private area for their own; a Notion Articles database as capture, mirror and owner-input channel, mirrored only to the database of the source an article came from; a rebuilt radar whose sources are settings, with a daily crawl that uses no model and one batched model call a week | Expansion on top of clipping; order in the delivery section below |
+| Clipping | Optional Notion capture and digest input that can replace a bookmark service; console connection/destination setup; verify transition | **High priority — confirmed**; reusable engine capability, no installation-specific fork; import and console card merged, not deployed |
+| Articles and radar | Articles as `article` notes with a reading state and a full-text companion file, filed in the shared area for organisation sources and in the member's private area for their own, with a link pasted in chat going where that agent files (the shared area for the shared agent, the member's private area for a personal agent); a Notion Articles database as capture, mirror and owner-input channel, each article mirrored only to a database of the same owner and visibility as the article; a rebuilt radar whose sources are settings, with a daily crawl that uses no model and one batched model call a week | Expansion on top of clipping; order in the delivery section below |
 | Daily usefulness | Briefs/digests, schedules/quiet hours, language/timezone, deadlines/renewals, obligations, meeting follow-ups and calendar conflict resolution | First useful assistant; source freshness and delivery evidence |
 | Email and writing | Show and revise drafts, owner instructions, relationship context, examples, draft/final capture, reviewed learning and later long-form writing | First useful assistant; baseline before learning expansion |
 | Approvals | See exact proposed content, revise/cancel while waiting, acknowledge queued messages, reliable delivery when an agent is down | First useful assistant; durable execution |
