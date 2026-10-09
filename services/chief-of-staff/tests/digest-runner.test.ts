@@ -5,6 +5,7 @@
  */
 import { describe, it, expect } from "vitest";
 
+import { VaultPushFailedError } from "@lares/agent-kit/vault-git";
 import { runDigest, type RunnerDeps } from "../lib/digest/runner.js";
 import type { EnrichedItem } from "../lib/digest/enrich.js";
 import type { FileArticleFn } from "../lib/digest/article-file.js";
@@ -37,7 +38,7 @@ function setup(over: Partial<RunnerDeps> = {}) {
   };
   const fileArticle: FileArticleFn = async (input) => {
     log.articles.push(input.inboxPath);
-    await input.classify();
+    await input.classify({ area: "shared" });
     return { title: "T", area: "shared", destPath: `articles/${input.inboxPath.split("/").pop()}`, duplicate: false, fellBack: false };
   };
   const deps: RunnerDeps = {
@@ -124,7 +125,7 @@ describe("saved links become articles", () => {
       fileArticle: async (input) => {
         if (input.inboxPath.endsWith("01.md")) throw new Error("push failed");
         log.articles.push(input.inboxPath);
-        await input.classify();
+        await input.classify({ area: "shared" });
         return { title: "T", area: "shared", destPath: "articles/x.md", duplicate: false, fellBack: false };
       },
     });
@@ -185,12 +186,89 @@ describe("the ceiling on model calls per pass", () => {
   });
 });
 
+describe("a push that fails after the article is already filed", () => {
+  const failingPush = (async (input) => {
+    await input.classify({ area: "private" });
+    return {
+      title: "T", area: "private", destPath: "articles/x.md", duplicate: false, fellBack: false,
+      pushFailure: new VaultPushFailedError("abc1234", new Error("remote unreachable")),
+    };
+  }) satisfies FileArticleFn;
+
+  it("still tells the callback where the article went, and reports the failure as an error", async () => {
+    const { deps, log } = setup({ listInbox: async () => items(1), fileArticle: failingPush });
+    const summary = await runDigest(deps);
+
+    expect(log.filedCallbacks).toEqual([["_inbox/item-00.md", { area: "private", destPath: "articles/x.md" }]]);
+    expect(summary.filed).toHaveLength(1);
+    expect(summary.errors).toHaveLength(1);
+    expect(summary.errors[0]!.path).toBe("_inbox/item-00.md");
+    expect(summary.errors[0]!.error).toMatch(/push to origin failed/);
+  });
+});
+
+describe("what the model is shown for an article", () => {
+  it("sends no private note names when the article will be shared, and sends them when it will not", async () => {
+    const prompts: string[] = [];
+    const run = async (area: "shared" | "private") => {
+      const { deps } = setup({
+        listInbox: async () => items(1),
+        llm: async (p) => {
+          prompts.push(p);
+          return "{}";
+        },
+        fileArticle: async (input) => {
+          await input.classify({ area });
+          return { title: "T", area, destPath: "articles/x.md", duplicate: false, fellBack: false };
+        },
+      });
+      await runDigest(deps);
+    };
+    await run("shared");
+    await run("private");
+    expect(prompts[0]).not.toContain("some-note");
+    expect(prompts[1]).toContain("some-note");
+  });
+});
+
+describe("a pass that held items back", () => {
+  it("files them on the next pass, once the first batch has left the inbox", async () => {
+    let inboxNow = items(25);
+    const filedPaths: string[] = [];
+    const common = {
+      listInbox: async () => inboxNow,
+      fileArticle: (async (input) => {
+        await input.classify({ area: "shared" });
+        filedPaths.push(input.inboxPath);
+        return { title: "T", area: "shared", destPath: "articles/x.md", duplicate: false, fellBack: false };
+      }) satisfies FileArticleFn,
+    };
+
+    const first = setup(common);
+    const firstSummary = await runDigest(first.deps);
+    expect(firstSummary.filed).toHaveLength(20);
+    expect(firstSummary.notices).toContain("5 more saved items will be filed in the next pass.");
+
+    // The filer retired the 20 it filed; the 5 held back are still there.
+    inboxNow = inboxNow.filter((i) => !filedPaths.includes(i.path));
+    expect(inboxNow.map((i) => i.path)).toEqual([
+      "_inbox/item-20.md", "_inbox/item-21.md", "_inbox/item-22.md", "_inbox/item-23.md", "_inbox/item-24.md",
+    ]);
+
+    const second = setup(common);
+    const secondSummary = await runDigest(second.deps);
+    expect(secondSummary.filed).toHaveLength(5);
+    expect(secondSummary.notices).toEqual([]);
+    expect(new Set(filedPaths).size).toBe(25);
+  });
+});
+
 describe("when the shared area is not connected", () => {
   it("tells the owner how many articles went to the private area", async () => {
     const { deps } = setup({
       listInbox: async () => items(3),
       fileArticle: async (input) => {
-        await input.classify();
+        await input.classify({ area: "private" });
         return { title: "T", area: "private", destPath: "articles/x.md", duplicate: false, fellBack: true };
       },
     });
@@ -202,7 +280,7 @@ describe("when the shared area is not connected", () => {
     const { deps } = setup({
       listInbox: async () => items(1),
       fileArticle: async (input) => {
-        await input.classify();
+        await input.classify({ area: "private" });
         return { title: "T", area: "private", destPath: "articles/x.md", duplicate: false, fellBack: true };
       },
     });

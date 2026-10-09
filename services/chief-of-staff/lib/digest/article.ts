@@ -126,6 +126,8 @@ export function normaliseTopics(clipTags: readonly string[], modelTopics: readon
 const MIN_EXCERPT = 40;
 const MAX_EXCERPT = 400;
 const MAX_EXCERPTS = 3;
+/** The model is asked for 2 to 4 sentences; code does not trust it to stop there. */
+const MAX_SUMMARY = 1200;
 
 /** Whitespace collapsed, curly quotes straightened, long dashes made hyphens. */
 function squash(s: string): string {
@@ -137,7 +139,12 @@ function squash(s: string): string {
     .trim();
 }
 
-/** Keep an excerpt only if it is 40 to 400 characters and found word for word in the page. */
+/**
+ * Keep an excerpt only if it is 40 to 400 characters and found word for word in the page.
+ * "Word for word" is judged after `squash`, and the excerpt that is kept (and later written to the
+ * note) is that squashed form: straight quotes, plain hyphens, single spaces. It is not
+ * necessarily byte-identical to the page's own typography.
+ */
 export function filterExcerpts(proposed: readonly string[], fullText: string): string[] {
   const haystack = squash(fullText);
   const out: string[] = [];
@@ -267,7 +274,7 @@ export function buildArticle(input: BuildArticleInput): BuiltArticle {
     "sources:",
     `  - resource: ${q(link)}`,
     `${ARTICLE_READING_KEY}: to-read`,
-    `topics: [${topics.join(", ")}]`,
+    `topics: [${topics.map(q).join(", ")}]`,
     `gathered_by: ${owner === ORGANISATION || !OWNER_TOKEN.test(owner) ? "owner" : `member:${owner}`}`,
     `captured: ${captured}`,
     "generated:",
@@ -282,7 +289,7 @@ export function buildArticle(input: BuildArticleInput): BuiltArticle {
   ];
 
   const sections: string[] = [];
-  const summary = classification.summary.trim();
+  const summary = classification.summary.trim().slice(0, MAX_SUMMARY);
   if (summary) sections.push(summary);
   if (excerpts.length > 0) {
     sections.push(

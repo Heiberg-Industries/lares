@@ -149,6 +149,21 @@ describe("buildArticle from a Notion-shaped inbox note", () => {
   });
 });
 
+describe("topics and summary as written", () => {
+  it("quotes every topic, so yes, no, null and 2024 stay text", () => {
+    const out = build({ classification: { ...classification, topics: ["yes", "no", "null", "2024"] }, inboxBody: renderClipNote({ ...clip, tags: [] }) });
+    expect(fm(out.noteRaw, "topics")).toBe('["yes", "no", "null", "2024"]');
+  });
+
+  it("caps an over-long summary at 1,200 characters", () => {
+    const out = build({ classification: { ...classification, summary: "word ".repeat(600) } });
+    const body = out.noteRaw.slice(out.noteRaw.indexOf("\n---\n", 4) + 5).trim();
+    const summary = body.split("\n\n")[0]!;
+    expect(summary.length).toBeLessThanOrEqual(1200);
+    expect(summary.length).toBeGreaterThan(1000);
+  });
+});
+
 describe("areas, owners and scopes", () => {
   it("a shared Notion clip goes to the shared area", () => {
     expect(chooseArea(parseInboxClip(renderClipNote(clip)))).toBe("shared");
