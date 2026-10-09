@@ -19,7 +19,6 @@
   },
   "breaking": [
     "The console now refuses changes made from a browser unless the request comes from the installation's configured public address (its Origin). Open the console at that address, not by IP or another hostname (#90).",
-    "The gateway refuses to start if its own start-up database migration fails, instead of starting half-ready. If the gateway does not come up after the update, read its log for the migration error.",
     "Caddy 2.11.7 caps request headers at 16 KiB (larger requests get 431 or a dropped HTTP/2 connection) and drops request header names that contain a dot. Anything that sends very large cookies or dotted header names through Caddy must change.",
     "The keeper image no longer contains corepack, npm, pnpm or yarn. Nothing in the engine runs them inside the keeper; a local script that did must run elsewhere."
   ]
