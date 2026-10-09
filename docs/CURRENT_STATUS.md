@@ -1,6 +1,6 @@
 # Current status
 
-Last checked: 9 October 2026, against `main` after #95.
+Last checked: 9 October 2026, end of day, against `main` after #101.
 
 This page is the short, current answer to "where are we?". Update it whenever
 something below changes. Older dated documents under `design/` and `runbooks/`
@@ -9,8 +9,39 @@ page, this page is newer.
 
 ## Done and on `main`
 
-- **The 8 October security and Notion-credential merges are on `main`** (#90 to #95); none
-  is in a published image yet (see Not done).
+- **The 9 October merges are on `main`** (#97 to #101). The code changes (#97, #100,
+  #101) are in no image yet (see Not done).
+  - **Release candidate rc.4 is published but not deployed** (#99). The manifest is
+    [`releases/2026-10-09-rc.4.json`](../releases/2026-10-09-rc.4.json): the eight
+    first-party images were built and published from `0e53c9d` (main after #95), with the
+    gateway on LiteLLM v1.101.6 and Caddy at 2.11.7; the database image is unchanged. The
+    scan and compatibility record is
+    [`runbooks/release-scans/2026-10-09-rc.4.md`](runbooks/release-scans/2026-10-09-rc.4.md).
+    Deployment waits on the real rehearsal of the switch (LAR-98) and the owner's go-ahead;
+    LAR-74 is the checklist. Not verified: a real console sign-in through the new Caddy,
+    the gateway's budget refusal and restore-key rotation, door webhooks, arm64, and any
+    install, update, rollback or restore rehearsal.
+  - **Notion saved-link import into the inbox** (#100, LAR-113 child a). Links saved into
+    one Notion database come into the existing inbox at each digest pass and are read and
+    filed like Karakeep links; saving a link twice never makes a second copy. Every failure
+    is named in the digest and opens a repair entry; it never reads as a quiet "0 new".
+    Database change `091_clipping.sql` (two new tables). **The import exists but has no
+    console controls until the console child (LAR-113 child b) lands**; it cannot be
+    switched on from the console yet.
+  - **Notion's live API sends no completeness flag** (#101). The live probe, run by hand
+    once on 9 October against Notion API version 2026-03-11, showed no `request_status` on
+    queries. The reader already treats its absence as complete; the probe and the test
+    fixture now match.
+  - **The console shows the gateway and the models it serves, read-only** (#97, LAR-111
+    slice 1). A Models section on Settings, filled by a keeper action: the gateway address,
+    whether it is reachable, and for each purpose whether the gateway serves it and which
+    agents use it. Each failure has its own plain wording. It never spends money and
+    changes nothing. No database change.
+  - **Roadmap and integration inventory, and the release-image remediation plan** (#98).
+    Two planning documents, scrubbed for the public repository, linked from the end of
+    this page.
+- **The 8 October security and Notion-credential merges are on `main`** (#90 to #95); all
+  are in the rc.4 images, which are not deployed.
   - **Browser mutation protection** (#90). The console rejects state-changing browser
     requests that do not carry the configured public Origin, before route handling.
     Signed webhook POSTs and OAuth GET callbacks keep their own paths, and normal
@@ -152,16 +183,21 @@ page, this page is newer.
 
 ## Not done
 
-- **None of #90 to #95 is in any published image.** The image workflows on `main` run with
-  publication off. Build-only runs on the branches passed, with scan reports retained. The
-  newest manifest is still rc.3, and its sync-jobs digest cannot be retrieved from the
-  registry, so a new candidate manifest is required before any deployment (LAR-114).
+- **#97 and later are in no image.** rc.4 was built from the state after #95 (#90 to #95 are
+  in it; #96 and #97 are not). The image workflows on `main` run with publication off.
+- **The sync-jobs image's GitHub package is still private, so making it public is a
+  prerequisite for installs.** Anonymous pulls of the rc.4 sync-jobs digest fail (403) until
+  then; the other seven first-party images and the three third-party images pull anonymously.
+- **The gateway status page (#97) has not met a real gateway.** Its live probe,
+  `services/keeper/tests/live/litellm-gateway-status.live.mts`, is written but has not been
+  run, so the response shapes it reads are unverified. Run it by hand before trusting the
+  Models section on an installation.
 - **Nothing is deployed to production.** LAR-74 is the single deploy checklist.
-- **No release is published.** The newest release candidate is
-  [`releases/2026-10-01-rc.3.json`](../releases/2026-10-01-rc.3.json). It has
-  not been installed or rehearsed anywhere. `2026-09-30-rc.1` and
-  `2026-10-01-rc.2` are kept as records and should not be used: rc.1's keeper
-  predates LAR-104, and rc.2's keeper and agent images predate LAR-105 and
+- **No release is announced.** The newest release candidate is
+  [`releases/2026-10-09-rc.4.json`](../releases/2026-10-09-rc.4.json), published but not
+  installed or rehearsed anywhere. `2026-10-01-rc.3` is superseded and kept as a record.
+  `2026-09-30-rc.1` and `2026-10-01-rc.2` are kept as records and should not be used: rc.1's
+  keeper predates LAR-104, and rc.2's keeper and agent images predate LAR-105 and
   LAR-106. The other
   files in `releases/` are test manifests.
   Publishing the first release and the console's "update available" notice
@@ -178,7 +214,8 @@ page, this page is newer.
 
 ## Next
 
-1. **Publish images from current `main` and write an rc.4 manifest** (LAR-114).
+1. **Make the sync-jobs package public**, then rehearse the switch (LAR-98) against rc.4.
+   After that, the console controls for the Notion import (LAR-113 child b).
 2. **The injection test suite** (LAR-49): the plan on branch `lar-49-injection-suite`
    (`docs/plans/2026-10-08-lar-49-injection-suite.md`) splits it into three slices and
    needs the owner's yes on slice 1, which adds one standing sentence under every prompt
