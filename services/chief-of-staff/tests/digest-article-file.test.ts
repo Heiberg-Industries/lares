@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -195,6 +195,142 @@ describe("the same link twice", () => {
     expect(r.calls()).toBe(0);
     expect(count(sharedRoot)).toBe(sharedBefore);
     expect(existsSync(join(privateRoot, second.path))).toBe(false);
+  });
+});
+
+describe("a link whose page title changed since it was filed", () => {
+  it("is still recognised as filed: no model call, nothing written, the existing path comes back", async () => {
+    const first = await run(filer(), inbox("clip-1", clip(), true)).promise;
+    const sharedBefore = count(sharedRoot);
+
+    const second = inbox("clip-2", clip(), true);
+    const r = run(filer(), second, { title: "A completely different title this week" });
+    const out = await r.promise;
+
+    expect(out).toMatchObject({ duplicate: true, destPath: first.destPath, area: "shared" });
+    expect(r.calls()).toBe(0);
+    expect(count(sharedRoot)).toBe(sharedBefore);
+    expect(existsSync(join(privateRoot, second.path))).toBe(false);
+  });
+});
+
+describe("the model is told where the article is going", () => {
+  it("passes the decided area to classify", async () => {
+    const seen: string[] = [];
+    const f = filer();
+    await f({
+      inboxPath: "_inbox/a.md",
+      inboxBody: inbox("a", clip(), true).body,
+      article: { url: "https://example.com/posts/pricing-pages", title: "T", text: TEXT },
+      classify: async (ctx) => {
+        seen.push(ctx.area);
+        return classification;
+      },
+      today: "2026-10-09",
+    });
+    const privateItem = inbox("b", clip({ url: "https://example.com/other", owner: "fixture-member", visibility: "private" }), true);
+    await f({
+      inboxPath: privateItem.path,
+      inboxBody: privateItem.body,
+      article: { url: "https://example.com/other", title: "Other", text: TEXT },
+      classify: async (ctx) => {
+        seen.push(ctx.area);
+        return classification;
+      },
+      today: "2026-10-09",
+    });
+    expect(seen).toEqual(["shared", "private"]);
+  });
+});
+
+describe("a commit never sweeps in what somebody else staged", () => {
+  it("shared: the article commit holds the note and its text only", async () => {
+    writeFileSync(join(sharedRoot, "unrelated.txt"), "someone else's work\n");
+    git(sharedRoot, "add", "unrelated.txt");
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+    expect(filesOfHead(sharedRoot)).toEqual([
+      "A\tarticles/how-pricing-pages-convert.md",
+      "A\tarticles/how-pricing-pages-convert.txt",
+    ]);
+    expect(git(sharedRoot, "diff", "--cached", "--name-only").trim()).toBe("unrelated.txt");
+  });
+
+  it("shared: retiring the inbox note commits that note only", async () => {
+    const item = inbox("clip-a", clip(), true);
+    writeFileSync(join(privateRoot, "unrelated.txt"), "someone else's work\n");
+    git(privateRoot, "add", "unrelated.txt");
+    await run(filer(), item).promise;
+    expect(filesOfHead(privateRoot)).toEqual([`D\t${item.path}`]);
+    expect(git(privateRoot, "diff", "--cached", "--name-only").trim()).toBe("unrelated.txt");
+  });
+
+  it("private: the article commit holds the note, its text and the inbox removal only", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    writeFileSync(join(privateRoot, "unrelated.txt"), "someone else's work\n");
+    git(privateRoot, "add", "unrelated.txt");
+    await run(filer(), item).promise;
+    expect(filesOfHead(privateRoot)).toEqual(
+      [`D\t${item.path}`, "A\tarticles/how-pricing-pages-convert.md", "A\tarticles/how-pricing-pages-convert.txt"].sort(),
+    );
+    expect(git(privateRoot, "diff", "--cached", "--name-only").trim()).toBe("unrelated.txt");
+  });
+});
+
+describe("a failed private commit", () => {
+  it("puts a tracked inbox note back exactly as it was and leaves no article files behind", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const hook = join(privateRoot, ".git/hooks/pre-commit");
+    writeFileSync(hook, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    await expect(run(filer(), item).promise).rejects.toThrow();
+
+    expect(readFileSync(join(privateRoot, item.path), "utf8")).toBe(item.body);
+    expect(git(privateRoot, "status", "--porcelain")).toBe("");
+    expect(git(privateRoot, "diff", "--cached", "--name-only")).toBe("");
+    const left = existsSync(join(privateRoot, "articles")) ? readdirSync(join(privateRoot, "articles")) : [];
+    expect(left).toEqual([]);
+  });
+});
+
+describe("a failed private filing when the tracked inbox note has unsaved edits", () => {
+  it("keeps the edited bytes, stages nothing and leaves no article files", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const edited = item.body + "\nA line the owner added by hand, not committed yet.\n";
+    writeFileSync(join(privateRoot, item.path), edited);
+    writeFileSync(join(privateRoot, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    await expect(run(filer(), item).promise).rejects.toThrow();
+
+    expect(readFileSync(join(privateRoot, item.path), "utf8")).toBe(edited);
+    expect(git(privateRoot, "diff", "--cached", "--name-only")).toBe("");
+    const left = existsSync(join(privateRoot, "articles")) ? readdirSync(join(privateRoot, "articles")) : [];
+    expect(left).toEqual([]);
+  });
+});
+
+describe("a push that fails after the inbox note is already gone", () => {
+  it("private: reports the failure beside the result, so the caller still learns where the article went", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    git(privateRoot, "remote", "set-url", "origin", join(tmp, "missing.git"));
+
+    const out = await run(filer(), item).promise;
+
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(out).toMatchObject({ area: "private", duplicate: false });
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+    expect(existsSync(join(privateRoot, out.destPath))).toBe(true);
+  });
+
+  it("shared: a failed push of the inbox retirement is reported beside the result too", async () => {
+    const item = inbox("clip-a", clip(), true);
+    git(privateRoot, "remote", "set-url", "origin", join(tmp, "missing.git"));
+
+    const out = await run(filer(), item).promise;
+
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(out.area).toBe("shared");
+    expect(git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD")).toContain(out.destPath);
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
   });
 });
 

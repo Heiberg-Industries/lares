@@ -217,6 +217,23 @@ describe("moveNote with an article's text companion", () => {
     expect(onBare).not.toContain("articles/a.txt");
   });
 
+  it("refuses before moving anything when the companion's destination is already taken", async () => {
+    seedNote(workDir, "articles/a.md", note);
+    seedNote(workDir, "articles/a.txt", "Full text.\n");
+    seedNote(workDir, "archive/a.txt", "Somebody else's file.\n");
+    const before = commitCount(workDir);
+
+    await expect(
+      moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/b.md", message: "move" }),
+    ).rejects.toThrow(/already exists/);
+
+    expect(commitCount(workDir)).toBe(before);
+    expect(existsSync(join(workDir, "articles/a.md"))).toBe(true);
+    expect(existsSync(join(workDir, "articles/a.txt"))).toBe(true);
+    expect(existsSync(join(workDir, "archive/b.md"))).toBe(false);
+    expect(git(workDir, "status", "--porcelain")).toBe("");
+  });
+
   it("moves the note alone when the companion is missing", async () => {
     seedNote(workDir, "articles/a.md", note);
     await moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/a.md", message: "move" });

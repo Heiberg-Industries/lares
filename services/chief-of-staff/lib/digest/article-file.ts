@@ -22,7 +22,7 @@
  * characters of its hash as a suffix.
  */
 import { execFileSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { resolveInStore, storeRootForArea } from "@lares/agent-kit/notes-store";
@@ -51,9 +51,10 @@ export interface ArticleFileInput {
   article: FetchedArticle;
   /**
    * Asks the model. Called at most once, and not at all for a link that is already filed, so the
-   * caller can count calls by counting invocations.
+   * caller can count calls by counting invocations. It is told which area the article is going
+   * to, so the caller can keep private note names away from a shared article.
    */
-  classify: () => Promise<ArticleClassification>;
+  classify: (ctx: { area: ArticleArea }) => Promise<ArticleClassification>;
   /** The pass date, for notes whose inbox note has no usable `saved:`. */
   today: string;
 }
@@ -68,6 +69,12 @@ export interface ArticleFiled {
   duplicate: boolean;
   /** The link belonged in the shared area but that area could not be used. */
   fellBack: boolean;
+  /**
+   * A push failed AFTER the article was committed and the inbox note was already gone. The result
+   * is still good (the article is in the vault, at `destPath`); the caller must record where it
+   * went and also report this, because the commit is not yet on the remote.
+   */
+  pushFailure?: VaultPushFailedError;
 }
 
 export type FileArticleFn = (input: ArticleFileInput) => Promise<ArticleFiled>;
@@ -120,6 +127,39 @@ function hasStaged(root: string, path: string): boolean {
   }
 }
 
+/** Whether the repository tracks this path. */
+function isTracked(root: string, path: string): boolean {
+  try {
+    gitIn(root, "ls-files", "--error-unmatch", "--", path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The file-name stem of an article in `root` that was filed for this link, whatever it was called
+ * when it was filed (a page title can change between passes), or null.
+ */
+function findFiledArticle(root: string, urlKey: string): string | null {
+  let names: string[];
+  try {
+    names = readdirSync(resolveInStore(ARTICLES_DIR, root)).filter((n) => n.endsWith(".md")).sort();
+  } catch {
+    return null; // no articles folder yet
+  }
+  for (const name of names) {
+    try {
+      if (filedLinkMatches(readFileSync(resolveInStore(`${ARTICLES_DIR}/${name}`, root), "utf8"), urlKey)) {
+        return name.slice(0, -3);
+      }
+    } catch {
+      /* unreadable: not a match */
+    }
+  }
+  return null;
+}
+
 /** Write the note and its text, undoing the writes if anything before the commit fails. */
 function writeFiles(root: string, files: Array<{ path: string; text: string }>): void {
   const written: string[] = [];
@@ -147,17 +187,28 @@ function undoWrites(root: string, paths: string[]): void {
 
 /**
  * Take the inbox note out of the private store. A tracked note is removed in a commit of its own
- * (`message`); a note that was never committed (a clipper drop) is just deleted and there is
- * nothing to commit.
+ * (`message`), scoped to that one path so nothing anybody else staged rides along; a note that was
+ * never committed (a clipper drop) is just deleted and there is nothing to commit. A failed push
+ * is RETURNED, not thrown: by then the inbox note is gone and the caller must still learn that.
  */
-async function retireInbox(privateRoot: string, inboxPath: string, message: string): Promise<void> {
-  await withNoteLock(privateRoot, inboxPath, async () => {
+async function retireInbox(
+  privateRoot: string,
+  inboxPath: string,
+  message: string,
+): Promise<VaultPushFailedError | undefined> {
+  return withNoteLock(privateRoot, inboxPath, async () => {
     const abs = resolveInStore(inboxPath, privateRoot);
     gitIn(privateRoot, "rm", "-q", "--ignore-unmatch", "--", inboxPath);
     if (existsSync(abs)) rmSync(abs);
-    if (!hasStaged(privateRoot, inboxPath)) return;
-    gitIn(privateRoot, "commit", "-q", "-m", message);
-    pushOrThrow(privateRoot, shortHead(privateRoot));
+    if (!hasStaged(privateRoot, inboxPath)) return undefined;
+    gitIn(privateRoot, "commit", "-q", "-m", message, "--", inboxPath);
+    try {
+      pushOrThrow(privateRoot, shortHead(privateRoot));
+    } catch (err) {
+      if (err instanceof VaultPushFailedError) return err;
+      throw err;
+    }
+    return undefined;
   });
 }
 
@@ -185,9 +236,10 @@ export function makeArticleFiler(opts: {
 
     // Which name is free, or already holds this very link.
     const stem = articleBase({ readabilityTitle: input.article.title, clipTitle: clip.title, url: link });
-    let base: string | undefined;
-    let duplicate = false;
-    for (const candidate of [stem, suffixedBase(stem, urlKey)]) {
+    // First: was this link filed already, under whatever name it had then?
+    let base: string | undefined = findFiledArticle(root, urlKey) ?? undefined;
+    let duplicate = base !== undefined;
+    for (const candidate of base !== undefined ? [] : [stem, suffixedBase(stem, urlKey)]) {
       const abs = resolveInStore(`${ARTICLES_DIR}/${candidate}.md`, root);
       if (!existsSync(abs)) {
         base = candidate;
@@ -201,22 +253,23 @@ export function makeArticleFiler(opts: {
     }
     if (base === undefined) throw new Error(`articles with different links already use the name ${stem}`);
 
-    const message = `digest: file article ${base} → ${ARTICLES_DIR}`;
+    const retireMessage = `digest: retire inbox note for article ${base}`;
     const destPath = `${ARTICLES_DIR}/${base}.md`;
 
     if (duplicate) {
       // A shared commit made earlier may never have reached the remote (a failed push); try again
-      // now, so retiring the inbox note below never strands it.
+      // now, so retiring the inbox note below never strands it. This one THROWS: the inbox note
+      // is still there, so the item stays in the inbox and is retried next pass.
       if (area === "shared") {
         await withNoteLock(root, destPath, async () => {
           pushOrThrow(root, shortHead(root));
         });
       }
-      await retireInbox(opts.privateRoot, input.inboxPath, message);
-      return { title: base, area, destPath, duplicate: true, fellBack };
+      const pushFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      return { title: base, area, destPath, duplicate: true, fellBack, ...(pushFailure ? { pushFailure } : {}) };
     }
 
-    const classification = await input.classify();
+    const classification = await input.classify({ area });
     const built = buildArticle({
       inboxBody: input.inboxBody,
       article: input.article,
@@ -237,38 +290,65 @@ export function makeArticleFiler(opts: {
         writeFiles(root, files);
         try {
           gitIn(root, "add", "--", ...paths);
-          gitIn(root, "commit", "-q", "-m", built.message);
+          // Scoped to the article's own files: the shared store has several writers, and a plain
+          // commit would take in whatever any of them had staged.
+          gitIn(root, "commit", "-q", "-m", built.message, "--", ...paths);
         } catch (err) {
           undoWrites(root, paths);
           throw err;
         }
+        // Throws: the inbox note is still there, so the next pass finds the article and retries.
         pushOrThrow(root, shortHead(root));
       });
-      await retireInbox(opts.privateRoot, input.inboxPath, built.message);
-      return { title: built.title, area, destPath: built.notePath, duplicate: false, fellBack };
+      const pushFailure = await retireInbox(opts.privateRoot, input.inboxPath, retireMessage);
+      return {
+        title: built.title, area, destPath: built.notePath, duplicate: false, fellBack,
+        ...(pushFailure ? { pushFailure } : {}),
+      };
     }
 
-    await withNoteLock(root, built.notePath, async () => {
+    const pushFailure = await withNoteLock(root, built.notePath, async () => {
       const sourceAbs = resolveInStore(input.inboxPath, root);
+      const tracked = isTracked(root, input.inboxPath);
       writeFiles(root, files);
+      // True only once `git rm` has actually removed the inbox note: if it refused (unsaved edits)
+      // or never ran, the file on disk is untouched and must not be "restored" over.
+      let removed = false;
       try {
         gitIn(root, "add", "--", ...paths);
-        // --ignore-unmatch: an inbox note straight from a clipper is untracked; the unlink after
-        // the commit is what removes it then.
-        gitIn(root, "rm", "-q", "--ignore-unmatch", "--", input.inboxPath);
-        gitIn(root, "commit", "-q", "-m", built.message);
+        // A tracked inbox note is removed in this same commit; one that was never committed (a
+        // clipper drop) is deleted after it. The commit is scoped to these paths only.
+        if (tracked) {
+          gitIn(root, "rm", "-q", "--", input.inboxPath);
+          removed = true;
+        }
+        gitIn(root, "commit", "-q", "-m", built.message, "--", ...paths, ...(tracked ? [input.inboxPath] : []));
       } catch (err) {
         undoWrites(root, paths);
-        try {
-          gitIn(root, "checkout", "-q", "--", input.inboxPath);
-        } catch {
-          /* never tracked, or untouched */
+        if (removed) {
+          try {
+            // The removal is staged and the file is gone; put both back.
+            gitIn(root, "reset", "-q", "HEAD", "--", input.inboxPath);
+            gitIn(root, "checkout", "-q", "HEAD", "--", input.inboxPath);
+          } catch {
+            /* nothing more can be done here; the original error is what matters */
+          }
         }
         throw err;
       }
       if (existsSync(sourceAbs)) rmSync(sourceAbs);
-      pushOrThrow(root, shortHead(root));
+      try {
+        pushOrThrow(root, shortHead(root));
+      } catch (err) {
+        // The inbox note is already gone: hand the failure back with the result.
+        if (err instanceof VaultPushFailedError) return err;
+        throw err;
+      }
+      return undefined;
     });
-    return { title: built.title, area, destPath: built.notePath, duplicate: false, fellBack };
+    return {
+      title: built.title, area, destPath: built.notePath, duplicate: false, fellBack,
+      ...(pushFailure ? { pushFailure } : {}),
+    };
   };
 }

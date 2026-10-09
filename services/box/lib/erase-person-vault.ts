@@ -42,16 +42,15 @@
 // an article therefore also yields a hit for its companion, with the same `why`: removed with the
 // note when the note is theirs, left alone when the note is `shared`.
 //
-// THE FRONTMATTER PARSE IS LOCAL, AND WHY. `services/box` depends on `pg`,
-// `better-sqlite3` and `@lares/network` — not on `@lares/agent-kit`, where `noteScope` lives. Adding
-// a dependency to reach one 20-line parse would put the whole agent kit into the box image (the
-// small `@lares/vault-format` package is used, for the companion-path rule only). So the parse
-// below is written here, following `noteScope`'s CRLF
-// rule exactly (a file saved with `\r\n` used to defeat an LF-only check and fall back to the
-// store default — pre-launch wave 3A). It reads MORE than `noteScope` does: block-style lists and
-// quoted scalars, which `noteScope`'s one-line regex does not handle. That is deliberate. A reader
-// that misses a form sees a wider note than it should; a walker that misses a form leaves a
-// person's file behind and reports success.
+// THE FRONTMATTER PARSE IS LOCAL, AND WHY. `services/box` depends on `pg`, `better-sqlite3` and
+// `@lares/network` — not on `@lares/agent-kit`, where `noteScope` lives. Adding a dependency to
+// reach one 20-line parse would put the whole agent kit into the box image (the small
+// `@lares/vault-format` package is used, for the companion-path rule only). So the parse below is
+// written here, following `noteScope`'s CRLF rule exactly (a file saved with `\r\n` used to defeat
+// an LF-only check and fall back to the store default — pre-launch wave 3A). It reads MORE than
+// `noteScope` does: block-style lists and quoted scalars, which `noteScope`'s one-line regex does
+// not handle. That is deliberate. A reader that misses a form sees a wider note than it should; a
+// walker that misses a form leaves a person's file behind and reports success.
 
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";

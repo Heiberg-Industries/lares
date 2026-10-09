@@ -95,11 +95,12 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
           inboxBody: item.body,
           article,
           today: deps.capturedAt,
-          classify: async () => {
+          classify: async ({ area }) => {
             modelCalls += 1;
             const decision = await classifyArticle(
               { title: article.title, url: article.url, ownerNote: parseInboxClip(item.body).note, text: article.text },
-              { noteNames },
+              // Names of private notes never go into the request for an article that will be shared.
+              { noteNames: area === "shared" ? [] : noteNames },
               deps.llm,
             );
             if (decision.unreadable) deps.log?.(`could not read the classifier's reply for ${item.path}; filing it with no summary`);
@@ -113,6 +114,11 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
           await deps.onFiled?.(item.path, { area: filed.area, destPath: filed.destPath });
         } catch (err) {
           deps.log?.(`could not record where ${item.path} went: ${String(err instanceof Error ? err.message : err)}`);
+        }
+        // Filed, and the inbox note is gone, but a push failed: still an error to report.
+        if (filed.pushFailure) {
+          summary.errors.push({ path: item.path, error: filed.pushFailure.message });
+          deps.log?.(`ERROR ${item.path}: ${filed.pushFailure.message}`);
         }
         continue;
       }
