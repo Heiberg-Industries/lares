@@ -3,7 +3,7 @@
 Status: planning document, published 9 October 2026, not an approved delivery schedule. The private security review it draws on is not in this repository.
 
 Proposed execution scope. No image build, publication, release manifest change or deployment
-is authorised by this document. The evidence is in the 8 October security review (private).
+is authorised by this document.
 
 ## Outcome
 

@@ -1,6 +1,6 @@
 # Roadmap and integration inventory
 
-**Date:** 8 October 2026. Status: planning document, published 9 October 2026, not an approved delivery schedule. The private security review it draws on is not in this repository. Planning inventory and proposed sequencing. Existing code means found in this checkout, not verified on an installation.
+**Date:** 8 October 2026. **Status:** planning document, published 9 October 2026, not an approved delivery schedule. The private security review it draws on is not in this repository. Planning inventory and proposed sequencing. Existing code means found in this checkout (local `main` at `d8d1177`; remote `main` independently checked through `c38ae50d`), not verified on an installation.
 
 Lares is an open-source, self-hosted engine with a chief of staff as its default experience.
 Private is the default; organisation sharing is an explicit choice once the boundaries work.
@@ -34,7 +34,7 @@ This inventory combines the current engine declarations and implementation paths
 specs and research, the full project issue listing, historical design material, and the product decisions of 8 October. Issue titles and
 summaries were inventoried. The follow-up sweep fetched full descriptions and all returned comment
 pages for the non-closed issues, refreshed recent closures, and checked related historical
-tracker items and the two original product/marketing notes. It is not a
+tracker items and private historical planning material. It is not a
 claim that every issue comment, historical plan, external document or unrecorded idea has been
 exhaustively reconciled. Private operational details and tracker references are deliberately
 excluded from this public document.
@@ -57,7 +57,7 @@ describe their date and can disagree with current code.
 | Twenty CRM | People/company lookup, notes, opportunities/stages and communication state | Chief-of-staff `catalogue/twenty_*.ts`, network sync. Current API-key wiring is distinct from planned per-user OAuth. |
 | Orakel | Business search and organisation/domain enrichment | `packages/agent-kit/src/orakel-client.ts` and catalogue tools; requires the installation's own account/access. |
 | GitHub repository sources | Read repository content as business-knowledge input | `services/atlas/lib/adapters/github-source.ts`. Not a general issue/PR/code-writing agent integration. |
-| Karakeep | Current bookmark input to digest work; planned replacement by Notion clipping | Connection registry and chief-of-staff digest code. Keep working until the high-priority Notion replacement is verified. |
+| Karakeep | Bookmark input to digest work; optional Notion clipping is planned as a replacement | Connection registry and chief-of-staff digest code. Keep working until an optional Notion replacement, where adopted, is verified. |
 | Web pages | URL reading through the readability service | `packages/agent-kit/src/readability-client.ts`, `read_url` tools. URL reading is not a general web-search integration. |
 | Mac Contacts, iMessage and call history | Local import into the relationship graph | `services/network/lib/importers/`. Generic importers exist; Mac scheduling, permissions and transfer onboarding need packaging. Message history import is not an iMessage sending channel. |
 | LinkedIn, Facebook and Instagram exports | File-based relationship/history imports | Network `linkedin.ts`, `meta.ts`. Not live account APIs or publishing. Replica content policy lives in `services/network/lib/replica.ts`. |
@@ -297,7 +297,7 @@ lanes are Foundation, First useful assistant, Expansion, Experiment and Optional
 | Ownership and privacy | Members/roles, private/shared/participants scope, account ownership, per-member imports, approvals and budgets; retention, export and erasure | Foundation before shared use |
 | Security and recovery | Injection tests, sealed network access, no implicit external reporting, backup/restore rehearsal, trustworthy health and failure signals | Foundation |
 | Agent setup | Templates, identity, providers/settings, permissions, channels, save/start and developer preview | First useful assistant; existing builder amendment |
-| Clipping | Replace Karakeep with optional Notion capture and digest input; console connection/destination setup; verify transition | **High priority — confirmed**; reusable engine capability, no installation-specific fork |
+| Clipping | Optional Notion capture and digest input that can replace a bookmark service; console connection/destination setup; verify transition | **High priority — confirmed**; reusable engine capability, no installation-specific fork |
 | Daily usefulness | Briefs/digests, schedules/quiet hours, language/timezone, deadlines/renewals, obligations, meeting follow-ups and calendar conflict resolution | First useful assistant; source freshness and delivery evidence |
 | Email and writing | Show and revise drafts, owner instructions, relationship context, examples, draft/final capture, reviewed learning and later long-form writing | First useful assistant; baseline before learning expansion |
 | Approvals | See exact proposed content, revise/cancel while waiting, acknowledge queued messages, reliable delivery when an agent is down | First useful assistant; durable execution |
@@ -350,21 +350,18 @@ No pull, deployment, provider test or tracker mutation was performed. A concurre
 pull request may move the documentation again; implementation evidence below is pinned to the
 individual merged pull requests rather than a claim that the working tree contains them.
 
-The refreshed tracker listing included archived items. The items in review
-are recorded as code on main awaiting live acceptance, not features still to implement.
-Their areas are builder/permissions, language, schedules, renewals, meeting redrafts, backups,
-calendar resolution, travelling-day briefs, restart recovery and transcript reload. This review
-does not independently reproduce those live checks.
+Items whose code is on main but which still await live acceptance are not features still to
+implement. This review does not independently reproduce those live checks.
 
 | Delivery item | Evidence and remaining boundary |
 | --- | --- |
 | Database checks report unreachable databases instead of healthy-looking output | [PR 84](https://github.com/Heiberg-Industries/lares/pull/84) merged 8 October. The deliberately wrong-database check remains for the next deployment. |
 | Configuration errors identify invalid fields without echoing secrets | [PR 85](https://github.com/Heiberg-Industries/lares/pull/85) merged 8 October. |
 | Calendar clash detection uses the owner's day clock in briefs | [PR 86](https://github.com/Heiberg-Industries/lares/pull/86) merged 8 October. Conversational-tool clock parity and visible invalid-timezone reporting remain separate possible follow-ups. |
-| Stable deny-all proxy before first-agent creation | Existing [PR 13](https://github.com/Heiberg-Industries/lares/pull/13), now recognised by the tracker as Done. Its comment still records an unobserved pre-agent container-state check; retain that in fresh-install acceptance. |
+| Stable deny-all proxy before first-agent creation | Existing [PR 13](https://github.com/Heiberg-Industries/lares/pull/13), merged. An unobserved pre-agent container-state check remains; retain it in fresh-install acceptance. |
 | Dependency sweep and flaky-test fixes | Batches 1–13 completed; eve 0.71 remains a separate track. Existing release candidate images predate later fixes and are not current-main delivery evidence. |
 | Injection suite | Branch plan read: corpus/block delimiting and flags, raw-text prompt restructuring, then a separately budgeted live test. Planned, not implemented. Approval status remains with that workstream. |
-| Jev pilot | Historical preparation exists outside this repository. Public `lares/pull/15` is a keeper-socket fix, not the Jev pilot. Reconcile and port the prepared experiment before execution; do not infer a live benchmark from offline preparation. |
+| Jev pilot | Historical preparation exists outside this repository. Public `lares/pull/15` is a keeper-socket fix, not the Jev pilot. Reconcile and port the prepared experiment before execution; do not merge historical private Git history into the public repository, and do not infer a live benchmark from offline preparation. |
 
 ### Features and follow-ups previously missing or too broadly grouped
 
@@ -374,14 +371,14 @@ with old runtime paths need current-code verification before they become build t
 | Item | Disposition and roadmap home |
 | --- | --- |
 | Article, podcast and newsletter discovery/extraction | Explicit content-intake work, separate from publishing and simple URL reading. Evaluate open-source capture/extraction tools against real inputs. |
-| Browser/mobile clipping: Karakeep → Notion | **High priority, confirmed 8 October.** Implement Notion clipping as a reusable Lares capability, replacing the current Karakeep bookmark input. Include browser/mobile capture, source links and captured content, incremental ingestion, duplicate handling and use in briefs/digests. Select the destination and connect the account in the console. Decide existing-bookmark import scope before implementation; verify replacement before disabling Karakeep. Notion remains optional for other installations. |
+| Browser/mobile clipping: bookmark service → Notion | **High priority, confirmed 8 October.** Implement Notion clipping as a reusable Lares capability, as an optional replacement for a bookmark service such as Karakeep. Include browser/mobile capture, source links and captured content, incremental ingestion, duplicate handling and use in briefs/digests. Select the destination and connect the account in the console. Decide existing-bookmark import scope before implementation; verify the replacement before the old path is retired. Notion stays optional. |
 | Task-system deadlines in briefs | Read unfinished/overdue tasks from the chosen task source, initially the historical Notion candidate. Distinct from legal deadlines and inferred email obligations; no second task database by default. |
 | Travel mail labelled after receipt | Historical ingestion correctness/quota issue: detect newly applied labels, not merely newly received mail; dedupe and compare request volume. Re-verify against the current travel pipeline. |
 | Persistent contact identity corrections | Remember explicitly confirmed aliases/merges, preferably in the authoritative contact source. Reversible correction and conflict handling; do not infer identity from similarity alone. |
 | Enrichment for unfamiliar contacts | User-requested, permitted source lookup; distinguish live profiles from already-supported export imports. Candidate research, not scraping access or a new connector claim. |
-| Proactive delivery destinations | Per-message/job channel selection was excluded from the schedule-time ticket. Capture separately, including installations without Slack and alert delivery alternatives. |
+| Proactive delivery destinations | Per-message/job channel selection is not covered by schedule-time settings. Capture separately, including installations without Slack and alert delivery alternatives. |
 | Calendar resolution beyond overlapping stays | Decline invitations, recognise superseding bookings, and account for travel time. Three distinct deferred cases, not implied by the existing overlap-resolution code. |
-| Calendar consistency and skipped checks | Follow up conversational-tool versus brief day clocks; decide whether invalid-timezone skips should be visible. Retain even though the recent day-clock fix is Done. |
+| Calendar consistency and skipped checks | Follow up conversational-tool versus brief day clocks; decide whether invalid-timezone skips should be visible. Retain even though the brief day-clock fix has merged. |
 | Freshness for opt-in schedules | Distinguish deliberately off from broken; decide opt-in grace, older definitions, and per-agent rather than shared per-role heartbeat ownership. |
 | Behavioural role evaluations with alerts | Golden task cases across models, release regression evidence, failed/missing-run alerts and bounded judge spend. Separate from structural permission tests and model recommendation rankings. |
 | Honest spending-cap messages | Match the actual reset period; old daily wording can mislead for monthly caps. Do not revive a previously dropped installation-wide-cap scope without a new decision. |
@@ -395,7 +392,7 @@ with old runtime paths need current-code verification before they become build t
 | Later personal data sources | Apple Health export bridge, illness/injury records and avalanche context were in the coach plan. Retained candidates, not current connectors; health access stays separately granted. |
 | Oura onboarding lifecycle | Per-installation OAuth setup and correct callback/privacy/terms pages; a managed shared app/relay is a separate future service decision requiring provider re-verification. No private registration data belongs in engine defaults. |
 | Alternative CRM adapters | HubSpot/Pipedrive remain demand-driven candidates behind the integration boundary, not just Twenty OAuth work. |
-| CRM source-schema transition | Coordinate the organisation-number field change with the supplying CRM application; preserve the engine-facing value and verify the live contract. Integration maintenance, not a general schema migration for every user. |
+| CRM source-schema transition | Handle a CRM field-name mismatch with the supplying CRM application; preserve the engine-facing value and verify the live contract. Integration maintenance, not a general schema migration for every user. |
 | Platform and distribution options | Full Mac-hosted engine installation is distinct from the Mac helper and remains deferred. Cross-platform secrets, signed releases/image verification and registry cleanup remain explicit later operational work. |
 | Managed setup operations | Sequential upgrades, stop on failed verification, version/health ledger and later operator UI for separately owned installations. Keep private client inventory outside the public engine. |
 | Public readiness | Public pullable images, maturity scorecard, current security posture/second security review, contribution agreement and intake, community access, support docs and website legal/contact/booking checks. Engine source availability alone does not close these. |
@@ -424,9 +421,9 @@ Specs, ADRs, current status, design notes, research and source-adjacent docs wer
 this is a coverage review, not a fresh line-by-line correctness audit of every historical document.
 Fixtures/personas are implementation/test inputs, not 102 additional independent roadmap documents.
 
-Sources also checked: the original product and brand notes; historical parent/launch, installer,
-permissions, multi-user, release and coaching plans; earlier review ledger/findings; the public
-repository changeover record; the lean-recipe input; and Jev experiment records. Archived copies
+Sources also checked: historical parent/launch, installer,
+permissions, multi-user, release and coaching plans; earlier review ledger/findings; and private
+historical planning material. Archived copies
 were treated as historical duplicates rather than independent delivery evidence.
 
 The table below assigns each local `docs/` file a coverage home. “History” preserves evidence and
@@ -437,11 +434,7 @@ grants, so documentation reconciliation is itself retained work.
 
 Not claimed: every cloud document, unrelated project ticket, archived branch or nested attachment
 has been exhaustively read; every historical review checkbox has been proven fixed; or any installation
-has been updated. The separate website's README, launch runbook and all five curated documentation pages were read
-from its current default branch. They still carry small-business/fleet-first wording and an outdated
-first-conversation release-gate statement. Reconcile these with private-first personal/business setup
-and the narrower remaining docs-only/first-brief acceptance. The launch runbook mixes dated preparation
-and rollout notes; it is not a fresh live-site check. Website implementation and the original full
+has been updated. The website and its documentation live in a private repository and must be reconciled with shipped behaviour. Website implementation and the original full
 coaching concept have not been freshly audited here (the latter is represented through the design's
 27-section coverage table).
 Known ideas now have a roadmap home; acceptance, priority and some historical dispositions still
@@ -548,8 +541,8 @@ need decisions. Keep this distinction when turning the inventory into a delivery
 
 ## Security-review sequencing input — 8 October
 
-The 8 October security review (private) produced 20 findings, which are summarised below by
-subject rather than by code. Full install/update/restore repetition is **deferred by the owner**,
+The 8 October security review produced 20 findings, independently source-reviewed and verified,
+which are summarised below by subject rather than by code. Full install/update/restore repetition is **deferred by the owner**,
 not silently passed against new code.
 
 ### Delivery order and existing-work mapping
