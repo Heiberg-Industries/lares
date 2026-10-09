@@ -1,6 +1,6 @@
 /**
  * ORB-133 Task 2 — enrichment, and the seam where the old runtime's second readability client
- * was replaced by eve-saga's own.
+ * was replaced by the chief of staff's own.
  *
  * The two properties under test are the ones a port loses silently: the 300-character floor
  * (without it, short pages start enriching) and never-throw (without it, one unreachable URL
@@ -79,7 +79,7 @@ describe("makeEnrich dispatch", () => {
   });
 });
 
-describe("digestReadability — the seam onto eve-saga's own client", () => {
+describe("digestReadability — the seam onto the chief of staff's own client", () => {
   it("returns the article when it clears the length floor", async () => {
     const client = digestReadability(async () => ({ title: "T", text: article() }));
     const out = await client("https://example.com/a");

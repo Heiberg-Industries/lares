@@ -4,7 +4,7 @@
  * `fileDecision` needs a `FileNoteFn`. The old implementation
  * (`services/box/lib/brain-source.ts:175-197`) does FOUR things in ONE commit: write the
  * destination, `git add` it, **remove the `_inbox` source**, and commit with the caller's own
- * message. eve-saga's nearest helper, `commitNote`, does none of the removal and hardcodes its
+ * message. The chief of staff's nearest helper, `commitNote`, does none of the removal and hardcodes its
  * message.
  *
  * Reuse `commitNote` naively and every filed clip stays in `_inbox`, to be re-classified,
@@ -65,10 +65,10 @@ describe("writing the destination note", () => {
   it("creates nested destination directories", async () => {
     const fileNote = makeDigestFileNote(vault);
     await fileNote({
-      destPath: "zero7/transcripts/deep/call.md",
+      destPath: "project-a/transcripts/deep/call.md",
       frontmatter: {}, body: "b", message: "m",
     });
-    expect(existsSync(join(vault, "zero7/transcripts/deep/call.md"))).toBe(true);
+    expect(existsSync(join(vault, "project-a/transcripts/deep/call.md"))).toBe(true);
   });
 
   it("uses the CALLER'S commit message — the vault history says what the digest did", async () => {

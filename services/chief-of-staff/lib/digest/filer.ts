@@ -1,3 +1,5 @@
+import { lstatSync, readdirSync, type Dirent } from "node:fs";
+import { join } from "node:path";
 import type { DigestDecision } from "./types.js";
 
 export type FileNoteFn = (opts: {
@@ -35,4 +37,25 @@ export async function fileDecision(
   const note = buildNote(decision, source.body, source.capturedAt);
   const { commit } = await fileNote({ ...note, sourcePath: source.path });
   return { commit, destPath: note.destPath };
+}
+
+/**
+ * The projects a transcript may be filed under: the top-level folders of the private store
+ * that have a `transcripts/` folder inside (a transcript is filed at `<project>/transcripts/`).
+ * Folders starting with "." or "_" (the inbox, metadata, git), names with a comma and symbolic
+ * links are never projects. Sorted, so the
+ * model sees the same list every pass. An unreadable or empty store gives an empty list.
+ */
+export function listTranscriptProjects(root: string): string[] {
+  // Symbolic links are never followed: a linked folder could point outside the private store.
+  const isRealDir = (p: string): boolean => { try { return lstatSync(p).isDirectory(); } catch { return false; } };
+  let entries: Dirent[] = [];
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return []; }
+  return entries
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    // A comma would split one name into two in the model's list.
+    .filter((n) => !n.startsWith(".") && !n.startsWith("_") && !n.includes(","))
+    .filter((n) => isRealDir(join(root, n, "transcripts")))
+    .sort();
 }

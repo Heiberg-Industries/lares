@@ -6,12 +6,12 @@ import { extractAttachment, parseFrontmatter, stripFrontmatter } from "./extract
 export type ReadabilityClient = (url: string) => Promise<{ title: string; text: string } | null>;
 
 /** The article-length floor below which a fetch does not count as enrichment. Exported
- *  because `lib/digest/readability.ts` re-implements the client against eve-saga's own
+ *  because `lib/digest/readability.ts` re-implements the client against the chief of staff's own
  *  worker and MUST apply the same threshold — dropping it would silently start enriching
  *  short pages the old service left alone. */
 export const MIN_ARTICLE_CHARS = 300;
 
-// `makeReadabilityClient` is deliberately NOT ported. eve-saga already owns the readability
+// `makeReadabilityClient` is deliberately NOT ported. The chief of staff already owns the readability
 // worker's HTTP contract in `@lares/agent-kit/readability-client` (auth, error taxonomy, egress via
 // squid); a second client would be a second place to keep that correct. The adapter that
 // satisfies `ReadabilityClient` from it lives in `lib/digest/readability.ts`.

@@ -4,7 +4,6 @@ import { parseInboxClip, type ArticleArea } from "./article.js";
 import type { FileArticleFn } from "./article-file.js";
 import { legacyEnrichedBody, type EnrichedItem } from "./enrich.js";
 import { fileDecision, type FileNoteFn } from "./filer.js";
-import { PROJECTS } from "./types.js";
 import { renderDigest, type DigestView } from "./format.js";
 
 export interface RunnerDeps {
@@ -12,6 +11,11 @@ export interface RunnerDeps {
   listInbox(): Promise<{ path: string; body: string }[]>;
   alreadySkipped(): Promise<string[]>;
   noteNames(): Promise<string[]>;
+  /**
+   * The projects a transcript may be filed under, read from the private store at run time
+   * (see `listTranscriptProjects`). Empty is fine: transcripts then go to "ask".
+   */
+  projects(): Promise<string[]>;
   llm: DigestLlm;
   fileNote: FileNoteFn;
   recordSkip(path: string, reason: string): Promise<void>;
@@ -71,7 +75,8 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
   const summary: DigestSummary = { filed: [], asked: [], errors: [], notices: [...(deps.notices ?? [])] };
   const skipped = new Set(await deps.alreadySkipped());
   const noteNames = await deps.noteNames();
-  const ctx: ClassifyContext = { projects: [...PROJECTS], noteNames };
+  const projects = await deps.projects();
+  const ctx: ClassifyContext = { projects: [...projects], noteNames };
   const limit = deps.maxClassify ?? (deps.fileArticle ? DEFAULT_MAX_CLASSIFY : Number.POSITIVE_INFINITY);
   let modelCalls = 0;
   let heldBack = 0;

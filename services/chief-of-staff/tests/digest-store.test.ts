@@ -24,7 +24,7 @@ function fakePool(rows: unknown[] = []) {
 describe("claimDigestRequests", () => {
   it("claims by DELETE … RETURNING — the claim IS the consumption", async () => {
     const { db, calls } = fakePool([{ id: "r1", door: "slack", thread_ref: "U1" }]);
-    const out = await claimDigestRequests(db, "saga");
+    const out = await claimDigestRequests(db, "agent-a");
     expect(out).toEqual([{ id: "r1", door: "slack", threadRef: "U1" }]);
     expect(calls[0].sql).toMatch(/DELETE FROM digest_requests/i);
     expect(calls[0].sql).toMatch(/RETURNING id, door, thread_ref/i);
@@ -32,37 +32,37 @@ describe("claimDigestRequests", () => {
 
   it("scopes to the agent and to pending rows", async () => {
     const { db, calls } = fakePool();
-    await claimDigestRequests(db, "saga");
+    await claimDigestRequests(db, "agent-a");
     expect(calls[0].sql).toMatch(/agent=\$1/);
     expect(calls[0].sql).toMatch(/status='pending'/);
-    expect(calls[0].params).toEqual(["saga"]);
+    expect(calls[0].params).toEqual(["agent-a"]);
   });
 
   it("maps thread_ref onto threadRef — the column and the field differ", async () => {
     const { db } = fakePool([{ id: "r2", door: "telegram", thread_ref: "716" }]);
-    expect((await claimDigestRequests(db, "saga"))[0].threadRef).toBe("716");
+    expect((await claimDigestRequests(db, "agent-a"))[0].threadRef).toBe("716");
   });
 
   it("returns [] when nothing is pending", async () => {
     const { db } = fakePool([]);
-    expect(await claimDigestRequests(db, "saga")).toEqual([]);
+    expect(await claimDigestRequests(db, "agent-a")).toEqual([]);
   });
 });
 
 describe("the skip ledger — why the digest does not re-ask about the same note forever", () => {
   it("upserts on (agent, path) and refreshes asked_at", async () => {
     const { db, calls } = fakePool();
-    await recordDigestSkip(db, { agent: "saga", path: "_inbox/x.md", reason: "unsure" });
+    await recordDigestSkip(db, { agent: "agent-a", path: "_inbox/x.md", reason: "unsure" });
     expect(calls[0].sql).toMatch(/INSERT INTO digest_skips/i);
     expect(calls[0].sql).toMatch(/ON CONFLICT \(agent, path\) DO UPDATE/i);
     expect(calls[0].sql).toMatch(/asked_at=now\(\)/);
-    expect(calls[0].params).toEqual(["saga", "_inbox/x.md", "unsure"]);
+    expect(calls[0].params).toEqual(["agent-a", "_inbox/x.md", "unsure"]);
   });
 
   it("lists the already-asked paths for the next pass to skip", async () => {
     const { db, calls } = fakePool([{ path: "_inbox/a.md" }, { path: "_inbox/b.md" }]);
-    expect(await listSkippedPaths(db, "saga")).toEqual(["_inbox/a.md", "_inbox/b.md"]);
-    expect(calls[0].params).toEqual(["saga"]);
+    expect(await listSkippedPaths(db, "agent-a")).toEqual(["_inbox/a.md", "_inbox/b.md"]);
+    expect(calls[0].params).toEqual(["agent-a"]);
   });
 });
 

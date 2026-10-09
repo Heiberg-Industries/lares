@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from "vitest";
 
-import { PROJECTS, DESTINATIONS, BODY_CHARS_FOR_CLASSIFY, type DigestDecision } from "../lib/digest/types.js";
+import { DESTINATIONS, BODY_CHARS_FOR_CLASSIFY, type DigestDecision } from "../lib/digest/types.js";
 import { dueScheduledSlot, osloParts, parseSlotHour, parsePositiveInt } from "../lib/digest/schedule.js";
 import { slugify, buildNote } from "../lib/digest/filer.js";
 import { parseFrontmatter, stripFrontmatter } from "../lib/digest/extract.js";
@@ -122,11 +122,6 @@ describe("filer — the note that lands in the vault", () => {
 });
 
 describe("types survived the copy", () => {
-  it("PROJECTS still bounds where a transcript may be filed", () => {
-    expect(PROJECTS).toContain("zero7");
-    expect(PROJECTS.length).toBeGreaterThan(1);
-  });
-
   it("DESTINATIONS maps the non-transcript types", () => {
     expect(DESTINATIONS.reference).toBe("reads");
     expect(DESTINATIONS.inspiration).toBe("inspiration");

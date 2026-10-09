@@ -73,7 +73,7 @@ export function stripFrontmatter(body: string): string {
  * Returns { text: "", kind: "image" } for recognised image types (PNG/JPG/GIF/WEBP).
  *
  * W3A-s5 — every non-null return taints `opts.turn` (when there is one) at `third_party`: the
- * attachment was sent by whoever sent the breadcrumb, not written by Bendik
+ * attachment was sent by whoever sent the breadcrumb, not written by the owner
  * (docs/specs/2026-09-18-origin-model-design.md, "The in-turn taint rule"). The image branch
  * taints too even though its own text is empty — the model still learns an image arrived and
  * from where.
