@@ -223,3 +223,9 @@ area-scoped grants make a separate mount unnecessary.
   — the shelf model and reversal conditions this ADR relies on.
 - Research reports 01, 09, 10 — corroborating patterns (index-beside-files, retirement by usage,
   the visible-index-health finding).
+
+## Amendment 2026-10-09 — articles and the shared agent
+
+An organisation has one shared agent, typically in Slack, with read and write access to the shared area. Which agent that is stays the installation's choice and is expressed only through the agents' `vault` grants; the default is the chief of staff. Each member has one or more personal agents with their own private area. Personal agents read the shared area and write there only where a grant says so. This changes no existing rule above; it states how the grants in rule 1 above are used for an organisation.
+
+Articles are OKF notes of type `article`. They sit in `shared/articles/` when they come from an organisation source (filed by the shared agent) and in the member's `private/<member>/articles/` when they come from that member's own source; a link pasted in chat goes where that agent files: the shared area for the shared agent, the member's private area for a personal agent. The engine's default article area is shared, and an installation whose shared area is not writable for the filing agent sets it to private. The reading state lives in a `reading:` key (`to-read | read | used | dropped | suggested`), because OKF v0.2 §5.4 reserves `status` for the document's lifecycle, which rule 3 above adopts. The full extracted text sits in a `<slug>.txt` companion beside the note. It is never searched and is outside the OKF type check, so it cannot crowd out recall or fail conformance. On a shared article the reading state is one value for the organisation; per-member reading state is an open question to settle before a second member uses articles.
