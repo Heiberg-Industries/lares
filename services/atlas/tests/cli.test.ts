@@ -99,6 +99,13 @@ describe("checkOkf", () => {
     expect(lines.join("\n")).toMatch(/_projects\/bare\.md/);
   });
 
+  it("accepts an article note in articles/", () => {
+    const lines: string[] = [];
+    const raw = "---\ntype: article\ntitle: \"A neutral example article\"\nreading: to-read\n---\n\nSummary.\n";
+    const res = checkOkf(writer({ "articles/a.md": raw }), (s) => lines.push(s));
+    expect(res.findings).toBe(0);
+  });
+
   it("never writes — it is a report", () => {
     // `writeNotes` throws above; reaching it would fail this test loudly.
     expect(() => checkOkf(writer({ "a.md": "# a\n" }), () => {})).not.toThrow();

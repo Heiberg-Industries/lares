@@ -2,6 +2,31 @@ import { describe, it, expect } from "vitest";
 import { migrateOkf } from "../lib/migrate-okf.js";
 import { fakeWriter } from "./helpers/fake-writer.js";
 
+const ARTICLE_NOTE = `---
+type: article
+title: "A neutral example article"
+sources:
+  - resource: "https://example.com/a/b"
+reading: to-read
+topics: [pricing, onboarding]
+gathered_by: owner
+captured: 2026-10-09
+generated:
+  by: "process:digest"
+  at: "2026-10-09T10:00:00+00:00"
+lares_origin: third_party
+owner: organisation
+scope: org
+full_text: a-neutral-example-article.txt
+---
+
+Summary.
+
+## Full text
+
+[Full text](a-neutral-example-article.txt)
+`;
+
 const LIVE = () => ({
   "README.md": "# The Atlas\n",
   "SCHEMA.md": "# Atlas per-brand note schema\n",
@@ -10,6 +35,7 @@ const LIVE = () => ({
   "_projects/soma.md": '---\nbrand: soma\nstatus: exploration\ncanonical_sources: ["notion:2f5cc987-b457-8094-a784-cbcc9b67493f"]\nlast_synced: 2026-08-11\n---\n\nbody\n',
   "_projects/murmur.md": "---\nbrand: murmur\nstatus: active\ncodebase: /workspace/murmur/\ncanonical_sources: [README.md]\nlast_synced: 2026-06-23\n---\n\nbody\n",
   "icp/zero7.md": "# Zero7 ICP\n",
+  "articles/a-neutral-example-article.md": ARTICLE_NOTE,
   "_inbox/idea.md": "---\ntitle: An idea\ntype: note\n---\n\nbody\n",
 });
 
@@ -24,6 +50,15 @@ describe("migrateOkf", () => {
     expect(w.files["_entities.md"]).toContain("type: reference");
     expect(w.files["_projects/soma.md"]).toContain("type: venture");
     expect(w.files["icp/zero7.md"]).toContain("type: profile");
+  });
+
+  it("accepts an article note and leaves it byte-identical", async () => {
+    const files = LIVE();
+    const res = await migrateOkf(fakeWriter(files), "2026-08-12");
+    expect(res.failures).toEqual([]);
+    expect(res.findings).toEqual([]);
+    expect(res.changed).not.toContain("articles/a-neutral-example-article.md");
+    expect(files["articles/a-neutral-example-article.md"]).toBe(ARTICLE_NOTE);
   });
 
   it("leaves a file that was already conformant byte-identical", async () => {

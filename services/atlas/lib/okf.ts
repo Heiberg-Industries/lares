@@ -16,11 +16,12 @@ function normPath(p: string): string {
  * unrecognised location is deliberate: a silent default would let a file into the bundle
  * wearing a type nobody chose, and OKF's whole promise is that `type` means something.
  */
-export function okfTypeFor(atlasRelPath: string): "venture" | "index" | "reference" | "profile" | "note" {
+export function okfTypeFor(atlasRelPath: string): "venture" | "index" | "reference" | "profile" | "note" | "article" {
   const p = normPath(atlasRelPath);
   if (p.startsWith("_projects/")) return "venture";
   if (p.startsWith("icp/")) return "profile";
   if (p.startsWith("_inbox/")) return "note";
+  if (p.startsWith("articles/")) return "article";
   if (p === "_portfolio.md" || p === "readme.md") return "index";
   if (p === "_entities.md" || p === "schema.md") return "reference";
   throw new Error(

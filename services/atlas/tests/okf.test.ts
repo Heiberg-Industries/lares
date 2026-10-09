@@ -10,11 +10,13 @@ describe("okfTypeFor", () => {
     expect(okfTypeFor("SCHEMA.md")).toBe("reference");
     expect(okfTypeFor("icp/zero7.md")).toBe("profile");
     expect(okfTypeFor("_inbox/some-idea.md")).toBe("note");
+    expect(okfTypeFor("articles/some-article.md")).toBe("article");
   });
 
   it("compares paths case- and NFC-insensitively (ext4 box vs APFS Mac)", () => {
     expect(okfTypeFor("_Projects/Soma.md")).toBe("venture");
     expect(okfTypeFor("ICP/zero7.md")).toBe("profile");
+    expect(okfTypeFor("Articles/Some-Article.md")).toBe("article");
   });
 
   it("refuses an unknown location rather than guessing a type", () => {
