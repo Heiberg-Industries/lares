@@ -280,3 +280,67 @@ describe("erasePersonFiles — what it removes, and what it refuses to decide", 
     }
   });
 });
+
+describe("an article's text companion goes with its note", () => {
+  const article = (owner: string, fullText: string): string =>
+    `---\ntype: article\nowner: ${owner}\nscope: private\nfull_text: ${fullText}\n---\n\nSummary.\n`;
+
+  it("reports the companion as its own hit and removes both in the one erase commit", async () => {
+    write("articles/mine.md", article("fixture-owner", "mine.txt"));
+    write("articles/mine.txt", "The full text of the page.\n");
+    git("add", "articles/mine.md", "articles/mine.txt");
+    git("commit", "-q", "-m", "an article and its text");
+
+    const hits = findPersonFiles(root, SPELLINGS);
+    expect(hits.filter((h) => h.path.startsWith("articles/"))).toEqual([
+      { path: "articles/mine.md", why: "owner", tracked: true },
+      { path: "articles/mine.txt", why: "owner", tracked: true },
+    ]);
+
+    const out = await erasePersonFiles({ vaultRoot: root, hits, dryRun: false });
+    expect(out.removed).toContain("articles/mine.md");
+    expect(out.removed).toContain("articles/mine.txt");
+    expect(existsSync(join(root, "articles/mine.txt"))).toBe(false);
+    expect(git("show", "--stat", "--format=", "HEAD")).toContain("articles/mine.txt");
+    expect(git("status", "--porcelain", "--untracked-files=no")).toBe("");
+  });
+
+  it("finds an untracked companion and says so", () => {
+    write("articles/loose.md", article("fixture-owner", "loose.txt"));
+    write("articles/loose.txt", "Never committed.\n");
+    const hit = findPersonFiles(root, SPELLINGS).find((h) => h.path === "articles/loose.txt");
+    expect(hit).toEqual({ path: "articles/loose.txt", why: "owner", tracked: false });
+  });
+
+  it("leaves the companion of a shared note alone, like the note", async () => {
+    write(
+      "articles/both.md",
+      `---\ntype: article\nscope: participants\nparticipants: [fixture-owner, ${SECOND}]\nfull_text: both.txt\n---\n\nSummary.\n`,
+    );
+    write("articles/both.txt", "Shared text.\n");
+    git("add", "articles/both.md", "articles/both.txt");
+    git("commit", "-q", "-m", "a shared article");
+
+    const hits = findPersonFiles(root, SPELLINGS);
+    expect(hits.map((h) => h.path)).not.toContain("articles/both.txt");
+    await erasePersonFiles({ vaultRoot: root, hits, dryRun: false });
+    expect(existsSync(join(root, "articles/both.txt"))).toBe(true);
+    expect(existsSync(join(root, "articles/both.md"))).toBe(true);
+  });
+
+  it("ignores a full_text value that names a file outside the note's folder", () => {
+    write("articles/odd.md", article("fixture-owner", "../people/other.md"));
+    write("articles/odd2.md", article("fixture-owner", "sub/x.txt"));
+    const paths = findPersonFiles(root, SPELLINGS).map((h) => h.path);
+    expect(paths).toContain("articles/odd.md");
+    expect(paths).not.toContain("people/other.md");
+    expect(paths.filter((p) => p.endsWith(".txt"))).toEqual([]);
+  });
+
+  it("a missing companion is not an error", () => {
+    write("articles/gone.md", article("fixture-owner", "gone.txt"));
+    const paths = findPersonFiles(root, SPELLINGS).map((h) => h.path);
+    expect(paths).toContain("articles/gone.md");
+    expect(paths).not.toContain("articles/gone.txt");
+  });
+});

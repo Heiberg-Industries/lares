@@ -12,7 +12,7 @@
 // migration and the tick disagreed about what conformance means, the tick would spend
 // forever undoing the migration. One implementation, two callers.
 import { mechanicalRefresh } from "./mechanical.js";
-import { OKF_CORE_TYPES, checkConformance, type ConformanceFinding } from "@lares/vault-format/okf";
+import { OKF_ARTICLE_TYPES, OKF_CORE_TYPES, checkConformance, type ConformanceFinding } from "@lares/vault-format/okf";
 import type { AtlasWriter } from "./adapters/atlas-writer.js";
 
 export interface MigrateResult {
@@ -51,7 +51,7 @@ export async function migrateOkf(writer: AtlasWriter, today: string): Promise<Mi
   // describe the STORE, not this function's intentions.
   const findings = checkConformance(
     paths.map((path) => ({ path, raw: writer.readNote(path) })),
-    { types: OKF_CORE_TYPES },
+    { types: [...OKF_CORE_TYPES, ...OKF_ARTICLE_TYPES] },
   );
   return { changed: updated.map((u) => u.path), findings, failures };
 }

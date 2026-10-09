@@ -1,9 +1,10 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { resolveInStore } from "./notes-store.js";
 import { withNoteLock } from "./note-lock.js";
+import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
 /**
  * The git mechanics behind the vault write tools (`vault_write`, `vault_file`, `vault_drop`
@@ -75,6 +76,38 @@ function gitPushOrThrow(vaultRoot: string, commit: string): void {
   }
 }
 
+/**
+ * The text companion an article note names with `full_text:`, as a store-relative path beside
+ * the note, or null (no key, an unsafe value, a missing file, or an unreadable note). Moves and
+ * deletes use it so the note and its `.txt` always travel together; anything unexpected means
+ * "no companion", never an error, so a plain note behaves exactly as before.
+ */
+function companionOf(vaultRoot: string, notePath: string): string | null {
+  let raw: string;
+  try {
+    raw = readFileSync(resolveInStore(notePath, vaultRoot), "utf8");
+  } catch {
+    return null;
+  }
+  const text = raw.replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) return null;
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) return null;
+  const value = text
+    .slice(4, end)
+    .match(new RegExp(`^${ARTICLE_FULL_TEXT_KEY}:\\s*(.+)$`, "m"))?.[1]
+    ?.trim()
+    .replace(/^["']|["']$/g, "");
+  if (value === undefined) return null;
+  const companion = articleCompanionPath(notePath, value);
+  if (companion === null) return null;
+  try {
+    return existsSync(resolveInStore(companion, vaultRoot)) ? companion : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Create (or overwrite) a note with serialised frontmatter + body, commit, push. Used by
  *  `vault_write` for the `_inbox/<slug>.md` convention.
  *
@@ -119,9 +152,16 @@ export async function moveNote(opts: {
     const destAbs = resolveInStore(destPath, vaultRoot);
     resolveInStore(sourcePath, vaultRoot); // reject traversal on the source too, before any git call
 
+    // An article's text companion keeps its name and moves to the note's new folder.
+    const companion = companionOf(vaultRoot, sourcePath);
+    const companionDest = companion === null ? null : articleCompanionPath(destPath, basename(companion));
+
     mkdirSync(dirname(destAbs), { recursive: true });
     // git mv preserves the file's bytes (and its history) — a true move, not a rewrite.
     execFileSync("git", ["-C", vaultRoot, "mv", "--", sourcePath, destPath]);
+    if (companion !== null && companionDest !== null) {
+      execFileSync("git", ["-C", vaultRoot, "mv", "--", companion, companionDest]);
+    }
     execFileSync("git", ["-C", vaultRoot, "commit", "-q", "-m", message]);
     const commit = gitShortHead(vaultRoot);
     gitPushOrThrow(vaultRoot, commit);
@@ -140,7 +180,9 @@ export async function removeNote(opts: {
   return withNoteLock(vaultRoot, path, async () => {
     resolveInStore(path, vaultRoot); // reject traversal, before any git call
 
+    const companion = companionOf(vaultRoot, path);
     execFileSync("git", ["-C", vaultRoot, "rm", "-q", "--", path]);
+    if (companion !== null) execFileSync("git", ["-C", vaultRoot, "rm", "-q", "--ignore-unmatch", "--", companion]);
     execFileSync("git", ["-C", vaultRoot, "commit", "-q", "-m", message]);
     const commit = gitShortHead(vaultRoot);
     gitPushOrThrow(vaultRoot, commit);

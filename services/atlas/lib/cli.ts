@@ -12,7 +12,7 @@ import { makeFsReader } from "./adapters/fs-source.js";
 import { makeRepoReader } from "./adapters/github-source.js";
 import { makeNotionReader } from "./adapters/notion-source.js";
 import type { Config } from "./config.js";
-import { OKF_CORE_TYPES, checkConformance } from "@lares/vault-format/okf";
+import { OKF_ARTICLE_TYPES, OKF_CORE_TYPES, checkConformance } from "@lares/vault-format/okf";
 import type { AtlasWriter } from "./adapters/atlas-writer.js";
 
 export const MODES = [
@@ -134,7 +134,7 @@ export interface ConformanceReport { findings: number }
 /** `--check-okf`: reports, writes nothing. */
 export function checkOkf(writer: AtlasWriter, log: (s: string) => void): ConformanceReport {
   const files = writer.listNotes().map((path) => ({ path, raw: writer.readNote(path) }));
-  const findings = checkConformance(files, { types: OKF_CORE_TYPES });
+  const findings = checkConformance(files, { types: [...OKF_CORE_TYPES, ...OKF_ARTICLE_TYPES] });
   if (findings.length === 0) {
     log(`atlas: all ${files.length} notes conform to OKF.`);
     return { findings: 0 };

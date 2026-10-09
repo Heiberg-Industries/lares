@@ -197,6 +197,87 @@ describe("moveNote", () => {
   });
 });
 
+describe("moveNote with an article's text companion", () => {
+  const note = "---\ntype: article\nfull_text: a.txt\n---\n\nSummary.\n";
+
+  it("moves the note and its .txt companion in one commit", async () => {
+    seedNote(workDir, "articles/a.md", note);
+    seedNote(workDir, "articles/a.txt", "Full text.\n");
+    const before = commitCount(workDir);
+
+    await moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/b.md", message: "move" });
+
+    expect(commitCount(workDir)).toBe(before + 1);
+    expect(existsSync(join(workDir, "articles/a.md"))).toBe(false);
+    expect(existsSync(join(workDir, "articles/a.txt"))).toBe(false);
+    expect(existsSync(join(workDir, "archive/b.md"))).toBe(true);
+    expect(existsSync(join(workDir, "archive/a.txt"))).toBe(true);
+    const onBare = git(bareDir, "ls-tree", "-r", "--name-only", "HEAD");
+    expect(onBare).toContain("archive/a.txt");
+    expect(onBare).not.toContain("articles/a.txt");
+  });
+
+  it("moves the note alone when the companion is missing", async () => {
+    seedNote(workDir, "articles/a.md", note);
+    await moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/a.md", message: "move" });
+    expect(existsSync(join(workDir, "archive/a.md"))).toBe(true);
+    expect(existsSync(join(workDir, "archive/a.txt"))).toBe(false);
+  });
+
+  it("leaves a neighbouring .txt alone when the note has no full_text key", async () => {
+    seedNote(workDir, "articles/a.md", "---\ntype: note\n---\n\nBody.\n");
+    seedNote(workDir, "articles/a.txt", "Unrelated.\n");
+    await moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/a.md", message: "move" });
+    expect(existsSync(join(workDir, "articles/a.txt"))).toBe(true);
+    expect(existsSync(join(workDir, "archive/a.txt"))).toBe(false);
+  });
+
+  it("ignores a full_text value that points outside the note's folder", async () => {
+    seedNote(workDir, "articles/a.md", "---\ntype: article\nfull_text: ../x.txt\n---\n\nSummary.\n");
+    seedNote(workDir, "x.txt", "Not this one.\n");
+    await moveNote({ vaultRoot: workDir, sourcePath: "articles/a.md", destPath: "archive/a.md", message: "move" });
+    expect(existsSync(join(workDir, "x.txt"))).toBe(true);
+  });
+});
+
+describe("removeNote with an article's text companion", () => {
+  const note = "---\ntype: article\nfull_text: a.txt\n---\n\nSummary.\n";
+
+  it("removes the note and its .txt companion in one commit", async () => {
+    seedNote(workDir, "articles/a.md", note);
+    seedNote(workDir, "articles/a.txt", "Full text.\n");
+    const before = commitCount(workDir);
+
+    await removeNote({ vaultRoot: workDir, path: "articles/a.md", message: "drop" });
+
+    expect(commitCount(workDir)).toBe(before + 1);
+    expect(existsSync(join(workDir, "articles/a.md"))).toBe(false);
+    expect(existsSync(join(workDir, "articles/a.txt"))).toBe(false);
+    const onBare = git(bareDir, "ls-tree", "-r", "--name-only", "HEAD");
+    expect(onBare).not.toContain("articles/a.txt");
+  });
+
+  it("removes just the note when the companion is already gone", async () => {
+    seedNote(workDir, "articles/a.md", note);
+    await removeNote({ vaultRoot: workDir, path: "articles/a.md", message: "drop" });
+    expect(existsSync(join(workDir, "articles/a.md"))).toBe(false);
+  });
+
+  it("leaves a neighbouring .txt alone when the note has no full_text key", async () => {
+    seedNote(workDir, "articles/a.md", "---\ntype: note\n---\n\nBody.\n");
+    seedNote(workDir, "articles/a.txt", "Unrelated.\n");
+    await removeNote({ vaultRoot: workDir, path: "articles/a.md", message: "drop" });
+    expect(existsSync(join(workDir, "articles/a.txt"))).toBe(true);
+  });
+
+  it("ignores a full_text value that points outside the note's folder", async () => {
+    seedNote(workDir, "articles/a.md", "---\ntype: article\nfull_text: ../x.txt\n---\n\nSummary.\n");
+    seedNote(workDir, "x.txt", "Not this one.\n");
+    await removeNote({ vaultRoot: workDir, path: "articles/a.md", message: "drop" });
+    expect(existsSync(join(workDir, "x.txt"))).toBe(true);
+  });
+});
+
 describe("removeNote", () => {
   it("removes the note, committed and pushed", async () => {
     seedNote(workDir, "_inbox/existing.md", "body");

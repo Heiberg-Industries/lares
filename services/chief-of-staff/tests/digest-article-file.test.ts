@@ -1,0 +1,277 @@
+/**
+ * Filing an article against REAL repositories: a private one (where the inbox lives) and a shared
+ * one, each with its own bare remote. The behaviour under test is the git invocations (what lands
+ * in which commit, what reaches the remote, what happens to the inbox note), so a mock would
+ * prove nothing. Compare `digest-file.test.ts`, the same idea for ordinary notes.
+ */
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { VaultPushFailedError } from "@lares/agent-kit/vault-git";
+import { renderClipNote, type ClipRecord } from "../lib/clipping/record.js";
+import type { ArticleClassification } from "../lib/digest/classifier.js";
+import { makeArticleFiler, resolveSharedRoot } from "../lib/digest/article-file.js";
+
+let tmp: string;
+let privateRoot: string;
+let privateBare: string;
+let sharedRoot: string;
+let sharedBare: string;
+
+function git(cwd: string, ...args: string[]): string {
+  return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8" });
+}
+
+function makeRepo(name: string): { root: string; bare: string } {
+  const bare = join(tmp, `${name}.git`);
+  const root = join(tmp, name);
+  execFileSync("git", ["init", "--bare", "-q", bare]);
+  execFileSync("git", ["init", "-q", root]);
+  git(root, "config", "user.email", "t@t.t");
+  git(root, "config", "user.name", "t");
+  git(root, "remote", "add", "origin", bare);
+  writeFileSync(join(root, "README.md"), "seed\n");
+  git(root, "add", "README.md");
+  git(root, "commit", "-q", "-m", "seed");
+  git(root, "push", "-q", "origin", "HEAD");
+  return { root, bare };
+}
+
+beforeEach(() => {
+  tmp = mkdtempSync(join(tmpdir(), "article-file-"));
+  ({ root: privateRoot, bare: privateBare } = makeRepo("private"));
+  ({ root: sharedRoot, bare: sharedBare } = makeRepo("shared"));
+});
+
+afterEach(() => {
+  rmSync(tmp, { recursive: true, force: true });
+});
+
+const clip = (over: Partial<ClipRecord> = {}): ClipRecord => ({
+  sourceId: "src1",
+  sourceKind: "notion",
+  sourceContainer: "ds1",
+  sourceItemId: "0a1b2c3d-0000-4000-8000-000000000001",
+  sourceRevision: "2026-10-01T10:00:00.000Z",
+  url: "https://example.com/posts/pricing-pages",
+  urlKey: "https://example.com/posts/pricing-pages",
+  title: "Pricing pages that convert",
+  note: "Check the section on anchoring.",
+  tags: ["Pricing"],
+  capturedAt: "2026-10-01T09:30:00.000Z",
+  owner: "organisation",
+  visibility: "shared",
+  ...over,
+});
+
+const TEXT = "Pricing pages work best when the middle plan is the obvious choice, and clear plan names matter.";
+
+/** Put an inbox note in the private repo, tracked (committed) or loose (like a clipper drop). */
+function inbox(name: string, c: ClipRecord, tracked: boolean): { path: string; body: string } {
+  const path = `_inbox/${name}.md`;
+  const body = renderClipNote(c);
+  mkdirSync(join(privateRoot, "_inbox"), { recursive: true });
+  writeFileSync(join(privateRoot, path), body);
+  if (tracked) {
+    git(privateRoot, "add", "--", path);
+    git(privateRoot, "commit", "-q", "-m", `seed ${name}`);
+    git(privateRoot, "push", "-q", "origin", "HEAD");
+  }
+  return { path, body };
+}
+
+const classification: ArticleClassification = {
+  summary: "Pricing pages convert when one plan is the default.",
+  topics: ["conversion"],
+  excerpts: [],
+  links: [],
+};
+
+/** `null` means the shared area is not connected. */
+function filer(shared: string | null = sharedRoot) {
+  return makeArticleFiler({ privateRoot, sharedRoot: () => shared ?? undefined, now: () => new Date("2026-10-09T10:00:00Z") });
+}
+
+function run(
+  fileArticle: ReturnType<typeof filer>,
+  item: { path: string; body: string },
+  opts: { title?: string; url?: string; text?: string } = {},
+) {
+  let calls = 0;
+  const promise = fileArticle({
+    inboxPath: item.path,
+    inboxBody: item.body,
+    article: { url: opts.url ?? "https://example.com/posts/pricing-pages", title: opts.title ?? "How pricing pages convert", text: opts.text ?? TEXT },
+    classify: async () => {
+      calls += 1;
+      return classification;
+    },
+    today: "2026-10-09",
+  });
+  return { promise, calls: () => calls };
+}
+
+const count = (root: string): number => Number(git(root, "rev-list", "--count", "HEAD").trim());
+const filesOfHead = (root: string): string[] =>
+  git(root, "show", "--name-status", "--format=", "HEAD").trim().split("\n").filter(Boolean).sort();
+
+describe("a shared article", () => {
+  it("lands as note and text in ONE shared commit, pushed, and the inbox note is retired in the private repo", async () => {
+    const item = inbox("clip-a", clip(), true);
+    const before = { shared: count(sharedRoot), priv: count(privateRoot) };
+
+    const r = run(filer(), item);
+    const out = await r.promise;
+
+    expect(out).toMatchObject({ area: "shared", duplicate: false, fellBack: false, destPath: "articles/how-pricing-pages-convert.md" });
+    expect(r.calls()).toBe(1);
+
+    expect(count(sharedRoot)).toBe(before.shared + 1);
+    expect(filesOfHead(sharedRoot)).toEqual([
+      "A\tarticles/how-pricing-pages-convert.md",
+      "A\tarticles/how-pricing-pages-convert.txt",
+    ]);
+    expect(git(sharedRoot, "log", "-1", "--format=%s").trim()).toBe("digest: file article how-pricing-pages-convert → articles");
+    const onBare = git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD");
+    expect(onBare).toContain("articles/how-pricing-pages-convert.md");
+    expect(onBare).toContain("articles/how-pricing-pages-convert.txt");
+
+    const note = readFileSync(join(sharedRoot, "articles/how-pricing-pages-convert.md"), "utf8");
+    expect(note).toContain("scope: org");
+    expect(note).toContain("## Note\nCheck the section on anchoring.");
+    expect(readFileSync(join(sharedRoot, "articles/how-pricing-pages-convert.txt"), "utf8")).toBe(TEXT);
+
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+    expect(count(privateRoot)).toBe(before.priv + 1);
+    expect(filesOfHead(privateRoot)).toEqual([`D\t${item.path}`]);
+    expect(git(privateBare, "ls-tree", "-r", "--name-only", "HEAD")).not.toContain(item.path);
+    expect(existsSync(join(privateRoot, "articles"))).toBe(false);
+  });
+
+  it("an inbox note that was never committed is simply removed, with no empty commit", async () => {
+    const item = inbox("clip-loose", clip(), false);
+    const before = count(privateRoot);
+    await run(filer(), item).promise;
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+    expect(count(privateRoot)).toBe(before);
+  });
+});
+
+describe("a private article", () => {
+  it("is one private commit: the note, its text and the inbox removal together", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const before = count(privateRoot);
+
+    const out = await run(filer(), item).promise;
+
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+    expect(count(privateRoot)).toBe(before + 1);
+    expect(filesOfHead(privateRoot)).toEqual([
+      `D\t${item.path}`,
+      "A\tarticles/how-pricing-pages-convert.md",
+      "A\tarticles/how-pricing-pages-convert.txt",
+    ].sort());
+    expect(git(privateBare, "ls-tree", "-r", "--name-only", "HEAD")).toContain("articles/how-pricing-pages-convert.txt");
+    const note = readFileSync(join(privateRoot, "articles/how-pricing-pages-convert.md"), "utf8");
+    expect(note).toContain("scope: private");
+    expect(note).toContain("owner: fixture-member");
+    expect(existsSync(join(sharedRoot, "articles"))).toBe(false);
+  });
+});
+
+describe("the same link twice", () => {
+  it("makes no model call, writes nothing new, and retires the second inbox note", async () => {
+    await run(filer(), inbox("clip-1", clip(), true)).promise;
+    const sharedBefore = count(sharedRoot);
+
+    const second = inbox("clip-2", clip({ url: "https://example.com/posts/pricing-pages?utm_source=newsletter" }), true);
+    const r = run(filer(), second, { url: "https://example.com/posts/pricing-pages?utm_source=newsletter" });
+    const out = await r.promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(r.calls()).toBe(0);
+    expect(count(sharedRoot)).toBe(sharedBefore);
+    expect(existsSync(join(privateRoot, second.path))).toBe(false);
+  });
+});
+
+describe("a different link with the same title", () => {
+  it("gets its own name with six hex characters of the link's hash, and its own companion", async () => {
+    await run(filer(), inbox("clip-1", clip(), true)).promise;
+    const other = inbox("clip-2", clip({ url: "https://example.com/posts/another", urlKey: "https://example.com/posts/another" }), true);
+
+    const out = await run(filer(), other, { url: "https://example.com/posts/another" }).promise;
+
+    expect(out.duplicate).toBe(false);
+    expect(out.destPath).toMatch(/^articles\/how-pricing-pages-convert-[0-9a-f]{6}\.md$/);
+    const companion = out.destPath.replace(/\.md$/, ".txt");
+    expect(existsSync(join(sharedRoot, companion))).toBe(true);
+    expect(readFileSync(join(sharedRoot, out.destPath), "utf8")).toContain(`full_text: ${companion.replace("articles/", "")}`);
+    expect(existsSync(join(sharedRoot, "articles/how-pricing-pages-convert.md"))).toBe(true);
+  });
+});
+
+describe("when the shared area cannot be used", () => {
+  it("files in the private area, says so, and never writes an owner on a private note", async () => {
+    const item = inbox("clip-a", clip(), true);
+    const out = await run(filer(null), item).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: true });
+    const note = readFileSync(join(privateRoot, out.destPath), "utf8");
+    expect(note).toContain("scope: private");
+    expect(note).not.toMatch(/^owner:/m);
+  });
+
+  it("treats a folder that is not a repository as unusable", async () => {
+    const plain = join(tmp, "plain");
+    mkdirSync(plain);
+    const out = await run(filer(plain), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: true });
+    expect(existsSync(join(plain, "articles"))).toBe(false);
+  });
+
+  it("treats a missing folder as unusable", async () => {
+    const out = await run(filer(join(tmp, "nope")), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: true });
+  });
+});
+
+describe("when the push fails", () => {
+  it("reports it, keeps the inbox note, and the next pass finishes without a second model call", async () => {
+    const item = inbox("clip-a", clip(), true);
+    git(sharedRoot, "remote", "set-url", "origin", join(tmp, "missing.git"));
+
+    await expect(run(filer(), item).promise).rejects.toBeInstanceOf(VaultPushFailedError);
+    expect(existsSync(join(privateRoot, item.path))).toBe(true);
+    expect(existsSync(join(sharedRoot, "articles/how-pricing-pages-convert.md"))).toBe(true);
+
+    git(sharedRoot, "remote", "set-url", "origin", sharedBare);
+    const retry = run(filer(), item);
+    const out = await retry.promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(retry.calls()).toBe(0);
+    expect(git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD")).toContain("articles/how-pricing-pages-convert.txt");
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+});
+
+describe("a link that cannot be filed", () => {
+  it("refuses an inbox note whose link is not a web link, before any model call or write", async () => {
+    const body = "---\nurl: ftp://example.com/file\ntitle: Not a page\n---\n\n";
+    const bad = run(filer(), { path: "_inbox/clip-bad.md", body }, { url: "ftp://example.com/file" });
+    await expect(bad.promise).rejects.toThrow(/web link/i);
+    expect(bad.calls()).toBe(0);
+  });
+});
+
+describe("resolveSharedRoot", () => {
+  it("answers undefined when the shared area is not configured", () => {
+    expect(resolveSharedRoot({})).toBeUndefined();
+  });
+  it("answers the configured path", () => {
+    expect(resolveSharedRoot({ ATLAS_PATH: "/some/where" })).toBe("/some/where");
+  });
+});

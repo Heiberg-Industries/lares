@@ -119,3 +119,37 @@ describe("mechanicalRefresh", () => {
     expect(out.raw).toContain("Body.");
   });
 });
+
+const ARTICLE = `---
+type: article
+title: "A neutral example article"
+sources:
+  - resource: "https://example.com/a/b"
+reading: to-read
+topics: [pricing, onboarding]
+gathered_by: owner
+captured: 2026-10-09
+generated:
+  by: "process:digest"
+  at: "2026-10-09T10:00:00+00:00"
+lares_origin: third_party
+owner: organisation
+scope: org
+full_text: a-neutral-example-article.txt
+---
+
+Summary.
+
+## Full text
+
+[Full text](a-neutral-example-article.txt)
+`;
+
+describe("mechanicalRefresh on an article note", () => {
+  it("leaves a complete article note byte-identical (no type rewrite, no stamp)", () => {
+    const out = mechanicalRefresh({ path: "articles/a-neutral-example-article.md", raw: ARTICLE, today: "2026-10-10" });
+    expect(out.changed).toBe(false);
+    expect(out.raw).toBe(ARTICLE);
+    expect(out.fields).toEqual([]);
+  });
+});

@@ -16,10 +16,36 @@ export const MIN_ARTICLE_CHARS = 300;
 // squid); a second client would be a second place to keep that correct. The adapter that
 // satisfies `ReadabilityClient` from it lives in `lib/digest/readability.ts`.
 
+/** A web page the reader opened for a saved link. */
+export interface FetchedArticle {
+  url: string;
+  title: string;
+  text: string;
+}
+
+export interface EnrichedItem {
+  path: string;
+  body: string;
+  enriched: boolean;
+  /**
+   * Set when the item is a saved link the reader could open. The page travels BESIDE the item's
+   * own body (the owner's clip note), never in place of it, so filing can keep both.
+   */
+  article?: FetchedArticle;
+}
+
+/**
+ * The body the digest classifies and files when nothing is set up to file articles: the page text
+ * with a provenance comment, as `enrichItem` used to return it.
+ */
+export function legacyEnrichedBody(article: FetchedArticle): string {
+  return `${article.text}\n\n<!-- source: ${article.url} -->`;
+}
+
 export async function enrichItem(
   item: { path: string; body: string },
   client: ReadabilityClient,
-): Promise<{ path: string; body: string; enriched: boolean }> {
+): Promise<EnrichedItem> {
   // Prefer the URL stored in frontmatter (written by CaptureSink.writeLink).
   // A real capture note has `url:` in its frontmatter AND a `url\nlabel` body —
   // classifyInbound on the full file would see two URLs and return `conversation`.
@@ -36,10 +62,9 @@ export async function enrichItem(
   }
 
   if (!url) return { ...item, enriched: false };
-  const article = await client(url);
-  if (!article) return { ...item, enriched: false };
-  const body = `${article.text}\n\n<!-- source: ${url} -->`;
-  return { path: item.path, body, enriched: true };
+  const page = await client(url);
+  if (!page) return { ...item, enriched: false };
+  return { ...item, enriched: true, article: { url, title: page.title, text: page.text } };
 }
 
 /**
@@ -60,7 +85,7 @@ export function makeEnrich(opts: {
    * needing to change again.
    */
   turn?: TurnKey;
-}): (item: { path: string; body: string }) => Promise<{ path: string; body: string; enriched: boolean }> {
+}): (item: { path: string; body: string }) => Promise<EnrichedItem> {
   return async (item) => {
     // Branch 1: attachment breadcrumb
     const att = await extractAttachment({ breadcrumbBody: item.body, readFile: opts.readFile, turn: opts.turn });

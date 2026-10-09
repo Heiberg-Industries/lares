@@ -2,6 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   OKF_CORE_TYPES,
   OKF_TASTE_TYPES,
+  OKF_ARTICLE_TYPES,
+  ARTICLE_READING_KEY,
+  ARTICLE_READING_STATES,
+  ARTICLE_FULL_TEXT_KEY,
+  articleCompanionPath,
   OKF_OPTIONAL_FAMILIES,
   LARES_FIELDS,
   checkConformance,
@@ -69,5 +74,59 @@ describe("checkAreas", () => {
 
   it("returns an empty array when every area conforms", () => {
     expect(checkAreas([{ name: "brain", types: OKF_CORE_TYPES, files: [{ path: "n.md", raw: "---\ntype: note\n---\n\nb\n" }] }])).toEqual([]);
+  });
+});
+
+describe("article notes", () => {
+  const article = [
+    "---",
+    "type: article",
+    'title: "A neutral example article"',
+    "sources:",
+    '  - resource: "https://example.com/a/b"',
+    "reading: to-read",
+    "topics: [pricing, onboarding]",
+    "gathered_by: owner",
+    "captured: 2026-10-09",
+    "generated:",
+    '  by: "process:digest"',
+    '  at: "2026-10-09T10:00:00+00:00"',
+    "lares_origin: third_party",
+    "owner: organisation",
+    "scope: org",
+    "full_text: a-neutral-example-article.txt",
+    "---",
+    "",
+    "Summary.",
+    "",
+  ].join("\n");
+
+  it("lists exactly one extra type", () => {
+    expect([...OKF_ARTICLE_TYPES]).toEqual(["article"]);
+  });
+
+  it("a full article note passes with the article type added, and is an unknown type without it", () => {
+    const files = [{ path: "articles/a.md", raw: article }];
+    expect(checkConformance(files, { types: [...OKF_CORE_TYPES, ...OKF_ARTICLE_TYPES] })).toEqual([]);
+    expect(checkConformance(files, core)).toEqual([
+      { path: "articles/a.md", problem: "unknown-type", found: "article" },
+    ]);
+  });
+
+  it("names the reading states and the two keys", () => {
+    expect(ARTICLE_READING_KEY).toBe("reading");
+    expect(ARTICLE_FULL_TEXT_KEY).toBe("full_text");
+    expect([...ARTICLE_READING_STATES]).toEqual(["to-read", "read", "used", "dropped", "suggested"]);
+  });
+
+  it("finds the companion text file beside the note", () => {
+    expect(articleCompanionPath("articles/a.md", "a.txt")).toBe("articles/a.txt");
+    expect(articleCompanionPath("a.md", "a.txt")).toBe("a.txt");
+  });
+
+  it("refuses anything that is not a plain .txt name beside the note", () => {
+    for (const bad of ["../a.txt", "sub/a.txt", "a.md", "", ".hidden.txt", "..", "a\\b.txt", "/a.txt"]) {
+      expect(articleCompanionPath("articles/a.md", bad)).toBeNull();
+    }
   });
 });

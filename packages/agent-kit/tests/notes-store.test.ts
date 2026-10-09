@@ -363,3 +363,22 @@ describe("noteScope and CRLF", () => {
     expect(noteScope("no frontmatter", "atlas").scope).toBe("org");
   });
 });
+
+describe("an article's text companion is invisible to search and listing", () => {
+  it("never reads the .txt beside a note", () => {
+    const root = fixture({
+      "articles/a.md": "---\ntype: article\nfull_text: a.txt\n---\n\nA short summary about pricing.\n",
+      "articles/a.txt": "Full text that mentions the made-up word zorblatt only here.\n",
+    });
+    expect(searchNotes("zorblatt", root).hits).toEqual([]);
+    expect(searchNotes("pricing", root).hits).toEqual(["articles/a.md"]);
+  });
+
+  it("lists the note and not the companion", () => {
+    const root = fixture({
+      "articles/a.md": "---\ntype: article\nfull_text: a.txt\n---\n\nSummary.\n",
+      "articles/a.txt": "Full text.\n",
+    });
+    expect(listNotes(root)).toEqual(["articles/a.md"]);
+  });
+});

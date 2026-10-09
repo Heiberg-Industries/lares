@@ -10,6 +10,13 @@
 // now adopted (ADR-0017 rule 3, reversing the 2026-08-11 decision recorded at the old
 // services/atlas/lib/okf.ts:14-16) — permitted without comment, same as any other extra key.
 //
+// Article notes (the `articles/` folder) add one type, `article`, and one reading-state key.
+// The reading state is deliberately NOT called `status`: in OKF SPEC.md at the pinned commit
+// ad30107c, §5.4, `status` is the document LIFECYCLE field (`draft | stable | deprecated`,
+// absent means `stable`), so reusing it for "have I read this yet" would collide with a
+// spec-defined meaning. The same spec's §5.1/§5.2 define `sources` as a list of mappings with a
+// required `resource`, and `generated` as `{by, at}`; articles write those shapes.
+//
 // The `lares_*` extension fields are this decision's own addition. An unknown `lares_*` key is
 // a finding, not a shrug: OKF permits arbitrary extra keys, but a field that LOOKS like one of
 // ours and is misspelled or invented should not pass silently.
@@ -25,6 +32,16 @@ export const OKF_CORE_TYPES = ["venture", "index", "reference", "profile", "note
 
 /** The taste store's additions (packages/taste/src/index.ts:22). */
 export const OKF_TASTE_TYPES = ["place", "track", "playlist", "dish", "note"] as const;
+
+// The article vocabulary lives in ./article.ts (no relative imports, so the agent extension build
+// can load it); it is re-exported here so this module's consumers see one OKF surface.
+export {
+  OKF_ARTICLE_TYPES,
+  ARTICLE_READING_KEY,
+  ARTICLE_READING_STATES,
+  ARTICLE_FULL_TEXT_KEY,
+  articleCompanionPath,
+} from "./article.js";
 
 export const OKF_OPTIONAL_FAMILIES = ["sources", "generated", "verified", "stale_after"] as const;
 

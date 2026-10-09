@@ -36,10 +36,17 @@
 // coordinated by a person across several places at once, and a push that fails halfway leaves a
 // worse state than a local commit somebody sends deliberately. The CLI prints the push command.
 //
+// AN ARTICLE'S TEXT TRAVELS WITH ITS NOTE. An `article` note names a plain-text companion in
+// `full_text:` (the page's full text, beside the note, never searched). The walk is `.md` only, so
+// without help an erase would remove the note and leave the person's saved page behind. A hit on
+// an article therefore also yields a hit for its companion, with the same `why`: removed with the
+// note when the note is theirs, left alone when the note is `shared`.
+//
 // THE FRONTMATTER PARSE IS LOCAL, AND WHY. `services/box` depends on `pg`,
-// `better-sqlite3` and `@lares/network` — not on `@lares/agent-kit`, where `noteScope` lives, and
-// not on `@lares/vault-format`. Adding a dependency to reach one 20-line parse would put the whole
-// agent kit into the box image. So the parse below is written here, following `noteScope`'s CRLF
+// `better-sqlite3` and `@lares/network` — not on `@lares/agent-kit`, where `noteScope` lives. Adding
+// a dependency to reach one 20-line parse would put the whole agent kit into the box image (the
+// small `@lares/vault-format` package is used, for the companion-path rule only). So the parse
+// below is written here, following `noteScope`'s CRLF
 // rule exactly (a file saved with `\r\n` used to defeat an LF-only check and fall back to the
 // store default — pre-launch wave 3A). It reads MORE than `noteScope` does: block-style lists and
 // quoted scalars, which `noteScope`'s one-line regex does not handle. That is deliberate. A reader
@@ -49,6 +56,8 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
+
+import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
 /** One vault file that names the person, and why we think so. */
 export interface VaultHit {
@@ -126,9 +135,11 @@ function unquote(raw: string): string {
 interface Frontmatter {
   owner: string | undefined;
   participants: string[];
+  /** The raw `full_text:` value of an article note; checked by `articleCompanionPath` before use. */
+  fullText: string | undefined;
 }
 
-const NO_FRONTMATTER: Frontmatter = { owner: undefined, participants: [] };
+const NO_FRONTMATTER: Frontmatter = { owner: undefined, participants: [], fullText: undefined };
 
 /**
  * `owner:` and `participants:` out of a note's frontmatter.
@@ -145,6 +156,7 @@ function parseFrontmatter(raw: string): Frontmatter {
   const lines = text.slice(4, end).split("\n");
 
   let owner: string | undefined;
+  let fullText: string | undefined;
   const participants: string[] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
@@ -153,6 +165,12 @@ function parseFrontmatter(raw: string): Frontmatter {
     if (ownerMatch !== null && owner === undefined) {
       const value = unquote(ownerMatch[1]!);
       if (value.length > 0) owner = value;
+      continue;
+    }
+    const fullTextMatch = new RegExp(`^${ARTICLE_FULL_TEXT_KEY}:\\s*(.+)$`).exec(line);
+    if (fullTextMatch !== null && fullText === undefined) {
+      const value = unquote(fullTextMatch[1]!);
+      if (value.length > 0) fullText = value;
       continue;
     }
     const participantsMatch = /^participants:\s*(.*)$/.exec(line);
@@ -177,7 +195,7 @@ function parseFrontmatter(raw: string): Frontmatter {
     }
   }
 
-  return { owner, participants };
+  return { owner, participants, fullText };
 }
 
 /** The set of spellings, checked. An empty list would make every `includes` below answer "no" —
@@ -277,7 +295,8 @@ function walkMarkdown(dir: string, root: string, seenDirs: Set<string>, out: str
 }
 
 /**
- * Every `.md` under `root` that names one of `spellings`, including `_meta/`.
+ * Every `.md` under `root` that names one of `spellings`, including `_meta/`, plus the `.txt`
+ * companion of each article note that is removed with its owner.
  *
  * READ-ONLY. Nothing here writes, moves or removes anything; `erasePersonFiles` does that, from
  * the hits this returns, so that a person can read the list before anything happens to it.
@@ -298,17 +317,32 @@ export function findPersonFiles(root: string, spellings: readonly string[]): Vau
       continue; // A file that cannot be read names nobody we can prove.
     }
     const path = relative(root, abs).split(sep).join("/");
-    const { owner, participants } = parseFrontmatter(raw);
+    const { owner, participants, fullText } = parseFrontmatter(raw);
+
+    // An article's text companion is a hit of its own, on the same grounds as its note — except
+    // when the note is `shared`, whose companion is left like the note (see the header).
+    const addWithCompanion = (why: VaultHit["why"]): void => {
+      hits.push({ path, why, tracked: tracked.has(path) });
+      if (why === "shared" || fullText === undefined) return;
+      const companion = articleCompanionPath(path, fullText);
+      if (companion === null) return;
+      const companionAbs = join(root, companion);
+      if (!resolvesWithin(companionAbs, root)) return;
+      try {
+        if (!statSync(companionAbs).isFile()) return;
+      } catch {
+        return; // No companion on disk: nothing to remove.
+      }
+      hits.push({ path: companion, why, tracked: tracked.has(companion) });
+    };
 
     // An `owner:` hit wins: the note is stamped as this person's, whoever else it mentions.
     if (owner !== undefined && spelled.has(owner)) {
-      const why = path === "_meta" || path.startsWith("_meta/") ? "meta" : "owner";
-      hits.push({ path, why, tracked: tracked.has(path) });
+      addWithCompanion(path === "_meta" || path.startsWith("_meta/") ? "meta" : "owner");
       continue;
     }
     if (participants.some((p) => spelled.has(p))) {
-      const why = participants.every((p) => spelled.has(p)) ? "sole-participant" : "shared";
-      hits.push({ path, why, tracked: tracked.has(path) });
+      addWithCompanion(participants.every((p) => spelled.has(p)) ? "sole-participant" : "shared");
     }
   }
 

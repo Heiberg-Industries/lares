@@ -54,7 +54,7 @@ and `mrr` are not below `baseline.json` (tolerance `1e-9`).
    ```json
    {
      "id": "kebab-id",
-     "kind": "direct | paraphrase | buried | superseded | ambiguous-name | multilingual | excluded",
+     "kind": "direct | paraphrase | buried | superseded | ambiguous-name | multilingual | excluded | article",
      "question": "what the owner would ask, in natural language",
      "query": "what an agent would plausibly type into the search tool",
      "expect": ["relative/path/to/note.md"]
@@ -127,6 +127,25 @@ pnpm -C packages/memory-evals exec vitest run tests/poisoning.eval.test.ts
 If a case here ever gets through — a laundering case promotes something —
 that is a finding about the promotion gate, not a reason to loosen the
 suite.
+
+## Saved articles (added 2026-10-09)
+
+`fixtures/vault/articles/` holds six saved-article notes (`type: article`), three of them with a
+`<name>.txt` text companion beside the note. Ten cases cover them: eight of kind `article`
+(found by topic, title words, the owner's own note, the link's host and a proposed excerpt) and two
+`paraphrase` cases, one of which is an honest miss (the question says "sleepiness", the note says
+"fatigue"). Search never reads a `.txt` companion, so two made-up words that exist only in
+companions must return nothing; `tests/recall.eval.test.ts` asserts that.
+
+The new notes use vocabulary no older case asks about, and every new query matches exactly one note, so
+the results do not depend on the order the folder is walked (it differs between macOS and Linux).
+`baseline.json` was NOT re-recorded: the 28 older cases keep their ranks, and the larger set still
+clears the 2026-09-18 numbers.
+
+| run                      |  n | hit@1 | hit@3 |  mrr |
+|--------------------------|---:|------:|------:|-----:|
+| baseline (28 cases)      | 28 |   75% |   86% | 0.80 |
+| with the article cases   | 38 |   79% |   87% | 0.83 |
 
 ## Baseline (recorded 2026-09-18, `notes-store keyword search`)
 
