@@ -23,7 +23,7 @@
 import { createHash } from "node:crypto";
 
 import { ARTICLE_FULL_TEXT_KEY, ARTICLE_READING_KEY } from "@lares/agent-kit/article";
-import { isOrigin, type Origin } from "@lares/agent-kit/origin";
+import { isOrigin, narrowest, type Origin } from "@lares/agent-kit/origin";
 
 import { normaliseUrl } from "../clipping/record.js";
 import type { ArticleClassification } from "./classifier.js";
@@ -55,17 +55,28 @@ const OWNER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_.:@-]*$/;
 const ID_TOKEN = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const ORGANISATION = "organisation";
 
-export function parseInboxClip(raw: string): InboxClip {
+/**
+ * `fetchedUrl` is the address the reader actually opened. A note an agent saved from a chat has no
+ * `url:` in its frontmatter (the link sits in the body), so a body line that is just that link is
+ * dropped as well; the owner's own words are what is left.
+ */
+export function parseInboxClip(raw: string, fetchedUrl?: string): InboxClip {
   const fm = parseFrontmatter(raw);
   const url = fm["url"];
-  const urlKey = url ? normaliseUrl(url) : null;
+  const urlKeys = new Set<string>();
+  for (const candidate of [url, fetchedUrl]) {
+    const key = candidate ? normaliseUrl(candidate) : null;
+    if (key !== null) urlKeys.add(key);
+  }
   const note = stripFrontmatter(raw)
     .split("\n")
     .filter((line) => {
       const t = line.trim();
       if (t === "") return true;
       if (url !== undefined && t === url) return false;
-      return !(urlKey !== null && normaliseUrl(t) === urlKey && /^\S+$/.test(t));
+      if (!/^\S+$/.test(t)) return true;
+      const key = normaliseUrl(t);
+      return !(key !== null && urlKeys.has(key));
     })
     .join("\n")
     .trim();
@@ -89,20 +100,51 @@ function sourceOwner(clip: InboxClip): string {
 }
 
 /**
- * Which store an article belongs in. A clip that its source marked `shared`, or that came from
- * Karakeep (recorded as the organisation's), goes to the shared area; anything else goes to the
- * private one. An owner that is not a plain id is not trusted, so the clip stays private.
+ * Which store an article belongs in, given the installation's article area setting (`shared`, the
+ * engine default, or `private`; see `article-area.ts`).
+ *
+ * The setting is a ceiling, never a floor to widen from:
+ *   - `private` sends every clip to the private area.
+ *   - A clip whose source is private is never shared, whatever the setting says.
+ *   - A clip an organisation source marked `shared`, a Karakeep clip (recorded as the
+ *     organisation's) and a link an agent saved from a chat (`source: agent`, which is what the
+ *     `vault_write` tool writes; no visibility, no member owner) follow the setting. A pasted link
+ *     belongs to the agent that was given it, which is why it follows the same setting as the
+ *     organisation's own saves.
+ *   - Anything else (an owner that is not a plain id, a note with no source at all, a visibility
+ *     or a source this code does not know, a chat link that names a member) is not trusted and
+ *     stays private.
+ *
+ * Whether the shared area can actually be written (a grant on the filing agent, a folder that is
+ * mounted writable) is the filer's concern, not this function's.
  */
-export function chooseArea(clip: InboxClip): ArticleArea {
+export function chooseArea(clip: InboxClip, setting: ArticleArea): ArticleArea {
+  if (setting === "private") return "private";
   if (clip.owner !== undefined && !OWNER_TOKEN.test(clip.owner)) return "private";
-  return clip.visibility === "shared" || clip.source === "karakeep" ? "shared" : "private";
+  if (clip.visibility === "private") return "private";
+  if (clip.visibility === "shared" || clip.source === "karakeep") return "shared";
+  // The `vault_write` tool leaves every note an agent saves from a chat as `source: agent`. A note
+  // with no source at all has no provenance, so it is not trusted to follow the setting.
+  const pastedInChat =
+    clip.visibility === undefined && clip.source === "agent" &&
+    (clip.owner === undefined || clip.owner === ORGANISATION);
+  return pastedInChat ? "shared" : "private";
 }
 
-/** A valid inbox origin is carried; Karakeep is `synced`; anything else fails closed. */
+/**
+ * The origin an article note is stamped with: the least trusted of the clip's own origin (a valid
+ * inbox value; Karakeep is `synced`; anything else fails closed to `third_party`) and `third_party`.
+ * In practice that is always `third_party`, on purpose: the note holds a model's summary and quotes
+ * from a fetched web page, and "the owner saved the link" is not the same question as "where did
+ * the content come from" (origin model, narrowest-origin rule). It also keeps articles out of
+ * long-term memory promotion. The clip's own provenance stays visible in `gathered_by`,
+ * `notion_page` and `sources`.
+ */
 export function originFor(clip: InboxClip): Origin {
-  if (isOrigin(clip.laresOrigin)) return clip.laresOrigin;
-  if (clip.source === "karakeep") return "synced";
-  return "third_party";
+  const fromClip: Origin = isOrigin(clip.laresOrigin)
+    ? clip.laresOrigin
+    : clip.source === "karakeep" ? "synced" : "third_party";
+  return narrowest([fromClip, "third_party"]);
 }
 
 /** Letters beyond ASCII, digits, spaces and hyphens; no commas, brackets or emoji. */
@@ -249,7 +291,7 @@ const q = (s: string): string => JSON.stringify(s);
 
 export function buildArticle(input: BuildArticleInput): BuiltArticle {
   const { article, classification, area, base } = input;
-  const clip = parseInboxClip(input.inboxBody);
+  const clip = parseInboxClip(input.inboxBody, input.article.url);
   const owner = sourceOwner(clip);
   const companionName = `${base}.txt`;
   const title = articleTitle({ readabilityTitle: article.title, clipTitle: clip.title, url: article.url });

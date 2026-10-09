@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { VaultPushFailedError } from "@lares/agent-kit/vault-git";
 import { renderClipNote, type ClipRecord } from "../lib/clipping/record.js";
 import type { ArticleClassification } from "../lib/digest/classifier.js";
-import { makeArticleFiler, resolveSharedRoot } from "../lib/digest/article-file.js";
+import { assertSharedWritesInArticles, makeArticleFiler, resolveSharedRoot } from "../lib/digest/article-file.js";
 
 let tmp: string;
 let privateRoot: string;
@@ -91,8 +91,13 @@ const classification: ArticleClassification = {
 };
 
 /** `null` means the shared area is not connected. */
-function filer(shared: string | null = sharedRoot) {
-  return makeArticleFiler({ privateRoot, sharedRoot: () => shared ?? undefined, now: () => new Date("2026-10-09T10:00:00Z") });
+function filer(shared: string | null = sharedRoot, articleArea?: "shared" | "private") {
+  return makeArticleFiler({
+    privateRoot,
+    sharedRoot: () => shared ?? undefined,
+    ...(articleArea ? { articleArea } : {}),
+    now: () => new Date("2026-10-09T10:00:00Z"),
+  });
 }
 
 function run(
@@ -179,6 +184,91 @@ describe("a private article", () => {
     expect(note).toContain("scope: private");
     expect(note).toContain("owner: fixture-member");
     expect(existsSync(join(sharedRoot, "articles"))).toBe(false);
+  });
+});
+
+/**
+ * A link pasted in chat, as the `vault_write` tool leaves it in the private inbox: `source: agent`,
+ * no visibility, no owner, the link in the body. `frontmatter` replaces the frontmatter lines.
+ */
+function chatLink(frontmatter = "title: Pricing pages\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []"): { path: string; body: string } {
+  const path = "_inbox/chat-link.md";
+  const body = `---\n${frontmatter}\n---\n\nhttps://example.com/posts/pricing-pages\n\nWorth reading.\n`;
+  mkdirSync(join(privateRoot, "_inbox"), { recursive: true });
+  writeFileSync(join(privateRoot, path), body);
+  git(privateRoot, "add", "--", path);
+  git(privateRoot, "commit", "-q", "-m", "seed chat link");
+  return { path, body };
+}
+
+describe("shared writes are confined to articles/", () => {
+  it("accepts a note and its text inside articles/", () => {
+    expect(() => assertSharedWritesInArticles(["articles/a.md", "articles/a.txt"])).not.toThrow();
+  });
+
+  it("refuses anything outside articles/, however it is spelled", () => {
+    for (const bad of ["README.md", "notes/a.md", "articles/../README.md", "/etc/passwd", "articles", "articles/", "_inbox/a.md", "articles/sub/a.md"]) {
+      expect(() => assertSharedWritesInArticles([bad]), bad).toThrow(/articles/);
+    }
+  });
+
+  it("a real shared filing touches nothing else in the shared repository", async () => {
+    await run(filer(sharedRoot, "shared"), inbox("clip-a", clip(), true)).promise;
+    const changed = git(sharedRoot, "diff", "--name-only", "HEAD~1", "HEAD").trim().split("\n").sort();
+    expect(changed).toEqual(["articles/how-pricing-pages-convert.md", "articles/how-pricing-pages-convert.txt"]);
+  });
+});
+
+describe("the article area setting", () => {
+  it("defaults to shared when no setting is given", async () => {
+    const out = await run(filer(sharedRoot), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "shared", fellBack: false });
+  });
+
+  it("private files a shared source's link privately, with no fall-back to report and the shared repository untouched", async () => {
+    const item = inbox("clip-a", clip(), true);
+    const sharedBefore = count(sharedRoot);
+
+    const out = await run(filer(sharedRoot, "private"), item).promise;
+
+    expect(out).toMatchObject({ area: "private", fellBack: false, destPath: "articles/how-pricing-pages-convert.md" });
+    expect(count(sharedRoot)).toBe(sharedBefore);
+    expect(existsSync(join(sharedRoot, "articles"))).toBe(false);
+    expect(readFileSync(join(privateRoot, out.destPath), "utf8")).toContain("scope: private");
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+
+  it("private needs no shared area at all: an unconnected shared area is not a fall-back", async () => {
+    const out = await run(filer(null, "private"), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("shared with a shared area that cannot be used is a fall-back to report", async () => {
+    const out = await run(filer(null, "shared"), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: true });
+  });
+
+  it("a note with no source at all is private whatever the setting, and that is not a fall-back", async () => {
+    const out = await run(filer(sharedRoot, "shared"), chatLink("title: Pricing pages")).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("a link pasted in chat (source: agent) follows the setting: shared when shared", async () => {
+    const out = await run(filer(sharedRoot, "shared"), chatLink()).promise;
+    expect(out).toMatchObject({ area: "shared", fellBack: false });
+  });
+
+  it("a link pasted in chat follows the setting: private when private", async () => {
+    const out = await run(filer(sharedRoot, "private"), chatLink()).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("a private source never goes shared, whatever the setting, and that is not a fall-back", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const sharedBefore = count(sharedRoot);
+    const out = await run(filer(sharedRoot, "shared"), item).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+    expect(count(sharedRoot)).toBe(sharedBefore);
   });
 });
 
@@ -391,6 +481,89 @@ describe("when the push fails", () => {
     expect(retry.calls()).toBe(0);
     expect(git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD")).toContain("articles/how-pricing-pages-convert.txt");
     expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+});
+
+/** A commit made in the shared clone by another writer and NOT pushed. */
+function unpushedCommit(path: string, text = "x\n"): void {
+  mkdirSync(join(sharedRoot, path, ".."), { recursive: true });
+  writeFileSync(join(sharedRoot, path), text);
+  git(sharedRoot, "add", "--", path);
+  git(sharedRoot, "commit", "-q", "-m", `other writer: ${path}`);
+}
+const onRemote = (): string => git(sharedBare, "ls-tree", "-r", "--name-only", "HEAD");
+
+describe("the standing approval covers articles/ only: nothing else is ever pushed", () => {
+  it("only articles ahead of the remote: pushes them all, as before", async () => {
+    unpushedCommit("articles/earlier.md");
+    const out = await run(filer(), inbox("clip-a", clip(), true)).promise;
+
+    expect(out.pushFailure).toBeUndefined();
+    expect(onRemote()).toContain("articles/earlier.md");
+    expect(onRemote()).toContain("articles/how-pricing-pages-convert.md");
+  });
+
+  it("an unrelated commit ahead of the remote: nothing is pushed, the article is still reported as filed, with a held-push report", async () => {
+    unpushedCommit("notes/plan.md");
+    const item = inbox("clip-a", clip(), true);
+
+    const out = await run(filer(), item).promise;
+
+    expect(out).toMatchObject({ area: "shared", duplicate: false, destPath: "articles/how-pricing-pages-convert.md" });
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(out.pushFailure!.message).toMatch(/not pushed|held/i);
+    expect(out.pushFailure!.message).toContain("notes/plan.md");
+    // Nothing reached the remote, not even the article; the commits stay local for their own writer.
+    expect(onRemote()).not.toContain("notes/plan.md");
+    expect(onRemote()).not.toContain("articles/how-pricing-pages-convert");
+    expect(existsSync(join(sharedRoot, "articles/how-pricing-pages-convert.md"))).toBe(true);
+    expect(git(sharedRoot, "log", "--format=%s", "-3")).toContain("other writer: notes/plan.md");
+    // The inbox note is retired, as for a push failure that happens after filing.
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+
+  it("a second pass over the same link makes no model call, loses nothing and does not loop: the inbox note goes, the report repeats", async () => {
+    unpushedCommit("notes/plan.md");
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+
+    const again = inbox("clip-b", clip(), true);
+    const r = run(filer(), again);
+    const out = await r.promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(r.calls()).toBe(0);
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(existsSync(join(privateRoot, again.path))).toBe(false);
+    expect(onRemote()).not.toContain("notes/plan.md");
+  });
+
+  it("once the other writer has published its commit, the next pass pushes the article too", async () => {
+    unpushedCommit("notes/plan.md");
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+    git(sharedRoot, "push", "-q", "origin", "HEAD"); // the shared area's own writer publishes (articles included)
+
+    const out = await run(filer(), inbox("clip-b", clip(), true)).promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(out.pushFailure).toBeUndefined();
+  });
+
+  it("a duplicate whose article is already published says nothing about someone else's unpushed commit and pushes nothing", async () => {
+    await run(filer(), inbox("clip-a", clip(), true)).promise;
+    unpushedCommit("notes/plan.md");
+
+    const out = await run(filer(), inbox("clip-b", clip(), true)).promise;
+
+    expect(out.duplicate).toBe(true);
+    expect(out.pushFailure).toBeUndefined();
+    expect(onRemote()).not.toContain("notes/plan.md");
+  });
+
+  it("an unrelated commit that changes a file in a subfolder of articles/ is also not pushed", async () => {
+    unpushedCommit("articles/sub/deep.md");
+    const out = await run(filer(), inbox("clip-a", clip(), true)).promise;
+    expect(out.pushFailure).toBeInstanceOf(VaultPushFailedError);
+    expect(onRemote()).not.toContain("articles/sub/deep.md");
   });
 });
 

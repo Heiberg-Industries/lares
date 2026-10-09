@@ -248,3 +248,56 @@ export async function readClippingChoice(db: Queryable): Promise<ClippingMode | 
     throw e;
   }
 }
+
+// --- where a filed article went (articles child 1b; no migration) ---------------------------
+
+/**
+ * The digest filed a clip as an article note: remember where it went.
+ *
+ * THE CHANGED MEANING OF `inbox_path`. While a clip waits, `inbox_path` is its place in the inbox
+ * (`_inbox/...`). Once the digest files it as an article, nothing reads that place any more (the
+ * note has left the inbox; `sync.ts` and the waiting-clip list only look at `imported` rows), so
+ * this reuses the column for the article's own place, written `<area>:<path>`: `shared:articles/x.md`
+ * or `private:articles/x.md`. The area is part of the value because the two areas are separate
+ * stores and can each hold an article of the same name, so the path alone would not say which one
+ * a row means. That is why no migration is needed. A row whose value starts with `_inbox/` is still
+ * waiting or was filed by another route; one that starts with `shared:` or `private:` was filed as
+ * an article. The state becomes `filed-unknown`, the state the ledger already uses for
+ * "the digest took it", so a later edit in Notion is counted and never re-imports the clip.
+ *
+ * Accepts `filed-unknown` as well as `imported`: the console's "Import now" can run a sync between
+ * the digest filing the note and this call, and that sync marks the row `filed-unknown` first.
+ * Matches on the inbox path, so only a row whose path is still the inbox note's changes: a second
+ * call for the same note, a note the ledger never saw (a clipper drop, a chat link) and a trashed
+ * or skipped row all change nothing. Returns whether a row changed.
+ */
+export async function recordFiledArticle(
+  db: Queryable, w: { inboxPath: string; area: "shared" | "private"; filedPath: string },
+): Promise<boolean> {
+  const res = await db.query(
+    `UPDATE clipping_items
+     SET state = 'filed-unknown', inbox_path = $2, updated_at = now()
+     WHERE inbox_path = $1 AND state IN ('imported', 'filed-unknown')`,
+    [w.inboxPath, `${w.area}:${w.filedPath}`],
+  );
+  return (res.rowCount ?? 0) > 0;
+}
+
+/**
+ * The digest's `onFiled` hook: records where each article went, and never fails the filing. The
+ * article is already in the vault by the time this runs, so a database failure is logged and
+ * dropped (the row then stays `imported` until the next sync notices the note is gone, which is
+ * the behaviour before articles existed). A box without the clipping tables has nothing to record.
+ */
+export function makeLedgerOnFiled(
+  db: Queryable, log: (message: string) => void,
+): (inboxPath: string, filed: { area: "shared" | "private"; destPath: string }) => Promise<void> {
+  return async (inboxPath, filed) => {
+    try {
+      await recordFiledArticle(db, { inboxPath, area: filed.area, filedPath: filed.destPath });
+    } catch (e) {
+      if ((e as { code?: string } | null)?.code === "42P01") return;
+      log(`could not record in the clipping ledger where ${inboxPath} went (${String(e instanceof Error ? e.message : e)})`);
+    }
+  };
+}

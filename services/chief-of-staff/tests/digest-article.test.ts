@@ -84,7 +84,7 @@ describe("buildArticle from a Notion-shaped inbox note", () => {
     expect(fm(raw, "gathered_by")).toBe("owner");
     expect(fm(raw, "captured")).toBe("2026-10-01");
     expect(raw).toContain('generated:\n  by: "process:digest"\n  at: "2026-10-09T10:00:00Z"\n');
-    expect(fm(raw, "lares_origin")).toBe("synced");
+    expect(fm(raw, "lares_origin")).toBe("third_party");
     expect(fm(raw, "owner")).toBe("organisation");
     expect(fm(raw, "scope")).toBe("org");
     expect(fm(raw, "notion_page")).toBe("0a1b2c3d-0000-4000-8000-000000000001");
@@ -166,23 +166,23 @@ describe("topics and summary as written", () => {
 
 describe("areas, owners and scopes", () => {
   it("a shared Notion clip goes to the shared area", () => {
-    expect(chooseArea(parseInboxClip(renderClipNote(clip)))).toBe("shared");
+    expect(chooseArea(parseInboxClip(renderClipNote(clip)), "shared")).toBe("shared");
   });
 
-  it("a Karakeep clip goes to the shared area as the organisation's, origin synced", () => {
+  it("a Karakeep clip goes to the shared area as the organisation's, origin third_party (a model summary of a fetched page)", () => {
     const raw = "---\nurl: https://example.com/a\ntitle: A\nsource: karakeep\nsaved: 2026-09-01T00:00:00Z\nkarakeep_id: k1\n---\n\n";
     const parsed = parseInboxClip(raw);
-    expect(chooseArea(parsed)).toBe("shared");
+    expect(chooseArea(parsed, "shared")).toBe("shared");
     const out = build({ inboxBody: raw });
     expect(fm(out.noteRaw, "owner")).toBe("organisation");
     expect(fm(out.noteRaw, "scope")).toBe("org");
     expect(fm(out.noteRaw, "gathered_by")).toBe("owner");
-    expect(fm(out.noteRaw, "lares_origin")).toBe("synced");
+    expect(fm(out.noteRaw, "lares_origin")).toBe("third_party");
   });
 
   it("a private member clip stays private: scope private, owner is the member, gathered by the member", () => {
     const raw = renderClipNote({ ...clip, owner: "fixture-member", visibility: "private" });
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
     const out = build({ inboxBody: raw, area: "private" });
     expect(fm(out.noteRaw, "scope")).toBe("private");
     expect(fm(out.noteRaw, "owner")).toBe("fixture-member");
@@ -204,26 +204,84 @@ describe("areas, owners and scopes", () => {
     expect(fm(out.noteRaw, "owner")).toBeUndefined();
   });
 
-  it("a note with no visibility and no known source is private, never widened", () => {
+  it("a note an agent wrote in chat (vault_write's real frontmatter, source: agent) follows the article area setting", () => {
+    // Exactly what the vault_write tool writes: title, type, source, lares_origin, created, tags.
+    const raw = "---\ntitle: A\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []\n---\n\nhttps://example.com/a\n\nWorth reading.\n";
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("shared");
+    expect(chooseArea(parseInboxClip(raw), "private")).toBe("private");
+  });
+
+  it("a note with no source at all has no provenance: private, whatever the setting", () => {
     const raw = "---\nurl: https://example.com/a\ntitle: A\n---\n\nJust a link.\n";
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "private")).toBe("private");
     const out = build({ inboxBody: raw, area: "private" });
     expect(fm(out.noteRaw, "scope")).toBe("private");
     expect(fm(out.noteRaw, "lares_origin")).toBe("third_party");
   });
 
+  it("a chat note that names a member owner, or says it is private, is not widened", () => {
+    const owned = "---\nurl: https://example.com/a\nsource: agent\nowner: fixture-member\n---\n\n";
+    expect(chooseArea(parseInboxClip(owned), "shared")).toBe("private");
+    const priv = "---\nurl: https://example.com/a\nsource: agent\nvisibility: private\n---\n\n";
+    expect(chooseArea(parseInboxClip(priv), "shared")).toBe("private");
+  });
+
+  it("a source we do not recognise is private, whatever the setting", () => {
+    const raw = "---\nurl: https://example.com/a\nsource: somewhere-else\n---\n\n";
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+    const odd = "---\nurl: https://example.com/a\nvisibility: friends\n---\n\n";
+    expect(chooseArea(parseInboxClip(odd), "shared")).toBe("private");
+  });
+
+  it("the setting private sends every clip to the private area, shared sources included", () => {
+    expect(chooseArea(parseInboxClip(renderClipNote(clip)), "private")).toBe("private");
+    const karakeep = "---\nurl: https://example.com/a\nsource: karakeep\n---\n\n";
+    expect(chooseArea(parseInboxClip(karakeep), "private")).toBe("private");
+  });
+
+  it("a clip whose source is private never goes shared, whatever the setting", () => {
+    const raw = renderClipNote({ ...clip, owner: "fixture-member", visibility: "private" });
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+    const orgPrivate = renderClipNote({ ...clip, owner: "organisation", visibility: "private" });
+    expect(chooseArea(parseInboxClip(orgPrivate), "shared")).toBe("private");
+  });
+
   it("an owner that is not a plain id is never trusted: the clip is filed privately without one", () => {
     const raw = "---\nurl: https://example.com/a\nsource: notion\nowner: someone else\nvisibility: shared\n---\n\n";
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+  });
+});
+
+describe("the owner's note from a chat-saved clip", () => {
+  const raw = "---\ntitle: A\ntype: note\nsource: agent\nlares_origin: owner\ncreated:\ntags: []\n---\n\nhttps://example.com/a?utm_source=x\n\nWorth reading before Friday.\n";
+
+  it("drops the bare link line from the body when the fetched page's address is given, though the frontmatter has no url", () => {
+    expect(parseInboxClip(raw, "https://example.com/a").note).toBe("Worth reading before Friday.");
+  });
+
+  it("matches the link after normalising, and only a line that is the link on its own", () => {
+    const withText = raw.replace("Worth reading before Friday.", "See https://example.com/a for the details.");
+    expect(parseInboxClip(withText, "https://example.com/a").note).toBe("See https://example.com/a for the details.");
+  });
+
+  it("keeps everything when no address is given (nothing to compare with)", () => {
+    expect(parseInboxClip(raw).note).toContain("https://example.com/a?utm_source=x");
   });
 });
 
 describe("origin rules", () => {
-  it("carries a valid inbox origin", () => {
-    expect(originFor(parseInboxClip("---\nurl: https://example.com\nlares_origin: owner\n---\n\n"))).toBe("owner");
+  // An article note holds a model's summary and quotes from a fetched web page, so it is never
+  // more trusted than third_party, whatever the clip said about itself. The clip's own provenance
+  // stays visible in gathered_by, notion_page and sources.
+  it("never lets a clip's own origin raise an article above third_party", () => {
+    for (const origin of ["owner", "agent", "synced", "system"]) {
+      expect(originFor(parseInboxClip(`---\nurl: https://example.com\nlares_origin: ${origin}\n---\n\n`)), origin).toBe("third_party");
+    }
   });
-  it("stamps synced on Karakeep clips", () => {
-    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: karakeep\n---\n\n"))).toBe("synced");
+  it("stamps third_party on Karakeep and Notion clips too", () => {
+    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: karakeep\n---\n\n"))).toBe("third_party");
+    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: notion\nlares_origin: synced\n---\n\n"))).toBe("third_party");
   });
   it("fails closed to third_party on anything else, including an invalid value", () => {
     expect(originFor(parseInboxClip("---\nurl: https://example.com\n---\n\n"))).toBe("third_party");

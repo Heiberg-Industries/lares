@@ -264,7 +264,7 @@ describe("a pass that held items back", () => {
   });
 });
 
-describe("when the shared area is not connected", () => {
+describe("when the shared area cannot be used", () => {
   it("tells the owner how many articles went to the private area", async () => {
     const { deps } = setup({
       listInbox: async () => items(3),
@@ -274,7 +274,18 @@ describe("when the shared area is not connected", () => {
       },
     });
     const summary = await runDigest(deps);
-    expect(summary.notices).toContain("The shared area is not connected, so 3 articles were filed in the private area.");
+    expect(summary.notices).toContain("The shared area could not be used, so 3 articles were filed in the private area. If that is intended, set the article area to private.");
+  });
+
+  it("says nothing when the articles were filed privately on purpose (no fall-back)", async () => {
+    const { deps } = setup({
+      listInbox: async () => items(3),
+      fileArticle: async (input) => {
+        await input.classify({ area: "private" });
+        return { title: "T", area: "private", destPath: "articles/x.md", duplicate: false, fellBack: false };
+      },
+    });
+    expect((await runDigest(deps)).notices).toEqual([]);
   });
 
   it("uses the singular for one", async () => {
@@ -286,7 +297,7 @@ describe("when the shared area is not connected", () => {
       },
     });
     expect((await runDigest(deps)).notices).toContain(
-      "The shared area is not connected, so 1 article was filed in the private area.",
+      "The shared area could not be used, so 1 article was filed in the private area. If that is intended, set the article area to private.",
     );
   });
 });

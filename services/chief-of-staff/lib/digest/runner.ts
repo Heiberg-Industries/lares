@@ -103,7 +103,7 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
           classify: async ({ area }) => {
             modelCalls += 1;
             const decision = await classifyArticle(
-              { title: article.title, url: article.url, ownerNote: parseInboxClip(item.body).note, text: article.text },
+              { title: article.title, url: article.url, ownerNote: parseInboxClip(item.body, article.url).note, text: article.text },
               // Names of private notes never go into the request for an article that will be shared.
               { noteNames: area === "shared" ? [] : noteNames },
               deps.llm,
@@ -152,7 +152,7 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
 
   if (filedPrivately > 0) {
     summary.notices?.push(
-      `The shared area is not connected, so ${plural(filedPrivately, "article was", "articles were")} filed in the private area.`,
+      `The shared area could not be used, so ${plural(filedPrivately, "article was", "articles were")} filed in the private area. If that is intended, set the article area to private.`,
     );
   }
   if (heldBack > 0) {
