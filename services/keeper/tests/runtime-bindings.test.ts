@@ -49,6 +49,15 @@ it('binds the eve route-password secret for travel and creative under one role-n
 it.each(['EVE_SCHEDULES_LIVE','LARES_AGENT_INCARNATION','LARES_EMAIL_MAILBOX','NODE_OPTIONS','PGPASSWORD','SLACK_ALLOWED_USER_IDS','GOOGLE_CLIENT_SECRET','AGENT_OWNER_USER_ID','HTTPS_PROXY'])('rejects a binding that overrides %s',key=>{
  expect(()=>runtimeBindingsSchema.parse({...binding(root()),environment:{[key]:'unsafe'}})).toThrow();
 });
+it.each(['shared','private'])('lets the installation bind the article area as %s and hands it to the agent',value=>{
+ const b:RuntimeBindings={role:'chief-of-staff',environment:{LARES_ARTICLE_AREA:value},mounts:[],secrets:{}};
+ expect(runtimeBindingsSchema.parse(b).environment.LARES_ARTICLE_AREA).toBe(value);
+ const doc=parse(renderAgentsCompose([{...agent,role:'chief-of-staff',bindings:b}],opts));
+ expect(doc.services['lares-writer'].environment.LARES_ARTICLE_AREA).toBe(value);
+});
+it.each(['everyone','Shared ','','both'])('refuses an article area of %j: only shared or private are values',value=>{
+ expect(()=>runtimeBindingsSchema.parse({role:'chief-of-staff',environment:{LARES_ARTICLE_AREA:value},mounts:[],secrets:{}})).toThrow();
+});
 it('refuses role changes, unsafe paths, missing mount coverage, overlapping targets and managed Google bypasses',()=>{
  const b=binding(root());
  for(const invalid of [

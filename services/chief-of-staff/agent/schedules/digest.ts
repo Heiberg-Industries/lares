@@ -6,6 +6,12 @@
  * gateway, file the confident ones (write + retire the source in ONE commit), record a skip and
  * ask about the rest, then post ONE Slack summary with any error detail as a thread reply.
  *
+ * ARTICLES: a saved link the reader can open is filed as an article note with a text companion
+ * (`lib/digest/article-file.ts`), at most 20 model calls per pass, oldest saves first. Where it
+ * goes is the installation's `LARES_ARTICLE_AREA` setting (`lib/digest/article-area.ts`), and the
+ * shared area is used only when this agent's own definition grants it write there. The clipping
+ * ledger keeps where each one went (`makeLedgerOnFiled`).
+ *
  * TIMEZONE: the house "poll every minute, gate on the wall clock" shape — a fixed cron string
  * cannot track a seasonal offset. `dueScheduledSlot` requires `minute === 0`, so a container down
  * across the whole slot minute misses that slot; that is pre-existing house behaviour (stability
@@ -55,7 +61,9 @@ import { makeKarakeepClient, makePgSeenStore, syncKarakeep } from "../../lib/kar
 import { clippingPass, makeVaultInbox } from "../../lib/clipping/step.js";
 import { makeNotionClient, readNotionToken } from "../../lib/clipping/notion-reader.js";
 import { normaliseUrl } from "../../lib/clipping/record.js";
-import { readClippingChoice, recordKarakeepImport } from "../../lib/clipping/store.js";
+import { makeLedgerOnFiled, readClippingChoice, recordKarakeepImport } from "../../lib/clipping/store.js";
+import { articleTargets } from "../../lib/digest/article-area.js";
+import { makeArticleFiler, resolveSharedRoot } from "../../lib/digest/article-file.js";
 import { parseFrontmatter } from "../../lib/digest/extract.js";
 import { runDigest } from "../../lib/digest/runner.js";
 import { listTranscriptProjects } from "../../lib/digest/filer.js";
@@ -96,15 +104,32 @@ function vaultRoot(): string {
   return storeRoot("brain");
 }
 
-function listInboxFiles(): { path: string; body: string }[] {
-  const inbox = join(vaultRoot(), "_inbox");
+/**
+ * Every model call the digest makes: no retries (the default is two, which triples the calls on
+ * the wire for a failing item; a failed item is simply tried again next pass) and a reply ceiling
+ * that a summary, a few topics and three excerpts fit inside.
+ */
+export const DIGEST_LLM_OPTIONS = { maxRetries: 0, maxOutputTokens: 800 } as const;
+
+/**
+ * The notes waiting in `_inbox`, OLDEST FIRST by modification time (ties by name). A pass files at
+ * most a fixed number of articles; oldest-first means the ones past that limit are the newest, and
+ * every saved link is reached in the order it was saved.
+ */
+export function listInboxFiles(root: string = vaultRoot()): { path: string; body: string }[] {
+  const inbox = join(root, "_inbox");
   let entries: string[] = [];
   try { entries = readdirSync(inbox); } catch { return []; }
-  return entries
-    .filter((n) => n.endsWith(".md"))
-    .map((n) => ({ rel: `_inbox/${n}`, abs: join(inbox, n) }))
-    .filter((e) => { try { return statSync(e.abs).isFile(); } catch { return false; } })
-    .map((e) => ({ path: e.rel, body: readFileSync(e.abs, "utf8") }));
+  const found: { rel: string; abs: string; mtimeMs: number }[] = [];
+  for (const n of entries.filter((name) => name.endsWith(".md"))) {
+    const abs = join(inbox, n);
+    try {
+      const st = statSync(abs);
+      if (st.isFile()) found.push({ rel: `_inbox/${n}`, abs, mtimeMs: st.mtimeMs });
+    } catch { /* gone since the listing */ }
+  }
+  found.sort((a, b) => a.mtimeMs - b.mtimeMs || (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  return found.map((e) => ({ path: e.rel, body: readFileSync(e.abs, "utf8") }));
 }
 
 function todayIso(): string {
@@ -225,17 +250,33 @@ export async function runDigestPass(
   if (choice === "karakeep") log("clipping: skipped (clipping is set to Karakeep)");
   else notices = await clippingStep(log);
 
+  // Articles child 1b. Where articles go is the installation's setting (LARES_ARTICLE_AREA,
+  // default shared), and the shared area is offered to the filer only when THIS agent's own
+  // definition grants it write there. Read once, so the whole pass agrees with itself.
+  const targets = await articleTargets({
+    readDefinition: async () => (await thisAgent(undefined)).loaded.definition,
+    resolveShared: () => resolveSharedRoot(),
+    log,
+  });
+
   const summary = await runDigest({
     agent: AGENT,
     mode,
     notices,
-    listInbox: async () => listInboxFiles(),
+    listInbox: async () => listInboxFiles(root),
     alreadySkipped: () => listSkippedPaths(db, AGENT),
     noteNames: async () => listNotes(root).map((p) => basename(p, ".md")),
     // Read from the private store each pass: the folders that hold a transcripts/ folder.
     projects: async () => listTranscriptProjects(root),
-    llm: (prompt: string) => gatewayComplete(prompt),
+    llm: (prompt: string) => gatewayComplete(prompt, DIGEST_LLM_OPTIONS),
     fileNote: makeDigestFileNote(root),
+    fileArticle: makeArticleFiler({
+      privateRoot: root,
+      sharedRoot: targets.sharedRoot,
+      articleArea: targets.articleArea,
+    }),
+    // The clipping ledger keeps where each article went. Best effort: filing never waits on it.
+    onFiled: makeLedgerOnFiled(db, log),
     recordSkip: (path, reason) => recordDigestSkip(db, { agent: AGENT, path, reason }),
     post: async (view) => {
       const post = async () => {

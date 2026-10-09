@@ -91,8 +91,13 @@ const classification: ArticleClassification = {
 };
 
 /** `null` means the shared area is not connected. */
-function filer(shared: string | null = sharedRoot) {
-  return makeArticleFiler({ privateRoot, sharedRoot: () => shared ?? undefined, now: () => new Date("2026-10-09T10:00:00Z") });
+function filer(shared: string | null = sharedRoot, articleArea?: "shared" | "private") {
+  return makeArticleFiler({
+    privateRoot,
+    sharedRoot: () => shared ?? undefined,
+    ...(articleArea ? { articleArea } : {}),
+    now: () => new Date("2026-10-09T10:00:00Z"),
+  });
 }
 
 function run(
@@ -179,6 +184,65 @@ describe("a private article", () => {
     expect(note).toContain("scope: private");
     expect(note).toContain("owner: fixture-member");
     expect(existsSync(join(sharedRoot, "articles"))).toBe(false);
+  });
+});
+
+/** A link pasted in chat: no source, no visibility, committed in the private inbox. */
+function chatLink(): { path: string; body: string } {
+  const path = "_inbox/chat-link.md";
+  const body = "---\nurl: https://example.com/posts/pricing-pages\ntitle: Pricing pages\n---\n\nWorth reading.\n";
+  mkdirSync(join(privateRoot, "_inbox"), { recursive: true });
+  writeFileSync(join(privateRoot, path), body);
+  git(privateRoot, "add", "--", path);
+  git(privateRoot, "commit", "-q", "-m", "seed chat link");
+  return { path, body };
+}
+
+describe("the article area setting", () => {
+  it("defaults to shared when no setting is given", async () => {
+    const out = await run(filer(sharedRoot), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "shared", fellBack: false });
+  });
+
+  it("private files a shared source's link privately, with no fall-back to report and the shared repository untouched", async () => {
+    const item = inbox("clip-a", clip(), true);
+    const sharedBefore = count(sharedRoot);
+
+    const out = await run(filer(sharedRoot, "private"), item).promise;
+
+    expect(out).toMatchObject({ area: "private", fellBack: false, destPath: "articles/how-pricing-pages-convert.md" });
+    expect(count(sharedRoot)).toBe(sharedBefore);
+    expect(existsSync(join(sharedRoot, "articles"))).toBe(false);
+    expect(readFileSync(join(privateRoot, out.destPath), "utf8")).toContain("scope: private");
+    expect(existsSync(join(privateRoot, item.path))).toBe(false);
+  });
+
+  it("private needs no shared area at all: an unconnected shared area is not a fall-back", async () => {
+    const out = await run(filer(null, "private"), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("shared with a shared area that cannot be used is a fall-back to report", async () => {
+    const out = await run(filer(null, "shared"), inbox("clip-a", clip(), true)).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: true });
+  });
+
+  it("a link pasted in chat (no source) follows the setting: shared when shared", async () => {
+    const out = await run(filer(sharedRoot, "shared"), chatLink()).promise;
+    expect(out).toMatchObject({ area: "shared", fellBack: false });
+  });
+
+  it("a link pasted in chat follows the setting: private when private", async () => {
+    const out = await run(filer(sharedRoot, "private"), chatLink()).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+  });
+
+  it("a private source never goes shared, whatever the setting, and that is not a fall-back", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const sharedBefore = count(sharedRoot);
+    const out = await run(filer(sharedRoot, "shared"), item).promise;
+    expect(out).toMatchObject({ area: "private", fellBack: false });
+    expect(count(sharedRoot)).toBe(sharedBefore);
   });
 });
 

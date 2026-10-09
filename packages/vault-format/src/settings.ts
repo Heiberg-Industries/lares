@@ -938,6 +938,17 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["services/chief-of-staff/agent/schedules/digest.ts:110"],
   },
   {
+    name: "LARES_ARTICLE_AREA",
+    readers: ["chief-of-staff"],
+    source: "owner",
+    requiredFor: [],
+    fallback: "shared",
+    secret: false,
+    breaksWithout:
+      "Nothing breaks. Unset, saved articles go to the shared area, but only when the filing agent is granted write there and the shared folder is writable; when it is not, the digest files them in the private area and says so in its summary on every pass. Set it to \"private\" on an installation that does not want that, and the digest files privately without the warning. Any other value is read as \"private\".",
+    readAt: ["services/chief-of-staff/lib/digest/article-area.ts:31"],
+  },
+  {
     name: "GOOGLE_ORG",
     readers: ["travel"],
     source: "installer",

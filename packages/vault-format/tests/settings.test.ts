@@ -51,6 +51,18 @@ describe("the settings list", () => {
     expect(settingByName("SLACK_TOKEN_PRINCIPAL_ID")!.breaksWithout).toMatch(/refuses before querying/);
   });
 
+  it("declares the article area: read by the chief of staff, shared unless the installation says private", () => {
+    const area = settingByName("LARES_ARTICLE_AREA")!;
+    expect(area).toBeDefined();
+    expect(area.readers).toEqual(["chief-of-staff"]);
+    expect(area.requiredFor).toEqual([]);
+    expect(area.fallback).toBe("shared");
+    expect(area.secret).toBe(false);
+    expect(area.source).toBe("owner");
+    expect(area.breaksWithout).toMatch(/private/);
+    expect(area.breaksWithout).toMatch(/warning/);
+  });
+
   it("every reader has at least one setting", () => {
     for (const r of ["agent-kit","chief-of-staff","travel","creative","console","box","keeper","atlas","notion-sync","readability"] as const) {
       expect(settingsFor(r).length, r).toBeGreaterThan(0);

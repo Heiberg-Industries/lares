@@ -89,13 +89,31 @@ function sourceOwner(clip: InboxClip): string {
 }
 
 /**
- * Which store an article belongs in. A clip that its source marked `shared`, or that came from
- * Karakeep (recorded as the organisation's), goes to the shared area; anything else goes to the
- * private one. An owner that is not a plain id is not trusted, so the clip stays private.
+ * Which store an article belongs in, given the installation's article area setting (`shared`, the
+ * engine default, or `private`; see `article-area.ts`).
+ *
+ * The setting is a ceiling, never a floor to widen from:
+ *   - `private` sends every clip to the private area.
+ *   - A clip whose source is private is never shared, whatever the setting says.
+ *   - A clip an organisation source marked `shared`, a Karakeep clip (recorded as the
+ *     organisation's) and a link pasted in chat (no source, no visibility, no member owner) follow
+ *     the setting. A pasted link belongs to the agent that was given it, which is why it follows
+ *     the same setting as the organisation's own saves.
+ *   - Anything else (an owner that is not a plain id, a visibility or a source this code does not
+ *     know, a chat link that names a member) is not trusted and stays private.
+ *
+ * Whether the shared area can actually be written (a grant on the filing agent, a folder that is
+ * mounted writable) is the filer's concern, not this function's.
  */
-export function chooseArea(clip: InboxClip): ArticleArea {
+export function chooseArea(clip: InboxClip, setting: ArticleArea): ArticleArea {
+  if (setting === "private") return "private";
   if (clip.owner !== undefined && !OWNER_TOKEN.test(clip.owner)) return "private";
-  return clip.visibility === "shared" || clip.source === "karakeep" ? "shared" : "private";
+  if (clip.visibility === "private") return "private";
+  if (clip.visibility === "shared" || clip.source === "karakeep") return "shared";
+  const pastedInChat =
+    clip.visibility === undefined && clip.source === undefined &&
+    (clip.owner === undefined || clip.owner === ORGANISATION);
+  return pastedInChat ? "shared" : "private";
 }
 
 /** A valid inbox origin is carried; Karakeep is `synced`; anything else fails closed. */

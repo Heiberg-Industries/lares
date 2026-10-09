@@ -152,7 +152,7 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
 
   if (filedPrivately > 0) {
     summary.notices?.push(
-      `The shared area is not connected, so ${plural(filedPrivately, "article was", "articles were")} filed in the private area.`,
+      `The shared area could not be used, so ${plural(filedPrivately, "article was", "articles were")} filed in the private area. If that is intended, set the article area to private.`,
     );
   }
   if (heldBack > 0) {

@@ -1,11 +1,14 @@
 /**
  * Writing a saved web link into the vault as an `article` note and its text companion.
  *
- * WHERE IT GOES. The inbox note says whose link it is (`article.ts` `chooseArea`): a shared link
- * goes to `articles/` in the shared area, anything else to `articles/` in the private one. A
- * shared link is never held back by an unusable shared area, and a private link is never widened:
- * when the shared area cannot be used (not configured, not a repository, not writable) the note is
- * filed privately instead and the result says so (`fellBack`), so the pass can tell the owner.
+ * WHERE IT GOES. The inbox note says whose link it is and the installation's article area setting
+ * says where articles go (`article.ts` `chooseArea`): a link bound for the shared area goes to
+ * `articles/` there, anything else to `articles/` in the private one. A shared link is never held
+ * back by an unusable shared area, and a private link is never widened: when the shared area
+ * cannot be used (not configured, not a repository, not writable, or the caller passed no root
+ * because the filing agent has no write grant there) the note is filed privately instead and the
+ * result says so (`fellBack`), so the pass can tell the owner. Under the `private` setting
+ * nothing is bound for the shared area, so nothing is reported.
  *
  * COMMITS. Private: the note, its text and the removal of the inbox note are ONE commit, as
  * `lib/digest-file.ts` does for ordinary notes. Shared: the note and its text are one commit in the
@@ -216,10 +219,16 @@ export function makeArticleFiler(opts: {
   privateRoot: string;
   /** The shared area's root, or a function that answers it; undefined when not connected. */
   sharedRoot: string | undefined | (() => string | undefined);
+  /**
+   * The installation's article area setting (`article-area.ts`). Default `shared`, the engine's
+   * default. `private` files every article privately and is never reported as a fall-back.
+   */
+  articleArea?: ArticleArea;
   now?: () => Date;
 }): FileArticleFn {
   const sharedRootNow = (): string | undefined =>
     typeof opts.sharedRoot === "function" ? opts.sharedRoot() : opts.sharedRoot;
+  const setting: ArticleArea = opts.articleArea ?? "shared";
   const nowFn = opts.now ?? (() => new Date());
 
   return async (input) => {
@@ -228,7 +237,7 @@ export function makeArticleFiler(opts: {
     const urlKey = normaliseUrl(link);
     if (urlKey === null) throw new Error("not a web link; nothing to file");
 
-    const wanted = chooseArea(clip);
+    const wanted = chooseArea(clip, setting);
     const shared = wanted === "shared" ? sharedRootNow() : undefined;
     const area: ArticleArea = wanted === "shared" && usable(shared) ? "shared" : "private";
     const fellBack = wanted === "shared" && area === "private";

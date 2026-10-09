@@ -4,7 +4,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
-import { digestGate, chooseTarget } from "../agent/schedules/digest.js";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { digestGate, chooseTarget, listInboxFiles, DIGEST_LLM_OPTIONS } from "../agent/schedules/digest.js";
 
 const saved = { ...process.env };
 beforeEach(() => { process.env = { ...saved }; });
@@ -76,5 +81,99 @@ describe("digest.ts reads its slots from the setting (LAR-17-s3)", () => {
     expect(src.indexOf('scheduleHours("digest")')).toBeGreaterThan(-1);
     expect(src.indexOf('scheduleHours("digest")')).toBeLessThan(src.indexOf("dueScheduledSlot("));
     expect(src).not.toContain("[9, 17]");
+  });
+});
+
+/**
+ * Articles child 1b: the digest files articles. The pieces that carry the decisions are tested on
+ * their own (`digest-article-area.test.ts`, `digest-article-file.test.ts`,
+ * `clipping-ledger-article.test.ts`); these pin that the schedule actually uses them, in the
+ * places that matter, and the small behaviours that live in this file.
+ */
+describe("the digest schedule switches article filing on", () => {
+  const read = () => readFile(new URL("../agent/schedules/digest.ts", import.meta.url), "utf8");
+
+  it("hands the runner an article filer built from the setting and the grant-checked shared root", async () => {
+    const src = await read();
+    expect(src).toMatch(/articleTargets\(\{/);
+    expect(src).toMatch(/fileArticle: makeArticleFiler\(\{\s*privateRoot: root,\s*sharedRoot: targets\.sharedRoot,\s*articleArea: targets\.articleArea,/);
+    // The grant is read from the running agent's own definition, never assumed.
+    expect(src).toMatch(/readDefinition: async \(\) => \(await thisAgent\(undefined\)\)\.loaded\.definition/);
+  });
+
+  it("reads the setting and the grant once, before the runner starts", async () => {
+    const src = await read();
+    expect(src.indexOf("await articleTargets(")).toBeGreaterThan(-1);
+    expect(src.indexOf("await articleTargets(")).toBeLessThan(src.indexOf("await runDigest({"));
+  });
+
+  it("records where each article went, best effort, through the ledger hook", async () => {
+    expect(await read()).toMatch(/onFiled: makeLedgerOnFiled\(db, log\)/);
+  });
+
+  it("makes every model call with no retries and an 800-token ceiling", async () => {
+    expect(DIGEST_LLM_OPTIONS).toEqual({ maxRetries: 0, maxOutputTokens: 800 });
+    expect(await read()).toMatch(/llm: \(prompt: string\) => gatewayComplete\(prompt, DIGEST_LLM_OPTIONS\)/);
+  });
+
+  it("keeps the clipping-choice gating and the runner's opening keys in order", async () => {
+    const src = await read();
+    expect(src).toMatch(/runDigest\(\{\s+agent: AGENT,\s+mode,\s+notices,/);
+    expect(src).toContain("readClippingChoice(db)");
+    expect(src).toContain('choice === "notion"');
+    expect(src).toContain('choice === "karakeep"');
+  });
+});
+
+describe("listInboxFiles lists the oldest saved links first", () => {
+  it("sorts by modification time, oldest first, and ignores anything that is not a note", () => {
+    const root = mkdtempSync(join(tmpdir(), "inbox-order-"));
+    try {
+      mkdirSync(join(root, "_inbox"));
+      const put = (name: string, body: string, secondsAgo: number) => {
+        const abs = join(root, "_inbox", name);
+        writeFileSync(abs, body);
+        const t = new Date(Date.now() - secondsAgo * 1000);
+        utimesSync(abs, t, t);
+      };
+      // Names sort the opposite way round to their age, so a name sort would get it wrong.
+      put("a-newest.md", "n", 10);
+      put("b-oldest.md", "o", 3000);
+      put("c-middle.md", "m", 500);
+      put("notes.txt", "x", 9000);
+      mkdirSync(join(root, "_inbox", "d-folder.md"));
+
+      expect(listInboxFiles(root).map((f) => f.path)).toEqual([
+        "_inbox/b-oldest.md", "_inbox/c-middle.md", "_inbox/a-newest.md",
+      ]);
+      expect(listInboxFiles(root).map((f) => f.body)).toEqual(["o", "m", "n"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("breaks a tie on the name, so the order is the same every time", () => {
+    const root = mkdtempSync(join(tmpdir(), "inbox-tie-"));
+    try {
+      mkdirSync(join(root, "_inbox"));
+      const t = new Date("2026-10-01T10:00:00Z");
+      for (const name of ["z.md", "a.md", "m.md"]) {
+        const abs = join(root, "_inbox", name);
+        writeFileSync(abs, name);
+        utimesSync(abs, t, t);
+      }
+      expect(listInboxFiles(root).map((f) => f.path)).toEqual(["_inbox/a.md", "_inbox/m.md", "_inbox/z.md"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("is empty when there is no inbox", () => {
+    const root = mkdtempSync(join(tmpdir(), "inbox-none-"));
+    try {
+      expect(listInboxFiles(root)).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

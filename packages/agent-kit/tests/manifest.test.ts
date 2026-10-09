@@ -14,6 +14,7 @@ import {
   assertDeclarationIntegrity,
   assertSkillsWithinGrants,
   autonomyOf,
+  canWriteVaultArea,
   grantFor,
   isGranted,
   loadManifest,
@@ -636,5 +637,40 @@ describe("agent.json display (lares split, hook 30)", () => {
   it("rejects a display that is not a non-empty string", () => {
     expect(manifestSchema.safeParse({ ...base, display: 42 }).success).toBe(false);
     expect(manifestSchema.safeParse({ ...base, display: "" }).success).toBe(false);
+  });
+});
+
+describe("canWriteVaultArea — may this declaration WRITE an area of the vault", () => {
+  const decl = (grants: unknown[], autonomy: Record<string, string> = {}) =>
+    parseManifest({
+      name: "x", model: "m", persona: "p.md", channels: [], egress: { sealed: true }, grants, autonomy,
+    });
+
+  it("is true for a write or write-with-confirm vault grant that names the area", () => {
+    for (const scope of ["write", "write-with-confirm"]) {
+      const m = decl([{ capability: "vault", scope, areas: ["private", "shared"] }]);
+      expect(canWriteVaultArea(m, "shared"), scope).toBe(true);
+      expect(canWriteVaultArea(m, "private"), scope).toBe(true);
+    }
+  });
+
+  it("is false for an area the grant does not name", () => {
+    const m = decl([{ capability: "vault", scope: "write-with-confirm", areas: ["private"] }]);
+    expect(canWriteVaultArea(m, "shared")).toBe(false);
+  });
+
+  it("is false for a read grant, a none grant and no vault grant at all", () => {
+    expect(canWriteVaultArea(decl([{ capability: "vault", scope: "read", areas: ["shared"] }]), "shared")).toBe(false);
+    expect(canWriteVaultArea(decl([{ capability: "vault", scope: "none", areas: ["shared"] }]), "shared")).toBe(false);
+    expect(canWriteVaultArea(decl([]), "shared")).toBe(false);
+  });
+
+  it("is false when the vault autonomy is never, whatever the grant says", () => {
+    const m = decl([{ capability: "vault", scope: "write", areas: ["shared"] }], { vault: "never" });
+    expect(canWriteVaultArea(m, "shared")).toBe(false);
+  });
+
+  it("is false for a vault grant with no areas (it names nothing)", () => {
+    expect(canWriteVaultArea(decl([{ capability: "vault", scope: "write" }]), "shared")).toBe(false);
   });
 });

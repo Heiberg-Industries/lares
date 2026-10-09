@@ -14,6 +14,9 @@ const environmentKeys = [
   'MARCEL_MODEL_GATE', 'KARAKEEP_URL', 'SIGNAL_SPINE_URL', 'SIGNAL_PROJECT',
   'WEEKLY_SUMMARY_HOUR', 'ROUTE_HOURS', 'EVE_DREAM_LIVE', 'EVE_DIGEST_LIVE',
   'DIGEST_SLACK_TARGET', 'TELEGRAM_BOT_USERNAME', 'GOOGLE_PRINCIPAL_ID', 'GOOGLE_ORG',
+  // Where the digest files saved articles: `shared` (the engine default) or `private`. Checked
+  // below, so a typo cannot silently mean "shared".
+  'LARES_ARTICLE_AREA',
   // W8B-s5. Who may answer an approval in web chat, on an installation whose agents are NOT a
   // managed incarnation — a managed one is given LARES_CONSOLE_PRINCIPAL below instead, from the
   // owner claim, exactly as the Slack and Telegram principals are. Unset admits nobody.
@@ -61,6 +64,8 @@ export const runtimeBindingsSchema = z.object({
   if (b.role !== 'travel' && (Object.keys(b.environment).some(k => k.startsWith('GOOGLE_')) || Object.keys(b.secrets).some(k => k.startsWith('GOOGLE_CLIENT_') || k === 'TOKEN_ENC_KEY_FILE')))
     ctx.addIssue({code:'custom',message:'Google bindings are reserved for the travel read-only adapter'});
   for (const [key,value] of Object.entries(b.environment)) {
+    if (key === 'LARES_ARTICLE_AREA' && value !== 'shared' && value !== 'private')
+      ctx.addIssue({code:'custom',message:'The article area must be shared or private'});
     if (key.endsWith('_URL')) {
       try { const u = new URL(value!); if(u.protocol !== 'https:' || u.username || u.password || u.search || u.hash) throw new Error(); }
       catch { ctx.addIssue({code:'custom',message:'Invalid integration URL'}); }

@@ -297,6 +297,25 @@ export function grantedVaultAreas(manifest: AgentManifest): VaultArea[] {
   return VAULT_AREAS.filter((area) => open.has(area));
 }
 
+/**
+ * WHETHER THIS DECLARATION MAY WRITE `area` of the vault. The same rules as `grantedVaultAreas`
+ * (the `vault` grant must name the area; `none` scope and `never` autonomy give nothing), plus the
+ * one `grantedVaultAreas` does not ask: the scope must be a WRITE scope. A `read` grant opens an
+ * area for reading only.
+ *
+ * Used by a job that writes on the agent's behalf without a model turn (the digest filing an
+ * article in the shared area), so it can only ever write where the agent's own definition says it
+ * may. `write-with-confirm` counts: the confirmation belongs to a model's tool call, and a
+ * scheduled job has no such call. It never adds an area; it only ever reads the grant.
+ */
+export function canWriteVaultArea(manifest: AgentManifest, area: VaultArea): boolean {
+  const grant = grantFor(manifest, "vault");
+  if (grant === undefined) return false;
+  if (grant.scope !== "write" && grant.scope !== "write-with-confirm") return false;
+  if (autonomyOf(manifest, "vault") === "never") return false;
+  return grant.areas?.includes(area) ?? false;
+}
+
 /** Permissiveness order for the never-widen check. `write` outranks `write-with-confirm`
  *  because a plain write grant runs the same action WITHOUT a card — it is the more permissive
  *  grant, so it satisfies a skill that only asked for the gated form. `read` satisfies nothing

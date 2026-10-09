@@ -166,13 +166,13 @@ describe("topics and summary as written", () => {
 
 describe("areas, owners and scopes", () => {
   it("a shared Notion clip goes to the shared area", () => {
-    expect(chooseArea(parseInboxClip(renderClipNote(clip)))).toBe("shared");
+    expect(chooseArea(parseInboxClip(renderClipNote(clip)), "shared")).toBe("shared");
   });
 
   it("a Karakeep clip goes to the shared area as the organisation's, origin synced", () => {
     const raw = "---\nurl: https://example.com/a\ntitle: A\nsource: karakeep\nsaved: 2026-09-01T00:00:00Z\nkarakeep_id: k1\n---\n\n";
     const parsed = parseInboxClip(raw);
-    expect(chooseArea(parsed)).toBe("shared");
+    expect(chooseArea(parsed, "shared")).toBe("shared");
     const out = build({ inboxBody: raw });
     expect(fm(out.noteRaw, "owner")).toBe("organisation");
     expect(fm(out.noteRaw, "scope")).toBe("org");
@@ -182,7 +182,7 @@ describe("areas, owners and scopes", () => {
 
   it("a private member clip stays private: scope private, owner is the member, gathered by the member", () => {
     const raw = renderClipNote({ ...clip, owner: "fixture-member", visibility: "private" });
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
     const out = build({ inboxBody: raw, area: "private" });
     expect(fm(out.noteRaw, "scope")).toBe("private");
     expect(fm(out.noteRaw, "owner")).toBe("fixture-member");
@@ -204,17 +204,43 @@ describe("areas, owners and scopes", () => {
     expect(fm(out.noteRaw, "owner")).toBeUndefined();
   });
 
-  it("a note with no visibility and no known source is private, never widened", () => {
+  it("a note with no visibility and no known source (a pasted chat link) follows the article area setting", () => {
     const raw = "---\nurl: https://example.com/a\ntitle: A\n---\n\nJust a link.\n";
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("shared");
+    expect(chooseArea(parseInboxClip(raw), "private")).toBe("private");
     const out = build({ inboxBody: raw, area: "private" });
     expect(fm(out.noteRaw, "scope")).toBe("private");
     expect(fm(out.noteRaw, "lares_origin")).toBe("third_party");
   });
 
+  it("a chat link that names a member owner is not widened: private, whatever the setting", () => {
+    const raw = "---\nurl: https://example.com/a\nowner: fixture-member\n---\n\n";
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+  });
+
+  it("a source we do not recognise is private, whatever the setting", () => {
+    const raw = "---\nurl: https://example.com/a\nsource: somewhere-else\n---\n\n";
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+    const odd = "---\nurl: https://example.com/a\nvisibility: friends\n---\n\n";
+    expect(chooseArea(parseInboxClip(odd), "shared")).toBe("private");
+  });
+
+  it("the setting private sends every clip to the private area, shared sources included", () => {
+    expect(chooseArea(parseInboxClip(renderClipNote(clip)), "private")).toBe("private");
+    const karakeep = "---\nurl: https://example.com/a\nsource: karakeep\n---\n\n";
+    expect(chooseArea(parseInboxClip(karakeep), "private")).toBe("private");
+  });
+
+  it("a clip whose source is private never goes shared, whatever the setting", () => {
+    const raw = renderClipNote({ ...clip, owner: "fixture-member", visibility: "private" });
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
+    const orgPrivate = renderClipNote({ ...clip, owner: "organisation", visibility: "private" });
+    expect(chooseArea(parseInboxClip(orgPrivate), "shared")).toBe("private");
+  });
+
   it("an owner that is not a plain id is never trusted: the clip is filed privately without one", () => {
     const raw = "---\nurl: https://example.com/a\nsource: notion\nowner: someone else\nvisibility: shared\n---\n\n";
-    expect(chooseArea(parseInboxClip(raw))).toBe("private");
+    expect(chooseArea(parseInboxClip(raw), "shared")).toBe("private");
   });
 });
 
