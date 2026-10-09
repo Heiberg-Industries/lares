@@ -194,5 +194,75 @@
     "question": "What did I tell the assistant about Erik Dahl's rate last week?",
     "query": "assistant conversation erik dahl rate",
     "expect": []
+  },
+  {
+    "id": "article-sourdough-topic",
+    "kind": "article",
+    "question": "What did I save about sourdough starter hydration?",
+    "query": "sourdough hydration",
+    "expect": ["articles/sourdough-starter-hydration.md"]
+  },
+  {
+    "id": "article-heat-pump-defrost",
+    "kind": "article",
+    "question": "Where did I read about how a heat pump handles its defrost cycle?",
+    "query": "heat pump defrost cycle",
+    "expect": ["articles/heat-pump-sizing-cold-climates.md"]
+  },
+  {
+    "id": "article-invoice-factoring",
+    "kind": "article",
+    "question": "Which article covered selling unpaid invoices to a finance company?",
+    "query": "factoring receivables",
+    "expect": ["articles/late-payment-invoice-factoring.md"]
+  },
+  {
+    "id": "article-contrast-wcag",
+    "kind": "article",
+    "question": "What contrast ratio does the accessibility guidance ask for?",
+    "query": "wcag contrast ratio",
+    "expect": ["articles/colour-contrast-accessibility.md"]
+  },
+  {
+    "id": "article-solar-title",
+    "kind": "article",
+    "question": "Find the piece on solar panel degradation.",
+    "query": "solar panel degradation",
+    "expect": ["articles/solar-panel-degradation-rates.md"]
+  },
+  {
+    "id": "article-owner-note",
+    "kind": "article",
+    "question": "Which saved article did I say to compare with our winter rota?",
+    "query": "rota winter",
+    "expect": ["articles/shift-work-and-sleep.md"]
+  },
+  {
+    "id": "article-link-host",
+    "kind": "article",
+    "question": "What did I save from the heatpumps site?",
+    "query": "heatpumps example",
+    "expect": ["articles/heat-pump-sizing-cold-climates.md"]
+  },
+  {
+    "id": "article-proposed-excerpt",
+    "kind": "article",
+    "question": "Which article says a healthy leaven doubles in volume?",
+    "query": "leaven doubles volume",
+    "expect": ["articles/sourdough-starter-hydration.md"]
+  },
+  {
+    "id": "article-solar-output-decline",
+    "kind": "paraphrase",
+    "question": "How much does a solar installation's output decline each year?",
+    "query": "solar output decline",
+    "expect": ["articles/solar-panel-degradation-rates.md"]
+  },
+  {
+    "id": "article-night-staff-sleepiness",
+    "kind": "paraphrase",
+    "question": "Is there anything saved on sleepiness among night staff?",
+    "query": "sleepiness night staff",
+    "expect": ["articles/shift-work-and-sleep.md"]
   }
 ]

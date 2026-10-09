@@ -1,0 +1,3 @@
+Solar panel degradation rates
+
+Most panels lose about half a percent of output a year. Warranties usually promise at least 80 percent of the original output after twenty-five years.

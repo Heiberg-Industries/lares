@@ -5,10 +5,11 @@
 // @lares/agent-kit/notes-store run over a fixed fixture vault and a fixed
 // question set, scored deterministically.
 
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, extname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { searchNotes } from "@lares/agent-kit/notes-store";
 import { runRecall, type CaseKind, type KindStats, type RecallCase } from "../src/run.js";
 import { formatReport } from "../src/report.js";
 
@@ -56,10 +57,27 @@ function frontmatterType(raw: string): string | undefined {
 describe("fixture vault", () => {
   const vaultFiles = allMarkdownFiles(VAULT);
 
-  it("has between 30 and 36 notes across wiki/ and journal/ (excluding _meta)", () => {
+  it("has between 30 and 40 notes across wiki/, journal/ and articles/ (excluding _meta)", () => {
     const counted = vaultFiles.filter((f) => !f.startsWith("_meta/"));
     expect(counted.length).toBeGreaterThanOrEqual(30);
-    expect(counted.length).toBeLessThanOrEqual(36);
+    expect(counted.length).toBeLessThanOrEqual(40);
+  });
+
+  it("gives every article note that names a full_text companion a real .txt beside it, and at least two do", () => {
+    const withCompanion: string[] = [];
+    for (const f of vaultFiles.filter((f) => f.startsWith("articles/"))) {
+      const name = readFileSync(join(VAULT, f), "utf8").match(/^full_text:\s*(\S+)$/m)?.[1];
+      if (name === undefined) continue;
+      withCompanion.push(f);
+      expect(existsSync(join(VAULT, dirname(f), name)), `${f} names ${name}, which is missing`).toBe(true);
+    }
+    expect(withCompanion.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("never finds a note through a word that only its text companion contains", () => {
+    // These two made-up words appear in `articles/*.txt` and nowhere in any note.
+    expect(searchNotes("quillfeather", VAULT).hits).toEqual([]);
+    expect(searchNotes("zephyrquill", VAULT).hits).toEqual([]);
   });
 
   it("gives every fixture note frontmatter with a `type:` key", () => {
@@ -84,9 +102,9 @@ describe("fixture vault", () => {
 });
 
 describe("cases/recall.json", () => {
-  it("has 28-32 cases with at least 3 of each kind", () => {
+  it("has 28-40 cases with at least 3 of each kind", () => {
     expect(cases.length).toBeGreaterThanOrEqual(28);
-    expect(cases.length).toBeLessThanOrEqual(32);
+    expect(cases.length).toBeLessThanOrEqual(40);
     const byKind = new Map<string, number>();
     for (const c of cases) byKind.set(c.kind, (byKind.get(c.kind) ?? 0) + 1);
     for (const [kind, n] of byKind) {

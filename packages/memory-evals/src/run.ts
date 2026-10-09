@@ -12,7 +12,7 @@
 
 import { searchNotes } from "@lares/agent-kit/notes-store";
 
-/** The seven ways a recall case can be hard — see cases/recall.json and the README. */
+/** The eight kinds of recall case — see cases/recall.json and the README. `article` finds a saved web article by its note, never by its text companion. */
 export const CASE_KINDS = [
   "direct",
   "paraphrase",
@@ -21,6 +21,7 @@ export const CASE_KINDS = [
   "ambiguous-name",
   "multilingual",
   "excluded",
+  "article",
 ] as const;
 
 export type CaseKind = (typeof CASE_KINDS)[number];
