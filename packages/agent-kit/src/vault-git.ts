@@ -95,7 +95,7 @@ function companionOf(vaultRoot: string, notePath: string): string | null {
   if (end === -1) return null;
   const value = text
     .slice(4, end)
-    .match(new RegExp(`^${ARTICLE_FULL_TEXT_KEY}:\\s*(.+)$`, "m"))?.[1]
+    .match(new RegExp(`^${ARTICLE_FULL_TEXT_KEY}:[ \\t]*(.+)$`, "m"))?.[1]
     ?.trim()
     .replace(/^["']|["']$/g, "");
   if (value === undefined) return null;
@@ -155,6 +155,10 @@ export async function moveNote(opts: {
     // An article's text companion keeps its name and moves to the note's new folder.
     const companion = companionOf(vaultRoot, sourcePath);
     const companionDest = companion === null ? null : articleCompanionPath(destPath, basename(companion));
+    // Refuse BEFORE the first move: failing between the two would leave the note moved and its text behind.
+    if (companionDest !== null && existsSync(resolveInStore(companionDest, vaultRoot))) {
+      throw new Error(`cannot move ${sourcePath}: ${companionDest} already exists`);
+    }
 
     mkdirSync(dirname(destAbs), { recursive: true });
     // git mv preserves the file's bytes (and its history) — a true move, not a rewrite.

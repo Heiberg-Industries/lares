@@ -262,6 +262,18 @@ describe("exportPerson — everything about one member", () => {
     expect(renderExportReport(report)).toMatch(/also name other people/i);
   }, 240_000);
 
+  it("exports an article's text companion together with its note", async () => {
+    write("articles/saved.md", "---\ntype: article\nowner: fixture-owner\nscope: private\nfull_text: saved.txt\n---\n\nSummary.\n");
+    write("articles/saved.txt", "The full text of the saved page.\n");
+    const report = await exportPerson(db.pool, { person: FIXTURE_OWNER, outDir, vaults: [vaultRoot] });
+    expect(report.refusals).toEqual([]);
+
+    const name = basename(vaultRoot);
+    expect(existsSync(join(outDir, "vault", name, "articles/saved.md"))).toBe(true);
+    expect(readFileSync(join(outDir, "vault", name, "articles/saved.txt"), "utf8")).toBe("The full text of the saved page.\n");
+    expect(report.vaults[0]!.copied).toContain("articles/saved.txt");
+  }, 240_000);
+
   it("records a checksum for every file it wrote, and the checksums are of the files", async () => {
     await exportPerson(db.pool, { person: FIXTURE_OWNER, outDir, vaults: [vaultRoot] });
     const manifest = readJson("manifest.json") as Manifest;
