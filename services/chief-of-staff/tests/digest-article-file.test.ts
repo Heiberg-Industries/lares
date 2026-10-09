@@ -292,6 +292,22 @@ describe("a failed private commit", () => {
   });
 });
 
+describe("a failed private filing when the tracked inbox note has unsaved edits", () => {
+  it("keeps the edited bytes, stages nothing and leaves no article files", async () => {
+    const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);
+    const edited = item.body + "\nA line the owner added by hand, not committed yet.\n";
+    writeFileSync(join(privateRoot, item.path), edited);
+    writeFileSync(join(privateRoot, ".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+
+    await expect(run(filer(), item).promise).rejects.toThrow();
+
+    expect(readFileSync(join(privateRoot, item.path), "utf8")).toBe(edited);
+    expect(git(privateRoot, "diff", "--cached", "--name-only")).toBe("");
+    const left = existsSync(join(privateRoot, "articles")) ? readdirSync(join(privateRoot, "articles")) : [];
+    expect(left).toEqual([]);
+  });
+});
+
 describe("a push that fails after the inbox note is already gone", () => {
   it("private: reports the failure beside the result, so the caller still learns where the article went", async () => {
     const item = inbox("clip-p", clip({ owner: "fixture-member", visibility: "private" }), true);

@@ -311,15 +311,21 @@ export function makeArticleFiler(opts: {
       const sourceAbs = resolveInStore(input.inboxPath, root);
       const tracked = isTracked(root, input.inboxPath);
       writeFiles(root, files);
+      // True only once `git rm` has actually removed the inbox note: if it refused (unsaved edits)
+      // or never ran, the file on disk is untouched and must not be "restored" over.
+      let removed = false;
       try {
         gitIn(root, "add", "--", ...paths);
         // A tracked inbox note is removed in this same commit; one that was never committed (a
         // clipper drop) is deleted after it. The commit is scoped to these paths only.
-        if (tracked) gitIn(root, "rm", "-q", "--", input.inboxPath);
+        if (tracked) {
+          gitIn(root, "rm", "-q", "--", input.inboxPath);
+          removed = true;
+        }
         gitIn(root, "commit", "-q", "-m", built.message, "--", ...paths, ...(tracked ? [input.inboxPath] : []));
       } catch (err) {
         undoWrites(root, paths);
-        if (tracked) {
+        if (removed) {
           try {
             // The removal is staged and the file is gone; put both back.
             gitIn(root, "reset", "-q", "HEAD", "--", input.inboxPath);
