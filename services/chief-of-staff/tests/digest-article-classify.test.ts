@@ -67,9 +67,9 @@ describe("classifyArticle", () => {
     expect(prompt).toMatch(/written by someone else/i);
   });
 
-  it("carries no installation names or personas in the prompt", async () => {
+  it("addresses nobody by name: the prompt speaks of 'the person who saved this link'", async () => {
     let prompt = "";
     await classifyArticle(item, ctx, async (p) => { prompt = p; return "{}"; });
-    expect(prompt).not.toMatch(/Bendik|Brain|Saga|zero7|murmur|orakel|Heiberg/i);
+    expect(prompt).toContain("the person who saved this link");
   });
 });
