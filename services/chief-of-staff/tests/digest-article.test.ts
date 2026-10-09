@@ -84,7 +84,7 @@ describe("buildArticle from a Notion-shaped inbox note", () => {
     expect(fm(raw, "gathered_by")).toBe("owner");
     expect(fm(raw, "captured")).toBe("2026-10-01");
     expect(raw).toContain('generated:\n  by: "process:digest"\n  at: "2026-10-09T10:00:00Z"\n');
-    expect(fm(raw, "lares_origin")).toBe("synced");
+    expect(fm(raw, "lares_origin")).toBe("third_party");
     expect(fm(raw, "owner")).toBe("organisation");
     expect(fm(raw, "scope")).toBe("org");
     expect(fm(raw, "notion_page")).toBe("0a1b2c3d-0000-4000-8000-000000000001");
@@ -169,7 +169,7 @@ describe("areas, owners and scopes", () => {
     expect(chooseArea(parseInboxClip(renderClipNote(clip)), "shared")).toBe("shared");
   });
 
-  it("a Karakeep clip goes to the shared area as the organisation's, origin synced", () => {
+  it("a Karakeep clip goes to the shared area as the organisation's, origin third_party (a model summary of a fetched page)", () => {
     const raw = "---\nurl: https://example.com/a\ntitle: A\nsource: karakeep\nsaved: 2026-09-01T00:00:00Z\nkarakeep_id: k1\n---\n\n";
     const parsed = parseInboxClip(raw);
     expect(chooseArea(parsed, "shared")).toBe("shared");
@@ -177,7 +177,7 @@ describe("areas, owners and scopes", () => {
     expect(fm(out.noteRaw, "owner")).toBe("organisation");
     expect(fm(out.noteRaw, "scope")).toBe("org");
     expect(fm(out.noteRaw, "gathered_by")).toBe("owner");
-    expect(fm(out.noteRaw, "lares_origin")).toBe("synced");
+    expect(fm(out.noteRaw, "lares_origin")).toBe("third_party");
   });
 
   it("a private member clip stays private: scope private, owner is the member, gathered by the member", () => {
@@ -254,11 +254,17 @@ describe("areas, owners and scopes", () => {
 });
 
 describe("origin rules", () => {
-  it("carries a valid inbox origin", () => {
-    expect(originFor(parseInboxClip("---\nurl: https://example.com\nlares_origin: owner\n---\n\n"))).toBe("owner");
+  // An article note holds a model's summary and quotes from a fetched web page, so it is never
+  // more trusted than third_party, whatever the clip said about itself. The clip's own provenance
+  // stays visible in gathered_by, notion_page and sources.
+  it("never lets a clip's own origin raise an article above third_party", () => {
+    for (const origin of ["owner", "agent", "synced", "system"]) {
+      expect(originFor(parseInboxClip(`---\nurl: https://example.com\nlares_origin: ${origin}\n---\n\n`)), origin).toBe("third_party");
+    }
   });
-  it("stamps synced on Karakeep clips", () => {
-    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: karakeep\n---\n\n"))).toBe("synced");
+  it("stamps third_party on Karakeep and Notion clips too", () => {
+    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: karakeep\n---\n\n"))).toBe("third_party");
+    expect(originFor(parseInboxClip("---\nurl: https://example.com\nsource: notion\nlares_origin: synced\n---\n\n"))).toBe("third_party");
   });
   it("fails closed to third_party on anything else, including an invalid value", () => {
     expect(originFor(parseInboxClip("---\nurl: https://example.com\n---\n\n"))).toBe("third_party");

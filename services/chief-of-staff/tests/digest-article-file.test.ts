@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { VaultPushFailedError } from "@lares/agent-kit/vault-git";
 import { renderClipNote, type ClipRecord } from "../lib/clipping/record.js";
 import type { ArticleClassification } from "../lib/digest/classifier.js";
-import { makeArticleFiler, resolveSharedRoot } from "../lib/digest/article-file.js";
+import { assertSharedWritesInArticles, makeArticleFiler, resolveSharedRoot } from "../lib/digest/article-file.js";
 
 let tmp: string;
 let privateRoot: string;
@@ -200,6 +200,24 @@ function chatLink(frontmatter = "title: Pricing pages\ntype: note\nsource: agent
   git(privateRoot, "commit", "-q", "-m", "seed chat link");
   return { path, body };
 }
+
+describe("shared writes are confined to articles/", () => {
+  it("accepts a note and its text inside articles/", () => {
+    expect(() => assertSharedWritesInArticles(["articles/a.md", "articles/a.txt"])).not.toThrow();
+  });
+
+  it("refuses anything outside articles/, however it is spelled", () => {
+    for (const bad of ["README.md", "notes/a.md", "articles/../README.md", "/etc/passwd", "articles", "articles/", "_inbox/a.md", "articles/sub/a.md"]) {
+      expect(() => assertSharedWritesInArticles([bad]), bad).toThrow(/articles/);
+    }
+  });
+
+  it("a real shared filing touches nothing else in the shared repository", async () => {
+    await run(filer(sharedRoot, "shared"), inbox("clip-a", clip(), true)).promise;
+    const changed = git(sharedRoot, "diff", "--name-only", "HEAD~1", "HEAD").trim().split("\n").sort();
+    expect(changed).toEqual(["articles/how-pricing-pages-convert.md", "articles/how-pricing-pages-convert.txt"]);
+  });
+});
 
 describe("the article area setting", () => {
   it("defaults to shared when no setting is given", async () => {

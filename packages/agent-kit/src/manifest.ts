@@ -305,8 +305,10 @@ export function grantedVaultAreas(manifest: AgentManifest): VaultArea[] {
  *
  * Used by a job that writes on the agent's behalf without a model turn (the digest filing an
  * article in the shared area), so it can only ever write where the agent's own definition says it
- * may. `write-with-confirm` counts: the confirmation belongs to a model's tool call, and a
- * scheduled job has no such call. It never adds an area; it only ever reads the grant.
+ * may. `write-with-confirm` counts because the owner has ruled that, for the digest, the
+ * installation's article area setting being `shared` is one standing approval to file articles into
+ * the shared area's `articles/` folder with no confirmation per write; the grant check here is the
+ * part that is not waived. It never adds an area; it only ever reads the grant.
  */
 export function canWriteVaultArea(manifest: AgentManifest, area: VaultArea): boolean {
   const grant = grantFor(manifest, "vault");

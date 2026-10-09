@@ -91,6 +91,24 @@ export function resolveSharedRoot(env: NodeJS.ProcessEnv = process.env): string 
   }
 }
 
+/**
+ * THE STANDING APPROVAL IS FOR `articles/` ONLY. Setting the article area to `shared` is the
+ * installation's standing approval for the digest to file articles into the shared area without a
+ * confirmation per write (ADR-0017, amendment 2026-10-09), and the approval covers exactly one
+ * folder: `articles/`, a note and its text companion directly inside it. Nothing else in the shared
+ * area is written, moved or deleted by the digest. The paths are built by code from a fixed folder
+ * name and a slugged file name, so this cannot fail today; it is the line that keeps it true if
+ * that ever changes.
+ */
+export function assertSharedWritesInArticles(paths: readonly string[]): void {
+  for (const p of paths) {
+    const rest = p.startsWith(`${ARTICLES_DIR}/`) ? p.slice(ARTICLES_DIR.length + 1) : "";
+    if (rest === "" || rest.includes("/") || rest === ".." || rest === ".") {
+      throw new Error(`the digest writes only inside ${ARTICLES_DIR}/ in the shared area, not ${JSON.stringify(p)}`);
+    }
+  }
+}
+
 /** A repository we can write into. */
 function usable(root: string | undefined): root is string {
   if (!root) return false;
@@ -295,6 +313,7 @@ export function makeArticleFiler(opts: {
     const paths = files.map((f) => f.path);
 
     if (area === "shared") {
+      assertSharedWritesInArticles(paths);
       await withNoteLock(root, built.notePath, async () => {
         writeFiles(root, files);
         try {

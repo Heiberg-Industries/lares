@@ -23,7 +23,7 @@
 import { createHash } from "node:crypto";
 
 import { ARTICLE_FULL_TEXT_KEY, ARTICLE_READING_KEY } from "@lares/agent-kit/article";
-import { isOrigin, type Origin } from "@lares/agent-kit/origin";
+import { isOrigin, narrowest, type Origin } from "@lares/agent-kit/origin";
 
 import { normaliseUrl } from "../clipping/record.js";
 import type { ArticleClassification } from "./classifier.js";
@@ -120,11 +120,20 @@ export function chooseArea(clip: InboxClip, setting: ArticleArea): ArticleArea {
   return pastedInChat ? "shared" : "private";
 }
 
-/** A valid inbox origin is carried; Karakeep is `synced`; anything else fails closed. */
+/**
+ * The origin an article note is stamped with: the least trusted of the clip's own origin (a valid
+ * inbox value; Karakeep is `synced`; anything else fails closed to `third_party`) and `third_party`.
+ * In practice that is always `third_party`, on purpose: the note holds a model's summary and quotes
+ * from a fetched web page, and "the owner saved the link" is not the same question as "where did
+ * the content come from" (origin model, narrowest-origin rule). It also keeps articles out of
+ * long-term memory promotion. The clip's own provenance stays visible in `gathered_by`,
+ * `notion_page` and `sources`.
+ */
 export function originFor(clip: InboxClip): Origin {
-  if (isOrigin(clip.laresOrigin)) return clip.laresOrigin;
-  if (clip.source === "karakeep") return "synced";
-  return "third_party";
+  const fromClip: Origin = isOrigin(clip.laresOrigin)
+    ? clip.laresOrigin
+    : clip.source === "karakeep" ? "synced" : "third_party";
+  return narrowest([fromClip, "third_party"]);
 }
 
 /** Letters beyond ASCII, digits, spaces and hyphens; no commas, brackets or emoji. */

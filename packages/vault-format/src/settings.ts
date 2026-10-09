@@ -945,7 +945,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: "shared",
     secret: false,
     breaksWithout:
-      "Nothing breaks. Unset, saved articles go to the shared area, but only when the filing agent is granted write there and the shared folder is writable; when it is not, the digest files them in the private area and says so in its summary on every pass. Set it to \"private\" on an installation that does not want that, and the digest files privately without the warning. Any other value is read as \"private\".",
+      "Nothing breaks. \"shared\" (also what unset means) is a standing approval for the digest to file saved articles into the shared area's articles/ folder, and nothing else in it, without a confirmation per write; it still only does so when the filing agent's own vault grant names the shared area with write access and the shared folder is writable. When that is not so, the digest files them in the private area and says so in its summary on every pass. Set it to \"private\" on an installation that does not want that, and the digest files privately without the warning. Any other value is read as \"private\".",
     readAt: ["services/chief-of-staff/lib/digest/article-area.ts:31"],
   },
   {
