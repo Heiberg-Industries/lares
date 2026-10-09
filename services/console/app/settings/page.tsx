@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
 import { SettingsThemeControl } from "../../components/ThemeControl";
+import { ModelsSection } from "../../components/ModelsSection";
+import { getGatewayStatusView } from "../../lib/gateway-status";
 import {
   getProactivityView,
   rowFor,
@@ -8,7 +10,7 @@ import {
 } from "../../lib/proactivity";
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
-  const view = await getProactivityView().catch(() => null);
+  const [view, gateway] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView()]);
   const quiet =
     view && !view.errors.length
       ? (rowFor(view.settings, "*", "*")?.effective.quiet ??
@@ -41,6 +43,7 @@ export default async function SettingsPage() {
             <span className="mono">{view?.clock.tz ?? "Unavailable"}</span>
           </div>
         </section>
+        <ModelsSection view={gateway} />
         <section className="lares-surface">
           <h2 className="lares-section-title">Appearance</h2>
           <div className="lares-setting-row">

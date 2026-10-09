@@ -88,6 +88,17 @@ an apply times out before retrying it. Re-run this configuration command after a
 rerun that replaces `/etc/lares/keeper.json`; the installer does not yet preserve these
 post-install Google settings automatically.
 
+## Models (Settings page)
+
+The **Models** section on Settings is read-only. It shows the address of the model gateway, whether
+Lares runs it or it is managed elsewhere, whether it is answering (with the time it was checked), and
+for each purpose (Brain, Writer, Utility, Gate, Embed) whether the gateway serves it, which provider
+and model are behind it where the gateway says, and which agents use it. It reads this once each time
+the page opens, through the keeper, and never makes a model request or costs money. "Provider not
+tested" means exactly that: Lares has checked that the gateway answers, not that the provider behind
+it accepts a request, because testing that sends a paid request. A gateway managed elsewhere shows
+only whether it is reachable.
+
 ## Follow-ups
 
 - Revoke the token at Google (not just delete the row) on Remove.
