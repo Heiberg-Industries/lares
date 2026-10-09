@@ -325,6 +325,25 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO standing_facts (fact, category, source_turn, user_id, origin)
      VALUES ('Fixture second said something', 'preference', 'fixture-turn-2', $1, 'owner')`,
     [FIXTURE_SECOND]),
+
+  // ── 091_clipping.sql — a source per person, then one ledger item under each (the ledger's
+  //    foreign key needs its source first). ──────────────────────────────────────────────────
+  row("clipping_sources", "owner", FIXTURE_OWNER,
+    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner)
+     VALUES ('fixture-clip-source-1', 'notion', 'fixture-data-source', 'u1', $1)`,
+    [FIXTURE_OWNER]),
+  row("clipping_sources", "owner", FIXTURE_SECOND,
+    `INSERT INTO clipping_sources (id, kind, data_source_id, url_property_id, owner)
+     VALUES ('fixture-clip-source-2', 'notion', 'fixture-data-source', 'u1', $1)`,
+    [FIXTURE_SECOND]),
+  row("clipping_items", "owner", FIXTURE_OWNER,
+    `INSERT INTO clipping_items (source_id, source_item_id, source_container, owner, visibility, state)
+     VALUES ('fixture-clip-source-1', 'fixture-page-1', 'fixture-data-source', $1, 'shared', 'imported')`,
+    [FIXTURE_OWNER]),
+  row("clipping_items", "owner", FIXTURE_SECOND,
+    `INSERT INTO clipping_items (source_id, source_item_id, source_container, owner, visibility, state)
+     VALUES ('fixture-clip-source-2', 'fixture-page-2', 'fixture-data-source', $1, 'shared', 'imported')`,
+    [FIXTURE_SECOND]),
 ];
 
 /** Every table the fixture puts a row in, with the spelling it used. Later slices assert

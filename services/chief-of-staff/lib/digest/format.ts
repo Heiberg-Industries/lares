@@ -32,13 +32,19 @@ function filedBreakdown(filed: DigestSummary["filed"]): string {
  */
 export function renderDigest(s: DigestSummary): DigestView {
   const filed = s.filed.length, asked = s.asked.length, errors = s.errors.length;
+  const notices = s.notices ?? [];
 
   if (!filed && !asked && !errors) {
-    const text = "📥 Digest · inbox clear — nothing new to file.";
+    const clear = "📥 Digest · inbox clear — nothing new to file.";
+    const text = notices.length ? `${clear}\n${notices.map((n) => `⚠️ ${n}`).join("\n")}` : clear;
     return {
       text,
-      blocks: [section(text)],
-      report: { title: "Digest · inbox clear — nothing new to file.", sections: [], links: [] },
+      blocks: [section(clear), ...notices.map((n) => context(`⚠️ ${n}`))],
+      report: {
+        title: "Digest · inbox clear — nothing new to file.",
+        sections: notices.map((n) => ({ label: "Notice", value: n })),
+        links: [],
+      },
     };
   }
 
@@ -54,18 +60,21 @@ export function renderDigest(s: DigestSummary): DigestView {
   }
 
   if (filed) blocks.push(context(`Filed ${filedBreakdown(s.filed)}`));
+  for (const n of notices) blocks.push(context(`⚠️ ${n}`));
 
   // Static pointer to the commercial radar — runs weekly (Mon 08:00) + monthly.
   blocks.push(context("📇 Commercial radar runs weekly — check #sales for who to contact & why."));
 
   const askLines = s.asked.map((a) => `• ${a.title}`).join("\n");
-  const text = asked ? `${headline}\n${askLines}` : headline;
+  const noticeLines = notices.map((n) => `⚠️ ${n}`).join("\n");
+  const text = [headline, asked ? askLines : "", noticeLines].filter(Boolean).join("\n");
 
   const reportSections = s.asked.map((a) => ({
     label: a.title,
     value: `Suggests ${a.suggestedDestination?.length ? a.suggestedDestination : "unsure"} · ${a.reason}`,
   }));
   reportSections.push({ label: "Filed", value: filed ? filedBreakdown(s.filed) : "Nothing filed" });
+  for (const n of notices) reportSections.push({ label: "Notice", value: n });
 
   const view: DigestView = {
     text,

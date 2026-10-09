@@ -2,7 +2,7 @@
  * The digest — 09:00 and 17:00 Europe/Oslo, plus an on-demand drain of `digest_requests`.
  *
  * Replaces the old runtime's standalone digest CONTAINER (`services/agent-runtime/bin/digest.ts`).
- * One pass: pull new Karakeep saves into `_inbox`, list `_inbox`, classify each item through the
+ * One pass: pull new Karakeep saves and Notion saved links into `_inbox`, list `_inbox`, classify each item through the
  * gateway, file the confident ones (write + retire the source in ONE commit), record a skip and
  * ask about the rest, then post ONE Slack summary with any error detail as a thread reply.
  *
@@ -52,6 +52,11 @@ import {
   claimDigestRequests, recordDigestSkip, listSkippedPaths, type DigestRequest,
 } from "../../lib/digest-store.js";
 import { makeKarakeepClient, makePgSeenStore, syncKarakeep } from "../../lib/karakeep.js";
+import { clippingPass, makeVaultInbox } from "../../lib/clipping/step.js";
+import { makeNotionClient, readNotionToken } from "../../lib/clipping/notion-reader.js";
+import { normaliseUrl } from "../../lib/clipping/record.js";
+import { recordKarakeepImport } from "../../lib/clipping/store.js";
+import { parseFrontmatter } from "../../lib/digest/extract.js";
 import { runDigest } from "../../lib/digest/runner.js";
 import { dueScheduledSlot } from "../../lib/digest/schedule.js";
 import { doorId } from "../../lib/principals.js";
@@ -144,10 +149,47 @@ async function karakeepPass(log: (m: string) => void): Promise<void> {
   const written = await syncKarakeep({
     client: makeKarakeepClient({ baseUrl: base, token }),
     seen,
-    writeNote: (o) => writeRawNote({ vaultRoot: root, relPath: o.relPath, bytes: Buffer.from(o.body, "utf8") }),
+    writeNote: async (o) => {
+      await writeRawNote({ vaultRoot: root, relPath: o.relPath, bytes: Buffer.from(o.body, "utf8") });
+      // LAR-113: remember the link in the clipping ledger so a Notion clip of the same link in the
+      // same inbox is not brought in twice. Best effort: Karakeep's own seen table stays the truth.
+      try {
+        const fm = parseFrontmatter(o.body);
+        const urlKey = normaliseUrl(fm["url"] ?? "");
+        const bookmarkId = fm["karakeep_id"];
+        if (urlKey && bookmarkId) await recordKarakeepImport(db, { bookmarkId, urlKey, inboxPath: o.relPath });
+      } catch (e) { log(`karakeep: could not record the link for duplicate checks (${String(e)})`); }
+    },
     log,
   });
   if (written > 0) log(`karakeep: imported ${written} new bookmark(s) to _inbox`);
+}
+
+/**
+ * Notion saved links to `_inbox` (LAR-113). Runs right after the Karakeep pull so the same pass
+ * enriches and files what it brings in. A failure is NOT swallowed: `clippingPass` records it,
+ * opens a repair and hands back a line for this pass's digest summary. No model call here.
+ */
+async function clippingStep(log: (m: string) => void): Promise<string[]> {
+  try {
+    const result = await clippingPass({
+      db: getPool(),
+      inbox: makeVaultInbox(vaultRoot()),
+      token: () => readNotionToken(),
+      makeClient: (token) => makeNotionClient({ token, proxyUrl: process.env["EGRESS_PROXY_URL"] }),
+      log,
+    });
+    return result.notices;
+  } catch (e) {
+    // Migration 091 not applied yet: nothing can be configured, so this is "not configured".
+    if ((e as { code?: string })?.code === "42P01") {
+      log("clipping: the clipping tables are not there yet (apply box migration 091); skipped");
+      return [];
+    }
+    // Only reachable when even the state row could not be read or written (database trouble).
+    console.error("digest: clipping step failed (continuing):", e);
+    return ["Clipping from Notion could not be checked this pass: Lares could not read its own records."];
+  }
 }
 
 export async function runDigestPass(
@@ -166,9 +208,13 @@ export async function runDigestPass(
   try { await karakeepPass(log); }
   catch (e) { console.error("digest: karakeep sync failed (continuing):", e); }
 
+  // Best-effort for the digest, never silent for the owner: a failure becomes a notice below.
+  const notices = await clippingStep(log);
+
   const summary = await runDigest({
     agent: AGENT,
     mode,
+    notices,
     listInbox: async () => listInboxFiles(),
     alreadySkipped: () => listSkippedPaths(db, AGENT),
     noteNames: async () => listNotes(root).map((p) => basename(p, ".md")),

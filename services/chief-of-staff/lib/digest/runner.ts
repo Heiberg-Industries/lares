@@ -22,18 +22,26 @@ export interface RunnerDeps {
   log?(m: string): void;
   /** Optional URL enrichment: if the item body is a bare URL, replace it with article text before classify. */
   enrich?(item: { path: string; body: string }): Promise<{ path: string; body: string; enriched: boolean }>;
+  /**
+   * One-line notices from steps that ran before the digest (LAR-113: a clipping fetch that failed).
+   * Any notice makes the pass worth posting, even when the inbox is otherwise empty, so a failure
+   * is never swallowed by a quiet scheduled run.
+   */
+  notices?: string[];
 }
 
 export interface DigestSummary {
   filed: { title: string; destination: string }[];
   asked: { title: string; reason: string; suggestedDestination?: string; suggestedType?: string }[];
   errors: { path: string; error: string }[];
+  /** Lines from earlier steps (see RunnerDeps.notices). Absent means none. */
+  notices?: string[];
 }
 
 const IGNORE_BASENAMES = new Set(["README.md"]);
 
 export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
-  const summary: DigestSummary = { filed: [], asked: [], errors: [] };
+  const summary: DigestSummary = { filed: [], asked: [], errors: [], notices: [...(deps.notices ?? [])] };
   const skipped = new Set(await deps.alreadySkipped());
   const noteNames = await deps.noteNames();
   const ctx: ClassifyContext = { projects: [...PROJECTS], noteNames };
@@ -62,7 +70,7 @@ export async function runDigest(deps: RunnerDeps): Promise<DigestSummary> {
     }
   }
 
-  const empty = !summary.filed.length && !summary.asked.length && !summary.errors.length;
+  const empty = !summary.filed.length && !summary.asked.length && !summary.errors.length && !summary.notices?.length;
   if (deps.mode === "scheduled" && empty) return summary; // silent on an empty timed run
   const view = renderDigest(summary);
   const res = await deps.post(view);
