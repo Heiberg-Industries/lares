@@ -12,6 +12,11 @@ Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-va
 - [`tools/design-preview/README.md`](../tools/design-preview/README.md) — standalone visual and interaction preview; sample state only
 - [`website-repository.md`](website-repository.md) — the public website and its docs live in a separate private repository
 
+## Roadmap planning
+
+- [Roadmap and integration inventory](specs/2026-10-08-roadmap-and-integration-inventory.md) — existing and planned integrations, extension foundations, memory, Vercel reuse and feature themes; proposed sequencing with explicit coverage limits and a file-by-file docs coverage table.
+- [Release-image remediation plan](specs/2026-10-08-release-image-remediation-plan.md) — proposed scope for rebuilding, scanning and publishing a refreshed set of release images, with publication and deployment kept as separate gates.
+
 ## decisions
 
 - [`0010-knowledge-store-authority.md`](decisions/0010-knowledge-store-authority.md) — ADR 0010 — One owner per fact: Brain, Atlas, Notion, repos, CRM, and a separate taste layer

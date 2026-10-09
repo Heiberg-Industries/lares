@@ -221,3 +221,5 @@ page, this page is newer.
 - [`design/console-lar50-handoff-2026-09-29.md`](design/console-lar50-handoff-2026-09-29.md)
   — the last session handoff before the merge
 - [`../CHANGELOG.md`](../CHANGELOG.md) — what changed, for someone upgrading
+
+Planning documents, not an approved delivery schedule: the [roadmap and integration inventory](specs/2026-10-08-roadmap-and-integration-inventory.md) and the [release-image remediation plan](specs/2026-10-08-release-image-remediation-plan.md).
