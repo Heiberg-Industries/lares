@@ -1,0 +1,39 @@
+import { describe, it, expect } from "vitest";
+import { STATE_COLOURS } from "../lib/state-colours";
+
+describe("StatePill vocabulary", () => {
+  // "done" is job vocabulary. A credential is not "done" — it is live. This only checks the
+  // vocabulary data itself — that credential states own their own labels, distinct from the
+  // job-status words. It does NOT prove ConnectionsTable renders them untranslated; that
+  // render-path guarantee (the live→done mislabel this task fixed) is covered by
+  // tests/connections-table.test.tsx, which renders the real table.
+  it("gives credential statuses their own labels, never job vocabulary", () => {
+    expect(STATE_COLOURS["live"]).toEqual({ c: "var(--ok)", label: "live" });
+    expect(STATE_COLOURS["partial"]).toEqual({ c: "var(--warn)", label: "partial" });
+    expect(STATE_COLOURS["missing"]).toEqual({ c: "var(--bad)", label: "missing" });
+  });
+
+  // The console does not mount host secrets, so it cannot tell a healthy host-custody
+  // credential from a broken one. It must stay grey with its raw label rather than borrow
+  // "never" (a deliberate revoke on the autonomy dial) or any other word.
+  it("leaves unknown unmapped so the grey fallback renders it", () => {
+    expect(STATE_COLOURS["unknown"]).toBeUndefined();
+  });
+
+  it("keeps each domain's vocabulary and gives lifecycle codes plain-language labels", () => {
+    const lifecycleLabels: Record<string, string> = {
+      "not-configured": "Not configured",
+      "host-administration-required": "Host administration required",
+      "pending-test": "Pending test",
+      "test-failed": "Test failed",
+      "pending-apply": "Pending Apply",
+      applying: "Applying",
+      disconnecting: "Disconnecting locally",
+      applied: "Applied",
+      disconnected: "Disconnected locally",
+      "recovery-required": "Recovery required",
+    };
+    for (const [state, m] of Object.entries(STATE_COLOURS))
+      expect(m.label).toBe(lifecycleLabels[state] ?? state);
+  });
+});

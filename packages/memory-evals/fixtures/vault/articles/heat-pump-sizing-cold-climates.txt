@@ -1,0 +1,5 @@
+Sizing a heat pump for cold climates
+
+Sizing against the average winter leaves the house short on the three coldest weeks of the year. Installers read the manufacturer's capacity table at the design temperature and add a backup heater for the gap.
+
+The coefficient of performance falls with the outdoor temperature. A purely invented word, zephyrquill, appears only in this companion file.

@@ -1,0 +1,30 @@
+{
+  "name": "board-evals-probe",
+  "private": true,
+  "type": "module",
+  "eve": {
+    "extension": {
+      "source": "./extension",
+      "dist": "./dist/extension"
+    }
+  },
+  "//dependencies": "zod is pinned rather than ranged because this package is not a pnpm workspace member (it is mounted by relative path from agent/extensions/probe/extension.ts), so it never dedupes against the root's copy. Harmless at this scale — the two tools here declare z.object({}) and nothing else — but keep it equal to packages/board-evals' zod so the bundled fixture uses one version.",
+  "dependencies": {
+    "zod": "4.4.3"
+  },
+  "peerDependencies": {
+    "eve": "*"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.mjs"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "default": "./dist/tools/index.mjs"
+    }
+  },
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts"
+}

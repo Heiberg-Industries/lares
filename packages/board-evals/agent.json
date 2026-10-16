@@ -1,0 +1,5 @@
+{
+  "name": "board-evals", "model": "lares-brain", "persona": "agent/instructions.md",
+  "grants": [{ "capability": "vault", "scope": "write-with-confirm", "areas": ["shared"] }, { "capability": "gmail", "scope": "write-with-confirm" }],
+  "autonomy": { "vault": "autonomous", "gmail": "autonomous" }
+}

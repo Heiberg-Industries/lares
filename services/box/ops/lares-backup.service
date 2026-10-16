@@ -1,0 +1,11 @@
+[Unit]
+Description=Lares nightly encrypted off-box backup
+Wants=network-online.target
+After=network-online.target docker.service
+RequiresMountsFor=/srv/lares /srv/taste
+
+[Service]
+Type=oneshot
+Environment=AGENT_BOX_BACKUP_ENV=/etc/lares/backup.env
+UMask=0077
+ExecStart=/opt/lares/backup.sh

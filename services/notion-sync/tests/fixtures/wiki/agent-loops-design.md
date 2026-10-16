@@ -1,0 +1,86 @@
+---
+title: "Designing agent loops — heartbeats, crons, hooks & goals"
+type: summary
+source: "[[raw/how-to-design-ai-agent-loops]]"
+created: 2026-01-10
+tags: [ai, agents, loops, automation]
+---
+
+# Designing agent loops — heartbeats, crons, hooks & goals
+
+> [!summary]
+> A practical how-to on **loop design**: a loop is "just an automated
+> prompt." Four ways to fire one (heartbeat, cron, hook, goal), five things every
+> loop needs before production, and an "onboard an employee" mental model — shown
+> through two live builds.
+
+This is the **operator's companion** to [[designing-loops-essay]]
+(an essay the episode cites directly). Where that piece argues
+*why* you stop prompting agents and start designing the systems that prompt them,
+this one shows *how* to actually wire one up.
+
+## The four ways to automate a prompt
+
+| Type | Fires when | Use for |
+|------|-----------|---------|
+| **Heartbeat** | continuously / steady tick | always-on watching |
+| **Cron** | fixed schedule (e.g. daily 10:15) | recurring routines |
+| **Hook** | an event happens | react to a trigger |
+| **Goal** | recursive — runs until purpose met | open-ended work |
+
+The goal loop is the one to watch on cost: you define a purpose and the agent
+iterates until it decides it's done.
+
+## Five things every effective loop needs
+
+Same primitives the essay lists — they now ship *inside* the products, so a loop
+is no longer a pile of bash you maintain forever:
+
+1. **Worktrees** — so parallel agents don't step on each other.
+2. **Skills** — written-down project knowledge the agent would otherwise guess.
+3. **Plugins / connectors** — wire the agent into the tools you already use.
+4. **Subagents** — one agent has the idea, a different one validates it.
+5. **State tracking (external memory)** — a markdown file / task board that
+   holds "what's done, what's next" *outside* the conversation. The agent forgets
+   between runs; the repo doesn't.
+
+## The "onboard an employee" framework
+
+Design a loop the way you'd guide a new hire through a recurring task: what's the
+job, what must they know (skills), what tools do they get (connectors), how do
+they check their own work (validating subagents), where do they write down status
+(memory). If you can onboard a person to it, you can onboard an agent.
+
+## The two live builds
+
+- **Daily aging-PR reviewer** — a *cron* loop that schedules itself
+  at 10:15 a.m., finds pull requests that are getting old, and spins off its own
+  subagents to review and alert teams. No more manually babysitting a PR.
+- **Weekly skills-identification loop** — a loop that spots reusable
+  skills and spawns *goal-based* subagents to validate its own output in real
+  time; you can watch the subagents spin up.
+
+## Warning signals (when loops get expensive)
+
+> [!warning]
+> Two red flags that a loop will burn money: **inefficient goal-based structures**
+> (recursive loops that don't converge) and **unnecessary token-consumption
+> patterns**. Token cost is the recurring caveat across both this and
+> [[designing-loops-essay]] — usage varies
+> wildly depending on whether you're token-rich or token-poor.
+
+## Why it is kept
+
+The clearest plain-language taxonomy of loop *types* in the collection — heartbeat / cron
+/ hook / goal is a vocabulary worth having. The "onboard an employee" framing is
+directly useful for delegating recurring work (report generation, intake
+processing, the notes system's own `/ingest` and `/lint`). Pairs
+with the notes system's phasing note (Phase 3: a research/validation gate on a
+schedule) — that *is* a goal loop with a validating subagent.
+
+## Links
+- [[designing-loops-essay]] — the essay this episode is the how-to for
+- [[evals-as-specs]] — what the validating subagent should check against: an eval as spec
+- [[services-as-software-autopilots]] — loops are how "autopilots" actually run unattended
+- [[camera-not-an-engine]] — the theory under the loop: error signal = feedback step; camera (explore) vs engine (exploit) modes
+- [[solo-builder-local-ai]] — this loop pattern taken to its limit: a solo builder runs build/review loops around the clock on local hardware ("ambient AI")

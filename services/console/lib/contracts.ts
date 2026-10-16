@@ -1,0 +1,99 @@
+// The typed surface the console reads/commands speak. Both the API route handlers
+// and the React screens import these — the single shared contract.
+export type AutonomyLevel = "autonomous" | "gated" | "never";
+export type AgentStatus = "idle" | "running" | "waiting";
+
+export interface CapabilityDTO {
+  name: string;
+  scope: "none" | "read" | "write" | "write-with-confirm";
+  defaultLevel: AutonomyLevel;   // the capability-wide level — the only one the approval check reads
+}
+export interface AgentSummaryDTO {
+  name: string;
+  role: string;                  // the role chip, e.g. "Sales"
+  status: AgentStatus;
+  pendingApprovals: number;
+  capabilities: string[];
+}
+export interface AgentDetailDTO {
+  name: string;
+  role: string;
+  status: AgentStatus;
+  capabilities: CapabilityDTO[];
+}
+export interface AuditRowDTO { at: string; agent: string; action: string; summary: string | null; }
+
+export interface BoardRowDTO {
+  agent: string;
+  displayName: string;
+  capability: string;
+  /** The ratchet key's third column. "" for every capability whose level is capability-wide; for
+   *  `vault` it is the AREA (W5C-s8 — the area is the action), so one grant is three rows. */
+  action: string;
+  /** What to call that action on screen ("Shared notes"), or null when there is none to name. */
+  actionLabel: string | null;
+  scope: string;
+  level: AutonomyLevel;
+  source: { kind: "board"; by: string; at: string } | { kind: "definition" };
+  controllable: boolean;
+  lockedTools: Array<{ tool: string; reason: string }>;
+  evidence: { asked: number; autonomous: number; denied: number; locked: number; failedClosed: number; lastAt: string | null };
+  /** What the OWNER answered, not what the policy decided (see `evidence` above) — from
+   *  `approval_asks` (box 086) via `@lares/agent-kit/approval-stats`. `rate` is null when nobody
+   *  has answered a card yet, never a percentage of nothing. */
+  answers: { approved: number; cancelled: number; neverAnswered: number; rate: number | null };
+  /** True when at least one of this row's tools has a clean, long-enough history and could be
+   *  suggested for "act on its own" (`couldActOnItsOwn`, owner decision B4). A SUGGESTION ONLY:
+   *  nothing reads this to change a level — the owner moves the dial by hand. */
+  couldGraduate: boolean;
+}
+
+export interface GoogleAccountDTO {
+  principal: string;
+  email: string;
+  org: string;
+  scopeCount: number;
+  connectedAt: string; // YYYY-MM-DD
+}
+
+export interface GoogleOrg {
+  id: string;
+  label: string;
+}
+
+export interface ConnectionRowDTO {
+  connectionId: string;
+  instanceId: string;
+  /** "google · the second org" — what the row is called on screen. */
+  label: string;
+  custody: "console" | "host" | "foreign";
+  status: "live" | "enrolled" | "partial" | "missing" | "unknown" | "unavailable";
+  detail: string;
+  /** Failed reads must remain distinguishable from successful empty results. */
+  accountsUnavailable: boolean;
+  usageUnavailable: boolean;
+  /** ISO timestamp, or null when unknown or unattributable. */
+  lastUsed: string | null;
+  /** Agents on this installation with a grant for the connection. */
+  usedBy: string[];
+  /** Static service declarations from the catalogue, not proof that they are running. */
+  declaredFor: string[];
+  /** Enrolled mailboxes — console-custody rows only. Empty is inconclusive when accountsUnavailable. */
+  accounts: GoogleAccountDTO[];
+}
+
+export interface VoiceProposed { core: string; notes_en: string; notes_no: string; learnedAt: string; sampleSize: number }
+export interface VoiceCardDTO {
+  /** `default` (the shared fallback card + learn settings) or a mailbox address (sql/001_baseline.sql). */
+  id: string;
+  core: string; notesEn: string; notesNo: string;
+  modelEn: string; modelNo: string;
+  learnKey: string; lookbackDays: number; cap: number;
+  learnStatus: string; learnMessage: string;
+  proposed: VoiceProposed | null;
+}
+export interface VoiceExampleDTO { id: string; lang: "en" | "no"; snippet: string; included: boolean }
+
+/** The console has no proof of which host compose file contains notion-sync. */
+export const NOTION_RESOLVE_GUIDANCE =
+  "Have an operator stop the sync daemon and follow this installation's Notion sync runbook to resolve the frozen document.";

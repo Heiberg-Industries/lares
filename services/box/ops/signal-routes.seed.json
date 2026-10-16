@@ -1,0 +1,5 @@
+[
+  { "position": 100, "severity": "error", "destinations": ["C0000000001"], "allowTarget": false },
+  { "position": 110, "severity": "warn",  "destinations": ["C0000000002"], "allowTarget": false },
+  { "position": 120, "severity": "info",  "destinations": ["C0000000003"], "allowTarget": false }
+]

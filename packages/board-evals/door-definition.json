@@ -1,0 +1,1 @@
+{"name":"door-eval","model":"lares-brain","persona":"agent/instructions.md","grants":[],"autonomy":{},"doors":[{"kind":"telegram","enabled":false,"settings":{}}],"channels":[]}

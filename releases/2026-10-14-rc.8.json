@@ -1,0 +1,22 @@
+{
+  "release": "2026-10-14-rc.8",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:c7797b854be1172f484d1b16ed50d056233a276db085355dcb990f3a951cadff",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:1b3b7729133250c5a2976250d4a3583d02e80c3e88e4b14fbae64ab471a22ed9",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:88054914cd3288fca4186bc64278a43704dd18e0777209cbc2d2999c6a3a0542",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:93f4419c528dff9d414449397af009b544e3be057d6d705b5da2d3c22883a2d2",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:46f4c7c48a8a9807a7f6c3b543064b2efbf199210bf2f309836114d8cb59df93",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:2f7c971aa5c14c753f6845c98c3be79177aec5da6841f9cf05ce3c0fc8725386",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:de6c6dc117a25edfd284c6d4c23775391549a3f235abcc2f6fa77fc8bc9e682b"
+  },
+  "migrations": {
+    "box": "002_standing_facts.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "After upgrading from rc.7 the keeper has no record of an installed firewall until the first agent change, so apply one agent once (the keeper's \"apply connection changes\"); from then on a restart or reboot re-applies the firewall by itself."
+  ]
+}

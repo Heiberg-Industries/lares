@@ -1,0 +1,23 @@
+{
+  "release": "2026-10-15-rc.9",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:a3bb5ff927e6386b86778e8d65e2e17acb38f224289b933e56a863a621c8efad",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:4350b352d5bd36e65926a60ba508d4f63e7f5d85658e6cc0dba2a18e20f41a16",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:894ab94eb311b9164977defb743728c11702065375c0d39820f39b2580d03365",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:c40666d4a5db9244d1ae078bebd11591db1b127f0abf29cfa241b8df484b4b2d",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:abf672b74d11c99e37fcdb5504b1e326fee7f0849827e591acdfd8c02631ecef",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:77c820a14cfaf3920f1ead2a24e70c0cbb8158c7f20ad9ae25e8c8e5e2ba825b",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:4aa6d4e7a43c86c55ec58d9f81931f1390389b22a3792478394ba9606ac7c992"
+  },
+  "migrations": {
+    "box": "003_outside_tool_seen.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "A new database file, 003_outside_tool_seen.sql, runs on update. It only adds columns and a check that are missing and changes no row; until it has run, the Access tab says \"Description checks unavailable\" for outside tools.",
+    "New optional setting LARES_CONSOLE_URL gives the chief of staff the console's address, so a long Telegram card can link to the Waiting on you page. The rc.8 keeper refuses it in a binding, so set it only after rc.9 is running, then apply that agent once."
+  ]
+}

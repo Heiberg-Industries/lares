@@ -1,0 +1,24 @@
+{
+  "release": "2026-10-16-rc.10",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:a09958e5de684f87723589c8fcc719ccdb07855c64546dc04b13d0e7477c68c9",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:6da2ee7b6b5f3f97f4296acb5651159e187991f184d02d28f2a3073cf63d6b9d",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:7ddc33126fc5a321873f60693d5002ef450dab4c51f4275cedcc4aa0c91614de",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:371a3702b7d0a96371f1d1ff60ca68bd918cfd39f8e3ecaae2f85c80537efb71",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:0baf5985f84b19c4dab6ceddc0098498b1dd5733b69d560a7198bdd599820a67",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:8a3c0d050ca39c0b05ac57c2cd7c33acd73fe6f4814e94997cd74801086af820",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:5296295c5dc94abfdce2a6b3b5cd1dcb713cafb411d1dfeb0f569a3a5e7348ba"
+  },
+  "migrations": {
+    "box": "003_outside_tool_seen.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "No new database file. Schedules are now on by default for a fresh install, but an rc.9 keeper.json written by the old installer says schedulesLive: false and an installer re-run keeps that value, so on an rc.9 server set it to true once by hand.",
+    "Re-run the installer after the update so the keeper settings gain publicDoorOrigin and the owner time zone in each role's default binding; then apply each agent once so its container gets OWNER_HOME_TZ (and the deadline calendar mount, when that file exists). Agents with their own binding do not get OWNER_HOME_TZ from the installer.",
+    "The nightly backup now also encrypts /srv/lares/secrets into the bundle, and the backup scripts read /etc/lares/backup.env when it exists. Snapshots taken before this release have no token folder; the first nightly backup after updating adds it."
+  ]
+}

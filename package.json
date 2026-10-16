@@ -1,0 +1,40 @@
+{
+  "name": "lares",
+  "private": true,
+  "version": "0.1.0",
+  "license": "AGPL-3.0-only",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "test": "pnpm -r --workspace-concurrency=1 test",
+    "typecheck": "pnpm -r typecheck",
+    "build": "pnpm -r build"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "eve@0.60.1": "patches/eve.patch"
+    },
+    "overrides": {
+      "@prisma/config@6.19.3>deepmerge-ts": "8.0.2",
+      "protobufjs@<7.6.5": "7.6.5",
+      "qs@<6.16.0": "6.16.0",
+      "baseline-browser-mapping@<2.11.0": "2.11.0",
+      "undici@>=7.0.0 <7.29.1": "7.29.1",
+      "undici@>=8.0.0 <8.10.2": "8.10.2",
+      "brace-expansion@>=2.0.0 <2.1.7": "2.1.7",
+      "brace-expansion@>=5.0.0 <5.0.12": "5.0.12",
+      "nanoid@3.3.12": "3.3.19",
+      "postcss@8.5.14": "8.5.23",
+      "uuid@<11.1.1": "11.1.1",
+      "sass@<1.79.0": "1.105.1"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "24.x",
+    "tsx": "^4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "id": "notion",
+  "name": "Notion",
+  "provenance": "core",
+  "concept": [],
+  "capability": ["notion"],
+  "region": "global",
+  "data_path": "non_eu_cloud",
+  "outbound_hosts": ["api.notion.com"],
+  "secrets": ["notion-token"],
+  "credential_type": "api_key",
+  "owner_supplies_client": false,
+  "sdk": { "package": "@notionhq/client", "licence": "MIT" },
+  "live_probe": "services/notion-sync/tests/live/notion.live.mts",
+  "quality": "integrations/notion/quality.yaml",
+  "codeowner": "lares-core"
+}

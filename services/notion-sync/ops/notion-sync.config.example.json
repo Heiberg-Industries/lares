@@ -1,0 +1,21 @@
+{
+  "notionVersion": "2026-03-11",
+  "meetingsDataSourceId": "00000000-0000-0000-0000-000000000000",
+  "docsDataSourceId": "00000000-0000-0000-0000-000000000000",
+  "docsDatabaseId": "00000000-0000-0000-0000-000000000000",
+  "wikiDir": "wiki",
+  "wikiProject": "Portfolio",
+  "deskDirs": [
+    { "dir": "desks/example-project", "project": "ExampleProject" },
+    { "dir": "writing", "project": "Portfolio" }
+  ],
+  "twoWayDirs": ["desks/example-project"],
+  "mirrorFilePrefixes": ["writing/generated__"],
+  "vaultPath": "/srv/vault",
+  "selfEmail": ["you@example.com", "you@second-org.example"],
+  "calendarWindowDays": 400,
+  "projects": [
+    { "notionProject": "ExampleProject", "vaultFolder": "example-project" },
+    { "notionProject": "AnotherProject", "vaultFolder": "another-project" }
+  ]
+}

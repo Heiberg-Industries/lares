@@ -1,0 +1,54 @@
+{
+  "recordedAt": "2026-09-18",
+  "engine": "notes-store keyword search",
+  "overall": {
+    "n": 28,
+    "hitAt1": 0.75,
+    "hitAt3": 0.8571428571428571,
+    "mrr": 0.8035714285714286
+  },
+  "byKind": {
+    "direct": {
+      "n": 5,
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "mrr": 1
+    },
+    "paraphrase": {
+      "n": 5,
+      "hitAt1": 0.4,
+      "hitAt3": 0.4,
+      "mrr": 0.4
+    },
+    "buried": {
+      "n": 4,
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "mrr": 1
+    },
+    "superseded": {
+      "n": 3,
+      "hitAt1": 0,
+      "hitAt3": 1,
+      "mrr": 0.5
+    },
+    "ambiguous-name": {
+      "n": 4,
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "mrr": 1
+    },
+    "multilingual": {
+      "n": 4,
+      "hitAt1": 0.75,
+      "hitAt3": 0.75,
+      "mrr": 0.75
+    },
+    "excluded": {
+      "n": 3,
+      "hitAt1": 1,
+      "hitAt3": 1,
+      "mrr": 1
+    }
+  }
+}

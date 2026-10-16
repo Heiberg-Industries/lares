@@ -1,0 +1,24 @@
+{
+  "name": "@lares/keeper",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "tsx bin/keeper.ts serve",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lares/agent-kit": "workspace:*",
+    "@notionhq/client": "5.27.0",
+    "pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "undici": "^8.11.2",
+    "yaml": "^2.9.1",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.2.0",
+    "@types/pg": "^8.23.1"
+  },
+  "license": "AGPL-3.0-only"
+}

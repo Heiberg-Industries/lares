@@ -1,0 +1,28 @@
+{
+  "release": "2026-10-14-rc.6",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:5af17080a5c6140eb7499eee90ae5e58fbfe11a3d159f8654e324a46ceaee49c",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:c801dccd585e02abd9c0accf24a991461e75cf70e7089a592e0e7acdef421897",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:bbdb905303b03999aec28f4af80d5ee403cf4238460ff313b7be1a163debb23c",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:f633a48503d99f763d73e1b8e31158022fc0522b87f9fe35ea4a6021d7d3f96d",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:314ff100d880c6cdd81483b2de64f165e4eaf0befb2f74d3e5d7e35d552658dc",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:b83dd70e3940df79d93a1a786af546c59f420554968642213046e15127a2cc25",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:d1291372fff66629ac02b283e4a17a92b0d154e0e7b62210d0e2a228d6807abe"
+  },
+  "migrations": {
+    "box": "001_baseline.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "The box database history is replaced by one file, 001_baseline.sql. A new install applies it. An existing database must first be at the last pre-release file (094_outside_tool_pins.sql), then take the renames listed under \"Adopting the migration baseline\" in the release notes, then run `pnpm -C services/box migrate --adopt-through 001_baseline.sql` (after a --dry-run). The runner refuses the baseline on an old database that has not adopted it.",
+    "The console refuses to start without CONSOLE_SESSION_SECRET_FILE, the path of a file holding the session secret; passing the secret itself as CONSOLE_SESSION_SECRET leaves the console restarting. An installation with its own compose file adds the variable and mounts the file before updating, keeping the secret's value so signed-in owners stay signed in.",
+    "The network, company-registry, markets and travel capabilities are removed. A saved agent definition that still holds one shows it as \"no longer available in this version\", and the next save is refused until the owner removes it.",
+    "The built-in company-registry lookup is gone. An installation that wants company data connects an outside tool (MCP server) in the agent's definition; the commercial and sales-outreach skills work without one.",
+    "The travel role, its image and the chief of staff's trip reader are removed. The briefs' travel context comes from the calendar alone. A keeper config that still lists travel loads, ignoring those entries with one log line each; the keeper no longer starts, stops or updates a travel agent.",
+    "Settings that carried an agent's or organisation's name are renamed: the chief of staff's route password is EVE_ROUTE_PASSWORD_FILE, the per-role model override is AGENT_MODEL, the Strava files are STRAVA_CLIENT_ID_FILE and STRAVA_CLIENT_SECRET_FILE, and Google client pairs are GOOGLE_CLIENT_ID_<ORG>_FILE and GOOGLE_CLIENT_SECRET_<ORG>_FILE. A keeper config that still binds the old route-password name is refused until the binding is renamed.",
+    "Brands, the commercial brand list, institutional sender domains and the statutory deadline calendar are no longer in code. Set CRM_BRANDS, COMMERCIAL_BRANDS, INSTITUTIONAL_SENDER_DOMAINS and DEADLINE_CALENDAR_FILE (the last with a read-only mount of the file); a keeper-managed agent can now be given all four. Unset, CRM routing proposes nothing, the who-to-contact tool has no brands, official senders are not recognised by domain, and there is no standing deadline calendar."
+  ]
+}

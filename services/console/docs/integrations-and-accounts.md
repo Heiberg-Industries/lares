@@ -1,0 +1,154 @@
+# Integrations & Accounts (console)
+
+The **Integrations & Accounts** page (`/integrations`) is where Test Owner self-serves the fleet's
+Google wiring instead of running `bin/oauth-enroll.ts` or editing the DB.
+
+## The model: agent → integration → account → autonomy
+
+- **Account** — a connected Google account (mailbox + calendar), stored encrypted in the shared
+  `oauth_tokens` table, keyed `(principal, provider, email_address)`. Provider is always `google`.
+  One consent covers all three scopes the fleet uses: `gmail.readonly`, `gmail.compose`
+  (drafts + send), `calendar.readonly`. v1 principal = `U_owner1` (matches the watcher + Chief of Staff).
+- **Integration (capability / hand)** — a power like `gmail` or `calendar`, built once and
+  **granted per agent** in that agent's `agent.json` (`grants[]`). Two agents holding the same
+  integration is one connector + two grants, not duplication.
+- **Autonomy** — each (agent, capability[, action]) has a level in the live `ratchet` table:
+  `autonomous` (acts + audits, no 👍), `gated` (needs 👍), `never` (hard-denied). The page's dial
+  writes this table directly via the `setAutonomy` server action.
+
+## What the console can and can't change live
+
+- **Live (DB):** connect/remove Google accounts; set any agent capability's autonomy on the dial.
+  `never` is a live, reversible **revoke** (the agent can't use the power even though the grant
+  exists). This is the v1 revoke mechanism.
+- **Not live (manifest + redeploy):** *adding a brand-new capability* to an agent, because grants
+  live in `agent.json`, which is baked into the agent image and read at boot by `buildAgentHands`.
+  For v1 the matrix is fixed (Chief of Staff: gmail read+draft + calendar read; Sales Agent: gmail draft+send), so
+  there's nothing to add from the console.
+
+## Add-account flow (in-browser OAuth)
+
+1. Pick an org (Org One / Org Two) and click **Add account** → POST `/api/accounts/google/start`.
+2. The console (session-gated) signs a short-lived `state` **bound to the initiating session's
+   email**, builds the per-org consent URL, and redirects to Google. The callback rejects a state
+   whose email ≠ the completing session (CSRF defence).
+3. Google redirects back to `/api/accounts/google/callback`; the console exchanges the code,
+   reads the *actual* connected mailbox (`gmail.users.getProfile`), and stores the encrypted
+   refresh token via `@lares/agent-box` (same `TOKEN_ENC_KEY` the runtime decrypts with).
+4. Back on `/integrations?added=<email>`, the new account appears and is immediately resolvable
+   by Chief of Staff / the watcher (same DB, same key).
+
+Removing an account deletes its `oauth_tokens` row (the agent loses access). The principal is
+bound **server-side** (`CONSOLE_PRINCIPAL`) — the remove action never trusts a client-supplied
+principal, so it can't be used to delete another principal's account.
+
+## Config (env)
+
+- `TOKEN_ENC_KEY` (or `TOKEN_ENC_KEY_FILE`) — 64-hex AES key, **must equal the runtime's**.
+- `GOOGLE_CLIENT_ID_<ORG>` / `GOOGLE_CLIENT_SECRET_<ORG>` (one pair per org) — per-org OAuth web
+  clients (or their `*_FILE` variants). The console discovers the orgs from these names. Mirror the enroll CLI.
+- `CONSOLE_PRINCIPAL_ID` (default: the owner key, `AGENT_OWNER_USER_ID`) — must name the same
+  value as the fleet's `GOOGLE_PRINCIPAL_ID` and the calendar job's `NOTION_SYNC_PRINCIPAL`.
+  Since box 085 that value is the identity register's id (`users.id`); the old legacy spelling
+  is no longer a default anywhere. See the OAuth principal rename note.
+- `CONSOLE_SESSION_SECRET` — signs both the login session and the OAuth `state`.
+- Each org's OAuth **web client** must register the redirect URI
+  `https://<console-host>/api/accounts/google/callback`.
+
+## Deploy
+
+1. Set the env above on the console service (Coolify). `TOKEN_ENC_KEY` = the runtime's key.
+2. Register the callback redirect URI on the org-one + org-two Google OAuth web clients.
+3. Redeploy the console (manual — push to main does not auto-deploy).
+4. Probe: open `/integrations`, Add account (Org One) → Google consent → returns with the mailbox
+   listed. Confirm `SELECT email_address, org_id FROM oauth_tokens WHERE provider='google';`
+   shows it, and that Chief of Staff's workflow can draft on it (Plan 3 probe).
+
+### Keeper-managed fresh installation
+
+The Google sign-in client is separate from a Google **data** client. Before an agent can use a
+connected mailbox, put the data client's `GOOGLE_CLIENT_ID_<ORG>` and
+`GOOGLE_CLIENT_SECRET_<ORG>` entries in the root-owned `0600` console OAuth env file, and register
+`https://<console-host>/api/accounts/google/callback` on that client. The owner still has to
+complete Google's consent screen. For an explicit lower-case org id (for example `org-one`), run
+from the Lares checkout on the installed server:
+
+```sh
+sudo python3 services/box/ops/configure-google-keeper.py --org org-one --dry-run
+sudo python3 services/box/ops/configure-google-keeper.py --org org-one
+sudo docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart lares-keeper
+```
+
+The command writes no credential to stdout or argv. It copies the two client values into
+root:10001 `0440` files that the Keeper can mount read-only, and adds the installed owner and
+explicit org to `/etc/lares/keeper.json`. It does not connect a mailbox or enable an agent.
+After the Keeper restart, connect the mailbox in the agent editor, select only the intended
+capabilities, enable Email, and apply connection changes. Inspect the agent's current state if
+an apply times out before retrying it. Re-run this configuration command after any installer
+rerun that replaces `/etc/lares/keeper.json`; the installer does not yet preserve these
+post-install Google settings automatically.
+
+## Models (Settings page)
+
+The **Models** section on Settings is read-only. It shows the address of the model gateway, whether
+Lares runs it or it is managed elsewhere, whether it is answering (with the time it was checked), and
+for each purpose (Brain, Writer, Utility, Gate, Embed) whether the gateway serves it, which provider
+and model are behind it where the gateway says, and which agents use it. It reads this once each time
+the page opens, through the keeper, and never makes a model request or costs money. "Provider not
+tested" means exactly that: Lares has checked that the gateway answers, not that the provider behind
+it accepts a request, because testing that sends a paid request. A gateway managed elsewhere shows
+only whether it is reachable.
+
+## Saved links from Notion (the Clipping card)
+
+Links saved into one Notion database you choose (phone share sheet, browser clipper, or a pasted link
+in a new row) are brought into the inbox at each digest pass and read and filed by the digest like
+any other link; the same link saved twice, or a pass that runs twice, never makes a second copy.
+Edits and trashing in Notion follow the clip only while it still waits in the inbox, never after it is
+filed. The database needs a title column and one URL column. Only links are copied, never the pages.
+
+Set it up on the Connections page, in the Clipping card under the Notion key card:
+
+1. Add the Notion key in the Notion key card above, and share the database with your Lares connection
+   in Notion (the three dots, then Connections).
+2. Paste the database's link and press Read database. The chief of staff reads it within a minute and
+   the card lists the columns it found, with the URL column already chosen when there is one clear
+   choice.
+3. Pick the columns (URL is required; note, tags and saved-at are optional) and press Save columns.
+   Saving starts the import from now: links saved before that are not imported, and changing to a
+   different database starts again from now.
+4. Optionally press Add Status, For and Origin columns. It adds only the columns that are missing and
+   never changes one that already exists; a column with the same name but another type is reported
+   and left alone.
+5. Press Test, then switch clipping on, then press Import now (or wait for the next digest).
+
+**Test** reads one page of rows and says how many links would be imported, how many came from the URL
+column and how many from the title, how many rows have no link, and how many were already imported.
+It writes nothing. **Import now** runs one import pass, the same one the digest runs; the two never
+run at the same time. **Switch clipping on** lets the chief of staff receive the Notion key (the
+keeper restarts that one agent after you confirm the list shown); **Switch clipping off** takes it
+away again. Only the installation's credential administrator sees the switch. The Source buttons
+(Notion, Karakeep, Both) choose which source the digest reads; Both is for the changeover, and nothing
+in Karakeep is deleted.
+
+The buttons that read Notion work through requests the chief of staff answers within a minute (the
+card checks every 5 seconds while one is waiting). If the chief of staff has not picked a request up,
+or not finished it, within ten minutes the card says "The chief of staff did not pick this up." or
+"The chief of staff did not finish this."; that means the agent is not running or the switch is off,
+not that Notion said no. "Clipping status unavailable." means Lares could not read its own records.
+If Notion cannot be read (not shared with the connection, key refused, column changed, rate limit,
+timeout) the card and the digest message say so in one line, a repair entry is opened, and the last
+good fetch time is kept; it never shows a quiet "0 new".
+
+This supports exactly one organisation-wide source using the Notion key the keeper manages, and does
+not move existing Karakeep bookmarks. A link saved in Notion first and in Karakeep later still lands
+twice (only the Notion side checks for the other). The live probe
+`services/chief-of-staff/tests/live/notion-clipping.live.mts` is what shows how Notion really answers;
+run it by hand when the pinned Notion API version or the SDK changes.
+
+## Follow-ups
+
+- Revoke the token at Google (not just delete the row) on Remove.
+- Writable grants (add a capability from the console) once a manifest-write + redeploy hook exists.
+- Multi-user: resolve the principal from the authenticated session (not a fixed `CONSOLE_PRINCIPAL`)
+  and surface a principal selector once real multi-user lands.

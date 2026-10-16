@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# CI-only scan of an already loaded final amd64 image. Reports do not clear a release.
+set -euo pipefail
+image=${1:?image required}
+output=${2:?report directory required}
+: "${RUNNER_TEMP:?Run image scans in CI}"
+: "${GITHUB_SHA:?Source commit required}"
+[[ $(uname -s) == Linux && $(uname -m) == x86_64 ]]
+mkdir -p "$output"
+version=0.75.0
+checksum=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
+scanner="$RUNNER_TEMP/lares-trivy-$version"
+if [[ ! -x "$scanner/trivy" ]]; then
+  mkdir -p "$scanner"
+  curl --fail --location --retry 3 \
+    "https://github.com/aquasecurity/trivy/releases/download/v$version/trivy_${version}_Linux-64bit.tar.gz" \
+    --output "$scanner/trivy.tar.gz"
+  echo "$checksum  $scanner/trivy.tar.gz" | sha256sum --check --strict
+  tar -xzf "$scanner/trivy.tar.gz" -C "$scanner" trivy
+fi
+# Prove the build-only native compiler is absent from this actual final image.
+# Override every image entrypoint; no application, daemon, credentials or network.
+# LARES_SCAN_BUILD_IMAGE=1: build images keep the compiler for an overlay's `eve build`; runtime images must not.
+if [[ ${LARES_SCAN_BUILD_IMAGE:-} != 1 ]]; then
+  docker run --rm --network none --cap-drop ALL --security-opt no-new-privileges:true \
+    --entrypoint sh "$image" -c 'if [ -d /app/node_modules/.pnpm ]; then test -z "$(find /app/node_modules/.pnpm -type f -path "*/node_modules/@typescript/typescript-linux-x64/lib/tsc")"; fi'
+fi
+# Record the actual executable files relevant to component-scoped vendor
+# advisories. Libraries from a source package do not prove its daemon is shipped.
+# Search executable locations and vendor helper directories, never execute them.
+docker run --rm --network none --read-only --user 0:0 --cap-drop ALL \
+  --security-opt no-new-privileges:true --entrypoint sh "$image" -c '
+  set -eu
+  for name in sshd systemd-homed systemd-homework homectl curl infocmp; do
+    path=$(command -v "$name" || true)
+    if [ -n "$path" ]; then printf "%s\t%s\n" "$name" "$path"; fi
+    for directory in /bin /sbin /usr /lib; do
+      if [ -d "$directory" ]; then
+        matches=$(find "$directory" -name "$name" \( -type f -o -type l \) -print)
+        printf "%s\n" "$matches" |
+          while IFS= read -r path; do
+            if [ -x "$path" ]; then printf "%s\t%s\n" "$name" "$path"; fi
+          done
+      fi
+    done
+  done' | python3 -c '
+import json, sys
+names=("sshd","systemd-homed","systemd-homework","homectl","curl","infocmp")
+paths={name:set() for name in names}
+for line in sys.stdin:
+    name,path=line.rstrip("\n").split("\t",1)
+    paths[name].add(path)
+json.dump({name:{"present":bool(paths[name]),"paths":sorted(paths[name])} for name in names},sys.stdout,indent=2)
+' > "$output/executables.json"
+# Retain image ID/layers/platform without serializing environment or secrets.
+docker image inspect "$image" --format '{{json .}}' | python3 -c '
+import json, os, sys, datetime
+image=json.load(sys.stdin)
+assert image["Os"] == "linux" and image["Architecture"] == "amd64"
+json.dump({"source":os.environ["GITHUB_SHA"], "scanned_at":datetime.datetime.now(datetime.timezone.utc).isoformat(), "image_id":image["Id"], "os":image["Os"], "architecture":image["Architecture"], "native_compiler_absent":None if os.environ.get("LARES_SCAN_BUILD_IMAGE")=="1" else True, "build_image":os.environ.get("LARES_SCAN_BUILD_IMAGE")=="1", "layers":image["RootFS"]["Layers"]},sys.stdout,indent=2)
+' > "$output/image.json"
+# No secret scan, ignore list or severity suppression. Preserve every match for review.
+"$scanner/trivy" image --image-src docker --scanners vuln --list-all-pkgs \
+  --severity UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL --ignorefile /dev/null --timeout 10m --format json --output "$output/scan.json" "$image"
+"$scanner/trivy" version --format json > "$output/scanner.json"
+python3 - "$output/scan.json" <<'PY'
+import json, sys, collections
+report=json.load(open(sys.argv[1]))
+counts=collections.Counter(v['Severity'] for r in report.get('Results',[]) for v in r.get('Vulnerabilities',[]))
+print('Final image vulnerability occurrences:', dict(counts))
+print('These are scanner matches, not a release clearance; review each high/critical finding.')
+PY

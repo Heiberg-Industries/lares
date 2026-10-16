@@ -1,0 +1,32 @@
+{
+  "name": "creative",
+  "model": "installation-brain",
+  "persona": "agent/persona.md",
+  "scope": "org",
+  "channels": [],
+  "egress": {
+    "sealed": true
+  },
+  "grants": [
+    {
+      "capability": "studio",
+      "scope": "write"
+    },
+    {
+      "capability": "vault",
+      "scope": "write-with-confirm",
+      "areas": [
+        "shared"
+      ]
+    }
+  ],
+  "autonomy": {
+    "studio": "gated",
+    "vault": "gated"
+  },
+  "skills": [],
+  "role": "creative",
+  "description": "",
+  "doors": [],
+  "schedules": {}
+}

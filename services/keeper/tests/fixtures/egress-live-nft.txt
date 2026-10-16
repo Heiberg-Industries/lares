@@ -1,0 +1,15 @@
+table inet lares_egress {
+	chain forward {
+		type filter hook forward priority filter - 10; policy accept;
+		ip saddr != { 172.18.0.10, 172.18.0.11, 172.18.0.13, 172.18.0.14, 172.18.0.23, 172.18.0.24, 172.18.0.25, 172.18.0.26 } accept
+		ct state established,related accept
+		ip daddr 172.18.0.0/16 accept
+		ip daddr 192.0.2.10 accept
+		ip daddr 198.51.100.10 accept
+		ip daddr { 203.0.113.10, 203.0.113.11, 203.0.113.12, 203.0.113.13 } accept
+		ip daddr 149.154.160.0/20 accept
+		udp dport 53 accept
+		tcp dport 53 accept
+		counter packets 191 bytes 11460 drop
+	}
+}

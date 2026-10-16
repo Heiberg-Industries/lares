@@ -1,0 +1,45 @@
+{
+  "name": "@lares/agent-box",
+  "version": "0.1.0",
+  "description": "The private agent box's state store: Postgres + pgvector. Schema, Compose stack, and a typed data layer (sessions, confirmations, reminders, schedules, audit). Deployed to lares-host; never built on the box.",
+  "private": true,
+  "type": "module",
+  "main": "./lib/index.ts",
+  "exports": {
+    ".": "./lib/index.ts",
+    "./lib/oauth-tokens.js": "./lib/oauth-tokens.ts",
+    "./lib/notion-proposals.js": "./lib/notion-proposals.ts",
+    "./lib/crypto.js": "./lib/crypto.ts",
+    "./lib/migration-ledger.js": "./lib/migration-ledger.ts",
+    "./lib/migration-runner.js": "./lib/migration-runner.ts",
+    "./tests/helpers/pg.js": "./tests/helpers/pg.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "migrate": "tsx migrate.ts",
+    "erase-person": "tsx bin/erase-person.ts",
+    "first-owner": "tsx bin/first-owner.ts",
+    "first-organisation": "tsx bin/first-organisation.ts",
+    "installation-settings": "tsx bin/installation-settings.ts",
+    "render-stack": "tsx bin/render-stack.ts",
+    "render-keeper-config": "tsx bin/render-keeper-config.ts",
+    "export-person": "tsx bin/export-person.ts",
+    "doctor": "tsx bin/doctor.ts"
+  },
+  "dependencies": {
+    "@lares/vault-format": "workspace:^",
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.2.0",
+    "@types/node": "24.x",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "^5.0.3",
+    "yaml": "^2.9.1"
+  },
+  "license": "AGPL-3.0-only"
+}

@@ -1,0 +1,26 @@
+{
+  "release": "2026-10-14-rc.7",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:8326fa71e2a159e3f535ab05c549e79930589aaf96469e9f35bcbdd2ea1ef618",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:c453e0a4326b1aa10a5ca693eb76b3b74187fae6621f33812cb51fe78597d876",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:d884a734b2ff15c10e82049a776b904b7ede993d1b21adc01d3602d485f068a7",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:8e98559303d40eed30f9071c1f69159372f6329d4eb6f3e98a09653e141ee1a6",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:3687ac31c9bb4be5701d2b4f013532764c08bc9ac5e2622fcbef1c378a214f5e",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:1c155264d8f819688e83e6046dd66b72cc7de0537c5ba339ac181da07c9ba8ab",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:e15f35dd631d8866fb769dd3c53670577caf949d214f6f0fe6716aedc3955f25"
+  },
+  "migrations": {
+    "box": "002_standing_facts.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "The outbound firewall table is renamed lares_egress. The first agent change after the update writes the new table and leaves the old one in place, so two rule sets stay active until the owner removes the old table once with `nft delete table inet <old name>` (the other name that `nft list tables` shows next to lares_egress).",
+    "Standing facts now need the standing_facts table to be in its final shape; the tolerance for a half-updated table is gone. Before updating, check that it has the columns origin, recorded_at, retired_at, source, source_turn, stated_at, superseded_by and user_id, as the release notes describe. With a column missing, every read and write of facts fails.",
+    "A new database file, 002_standing_facts.sql, runs on update. It creates the standing_facts table and its indexes only when they are missing; on a database that already has the table it changes nothing.",
+    "Backups, the verify job and the restore drill include /srv/lares/installation when it exists. Copy the new host scripts (backup.sh, backup-verify.sh, restore-drill.sh, export.sh) to the host first, or the old backup script stops with \"unclassified Lares store\".",
+    "New optional setting TWENTY_ORG_NUMBER_FIELD names the CRM company field that holds the organisation number; unset keeps orgNumber. A keeper older than rc.7 refuses it in a binding, so set it only after rc.7 is running."
+  ]
+}
