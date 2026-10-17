@@ -136,20 +136,20 @@
  * is duplicated. This is new production surface for chief-of-staff (a Notion API token it did not
  * need before) that Task 9's "ship gated OFF" deploy step is the intended checkpoint for.
  */
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Pool } from "pg";
 
 import { defineSchedule } from "eve/schedules";
-import { callSlackApi } from "eve/channels/slack";
 
 import slack from "../channels/slack.js";
-import { slackCredentials } from "../channels/slack.js";
+import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
 import { KitRatchet } from "@lares/agent-kit/ratchet";
-import { allowedSlackUserIds, logSlackNotConnected } from "../../lib/slack-allowlist.js";
+import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
 import { listAliases, configuredOwnerId, getDisplayName } from "../../lib/identity-client.js";
 import { makeDbVoiceAccess } from "../../lib/voice-store.js";
 import { googleClients } from "../../lib/google.js";
@@ -184,7 +184,9 @@ import { FOLLOWUP_CAPABILITY, isGroupAlias, type FollowupApprovalDeps } from "..
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 import { doorId } from "../../lib/principals.js";
-import { initiate, wouldInitiate } from "../../lib/initiation.js";
+import { wouldInitiate } from "../../lib/initiation.js";
+import { routeDelivery, type Routed } from "../../lib/delivery.js";
+import { sendText, sendTurn } from "../../lib/delivery-send.js";
 import { agentName } from "../../lib/agent-name.js";
 
 export const FOLLOWUP_CEILING_PER_TICK = 5;
@@ -1225,11 +1227,16 @@ export interface FollowupPrecheckDeps {
   releaseClaim(pageId: string): Promise<void>;
 }
 
-export function makeLivePrecheckWith(channelId: string, deps: FollowupPrecheckDeps): NonNullable<FollowupDeps["precheck"]> {
+export function makeLivePrecheckWith(
+  channelId: string,
+  deps: FollowupPrecheckDeps,
+  /** The ledger door, when it is not the Slack DM `channelId` names (the owner chose another door). */
+  door: string = doorId("slack", channelId),
+): NonNullable<FollowupDeps["precheck"]> {
   return async (pageId, attempt) => {
     const outcome = await deps.wouldInitiate("meeting-followup", {
       cls: "event",
-      door: doorId("slack", channelId),
+      door,
       itemKey: meetingFollowupItemKey(pageId, attempt),
     });
     // `handled` (send-already-decided OR already-seen) is NOT a hold — see `makeLiveSend`'s own
@@ -1256,11 +1263,25 @@ export function makeLivePrecheckWith(channelId: string, deps: FollowupPrecheckDe
 
 /** The live wiring's own binding of `makeLivePrecheckWith` to a real pool — separate from the
  *  testable factory above so a test never has to construct a `Pool`. */
-function makeLivePrecheck(pool: Pool, channelId: string): NonNullable<FollowupDeps["precheck"]> {
-  return makeLivePrecheckWith(channelId, {
+function makeLivePrecheck(pool: Pool, routed: Routed): NonNullable<FollowupDeps["precheck"]> {
+  return makeLivePrecheckWith(routed.target, {
     wouldInitiate: (schedule, init) => wouldInitiate(schedule, init),
     releaseClaim: (pageId) => releaseClaim(pool, pageId),
-  });
+  }, routed.doorId);
+}
+
+/** What the owner reads in web chat for a follow-up that is ready to send: the whole draft. */
+function followupInboxBody(p: FollowupSendPayload): string {
+  return [
+    `A follow-up for "${p.meetingTitle}" (${p.meetingWhen}) is drafted and ready to send.`,
+    "",
+    `To: ${p.to.join(", ")}`,
+    `Subject: ${p.subject}`,
+    "",
+    p.bodyText,
+    "",
+    "Reply to this message to have it sent. You will be asked to approve before anything goes out.",
+  ].join("\n");
 }
 
 function makeLiveSend(
@@ -1268,11 +1289,14 @@ function makeLiveSend(
   to: ScheduleArgs["to"],
   waitUntil: ScheduleArgs["waitUntil"],
   appAuth: ScheduleArgs["appAuth"],
-  channelId: string,
+  routed: Routed,
 ): FollowupDeps["send"] {
   const ratchet = new KitRatchet(pool);
   return async (payload, attempt) => {
-    const autonomous = await computeAutonomousPreCheck(payload, {
+    // Web chat cannot run the send-turn (no tools, no card), so a follow-up routed there is never
+    // auto-sent: it waits in the inbox, and the owner's reply opens a chat that does the send behind
+    // the usual approval card.
+    const autonomous = routed.door === "web" ? false : await computeAutonomousPreCheck(payload, {
       level: (seriesKey) => ratchet.level(agentName(), FOLLOWUP_CAPABILITY, seriesKey),
       lastFingerprint: (seriesKey) => lastRecipientsFingerprint(pool, seriesKey),
     });
@@ -1282,16 +1306,14 @@ function makeLiveSend(
     // card is corrected reads to the gate as the SAME initiation as the original send-turn, and
     // an already-seen suppression silently skips the second turn entirely. `meetingFollowupItemKey`
     // is the SAME expression `makeLivePrecheck` above asks under — never restated.
-    const initiation = await initiate(
-      "meeting-followup",
-      { cls: "event", door: doorId("slack", channelId), itemKey: meetingFollowupItemKey(payload.notionPageId, attempt) },
-      async () => {
-        const task = to(slack, { channelId }).send(buildSendTurnPrompt(payload), {
-          auth: { ...appAuth, attributes: { lane: "meeting-followup" } },
-        });
-        waitUntil(task);
-        await task;
-      },
+    const itemKey = meetingFollowupItemKey(payload.notionPageId, attempt);
+    const prompt = buildSendTurnPrompt(payload);
+    const initiation = await routed.gate(
+      { cls: "event", itemKey },
+      () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+        lane: "meeting-followup", itemKey, title: `Follow-up ready: ${payload.meetingTitle}`,
+        webBody: followupInboxBody(payload), webContext: prompt,
+      }),
     );
     // `handled`, not `sent` (fix round 1, CRITICAL): an ALREADY-SEEN suppression means the send-turn
     // for this page already ran, so the tick must do its normal post-send bookkeeping (read the
@@ -1314,10 +1336,6 @@ function makeLiveSend(
 
 // ─── Live wiring — schedule ─────────────────────────────────────────────────────────────────
 
-function liveSlackChannelId(): string | undefined {
-  return allowedSlackUserIds()[0];
-}
-
 /** Prevents an overlapping tick if one run ever takes longer than the 5-minute cron period —
  *  matches `email-triage.ts`/`crm-routing.ts`'s own `state.running` guard. */
 let running = false;
@@ -1332,8 +1350,9 @@ export default defineSchedule({
     if (!scheduleEnabled(loaded.definition, "meeting-followup")) return;
     if (running) return;
 
-    const channelId = liveSlackChannelId();
-    if (!channelId) {
+    // The owner's `delivery` choice; without one, the Slack DM it always went to.
+    const routed = routeDelivery("meeting-followup", loaded);
+    if (!routed) {
       logSlackNotConnected("meeting-followup");
       return;
     }
@@ -1352,10 +1371,10 @@ export default defineSchedule({
       const deps: FollowupDeps = {
         listMeetings: () => liveListMeetings(pool),
         claim: (pageId, summaryHash) => claimMeeting(pool, pageId, summaryHash),
-        precheck: makeLivePrecheck(pool, channelId),
+        precheck: makeLivePrecheck(pool, routed),
         recordSeriesKey: (pageId, seriesKey) => storeRecordSeriesKey(pool, pageId, seriesKey),
         compose: makeLiveCompose(pool, fromMailbox),
-        send: makeLiveSend(pool, to, waitUntil, appAuth, channelId),
+        send: makeLiveSend(pool, to, waitUntil, appAuth, routed),
         getOutcome: (pageId) => storeGetOutcome(pool, pageId),
         recordOutcome: (pageId, outcome) => storeRecordOutcome(pool, pageId, outcome),
         reportAutonomousSendFailed: (pageId, title, outcome) => emitSignal(
@@ -1368,14 +1387,10 @@ export default defineSchedule({
           `meeting-followup: gave up on "${title}" (${pageId}) after ${MAX_ATTEMPTS} attempts`,
           errorDetail(err),
         ),
-        notify: async (text) => {
-          const res = await callSlackApi({
-            botToken: slackCredentials.botToken,
-            operation: "chat.postMessage",
-            body: { channel: channelId, text },
-          });
-          if (!res.ok) throw new Error(`meeting-followup: slack notify failed: ${String((res as { error?: unknown }).error)}`);
-        },
+        // A plain "what I did" line. Its own inbox key: the send-turn's row is keyed on the item.
+        notify: (text) => sendText(routed, text, {
+          itemKey: `meeting-followup/notice/${randomUUID()}`, title: "Meeting follow-up sent",
+        }),
         selfEmails: [fromMailbox, ...selfEmails].filter((e, i, arr) => e !== "" && arr.indexOf(e) === i),
       };
 

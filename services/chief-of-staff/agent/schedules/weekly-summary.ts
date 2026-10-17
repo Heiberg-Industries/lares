@@ -34,6 +34,7 @@
 import { defineSchedule } from "eve/schedules";
 
 import telegram from "../channels/telegram.js";
+import slack from "../channels/slack.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
@@ -43,8 +44,10 @@ import { BRIEF_LANGUAGE_NAMES, readBriefLanguage, type BriefLanguage } from "../
 import { activePreferences, type PreferenceRow } from "../../lib/dream-store.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { doorId, ownerId, primaryTelegramChatId, telegramPushAttributes } from "../../lib/principals.js";
-import { alreadySentToday, initiate } from "../../lib/initiation.js";
+import { ownerId } from "../../lib/principals.js";
+import { alreadySentToday } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { agentName } from "../../lib/agent-name.js";
@@ -164,10 +167,6 @@ export function makeWeeklySummaryTick(deps: WeeklySummaryDeps): { tick(): Promis
 
 // ─── Live wiring ────────────────────────────────────────────────────────────────────────────
 
-function liveTelegramChatId(): string | undefined {
-  return primaryTelegramChatId();
-}
-
 function liveStore(): WeeklySummaryStore {
   const pool = getPool();
   return { activePreferences: () => activePreferences(pool), briefLanguage: () => readBriefLanguage(pool, ownerId()) };
@@ -217,11 +216,12 @@ export default defineSchedule({
         return;
       }
 
-      const chatId = liveTelegramChatId();
-      if (!chatId) {
+      // The owner's `delivery` choice; without one, the Telegram chat it always went to.
+      const routed = routeDelivery("weekly-summary", loaded);
+      if (!routed) {
         if (!warnedNoPrincipal) {
           warnedNoPrincipal = true;
-          console.warn("weekly-summary: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+          console.warn("weekly-summary: no door to deliver through (Telegram is not connected); skipping");
         }
         return;
       }
@@ -231,14 +231,11 @@ export default defineSchedule({
           // — a `scheduled` initiation keyed on the slot. There is nothing per-item to
           // finish here, so `sent` (not `handled`) is the honest answer: an already-sent slot did
           // not deliver anything on THIS call either.
-          const initiation = await initiate(
-            "weekly-summary",
-            { cls: "scheduled", door: doorId("telegram", chatId), itemKey: `weekly-summary/${slot}`, now, tz },
-            async () => {
-              const task = to(telegram, { chatId }).send(prompt, { auth: { ...appAuth, attributes: telegramPushAttributes("weekly-summary", chatId) } });
-              waitUntil(task);
-              await task;
-            },
+          const initiation = await routed.gate(
+            { cls: "scheduled", itemKey: `weekly-summary/${slot}`, now, tz },
+            () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+              lane: "weekly-summary", itemKey: `weekly-summary/${slot}`, title: "Weekly summary",
+            }),
           );
           return initiation.sent;
         },

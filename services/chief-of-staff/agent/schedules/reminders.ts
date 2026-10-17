@@ -64,14 +64,19 @@ import { telegramCredentials } from "../channels/telegram.js";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { primaryTelegramChatId } from "../../lib/principals.js";
+import { allowedSlackUserIds, ownerId, primaryTelegramChatId } from "../../lib/principals.js";
 import { initiateFor, SEND_UNGATED, type Initiate } from "../../lib/initiation.js";
+import { DOOR_LABEL, isDeliveryDoor, routeFor } from "@lares/agent-kit/delivery";
+import { connectedDoors } from "../../lib/delivery.js";
+import { agentName } from "../../lib/agent-name.js";
+import { putInbox, recordFallback } from "../../lib/web-inbox.js";
 
 // ─── Public types (mirrors services/agent-runtime/lib/adapters/reminders/loop.ts) ─────────
 
 /** Door interface: each door can send a message to a threadRef. */
 export interface ReminderDoor {
-  send(o: { threadRef: string; text: string }): Promise<void>;
+  /** `id` is the reminder's, for a door (web chat) that files the message under it. */
+  send(o: { threadRef: string; text: string; id?: string }): Promise<void>;
 }
 
 /** Minimal store contract for the tick (injectable / fakeable in tests). */
@@ -112,6 +117,12 @@ export interface ReminderTickDeps {
    * Injected so this factory stays pure; the live wiring below always passes the real one.
    */
   gate?: Initiate;
+  /**
+   * Called after a reminder that went to a different door than its pinned one has been SENT:
+   * `note` is the plain sentence ("Reminder went to web chat: Telegram is not connected") the
+   * console shows. Best effort; the live wiring writes it to the initiations ledger.
+   */
+  onFallback?: (itemKey: string, note: string) => Promise<void>;
 }
 
 export interface ReminderTick {
@@ -135,7 +146,10 @@ export function makeReminderTick(deps: ReminderTickDeps): ReminderTick {
     fallbackDoor,
     resolveTarget,
     gate = SEND_UNGATED,
+    onFallback,
   } = deps;
+
+  const doorName = (d: string): string => (isDeliveryDoor(d) ? DOOR_LABEL[d] : d);
 
   function fallbackTargetFor(door: string): string | undefined {
     if (!fallbackDoor || fallbackDoor === door) return undefined;
@@ -146,20 +160,22 @@ export function makeReminderTick(deps: ReminderTickDeps): ReminderTick {
   /**
    * Deliver one reminder, re-routing to the fallback door if the pinned door is gone or its
    * send throws. Throws only when neither the pinned nor the fallback door can deliver — the
-   * caller then leaves the row pending for the next tick.
+   * caller then leaves the row pending for the next tick. Resolves to the fallback note when the
+   * reminder went somewhere other than its pinned door, else null.
    */
-  async function send(id: string, door: string, threadRef: string, text: string): Promise<void> {
+  async function send(id: string, door: string, threadRef: string, text: string): Promise<string | null> {
+    const note = (why: string) => `Reminder went to ${doorName(fallbackDoor!)}: ${doorName(door)} ${why}`;
     const pinned = doors[door];
     if (pinned) {
       try {
-        await pinned.send({ threadRef, text });
-        return;
+        await pinned.send({ threadRef, text, id });
+        return null;
       } catch (err) {
         const fbTarget = fallbackTargetFor(door);
         if (!fbTarget) throw err;
         console.warn(`[reminders] door "${door}" send failed for ${id}; re-routing to "${fallbackDoor}"`);
-        await doors[fallbackDoor!]!.send({ threadRef: fbTarget, text });
-        return;
+        await doors[fallbackDoor!]!.send({ threadRef: fbTarget, text, id });
+        return note("could not be reached");
       }
     }
     // Pinned door not registered at all — this is the generic path an "email"-pinned (or any
@@ -167,7 +183,8 @@ export function makeReminderTick(deps: ReminderTickDeps): ReminderTick {
     const fbTarget = fallbackTargetFor(door);
     if (!fbTarget) throw new Error(`Unknown door "${door}" for reminder ${id}`);
     console.warn(`[reminders] door "${door}" unavailable for ${id}; re-routing to "${fallbackDoor}"`);
-    await doors[fallbackDoor!]!.send({ threadRef: fbTarget, text });
+    await doors[fallbackDoor!]!.send({ threadRef: fbTarget, text, id });
+    return note("is not connected");
   }
 
   async function deliverOne(reminder: DueReminder): Promise<void> {
@@ -179,10 +196,14 @@ export function makeReminderTick(deps: ReminderTickDeps): ReminderTick {
     // this agent does not register (`email`) is still a stable, honest key rather than a lie about
     // which surface was used. The re-route inside `send` may land the text elsewhere; the DECISION
     // was made about the door the owner pinned.
+    const routing: { note: string | null } = { note: null };
     const initiation = await gate(
       { cls: "scheduled", door: `${door}:${threadRef}`, itemKey: `reminder/${id}`, ownerSetTime: true },
-      () => send(id, door, threadRef, text),
+      async () => { routing.note = await send(id, door, threadRef, text); },
     );
+    if (initiation.sent && routing.note && onFallback) {
+      await onFallback(`reminder/${id}`, routing.note).catch((e) => console.warn(`[reminders] could not record the fallback for ${id}`, e));
+    }
     if (!initiation.handled) {
       // A genuine HOLD (DND). NOT re-armed and NOT marked delivered: the row stays pending, so the
       // next tick reconsiders it and it lands the moment the gate reopens. A recurrence must never
@@ -272,8 +293,23 @@ export function telegramDoor(): ReminderDoor {
  * scope).
  */
 export function liveResolveTarget(door: string): string | undefined {
-  if (door !== "telegram") return undefined;
-  return primaryTelegramChatId();
+  if (door === "telegram") return primaryTelegramChatId();
+  // Only reached when the owner's `delivery.reminders` list chose these as the fallback.
+  if (door === "slack") return allowedSlackUserIds()[0];
+  if (door === "web") return ownerId();
+  return undefined;
+}
+
+/** Web chat as a reminder door: the reminder text goes to the inbox, filed under the reminder. */
+export function webDoor(): ReminderDoor {
+  return {
+    async send({ text, id }) {
+      await putInbox(getPool(), {
+        owner: ownerId(), agent: agentName(), kind: "reminders", title: "Reminder", body: text,
+        itemKey: `reminder/${id ?? text.slice(0, 40)}`,
+      });
+    },
+  };
 }
 
 /** Wraps `lib/reminders-store.ts`'s pooled functions to the tick's minimal store contract. */
@@ -297,12 +333,17 @@ export default defineSchedule({
     const { loaded } = await thisAgent(undefined);
     if (!scheduleEnabled(loaded.definition, "reminders")) return;
     try {
+      // A reminder goes to the door it was set for; if that door is gone, to the first connected
+      // door in the owner's `delivery.reminders` list, and finally to web chat. With no list this is
+      // the Telegram fallback it always was.
+      const fallback = routeFor("reminders", loaded.definition.delivery, connectedDoors(loaded, "reminders"));
       const tick = makeReminderTick({
         store: liveStore(),
-        doors: { slack: slackDoor(), telegram: telegramDoor() },
-        fallbackDoor: "telegram",
+        doors: { slack: slackDoor(), telegram: telegramDoor(), web: webDoor() },
+        fallbackDoor: fallback.door ?? "telegram",
         resolveTarget: liveResolveTarget,
         gate: initiateFor("reminders"),
+        onFallback: (itemKey, note) => recordFallback(getPool(), { owner: ownerId(), agent: agentName(), itemKey, note }),
       });
       await tick.tick();
       await recordSchedulePass(getPool(), HEARTBEAT_KEY);

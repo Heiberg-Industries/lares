@@ -45,14 +45,13 @@
  * detect-then-start-a-session schedule in this codebase already uses.
  */
 import { defineSchedule } from "eve/schedules";
-import { callSlackApi } from "eve/channels/slack";
 
-import slack, { slackCredentials } from "../channels/slack.js";
+import slack from "../channels/slack.js";
+import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
-import { allowedSlackUserIds } from "../../lib/slack-allowlist.js";
 import { listAwaitingReply, markReplied, stopTracking, beginTriage, type OutreachThread } from "../../lib/outreach-store.js";
 import { detectReply } from "../../lib/outreach-reply-detect.js";
 import {
@@ -62,9 +61,10 @@ import { makeDbVoiceAccess } from "../../lib/voice-store.js";
 import { googleClients, type ThreadMessage } from "../../lib/google.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { doorId } from "../../lib/principals.js";
 import { configuredOwnerId, getDisplayName } from "../../lib/identity-client.js";
-import { initiateTo, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import type { InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendText, sendTurn } from "../../lib/delivery-send.js";
 
 // Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
 let warnedNoPrincipal = false;
@@ -136,10 +136,6 @@ export function makeOutreachReplyWatchTick(
 
 // ─── Live wiring ────────────────────────────────────────────────────────────────────────────
 
-function liveSlackChannelId(): string | undefined {
-  return allowedSlackUserIds()[0];
-}
-
 const liveState = freshState();
 
 /** — the row input-freshness.sh reads; pinned to this filename by the conformance test. */
@@ -153,11 +149,12 @@ export default defineSchedule({
 
     const now = new Date();
 
-    const channelId = liveSlackChannelId();
-    if (!channelId) {
+    // The owner's `delivery` choice; without one, the Slack DM it always went to.
+    const routed = routeDelivery("outreach-reply-watch", loaded);
+    if (!routed) {
       if (!warnedNoPrincipal) {
         warnedNoPrincipal = true;
-        console.warn("outreach-reply-watch: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+        console.warn("outreach-reply-watch: no door to deliver through (Slack is not connected); skipping");
       }
       return;
     }
@@ -165,20 +162,20 @@ export default defineSchedule({
     try {
       const pool = getPool();
 
-      // — bound to the Slack DM both sends below go to; the itemKey is per THREAD.
-      const gate: DoorInitiate = initiateTo("outreach-reply-watch", doorId("slack", channelId));
+      // — bound to the door both sends below go to; the itemKey is per THREAD.
+      const gate = routed.gate;
 
-      const notify = async (text: string) => {
-        const botToken = await slackCredentials.botToken();
-        const res = await callSlackApi({ botToken, operation: "chat.postMessage", body: { channel: channelId, text } });
-        if (!res.ok) throw new Error(`outreach-reply-watch: slack notify failed: ${String((res as { error?: unknown }).error)}`);
-      };
+      const notify = (text: string) => sendText(routed, text, { title: "Reply on an outreach thread" });
 
-      const startActSession = async (prompt: string) => {
-        const task = to(slack, { channelId }).send(prompt, { auth: { ...appAuth, attributes: { lane: "outreach-reply-watch" } } });
-        waitUntil(task);
-        await task;
-      };
+      // A session that acts (drafts a reply, flags do-not-contact) needs tools and an approval card,
+      // which web chat cannot start. Routed there, the owner reads `summary` in the inbox and the
+      // reply opens a chat seeded with the instruction.
+      const startActSession = (prompt: string, summary: () => string) =>
+        sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+          lane: "outreach-reply-watch", title: "Reply on an outreach thread",
+          ...(routed.door === "web" ? { webBody: `${summary()}\n\nReply to this message to have me act on it. Anything that sends needs your approval.` } : {}),
+          webContext: prompt,
+        });
 
       const deps: OutreachReplyWatchDeps = {
         awaitingThreads: () => listAwaitingReply(pool),
@@ -205,10 +202,10 @@ export default defineSchedule({
                 // mailbox's voice (sql/001_baseline.sql). Also billed, also inside the gate.
                 const voice = makeDbVoiceAccess({ db: pool, mailbox: thread.account });
                 const draft = await draftReply({ voice, ownerName: await getDisplayName(pool, configuredOwnerId()).catch(() => null) }, thread, reply);
-                await startActSession(buildSendActPrompt(thread, reply, draft));
+                await startActSession(buildSendActPrompt(thread, reply, draft), () => notifyTextFor(classification, thread, reply));
               } else if (classification === "unsubscribe") {
                 if (thread.personId) {
-                  await startActSession(buildDoNotContactActPrompt(thread));
+                  await startActSession(buildDoNotContactActPrompt(thread), () => notifyTextFor(classification, thread, reply));
                 } else {
                   await notify(
                     `Reply on outreach thread ${thread.threadId} (${thread.account}) looks like an unsubscribe ` +

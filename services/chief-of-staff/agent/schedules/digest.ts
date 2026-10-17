@@ -70,6 +70,8 @@ import { listTranscriptProjects } from "../../lib/digest/filer.js";
 import { dueScheduledSlot } from "../../lib/digest/schedule.js";
 import { doorId } from "../../lib/principals.js";
 import { initiate } from "../../lib/initiation.js";
+import { routeDelivery, type Routed } from "../../lib/delivery.js";
+import { sendText } from "../../lib/delivery-send.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { makeEnrich } from "../../lib/digest/enrich.js";
@@ -224,7 +226,9 @@ export async function runDigestPass(
   // — present only for a SCHEDULED pass: the slot key the initiation is deduped on, and
   // Owner clock it was computed from. Absent means "not an initiation", which is exactly what
   // an on-demand `digest_run` reply is.
-  initiation?: { slot: string; tz: string; now: Date },
+  // `routed` is present only when the owner has chosen doors for the digest (`delivery.digest`);
+  // without it the digest goes to `target` on Slack, exactly as it always did.
+  initiation?: { slot: string; tz: string; now: Date; routed?: Routed },
 ): Promise<void> {
   const db = getPool();
   const log = (m: string) => console.log(`digest: ${m}`);
@@ -303,6 +307,23 @@ export async function runDigestPass(
       // is what routes `postErrorDetail` to the log instead of threading under a message that is not
       // there. Nothing else in a pass depends on it.
       let ts: string | undefined;
+      const routed = initiation.routed;
+      if (routed) {
+        // The owner chose doors for the digest. The spine report is a record, not a door, so it is
+        // still emitted; the message itself goes through the chosen door.
+        await routed.gate(
+          { cls: "scheduled", itemKey: `digest/${initiation.slot}`, now: initiation.now, tz: initiation.tz },
+          async () => {
+            if (routed.door === "slack") { ts = await post(); return; }
+            await emitSignal("daily-digest", view.report.title, view.text, {
+              kind: "report", type: "user-feedback", severity: "info", key: "daily",
+              fingerprintKey: "user-feedback|daily", sections: view.report.sections, links: view.report.links, target,
+            });
+            await sendText(routed, view.text, { title: view.report.title });
+          },
+        );
+        return { ts };
+      }
       await initiate(
         "digest",
         {
@@ -370,7 +391,10 @@ export default defineSchedule({
 
     const dm = dmTarget();
     const target = chooseTarget(scheduled, requests, dm ?? "");
-    if (!target) {
+    // Only the scheduled digest follows the owner's door choice; an on-demand digest answers in
+    // the place that asked for it.
+    const routed = scheduled && loaded.definition.delivery?.["digest"] ? routeDelivery("digest", loaded) : null;
+    if (!target && !routed) {
       console.warn("digest: no Slack target (DIGEST_SLACK_TARGET / SLACK_ALLOWED_USER_IDS); skipping");
       return;
     }
@@ -382,7 +406,7 @@ export default defineSchedule({
       await runDigestPass(
         target,
         scheduled ? "scheduled" : "on-demand",
-        scheduled && slot ? { slot, tz, now } : undefined,
+        scheduled && slot ? { slot, tz, now, ...(routed ? { routed } : {}) } : undefined,
       );
     } catch (e) {
       console.error("digest: pass failed", e);

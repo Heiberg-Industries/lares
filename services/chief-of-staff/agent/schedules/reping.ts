@@ -26,13 +26,15 @@
 import { defineSchedule } from "eve/schedules";
 
 import telegram from "../channels/telegram.js";
+import slack from "../channels/slack.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
 import { configuredOwnerId, listAliases } from "../../lib/identity-client.js";
-import { doorId, primaryTelegramChatId, telegramPushAttributes } from "../../lib/principals.js";
-import { initiate, type InitiationOutcome } from "../../lib/initiation.js";
+import type { InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { googleClients } from "../../lib/google.js";
 import { assignSurfaces, type Obligation } from "../../lib/brief-content.js";
 import { dropResolved, gatherOpenObligations } from "../../lib/obligation-pipeline.js";
@@ -52,10 +54,6 @@ import { errorDetail } from "../../lib/error-detail.js";
 let warnedNoPrincipal = false;
 
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 20_000;
-
-function liveTelegramChatId(): string | undefined {
-  return primaryTelegramChatId();
-}
 
 /** Mechanical facts only — no model-written reason. This lane consumes exactly one field off
  *  each item (`isRePing`, already true for everything in `batch`) plus the counterparty and
@@ -94,11 +92,12 @@ export default defineSchedule({
     running = true;
     try {
       const now = new Date();
-      const chatId = liveTelegramChatId();
-      if (!chatId) {
+      // The owner's `delivery` choice; without one, the Telegram chat it always went to.
+      const routed = routeDelivery("reping", loaded);
+      if (!routed) {
         if (!warnedNoPrincipal) {
           warnedNoPrincipal = true;
-          console.warn("reping: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+          console.warn("reping: no door to deliver through (Telegram is not connected); skipping");
         }
         return;
       }
@@ -176,19 +175,12 @@ export default defineSchedule({
       for (const o of interrupt) {
         let initiation: InitiationOutcome;
         try {
-          initiation = await initiate(
-            "reping",
-            {
-              cls: "escalation",
-              door: doorId("telegram", chatId),
-              itemKey: `reping/${o.threadId}#${o.unansweredCount}`,
-              now,
-            },
-            async () => {
-              const task = to(telegram, { chatId }).send(buildRePingPrompt([o]), { auth: { ...appAuth, attributes: telegramPushAttributes("reping", chatId) } });
-              waitUntil(task);
-              await task;
-            },
+          const itemKey = `reping/${o.threadId}#${o.unansweredCount}`;
+          initiation = await routed.gate(
+            { cls: "escalation", itemKey, now },
+            () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, buildRePingPrompt([o]), {
+              lane: "reping", itemKey, title: `${o.counterpartyName} wrote again`,
+            }),
           );
         } catch (err) {
           // Leaving the thread unmarked is the whole point — the next tick retries. A thrown send

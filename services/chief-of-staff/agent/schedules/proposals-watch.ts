@@ -56,8 +56,9 @@ import {
 } from "../../lib/proposals-store.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { doorId, primaryTelegramChatId } from "../../lib/principals.js";
-import { initiateTo, SEND_UNGATED, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { SEND_UNGATED, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { plainFromTelegramHtml, sendText } from "../../lib/delivery-send.js";
 import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import {
   buildNotionAnnouncement,
@@ -393,12 +394,6 @@ export function makeProposalsWatchTick(
 
 // ─── Live wiring ─────────────────────────────────────────────────────────────────────────
 
-/** Owner's Telegram chat id — `lib/principals.ts`'s `primaryTelegramChatId`, same as
- *  `agent/schedules/reminders.ts`'s `liveResolveTarget`. */
-function liveTelegramChatId(): string | undefined {
-  return primaryTelegramChatId();
-}
-
 function liveStore(): ProposalsWatchStore {
   const pool = getPool();
   return {
@@ -423,20 +418,31 @@ export default defineSchedule({
     const { loaded } = await thisAgent(undefined);
     if (!scheduleEnabled(loaded.definition, "proposals-watch")) return;
 
-    const chatId = liveTelegramChatId();
-    if (!chatId) {
+    // The owner's `delivery` choice; without one, the Telegram chat it always went to.
+    const routed = routeDelivery("proposals-watch", loaded);
+    if (!routed) {
       if (!warnedNoPrincipal) {
         warnedNoPrincipal = true;
-        console.warn("proposals-watch: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        console.warn("proposals-watch: no door to deliver through (Telegram is not connected); skipping");
       }
       return;
     }
 
     const door: ProposalsWatchDoor = {
       async announce(a) {
+        // The Approve/Reject buttons are Telegram callbacks; the other doors get the same text
+        // without them, and say so.
+        if (routed.door !== "telegram") {
+          await sendText(
+            routed,
+            `${plainFromTelegramHtml(a.text)}\n\n(One-tap Approve and Reject buttons are only available on Telegram.)`,
+            { title: "Proposal waiting for your decision" },
+          );
+          return;
+        }
         await sendTelegramMessage({
           credentials: telegramCredentials,
-          chatId,
+          chatId: routed.target,
           body: { text: a.text, parse_mode: a.parseMode, reply_markup: a.replyMarkup } as never,
           fetch: telegramFetch,
         });
@@ -444,7 +450,7 @@ export default defineSchedule({
     };
 
     const tick = makeProposalsWatchTick(
-      { store: liveStore(), door, gate: initiateTo("proposals-watch", doorId("telegram", chatId)) },
+      { store: liveStore(), door, gate: routed.gate },
       liveState,
     );
     const completed = await tick.tick();

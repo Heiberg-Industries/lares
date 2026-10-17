@@ -235,7 +235,7 @@ describe("the re-ping budget is gone — the engine's ceiling is the only one", 
 // the schedule's own logic — the slot gate, the null-content gate, the surface assignment, the
 // heartbeat stamp — because that is what is under test.
 
-const fakePool = { query: async () => ({ rows: [], rowCount: 0 }) };
+const fakePool = { query: vi.fn(async (_sql?: string, _params?: unknown[]) => ({ rows: [] as unknown[], rowCount: 0 })) };
 
 vi.mock("@lares/agent-kit/db", () => ({
   getPool: () => fakePool,
@@ -426,7 +426,7 @@ vi.mock("../lib/outreach-store.js", () => ({
   stopTracking: async () => {},
 }));
 vi.mock("../lib/outreach-reply-detect.js", () => ({
-  detectReply: () => ({ from: "them@example.com", to: [], sentAt: new Date("2026-06-16T08:00:00Z"), text: "not now" }),
+  detectReply: () => ({ from: "them@example.com", to: [], sentAt: new Date("2026-06-16T08:00:00Z"), text: "not now", bodyText: "not now", subject: "Re: hello" }),
 }));
 /**-s1: both BILLED calls are `vi.fn`s (not plain stubs) so a test can assert HOW OFTEN they
  *  ran — the whole point of moving them inside the gate. `notifyTextFor` and the act prompts stay
@@ -861,5 +861,265 @@ describe("email-triage (event): the draft stands, only the ping is gated", () =>
     expect(notify).not.toHaveBeenCalled();
     // The draft exists in Gmail and the row says so — the ping is the only thing withheld.
     expect(recorded).toEqual([["m1", "drafted"]]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// Delivery routing — the owner's `delivery` map decides the door, web chat is the last resort
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+//
+// `routedDefinition` is what the (mocked) definition read adds to the neutral one: null leaves it
+// exactly as shipped, i.e. an agent WITHOUT a map, which every case above relies on.
+
+let routedDefinition: { delivery: Record<string, string[]>; doors: { kind: string; enabled: boolean; settings: Record<string, string> }[] } | null = null;
+vi.mock("../lib/definition.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/definition.js")>();
+  return {
+    ...original,
+    thisAgent: async (id: string | undefined) => {
+      const r = await original.thisAgent(id);
+      if (!routedDefinition) return r;
+      return { ...r, loaded: { ...r.loaded, definition: { ...r.loaded.definition, ...routedDefinition } } };
+    },
+  };
+});
+
+const generated = vi.fn(async (_prompt: string, _opts?: unknown) => "Good evening. Here is tomorrow.");
+let generating = false;
+vi.mock("../lib/llm-complete.js", async (importOriginal) => {
+  const original = await importOriginal<typeof import("../lib/llm-complete.js")>();
+  return { ...original, gatewayComplete: (p: string, o?: never) => (generating ? generated(p, o) : original.gatewayComplete(p, o)) };
+});
+
+const BOTH_DOORS = [
+  { kind: "telegram", enabled: true, settings: {} },
+  { kind: "slack", enabled: true, settings: {} },
+];
+const routeVia = (kind: string, doors: string[], enabled = BOTH_DOORS) => {
+  routedDefinition = { delivery: { [kind]: doors }, doors: enabled };
+  generating = true;
+};
+const gateSends = () => gatedSendMock.mockImplementation(async (_db, _req, send) => { await send(); return { verdict: "send" } as never; });
+const gateDoor = () => (gatedSendMock.mock.calls[0]![1] as { door: string }).door;
+const sqlCalls = () => fakePool.query.mock.calls.map((c) => [String(c[0]), c[1] as unknown[]] as const);
+const inboxInserts = () => sqlCalls().filter(([s]) => /INSERT INTO web_inbox/.test(s));
+const fallbackNotes = () => sqlCalls().filter(([s]) => /UPDATE initiations SET fallback_note/.test(s)).map(([, p]) => p![3]);
+
+function recordingCtx() {
+  const send = vi.fn(async () => ({}));
+  const to = vi.fn((_channel: unknown, _target: unknown) => ({ send }));
+  return { send, to, ctx: { to, waitUntil: () => {}, appAuth: {} } as never };
+}
+
+async function atEvening() {
+  vi.useFakeTimers();
+  const { osloLocalToDate } = await import("../lib/recurrence.js");
+  vi.setSystemTime(osloLocalToDate("2026-06-17 20:00"));
+  process.env["EVE_SCHEDULES_LIVE"] = "1";
+}
+
+describe("delivery routing", () => {
+  beforeEach(() => {
+    routedDefinition = null;
+    generating = false;
+    generated.mockClear();
+    fakePool.query.mockClear();
+  });
+
+  it("no map: the evening brief with no Telegram chat skips, with no web fallback (today)", async () => {
+    gateSends();
+    await atEvening();
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(gatedSendMock).not.toHaveBeenCalled();
+    expect(inboxInserts()).toEqual([]);
+  });
+
+  it("map [slack, telegram]: the first connected door in the owner's order, with the matching address", async () => {
+    gateSends();
+    await atEvening();
+    process.env["SLACK_ALLOWED_USER_IDS"] = "U0ABC";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    routeVia("evening-brief", ["slack", "telegram"]);
+    const { send, to, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(ctx);
+    expect(gateDoor()).toBe("slack:U0ABC");
+    expect(to.mock.calls[0]![1]).toEqual({ channelId: "U0ABC" });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(fallbackNotes()).toEqual([]);
+  });
+
+  it("map [telegram, web] with Telegram not connected: the message goes to web chat and the ledger says why", async () => {
+    gateSends();
+    await atEvening();
+    routeVia("evening-brief", ["telegram", "web"]);
+    const { send, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(ctx);
+
+    expect(gateDoor()).toBe("web:inbox");
+    expect(send).not.toHaveBeenCalled(); // no chat session: web chat cannot be pushed into
+    expect(generated).toHaveBeenCalledTimes(1);
+    expect(String(generated.mock.calls[0]![0])).toContain("the evening prep pass"); // the same prompt
+    const [[, params]] = inboxInserts();
+    expect(params).toEqual([
+      "owner-1", "chief-of-staff", "evening-brief", "Evening brief",
+      "Good evening. Here is tomorrow.", null, "evening-brief/2026-06-17T20",
+    ]);
+    expect(fallbackNotes()).toEqual(["Evening brief went to web chat: Telegram is not connected"]);
+  });
+
+  it("a door listed but switched off in the definition is skipped, not used", async () => {
+    gateSends();
+    await atEvening();
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    routeVia("evening-brief", ["telegram"], [{ kind: "telegram", enabled: false, settings: {} }]);
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(gateDoor()).toBe("web:inbox");
+  });
+
+  it("a held web message generates nothing, writes nothing and records no fallback", async () => {
+    // default gate = hold
+    await atEvening();
+    routeVia("evening-brief", ["web"]);
+    const { default: schedule } = await import("../agent/schedules/evening-brief.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(generated).not.toHaveBeenCalled();
+    expect(inboxInserts()).toEqual([]);
+    expect(fallbackNotes()).toEqual([]);
+  });
+
+  it("reping: map [web] sends the nudge text to the inbox, not Telegram", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["OBLIGATION_REPING_ENABLED"] = "1";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    routeVia("reping", ["web"]);
+    const { send, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/reping.js");
+    await schedule.run!(ctx);
+    expect(gateDoor()).toBe("web:inbox");
+    expect(send).not.toHaveBeenCalled();
+    expect(inboxInserts()[0]![1]![6]).toBe("reping/t1#2");
+  });
+
+  it("deadlines: map [web] shows the rung's own wording, with no model call", async () => {
+    gateSends();
+    vi.useFakeTimers();
+    const { osloLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(osloLocalToDate("2026-06-17 16:00"));
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    routeVia("deadlines", ["web"]);
+    const { send, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/deadlines.js");
+    await schedule.run!(ctx);
+    expect(send).not.toHaveBeenCalled();
+    expect(generated).not.toHaveBeenCalled();
+    const [[, params]] = inboxInserts();
+    expect(params![4]).toContain("Aksjonærregisteroppgaven");
+    expect(params![6]).toBe("deadline/d1#1");
+  });
+
+  it("proposals-watch: map [slack] posts the text without Telegram's buttons and says so", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["SLACK_ALLOWED_USER_IDS"] = "U0ABC";
+    routeVia("proposals-watch", ["slack"]);
+    const { default: schedule } = await import("../agent/schedules/proposals-watch.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(gateDoor()).toBe("slack:U0ABC");
+    expect(sendTelegramMessage).not.toHaveBeenCalled();
+    const body = (callSlackApi.mock.calls[0] as unknown as [{ body: { channel: string; text: string } }])[0].body;
+    expect(body.channel).toBe("U0ABC");
+    expect(body.text).toContain("only available on Telegram");
+    expect(body.text).not.toMatch(/<b>|<\/b>/);
+  });
+
+  it("proposals-watch: no map and Telegram connected still sends the buttons (today)", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    const { default: schedule } = await import("../agent/schedules/proposals-watch.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(sendTelegramMessage).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(sendTelegramMessage.mock.calls[0])).toContain("reply_markup");
+  });
+
+  it("outreach-reply-watch: map [web] puts the notice in the inbox; a negative reply needs no model turn", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    routeVia("outreach-reply-watch", ["web"]);
+    const { send, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/outreach-reply-watch.js");
+    await schedule.run!(ctx);
+    expect(callSlackApi).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(inboxInserts()[0]![1]![6]).toBe("outreach/thread-1");
+  });
+
+  it("outreach-reply-watch: a reply that needs an approval is not run in web chat; the inbox carries the instruction", async () => {
+    gateSends();
+    classifyReplyMock.mockImplementationOnce(async () => "positive" as const);
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    routeVia("outreach-reply-watch", ["web"]);
+    const { send, ctx } = recordingCtx();
+    const { default: schedule } = await import("../agent/schedules/outreach-reply-watch.js");
+    await schedule.run!(ctx);
+    expect(send).not.toHaveBeenCalled();
+    const params = inboxInserts()[0]![1]!;
+    expect(String(params[4])).toContain("Reply to this message to have me act on it");
+    expect(String(params[5])).toContain("[scheduled"); // context = the act prompt a chat app would have been given
+  });
+
+  it("reminders: a pinned door that fails falls back to the owner's list, then web chat, and the ledger says why", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    sendTelegramMessage.mockImplementationOnce(async () => { throw new Error("telegram down"); });
+    routeVia("reminders", ["slack", "web"]); // Slack is not connected (no allow-list) -> web
+    const { default: schedule } = await import("../agent/schedules/reminders.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(inboxInserts()[0]![1]).toEqual([
+      "owner-1", "chief-of-staff", "reminders", "Reminder", "Ring leverandøren", null, "reminder/r1",
+    ]);
+    expect(fallbackNotes()).toEqual(["Reminder went to web chat: Telegram could not be reached"]);
+    expect(markDelivered).toHaveBeenCalledWith(expect.anything(), "r1");
+  });
+
+  it("reminders: no map keeps the Telegram-only behaviour (a failed send leaves it pending)", async () => {
+    gateSends();
+    process.env["EVE_SCHEDULES_LIVE"] = "1";
+    process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
+    sendTelegramMessage.mockImplementationOnce(async () => { throw new Error("telegram down"); });
+    const { default: schedule } = await import("../agent/schedules/reminders.js");
+    await schedule.run!(recordingCtx().ctx);
+    expect(inboxInserts()).toEqual([]);
+    expect(markDelivered).not.toHaveBeenCalled();
+  });
+});
+
+describe("delivery routing: every sending schedule asks for its own kind", () => {
+  // A tripwire, not a survey of behaviour (the cases above are that): a schedule that goes back to
+  // hard-coding its door, or names another kind's list, fails here.
+  const KINDS = [
+    "morning-brief", "evening-brief", "weekly-summary", "reping", "deadlines", "proposals-watch",
+    "email-triage", "meeting-followup", "outreach-reply-watch", "crm-routing", "digest",
+  ];
+  for (const kind of KINDS) {
+    it(`${kind}.ts routes ${kind}`, async () => {
+      const { readFile } = await import("node:fs/promises");
+      const src = await readFile(new URL(`../agent/schedules/${kind}.ts`, import.meta.url), "utf8");
+      expect(src).toContain(`routeDelivery("${kind}"`);
+      expect(src).not.toMatch(/const task = to\(/);
+    });
+  }
+
+  it("reminders.ts uses the kit's route for its fallback", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const src = await readFile(new URL("../agent/schedules/reminders.ts", import.meta.url), "utf8");
+    expect(src).toContain('routeFor("reminders"');
   });
 });

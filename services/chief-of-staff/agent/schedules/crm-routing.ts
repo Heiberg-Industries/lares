@@ -38,17 +38,18 @@
 import { defineSchedule } from "eve/schedules";
 
 import slack from "../channels/slack.js";
+import telegram from "../channels/telegram.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
 import { slotIn } from "../../lib/recurrence.js";
-import { doorId } from "../../lib/principals.js";
-import { initiateTo, SEND_UNGATED, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { SEND_UNGATED, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { configuredOwnerId, listAliases, listOrgDomains } from "../../lib/identity-client.js";
-import { allowedSlackUserIds } from "../../lib/slack-allowlist.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../../lib/route-store.js";
 import { makeRouteTwentyClient } from "../../lib/route-twenty.js";
 import { makeRouteClassifier } from "../../lib/route-classify.js";
@@ -130,7 +131,13 @@ export interface CrmRoutingStore {
 /** The door the tick speaks through — one resumed-session send per proposal. */
 export interface CrmRoutingDoor {
   /** Resolves once eve has accepted and dispatched the send; throws if it did not go out. */
-  send(prompt: string): Promise<void>;
+  send(prompt: string, summary?: string): Promise<void>;
+}
+
+/** What the owner reads in web chat for a proposal: the same facts the prompt hands the model. */
+export function routeProposalSummary(p: RouteProposal): string {
+  const action = p.action === "create" ? "create a new opportunity" : "move the existing opportunity";
+  return `${p.personName} <${p.personHandle}> has new activity. I suggest we ${action} at ${p.brand} / ${p.stage} (${Math.round(p.confidence * 100)}% sure). Why: ${p.reasoning}`;
 }
 
 export interface CrmRoutingDeps {
@@ -228,7 +235,7 @@ export function makeCrmRoutingTick(
             // signal ref is the durable id the engine's own dedupe already keys on.
             initiation = await gate(
               { cls: "event", itemKey: `crm-routing/${p.signalRef}`, now, tz },
-              () => door.send(buildRouteProposalPrompt(p)),
+              () => door.send(buildRouteProposalPrompt(p), routeProposalSummary(p)),
             );
           } catch (err) {
             console.error(
@@ -282,13 +289,6 @@ export function makeCrmRoutingTick(
 
 // ─── Live wiring ────────────────────────────────────────────────────────────────────────────
 
-/** Owner's Slack user id, reused as the DM channel id — Slack's `chat.postMessage` opens
- *  (or reuses) the DM when `channel` is a user id. Same convention as
- *  `agent/tools/digest_run.ts`'s `allowedSlackUserIds[0]`. */
-function liveSlackChannelId(): string | undefined {
-  return allowedSlackUserIds()[0];
-}
-
 let tablesEnsured = false;
 
 /** Persists across cron fires within the same warm process — see CrmRoutingState. */
@@ -316,11 +316,12 @@ export default defineSchedule({
     // 59 out-of-slot minutes of every hour.
     if (dueRouteSlot(now, tz, hours) === null && !resumeDue(liveState, now)) return;
 
-    const channelId = liveSlackChannelId();
-    if (!channelId) {
+    // The owner's `delivery` choice; without one, the Slack DM it always went to.
+    const routed = routeDelivery("crm-routing", loaded);
+    if (!routed) {
       if (!warnedNoPrincipal) {
         warnedNoPrincipal = true;
-        console.warn("crm-routing: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+        console.warn("crm-routing: no door to deliver through (Slack is not connected); skipping");
       }
       return;
     }
@@ -354,15 +355,17 @@ export default defineSchedule({
       });
 
       const door: CrmRoutingDoor = {
-        async send(prompt) {
-          const task = to(slack, { channelId }).send(prompt, { auth: { ...appAuth, attributes: { lane: "crm-routing" } } });
-          waitUntil(task);
-          await task;
-        },
+        // The proposal ends in an approval card, which web chat cannot start: there the owner reads
+        // the proposal in the inbox and the reply opens a chat that raises the card.
+        send: (prompt, summary) => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+          lane: "crm-routing", title: "CRM routing proposal",
+          ...(summary ? { webBody: `${summary}\n\nReply to this message to have me make the change. You will be asked to approve it first.` } : {}),
+          webContext: prompt,
+        }),
       };
 
       const completed = await makeCrmRoutingTick(
-        { engine, store: routeStore, door, gate: initiateTo("crm-routing", doorId("slack", channelId)) },
+        { engine, store: routeStore, door, gate: routed.gate },
         liveState,
       ).tick(now, hours, tz);
       if (completed) await recordSchedulePass(pool, HEARTBEAT_KEY);

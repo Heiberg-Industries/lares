@@ -37,6 +37,7 @@
     "./memory-core": "./src/memory-core.ts",
     "./memory-read": "./src/memory-read.ts",
     "./proactivity": "./src/proactivity.ts",
+    "./delivery": "./src/delivery.ts",
     "./deadlines": "./src/deadlines.ts",
     "./okf": "./src/okf.ts",
     "./article": "./src/article.ts",
