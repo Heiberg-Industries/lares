@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { sign, allowed, SESSION_MAX_AGE } from "../../../../lib/auth";
+import { safeNext } from "../../../../lib/safe-next";
 
 /**
  * Fail-closed env resolution: throws in production when a required variable is
@@ -22,6 +23,16 @@ const REDIRECT =
 // OAuth redirect so post-login redirects target the host the browser actually
 // uses — NOT req.url, which in Next standalone resolves to the container hostname.
 const BASE_URL = new URL(REDIRECT).origin;
+
+// Failures send the person back to the sign-in page, which says what happened in plain words.
+function signInError(code: "denied" | "unverified" | "failed"): NextResponse {
+  const res = NextResponse.redirect(new URL(`/sign-in?error=${code}`, BASE_URL));
+  res.cookies.set("oauth_state", "", { maxAge: 0, path: "/" });
+  res.cookies.set("oauth_nonce", "", { maxAge: 0, path: "/" });
+  res.cookies.set("oauth_next", "", { maxAge: 0, path: "/" });
+  res.headers.set("Cache-Control", "no-store");
+  return res;
+}
 
 const GOOGLE_JWKS = createRemoteJWKSet(
   new URL("https://www.googleapis.com/oauth2/v3/certs"),
@@ -62,6 +73,9 @@ export async function GET(
     };
     res.cookies.set("oauth_state", state, cookieOpts);
     res.cookies.set("oauth_nonce", nonce, cookieOpts);
+    // Remember the page the person was heading to; the callback returns them there.
+    const next = safeNext(req.nextUrl.searchParams.get("next"));
+    if (next !== "/") res.cookies.set("oauth_next", next, cookieOpts);
     return res;
   }
 
@@ -75,12 +89,12 @@ export async function GET(
     const stateParam = req.nextUrl.searchParams.get("state");
     const stateCookie = req.cookies.get("oauth_state")?.value;
     if (!stateParam || !stateCookie || stateParam !== stateCookie) {
-      return new NextResponse("Invalid OAuth state", { status: 400 });
+      return signInError("failed");
     }
 
     const nonceCookie = req.cookies.get("oauth_nonce")?.value;
     if (!nonceCookie) {
-      return new NextResponse("Missing OAuth nonce", { status: 400 });
+      return signInError("failed");
     }
 
     const code = req.nextUrl.searchParams.get("code") ?? "";
@@ -97,7 +111,7 @@ export async function GET(
     }).then((r) => r.json());
 
     if (!tok || typeof tok.id_token !== "string") {
-      return new NextResponse("Auth failed", { status: 400 });
+      return signInError("failed");
     }
 
     // Verify the id_token cryptographically against Google's JWKS
@@ -109,28 +123,29 @@ export async function GET(
       });
       payload = result.payload as typeof payload;
     } catch {
-      return new NextResponse("Invalid id_token", { status: 401 });
+      return signInError("failed");
     }
 
     // Verify nonce to prevent replay
     if (payload.nonce !== nonceCookie) {
-      return new NextResponse("Nonce mismatch", { status: 401 });
+      return signInError("failed");
     }
 
     // Require email_verified
     if (!payload.email_verified) {
-      return new NextResponse("Email not verified", { status: 401 });
+      return signInError("unverified");
     }
 
     if (!payload.email || !allowed(payload.email)) {
-      return new NextResponse("Forbidden", { status: 403 });
+      return signInError("denied");
     }
 
-    const res = NextResponse.redirect(new URL("/", BASE_URL));
+    const res = NextResponse.redirect(new URL(safeNext(req.cookies.get("oauth_next")?.value), BASE_URL));
 
     // Clear the temp OAuth cookies
     res.cookies.set("oauth_state", "", { maxAge: 0, path: "/" });
     res.cookies.set("oauth_nonce", "", { maxAge: 0, path: "/" });
+    res.cookies.set("oauth_next", "", { maxAge: 0, path: "/" });
 
     res.cookies.set("lares_session", await sign(payload.email), {
       httpOnly: true,
@@ -142,27 +157,8 @@ export async function GET(
     return res;
   }
 
-  // ------------------------------------------------------------------
-  // /signed-out — public confirmation page shown after sign-out
-  // ------------------------------------------------------------------
-  if (route[0] === "signed-out" && route.length === 1) {
-    return new NextResponse(SIGNED_OUT_HTML, {
-      status: 200,
-      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
-    });
-  }
-
   return new NextResponse("Not found", { status: 404 });
 }
-
-const SIGNED_OUT_HTML = `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Signed out</title>
-<style>body{font-family:system-ui,sans-serif;display:grid;place-items:center;min-height:100vh;margin:0;color:#222;background:#fff}
-@media (prefers-color-scheme:dark){body{color:#eee;background:#111}a{color:#eee}}
-main{text-align:center;padding:24px}a{display:inline-block;margin-top:16px;padding:8px 16px;border:1px solid currentColor;border-radius:6px;text-decoration:none;color:inherit}</style>
-</head><body><main><h1>You are signed out</h1><p>Your session on this device has ended.</p>
-<a href="/api/auth/login">Sign in again</a></main></body></html>`;
 
 // POST /logout — clear the session cookie. The session is a signed cookie with no
 // server-side store, so there is nothing else to delete. The origin check for
@@ -175,8 +171,8 @@ export async function POST(
   if (route[0] !== "logout" || route.length !== 1) {
     return new NextResponse("Not found", { status: 404 });
   }
-  // 303 turns the POST into a GET of the signed-out page.
-  const res = NextResponse.redirect(new URL("/api/auth/signed-out", BASE_URL), 303);
+  // 303 turns the POST into a GET of the sign-in page, which says "You're signed out."
+  const res = NextResponse.redirect(new URL("/sign-in?signed-out=1", BASE_URL), 303);
   res.cookies.set("lares_session", "", {
     httpOnly: true,
     secure: true,

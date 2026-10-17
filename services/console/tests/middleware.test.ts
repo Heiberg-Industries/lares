@@ -46,7 +46,7 @@ describe("console mutation origin boundary", () => {
     const middleware = await guard(); verify.mockResolvedValue(null);
     const response = await middleware(request("/api/notion-proposals"));
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe(`${origin}/api/auth/login`);
+    expect(response.headers.get("location")).toBe(`${origin}/sign-in?next=%2Fapi%2Fnotion-proposals`);
   });
   it.each(["/api/auth/login", "/api/auth/callback?code=synthetic", "/api/accounts/google/callback?code=synthetic"])("preserves GET navigation/callback: %s", async path => {
     const middleware = await guard();

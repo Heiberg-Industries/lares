@@ -21,11 +21,11 @@ const req = (path: string, method: string, from: string | null = origin) =>
 afterEach(() => vi.unstubAllEnvs());
 
 describe("sign out", () => {
-  it("POST clears the session cookie with the flags it was set with and lands on the signed-out page", async () => {
+  it("POST clears the session cookie with the flags it was set with and lands on the sign-in page", async () => {
     const { route } = await load();
     const res = await route.POST(req("/api/auth/logout", "POST"), ctx("logout"));
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe(`${origin}/api/auth/signed-out`);
+    expect(res.headers.get("location")).toBe(`${origin}/sign-in?signed-out=1`);
     expect(res.headers.get("cache-control")).toBe("no-store");
     const cookie = res.headers.get("set-cookie")!;
     expect(cookie).toMatch(/^lares_session=;/);
@@ -57,22 +57,17 @@ describe("sign out", () => {
     }
     expect((await middleware(req("/api/auth/logout", "POST"))).headers.get("x-middleware-next")).toBe("1");
   });
-  it("the signed-out page is public, says so, and offers sign in again", async () => {
-    const { route, middleware } = await load();
-    expect((await middleware(req("/api/auth/signed-out", "GET", null))).headers.get("x-middleware-next")).toBe("1");
-    const res = await route.GET(req("/api/auth/signed-out", "GET", null), ctx("signed-out"));
-    const html = await res.text();
-    expect(html).toContain("You are signed out");
-    expect(html).toContain('href="/api/auth/login"');
-    expect(html).toContain("Sign in again");
-    expect(res.headers.get("cache-control")).toBe("no-store");
+  it("the sign-in page is public", async () => {
+    const { middleware } = await load();
+    verify.mockResolvedValue(null);
+    expect((await middleware(req("/sign-in?signed-out=1", "GET", null))).headers.get("x-middleware-next")).toBe("1");
   });
-  it("after sign-out a protected page redirects to sign-in", async () => {
+  it("after sign-out a protected page redirects to the sign-in page", async () => {
     const { middleware } = await load();
     verify.mockResolvedValue(null);
     const res = await middleware(req("/agents", "GET", null));
     expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toBe(`${origin}/api/auth/login`);
+    expect(res.headers.get("location")).toBe(`${origin}/sign-in?next=%2Fagents`);
   });
   it("signed-in pages are marked no-store so the back button cannot show them", async () => {
     const { middleware } = await load();
