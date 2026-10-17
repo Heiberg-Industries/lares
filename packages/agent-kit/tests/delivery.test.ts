@@ -8,11 +8,13 @@ import { validateDefinition } from "../src/definition-validate.js";
 const only = (...doors: string[]) => (d: string) => doors.includes(d);
 
 describe("routeFor", () => {
-  it("an agent with no map keeps today's door, and nothing after it", () => {
+  it("an agent with no map tries today's door first, then web chat with a note", () => {
     expect(routeFor("morning-brief", undefined, only("telegram")).door).toBe("telegram");
     expect(routeFor("email-triage", undefined, only("slack")).door).toBe("slack");
-    // Today's door missing: nothing - the schedule logs and skips, as before. No silent web fallback.
-    expect(routeFor("morning-brief", undefined, only("slack")).door).toBeNull();
+    expect(routeFor("morning-brief", undefined, only("telegram")).fallbackNote).toBeNull();
+    const r = routeFor("morning-brief", undefined, only("slack"), "Morning brief");
+    expect(r.door).toBe("web");
+    expect(r.fallbackNote).toBe("Morning brief went to web chat: Telegram is not connected");
   });
 
   it("every kind has today's door when nothing is mapped", () => {

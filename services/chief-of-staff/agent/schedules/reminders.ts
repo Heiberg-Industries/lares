@@ -340,7 +340,7 @@ export default defineSchedule({
       const tick = makeReminderTick({
         store: liveStore(),
         doors: { slack: slackDoor(), telegram: telegramDoor(), web: webDoor() },
-        fallbackDoor: fallback.door ?? "telegram",
+        fallbackDoor: loaded.definition.delivery?.["reminders"] ? (fallback.door ?? "telegram") : "telegram",
         resolveTarget: liveResolveTarget,
         gate: initiateFor("reminders"),
         onFallback: (itemKey, note) => recordFallback(getPool(), { owner: ownerId(), agent: agentName(), itemKey, note }),

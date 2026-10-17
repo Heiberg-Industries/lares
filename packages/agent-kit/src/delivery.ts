@@ -88,7 +88,7 @@ export function deliveryFindings(delivery: DeliveryMap | undefined): string[] {
 }
 
 /** The ordered doors a kind is TRIED through. With a map entry: the owner's list. Without one:
- *  today's single door (and nothing after it - an agent without a map keeps today's behaviour). */
+ *  today's single door (`routeFor` adds web chat after it, so nothing is dropped). */
 export function configuredDoors(kind: DeliveryKind, delivery: DeliveryMap | undefined): DeliveryDoor[] {
   const listed = delivery?.[kind];
   if (!listed) return [DELIVERY_KINDS[kind]];
@@ -96,7 +96,7 @@ export function configuredDoors(kind: DeliveryKind, delivery: DeliveryMap | unde
 }
 
 export interface DeliveryRoute {
-  /** The door the message goes through, or null when nothing can carry it (no-map agent only). */
+  /** The door the message goes through. Null is unreachable (web chat is always last) and kept only for the type. */
   door: DeliveryDoor | null;
   /** Doors skipped before reaching `door`, in order, each with the plain reason. */
   skipped: { door: DeliveryDoor; reason: string }[];
@@ -106,8 +106,7 @@ export interface DeliveryRoute {
 
 /**
  * Pick the door. Walk the owner's list and take the first connected door; if none is connected,
- * web chat - always. An agent with no map entry for this kind gets today's door only: connected,
- * or nothing (the schedule logs and skips, exactly as before).
+ * web chat - always. An agent with no map entry for this kind tries today's door first, then web chat.
  */
 export function routeFor(
   kind: DeliveryKind,
@@ -115,9 +114,8 @@ export function routeFor(
   connected: (door: DeliveryDoor) => boolean,
   label: string = kind,
 ): DeliveryRoute {
-  const mapped = delivery?.[kind] !== undefined;
   const order = configuredDoors(kind, delivery);
-  if (mapped && !order.includes("web")) order.push("web");
+  if (!order.includes("web")) order.push("web");
   const skipped: DeliveryRoute["skipped"] = [];
   for (const door of order) {
     if (door === "web" || connected(door)) {

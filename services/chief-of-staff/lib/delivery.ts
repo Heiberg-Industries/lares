@@ -12,9 +12,8 @@
  * do-not-disturb and the daily limits apply to whichever door is chosen - web chat included, as
  * its own door (`WEB_DOOR`).
  *
- * An agent whose definition has no `delivery` entry for a kind keeps today's door for it, exactly:
- * connected, or the schedule logs and skips. Only an owner who has listed doors gets the web chat
- * last resort.
+ * An agent whose definition has no `delivery` entry for a kind tries today's door first and, when
+ * that is not connected, falls back to web chat with a note - nothing is dropped silently.
  */
 import { getPool } from "@lares/agent-kit/db";
 import { doorsOf, type LoadedDefinition } from "@lares/agent-kit/definition";

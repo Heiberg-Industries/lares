@@ -45,9 +45,11 @@ describe("routeDelivery", () => {
     }
   });
 
-  it("no map and today's door missing: nothing can carry it (the schedule skips, as before)", async () => {
+  it("no map and today's door missing: web chat, with the reason", async () => {
     const { routeDelivery } = await import("../lib/delivery.js");
-    expect(routeDelivery("morning-brief", loaded(), { targets: { slack: "U1" }, db: fakeDb() })).toBeNull();
+    const r = routeDelivery("morning-brief", loaded(), { targets: { slack: "U1" }, db: fakeDb() })!;
+    expect(r.door).toBe("web");
+    expect(r.note).toBe("Morning brief went to web chat: Telegram is not connected");
   });
 
   it("a map with no connected chat door still delivers, to web chat, with the reason", async () => {

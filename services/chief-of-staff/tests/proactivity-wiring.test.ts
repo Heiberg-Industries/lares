@@ -926,13 +926,15 @@ describe("delivery routing", () => {
     fakePool.query.mockClear();
   });
 
-  it("no map: the evening brief with no Telegram chat skips, with no web fallback (today)", async () => {
+  it("no map: the evening brief with no Telegram chat goes to web chat, with the reason", async () => {
     gateSends();
     await atEvening();
+    generating = true;
     const { default: schedule } = await import("../agent/schedules/evening-brief.js");
     await schedule.run!(recordingCtx().ctx);
-    expect(gatedSendMock).not.toHaveBeenCalled();
-    expect(inboxInserts()).toEqual([]);
+    expect(gateDoor()).toBe("web:inbox");
+    expect(inboxInserts()).toHaveLength(1);
+    expect(fallbackNotes()).toEqual(["Evening brief went to web chat: Telegram is not connected"]);
   });
 
   it("map [slack, telegram]: the first connected door in the owner's order, with the matching address", async () => {
