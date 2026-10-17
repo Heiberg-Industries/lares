@@ -31,14 +31,17 @@
 import { defineSchedule } from "eve/schedules";
 
 import telegram from "../channels/telegram.js";
+import slack from "../channels/slack.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { isGranted } from "@lares/agent-kit/manifest";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
 import { configuredOwnerId, listAliases } from "../../lib/identity-client.js";
-import { doorId, ownerId, primaryTelegramChatId, telegramPushAttributes } from "../../lib/principals.js";
-import { alreadySentToday, initiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { ownerId } from "../../lib/principals.js";
+import { alreadySentToday, type InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
@@ -232,10 +235,6 @@ const SLACK_SCAN_TIMEOUT_MS = Number(process.env["SLACK_SCAN_TIMEOUT_MS"]) || 20
 // minus the four least-recent channels) and the pooled scan (concurrency 4, backoff on
 // 429) holds it well inside the measured 20s budget — ~4.5s where 40 serial cost ~8.8s.
 const SLACK_MAX_CONVERSATIONS = Number(process.env["SLACK_MAX_CONVERSATIONS"]) || 80;
-
-function liveTelegramChatId(): string | undefined {
-  return primaryTelegramChatId();
-}
 
 /**
  * What one tick's Slack scan is willing to say about itself.
@@ -754,11 +753,13 @@ export default defineSchedule({
         return;
       }
 
-      const chatId = liveTelegramChatId();
-      if (!chatId) {
+      // Where this goes is the owner's choice (the definition's `delivery` map); without one, the
+      // Telegram chat it always went to. Null = no door can carry it.
+      const routed = routeDelivery("morning-brief", loaded);
+      if (!routed) {
         if (!warnedNoPrincipal) {
           warnedNoPrincipal = true;
-          console.warn("morning-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+          console.warn("morning-brief: no door to deliver through (Telegram is not connected); skipping");
         }
         return;
       }
@@ -1054,14 +1055,11 @@ export default defineSchedule({
       const prompt = buildMorningPrompt(content, facts, unreadableSources, heldBack, { lang, tz, transit: isGranted(loaded.definition, "transit") });
       let initiation: InitiationOutcome;
       try {
-        initiation = await initiate(
-          "morning-brief",
-          { cls: "scheduled", door: doorId("telegram", chatId), itemKey: `morning-brief/${slot}`, now, tz },
-          async () => {
-            const task = to(telegram, { chatId }).send(prompt, { auth: { ...appAuth, attributes: telegramPushAttributes("morning-brief", chatId) } });
-            waitUntil(task);
-            await task;
-          },
+        initiation = await routed.gate(
+          { cls: "scheduled", itemKey: `morning-brief/${slot}`, now, tz },
+          () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+            lane: "morning-brief", itemKey: `morning-brief/${slot}`, title: "Morning brief",
+          }),
         );
       } catch (err) {
         console.error(`morning-brief: send FAILED (slot ${slot})`, err);

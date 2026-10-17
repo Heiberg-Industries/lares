@@ -35,14 +35,17 @@
 import { defineSchedule } from "eve/schedules";
 
 import telegram from "../channels/telegram.js";
+import slack from "../channels/slack.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { isGranted } from "@lares/agent-kit/manifest";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass, recordScheduleTick } from "@lares/agent-kit/schedule-heartbeat";
 import { configuredOwnerId, listAliases } from "../../lib/identity-client.js";
-import { doorId, ownerId, primaryTelegramChatId, telegramPushAttributes } from "../../lib/principals.js";
-import { alreadySentToday, initiate, type InitiationOutcome } from "../../lib/initiation.js";
+import { ownerId } from "../../lib/principals.js";
+import { alreadySentToday, type InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
@@ -112,10 +115,6 @@ let warnedNoPrincipal = false;
  * ticks rather than double-sending. Anyone raising this again should double whatever they add.
  */
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 35_000;
-
-function liveTelegramChatId(): string | undefined {
-  return primaryTelegramChatId();
-}
 
 /** `facts` defaults to `[]` — . See buildMorningPrompt's own note for why standing
  *  facts ride as a parameter rather than as a `BriefContent` field. */
@@ -271,11 +270,13 @@ export default defineSchedule({
         return;
       }
 
-      const chatId = liveTelegramChatId();
-      if (!chatId) {
+      // Where this goes is the owner's choice (the definition's `delivery` map); without one, the
+      // Telegram chat it always went to. Null = no door can carry it.
+      const routed = routeDelivery("evening-brief", loaded);
+      if (!routed) {
         if (!warnedNoPrincipal) {
           warnedNoPrincipal = true;
-          console.warn("evening-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+          console.warn("evening-brief: no door to deliver through (Telegram is not connected); skipping");
         }
         return;
       }
@@ -415,14 +416,11 @@ export default defineSchedule({
       const prompt = buildEveningPrompt(content, facts, unreadableSources, { tz, transit: isGranted(loaded.definition, "transit") });
       let initiation: InitiationOutcome;
       try {
-        initiation = await initiate(
-          "evening-brief",
-          { cls: "scheduled", door: doorId("telegram", chatId), itemKey: `evening-brief/${slot}`, now, tz },
-          async () => {
-            const task = to(telegram, { chatId }).send(prompt, { auth: { ...appAuth, attributes: telegramPushAttributes("evening-brief", chatId) } });
-            waitUntil(task);
-            await task;
-          },
+        initiation = await routed.gate(
+          { cls: "scheduled", itemKey: `evening-brief/${slot}`, now, tz },
+          () => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, prompt, {
+            lane: "evening-brief", itemKey: `evening-brief/${slot}`, title: "Evening brief",
+          }),
         );
       } catch (err) {
         console.error(`evening-brief: send FAILED (slot ${slot}) — nothing stamped; will be reconsidered tomorrow morning`, err);

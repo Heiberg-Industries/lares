@@ -87,7 +87,7 @@ describe("validateDefinition", () => {
   it("keeps the definition-only fields — the ones stripped before assertDeclarationIntegrity — a known, closed set", () => {
     const manifestKeys = new Set(Object.keys(manifestSchema.shape));
     const extraKeys = Object.keys(definitionSchema.shape).filter((k) => !manifestKeys.has(k));
-    expect(new Set(extraKeys)).toEqual(new Set(["gender", "description", "language", "duties", "schedules", "doors", "outsideTools"]));
+    expect(new Set(extraKeys)).toEqual(new Set(["gender", "description", "language", "duties", "schedules", "doors", "outsideTools", "delivery"]));
   });
 
   // Review fix: a throwing `secretExists` (a real filesystem permission error, say) used to

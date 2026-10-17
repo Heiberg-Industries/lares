@@ -44,10 +44,13 @@ import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
 
 import telegram from "../channels/telegram.js";
+import slack from "../channels/slack.js";
 import { advanceRung, listDeadlines, readLadderEnabled, type DeadlineRow } from "../../lib/deadlines-store.js";
-import { initiateTo, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
+import type { DoorInitiate, InitiationOutcome } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendTurn } from "../../lib/delivery-send.js";
 import { ownerTz } from "../../lib/owner-clock.js";
-import { doorId, ownerId, primaryTelegramChatId, telegramPushAttributes } from "../../lib/principals.js";
+import { ownerId } from "../../lib/principals.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 import { readBriefLanguage, type BriefLanguage } from "../../lib/brief-settings.js";
@@ -248,11 +251,12 @@ export default defineSchedule({
     if (running) return;
     running = true;
     try {
-      const chatId = primaryTelegramChatId();
-      if (!chatId) {
+      // The owner's `delivery` choice; without one, the Telegram chat it always went to.
+      const routed = routeDelivery("deadlines", loaded);
+      if (!routed) {
         if (!warnedNoPrincipal) {
           warnedNoPrincipal = true;
-          console.warn("deadlines: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+          console.warn("deadlines: no door to deliver through (Telegram is not connected); skipping");
         }
         return;
       }
@@ -269,16 +273,13 @@ export default defineSchedule({
           advanceRung: (id, rung, now) => advanceRung(pool, id, owner, rung, now),
           ladderEnabled: () => readLadderEnabled(pool, owner),
         },
-        gate: initiateTo("deadlines", doorId("telegram", chatId)),
+        gate: routed.gate,
         tz: () => ownerTz(),
         lang,
-        async send(text) {
-          const task = to(telegram, { chatId }).send(deadlinePrompt(text), {
-            auth: { ...appAuth, attributes: telegramPushAttributes("deadlines", chatId) },
-          });
-          waitUntil(task);
-          await task;
-        },
+        // The rung's wording is the whole message, so web chat shows it as written (no model call).
+        send: (text) => sendTurn(routed, { to, waitUntil, appAuth, telegram, slack }, deadlinePrompt(text), {
+          lane: "deadlines", title: "Deadline", webBody: text,
+        }),
       }).tick();
 
       if (result.skipped === null) {

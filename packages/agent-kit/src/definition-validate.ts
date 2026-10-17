@@ -10,6 +10,7 @@ import { MODEL_ALIAS_RE, manifestViewOf } from "./definition.js";
 import { assertDeclarationIntegrity } from "./manifest.js";
 import { assertRoleToolsAreDeployed } from "./persona/index.js";
 import { assertNoUngatedWrites } from "./write-shape-lint.js";
+import { deliveryFindings } from "./delivery.js";
 import { OUTSIDE_CAPABILITY, checkOutsideUrl, outsideSecretName } from "./outside-tools.js";
 
 export interface ValidationFinding { check: string; message: string }
@@ -154,6 +155,9 @@ export function validateDefinition(opts: ValidateOptions): ValidationFinding[] {
       out.push({ check: "outside-tools", message: `the "${OUTSIDE_CAPABILITY}" grant is "write" (no confirmation card); outside tools only run behind a card or read-only — use write-with-confirm or read` });
     }
   }
+
+  // 8. Delivery routing: known kinds, known doors, no empty or repeated list.
+  for (const message of deliveryFindings(d.delivery)) out.push({ check: "delivery", message });
 
   return out;
 }

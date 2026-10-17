@@ -33,22 +33,20 @@
  */
 import { defineSchedule } from "eve/schedules";
 import { configuredOwnerId, getDisplayName, listAliases } from "../../lib/identity-client.js";
-import { callSlackApi } from "eve/channels/slack";
-
-import { slackCredentials } from "../channels/slack.js";
 import { getPool } from "@lares/agent-kit/db";
 import { scheduleEnabled } from "@lares/agent-kit/schedule-switch";
 import { thisAgent } from "../../lib/definition.js";
 import { recordSchedulePass } from "@lares/agent-kit/schedule-heartbeat";
-import { allowedSlackUserIds, logSlackNotConnected } from "../../lib/slack-allowlist.js";
+import { logSlackNotConnected } from "../../lib/slack-allowlist.js";
 import { googleClients, listEnrolledMailboxes, type MailMessage, type ThreadMessage, type GmailClient, type CalendarClient } from "../../lib/google.js";
 import { makeDbVoiceAccess } from "../../lib/voice-store.js";
 import { triageOneMessage, notifyTextFor, hasHumanReplyAfter, type TriageResult } from "../../lib/email-triage.js";
 import { claimMessage, recordOutcome, recordDraft, pruneOldRecords, MAX_ATTEMPTS, type TriageOutcome, type ClaimResult } from "../../lib/email-triage-store.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { doorId } from "../../lib/principals.js";
-import { initiateTo, SEND_UNGATED, type DoorInitiate } from "../../lib/initiation.js";
+import { SEND_UNGATED, type DoorInitiate } from "../../lib/initiation.js";
+import { routeDelivery } from "../../lib/delivery.js";
+import { sendText } from "../../lib/delivery-send.js";
 import { gatherPerson, type PersonDossier, type PersonSources } from "../../lib/person/gather.js";
 import { renderDossier } from "../../lib/person/render.js";
 import { eveSagaPersonWiring, makePersonSources } from "../../lib/person-sources.js";
@@ -251,8 +249,9 @@ export default defineSchedule({
     const { loaded } = await thisAgent(undefined);
     if (!scheduleEnabled(loaded.definition, "email-triage")) return;
 
-    const channelId = allowedSlackUserIds()[0];
-    if (!channelId) {
+    // The owner's `delivery` choice; without one, the Slack DM it always went to.
+    const routed = routeDelivery("email-triage", loaded);
+    if (!routed) {
       logSlackNotConnected("email-triage");
       return;
     }
@@ -353,15 +352,8 @@ export default defineSchedule({
           );
         },
         recordOutcome: (mailbox, id, outcome) => recordOutcome(pool, mailbox, id, outcome),
-        gate: initiateTo("email-triage", doorId("slack", channelId)),
-        notify: async (text) => {
-          const res = await callSlackApi({
-            botToken: slackCredentials.botToken,
-            operation: "chat.postMessage",
-            body: { channel: channelId, text },
-          });
-          if (!res.ok) throw new Error(`email-triage: slack notify failed: ${String((res as { error?: unknown }).error)}`);
-        },
+        gate: routed.gate,
+        notify: (text) => sendText(routed, text, { title: "New email draft" }),
         reportDropped: (mailbox, id, err) => emitSignal(
           "email-triage-message-dropped",
           `email-triage: gave up on ${mailbox}:${id} after ${MAX_ATTEMPTS} attempts`,

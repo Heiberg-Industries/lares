@@ -322,6 +322,16 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('Fixture second said something', 'preference', 'fixture-turn-2', $1, 'owner')`,
     [FIXTURE_SECOND]),
 
+  // ── 004_web_inbox.sql ─────────────────────────────────────────────────────────────────────
+  row("web_inbox", "owner", FIXTURE_OWNER,
+    `INSERT INTO web_inbox (owner, agent, kind, title, body, item_key)
+     VALUES ($1, 'fixture-agent', 'morning-brief', 'Fixture brief', 'Fixture message for the owner', 'fixture-inbox-1')`,
+    [FIXTURE_OWNER]),
+  row("web_inbox", "owner", FIXTURE_SECOND,
+    `INSERT INTO web_inbox (owner, agent, kind, title, body, item_key)
+     VALUES ($1, 'fixture-agent', 'morning-brief', 'Fixture brief', 'Fixture message for the second person', 'fixture-inbox-2')`,
+    [FIXTURE_SECOND]),
+
   // ── 001_baseline.sql — a source per person, then one ledger item under each (the ledger's
   //    foreign key needs its source first). ──────────────────────────────────────────────────
   row("clipping_sources", "owner", FIXTURE_OWNER,

@@ -113,6 +113,11 @@ export const definitionSchema = manifestSchema.extend({
   /** Outside (MCP) tool servers. OPTIONAL WITH NO DEFAULT on purpose: a default of `[]` would
    *  change the hash of every existing definition (`hashOf` hashes the parsed object). */
   outsideTools: z.array(outsideToolSchema).optional(),
+  /** Where each kind of unprompted message goes: kind -> ordered doors (`delivery.ts`). OPTIONAL
+   *  WITH NO DEFAULT for the same reason as `outsideTools`: a default would change the hash of
+   *  every existing definition, and an absent map means "today's doors". Kinds and doors are
+   *  checked at save by `definition-validate.ts`, not here, so a newer engine's kind still loads. */
+  delivery: z.record(z.string(), z.array(z.string())).optional(),
 });
 
 export type AgentDefinition = z.infer<typeof definitionSchema>;
