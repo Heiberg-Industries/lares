@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { jwtVerify, createRemoteJWKSet } from "jose";
 import { sign, allowed, SESSION_MAX_AGE } from "../../../../lib/auth";
-import { safeNext } from "../../../../lib/safe-next";
+import { safeNext, sameOriginTarget } from "../../../../lib/safe-next";
 
 /**
  * Fail-closed env resolution: throws in production when a required variable is
@@ -140,7 +140,7 @@ export async function GET(
       return signInError("denied");
     }
 
-    const res = NextResponse.redirect(new URL(safeNext(req.cookies.get("oauth_next")?.value), BASE_URL));
+    const res = NextResponse.redirect(sameOriginTarget(safeNext(req.cookies.get("oauth_next")?.value), BASE_URL));
 
     // Clear the temp OAuth cookies
     res.cookies.set("oauth_state", "", { maxAge: 0, path: "/" });

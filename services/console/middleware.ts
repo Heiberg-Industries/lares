@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { verify } from "./lib/auth";
-import { safeNext } from "./lib/safe-next";
+import { safeNext, sameOriginTarget } from "./lib/safe-next";
 
 // External origin the browser uses; derived from the OAuth redirect so redirects
 // don't leak the container hostname (Next standalone resolves req.url to it).
@@ -27,7 +27,7 @@ export async function middleware(req: NextRequest) {
   const email = await verify(req.cookies.get("lares_session")?.value);
   // The sign-in page is public. Someone already signed in has no use for it.
   if (req.nextUrl.pathname === "/sign-in") {
-    if (email) return NextResponse.redirect(new URL(safeNext(req.nextUrl.searchParams.get("next")), BASE_URL ?? req.url));
+    if (email) return NextResponse.redirect(sameOriginTarget(safeNext(req.nextUrl.searchParams.get("next")), BASE_URL ?? req.url));
     const page = NextResponse.next();
     page.headers.set("Cache-Control", "no-store");
     return page;
@@ -36,7 +36,8 @@ export async function middleware(req: NextRequest) {
     // Send visitors to the sign-in page, remembering where they were headed.
     const to = new URL("/sign-in", BASE_URL ?? req.url);
     const back = req.nextUrl.pathname + req.nextUrl.search;
-    if (safeNext(back) !== "/") to.searchParams.set("next", back);
+    const next = safeNext(back);
+    if (next !== "/") to.searchParams.set("next", next);
     return NextResponse.redirect(to);
   }
   // Signed-in pages must never be kept by the browser, or the back button would show

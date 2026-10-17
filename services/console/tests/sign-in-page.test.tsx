@@ -97,3 +97,26 @@ describe("sign-in flow", () => {
     expect(res.headers.get("location")).toBe(`${origin}/sign-in?error=failed`);
   });
 });
+
+describe("return path cannot leave the console", () => {
+  // Raw query-string forms; the decoded forms are checked too.
+  const hostile = ["/%09/attacker.test", "/%0a/attacker.test", "/%0d/attacker.test", "/%5Cattacker.test", "//attacker.test", "/%2F%2Fattacker.test", "https://attacker.test"];
+  it.each(hostile)("safeNext falls back to home for %s", async raw => {
+    const { safeNext } = await import("../lib/safe-next");
+    expect(safeNext(decodeURIComponent(raw))).toBe("/");
+  });
+  it.each(hostile)("a signed-in visit to /sign-in?next=%s stays on the console", async raw => {
+    const mw = await middleware();
+    verify.mockReset().mockResolvedValue("owner@example.test");
+    const res = await mw(get(`/sign-in?next=${raw}`));
+    expect(new URL(res.headers.get("location")!).origin).toBe(origin);
+  });
+  it.each(hostile)("the sign-in redirect never goes off the console for a stored path %s", async raw => {
+    const { safeNext, sameOriginTarget } = await import("../lib/safe-next");
+    expect(sameOriginTarget(safeNext(decodeURIComponent(raw)), origin).origin).toBe(origin);
+  });
+  it("keeps an ordinary path, query and hash", async () => {
+    const { safeNext } = await import("../lib/safe-next");
+    expect(safeNext("/agents?tab=1#x")).toBe("/agents?tab=1#x");
+  });
+});
