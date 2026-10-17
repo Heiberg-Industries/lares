@@ -48,6 +48,9 @@ export async function GET(
     u.searchParams.set("scope", "openid email");
     u.searchParams.set("state", state);
     u.searchParams.set("nonce", nonce);
+    // Always show Google's account picker, so signing out and back in asks which account to use
+    // instead of re-admitting the last one silently.
+    u.searchParams.set("prompt", "select_account");
 
     const res = NextResponse.redirect(u.toString());
     const cookieOpts = {

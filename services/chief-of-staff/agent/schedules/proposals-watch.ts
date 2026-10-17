@@ -66,6 +66,9 @@ import {
   type Announcement,
 } from "../../lib/proposal-buttons.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 // ─── Public types ───────────────────────────────────────────────────────────────────────
 
 /** Minimal store contract for the tick (injectable / fakeable in tests). */
@@ -422,7 +425,10 @@ export default defineSchedule({
 
     const chatId = liveTelegramChatId();
     if (!chatId) {
-      console.warn("proposals-watch: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+      if (!warnedNoPrincipal) {
+        warnedNoPrincipal = true;
+        console.warn("proposals-watch: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+      }
       return;
     }
 

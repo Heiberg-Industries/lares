@@ -118,8 +118,15 @@ Every setting an agent or the console can read is declared in
 
 ## 5. Running the installer
 
-First save the console's Google client. Create `/etc/lares/console-oauth.env`, owned by root,
-mode 0600, with two lines. Put the bare values in, without quotes:
+First save the console's Google client. On a fresh server the folder does not exist yet, so
+create it first:
+
+```bash
+mkdir -p /etc/lares
+```
+
+Then create `/etc/lares/console-oauth.env`, owned by root, mode 0600, with two lines. Put the
+bare values in, without quotes:
 
 ```
 GOOGLE_CLIENT_ID_CONSOLE=<client id ending in .apps.googleusercontent.com>

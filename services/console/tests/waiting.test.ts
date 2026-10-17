@@ -141,6 +141,13 @@ describe("who owns an agent: the keeper's own selection, and only a sole claiman
     expect(ownedFrom([agentRow()], OTHER)).toEqual([]);
   });
 
+  it("an agent with no claim at all belongs to the installation administrator; a claim still wins", () => {
+    const unclaimed = agentRow({ claim: null });
+    expect(ownedFrom([unclaimed], OWNER, true).map((a) => a.name)).toEqual(["example"]);
+    expect(ownedFrom([unclaimed], OWNER, false)).toEqual([]);
+    expect(ownedFrom([agentRow()], OTHER, true)).toEqual([]);
+  });
+
   it("two members holding claims on one agent: neither owns it", () => {
     const rows = [agentRow(), agentRow({ claim: { kind: "slack", owner_email: OTHER } })].map((r) => ({ ...r, doors: [...telegramDoor, { kind: "slack", enabled: true }] }));
     expect(ownedFrom(rows, OWNER)).toEqual([]);

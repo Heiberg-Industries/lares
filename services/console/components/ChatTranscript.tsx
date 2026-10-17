@@ -39,6 +39,8 @@ export interface ChatTranscriptProps {
    *  and NO buttons — which is what a transcript rendered anywhere that cannot send an answer
    *  should do. */
   readonly onAnswer?: (requestId: string, optionId: string) => void;
+  /** The agent's display name, shown above its replies. Falls back to "Agent" when absent. */
+  readonly agentName?: string;
 }
 
 const UNSUPPORTED_PART = "— something this page cannot show yet —";
@@ -186,7 +188,7 @@ function ApprovalCard({
   const body = approvalCardFields(part.input);
   return (
     <div style={cardStyle}>
-      <p className="mono" style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", color: "var(--warn)", margin: "0 0 6px" }}>
+      <p className="mono" style={{ fontSize: 11, letterSpacing: ".04em", color: "var(--warn)", margin: "0 0 6px" }}>
         Needs your approval
       </p>
       <p style={{ margin: "0 0 8px", whiteSpace: "pre-wrap", wordBreak: "break-word", fontWeight: 600 }}>{request.prompt}</p>
@@ -292,8 +294,8 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
   );
 }
 
-function TranscriptMessage({ message, cards }: { message: EveMessage; cards: CardState }) {
-  const who = message.role === "user" ? "You" : "Agent";
+function TranscriptMessage({ message, cards, agentName }: { message: EveMessage; cards: CardState; agentName?: string }) {
+  const who = message.role === "user" ? "You" : agentName || "Agent";
   return (
     <article className={`lares-message ${message.role === "user" ? "lares-message-user" : "lares-message-agent"}`}>
       <div
@@ -309,7 +311,7 @@ function TranscriptMessage({ message, cards }: { message: EveMessage; cards: Car
 
 const NONE: ReadonlySet<string> = new Set();
 
-export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer }: ChatTranscriptProps) {
+export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer, agentName }: ChatTranscriptProps) {
   const cards: CardState = { expired, answering, ...(onAnswer === undefined ? {} : { onAnswer }) };
   return (
     <div>
@@ -322,7 +324,7 @@ export function ChatTranscript({ messages, status, error, expired = NONE, answer
               : "Say something to start."}
         </p>
       ) : (
-        messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} />)
+        messages.map((message) => <TranscriptMessage key={message.id} message={message} cards={cards} {...(agentName === undefined ? {} : { agentName })} />)
       )}
       {status === "error" && error ? (
         <p role="alert" style={{ color: "var(--bad)" }}>

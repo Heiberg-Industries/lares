@@ -29,7 +29,8 @@ const environmentKeys = [
   'TWENTY_ORG_NUMBER_FIELD',
   // W8B-s5. Who may answer an approval in web chat, on an installation whose agents are NOT a
   // managed incarnation — a managed one is given LARES_CONSOLE_PRINCIPAL below instead, from the
-  // owner claim, exactly as the Slack and Telegram principals are. Unset admits nobody.
+  // owner claim, exactly as the Slack and Telegram principals are (or, with no claim yet, from the
+  // installation's credential administrator in keeper.json). Unset admits nobody.
   'CONSOLE_ALLOWED_EMAILS',
   // The console's public address, e.g. `https://console.example.com`. A Telegram approval card too
   // long for one message links to its Waiting on you page. Unset: the card says to open the console.

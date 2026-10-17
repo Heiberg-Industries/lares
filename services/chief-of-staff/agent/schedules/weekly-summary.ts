@@ -49,6 +49,9 @@ import { ownerTz } from "../../lib/owner-clock.js";
 import { scheduleHours } from "../../lib/schedule-hours.js";
 import { agentName } from "../../lib/agent-name.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 /** Sunday on the OWNER's clock, from the same `partsIn` date string the slot above
  *  comes off — one formatter, so the day and the hour cannot disagree. */
 function isSunday(now: Date, tz: string): boolean {
@@ -216,7 +219,10 @@ export default defineSchedule({
 
       const chatId = liveTelegramChatId();
       if (!chatId) {
-        console.warn("weekly-summary: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        if (!warnedNoPrincipal) {
+          warnedNoPrincipal = true;
+          console.warn("weekly-summary: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        }
         return;
       }
 

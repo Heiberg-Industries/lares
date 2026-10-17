@@ -47,6 +47,14 @@ it('serializes validation findings across the production server-action boundary'
  expect(result).toEqual({ok:false,error:{message:'Skill requires a removed grant',findings:[{check:'skills-within-grants',message:'A skill can never widen access'}],outcomeMayBeUnknown:false}});
 });
 
+it('tells the owner why a door cannot be turned on without its credentials, and that nothing changed',async()=>{
+ const {KeeperRefusedError}=await import('../lib/keeper-client');
+ const message='Telegram needs a bot token before it can be turned on. Save the credentials first.';
+ mocks.keeper.mockResolvedValueOnce({definition:JSON.stringify({doors:[],channels:[]}),duties:'',voice:''});
+ mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError(message));
+ expect(await setDoorEnabled('example','telegram',true)).toEqual({ok:false,error:{message,findings:undefined,outcomeMayBeUnknown:false}});
+});
+
 it('serializes door read failures before mutation, preserving findings without retry',async()=>{
  const {KeeperRefusedError,KeeperUnavailableError}=await import('../lib/keeper-client');
  mocks.keeper.mockRejectedValueOnce(new KeeperRefusedError('Read refused',[{check:'ownership',message:'Different incarnation'}]));

@@ -35,6 +35,14 @@ describe("sign out", () => {
     expect(cookie).toMatch(/Secure/i);
     expect(cookie).toMatch(/SameSite=lax/i);
   });
+  it("sign-in asks Google to show the account picker, so signing back in is a choice", async () => {
+    const { route } = await load();
+    vi.stubEnv("GOOGLE_CLIENT_ID_CONSOLE", "client-id.example");
+    const res = await route.GET(req("/api/auth/login", "GET", null), ctx("login"));
+    const target = new URL(res.headers.get("location")!);
+    expect(target.origin).toBe("https://accounts.google.com");
+    expect(target.searchParams.get("prompt")).toBe("select_account");
+  });
   it("GET to the sign-out route does not sign out", async () => {
     const { route } = await load();
     const res = await route.GET(req("/api/auth/logout", "GET", null), ctx("logout"));

@@ -57,6 +57,9 @@ import { gatewayComplete } from "../../lib/llm-complete.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 /**
  * A slot key for the current minute across MULTIPLE hours, or null when `now` is not exactly one of
  * `hours`:00 on `tz`'s wall clock. The single-hour case is `lib/recurrence.ts`'s `slotIn`, which
@@ -315,7 +318,10 @@ export default defineSchedule({
 
     const channelId = liveSlackChannelId();
     if (!channelId) {
-      console.warn("crm-routing: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+      if (!warnedNoPrincipal) {
+        warnedNoPrincipal = true;
+        console.warn("crm-routing: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+      }
       return;
     }
 

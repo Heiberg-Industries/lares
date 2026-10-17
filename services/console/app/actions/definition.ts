@@ -12,7 +12,8 @@ export type DefinitionActionResult<T> = {ok:true;result:T}|{ok:false;error:{mess
 async function call<T>(action:string,input:unknown,email:string,timeoutMs?:number):Promise<DefinitionActionResult<T>> {
   try { return {ok:true,result:await (timeoutMs ? keeper<T>(action,input,email,{timeoutMs}) : keeper<T>(action,input,email))}; }
   catch(error) {
-    if(error instanceof KeeperRefusedError) return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length}};
+    // A door switched on without its credentials is refused before anything is stored: say why, and say nothing changed.
+    if(error instanceof KeeperRefusedError) return {ok:false,error:{message:error.message,findings:error.findings,outcomeMayBeUnknown:!error.findings?.length&&!error.message.endsWith('before it can be turned on. Save the credentials first.')}};
     if(error instanceof KeeperUnavailableError) return {ok:false,error:{message:error.message,outcomeMayBeUnknown:error.outcomeMayBeUnknown}};
     return {ok:false,error:{message:'Keeper action failed; its outcome may be unknown. Inspect the current state before trying again.',outcomeMayBeUnknown:true}};
   }

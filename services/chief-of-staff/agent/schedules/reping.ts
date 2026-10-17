@@ -48,6 +48,9 @@ import {
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 20_000;
 
 function liveTelegramChatId(): string | undefined {
@@ -93,7 +96,10 @@ export default defineSchedule({
       const now = new Date();
       const chatId = liveTelegramChatId();
       if (!chatId) {
-        console.warn("reping: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        if (!warnedNoPrincipal) {
+          warnedNoPrincipal = true;
+          console.warn("reping: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        }
         return;
       }
 

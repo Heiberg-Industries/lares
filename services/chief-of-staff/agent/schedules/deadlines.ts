@@ -53,6 +53,9 @@ import { errorDetail } from "../../lib/error-detail.js";
 import { readBriefLanguage, type BriefLanguage } from "../../lib/brief-settings.js";
 import { BRIEF_STRINGS } from "../../lib/brief-strings.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 // ─── The rung's wording ──────────────────────────────────────────────────────────────────────
 
 /**
@@ -247,7 +250,10 @@ export default defineSchedule({
     try {
       const chatId = primaryTelegramChatId();
       if (!chatId) {
-        console.warn("deadlines: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        if (!warnedNoPrincipal) {
+          warnedNoPrincipal = true;
+          console.warn("deadlines: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        }
         return;
       }
 
