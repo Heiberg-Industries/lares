@@ -1,92 +1,70 @@
-# Integrations & Accounts (console)
+# Connections and accounts (console)
 
-The **Integrations & Accounts** page (`/integrations`) is where Test Owner self-serves the fleet's
-Google wiring instead of running `bin/oauth-enroll.ts` or editing the DB.
+The **Connections** page (`/integrations`) is where the owner sees and manages what the agents on
+this installation are connected to: Google accounts, the Notion key, saved-link clipping, and
+what each agent may do with each connection. It is how you connect accounts without editing files
+on the server.
 
-## The model: agent → integration → account → autonomy
+## The model: account, connection, agent access, autonomy
 
-- **Account** — a connected Google account (mailbox + calendar), stored encrypted in the shared
-  `oauth_tokens` table, keyed `(principal, provider, email_address)`. Provider is always `google`.
-  One consent covers all three scopes the fleet uses: `gmail.readonly`, `gmail.compose`
-  (drafts + send), `calendar.readonly`. v1 principal = `U_owner1` (matches the watcher + Chief of Staff).
-- **Integration (capability / hand)** — a power like `gmail` or `calendar`, built once and
-  **granted per agent** in that agent's `agent.json` (`grants[]`). Two agents holding the same
-  integration is one connector + two grants, not duplication.
-- **Autonomy** — each (agent, capability[, action]) has a level in the live `ratchet` table:
-  `autonomous` (acts + audits, no 👍), `gated` (needs 👍), `never` (hard-denied). The page's dial
-  writes this table directly via the `setAutonomy` server action.
+- **Account** — a connected Google account (mailbox and calendar), stored encrypted in the
+  installation's database, keyed by owner, provider and address. The provider is Google. One
+  consent covers the scopes the agents use: `gmail.readonly`, `gmail.compose` (drafts and send)
+  and `calendar.readonly`.
+- **Connection** — a card on the page for something the installation can reach: a Google client,
+  Notion, an outside tool server. It shows a status, which agents have access, and details.
+- **Agent access** — an agent only has the powers (capabilities) in its definition. The
+  definition is saved by the keeper under `/srv/lares/agents/<name>/`; the console edits it (Edit
+  agent, then Access) and a change reaches the running agent when you apply it ("Apply connection
+  changes (restarts agent)"). Two agents holding the same capability is one connection and two
+  grants.
+- **Autonomy** — for each agent and capability the table at the bottom of the page shows a level:
+  acts on its own, asks first, or never (a live, reversible revoke). A change reaches the agent at
+  its next action. Some actions always ask whatever the level: moving money, deleting data,
+  contacting someone for the first time, publishing, an agent changing its own autonomy.
 
-## What the console can and can't change live
+## Connecting a Google account
 
-- **Live (DB):** connect/remove Google accounts; set any agent capability's autonomy on the dial.
-  `never` is a live, reversible **revoke** (the agent can't use the power even though the grant
-  exists). This is the v1 revoke mechanism.
-- **Not live (manifest + redeploy):** *adding a brand-new capability* to an agent, because grants
-  live in `agent.json`, which is baked into the agent image and read at boot by `buildAgentHands`.
-  For v1 the matrix is fixed (Chief of Staff: gmail read+draft + calendar read; Sales Agent: gmail draft+send), so
-  there's nothing to add from the console.
+There are two entry points, both ending at Google's consent screen and back to
+`/api/accounts/google/callback`:
 
-## Add-account flow (in-browser OAuth)
+1. **Connections page, "Connect a Google account".** Type the address; its domain decides which
+   configured Google client is used.
+2. **An agent's own mailbox (chief of staff only).** On the agent's page, under Connect doors, the
+   Email door: "Connect mailbox with Google". The agent must be running, and it can then use only
+   that mailbox. Apply the connection changes afterwards.
 
-1. Pick an org (Org One / Org Two) and click **Add account** → POST `/api/accounts/google/start`.
-2. The console (session-gated) signs a short-lived `state` **bound to the initiating session's
-   email**, builds the per-org consent URL, and redirects to Google. The callback rejects a state
-   whose email ≠ the completing session (CSRF defence).
-3. Google redirects back to `/api/accounts/google/callback`; the console exchanges the code,
-   reads the *actual* connected mailbox (`gmail.users.getProfile`), and stores the encrypted
-   refresh token via `@lares/agent-box` (same `TOKEN_ENC_KEY` the runtime decrypts with).
-4. Back on `/integrations?added=<email>`, the new account appears and is immediately resolvable
-   by Chief of Staff / the watcher (same DB, same key).
+Either needs a Google **data** client set up first. It is separate from the client that signs you
+in to the console. As root on the server:
 
-Removing an account deletes its `oauth_tokens` row (the agent loses access). The principal is
-bound **server-side** (`CONSOLE_PRINCIPAL`) — the remove action never trusts a client-supplied
-principal, so it can't be used to delete another principal's account.
+1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` (an explicit lower-case
+   organisation id, for example `org-one`) to `/etc/lares/console-oauth.env`.
+2. Register `https://<console-host>/api/accounts/google/callback` as a redirect address on that
+   Google client.
+3. From the Lares checkout, run the configuration command, then restart the keeper:
 
-## Config (env)
+   ```sh
+   sudo python3 services/box/ops/configure-google-keeper.py --org org-one --dry-run
+   sudo python3 services/box/ops/configure-google-keeper.py --org org-one
+   sudo docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart
+   ```
 
-- `TOKEN_ENC_KEY` (or `TOKEN_ENC_KEY_FILE`) — 64-hex AES key, **must equal the runtime's**.
-- `GOOGLE_CLIENT_ID_<ORG>` / `GOOGLE_CLIENT_SECRET_<ORG>` (one pair per org) — per-org OAuth web
-  clients (or their `*_FILE` variants). The console discovers the orgs from these names. Mirror the enroll CLI.
-- `CONSOLE_PRINCIPAL_ID` (default: the owner key, `AGENT_OWNER_USER_ID`) — must name the same
-  value as the fleet's `GOOGLE_PRINCIPAL_ID` and the calendar job's `NOTION_SYNC_PRINCIPAL`.
-  Since box 085 that value is the identity register's id (`users.id`); the old legacy spelling
-  is no longer a default anywhere. See the OAuth principal rename note.
-- `CONSOLE_SESSION_SECRET` — signs both the login session and the OAuth `state`.
-- Each org's OAuth **web client** must register the redirect URI
-  `https://<console-host>/api/accounts/google/callback`.
+   The command writes no credential to the screen or the command line. It copies the two client
+   values into `root:10001` `0440` files that the keeper mounts read-only, adds the installed owner
+   and the organisation to `/etc/lares/keeper.json`, and sets `CONSOLE_PRINCIPAL_ID` in the console
+   file to the installed owner. It does not connect a mailbox or switch an agent on.
+4. Recreate the console so it reads the file again: `sudo docker compose -f /opt/lares/compose.yaml up -d --force-recreate console`.
+5. Connect the mailbox (either entry point above) and complete Google's consent screen.
 
-## Deploy
+Re-run step 3 after any installer re-run that replaces `/etc/lares/keeper.json`; the installer
+carries the Google settings over when it can read the file and stops without touching it when it
+cannot (see the install guide).
 
-1. Set the env above on the console service (Coolify). `TOKEN_ENC_KEY` = the runtime's key.
-2. Register the callback redirect URI on the org-one + org-two Google OAuth web clients.
-3. Redeploy the console (manual — push to main does not auto-deploy).
-4. Probe: open `/integrations`, Add account (Org One) → Google consent → returns with the mailbox
-   listed. Confirm `SELECT email_address, org_id FROM oauth_tokens WHERE provider='google';`
-   shows it, and that Chief of Staff's workflow can draft on it (Plan 3 probe).
-
-### Keeper-managed fresh installation
-
-The Google sign-in client is separate from a Google **data** client. Before an agent can use a
-connected mailbox, put the data client's `GOOGLE_CLIENT_ID_<ORG>` and
-`GOOGLE_CLIENT_SECRET_<ORG>` entries in the root-owned `0600` console OAuth env file, and register
-`https://<console-host>/api/accounts/google/callback` on that client. The owner still has to
-complete Google's consent screen. For an explicit lower-case org id (for example `org-one`), run
-from the Lares checkout on the installed server:
-
-```sh
-sudo python3 services/box/ops/configure-google-keeper.py --org org-one --dry-run
-sudo python3 services/box/ops/configure-google-keeper.py --org org-one
-sudo docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart lares-keeper
-```
-
-The command writes no credential to stdout or argv. It copies the two client values into
-root:10001 `0440` files that the Keeper can mount read-only, and adds the installed owner and
-explicit org to `/etc/lares/keeper.json`. It does not connect a mailbox or enable an agent.
-After the Keeper restart, connect the mailbox in the agent editor, select only the intended
-capabilities, enable Email, and apply connection changes. Inspect the agent's current state if
-an apply times out before retrying it. Re-run this configuration command after any installer
-rerun that replaces `/etc/lares/keeper.json`; the installer does not yet preserve these
-post-install Google settings automatically.
+The token key (`token-enc-key` in `/etc/lares/secrets`, the `TOKEN_ENC_KEY` setting) is shared
+between the console and the agents, so a token the console stores is one the agent can read. The
+installer generates it once; back it up (install guide, section 4). Removing an account on the
+page deletes its stored token, so the agents lose access. It does not revoke the grant at Google:
+do that in the Google account's third-party access settings.
 
 ## Models (Settings page)
 
@@ -146,9 +124,9 @@ twice (only the Notion side checks for the other). The live probe
 `services/chief-of-staff/tests/live/notion-clipping.live.mts` is what shows how Notion really answers;
 run it by hand when the pinned Notion API version or the SDK changes.
 
-## Follow-ups
+## Not done yet
 
-- Revoke the token at Google (not just delete the row) on Remove.
-- Writable grants (add a capability from the console) once a manifest-write + redeploy hook exists.
-- Multi-user: resolve the principal from the authenticated session (not a fixed `CONSOLE_PRINCIPAL`)
-  and surface a principal selector once real multi-user lands.
+- Removing an account does not revoke the token at Google.
+- Adding a capability to an agent from this page is done in Edit agent, not on the Connections
+  page.
+- One owner principal per installation; there is no selector for several.

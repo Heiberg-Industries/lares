@@ -5,12 +5,14 @@ The operating-side role, extracted from the fleet's daily driver.
 or language. `agent.json` is the declaration this role assumes: every capability at the scope
 the role's prose relies on, every autonomy level at the safe baseline, egress sealed.
 
-An installation uses it by pointing its own service at this `role.md` and supplying its own
-`voice.md` overlay — the assembler (`bin/assemble-instructions.ts`) turns the service's own
-`agent.json` + this role + that voice into `agent/persona.md`, and the "where I run"
-section of the result is GENERATED from the declaration, never hand-written. That generation is
-the point: the hand-written environment text this role replaced is what once made the agent deny
-capabilities it actually held.
+An installation uses it by creating an agent from this role in the console: the agent's definition
+(`agent.json`, `duties.md`, `voice.md`) is saved by the keeper, and the running agent gets this
+`role.md` and the engine's safety rules at session start, with its own voice added after them
+([ADR-0015](../../../../docs/decisions/0015-agents-are-definitions-resolved-at-runtime.md)). The
+assembler (`bin/assemble-instructions.ts`) builds the neutral default persona that ships in the
+role's image, and the "where I run" section of the result is GENERATED from the declaration, never
+hand-written. That generation is the point: the hand-written environment text this role replaced is
+what once made the agent deny capabilities it actually held.
 
 ## What it is for
 
@@ -49,8 +51,8 @@ role's prose gracefully — the generated "where I run" section simply stops nam
 
 ## Optional grants, off by default
 
-`transit` (real public-transport journeys, from a national journey planner that covers Norway
-only) is not in the default declaration. An installation that wants it adds
+`transit` (real public-transport journeys, from a single national journey planner, so it only
+works in the country that planner covers) is not in the default declaration. An installation that wants it adds
 `{ "capability": "transit", "scope": "read" }` and `"transit": "gated"` to its own agent
 definition. Without the grant the tool does not exist for the agent, and the morning and evening
 briefs keep only their ban on stating a journey they were not told about.
