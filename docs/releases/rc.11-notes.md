@@ -82,9 +82,9 @@ published; this page is a draft until then, and the security scan section below 
 - The install guide creates `/etc/lares` before writing the console sign-in file.
 - Schedules that warn about a missing chat principal now log it once per process, not every minute.
 - The meeting follow-up schedule no longer falls back to a built-in Notion database. Set
-  `NOTION_MEETINGS_DATA_SOURCE_ID`; without it the schedule fails with a clear message. An
-  installation made by the installer has no console or keeper setting that passes it to the agent
-  yet, so meeting follow-ups do not run there until that is added.
+  `NOTION_MEETINGS_DATA_SOURCE_ID` in `/etc/lares/keeper.json` under
+  `defaultBindings["chief-of-staff"].environment`; the keeper now accepts it. Without it the
+  schedule stops with a clear message and nothing else is affected.
 
 ### Documentation
 

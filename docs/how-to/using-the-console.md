@@ -148,9 +148,8 @@ Two further pages are reached from the buttons at the top.
 asking first. Revoking a series does not delete its history; it goes back to needing your approval.
 You switch a series on by asking the agent. Meeting follow-ups read your meeting notes from Notion,
 so they need the `NOTION_MEETINGS_DATA_SOURCE_ID` setting (the id of your Meetings database); with
-it unset the schedule says so each time it runs. An installation made by the installer has no
-console or keeper setting that passes it to the agent yet, so on such an installation meeting
-follow-ups do not run.
+it unset the schedule says so each time it runs. It is set in the server's keeper configuration,
+not in the console; see the install guide, "Meeting follow-ups and Notion".
 
 ### Voice (Email writing style)
 
