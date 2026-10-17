@@ -115,6 +115,9 @@ export interface WaitingDeps {
   /** Where the console says why it could not read an agent. Never given a secret. Defaults to the console log. */
   log?(line: string): void;
   now(): number;
+  /** Whether this member is the installation's credential administrator, who owns agents that have
+   *  no door or email claim. Absent: nobody is. */
+  isAdministrator?(member: string): Promise<boolean>;
   /** Pause between checks for the agent's outcome after an answer. Injected so tests do not wait. */
   sleep(ms: number): Promise<void>;
 }
@@ -175,15 +178,15 @@ function enabledDoors(doors: unknown, channels: unknown): Set<string> {
  * agent (`connections()` in `services/keeper/lib/lifecycle.ts`, written into
  * `LARES_CONSOLE_PRINCIPAL` by `compose-agents.ts`): the APPLIED connection of each claimed door
  * (`applied_connection`, not the row's newer unapplied values) on the current incarnation, counted
- * only for a door the definition has switched on. Pure; one row per agent × claim. (With no claim at
- * all the keeper falls back to the installation's credential administrator for the agent's own
- * approval check; this list does not, and shows such an agent to nobody.)
+ * only for a door the definition has switched on. Pure; one row per agent × claim. An agent with no
+ * claim at all is the installation administrator's: the keeper hands it that address as its console
+ * approver, so `administrator` (is this member the credential administrator?) owns it here.
  *
  * OWNED means this member is the ONLY such claimant. Any member can claim any door, so two members
  * may hold claims on one agent while its `LARES_CONSOLE_PRINCIPAL` names only one of them; with
  * two claimants the console cannot tell which, and offers the agent to neither. EXPORTED for tests.
  */
-export function ownedFrom(rows: readonly Record<string, unknown>[], member: string): OwnedAgent[] {
+export function ownedFrom(rows: readonly Record<string, unknown>[], member: string, administrator = false): OwnedAgent[] {
   const agents = new Map<string, { agent: OwnedAgent | null; owners: Set<string> }>();
   for (const row of rows) {
     if (typeof row.name !== "string" || !AGENT_NAME.test(row.name)) continue;
@@ -201,7 +204,7 @@ export function ownedFrom(rows: readonly Record<string, unknown>[], member: stri
     entry.owners.add(claim.owner_email);
   }
   return [...agents.values()]
-    .filter((e) => e.agent !== null && e.owners.size === 1 && e.owners.has(member))
+    .filter((e) => e.agent !== null && (e.owners.size === 0 ? administrator : e.owners.size === 1 && e.owners.has(member)))
     .map((e) => e.agent!);
 }
 
@@ -220,7 +223,11 @@ async function ownedAgents(member: string, deps: WaitingDeps, only?: string): Pr
      ORDER BY r.name`,
     [only ?? null],
   );
-  return ownedFrom(rows, member);
+  // Only asked when some agent has no claim: the keeper answers a credential status request for the
+  // administrator alone, so a successful answer is the proof.
+  const unclaimed = rows.some((r) => !r.claim);
+  const administrator = unclaimed && deps.isAdministrator ? await deps.isAdministrator(member).catch(() => false) : false;
+  return ownedFrom(rows, member, administrator);
 }
 
 interface Conversation {

@@ -4,6 +4,8 @@
  * export would become a callable endpoint.
  */
 import { pool } from "./db";
+import { CREDENTIAL_SLOT } from "@lares/agent-kit/credential-lifecycle";
+import { keeper } from "./keeper-client";
 import { readSecret } from "./secrets";
 import type { WaitingDeps } from "./waiting";
 
@@ -16,6 +18,8 @@ export const waitingDeps: WaitingDeps = {
   },
   fetch: (input, init) => fetch(input, init),
   routePassword: () => readSecret("EVE_ROUTE_PASSWORD"),
+  // The keeper answers a credential status request for its configured administrator only.
+  isAdministrator: (member) => keeper("credential.status", { slot: CREDENTIAL_SLOT }, member).then(() => true, () => false),
   now: () => Date.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
