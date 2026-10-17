@@ -58,6 +58,9 @@ export async function acceptOutsideDescriptions(input:{name:string;tool:string;e
 export async function doorStatus(name:string):Promise<DefinitionActionResult<import('../../components/DoorSetup').DoorStatus[]>> {
   return call('door.status',{name},await actor());
 }
+export async function verifyDoor(name:string,kind:'slack'|'telegram'):Promise<DefinitionActionResult<{kind:string;username?:string;team?:string;user?:string}>> {
+  return call('door.verify',{name,kind},await actor());
+}
 export async function claimCode(name:string,kind:'slack'|'telegram'):Promise<DefinitionActionResult<{code:string;expiresAt:string;instruction:string}>> {
   return call('door.claim_issue',{name,kind},await actor());
 }

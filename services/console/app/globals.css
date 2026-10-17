@@ -454,6 +454,10 @@ th {
 .lares-door-setup form { display:flex; flex-wrap:wrap; align-items:end; gap:12px; }
 .lares-door-setup form input[type=hidden] { display:none; }
 .lares-door-setup > button { justify-self:start; }
+.lares-door-setup .lares-door-progress { padding:var(--space-4); border:2px solid var(--primary); border-radius:var(--lares-surface-radius); background:var(--card); color:var(--foreground); }
+.lares-door-setup .lares-door-connect { flex-basis:100%; padding:var(--space-4); border:2px solid var(--primary); border-radius:var(--lares-surface-radius); background:var(--secondary); }
+.lares-door-setup .lares-door-connect p { margin:0 0 var(--space-2); color:var(--foreground); }
+.lares-door-setup .lares-door-tap { display:inline-block; padding:var(--space-3) var(--space-5); border-radius:var(--lares-control-radius); background:var(--primary); color:var(--primary-foreground); font:var(--text-lead); text-decoration:none; }
 .lares-editor-actions { display:flex; justify-content:flex-end; gap:12px; padding-top:24px; border-top:1px solid var(--border); }
 .lares-steps { list-style:none; display:flex; justify-content:space-between; gap:12px; padding:0 0 16px; margin:0 0 24px; border-bottom:1px solid var(--border); font:var(--text-mono-sm); color:var(--muted-foreground); }
 .lares-steps [aria-current=step] { color:var(--foreground); }

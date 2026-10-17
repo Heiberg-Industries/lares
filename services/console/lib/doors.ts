@@ -22,6 +22,26 @@ export function telegramSteps(agent:string):{step:number;text:string}[] {
     {step:1,text:'Open the verified @BotFather account in Telegram.'},
     {step:2,text:`Send /newbot and enter ${agent} as the display name.`},
     {step:3,text:'Choose an available username ending in bot. Copy the bot token privately.'},
-    {step:4,text:'Paste the token here, save, and apply connection changes. Register the webhook, then send the one-time claim code in a private chat with your bot.'},
+    {step:4,text:'Paste the token below and press Connect. Everything else happens by itself; at the end you tap one link and press Start.'},
   ];
 }
+/** The door's row as the keeper reports it. `configured` means a token was saved at some point. */
+export interface DoorRow {kind:string;enabled:boolean;configured?:boolean;claimed:boolean;mailbox?:string;pending:boolean;pending_reason?:string;applied:boolean}
+/** A door the owner has never touched: not enabled, no saved token, no owner, no mailbox. The
+ * keeper's pending flag belongs to the whole agent, so it says nothing about such a door. */
+export function doorTouched(row?:DoorRow):boolean {
+  return Boolean(row&&(row.enabled||row.configured||row.claimed||row.mailbox));
+}
+export function doorStateText(row?:DoorRow):string {
+  if(!row||!doorTouched(row))return 'Not set up';
+  if(row.pending)return `Pending: ${row.pending_reason??'Apply connection changes'}`;
+  if(row.applied&&row.enabled)return row.claimed?'Connected':'Owner connection applied';
+  return row.enabled?'Credentials applied; owner connection still needed':'Credentials saved; door is off';
+}
+/** Telegram's deep link: opening it and pressing Start sends `/start <code>` to the bot. The
+ * code is the one-time code (letters and digits only, which Telegram allows in a start link). */
+export function telegramConnectLink(username:string,code:string):string {
+  if(!/^[A-Za-z0-9_]{4,32}$/.test(username)||!/^[A-Z0-9]{24}$/.test(code))throw new Error('Invalid Telegram bot username or code');
+  return `https://t.me/${username}?start=${code}`;
+}
+export const slackClaimMessage=(code:string)=>`claim ${code}`;
