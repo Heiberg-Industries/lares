@@ -745,6 +745,16 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     createdBy: "services/box/sql/002_standing_facts.sql",
     reason: "the chief of staff's store of a person's own stated words, created by its own box migration so it is part of this inventory.",
   },
+
+  // ── The web chat door's mailbox, created by services/box/sql/004_web_inbox.sql ──
+  {
+    table: "web_inbox",
+    scope: "member",
+    column: "owner",
+    idKind: "registry",
+    createdBy: `${BOX}/004_web_inbox.sql`,
+    reason: "messages an agent wrote for one owner's web chat; `owner` is the same canonical id the proactivity ledger (`initiations.owner`) uses.",
+  },
 ];
 
 export function scopeOf(table: string): ScopedTable | undefined {
