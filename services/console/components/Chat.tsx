@@ -64,11 +64,17 @@ export function Chat({
   name,
   owner,
   fresh = false,
+  seed,
+  inbox,
   agents = [],
 }: {
   name: string;
   owner: string;
   fresh?: boolean;
+  /** "Reply" on a web-chat message: start a new conversation with this text in the box, ready to send. */
+  seed?: string;
+  /** Messages the agent left in web chat, shown at the top. */
+  inbox?: React.ReactNode;
   agents?: ChatIdentity[];
 }) {
   const storageKey = chatSessionKey(owner, name);
@@ -81,19 +87,23 @@ export function Chat({
   // agent or owner gets a new binding before its Eve hook can mount under the wrong host.
   useEffect(() => {
     const storage = tabStorage();
-    if (fresh && storage) {
+    if ((fresh || seed !== undefined) && storage) {
       storage.removeItem(storageKey);
       storage.removeItem(`${storageKey}:draft`);
       storage.removeItem(`${storageKey}:scroll`);
+      try {
+        if (seed !== undefined) storage.setItem(`${storageKey}:draft`, seed);
+      } catch {}
       const url = new URL(window.location.href);
       url.searchParams.delete("created");
+      url.searchParams.delete("reply");
       window.history.replaceState(window.history.state, "", url);
     }
     setBinding({
       key: storageKey,
-      session: storage && !fresh ? readChatSession(storage, storageKey) : null,
+      session: storage && !fresh && seed === undefined ? readChatSession(storage, storageKey) : null,
     });
-  }, [storageKey, fresh]);
+  }, [storageKey, fresh, seed]);
 
   if (binding?.key !== storageKey) return <p role="status">Opening chat…</p>;
   return (
@@ -103,6 +113,7 @@ export function Chat({
       agents={agents}
       storageKey={storageKey}
       initialSession={binding.session}
+      inbox={inbox}
     />
   );
 }
@@ -112,11 +123,13 @@ function ChatSession({
   agents,
   storageKey,
   initialSession,
+  inbox,
 }: {
   agents: ChatIdentity[];
   name: string;
   storageKey: string;
   initialSession: ClientSessionState | null;
+  inbox?: React.ReactNode;
 }) {
   const router = useRouter();
   const identity = agents.find((a) => a.name === name) ?? {
@@ -201,6 +214,7 @@ function ChatSession({
         title="Chat"
         description="Talk things through. Your agents are here."
       />
+      {inbox}
       <div className="lares-chat-top">
         <Menu.Root>
           <Menu.Trigger asChild>

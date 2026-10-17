@@ -28,6 +28,7 @@ import { checkCeilings, ownerId, readDoors, readProactiveAgents, validateQuietHo
 import type { Ceilings } from "../../lib/proactivity";
 import { isBriefLanguageCode } from "../../lib/brief-settings";
 import { isOwnerFacingSchedule, validateHours } from "../../lib/schedule-settings";
+import { briefConflicts, loadConflictInputs } from "../../lib/delivery-check";
 
 export type SaveResult = { ok: true } | { ok: false; message: string };
 
@@ -83,6 +84,16 @@ export async function saveQuietHours(input: { door: string; quietStart: string; 
   if (!door.ok) return door;
   const valid = validateQuietHours(input.quietStart, input.quietEnd);
   if (!valid.ok) return valid;
+  // A window that swallows the hour a brief goes out would hold that brief back every day, silently.
+  const data = await loadConflictInputs(owner, email);
+  if (data) {
+    const rows = [
+      ...data.rows.filter((r) => !(r.agent === "*" && r.door === input.door)),
+      { agent: "*", door: input.door, quietStart: input.quietStart, quietEnd: input.quietEnd },
+    ];
+    const conflicts = briefConflicts({ ...data, rows, onlyDoorId: input.door });
+    if (conflicts.length > 0) return { ok: false, message: conflicts.join(" ") };
+  }
   await pool.query(
     `INSERT INTO proactivity_settings (owner, agent, door, quiet_start, quiet_end, updated_by, updated_at)
      VALUES ($1, '*', $2, $3, $4, $5, now())
@@ -163,6 +174,14 @@ export async function saveScheduleHours(input: { schedule: string; hours: number
   const checked = validateHours(input.schedule, input.hours);
   if (!checked.ok) return checked;
   const owner = ownerId();
+  // An hour inside the quiet window of the door the message goes to would never be sent.
+  const data = await loadConflictInputs(owner, email);
+  if (data) {
+    const conflicts = briefConflicts({
+      ...data, hours: { ...data.hours, [input.schedule]: input.hours }, onlySchedules: [input.schedule],
+    });
+    if (conflicts.length > 0) return { ok: false, message: conflicts.join(" ") };
+  }
   await pool.query(
     `INSERT INTO schedule_settings (owner, schedule, hours, updated_by, updated_at)
      VALUES ($1, $2, $3, $4, now())
