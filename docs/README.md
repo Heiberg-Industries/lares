@@ -24,6 +24,7 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 
 ## how-to
 
+- [`using-the-console.md`](how-to/using-the-console.md) — A tour of the console's pages
 - [`erasing-a-person.md`](how-to/erasing-a-person.md) — Erase one person from an installation
 
 ## runbooks
@@ -31,6 +32,13 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 - [`definition-backups.md`](runbooks/definition-backups.md) — Optional Git backups of agent definitions
 - [`export-and-teardown.md`](runbooks/export-and-teardown.md) — Export, restore and tear down an installation
 - [`outside-tool-tokens.md`](runbooks/outside-tool-tokens.md) — Placing the token file for an outside tool
+
+## releases
+
+Release notes say what changed, what breaks and how to upgrade. The newest is
+[`rc.11-notes.md`](releases/rc.11-notes.md) (draft); earlier ones are
+[rc.10](releases/rc.10-notes.md), [rc.9](releases/rc.9-notes.md), [rc.8](releases/rc.8-notes.md),
+[rc.7](releases/rc.7-notes.md) and [rc.6](releases/rc.6-notes.md).
 
 ## installation
 

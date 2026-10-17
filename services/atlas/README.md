@@ -1,5 +1,10 @@
 # @lares/atlas — the Atlas sync job
 
+> **Not part of the tested install path.** The installer does not start this job: the stack it
+> renders has no `atlas-sync` service. The code ships in the `sync-jobs` image
+> ([`services/sync-jobs`](../sync-jobs/README.md)), which release files list, for an operator who
+> wants to run it themselves. Nothing in the console or the agents needs it.
+
 Keeps the **Atlas** (`/srv/atlas`, the business knowledge store every business agent grounds
 on) derived from its canonical sources, instead of rotting as a hand-tended wiki.
 
@@ -57,11 +62,11 @@ apart. Pings fire on **transition**, so a source unreachable for a week is one m
 
 ## Operator commands
 
-Run on the box, where the store, the database and the tokens are:
+Run in a container of the `sync-jobs` image that you have started yourself, with the store, the
+database and the tokens available to it (the tested install does not start one):
 
 ```bash
-cd /opt/agent-box            # never `docker compose -f …` — that suppresses the override file
-docker compose exec atlas-sync /app/node_modules/.bin/tsx services/atlas/bin/atlas-sync.ts <flag>
+docker exec <your-atlas-sync-container> /app/node_modules/.bin/tsx services/atlas/bin/atlas-sync.ts <flag>
 ```
 
 | Flag | Does |

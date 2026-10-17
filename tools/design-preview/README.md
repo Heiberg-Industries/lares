@@ -105,7 +105,7 @@ screenshots informed the changes; a new browser visual check has not been perfor
   page; navigating away or reloading still resets chat state.
 - User messages use primary ink and agent messages use pale moss. Author labels
   and alignment also distinguish senders; dark mode uses the original theme tokens.
-- Default symbols adapt the supplied chief-of-staff, travel and loop-four artwork
+- Default symbols adapt the supplied chief-of-staff and loop-four artwork
   as inline vectors. No house icon is used for agent identity.
 - Create/edit supports optional PNG/JPG/WebP images up to 2 MB, centered in the
   shared avatar component, with a restore-default action. Uploads remain in memory

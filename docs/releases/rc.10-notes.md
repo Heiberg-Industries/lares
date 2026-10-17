@@ -1,4 +1,4 @@
-# rc.10 release notes (draft)
+# rc.10 release notes
 
 rc.10 follows rc.9 (`releases/2026-10-15-rc.9.json`) and is recorded in `releases/2026-10-16-rc.10.json`. It
 contains nine changes, almost all from a stranger's first install of the tested path on a

@@ -1,58 +1,69 @@
 # @lares/agent-box
 
-The private agent box's **state store** — Postgres 16 + pgvector — and a
-small typed data layer over it. This is Stage 2 of the agent-box build.
+The installation's **state store** and the commands that install and look after it. It holds the
+Postgres schema (PostgreSQL 16 with pgvector), a small typed data layer over it, the stack
+renderer the installer uses, and the install, update, backup and restore scripts under `ops/`.
 
-It deploys to `lares-host` and **runs** there — it is never built on the box
-(`docker build` / `pnpm install` on an 8 GB box risks an OOM). Images are
-digest-pinned and pulled; the Node code is small enough to ship as source.
+You do not deploy this package by hand. A server is installed with `ops/install.sh`, which renders
+the stack from a release file and pulls every image by digest; nothing is built on the server. The
+step-by-step guide is [`docs/install.md`](../../docs/install.md), and `ops/README.md` describes the
+scripts.
 
-## What's in here
+## What is in here
 
-| File | What it is |
+| Path | What it is |
 |---|---|
-| `sql/001_baseline.sql` | The whole state schema in one file: `sessions`, `confirmations`, `reminders`, `trigger_schedules`, `audit`, the agent, keeper and console tables, plus the `vector` + `pgcrypto` extensions. `pnpm -C services/box migrate` applies it on a fresh database and records it; later changes are new files numbered above 001. |
-| `compose.yaml` | One `db` service (`pgvector/pgvector:pg16`, digest-pinned). **No published port** — Postgres is reachable only on the internal Compose network. Password injected via a Docker secret file. |
-| `.env.example` | Non-secret connection config (`PGHOST` etc.). Copy to `.env` (gitignored). The DB password is never an env value. |
-| `lib/db.ts` | Pool helpers. Reads the password from `DATABASE_PASSWORD_FILE` (default `/run/secrets/database-password`), falling back to `/run/secrets/db_password` for one older installation, then to `PGPASSWORD` for local use. |
-| `lib/reminders.ts` | Typed reminders data layer (`createReminder`, `dueReminders`, `markDelivered`) — closes the chief of staff's reminder gap. The Stage 3 daemon consumes it. |
-| `migrate.ts` | Manual first-apply runner for the SQL (the Compose init mount is the normal path). |
-| `tests/` | Vitest tests that spin up a real `pgvector:pg16` container (Testcontainers), apply the real schema, and verify the data layer. No mocks. |
+| `sql/` | The schema. `001_baseline.sql` is the whole base schema (sessions, confirmations, reminders, schedules, the audit record, the agent, keeper and console tables, the identity register, plus the `vector` and `pgcrypto` extensions). Later changes are new files numbered above 001 (`002_…`, `003_…`, `004_…`), applied in order. |
+| `migrate.ts` | The migration runner: `pnpm -C services/box migrate` applies any file not yet recorded, and says when there is nothing to do. The installer and `ops/update.sh` run it; there are no down migrations. |
+| `lib/` | The data layer: database pool (`db.ts`), sessions, confirmations, reminders, the audit record, token encryption (`crypto.ts`, `oauth-tokens.ts`), the migration ledger, the stack renderer (`stack-compose.ts`), the release-file reader (`release-manifest.ts`), and the person export and erasure code. |
+| `bin/` | The commands the installer and the owner run (below). |
+| `ops/` | The install, update, rollback, backup, restore and export scripts and their systemd units. See [`ops/README.md`](ops/README.md). |
+| `proxy/squid.conf` | The egress proxy's configuration: outbound traffic from agents goes through an allow-list. |
+| `compose.lares-keeper.yaml` | The keeper and egress proxy, as rendered into `/opt/lares/compose.lares-keeper.yaml`. |
+| `tests/` | Vitest tests that start real `pgvector` containers (Testcontainers), apply the real schema and check the data layer. Docker must be running. |
 
-## Develop / test (on the Mac)
+The stack Compose file (database, console, gateway, Caddy) is not a file in this folder. The
+installer renders it from the release file with `bin/render-stack.ts` into
+`/opt/lares/compose.yaml`.
+
+## The commands
+
+Run from the repository root, normally by the installer. Each takes `--help` or documents itself in
+its file header.
+
+| Command | What it does |
+|---|---|
+| `pnpm -C services/box migrate` | Create or update the database schema. |
+| `pnpm -C services/box doctor` | `lares doctor`: read-only health check; see below. |
+| `pnpm -C services/box first-owner` | Make the owner a real member of the installation. A practice run unless `--apply`. |
+| `pnpm -C services/box first-organisation` | Enrol the installation's first organisation (the owner's domain). Safe to repeat. |
+| `pnpm -C services/box installation-settings` | Write the two settings the first-agent page needs (model alias prefix, agent ceiling) if they are missing; never overwrites. |
+| `pnpm -C services/box render-stack` | Render `/opt/lares/compose.yaml` from a release file. |
+| `pnpm -C services/box render-keeper-config` | Render `/etc/lares/keeper.json` from a release file. |
+| `pnpm -C services/box export-person -- <who> --out <dir>` | Export what the installation holds about one member. Read-only. |
+| `pnpm -C services/box erase-person -- <who>` | Erase one person. A practice run unless `--apply`. See [erasing a person](../../docs/how-to/erasing-a-person.md). |
+
+### `lares doctor`
 
 ```bash
-pnpm --filter @lares/agent-box test       # spins ephemeral Postgres containers; needs Docker running
-pnpm --filter @lares/agent-box typecheck
+cd lares      # the checkout on the server
+PGHOST=127.0.0.1 DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
+  pnpm -C services/box doctor
 ```
 
-## Deploy to the box (Stage 2 box-side — NOT done yet)
+It reads the installation's settings and database and prints, in plain sentences, what is wrong
+and what to type to fix it: the settings list, the database, the migrations, the owner, the backup
+record, open repairs, and the gateway. It changes no setting, no file and no row. It makes no
+network call unless you add `--test-model --gateway <url> --alias <name> --key-file <path>`, which
+sends one tiny, paid completion through your own gateway. Exit code 0 means nothing failed (a
+warning alone still exits 0); 1 means at least one check failed.
 
-These steps run on `lares-host` and are **deliberately deferred until Stage 1.5
-(Backup & DR) is green**, so the moment any data lands it is already backed up.
+## Develop and test
 
-1. **Pin the secret.** Generate a DB password and place it root-only (not a
-   world-readable `.env`) so a contained agent can't read it:
-   ```bash
-   umask 077
-   openssl rand -base64 32 > /run/secrets/agent-box-db-password   # tmpfs, root:root 0400
-   ```
-   For persistence across reboot, store it in the password manager and
-   re-materialise on boot via a systemd unit using `LoadCredentialEncrypted=`.
-   Migrate here when Vaultwarden is deployed.
-2. **Bring up Postgres** (compose + sql shipped to `/opt/agent-box`, pulled — never built):
-   ```bash
-   cd /opt/agent-box && docker compose up -d
-   ```
-3. **Verify** the five tables + `vector` exist, and that Postgres is **not** reachable
-   from outside the box (no published port).
-4. **Confirm the backup captures it** — re-run the Stage 1.5 `backup.sh` and check a
-   DB dump is in the snapshot.
+```bash
+pnpm -C services/box test         # starts disposable Postgres containers; Docker must be running
+pnpm -C services/box typecheck
+```
 
-## Notes carried from the 2026-06-16 pre-build audit
-
-- Secrets via systemd-creds / Docker secret file — never a world-readable `.env`.
-- The box runs **pinned prebuilt images only**; never `docker build` / `pnpm install` on the box.
-- The `audit` table is **append-only** (the agent role gets INSERT + SELECT only,
-  granted at deploy time) and shipped off-box.
-- Postgres is bound to the **internal Compose network only**.
+The image probe in CI applies every file in `sql/`, in number order, to an empty pgvector
+database. A new migration must run there; see the repository's `AGENTS.md`.

@@ -9,7 +9,7 @@ run there; they live here so they can be reviewed.
 |---|---|
 | `install.sh` | First install and re-runs: preflight, secrets, database, keeper, stack, first owner |
 | `update.sh` | Move the box to a released version (images pulled by digest, never built on the box) |
-| `rollback.sh` | Return to the previous recorded version |
+| `rollback.sh` | Put the previous images back, one step only (see below) |
 | `restore.sh` | Restore an installation from a nightly restic snapshot onto a fresh install (`--snapshot <id\|latest>`, `--dry-run`) |
 | `export.sh` | Export an installation's data as an archive, without secrets |
 | `vault-purge.sh` | Erase named material from the vault, with an audit record |
@@ -25,6 +25,24 @@ the path of a file holding its session secret. `install.sh` creates `console-ses
 the generated compose sets the variable. A hand-written console compose must mount that file and
 set the variable before you update, and if it interpolates `${...}` values it must be started
 with `--env-file`. Details: [`docs/releases/rc.6-notes.md`](../../../docs/releases/rc.6-notes.md).
+
+## Rolling back an update
+
+`rollback.sh [--dry-run] [--yes]` reads the record `update.sh` wrote, says what it would put back
+and what it would not, asks, then writes the previous image digests into the installation's
+compose file, pulls them and starts them. It goes back exactly one step; once that record says
+"rolled-back" it refuses to run again. **It does not undo database changes**: it runs no migration
+in either direction, and it names the backup `update.sh` took before the update. To go back past
+a migration, restore that backup
+([restore onto a new server](../../../docs/install.md#restoring-onto-a-new-server)). If the keeper
+renders an agent's compose file from its own configuration, change that configuration too, or the
+keeper puts its configured image back the next time it applies the agent.
+
+## Health check
+
+`pnpm -C services/box doctor` (`lares doctor`) is a read-only check of the installation's settings,
+database, migrations, owner, backup record, open repairs and gateway. See
+[`services/box/README.md`](../README.md#lares-doctor).
 
 ## Backups
 
@@ -51,7 +69,19 @@ own, independent of disk encryption.
 | `lares-backup-verify.service` / `.timer` | `/etc/systemd/system/` | `systemctl enable --now lares-backup-verify.timer` |
 | `restore-drill.sh` | `/opt/lares/restore-drill.sh` (0750 root) | Monthly: restores a snapshot into scratch space and checks it |
 | `lares-restore-drill.service` / `.timer` | `/etc/systemd/system/` | `systemctl enable --now lares-restore-drill.timer` |
-| `disk-guard.sh` + `.service` / `.timer` / `.env.example` | `/usr/local/bin/`, `/etc/disk-guard.env` | Every 10 minutes, pushes root-disk usage to a push-style uptime monitor |
+| `disk-guard.sh` + `.service` / `.timer` / `.env.example` | `/usr/local/bin/`, `/etc/disk-guard.env` | Optional; `install.sh` does not install it (see below) |
+
+### Disk guard (optional)
+
+`disk-guard.sh` checks how full the root disk is every 10 minutes and pushes the result to a
+"push" monitor in an uptime tool you run (the script is written for Uptime Kuma). Under the
+threshold (default 75 percent) it reports up; at or over it reports down, which fires that tool's
+own notification, and if the box stops pushing at all the missed heartbeat alerts you. It is not
+installed by `install.sh` and nothing in the console reads it. To use it: copy the script to
+`/usr/local/bin/`, the `.service` and `.timer` to `/etc/systemd/system/`, create the monitor,
+put its push URL in `/etc/disk-guard.env` as `KUMA_PUSH_URL` (mode 0600; `THRESHOLD` and `MOUNT`
+are optional), and enable `disk-guard.timer`. Set the monitor's heartbeat and retry intervals to
+at least twice the timer's period (1500 seconds for the 10-minute timer), or the monitor flaps.
 
 The restic repository password is the most important secret: lose it and every backup is
 unrecoverable. Keep it in a root-only file on the box (`RESTIC_PASSWORD_FILE`) and in at least

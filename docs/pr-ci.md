@@ -1,12 +1,12 @@
 # Pull request CI
 
-The `tests` workflow runs on pull requests targeting `main`, pushes to `main`, and manual dispatch. It uses read-only repository permissions, no live credentials, and disposable hosted runners. It does not build or publish images or deploy anything. PR runs test GitHub's proposed merge commit.
+The `tests` workflow runs on pull requests targeting `main`, in the merge queue (`merge_group`), on pushes to `main`, and on manual dispatch. It uses read-only repository permissions, no live credentials, and disposable hosted runners. It does not build or publish images or deploy anything. PR runs test GitHub's proposed merge commit.
 
-Require the single **CI passed** status from GitHub Actions in the main ruleset after this workflow reaches main and has passed on a PR. That gate requires both the complete configured test matrix and the workspace typecheck to succeed. Failed, cancelled, and skipped dependencies do not pass. Leave the existing deletion and force-push protections enabled. Requiring a PR and up-to-date branches is a separate settings change; coordinate it with active work before enabling it.
+The single **CI passed** status from GitHub Actions is the required check. It passes only when the complete configured test matrix and the workspace typecheck both succeed; failed, cancelled and skipped dependencies do not pass. The merge queue needs the `merge_group` trigger to produce that status on its temporary branch.
 
-All test jobs run without path filters. board-evals requires a model and is not run, and slack-relay/sync-jobs have no workspace test scripts. A green gate is not image-probe or deployment validation.
+All test jobs run without path filters. board-evals requires a model and is not run, and slack-relay and sync-jobs are not workspace packages and have no test scripts. A green gate is not image-probe or deployment validation.
 
-To limit wasted Actions minutes, a newer commit cancels only an earlier run for the same PR. Main and manual runs have independent concurrency groups. Each job has a timeout; the configured maximum is 197 runner-minutes per run (16 test jobs, one typecheck, one gate), with actual consumption normally lower. Tests still run after merging to main. Draft PRs also run checks.
+To limit wasted Actions minutes, a newer commit cancels only an earlier run for the same PR. Main and manual runs have independent concurrency groups. Each job has a timeout; the configured maximum is 177 runner-minutes per run (14 test jobs, one typecheck, one gate), with actual consumption normally lower. Tests still run after merging to main. Draft PRs also run checks.
 
 Image publishing workflows retain their existing triggers. Repository instructions additionally require a manual `keeper and neutral runtime images` run on workflow changes before merging; run it on the exact candidate branch and record its result in the PR. It publishes commit-specific images but does not deploy them.
 

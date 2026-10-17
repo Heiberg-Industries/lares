@@ -3,15 +3,19 @@
 Keeps a Markdown vault and a Notion workspace in step. Notion is the human surface;
 Markdown on disk stays the substrate agents read and write.
 
-**Phase 1 (this release)** ships one job: filling Notion meeting `Attendees` from Google
-Calendar. The config, Notion adapter and state tables it introduces are the foundation the
-later phases reuse — `vaultPath` and `projects[]` are validated today but not yet read by
-the attendee job itself.
+> **Not part of the tested install path.** The installer does not start this job; it ships in the
+> `sync-jobs` image ([`services/sync-jobs`](../sync-jobs/README.md)) for an operator who runs it
+> themselves. Meeting follow-ups in the chief of staff do not need it; they need the
+> `NOTION_MEETINGS_DATA_SOURCE_ID` setting (see the install guide).
+
+The first job it ships fills Notion meeting `Attendees` from Google Calendar. The config, Notion
+adapter and state tables it introduces are the foundation the later jobs reuse; `vaultPath` and
+`projects[]` are validated but not read by the attendee job itself.
 
 ## Configuration
 
 The service is driven entirely by a JSON config — no project names live in the code, so
-this package is usable outside Example Company. Copy
+this package is usable by any installation. Copy
 `ops/notion-sync.config.example.json` and point `NOTION_SYNC_CONFIG` at it (default
 `/etc/lares/notion-sync.config.json`).
 

@@ -8,7 +8,8 @@ alpha software; there is no tagged release yet, only release candidates. Try it 
 server first.
 
 The installer stops at the console's "create your first agent" page. Creating the first agent
-and talking to it is done in the console and is not covered by this guide beyond a pointer.
+and talking to it is done in the console; [Using the console](how-to/using-the-console.md) is a
+tour of its pages.
 
 ## 1. What you need
 
@@ -37,8 +38,9 @@ and talking to it is done in the console and is not covered by this guide beyond
   ```
 - **A place for backups** that is not this server: an SFTP host, an S3-compatible bucket, or a
   second disk. See section 9.
-- **A chat channel.** None is needed to install. Web chat in the console is the first door. Slack
-  and Telegram are connected afterwards.
+- **A chat channel.** None is needed to install. Web chat in the console is the first door; every
+  agent has it. Slack, Telegram and (for the chief of staff) an e-mail door are connected
+  afterwards (section 8).
 
 Set the server's time zone before you install (`timedatectl set-timezone <zone>`). The installer
 reads it and uses it as the owner's clock for quiet hours and briefs. It does not ask.
@@ -192,14 +194,30 @@ You should see `db`, `console`, `lares-gateway` and `caddy` running. The keeper 
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
 `docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml ps`.
 
-Then open the console. Signing in with Google as the e-mail address you gave proves the OAuth
-client, the domain and the certificate. Create your first agent on `/agents/new`.
+Then open the console at your domain. You see the sign-in page; press **Continue with Google** and
+sign in as the e-mail address you gave. That proves the OAuth client, the domain and the
+certificate. Create your first agent on `/agents/new`. To end the session, use **Sign out** at the
+bottom of the sidebar.
+
+To check the installation from the command line, run `lares doctor`, a read-only check that says in
+plain sentences what is wrong and what to type to fix it (settings, database, migrations, owner,
+backup record, open repairs, gateway):
+
+```bash
+PGHOST=127.0.0.1 DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
+  pnpm -C services/box doctor
+```
+
+It changes nothing and makes no network call. Add `--test-model --gateway <url> --alias <name>
+--key-file <path>` to also send one tiny, paid completion through your gateway. Exit code 0 means
+nothing failed; 1 means at least one check did. More in [`services/box/README.md`](../services/box/README.md#lares-doctor).
 
 ## 7. The console and the deadline calendar file
 
 The console is the web page at your domain. Use it to create and edit agents, grant what they
-may touch, connect integrations and check backup and model status. Caddy is the only public
-listener; Postgres is bound to the server's loopback address only.
+may touch, connect integrations, choose where messages go and check backup and model status
+([Using the console](how-to/using-the-console.md)). Caddy is the only public listener; Postgres is
+bound to the server's loopback address only.
 
 The **Deadlines** page can show a standing yearly calendar of statutory deadlines. The engine
 ships none. It is installation data, in a JSON file you write:
@@ -260,10 +278,11 @@ Once the chief of staff has the file, keep it in place. If you remove it, run th
 before you next change that agent; until then the keeper refuses to apply the agent, because the
 file it was told to mount is missing.
 
-## 8. Outside tools, integrations and chat apps
+## 8. Doors, outside tools and integrations
 
-After your first agent runs, connect what it needs from the console: Google accounts under
-Integrations, then Slack or Telegram as further doors.
+After your first agent runs, connect what it needs from the console. A **door** is a way to reach
+an agent. Web chat always exists. Slack and Telegram are chat doors; the chief of staff also has an
+e-mail door (a mailbox it may use). Google accounts are connected on the Connections page.
 
 The installer already stored your public address as the door address, so nothing needs editing
 on the server. Open the agent in the console and use its "Connect doors" section. You paste the
@@ -271,7 +290,7 @@ bot's credentials and press "Connect". The console then saves them, checks them 
 Slack, switches the door on, applies it to the agent (which restarts it, about a minute) and
 prepares a one-time connection that is valid for 10 minutes. Until you complete that last step,
 nobody can use the door. When you do, the page notices by itself, applies the last change and
-reloads.
+reloads. A door you have not touched reads "Not set up".
 
 **Telegram** (chief-of-staff agent):
 
@@ -293,9 +312,62 @@ reloads.
 4. When the console shows the message to send, open a direct message with the app in Slack and
    send exactly that (for example `claim 0123...`; "Copy" puts it on your clipboard).
 
-Tools the engine does not ship come in
-as outside tool servers listed in the agent's definition ([ADR-0019](decisions/0019-integrations.md)).
-If a server needs a key, see [placing a token file](runbooks/outside-tool-tokens.md).
+**E-mail** (chief-of-staff agent). The agent works on one mailbox you choose. It needs a Google
+client with Gmail and Calendar scopes, which is separate from the sign-in client from section 5:
+
+1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` to `/etc/lares/console-oauth.env`
+   (an explicit lower-case organisation id), and register
+   `https://example.com/api/accounts/google/callback` (your domain) as a redirect address on that
+   client.
+2. Run `sudo python3 services/box/ops/configure-google-keeper.py --org <org>`, then restart the
+   keeper and recreate the console. The commands are in
+   [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#connecting-a-google-account).
+3. With the agent running, open it in the console, and under Email type the mailbox and press
+   "Connect mailbox with Google". Complete Google's consent screen, then press "Apply connection
+   changes (restarts agent)".
+
+E-mail triage tells you about new mail on a chat door; where those messages go is your choice (next
+subsection).
+
+### Choosing where messages go
+
+Each agent starts some conversations itself: the morning and evening brief, the weekly summary,
+nudges, deadline warnings, proposals, e-mail triage, meeting follow-ups, outreach replies, CRM
+routing, the digest and reminders. On the agent's page, **Schedules** tab, **Where messages go**
+is a grid: a row per kind of message, a column per door (web chat, Slack, Telegram). Number the
+doors 1st, 2nd and 3rd per row. The message tries them in order and skips doors that are not
+connected. **Web chat is always the last resort**, so a message is never dropped: if nothing you
+chose is connected, it lands in web chat and the Proactivity page records why ("Morning brief went
+to web chat: Telegram is not connected"). An agent with nothing saved keeps its usual door, and
+falls back to web chat the same way. Quiet hours, do-not-disturb and daily limits apply to
+whichever door is used. Saving a brief hour or a routing that would put a brief inside the chosen
+door's quiet hours is refused, with the fix in the message.
+
+### The web chat inbox and approvals
+
+Messages that land in web chat appear above the chat, with **Reply** and **Mark as read**; a dot
+by "Chat" in the sidebar shows unread ones. Anything that needs your yes arrives as an approval
+card, in the chat you replied from and under **Waiting on you**, where you can decide it from any
+conversation. Sending mail or changing something outside the server goes through such a card unless you
+have deliberately let that agent act on its own for it. Web chat can approve on a fresh installation that has no other door yet: when no chat door
+or e-mail address has been connected, the signed-in owner (the administrator of the installation)
+may approve; once a door is connected, that door's strict rules apply. (Telegram's one-tap
+Approve and Reject buttons on proposals stay Telegram-only; Slack and web chat get the text.)
+
+### Meeting follow-ups and Notion
+
+The meeting follow-up schedule reads your meeting notes from a Notion database and has no built-in
+default. It needs the `NOTION_MEETINGS_DATA_SOURCE_ID` setting (the id of your Meetings data
+source) and a Notion key (Connections page, Notion key). Without the setting the schedule fails
+with "NOTION_MEETINGS_DATA_SOURCE_ID is not set" each time it runs. On an installation made by this
+installer there is currently no console or keeper setting that passes it to the agent, so
+meeting follow-ups do not run until that is added to the engine.
+
+### Outside tools
+
+Tools the engine does not ship come in as outside tool servers listed in the agent's definition
+([ADR-0019](decisions/0019-integrations.md)). If a server needs a key, see
+[placing a token file](runbooks/outside-tool-tokens.md).
 
 Optional: back up agent definitions to a private Git repository. It is off by default; see
 [definition backups](runbooks/definition-backups.md). It is not a server backup.
@@ -447,7 +519,8 @@ Ubuntu server with the tools from section 1. The age key never goes onto the new
       "Apply connection changes (restarts agent)" when the console offers that instead.
    7. Only when an agent has a Telegram door: Telegram remembers the old server's address. After
       the agent is applied, open it in the console, go to its Telegram door and press "Register
-      Telegram webhook" once.
+      Telegram webhook" once. (A new connection registers it by itself; a restore is the one case
+      where you press it.)
    8. Only when `backup.env` names retained file volumes: copying those back is still a manual job.
    9. Check: sign in, send one chat message to an agent and read the reply, and open the Backup
       page to confirm the next backup is scheduled (run `install.sh --backups` again if it is not).
@@ -467,7 +540,7 @@ how to check it before relying on it.
 
 Updates are dated releases, each with release notes that list what breaks and how to fix it
 ([ADR-0021](decisions/0021-releases-and-upgrades.md)). Read the notes for the release first,
-for example [rc.10](releases/rc.10-notes.md). To move to a release:
+for example [rc.11](releases/rc.11-notes.md). To move to a release:
 
 ```bash
 ./services/box/ops/update.sh --release releases/<release-file>.json --dry-run
@@ -475,9 +548,20 @@ for example [rc.10](releases/rc.10-notes.md). To move to a release:
 ```
 
 The update checks that last night's backup was verified, takes a backup, records which images
-were running, and pulls the new ones by digest. To put the previous images back, run
-`./services/box/ops/rollback.sh`. It goes back one step and does not undo database changes; for
-that, restore the backup named before the update.
+were running, and pulls the new ones by digest.
+
+**Rolling back.** To put the previous images back, run `./services/box/ops/rollback.sh` (add
+`--dry-run` to see what it would do). It reads the record of the last update, shows what it would
+put back and what it would not, asks, writes the previous digests into the compose file, pulls
+and starts them. It goes back exactly one step and refuses to run a second time. It does **not**
+undo database changes: it runs no migration in either direction, and it names the backup that
+was taken before the update. To go back past a database change, restore that backup. If the
+keeper renders an agent's compose file from its own configuration, the keeper's configured image
+comes back the next time it applies the agent, so change that configuration too.
+
+**Disk space.** An optional `disk-guard` timer can report root-disk usage to an uptime monitor;
+`install.sh` does not install it (see [`services/box/ops/README.md`](../services/box/ops/README.md#disk-guard-optional)).
+The backup and restore checks need free disk too: keep some room.
 
 ## Getting help
 
