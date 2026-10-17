@@ -319,7 +319,7 @@ export function doorLabel(door: string): string {
   if (i <= 0) return door;
   const kind = door.slice(0, i);
   const id = door.slice(i + 1);
-  const name = kind === "telegram" ? "Telegram" : kind === "slack" ? "Slack" : kind;
+  const name = kind === "telegram" ? "Telegram" : kind === "slack" ? "Slack" : kind === "web" ? "Web chat" : kind;
   return `${name} · ${id}`;
 }
 
@@ -423,6 +423,8 @@ export interface InitiationRowDTO {
   status: string;
   reason: string | null;
   untilAt: Date | null;
+  /** "Morning brief went to web chat: Telegram is not connected" - set when the message went to another door than asked. */
+  fallbackNote?: string | null;
 }
 
 export interface ProactivityView {
@@ -492,18 +494,26 @@ export async function readToday(owner: string, ownerDay: string): Promise<TodayR
 }
 
 export async function readRecent(owner: string, limit = 50): Promise<InitiationRowDTO[]> {
-  const { rows } = await pool.query<{
+  type Raw = {
     id: string; decided_at: Date; sent_at: Date | null; agent: string; door: string;
     cls: string; item_key: string; status: string; reason: string | null; until_at: Date | null;
-  }>(
-    `SELECT id, decided_at, sent_at, agent, door, cls, item_key, status, reason, until_at
+    fallback_note?: string | null;
+  };
+  const query = (columns: string) => pool.query<Raw>(
+    `SELECT id, decided_at, sent_at, agent, door, cls, item_key, status, reason, until_at${columns}
        FROM initiations
       WHERE owner = $1
       ORDER BY id DESC
       LIMIT $2`,
     [owner, limit],
   );
+  // `fallback_note` arrives with box/sql/004_web_inbox.sql; before that is applied the ledger still reads.
+  const { rows } = await query(", fallback_note").catch((e: { code?: string }) => {
+    if (e?.code !== "42703") throw e;
+    return query("");
+  });
   return rows.map((r) => ({
+    fallbackNote: r.fallback_note ?? null,
     id: String(r.id),
     decidedAt: new Date(r.decided_at),
     sentAt: r.sent_at === null ? null : new Date(r.sent_at),

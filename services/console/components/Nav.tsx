@@ -23,6 +23,7 @@ import {
   DialogTitle,
 } from "@lares/ui/primitives/dialog";
 import { ThemeControl, useConsoleTheme } from "./ThemeControl";
+import { InboxDot } from "./InboxDot";
 import styles from "./AppShell.module.css";
 const main = [
   { href: "/", label: "Home", Icon: HomeIcon },
@@ -66,6 +67,7 @@ export function Nav() {
     >
       <Icon aria-hidden="true" />
       {label}
+      {href === "/chat" && <InboxDot />}
     </Link>
   );
   const contents = (
