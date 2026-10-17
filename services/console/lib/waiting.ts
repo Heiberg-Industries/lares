@@ -175,7 +175,9 @@ function enabledDoors(doors: unknown, channels: unknown): Set<string> {
  * agent (`connections()` in `services/keeper/lib/lifecycle.ts`, written into
  * `LARES_CONSOLE_PRINCIPAL` by `compose-agents.ts`): the APPLIED connection of each claimed door
  * (`applied_connection`, not the row's newer unapplied values) on the current incarnation, counted
- * only for a door the definition has switched on. Pure; one row per agent × claim.
+ * only for a door the definition has switched on. Pure; one row per agent × claim. (With no claim at
+ * all the keeper falls back to the installation's credential administrator for the agent's own
+ * approval check; this list does not, and shows such an agent to nobody.)
  *
  * OWNED means this member is the ONLY such claimant. Any member can claim any door, so two members
  * may hold claims on one agent while its `LARES_CONSOLE_PRINCIPAL` names only one of them; with

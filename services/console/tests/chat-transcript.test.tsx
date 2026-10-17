@@ -14,6 +14,11 @@ const message = (role: "user" | "assistant", text: string, id: string): EveMessa
   ({ id, role, parts: [{ type: "text", text }] } as unknown as EveMessage);
 
 describe("the chat transcript", () => {
+  it("labels the agent's replies with its display name, and falls back to Agent", () => {
+    const messages = [message("assistant", "hello back", "2")];
+    expect(renderToStaticMarkup(<ChatTranscript status="ready" messages={messages} agentName="Ada" />)).toContain(">Ada<");
+    expect(renderToStaticMarkup(<ChatTranscript status="ready" messages={messages} />)).toContain(">Agent<");
+  });
   it("shows what was said, in order, on both sides", () => {
     const html = renderToStaticMarkup(
       <ChatTranscript status="ready" messages={[message("user", "hello", "1"), message("assistant", "hello back", "2")]} />,

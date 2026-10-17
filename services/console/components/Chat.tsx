@@ -315,6 +315,7 @@ function ChatSession({
             expired={expired}
             answering={answering}
             onAnswer={answer}
+            agentName={identity.displayName}
           />
         )}
       </div>

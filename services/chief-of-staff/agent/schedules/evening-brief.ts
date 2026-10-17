@@ -89,6 +89,9 @@ import { errorDetail } from "../../lib/error-detail.js";
 import { STANDING_FACTS_TIMEOUT_MS, listActiveFacts, type StandingFact } from "../../lib/standing-facts.js";
 import { agentName } from "../../lib/agent-name.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 /**
  * Task 10 (B5) — 20_000 → 35_000, the old 20s plus `RESOLUTION_PASS_TIMEOUT_MS` (15s)
  * and nothing else, matching the arithmetic morning-brief.ts spells out at its own copy of this
@@ -270,7 +273,10 @@ export default defineSchedule({
 
       const chatId = liveTelegramChatId();
       if (!chatId) {
-        console.warn("evening-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        if (!warnedNoPrincipal) {
+          warnedNoPrincipal = true;
+          console.warn("evening-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        }
         return;
       }
 

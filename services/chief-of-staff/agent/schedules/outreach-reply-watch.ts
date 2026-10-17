@@ -66,6 +66,9 @@ import { doorId } from "../../lib/principals.js";
 import { configuredOwnerId, getDisplayName } from "../../lib/identity-client.js";
 import { initiateTo, type DoorInitiate, type InitiationOutcome } from "../../lib/initiation.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 const MAX_AWAIT_DAYS = 30;
 
 // ─── Testable tick ──────────────────────────────────────────────────────────────────────────
@@ -152,7 +155,10 @@ export default defineSchedule({
 
     const channelId = liveSlackChannelId();
     if (!channelId) {
-      console.warn("outreach-reply-watch: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+      if (!warnedNoPrincipal) {
+        warnedNoPrincipal = true;
+        console.warn("outreach-reply-watch: no Slack principal configured (SLACK_ALLOWED_USER_IDS); skipping");
+      }
       return;
     }
 

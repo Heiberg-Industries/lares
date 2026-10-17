@@ -112,6 +112,9 @@ import { STANDING_FACTS_TIMEOUT_MS, listActiveFacts, type StandingFact } from ".
 import { makeSignalsClient, SignalsNotConfiguredError, type SignalRow } from "@lares/agent-kit/signals-client";
 import { agentName } from "../../lib/agent-name.js";
 
+// Logged once per process: the schedule ticks every minute, and a missing principal does not change between ticks.
+let warnedNoPrincipal = false;
+
 /**
  * review round 3 — raised from 20_000 to 28_000. `gatherOpenObligations` awaits Gmail
  * FIRST, then (only after Gmail resolves) calls `deps.slack` — so on this schedule the two
@@ -753,7 +756,10 @@ export default defineSchedule({
 
       const chatId = liveTelegramChatId();
       if (!chatId) {
-        console.warn("morning-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        if (!warnedNoPrincipal) {
+          warnedNoPrincipal = true;
+          console.warn("morning-brief: no TELEGRAM_PRINCIPAL_ID configured; skipping");
+        }
         return;
       }
 

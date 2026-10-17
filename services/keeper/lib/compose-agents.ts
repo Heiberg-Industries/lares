@@ -50,6 +50,9 @@ export interface ComposeOptions {
     /** The installation's gateway model-name prefix (setting models.alias_prefix). Every agent
      * derives its purpose names from it as LARES_MODEL_PREFIX. */
     modelPrefix: string;
+    /** The installation owner's console address (keeper.json `credentials.administrator`). The
+     * console approver of an agent that has no door or email claim. A claim always wins. */
+    consoleAdministrator?: string;
 }
 function absolute(path: string): string { if (!isAbsolute(path) || /[\n\r\0]/.test(path))
     throw new Error('Absolute path required'); return path; }
@@ -105,6 +108,10 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             // today's behaviour exactly, and fail-closed by construction.
             environment.LARES_CONSOLE_PRINCIPAL = claim.owner;
         }
+        // A fresh install has no claim yet, so web chat would admit nobody. Fall back to the owner's
+        // own console address. A door claim (above) or the email owner (below) takes precedence.
+        if (a.incarnation && opts.consoleAdministrator && !environment.LARES_CONSOLE_PRINCIPAL)
+            environment.LARES_CONSOLE_PRINCIPAL = opts.consoleAdministrator;
         const mounts: {
             source: string;
             target: string;

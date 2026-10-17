@@ -109,3 +109,11 @@ it('passes the owner time zone from the binding into the agent container',()=>{
  expect(parse(renderAgentsCompose([bound],opts)).services['lares-bookkeeper'].environment.OWNER_HOME_TZ).toBe('Europe/Oslo');
  expect(parse(renderAgentsCompose([agent],opts)).services['lares-bookkeeper'].environment.OWNER_HOME_TZ).toBeUndefined();
 });
+it('gives a managed agent with no claim the installation administrator as console approver; a claim wins',()=>{
+ const inc='22222222-2222-4222-8222-222222222222',o={...opts,consoleAdministrator:'admin@example.test'};
+ const none=parse(renderAgentsCompose([{...agent,incarnation:inc}],o)).services['lares-bookkeeper'].environment;
+ expect(none.LARES_CONSOLE_PRINCIPAL).toBe('admin@example.test');
+ const claimed=parse(renderAgentsCompose([{...agent,incarnation:inc,claims:[{kind:'slack',principal:'U_SELECTED',revision:'11111111-1111-4111-8111-111111111111',owner:'owner@example.test'}]}],o)).services['lares-bookkeeper'].environment;
+ expect(claimed.LARES_CONSOLE_PRINCIPAL).toBe('owner@example.test');
+ expect(parse(renderAgentsCompose([{...agent,incarnation:inc}],opts)).services['lares-bookkeeper'].environment.LARES_CONSOLE_PRINCIPAL).toBeUndefined();
+});
