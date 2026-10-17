@@ -66,6 +66,15 @@ it('lets the installation name the CRM field that holds the org number',()=>{
  const b:RuntimeBindings={role:'chief-of-staff',environment:{TWENTY_ORG_NUMBER_FIELD:'registryNumber'},mounts:[],secrets:{}};
  expect(runtimeBindingsSchema.parse(b).environment).toEqual({TWENTY_ORG_NUMBER_FIELD:'registryNumber'});
 });
+it('lets the installation name the Notion meetings database and hands it to the agent',()=>{
+ const b:RuntimeBindings={role:'chief-of-staff',environment:{NOTION_MEETINGS_DATA_SOURCE_ID:'00000000-0000-4000-8000-000000000001'},mounts:[],secrets:{}};
+ expect(runtimeBindingsSchema.parse(b).environment).toEqual({NOTION_MEETINGS_DATA_SOURCE_ID:'00000000-0000-4000-8000-000000000001'});
+ const doc=parse(renderAgentsCompose([{...agent,role:'chief-of-staff',bindings:b}],opts));
+ expect(doc.services['lares-writer'].environment).toMatchObject({NOTION_MEETINGS_DATA_SOURCE_ID:'00000000-0000-4000-8000-000000000001'});
+});
+it('still refuses an environment key the allow-list does not name',()=>{
+ expect(()=>runtimeBindingsSchema.parse({role:'chief-of-staff',environment:{NOTION_MEETINGS_DATA_SOURCE:'x'},mounts:[],secrets:{}})).toThrow();
+});
 it('lets the installation name the console address a long Telegram approval card links to',()=>{
  const b:RuntimeBindings={role:'chief-of-staff',environment:{LARES_CONSOLE_URL:'https://console.example.com'},mounts:[],secrets:{}};
  expect(runtimeBindingsSchema.parse(b).environment).toEqual({LARES_CONSOLE_URL:'https://console.example.com'});

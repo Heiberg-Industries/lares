@@ -27,6 +27,9 @@ const environmentKeys = [
   'CRM_BRANDS', 'COMMERCIAL_BRANDS', 'INSTITUTIONAL_SENDER_DOMAINS', 'DEADLINE_CALENDAR_FILE',
   // The CRM company field that holds the organisation number (Twenty has no standard one).
   'TWENTY_ORG_NUMBER_FIELD',
+  // The Notion database (data source) the meeting follow-up schedule reads meeting notes from.
+  // Not a secret; it identifies the installation's own database, so the engine has no default.
+  'NOTION_MEETINGS_DATA_SOURCE_ID',
   // W8B-s5. Who may answer an approval in web chat, on an installation whose agents are NOT a
   // managed incarnation — a managed one is given LARES_CONSOLE_PRINCIPAL below instead, from the
   // owner claim, exactly as the Slack and Telegram principals are (or, with no claim yet, from the
