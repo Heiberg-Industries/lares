@@ -19,6 +19,7 @@ import { useState, useTransition } from "react";
 import { saveScheduleHours } from "../app/actions/proactivity";
 import type { SaveResult } from "../app/actions/proactivity";
 import { SINGLE_SLOT } from "../lib/schedule-hours";
+import { scheduleExplanation } from "../lib/schedule-labels";
 
 export interface ScheduleHoursRow {
   schedule: string;
@@ -82,6 +83,9 @@ function ScheduleRow({ row }: { row: ScheduleHoursRow }) {
       <td className="mono" style={{ fontSize: 12 }}>
         {row.label}
         {row.isDefault && <span style={{ color: "var(--mist)" }}> · default</span>}
+        {scheduleExplanation(row.schedule) && (
+          <div style={{ color: "var(--mist)", fontFamily: "inherit", marginTop: 2 }}>{scheduleExplanation(row.schedule)}</div>
+        )}
       </td>
       <td>
         <input

@@ -20,7 +20,7 @@ import { AutonomyControl } from "./AutonomyControl";
 import { PermissionEvents } from "./PermissionEvents";
 import { OutsideToolsSection, type OutsideToolView } from "./OutsideToolsSection";
 import type { OutsideToolEvidence } from "../lib/outside-tools";
-import { scheduleLabel } from "../lib/schedule-labels";
+import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import styles from "./AgentDetail.module.css";
 export function AgentDetail({
   agent,
@@ -198,7 +198,7 @@ export function AgentDetail({
                 {schedules.value.some((s) => s.on) ? (
                   <ul className="lares-data-list">
                     {schedules.value.filter((s) => s.on).map((s) => (
-                      <li key={s.name}>{scheduleLabel(s.name)} · Enabled</li>
+                      <li key={s.name}>{scheduleLabel(s.name)} · Enabled{scheduleExplanation(s.name) && <p className="lares-muted">{scheduleExplanation(s.name)}</p>}</li>
                     ))}
                   </ul>
                 ) : <p>No recurring work enabled.</p>}
@@ -207,7 +207,7 @@ export function AgentDetail({
                     <summary>Disabled schedules ({schedules.value.filter((s) => !s.on).length})</summary>
                     <ul className="lares-data-list">
                       {schedules.value.filter((s) => !s.on).map((s) => (
-                        <li key={s.name}>{scheduleLabel(s.name)}</li>
+                        <li key={s.name}>{scheduleLabel(s.name)}{scheduleExplanation(s.name) && <p className="lares-muted">{scheduleExplanation(s.name)}</p>}</li>
                       ))}
                     </ul>
                   </details>
