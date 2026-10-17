@@ -19,6 +19,7 @@ import type { EventPage, Reading } from "../lib/console-overview";
 import { AutonomyControl } from "./AutonomyControl";
 import { PermissionEvents } from "./PermissionEvents";
 import { OutsideToolsSection, type OutsideToolView } from "./OutsideToolsSection";
+import { DeliveryGrid, type DeliveryGridProps } from "./DeliveryGrid";
 import type { OutsideToolEvidence } from "../lib/outside-tools";
 import { scheduleLabel } from "../lib/schedule-labels";
 import styles from "./AgentDetail.module.css";
@@ -27,12 +28,15 @@ export function AgentDetail({
   board,
   events,
   schedules,
+  routing,
   outsideTools = { tools: [], inEffect: true },
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
   events: Reading<EventPage>;
   schedules: Reading<Array<{ name: string; on: boolean }>>;
+  /** The delivery grid's inputs; absent when the definition could not be read or the agent sends nothing on its own. */
+  routing?: Omit<DeliveryGridProps, "agent">;
   outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence };
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
@@ -225,6 +229,12 @@ export function AgentDetail({
               <Link href={edit}>Edit schedules</Link>
             </Button>
           </section>
+          {routing && (
+            <section className="lares-surface">
+              <h2 className="lares-section-title">Where messages go</h2>
+              <DeliveryGrid agent={agent.name} {...routing} />
+            </section>
+          )}
         </TabsContent>
         <TabsContent value="activity">
           <section>

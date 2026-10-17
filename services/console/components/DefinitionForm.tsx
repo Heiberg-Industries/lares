@@ -38,6 +38,7 @@ import { TakesEffect } from "./TakesEffect";
 import { CeilingNotice } from "./CeilingNotice";
 import { scheduleLabel } from "../lib/schedule-labels";
 import { firstChatPath } from "../lib/first-conversation";
+import { withStartingDelivery } from "../lib/delivery";
 
 export interface DefinitionFormProps {
   publicDoorOrigin?: string;
@@ -237,7 +238,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
           )
             return;
           void run(async () => {
-            const input = { name: definition.name, definition, duties, voice };
+            // A new chief of staff starts with every kind of message going to its first chat door,
+            // then web chat (web chat alone when no chat door is declared yet).
+            const started = withStartingDelivery(definition, point.id, !editing);
+            const input = { name: definition.name, definition: started, duties, voice };
             const result = editing
               ? await saveDefinition(input)
               : await createAgent({

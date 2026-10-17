@@ -7,6 +7,7 @@ import { getPermissionEvents } from "../../../lib/console-overview";
 import { checkOutsideUrl, outsideToolsInEffect } from "@lares/agent-kit/outside-tools";
 import { AgentDetail } from "../../../components/AgentDetail";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
+import { fallbackNotes } from "../../../lib/delivery-notes";
 export const dynamic = "force-dynamic";
 export default async function AgentPage({
   params,
@@ -47,8 +48,21 @@ export default async function AgentPage({
         evidence: saved.outsideTools?.length ? await getOutsideToolEvidence(name) : undefined,
       }
     : undefined;
+  // The delivery grid belongs to agents that start messages on their own (the chief of staff).
+  const routing =
+    saved && saved.role === "chief-of-staff"
+      ? {
+          delivery: saved.delivery,
+          connected: {
+            slack: agent.doors.some((d) => d.kind === "slack" && d.enabled),
+            telegram: agent.doors.some((d) => d.kind === "telegram" && d.enabled),
+          },
+          notes: await fallbackNotes(name),
+        }
+      : undefined;
   return (
     <AgentDetail
+      routing={routing}
       outsideTools={outsideTools}
       agent={agent}
       board={

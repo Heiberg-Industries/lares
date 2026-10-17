@@ -158,6 +158,7 @@ export default async function ProactivityPage() {
               <td className={`mono ${r.status === "sent" ? "lares-status-success" : r.status === "suppressed" ? "lares-status-error" : "lares-status-warning"}`}>{r.status}</td>
               <td className="lares-status-muted">
                 {reasonLabel(r.reason)}
+                {r.fallbackNote && <>{r.reason ? " · " : ""}{r.fallbackNote}</>}
                 {r.untilAt !== null && <> · until {formatInOwnerTz(r.untilAt, clock.tz)}</>}
               </td>
             </tr>

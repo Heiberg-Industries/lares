@@ -64,6 +64,14 @@
   text-decoration: none;
   background: var(--lares-hover);
 }
+.unreadDot {
+  width: 8px;
+  height: 8px;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--primary);
+  flex: none;
+}
 .signOut {
   width: 100%;
   border: 0;
