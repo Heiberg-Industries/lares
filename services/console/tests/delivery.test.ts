@@ -101,9 +101,10 @@ describe("quiet-hours check", () => {
     const off = [{ kind: "telegram", enabled: false }];
     expect(doorFor(fact({ "morning-brief": ["telegram", "web"] }, off), "morning-brief")).toBe("web");
     expect(doorFor(fact({ "morning-brief": ["slack", "telegram"] }), "morning-brief")).toBe("slack");
-    // no map: today's door, or nothing to check when that door is off
-    expect(doorFor(fact(undefined, off), "morning-brief")).toBeNull();
-    expect(briefConflicts({ ...base, facts: [fact(undefined, off)] })).toEqual([]);
+    // no map: today's door, then web chat when that door is off
+    expect(doorFor(fact(undefined), "morning-brief")).toBe("telegram");
+    expect(doorFor(fact(undefined, off), "morning-brief")).toBe("web");
+    expect(briefConflicts({ ...base, facts: [fact(undefined, off)] })[0]).toContain("goes to web chat");
   });
 
   it("the most specific stored window wins, the way the gate resolves it", () => {

@@ -37,11 +37,10 @@ export interface RoutingFact {
 
 export interface QuietRow { agent: string; door: string; quietStart: string | null; quietEnd: string | null }
 
-/** The door a kind really goes to for this agent: the first listed door that is switched on, else web chat. */
+/** The door a kind really goes to for this agent: the first listed (or, with no list, today's) door that is switched on, else web chat. */
 export function doorFor(fact: RoutingFact, kind: DeliveryKind): DeliveryDoor | null {
-  const mapped = fact.delivery?.[kind] !== undefined;
   const order = configuredDoors(kind, fact.delivery);
-  if (mapped && !order.includes("web")) order.push("web");
+  if (!order.includes("web")) order.push("web");
   for (const door of order) {
     if (door === "web") return "web";
     if (fact.doors.some((d) => d.kind === door && d.enabled)) return door;
@@ -127,11 +126,16 @@ export interface ConflictData {
 /** What the check needs, or null when any of it cannot be read (the save then goes ahead). */
 export async function loadConflictInputs(owner: string, actor: string): Promise<ConflictData | null> {
   try {
-    const agents = (await listAgents({ strict: true })).filter((a) => a.role === "Chief of Staff");
+    const agents = await listAgents({ strict: true });
     const facts: RoutingFact[] = [];
     for (const a of agents) {
       const saved = await keeper<{ definition: string }>("definition.get", { name: a.name }, actor);
-      const def = JSON.parse(saved.definition) as { delivery?: DeliveryMap; doors?: RoutingFact["doors"]; channels?: string[] };
+      const def = JSON.parse(saved.definition) as {
+        delivery?: DeliveryMap; doors?: RoutingFact["doors"]; channels?: string[]; schedules?: Record<string, { on?: boolean }>;
+      };
+      // An agent is in scope when its definition runs one of the hour-based schedules, not by what
+      // its role is called.
+      if (!Object.entries(def.schedules ?? {}).some(([name, s]) => name in HOURLY_KINDS && s?.on === true)) continue;
       const doors = def.doors ?? (def.channels ?? []).map((kind) => ({ kind, enabled: true }));
       facts.push({ agent: a.name, delivery: def.delivery, doors: doors.map((d) => ({ kind: d.kind, enabled: d.enabled })) });
     }
