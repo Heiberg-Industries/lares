@@ -266,30 +266,34 @@ After your first agent runs, connect what it needs from the console: Google acco
 Integrations, then Slack or Telegram as further doors.
 
 The installer already stored your public address as the door address, so nothing needs editing
-on the server. Open the agent in the console and use its "Connect doors" section. Each door goes
-through the same steps: save the credentials, enable the door, press "Apply connection changes
-(restarts agent)", then claim the door. Claiming means pressing "Get one-time owner code" and
-sending that code from your own account; it is valid for 10 minutes, and until you do, nobody
-can use the door.
+on the server. Open the agent in the console and use its "Connect doors" section. You paste the
+bot's credentials and press "Connect". The console then saves them, checks them with Telegram or
+Slack, switches the door on, applies it to the agent (which restarts it, about a minute) and
+prepares a one-time connection that is valid for 10 minutes. Until you complete that last step,
+nobody can use the door. When you do, the page notices by itself, applies the last change and
+reloads.
 
 **Telegram** (chief-of-staff agent):
 
 1. In Telegram, open the verified @BotFather account and send `/newbot`. Give the bot the
    agent's display name and a username ending in `bot`. Copy the token it gives you; treat it as
    a password.
-2. In the agent's "Connect doors" section, paste the token under Telegram and press "Save
-   credentials", then "Enable door", then "Apply connection changes (restarts agent)".
-3. Press "Register Telegram webhook".
-4. Press "Get one-time owner code" and send the code to your bot in a private chat.
+2. In the agent's "Connect doors" section, paste the token under Telegram and press "Connect".
+3. When "Tap to connect" appears, tap it on your phone (or open it in Telegram) and press Start.
+   That is the whole connection; nothing is copied or typed.
 
 **Slack** (chief-of-staff and creative agents):
 
-1. Press "Create this Slack app from its manifest". Slack opens with the app filled in; confirm it.
+1. Press "Create this Slack app from its manifest" (or "Copy manifest" and paste it under Create
+   new app, From a manifest). Slack opens with the app filled in, including this installation's
+   request addresses; confirm it.
 2. Install the app into your workspace. From it, copy the Bot User OAuth Token (under OAuth &
    Permissions) and the Signing Secret (under Basic Information).
-3. Paste both under Slack, press "Save credentials", then "Enable door", then "Apply connection
-   changes (restarts agent)".
-4. Press "Get one-time owner code" and send the code to the app in a direct message. Tools the engine does not ship come in
+3. Paste both under Slack and press "Connect".
+4. When the console shows the message to send, open a direct message with the app in Slack and
+   send exactly that (for example `claim 0123...`; "Copy" puts it on your clipboard).
+
+Tools the engine does not ship come in
 as outside tool servers listed in the agent's definition ([ADR-0019](decisions/0019-integrations.md)).
 If a server needs a key, see [placing a token file](runbooks/outside-tool-tokens.md).
 

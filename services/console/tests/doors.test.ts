@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { slackManifest, telegramSteps } from '../lib/doors';
+import { slackManifest, telegramSteps, telegramConnectLink, doorStateText, doorTouched, slackClaimMessage } from '../lib/doors';
 describe('door setup', () => {
   it('carries only this agent request URLs', () => {
     const { manifest, createUrl } = slackManifest({name:'bookkeeper',display:'Bookkeeper'}, 'https://doors.example.com');
@@ -22,4 +22,18 @@ describe('door setup', () => {
     expect(()=>slackManifest({name:'bookkeeper',display:'Bookkeeper'},origin)).toThrow();
   });
   it('rejects path injection',()=>expect(()=>slackManifest({name:'../other',display:'B'},'https://doors.example.com')).toThrow());
+  it('builds the Telegram tap link only from a plain bot username and a 24 character code',()=>{
+    const code='A1'.repeat(12);
+    expect(telegramConnectLink('example_bot',code)).toBe(`https://t.me/example_bot?start=${code}`);
+    expect(()=>telegramConnectLink('example bot',code)).toThrow();
+    expect(()=>telegramConnectLink('example_bot','short')).toThrow();
+    expect(()=>telegramConnectLink('example_bot/../x',code)).toThrow();
+    expect(slackClaimMessage(code)).toBe(`claim ${code}`);
+  });
+  it('shows Pending only for a door the owner has touched',()=>{
+    const base={kind:'telegram',enabled:false,claimed:false,pending:true,pending_reason:'Apply',applied:false};
+    expect(doorTouched(base)).toBe(false);expect(doorStateText(base)).toBe('Not set up');expect(doorStateText(undefined)).toBe('Not set up');
+    expect(doorStateText({...base,configured:true})).toBe('Pending: Apply');
+    expect(doorStateText({...base,enabled:true,pending:false,applied:true,claimed:true})).toBe('Connected');
+  });
 });

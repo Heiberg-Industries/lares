@@ -20,3 +20,23 @@ it('does not claim success on API refusal, malformed response, or pending mounts
  fetcher.mockResolvedValue(Response.json({ok:false}));await expect(call()).rejects.toThrow();expect(query.mock.calls.some(([sql])=>sql.startsWith('UPDATE'))).toBe(false);
  query.mockResolvedValue({rows:[{...row,pending:true}]});fetcher.mockClear();await expect(call()).rejects.toThrow('Apply');expect(fetcher).not.toHaveBeenCalled();
 });
+const verify=(kind:'slack'|'telegram')=>runAction('door.verify',{name:'example',kind},{actor:'owner',audit:async()=>{}});
+it('reads the Telegram bot username with getMe and never returns the token',async()=>{
+ fetcher.mockResolvedValue(Response.json({ok:true,result:{id:1,is_bot:true,username:'example_bot'}}));
+ const result=await verify('telegram');expect(result).toEqual({kind:'telegram',username:'example_bot'});
+ expect(fetcher.mock.calls[0][0]).toMatch(/getMe$/);expect(JSON.stringify(result)).not.toContain('secret');
+});
+it('refuses a Telegram token the platform rejects, and a reply with no usable username',async()=>{
+ fetcher.mockResolvedValueOnce(Response.json({ok:false}));await expect(verify('telegram')).rejects.toThrow('did not accept');
+ fetcher.mockResolvedValueOnce(Response.json({ok:true,result:{is_bot:true,username:'a b'}}));await expect(verify('telegram')).rejects.toThrow('did not accept');
+});
+it('verifies a Slack bot token with auth.test, sent as a bearer header',async()=>{
+ writeFileSync(join(dir,'example-slack-token'),'xoxb-test');
+ fetcher.mockResolvedValue(Response.json({ok:true,team:'Team',user:'bot'}));
+ expect(await verify('slack')).toEqual({kind:'slack',team:'Team',user:'bot'});
+ expect(fetcher.mock.calls[0][0]).toBe('https://slack.com/api/auth.test');expect(fetcher.mock.calls[0][1].headers.authorization).toBe('Bearer xoxb-test');
+ fetcher.mockResolvedValue(Response.json({ok:false,error:'invalid_auth'}));await expect(verify('slack')).rejects.toThrow('did not accept');
+});
+it('asks for the token to be saved first when no secret file exists',async()=>{
+ await expect(verify('slack')).rejects.toThrow('Save the bot token first');expect(fetcher).not.toHaveBeenCalled();
+});

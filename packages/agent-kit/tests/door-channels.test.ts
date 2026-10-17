@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { claimHash } from "../src/door-authority.js";
 import { CLAIM_REPLY_CONNECTED, CLAIM_REPLY_NOT_YET, interceptTelegramClaim } from "../src/door-channels.js";
 
 const env = { LARES_AGENT_NAME: "example-agent", LARES_AGENT_INCARNATION: "11111111-2222-3333-4444-555555555555" } as NodeJS.ProcessEnv;
@@ -21,6 +22,27 @@ describe("the door's fixed replies", () => {
     const handled = await interceptTelegramClaim(privateHuman("claim ABCDEFGHJKLMNPQRSTUVWXYZ"), fakeDb({ claimRows: [{ name: "example-agent" }] }), env, reply);
     expect(handled).toBe(true);
     expect(reply).toHaveBeenCalledExactlyOnceWith(CLAIM_REPLY_CONNECTED);
+  });
+
+  it("treats the Telegram tap-to-connect message (/start and a code) as a claim", async () => {
+    const reply = vi.fn(async () => {});
+    const db = fakeDb({ claimRows: [{ name: "example-agent" }] });
+    expect(await interceptTelegramClaim(privateHuman("/start ABCDEFGHJKLMNPQRSTUVWXYZ"), db, env, reply)).toBe(true);
+    expect(reply).toHaveBeenCalledExactlyOnceWith(CLAIM_REPLY_CONNECTED);
+    expect((db.query.mock.calls[0] as unknown[])[1]).toContain(claimHash("ABCDEFGHJKLMNPQRSTUVWXYZ"));
+  });
+
+  it("leaves a bare /start, and a /start with something other than a code, to the normal path", async () => {
+    const { tryClaim } = await import("../src/door-authority.js");
+    const db = fakeDb({});
+    expect(await tryClaim("telegram", "/start", "42", true, db, env)).toBe("none");
+    expect(await tryClaim("telegram", "/start hello", "42", true, db, env)).toBe("none");
+    expect(db.query).not.toHaveBeenCalled();
+  });
+
+  it("does not take /start as a claim on Slack", async () => {
+    const { tryClaim } = await import("../src/door-authority.js");
+    expect(await tryClaim("slack", "/start ABCDEFGHJKLMNPQRSTUVWXYZ", "U1", true, fakeDb({}), env)).toBe("none");
   });
 
   it("answers a wrong code with the same generic line, never saying why", async () => {

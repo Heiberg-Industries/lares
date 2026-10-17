@@ -10,6 +10,11 @@ const roles:Record<string,string[]>={creative:['slack'],'chief-of-staff':['slack
 export function doorOrigin(value:string):string {
   const u=new URL(value);if(u.protocol!=='https:'||u.username||u.password||u.pathname!=='/'||u.search||u.hash)throw new Error('Explicit HTTPS public door origin required');return u.origin;
 }
+function readSecretFile(secretsDir:string,name:string,suffix:string):string {
+  const path=join(secretsDir,`${name}-${suffix}`);const st=lstatSync(path);
+  if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw new Error('Invalid secret file');
+  return readFileSync(path,'utf8').trim();
+}
 /** Caller-supplied names cannot choose URLs, secret paths, platform methods or transports. */
 export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;emailPrincipal?:string;googleOrgs?:string[];fetch?:typeof fetch;namespaceGuard?():Promise<void>}) {
  const query=o.pool.query.bind(o.pool);
@@ -20,12 +25,34 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
   return row;
  }
  registerAction({name:'door.status',input:z.strictObject({name:z.string().regex(NAME)}),run:async({name})=>{
-  const {rows}=await query(`SELECT k.kind,COALESCE(d.enabled,false) AS enabled,c.principal IS NOT NULL AS claimed,c.mailbox,c.org,c.expires_at,c.attempts,c.webhook_set_at,
+  const {rows}=await query(`SELECT k.kind,COALESCE(d.enabled,false) AS enabled,d.secret_set_at IS NOT NULL AS configured,c.principal IS NOT NULL AS claimed,c.mailbox,c.org,c.expires_at,c.attempts,c.webhook_set_at,
     r.pending,r.pending_reason,c.revision=c.applied_revision AND NOT r.pending AS applied
     FROM agent_resources r CROSS JOIN (VALUES('slack'),('telegram'),('email')) k(kind) LEFT JOIN agent_doors d ON d.agent=r.name AND d.kind=k.kind
     LEFT JOIN agent_door_connections c ON c.agent=r.name AND c.kind=k.kind AND c.incarnation=r.ownership_token
     WHERE r.name=$1 AND r.runtime_control_token=r.ownership_token AND r.state='ready'`,[name]);
   return rows;
+ }});
+ /** Asks the platform whether the saved bot token works and who the bot is, so the console can
+  * show a "Tap to connect" link (Telegram) or name the app to message (Slack). Read only. */
+ registerAction({name:'door.verify',input:z.strictObject({name:z.string().regex(NAME),kind:z.enum(['slack','telegram'])}),run:async({name,kind})=>{
+  await resource(name,kind);
+  let token:string;
+  try{token=readSecretFile(o.secretsDir,name,`${kind}-token`);}catch{throw new KeeperRefusedError('Save the bot token first');}
+  const call=async(url:string,init:RequestInit):Promise<any>=>{
+   try{
+    const response=await (o.fetch??fetch)(url,{...init,signal:AbortSignal.timeout(15000),redirect:'error'});
+    return await response.json();
+   }catch{throw new Error(`Could not reach ${kind==='slack'?'Slack':'Telegram'}; try again`);}
+  };
+  if(kind==='telegram') {
+   if(!/^\d+:[A-Za-z0-9_-]+$/.test(token))throw new KeeperRefusedError('Telegram credentials are incomplete');
+   const data=await call(`https://api.telegram.org/bot${token}/getMe`,{method:'POST',headers:{'content-type':'application/json'},body:'{}'});
+   if(data?.ok!==true||data.result?.is_bot!==true||typeof data.result.username!=='string'||!/^[A-Za-z0-9_]{4,32}$/.test(data.result.username))throw new KeeperRefusedError('Telegram did not accept this bot token');
+   return {kind,username:data.result.username as string};
+  }
+  const data=await call('https://slack.com/api/auth.test',{method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/x-www-form-urlencoded'},body:''});
+  if(data?.ok!==true||typeof data.team!=='string'||typeof data.user!=='string')throw new KeeperRefusedError('Slack did not accept this bot token');
+  return {kind,team:data.team as string,user:data.user as string};
  }});
  registerAction({name:'door.claim_issue',input:z.strictObject({name:z.string().regex(NAME),kind:z.enum(['slack','telegram'])}),run:async({name,kind},ctx)=>{
   const client=await o.pool.connect();
@@ -67,7 +94,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
   if(row.pending||!row.applied_definition?.doors?.some((d:any)=>d.kind==='telegram'&&d.enabled))throw new KeeperRefusedError('Apply the Telegram connection changes before registering its webhook');
   if(!o.publicOrigin)throw new KeeperRefusedError('Configure the public door origin and reviewed public routing first');
   const url=`${doorOrigin(o.publicOrigin)}/api/doors/${name}/telegram/events`;
-  const read=(suffix:string)=>{const path=join(o.secretsDir,`${name}-${suffix}`);const st=lstatSync(path);if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw new Error('Invalid secret file');return readFileSync(path,'utf8').trim();};
+  const read=(suffix:string)=>readSecretFile(o.secretsDir,name,suffix);
   const token=read('telegram-token'),secret=read('telegram-webhook-secret');
   if(!/^\d+:[A-Za-z0-9_-]+$/.test(token)||!/^[-_A-Za-z0-9]{32,256}$/.test(secret))throw new KeeperRefusedError('Telegram credentials are incomplete');
   async function api(method:'getWebhookInfo'|'setWebhook',body:object={}) {

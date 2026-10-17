@@ -45,9 +45,11 @@ export async function tryClaim(kind:ChatDoor,text:string,sender:string,privateHu
   // Treat every claim-looking message as control input. Never leak invalid codes to history.
   // Slack reserves slash commands before a message reaches the bot. Plain `claim`
   // works in ordinary private messages; retain /claim for existing clients.
-  if(!/^\/?claim(?:\s|$)/i.test(text.trimStart()))return 'none';
+  // Telegram's "Tap to connect" link opens the chat with `/start <code>`; that is the same claim.
+  const startLink=kind==='telegram'?/^\/start(?:@\w+)? ([A-Z0-9]{24})$/.exec(text.trim()):null;
+  if(!startLink&&!/^\/?claim(?:\s|$)/i.test(text.trimStart()))return 'none';
   if(!privateHuman||!sender||sender.length>128)return 'ignored';
-  const match=/^\/?claim ([A-Z0-9]{24})$/.exec(text.trim());
+  const match=startLink??/^\/?claim ([A-Z0-9]{24})$/.exec(text.trim());
   const hash=claimHash(match?.[1]??'invalid');
   // Single SQL statement acquires the row lock; counter and consumption are atomic. Recheck
   // current incarnation/enabled state in this same statement, including concurrent slug reuse.
