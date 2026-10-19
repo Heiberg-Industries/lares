@@ -84,7 +84,9 @@ or restore from a backup. See
 [the tested install path](docs/decisions/0022-the-tested-install-path.md) for what that means.
 The installer is `services/box/ops/install.sh`.
 
-The step-by-step guide is [docs/install.md](docs/install.md).
+The step-by-step guide is [docs/install.md](docs/install.md). To have a coding agent such as
+Claude Code or Codex do the install for you, point it at
+[docs/install-with-an-agent.md](docs/install-with-an-agent.md).
 
 No one has yet installed Lares
 from the docs alone without help, and we are working on that next. If you try it, notes on
