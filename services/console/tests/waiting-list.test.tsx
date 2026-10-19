@@ -146,3 +146,24 @@ it("renders other body formats without interpreting them (the shape later kinds 
   expect(within(detail).getByRole("link", { name: "photo.png" }).getAttribute("href")).toBe("/api/waiting/files/1");
   expect(within(detail).queryByRole("link", { name: "elsewhere.png" })).toBeNull();
 });
+
+it("a proposal row is labelled by its own kind label, with no agent or chat named as its source of truth", () => {
+  const proposal = (ref: string, kindLabel: string): WaitingItem => ({
+    id: `proposal:${ref}`, kind: "proposal", kindLabel, agent: "Shared notes", channel: "Console", createdAt: "2026-10-15T09:00:00.000Z",
+    title: "Update to projects/example.md", body: [{ format: "text", label: "Proposed change", text: "- a\n+ b" }],
+    actions: [{ id: "approve", label: "Approve", tone: "primary" }, { id: "reject", label: "Reject", tone: "neutral" }], ref,
+  });
+  const detail = setup([proposal("n", "Shared notes proposal"), proposal("m", "Notion proposal")], vi.fn());
+  const list = screen.getByRole("region", { name: "Waiting items" });
+  expect(within(list).getByText("Shared notes proposal · Shared notes · Console · 3 hours ago")).toBeTruthy();
+  expect(within(list).getByText("Notion proposal · Shared notes · Console · 3 hours ago")).toBeTruthy();
+  expect(within(detail).getByRole("button", { name: "Reject" })).toBeTruthy();
+  expect(document.body.textContent).not.toMatch(/atlas/i);
+});
+
+it("Reject on a proposal sends its id and the reject action", async () => {
+  const onDecide = vi.fn(async (): Promise<DecideResult> => ({ ok: true, outcome: "cancelled", message: "Rejected." }));
+  const detail = setup([item("p", { id: "proposal:p", kind: "proposal", actions: [{ id: "reject", label: "Reject", tone: "neutral" }] })], onDecide);
+  await userEvent.click(within(detail).getByRole("button", { name: "Reject" }));
+  expect(onDecide).toHaveBeenCalledWith({ id: "proposal:p", actionId: "reject" });
+});

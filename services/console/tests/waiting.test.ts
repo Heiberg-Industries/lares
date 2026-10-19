@@ -65,12 +65,19 @@ function fake(opts: {
   after?: "nothing" | "resolve" | { status: string; error?: string };
   /** An address whose every request hangs and ignores its abort signal. */
   stalled?: string;
+  /** Proposal rows as the database holds them, by table. */
+  notion?: Record<string, unknown>[];
+  atlas?: Record<string, unknown>[];
+  /** Make every proposal query fail, as an unreachable database would. */
+  proposalsDown?: boolean;
 } = {}): Fake {
   const streams: Record<string, unknown[]> = { ...(opts.streams ?? {}) };
   const posts: Fake["posts"] = [];
   const queries: Fake["queries"] = [];
   const streamUrls: string[] = [];
   const agents = opts.agents ?? [agentRow()];
+  const notion = opts.notion ?? [];
+  const atlas = opts.atlas ?? [];
   const sessions = opts.sessions ?? { example: [{ session_id: "wrun_tg", door: "telegram" }] };
   const deps: WaitingDeps = {
     query: async (sql, values) => {
@@ -79,6 +86,18 @@ function fake(opts: {
       if (sql.includes("agent_conversations")) {
         const mine = sessions[values[0] as string] ?? [];
         return { rows: values[2] ? mine.filter((s) => s.session_id === values[2]) : mine };
+      }
+      if (sql.includes("notion_sync_proposals") || sql.includes("atlas_proposals")) {
+        if (opts.proposalsDown) throw new Error("database down");
+        const table = sql.includes("atlas_proposals") ? atlas : notion;
+        if (/^\s*(WITH p AS \()?\s*UPDATE/.test(sql)) {
+          const [id, state] = values as [number, string];
+          const row = table.find((r) => Number(r.id) === id && ["pending", "approved"].includes(r.state as string));
+          if (!row) return { rows: [] };
+          row.state = state;
+          return { rows: [row] };
+        }
+        return { rows: table.filter((r) => ["pending", "approved"].includes(r.state as string)) };
       }
       throw new Error(`unexpected query ${sql}`);
     },
@@ -471,5 +490,87 @@ describe("deciding", () => {
     const fetchSpy = vi.spyOn(f.deps, "fetch");
     expect(await decideWaiting(OWNER, id, "approve", f.deps)).toMatchObject({ ok: false, reason: "unavailable" });
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── Proposals: read from the database, whether or not any agent is running ─────────────────────
+
+const notionRow = (over: Record<string, unknown> = {}) => ({
+  id: "7", vault_path: "notes/plan.md", notion_page_id: "page-1", proposed_body: "new text", base_md_hash: "a", notion_hash: "b",
+  diff_preview: "- old line\n+ new line", kind: "update", state: "pending", created_at: new Date("2026-10-15T08:00:00.000Z"), notion_owned: false,
+  ...over,
+});
+const atlasRow = (over: Record<string, unknown> = {}) => ({
+  id: "3", note_path: "projects/example.md", proposed_note: "full note", base_body_hash: "a", sources_hash: "b",
+  diff_preview: "- before\n+ after", state: "pending", created_at: new Date("2026-10-15T07:00:00.000Z"), ...over,
+});
+
+describe("proposals on the Waiting page", () => {
+  it("lists pending Notion and shared-notes proposals even when every agent fetch fails", async () => {
+    const f = fake({ notion: [notionRow(), notionRow({ id: "8", state: "approved" })], atlas: [atlasRow()], streams: {} });
+    f.deps.fetch = (async () => {
+      throw new Error("connect ECONNREFUSED");
+    }) as typeof fetch;
+    const { items, unreadable } = await listWaiting(OWNER, f.deps);
+    expect(unreadable).toEqual([{ agent: "example", kind: "unreachable" }]);
+    const proposals = items.filter((i) => i.kind === "proposal");
+    expect(proposals.map((i) => i.kindLabel)).toEqual(["Shared notes proposal", "Notion proposal"]); // oldest first
+    expect(proposals.every((i) => i.actions.map((a) => a.id).join() === "approve,reject")).toBe(true);
+    expect(proposals[1]!.body.map((b) => ("text" in b ? b.text : "")).join("\n")).toContain("+ new line");
+  });
+
+  it("lists them with no agent at all, and never says 'Atlas'", async () => {
+    const f = fake({ agents: [], notion: [notionRow()], atlas: [atlasRow()] });
+    const { items } = await listWaiting(OWNER, f.deps);
+    expect(items).toHaveLength(2);
+    expect(JSON.stringify(items.map(({ id: _id, ref: _ref, ...shown }) => shown))).not.toMatch(/atlas/i); // only what the page shows
+    expect(f.streamUrls).toEqual([]);
+  });
+
+  it("a database failure is named, and the agents' approvals are still listed", async () => {
+    const f = fake({ proposalsDown: true, streams: { wrun_tg: [asked("req-1", "Send it?", "2026-10-15T09:00:00.000Z")] } });
+    const { items, unreadable } = await listWaiting(OWNER, f.deps);
+    expect(items.map((i) => i.kind)).toEqual(["approval"]);
+    expect(unreadable.map((u) => u.agent)).toEqual(["Notion proposals", "Shared notes proposals"]);
+  });
+
+  it("Approve flips the Notion proposal through the guarded transition and sends nothing to any agent", async () => {
+    const rows = [notionRow()];
+    const f = fake({ agents: [], notion: rows });
+    const [item] = (await listWaiting(OWNER, f.deps)).items;
+    const result = await decideWaiting(OWNER, item!.id, "approve", f.deps);
+    expect(result).toMatchObject({ ok: true, outcome: "approved" });
+    expect(rows[0]!.state).toBe("approved");
+    expect(f.posts).toEqual([]);
+  });
+
+  it("Reject flips a shared-notes proposal to rejected", async () => {
+    const rows = [atlasRow()];
+    const f = fake({ agents: [], atlas: rows });
+    const [item] = (await listWaiting(OWNER, f.deps)).items;
+    const result = await decideWaiting(OWNER, item!.id, "reject", f.deps);
+    expect(result).toMatchObject({ ok: true, outcome: "cancelled" });
+    expect(rows[0]!.state).toBe("rejected");
+    expect(result.message).not.toMatch(/atlas/i);
+  });
+
+  it("a proposal already resolved elsewhere gives decided-elsewhere and changes nothing", async () => {
+    const rows = [notionRow()];
+    const f = fake({ agents: [], notion: rows });
+    const [item] = (await listWaiting(OWNER, f.deps)).items;
+    rows[0]!.state = "applied";
+    const result = await decideWaiting(OWNER, item!.id, "approve", f.deps);
+    expect(result).toMatchObject({ ok: false, reason: "decided-elsewhere" });
+    expect(rows[0]!.state).toBe("applied");
+  });
+
+  it("a database failure while deciding says nothing was decided; a bad id or action is 'gone'", async () => {
+    const f = fake({ agents: [], notion: [notionRow()] });
+    const [item] = (await listWaiting(OWNER, f.deps)).items;
+    const down = fake({ agents: [], proposalsDown: true });
+    expect(await decideWaiting(OWNER, item!.id, "approve", down.deps)).toMatchObject({ ok: false, reason: "unavailable" });
+    expect(await decideWaiting(OWNER, item!.id, "cancel", f.deps)).toMatchObject({ ok: false, reason: "gone" });
+    expect(await decideWaiting(OWNER, itemId("proposal", ["other", "1"]), "approve", f.deps)).toMatchObject({ ok: false, reason: "gone" });
+    expect(await decideWaiting(OWNER, itemId("proposal", ["notion", "x"]), "approve", f.deps)).toMatchObject({ ok: false, reason: "gone" });
   });
 });

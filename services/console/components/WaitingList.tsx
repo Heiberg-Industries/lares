@@ -46,7 +46,8 @@ function unreadableGroups(unreadable: readonly Unreadable[]): { reason: string; 
   return [...groups].map(([reason, agents]) => ({ reason, agents }));
 }
 
-const KIND_LABEL: Record<WaitingItem["kind"], string> = { approval: "Approval" };
+const KIND_LABEL: Record<WaitingItem["kind"], string> = { approval: "Approval", proposal: "Proposal" };
+const labelOf = (item: WaitingItem): string => item.kindLabel ?? KIND_LABEL[item.kind];
 
 /** "just now", "12 minutes ago", "3 hours ago", "2 days ago". Pure; `now` is a prop. */
 export function age(createdAt: string | null, now: number): string {
@@ -143,7 +144,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
       ))}
       {shown.length === 0 ? (
         <EmptyState title="Nothing is waiting on you">
-          When an agent asks for your approval, in any conversation, it shows up here.
+          When an agent asks for your approval, or Notion or the shared notes propose a change, it shows up here.
         </EmptyState>
       ) : (
         <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 320px), 1fr))", alignItems: "start" }}>
@@ -161,7 +162,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
                     >
                       <span style={{ display: "block", wordBreak: "break-word" }}>{item.title}</span>
                       <span className="lares-muted" style={{ fontSize: 13 }}>
-                        {KIND_LABEL[item.kind]} · {item.agent} · {item.channel} · {age(item.createdAt, now)}
+                        {labelOf(item)} · {item.agent} · {item.channel} · {age(item.createdAt, now)}
                       </span>{" "}
                       {done ? <StatusBadge tone={done.result.ok ? "success" : "quiet"}>Decided</StatusBadge> : null}
                     </button>
@@ -174,7 +175,7 @@ export function WaitingList({ items, unreadable, selectedRef, now, onDecide }: W
             <article className="lares-surface lares-stack" aria-label="Selected item">
               <header>
                 <p className="mono lares-muted" style={{ fontSize: 11, letterSpacing: ".04em", textTransform: "uppercase", margin: "0 0 6px" }}>
-                  {KIND_LABEL[selected.kind]} · {selected.agent} · {selected.channel} · {age(selected.createdAt, now)}
+                  {labelOf(selected)} · {selected.agent} · {selected.channel} · {age(selected.createdAt, now)}
                 </p>
                 <h2 className="lares-section-title" style={{ wordBreak: "break-word" }}>{selected.title}</h2>
               </header>

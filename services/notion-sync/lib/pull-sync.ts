@@ -283,9 +283,9 @@ export interface PullSyncResult {
 const MIRROR_CHILD_REASON = "sub-page added under a mirror row — move it out, then resolve";
 const CONFLICT_REASON = "changed in both Notion and the vault";
 const DEFAULT_STALE_FREEZE_DAYS = 7;
-// A day. Long enough that a normal "I'll look at it tonight" never alarms; short enough
-// that an edit lost to a broken DM surfaces the next morning rather than next week.
-const DEFAULT_STALE_PROPOSAL_HOURS = 24;
+// Four hours. Long enough that a quick "I'll look after lunch" never alarms; short enough
+// that an edit lost to a broken DM surfaces the same day rather than the next morning.
+const DEFAULT_STALE_PROPOSAL_HOURS = 4;
 const DIFF_PREVIEW_LINES = 10;
 const DIFF_LINE_CHARS = 100;
 
@@ -971,8 +971,9 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
         ? `never announced: ${stale.vaultPath} — proposed ${proposedOn} and NOBODY has been told. ` +
           `The agent's proposal watch is not running (apply the latest database update, and check that the agent's image carries the Notion tools). ` +
           `Decide meanwhile on the console /integrations card, or with: notion-sync approve|reject ${stale.vaultPath}`
-        : `still awaiting your decision: ${stale.vaultPath} — proposed ${proposedOn}, ` +
-          `The agent asked and got no answer. Decide in its chat, on the console /integrations card, ` +
+        : `still awaiting your decision: ${stale.vaultPath} — proposed ${proposedOn}. ` +
+          `The agent asked and got no answer. Decide on the console's Waiting on you page (/waiting), ` +
+          `which lists it even when the agent is down, or in the agent's chat, on the console /integrations card, ` +
           `or with: notion-sync approve|reject ${stale.vaultPath}`,
     );
   }
