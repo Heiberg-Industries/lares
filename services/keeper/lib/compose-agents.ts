@@ -3,6 +3,7 @@ import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { stringify } from 'yaml';
 import { gatewayModels } from './gateway-keys.js';
+import { DOOR_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
 import { outsideSecretName, outsideSecretTarget } from '@lares/agent-kit/outside-tools';
 import { bindingsFor, INTEGRATION_SECRET_FILES, type RuntimeBindings } from './runtime-bindings.js';
 export const DIGEST = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
@@ -11,10 +12,7 @@ export function agentName(name: string): string { if (!/^[a-z][a-z0-9-]{1,30}$/.
 export function pinnedImage(image: string): string { if (!DIGEST.test(image))
     throw new Error('Image must have a full SHA256 digest'); return image; }
 export const ROLE_DOORS:Record<string,readonly string[]>={creative:['slack'],'chief-of-staff':['slack','telegram','email']};
-export const DOOR_FILES = {
-    slack: { SLACK_BOT_TOKEN_FILE: 'slack-token', SLACK_SIGNING_SECRET_FILE: 'slack-signing-secret' },
-    telegram: { TELEGRAM_BOT_TOKEN_FILE: 'telegram-token', TELEGRAM_WEBHOOK_SECRET_TOKEN_FILE: 'telegram-webhook-secret' },
-} as const;
+export const DOOR_FILES = DOOR_SECRET_FILES;
 export interface AgentContainer {
     name: string;
     role: string;

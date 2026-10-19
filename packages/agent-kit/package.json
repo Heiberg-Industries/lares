@@ -71,6 +71,7 @@
     "./integration-rows": "./src/integration-rows.ts",
     "./integration-generate": "./src/integration-generate.ts",
     "./integration-secrets": "./src/integration-secrets.ts",
+    "./platform-secrets": "./src/platform-secrets.ts",
     "./integration-secret-lint": "./src/integration-secret-lint.ts",
     "./definition": "./src/definition.ts",
     "./outside-tools": "./src/outside-tools.ts",

@@ -16,6 +16,7 @@ import { isAbsolute, extname, join, resolve } from "node:path";
 
 import { loadIntegrationManifests, INTEGRATIONS_DIR } from "./integration-manifest.js";
 import { connections, secretsForRefs } from "./connections.js";
+import { platformSecretNames } from "./platform-secrets.js";
 
 export interface SecretFinding {
   file: string;
@@ -76,6 +77,7 @@ function declaredSecrets(dir: string): Set<string> {
     for (const inst of def.instances) refs.push(`${def.id}:${inst.id}`);
   }
   for (const s of secretsForRefs(refs)) out.add(s);
+  for (const s of platformSecretNames()) out.add(s);
   return out;
 }
 
