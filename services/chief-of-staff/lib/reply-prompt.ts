@@ -17,7 +17,7 @@
  *
  * Pure: no I/O, no model call. Both drafters gather their own context and pass it in.
  */
-import { contractClauses, type Lang } from "@lares/compose-contract";
+import { contractClauses, labeledContext, type Lang } from "@lares/compose-contract";
 
 export interface ReplyPromptInput {
   /** The mailbox the reply is sent from. */
@@ -56,7 +56,11 @@ export function buildReplyPrompt(i: ReplyPromptInput): string {
     context,
     ...(i.extraRules ?? []),
     i.closing,
-    `Original — From: ${i.original.from}\nSubject: ${i.original.subject}\n\n${i.original.body}`,
+    // The mail is somebody else's text: only ever inside a flagged block, never in prose.
+    // No blank line inside the block, so the flag sits directly on what it covers.
+    labeledContext([
+      { label: "Original email", content: `From: ${i.original.from}\nSubject: ${i.original.subject}\n${i.original.body}`, thirdParty: true },
+    ]),
     REPLY_FORMAT_LINE,
   ]
     .map((s) => s.trim())
