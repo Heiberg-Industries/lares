@@ -28,8 +28,13 @@ Across all of them:
 - **One gate for unprompted messages.** Briefs and nudges run on named slots, respect quiet
   hours on the owner's clock, stay silent when there is nothing to say, and keep a record of
   what was sent and why.
-- **A web console.** Sign in with Google to chat with agents, create and edit them, grant or
-  revoke what they may touch, connect integrations, and check backups and model status.
+- **You choose where each message goes.** For every kind of message an agent starts itself, you
+  rank the doors to try (web chat, Slack, Telegram). If none is connected the message lands in
+  web chat, which every agent has, so nothing is dropped, and the record says why.
+- **A web console.** Sign in with Google to chat with agents, read what they left for you in the
+  web chat inbox, decide what they are waiting on, create and edit them, grant or revoke what they
+  may touch, connect integrations, and check backups and model status. A
+  [tour of the console](docs/how-to/using-the-console.md) is in the docs.
 - **Backups you can prove.** Nightly encrypted backups (restic), a monthly restore drill, an
   export of everything, and erasure of one person's data on request.
 
@@ -47,7 +52,9 @@ Across all of them:
 - **Vault.** Memory and knowledge as Markdown in Git, readable in any editor, with named areas an
   agent is or is not granted. Facts with a date or an owner live in Postgres, and each one can be
   exported.
-- **Doors.** The ways in: web chat in the console first, then Slack and Telegram.
+- **Doors.** The ways in: web chat in the console first, then Slack, Telegram and, for the chief
+  of staff, e-mail. Each is connected from the agent's page by pasting a credential and pressing
+  Connect.
 - **Runtime.** Agents run on [eve](https://github.com/vercel/eve), self-hosted. Caddy is the one
   public listener, and outbound traffic from agents goes through an allow-list proxy. Nothing
   phones home.

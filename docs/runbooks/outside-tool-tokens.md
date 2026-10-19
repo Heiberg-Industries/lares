@@ -43,7 +43,13 @@ checks only that the file exists, is not empty and is not a link; it never reads
 ## Outside tools on Telegram
 
 Until the owner has seen a Telegram approval work on the real bot, an agent asked to use an outside
-tool from Telegram answers that approving it is not available there yet and asks the owner to use
-Slack. To check: ask the agent to use a tool that writes, tap Approve on the card, and confirm the
-write happened. Then set `OUTSIDE_TELEGRAM_APPROVALS_PROVEN` to `true` in
-`packages/agent-kit/src/outside-connections.ts` and ship a new image.
+tool from Telegram refuses, and its answer says the approval is not available there yet and
+suggests Slack. Nothing is done on that attempt. The same approval can be given in the console's
+web chat, where the approval card appears in the chat and under Waiting on you; the refusal text
+itself still names only Slack. To check Telegram: ask the agent to use a tool that writes, tap
+Approve on the card, and confirm the write happened. Then set `OUTSIDE_TELEGRAM_APPROVALS_PROVEN`
+to `true` in `packages/agent-kit/src/outside-connections.ts` and ship a new image.
+
+A message that an agent sends on its own and that asks for such an approval (for example a CRM
+routing proposal) can be routed to web chat in "Where messages go"; it then arrives in the web chat
+inbox as the facts plus a Reply, and the approval card appears once you reply.
