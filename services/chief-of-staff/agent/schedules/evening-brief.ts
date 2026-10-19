@@ -137,18 +137,27 @@ export function buildEveningPrompt(
   // their own block. Both renderers are shared with the morning brief on purpose: the two
   // briefs read the same `NightBeforeMeeting`, so they must render it the same way.
   const { commitments, travel } = splitCommitments(content.meetings);
-  const meetingLines = commitments.length > 0
+  // The titles, locations and attendee names are somebody else's words: the rows ride only
+  // inside a flagged block, the owner-side wording stays in the heading's label and note.
+  const meetingLines = labeledContext([{
+    label: "Tomorrow's calendar",
+    note: "meetings, and the blocks he set aside",
     // -s4 GOTCHA — see morning-brief.ts's own note: `.map(commitmentLine)` would pass the
     // array index as `tz`, so this is wrapped in an arrow instead.
-    ? commitments.map((m) => commitmentLine(m, tz)).join("\n")
-    : "(none)";
+    content: commitments.map((m) => commitmentLine(m, tz)).join("\n"),
+    emptyText: "(none)",
+    thirdParty: true,
+  }]);
   const travelSection = travelContextBlock(travel, tz);
   const factsSection = standingFactsBlock(facts);
   // A source that could not be read, named right under the calendar it is about.
   const unavailableSection = unavailableSourcesBlock(content.unavailable);
 
-  const obligationLines = content.obligations.length > 0
-    ? content.obligations
+  // The counterparty's name and the mail's subject are outside text: flagged block, as above.
+  const obligationLines = labeledContext([{
+    label: "Owed a reply",
+    note: "from people he's meeting tomorrow",
+    content: content.obligations
         .map((o: Obligation) =>
           `- ${o.counterpartyName} <${o.counterpartyAddress}> — waiting ${o.ageHours}h` +
           `${o.isRePing ? ", they've written again since" : ""} — re: ${o.subject || "(no subject)"}` +
@@ -156,8 +165,10 @@ export function buildEveningPrompt(
           // field, so the two briefs can never explain the same obligation differently.
           ` — why: ${o.reason ?? "on the radar"}`,
         )
-        .join("\n")
-    : "(none)";
+        .join("\n"),
+    emptyText: "(none)",
+    thirdParty: true,
+  }]);
 
   // Task 10 (B5) — a cross-channel lookup that could not be read, as a labeled block.
   // Mirrors `buildMorningPrompt`'s "Sources behind that list": the whole point is that a
@@ -176,12 +187,10 @@ export function buildEveningPrompt(
     "[scheduled turn — the evening prep pass. This is not a message from a person; it is your cue",
     "to prepare him for tomorrow.]",
     "",
-    "Tomorrow's calendar — meetings, and the blocks he set aside:",
     meetingLines,
     "",
     ...(unavailableSection ? [unavailableSection, ""] : []),
     ...(travelSection ? [travelSection, ""] : []),
-    "Owed a reply, from people he's meeting tomorrow:",
     obligationsSection,
     "",
     // — what he has told her. Empty drops out entirely (`labeledContext`).

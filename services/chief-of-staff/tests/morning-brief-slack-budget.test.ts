@@ -260,8 +260,8 @@ describe("the morning brief names a dropped Slack source", () => {
     // FIX ROUND 1, finding 3 — and the list above it must NOT claim a bare "(none)". "none" is a
     // factual claim (ContextBlock's own docblock, @lares/compose-contract) and a source that
     // never answered has not earned it: "none" is true of Gmail and unknown of Slack.
-    expect(prompt).toContain("New or changed since last night's evening pass — owed a reply:\n(none from Gmail)");
-    expect(prompt).not.toContain("owed a reply:\n(none)\n");
+    expect(prompt).toMatch(/## Owed a reply \(new or changed since last night's evening pass\)\n[^\n]+\n\(none from Gmail\)/);
+    expect(prompt).not.toMatch(/## Owed a reply[^\n]*\n[^\n]+\n\(none\)\n/);
   });
 
   it("an ordinary empty morning is still silent — the dropped-source path must not turn every quiet day into a message", () => {

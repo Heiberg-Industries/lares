@@ -517,7 +517,7 @@ describe("obligation lines carry a reason ( Task 10, B5)", () => {
 import { deadlinesBlock } from "../lib/brief-content.js";
 import type { CandidateLine, DeadlineLine } from "../lib/brief-content.js";
 
-const OWED_HEADING = "New or changed since last night's evening pass — owed a reply:";
+const OWED_HEADING = "## Owed a reply (new or changed since last night's evening pass)";
 
 const DEADLINE: DeadlineLine = {
   id: "d1",

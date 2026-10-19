@@ -135,7 +135,8 @@ describe("-s6 pin — with no resolution, rendering is byte-identical to today, 
     expect(conflictsBlock([conflict()], "nb")).toBe(today);
     expect(today).toContain("nothing here has been resolved");
     expect(today).not.toContain("Evidence:");
-    expect(today).not.toContain("Everything under this heading was written by someone else");
+    // The titles in a clash row are calendar text, so the block is flagged with or without evidence.
+    expect(today).toContain("Everything under this heading was written by someone else");
   });
 
   it("conflictLine appends nothing without a resolution, whatever the language", () => {
@@ -178,15 +179,15 @@ describe("-s6 — a strong resolution adds the evidence line and the third-party
     expect(block).not.toContain("nothing here has been resolved");
   });
 
-  it("a block with no evidence anywhere carries no third-party notice", () => {
+  it("a block with no evidence anywhere still carries the third-party notice", () => {
     const block = conflictsBlock([conflict()]);
-    expect(block).not.toContain("Everything under this heading was written by someone else");
+    expect(block).toContain("Everything under this heading was written by someone else");
   });
 
-  it("a weak-only match never flags the block third-party either", () => {
+  it("a weak-only match shows no evidence line, but the block is still flagged", () => {
     const weak: ResolvedConflict = { ...conflict(), resolution: strongResolution({ strength: "weak" }) };
     const block = conflictsBlock([weak]);
-    expect(block).not.toContain("Everything under this heading was written by someone else");
+    expect(block).toContain("Everything under this heading was written by someone else");
     expect(block).not.toContain("Evidence:");
   });
 
@@ -221,7 +222,7 @@ describe("buildMorningPrompt with conflicts", () => {
   it("renders the block right under the calendar it is about", () => {
     const prompt = buildMorningPrompt(withConflicts);
     expect(prompt.indexOf("Today's calendar")).toBeLessThan(prompt.indexOf("## Clashes"));
-    expect(prompt.indexOf("## Clashes")).toBeLessThan(prompt.indexOf("owed a reply"));
+    expect(prompt.indexOf("## Clashes")).toBeLessThan(prompt.indexOf("## Owed a reply"));
   });
 
   it("renders NOTHING about conflicts otherwise, and the prompt is byte-for-byte the old one", () => {

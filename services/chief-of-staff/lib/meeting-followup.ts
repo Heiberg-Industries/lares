@@ -114,7 +114,7 @@ export function buildFollowupPrompt(input: FollowupInput): string {
     input.voiceBlock,
     labeledContext([
       { label: "Meeting", content: `${input.title} — ${input.whenIso}`, thirdParty: true },
-      { label: "Recipients", content: input.recipients.join(", ") },
+      { label: "Recipients", content: input.recipients.join(", "), thirdParty: true },
       { label: "Summary", content: stripFootnoteAnchors(input.summaryBlock), thirdParty: true },
       { label: "Action items", content: input.actionItems.map((a) => `- ${a}`).join("\n"), thirdParty: true },
     ]),

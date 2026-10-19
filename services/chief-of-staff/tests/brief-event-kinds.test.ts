@@ -235,7 +235,7 @@ describe(" regression — the morning of 2026-08-25", () => {
     const content = buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] });
     const prompt = buildMorningPrompt(content!);
 
-    const calendar = sectionAfter(prompt, "Today's calendar — meetings, and the blocks he set aside:");
+    const calendar = sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)");
     expect(calendar).not.toContain("Hotel A");
     expect(calendar).not.toContain("Example Street");
     expect(prompt).not.toContain("all day — Stay at Hotel A Airport");
@@ -256,7 +256,7 @@ describe(" regression — the morning of 2026-08-25", () => {
   it("the 16:30 call renders as remote and carries no venue", async () => {
     const meetings = await listTodayMeetings(deps, THAT_MORNING);
     const prompt = buildMorningPrompt(buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] })!);
-    const calendar = sectionAfter(prompt, "Today's calendar — meetings, and the blocks he set aside:");
+    const calendar = sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)");
 
     // Fix round 1, Finding 2 — the SPAN, so "the 16:30 runs into the 17:00" is read, not invented.
     expect(calendar).toContain("16:30–17:00 — Intro call — Dana Rowe (remote)");
@@ -271,7 +271,7 @@ describe(" regression — the morning of 2026-08-25", () => {
       obligations: [],
     });
     const prompt = buildEveningPrompt(evening!);
-    const calendar = sectionAfter(prompt, "Tomorrow's calendar — meetings, and the blocks he set aside:");
+    const calendar = sectionAfter(prompt, "## Tomorrow's calendar (meetings, and the blocks he set aside)");
 
     expect(calendar).not.toContain("Hotel A");
     expect(calendar).toContain("(remote)");
@@ -284,7 +284,7 @@ describe(" regression — the morning of 2026-08-25", () => {
     const meetings = await listTodayMeetings(only, THAT_MORNING);
     const prompt = buildMorningPrompt(buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] })!);
 
-    expect(sectionAfter(prompt, "Today's calendar — meetings, and the blocks he set aside:").trim()).toBe("(none)");
+    expect(sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)").trim()).toMatch(/\(none\)$/);
     expect(sectionAfter(prompt, "## Travel context")).toContain("Stay at Hotel A Airport");
   });
 
@@ -298,7 +298,7 @@ describe(" regression — the morning of 2026-08-25", () => {
     expect(meetings[0]?.kind).toBe("in-person");
 
     const prompt = buildMorningPrompt(buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] })!);
-    const calendar = sectionAfter(prompt, "Today's calendar — meetings, and the blocks he set aside:");
+    const calendar = sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)");
     expect(calendar).toContain("17:00–18:50 — AI & Agenter - Example Comm (Example Venue) (in person; a join link also exists)");
     expect(calendar).not.toContain("(remote)");
     // …and the clause that would have contradicted it is not fired.
@@ -320,7 +320,7 @@ describe(" regression — the morning of 2026-08-25", () => {
     expect(meetings[0]?.kind).toBe("transport");
 
     const prompt = buildMorningPrompt(buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] })!);
-    expect(sectionAfter(prompt, "Today's calendar — meetings, and the blocks he set aside:").trim()).toBe("(none)");
+    expect(sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)").trim()).toMatch(/\(none\)$/);
     expect(sectionAfter(prompt, "## Travel context"))
       .toContain("- Flight to City A (XX 100) (Oslo OSL) [transport — where he moves; 09:00–10:10]");
   });
