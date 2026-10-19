@@ -16,6 +16,11 @@ import {
 import { inboxNotePath } from "../src/note-paths.js";
 
 describe("summarizeApproval — what owner-1 reads before authorising a write", () => {
+  it("calls the shared-notes proposal card by that name, not the old product name", () => {
+    expect(summarizeApproval("atlas_resolve_proposal", { decision: "approve", id: "p-42" }))
+      .toBe("Shared notes proposal — APPROVE (p-42)");
+  });
+
   it("names the recipient and subject on a send, the two fields that decide safety", () => {
     expect(summarizeApproval("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: outside-service" }))
       .toBe('Send email to tor@ledgerly.example — "Re: outside-service"');

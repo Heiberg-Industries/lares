@@ -372,7 +372,7 @@ const FORMATTERS: Record<string, Formatter> = {
 
   // — Proposal resolutions. The decision is the whole point; lead with it.
   notion_resolve_proposal: (i) => line("Notion proposal —", str(i["decision"])?.toUpperCase() ?? null, str(i["id"]) && `(${trunc(str(i["id"])!, 32)})`),
-  atlas_resolve_proposal: (i) => line("Atlas proposal —", str(i["decision"])?.toUpperCase() ?? null, str(i["id"]) && `(${trunc(str(i["id"])!, 32)})`),
+  atlas_resolve_proposal: (i) => line("Shared notes proposal —", str(i["decision"])?.toUpperCase() ?? null, str(i["id"]) && `(${trunc(str(i["id"])!, 32)})`),
 
   // — The link a tainted turn wants to open (W7D-s3). The address is the whole decision, so it
   // is rendered WHOLE: no `trunc`, no `MAX_FIELD`, no middle ellipsis, at any length. Three
