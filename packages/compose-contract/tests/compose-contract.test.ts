@@ -310,32 +310,34 @@ describe("absentBlockClause — a missing block is not a memory prompt", () => {
   });
 });
 
-// ── No forward-commitment claims ─────────────────────────────────────
-// untakenActionsClause() already bans PAST-tense claims ("I have sent / booked / scheduled").
-// The live drafts obey it perfectly, and that is exactly the problem: pushed out of a false
-// past claim, the model lands on a compliant FUTURE one instead — "jeg SENDER deg en
-// invitasjon" rather than "jeg HAR SENDT" — and the owner ends up keeping a promise the draft
-// made for him. This clause closes the door the first one left open, in both languages: state
-// what is true now, or say the action is his; never promise it will happen.
-describe("noCommitmentsClause — closing the forward door untakenActionsClause opened", () => {
-  it("forbids committing him to a future action, in English", () => {
+// ── Suggestions, not promises ────────────────────────────────────────
+// untakenActionsClause() bans past-tense claims; this clause bans the future-tense twin only for
+// things the draft has no authority to promise, and allows ordinary suggestions and questions.
+describe("noCommitmentsClause — suggestions, not promises", () => {
+  it("allows suggesting a next step or asking a question", () => {
     const c = noCommitmentsClause();
-    expect(c).toMatch(/future action/i);
-    expect(c).toMatch(/I'?ll send|I will send/i);
-    expect(c).toMatch(/I'?ll book|I will book/i);
-    expect(c).toMatch(/get back to you/i);
+    expect(c).toMatch(/suggest/i);
+    expect(c).toMatch(/ask a question/i);
   });
 
-  it("forbids the same in Norwegian — the exact phrasing the live drafts actually used", () => {
+  it("still names dates, payments, bookings, prices and deliverables as things not to promise", () => {
     const c = noCommitmentsClause();
-    expect(c).toMatch(/jeg sender/i);
-    expect(c).toMatch(/kommer tilbake til deg/i);
+    expect(c).toMatch(/do not promise/i);
+    for (const word of ["date", "payment", "booking", "price", "deliverable"]) {
+      expect(c).toMatch(new RegExp(word, "i"));
+    }
   });
 
-  it("tells the model what to do instead of promising: state what is true, or leave it to him", () => {
+  it("tells the model what to do instead: offer it for the owner to confirm, or leave it out", () => {
     const c = noCommitmentsClause();
-    expect(c).toMatch(/what is (already )?true/i);
-    expect(c).toMatch(/leave|his to|up to him/i);
+    expect(c).toMatch(/owner can confirm/i);
+    expect(c).toMatch(/leave it out/i);
+  });
+
+  it("has no gendered pronoun and no 'his to take'", () => {
+    const c = noCommitmentsClause();
+    expect(c).not.toMatch(/his to take/i);
+    expect(c).not.toMatch(/\b(he|him|his)\b/i);
   });
 
   it("contractClauses includes it only when asked — the default stack is unchanged", () => {

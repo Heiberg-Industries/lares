@@ -163,41 +163,24 @@ export function absentBlockClause(): string {
 }
 
 /**
- * Bans the future half of the same lie untakenActionsClause bans the past half of.
+ * Suggestions, not promises: a draft may propose next steps and ask questions, but never commits
+ * the owner to a date, payment, booking, price or deliverable (it began as a blanket ban on any
+ * forward-looking sentence, which also stopped ordinary suggestions).
  *
- * untakenActionsClause() (above) forbids claiming an action already happened ("I have sent
- * / booked / scheduled"). The live drafts obey that perfectly, and obeying it is exactly what
- * produces the failure this clause exists to close: pushed out of a false past claim with
- * nowhere else honest to land, the model reaches for a compliant FUTURE one instead — "jeg
- * SENDER deg en invitasjon" rather than "jeg HAR SENDT". Grammatically that clears
- * untakenActionsClause with room to spare. It still commits the owner to something the draft
- * had no authority to promise, and he is the one who ends up sending the invitation by hand
- * so the mail is not a lie in hindsight.
- *
- * So: neither tense is his to write from the draft's chair. State what is true right now, or
- * say the action is his to take — never promise it will happen, in either language, because
- * a promise made in his voice becomes a commitment he has to keep whether he meant it or not.
- *
- * Opt-in like absentBlocks: the two callers that draft outbound replies (the sales agent's reply, the chief of staff's
- * email drafter) want this; the sites that never write "I will…" in the first place (triage,
- * the digest classifier) have no forward promise to ban and gain nothing from the extra text.
+ * Opt-in like absentBlocks: only the callers that draft outbound replies want it.
  */
 export function noCommitmentsClause(): string {
   return (
-    "Never commit him to a future action on his behalf — no promises about what will happen next, " +
-    'in either language: no "I\'ll send you an invitation", "I will book a time", "I\'ll get back to ' +
-    'you", "jeg sender deg en invitasjon", "jeg booker et møte", "jeg kommer tilbake til deg". ' +
-    "This applies even when the promise is the honest-sounding alternative to a false past-tense " +
-    "claim — swapping tense does not make it his to commit to. State only what is already true, or " +
-    "say plainly that the action is his to take; do not write a promise on his behalf that he then " +
-    "has to go and keep by hand."
+    "You may suggest a next step or ask a question (\"shall we say Friday?\", \"happy to send the deck " +
+    "if useful\"). Do not promise, on the owner's behalf, a date, a payment, a booking, a price or a " +
+    "deliverable — offer it as a suggestion the owner can confirm, or leave it out."
   );
 }
 
 /** The standard clause stack for a compose site. Language is per-site (omit when there is no
  *  counterpart); `toolResults` is for turns that call hands (see groundingClause);
  *  `absentBlocks` is for turns that run inside a persistent conversation (see absentBlockClause);
- *  `noCommitments` is for turns that draft outbound replies in his voice (see noCommitmentsClause). */
+ *  `noCommitments` is for turns that draft outbound replies in the owner's voice (see noCommitmentsClause). */
 export function contractClauses(
   opts: { lang?: Lang; toolResults?: boolean; absentBlocks?: boolean; noCommitments?: boolean } = {},
 ): string {
