@@ -28,7 +28,7 @@ const save = (name = 'bookkeeper', extra = {}) => ({ name, definition: { ...GOOD
 const create = (name = 'bookkeeper', extra = {}) => runAction('definition.create', { ...save(name, extra), startingPoint: role }, ctx());
 function register(ceiling = 2, storage = true) {
     resetActions();
-    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, ceiling: async () => ceiling, compose, backup,
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, ceiling: async () => ceiling, memory: () => 0, compose, backup,
         roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }),
         storage: storage ? { prepareDelete: async (name) => ({ delete: async () => { await pool.query('DELETE FROM owned_memory WHERE agent=$1', [name]); } }) } : undefined,
     });
@@ -222,10 +222,10 @@ it('enforces capacity across two independent keeper processes sharing the databa
 it('reports unconfigured capacity distinctly from zero without blocking existing saves', async () => {
  register(); await create();
  register(NaN);
- expect(await runAction('definition.capacity',{},ctx())).toEqual({ceiling:null,activeCount:1,approved:false,creationAvailable:false});
+ expect(await runAction('definition.capacity',{},ctx())).toEqual({ceiling:null,activeCount:1,approved:false,creationAvailable:false,serverMemoryBytes:null,suggestedMax:null,canChange:false});
  await expect(runAction('definition.save',save(),ctx())).resolves.toBeTruthy();
  register(0);
- expect(await runAction('definition.capacity',{},ctx())).toEqual({ceiling:0,activeCount:1,approved:true,creationAvailable:false});
+ expect(await runAction('definition.capacity',{},ctx())).toEqual({ceiling:0,activeCount:1,approved:true,creationAvailable:false,serverMemoryBytes:null,suggestedMax:null,canChange:false});
 });
 it('rejects stale reconciliation hashes before lifecycle side effects',async()=>{
  await create(); const reconcile=vi.fn(async()=>({pending:false}));Object.assign(compose,{reconcile});register();
@@ -255,4 +255,68 @@ it(': a save the lifecycle refuses in prepare stores nothing and leaves the file
  expect(readFileSync(join(agentsDir,'bookkeeper','duties.md'),'utf8')).not.toBe('Changed duties');
  expect((await pool.query("SELECT hash FROM agent_definitions WHERE name='bookkeeper'")).rows[0]).toEqual(row);
  expect(saved).not.toHaveBeenCalled();expect(compose.stop).not.toHaveBeenCalled();
+});
+
+const GIB = 1024 ** 3;
+const OWNER = 'owner@example.com';
+const asOwner = (actor = OWNER) => ({ actor, audit: vi.fn(async (_record: unknown) => { }) });
+function registerLimit(opts: { memory?: () => number; administrator?: string | undefined } = {}) {
+    resetActions();
+    registerDefinitionActions({ pool, agentsDir, retiredDir, secretsDir, compose, backup,
+        ceiling: async () => { const { rows } = await pool.query("SELECT value FROM settings WHERE key='agents.ceiling'"); return typeof rows[0]?.value === 'number' ? rows[0].value : NaN; },
+        administrator: 'administrator' in opts ? opts.administrator : OWNER, memory: opts.memory,
+        roleInfo: (r) => ({ roleMd: readFileSync(join(repo, 'packages/agent-kit/templates', r, 'role.md'), 'utf8'), deployedTools: deployedToolsFor(join(repo, 'services', r)) }) });
+}
+const settingNow = async () => (await pool.query("SELECT value FROM settings WHERE key='agents.ceiling'")).rows[0]?.value;
+it('the administrator raises the limit and a second agent can then be created', async () => {
+    await pool.query("TRUNCATE settings, settings_audit");
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agents.ceiling','1','seed')");
+    registerLimit();
+    await create();
+    await expect(create('second')).rejects.toThrow('holds 1 agents');
+    const result: any = await runAction('definition.capacity_set', { ceiling: 2 }, asOwner());
+    expect(result).toMatchObject({ ceiling: 2, activeCount: 1, approved: true, creationAvailable: true });
+    await expect(create('second')).resolves.toBeTruthy();
+    expect((await pool.query("SELECT changed_by FROM settings_audit WHERE key='agents.ceiling' ORDER BY id DESC LIMIT 1")).rows[0].changed_by).toBe(OWNER);
+});
+it('refuses anyone but the administrator and leaves the limit unchanged', async () => {
+    await pool.query("TRUNCATE settings, settings_audit");
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agents.ceiling','1','seed')");
+    registerLimit();
+    await expect(runAction('definition.capacity_set', { ceiling: 5 }, asOwner('member@example.com'))).rejects.toThrow("Only the installation's owner can change the agent limit.");
+    expect(await settingNow()).toBe(1);
+    registerLimit({ administrator: undefined });
+    await expect(runAction('definition.capacity_set', { ceiling: 5 }, asOwner())).rejects.toThrow("Only the installation's owner");
+    expect(await settingNow()).toBe(1);
+});
+it('lets the host shell change the limit too', async () => {
+    await pool.query("TRUNCATE settings, settings_audit");
+    registerLimit();
+    await expect(runAction('definition.capacity_set', { ceiling: 3 }, asOwner('host'), { host: true })).resolves.toMatchObject({ ceiling: 3 });
+    expect(await settingNow()).toBe(3);
+});
+it('refuses a limit below the active count, naming the count, and accepts one equal to it', async () => {
+    await pool.query("TRUNCATE settings, settings_audit");
+    await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('agents.ceiling','2','seed')");
+    registerLimit();
+    await create(); await create('second');
+    await expect(runAction('definition.capacity_set', { ceiling: 1 }, asOwner())).rejects.toThrow('You have 2 agents. Retire one before lowering the limit below 2.');
+    expect(await settingNow()).toBe(2);
+    await expect(runAction('definition.capacity_set', { ceiling: 2 }, asOwner())).resolves.toMatchObject({ ceiling: 2, creationAvailable: false });
+});
+it('rejects negative, fractional and too-large limits as invalid input', async () => {
+    registerLimit();
+    for (const ceiling of [-1, 1.5, 51])
+        await expect(runAction('definition.capacity_set', { ceiling }, asOwner())).rejects.toThrow('invalid input');
+});
+it('reports server memory, a suggested maximum and whether the caller can change the limit', async () => {
+    // (16 - 2.5 stack - 2 headroom) / 1.5 per agent = 7.67 -> 7
+    registerLimit({ memory: () => 16 * GIB });
+    expect(await runAction('definition.capacity', {}, asOwner())).toMatchObject({ serverMemoryBytes: 16 * GIB, suggestedMax: 7, canChange: true });
+    expect(await runAction('definition.capacity', {}, asOwner('member@example.com'))).toMatchObject({ canChange: false });
+    expect(await runAction('definition.capacity', {}, asOwner('host'), { host: true })).toMatchObject({ canChange: true });
+    registerLimit({ memory: () => 4 * GIB });
+    expect(await runAction('definition.capacity', {}, asOwner())).toMatchObject({ suggestedMax: 0 });
+    registerLimit({ memory: () => 0 });
+    expect(await runAction('definition.capacity', {}, asOwner())).toMatchObject({ serverMemoryBytes: null, suggestedMax: null });
 });

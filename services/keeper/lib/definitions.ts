@@ -11,6 +11,9 @@ import { KeeperRefusedError, registerAction, type ActionContext } from './action
 import { DOOR_FILES } from './compose-agents.js';
 import { publishDefinition, plainDirectory, syncDefinitionDirectory } from './definition-files.js';
 import type { Backup } from './git-backup.js';
+import { totalmem } from 'node:os';
+import { ceilingFor, HEADROOM_BYTES, STACK_ESTIMATE_BYTES, PER_AGENT_ESTIMATE_BYTES, AGENT_LIMIT_MAX } from './ceiling.js';
+import { writeSetting } from './settings.js';
 const NAME_RE = /^[a-z][a-z0-9-]{1,30}$/;
 let namespaceTail: Promise<unknown> = Promise.resolve();
 const ROLES = ['chief-of-staff', 'creative'] as const;
@@ -47,6 +50,12 @@ export interface DefinitionOptions {
     retiredDir: string;
     secretsDir: string;
     ceiling(): Promise<number>;
+    /** The installation administrator's identity (the only non-host caller who may change the limit). */
+    administrator?: string;
+    /** Total server memory in bytes; defaults to os.totalmem(). 0 or less means unknown. */
+    memory?(): number;
+    /** Persists the new limit; defaults to the audited agents.ceiling setting. */
+    setCeiling?(value: number, actor: string): Promise<void>;
     compose: DefinitionCompose;
     storage?: DefinitionStorage;
     backup: Backup;
@@ -217,12 +226,29 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused('starting point and definition role must match');
             return save(input, ctx, true);
         }) });
-    registerAction({name:'definition.capacity',input:z.strictObject({}),run:async()=>{
-        const value=await o.ceiling();
-        const ceiling=Number.isInteger(value)&&value>=0?value:null;
-        const activeCount=readdirSync(o.agentsDir,{withFileTypes:true}).filter(e=>!e.name.startsWith('.')&&(e.isDirectory()||e.isSymbolicLink())).length;
-        return {ceiling,activeCount,approved:ceiling!==null,creationAvailable:ceiling!==null&&activeCount<ceiling};
-    }});
+    const countActive = () => readdirSync(o.agentsDir, { withFileTypes: true }).filter(e => !e.name.startsWith('.') && (e.isDirectory() || e.isSymbolicLink())).length;
+    const mayChange = (ctx: ActionContext) => ctx.host === true || (o.administrator !== undefined && ctx.actor === o.administrator);
+    async function capacity(ctx: ActionContext) {
+        const value = await o.ceiling();
+        const ceiling = Number.isInteger(value) && value >= 0 ? value : null;
+        const activeCount = countActive();
+        const bytes = (o.memory ?? totalmem)();
+        const serverMemoryBytes = Number.isFinite(bytes) && bytes > 0 ? bytes : null;
+        const suggestedMax = serverMemoryBytes === null ? null : ceilingFor({ boxMemoryBytes: serverMemoryBytes, stackBytes: STACK_ESTIMATE_BYTES, headroomBytes: HEADROOM_BYTES, perAgentPeakBytes: PER_AGENT_ESTIMATE_BYTES });
+        return { ceiling, activeCount, approved: ceiling !== null, creationAvailable: ceiling !== null && activeCount < ceiling, serverMemoryBytes, suggestedMax, canChange: mayChange(ctx) };
+    }
+    registerAction({ name: 'definition.capacity', input: z.strictObject({}), run: (_input, ctx) => capacity(ctx) });
+    registerAction({ name: 'definition.capacity_set', input: z.strictObject({ ceiling: z.number().int().min(0).max(AGENT_LIMIT_MAX) }),
+        successDetail: (r: { ceiling: number | null }) => JSON.stringify({ ceiling: r.ceiling }),
+        run: ({ ceiling }, ctx) => locked(async () => {
+            if (!mayChange(ctx))
+                refused("Only the installation's owner can change the agent limit.");
+            const count = countActive();
+            if (ceiling < count)
+                refused(`You have ${count} ${count === 1 ? 'agent' : 'agents'}. Retire one before lowering the limit below ${count}.`);
+            await (o.setCeiling ?? ((v, actor) => writeSetting(o.pool, 'agents.ceiling', v, actor)))(ceiling, ctx.actor);
+            return capacity(ctx);
+        }) });
     registerAction({ name: 'definition.get', input: nameInput, run: async ({ name }) => {
             roots();
             const files = await readDefinitionFiles(await folder(name));
