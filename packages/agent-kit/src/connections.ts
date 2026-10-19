@@ -91,13 +91,13 @@ const defs: ConnectionDef[] = [
     id: "slack",
     label: "Slack (bot)",
     custody: "host",
-    instances: [{ id: "shared", secrets: ["slack-bot-token", "slack-app-token"] }],
+    instances: [{ id: "shared", secrets: ["slack-token", "slack-signing-secret"] }],
   },
   {
     id: "telegram",
     label: "Telegram (bot)",
     custody: "host",
-    instances: [{ id: "shared", secrets: ["telegram-bot-token"] }],
+    instances: [{ id: "shared", secrets: ["telegram-token", "telegram-webhook-secret"] }],
   },
   {
     // Declared because the keeper mounts this key from an agent definition and no list said
@@ -114,28 +114,6 @@ const defs: ConnectionDef[] = [
     label: "Signal spine (bearer token)",
     custody: "host",
     instances: [{ id: "shared", secrets: ["signal-spine-token", "signal-read-token"] }],
-  },
-  {
-    // A plain API key, NOT the OAuth client above: different credential, different custody, and
-    // it is optional. Declared so the secret lint does not report it as read but undeclared.
-    id: "places",
-    label: "Google Places (API key)",
-    custody: "host",
-    instances: [{ id: "shared", secrets: ["google-places-api-key"] }],
-  },
-  {
-    // Optional third-party flight-status key the keeper already mounts.
-    id: "aerodatabox",
-    label: "AeroDataBox (flight status)",
-    custody: "host",
-    instances: [{ id: "shared", secrets: ["aerodatabox-api-key"] }],
-  },
-  {
-    // Optional. The keeper sets the environment variables below to the mounted file paths.
-    id: "strava",
-    label: "Strava (OAuth client)",
-    custody: "host",
-    instances: [{ id: "shared", secrets: ["strava-client-id", "strava-client-secret"] }],
   },
 ];
 

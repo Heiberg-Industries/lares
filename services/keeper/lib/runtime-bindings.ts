@@ -65,6 +65,19 @@ function dropRetiredEnvironment(value: unknown): unknown {
   }
   return kept;
 }
+/** Secret bindings only the removed travel role (and the console's old place lookup) mounted
+ * into an agent. An older keeper.json may still carry them; they are dropped with a log line so
+ * that file keeps loading instead of failing closed on the secrets enum. */
+const RETIRED_SECRET_KEYS = new Set(['STRAVA_CLIENT_ID_FILE', 'STRAVA_CLIENT_SECRET_FILE', 'AERODATABOX_API_KEY_FILE', 'GOOGLE_PLACES_API_KEY_FILE']);
+function dropRetiredSecrets(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const kept: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (RETIRED_SECRET_KEYS.has(key)) console.warn(`keeper: ignoring retired secret binding "${key}" in a runtime binding`);
+    else kept[key] = entry;
+  }
+  return kept;
+}
 /** Roles this engine used to run and no longer does. A stored definition or an old keeper.json
  * may still name one; the keeper skips it with a message instead of failing for every agent. */
 export const RETIRED_ROLES: ReadonlySet<string> = new Set(['travel']);
@@ -75,7 +88,7 @@ export const runtimeBindingsSchema = z.object({
   ownerId: text.optional(),
   environment: z.preprocess(dropRetiredEnvironment, z.partialRecord(z.enum(environmentKeys), text)),
   mounts: z.array(z.object({ source: path, target: path.refine(s => s.startsWith('/srv/') || s.startsWith('/data/') || s === '/etc/gitconfig'), readOnly: z.boolean() }).strict()),
-  secrets: z.partialRecord(z.enum(secretKeys), path),
+  secrets: z.preprocess(dropRetiredSecrets, z.partialRecord(z.enum(secretKeys), path)),
   // Existing workflow-file storage is retained, never recreated or deleted by keeper.
   workflowVolume: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/).optional(),
   // Retained sessions may remember a pre-rename sandbox root. Never mask a current role.

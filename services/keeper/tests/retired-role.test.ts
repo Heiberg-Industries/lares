@@ -46,6 +46,20 @@ it('drops the environment settings only the travel role read, and keeps refusing
   } finally { warn.mockRestore(); }
   expect(() => runtimeBindingsSchema.parse({ role: 'chief-of-staff', environment: { NOT_A_SETTING: 'x' }, mounts: [], secrets: {} })).toThrow();
 });
+it('drops the secret bindings only the travel role read, and keeps refusing unknown ones', () => {
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    const parsed = runtimeBindingsSchema.parse({ role: 'chief-of-staff', environment: {}, mounts: [], secrets: {
+      STRAVA_CLIENT_ID_FILE: '/etc/secrets/a', STRAVA_CLIENT_SECRET_FILE: '/etc/secrets/b',
+      AERODATABOX_API_KEY_FILE: '/etc/secrets/c', GOOGLE_PLACES_API_KEY_FILE: '/etc/secrets/d',
+      NOTION_TOKEN_FILE: '/etc/secrets/e',
+    } });
+    expect(parsed.secrets).toEqual({ NOTION_TOKEN_FILE: '/etc/secrets/e' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('STRAVA_CLIENT_ID_FILE'));
+    expect(warn).toHaveBeenCalledTimes(4);
+  } finally { warn.mockRestore(); }
+  expect(() => runtimeBindingsSchema.parse({ role: 'chief-of-staff', environment: {}, mounts: [], secrets: { NOT_A_SECRET_FILE: '/etc/secrets/x' } })).toThrow();
+});
 it('refuses a new travel binding: the role is gone', () => {
   expect(() => runtimeBindingsSchema.parse(binding('travel'))).toThrow();
 });

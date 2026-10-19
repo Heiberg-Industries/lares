@@ -96,8 +96,8 @@ describe("the generated connections module", () => {
     expect(connectionsByCapability.studio).toEqual(["gateway:shared"]);
     expect(connectionsByCapability.commercial).toEqual(["twenty", "gateway:shared"]);
     expect([...connections.keys()].sort()).toEqual(
-      ["aerodatabox", "gateway", "google", "karakeep", "notion", "places",
-       "readability", "signals", "slack", "strava", "telegram", "twenty"],
+      ["gateway", "google", "karakeep", "notion",
+       "readability", "signals", "slack", "telegram", "twenty"],
     );
   });
 });
