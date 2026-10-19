@@ -8,7 +8,8 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches/ ./patches/
 COPY packages/ ./packages/
 COPY services/ ./services/
-RUN pnpm install --frozen-lockfile --ignore-scripts --filter @lares/keeper...
+COPY images/gateway-runtime/start.sh ./images/gateway-runtime/start.sh
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter @lares/keeper... --filter @lares/agent-box...
 RUN pnpm --filter @lares/agent-kit build
 
 # Preserve the installed workspace and compiled extension, but not build-stage
