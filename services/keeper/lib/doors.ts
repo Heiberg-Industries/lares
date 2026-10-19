@@ -15,6 +15,12 @@ function readSecretFile(secretsDir:string,name:string,suffix:string):string {
   if(!st.isFile()||st.isSymbolicLink()||st.nlink!==1)throw new Error('Invalid secret file');
   return readFileSync(path,'utf8').trim();
 }
+const OTHER_OWNER='Another member already connects this agent. Only they can connect its other doors.';
+/** One owner per agent: refuse when another member holds a claimed door, or an unexpired pending code, on this incarnation. */
+async function refuseOtherOwner(db:Pick<Pool,'query'>,agent:string,incarnation:string,actor:string):Promise<void> {
+  const {rows}=await db.query(`SELECT 1 FROM agent_door_connections WHERE agent=$1 AND incarnation=$2::uuid AND owner_email<>$3 AND (principal IS NOT NULL OR expires_at>now()) LIMIT 1`,[agent,incarnation,actor]);
+  if(rows.length)throw new KeeperRefusedError(OTHER_OWNER);
+}
 /** Caller-supplied names cannot choose URLs, secret paths, platform methods or transports. */
 export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?:string;emailPrincipal?:string;googleOrgs?:string[];fetch?:typeof fetch;namespaceGuard?():Promise<void>}) {
  const query=o.pool.query.bind(o.pool);
@@ -58,11 +64,12 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
   const client=await o.pool.connect();
   try {
    await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
-   const row=await resource(name,kind,client);const code=randomBytes(12).toString('hex').toUpperCase();
+   const row=await resource(name,kind,client);await refuseOtherOwner(client,name,row.ownership_token,ctx.actor);const code=randomBytes(12).toString('hex').toUpperCase();
    const inserted=await client.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,code_hash,expires_at)
       VALUES($1,$2,$3,$4,$5,$6,now()+interval '10 minutes')
       ON CONFLICT(agent,kind) DO UPDATE SET revision=EXCLUDED.revision,owner_email=EXCLUDED.owner_email,code_hash=EXCLUDED.code_hash,expires_at=EXCLUDED.expires_at,attempts=0
       WHERE agent_door_connections.incarnation=EXCLUDED.incarnation AND agent_door_connections.principal IS NULL
+        AND (agent_door_connections.owner_email=EXCLUDED.owner_email OR agent_door_connections.expires_at IS NULL OR agent_door_connections.expires_at<=now())
       RETURNING expires_at`,[name,kind,row.ownership_token,randomUUID(),ctx.actor,claimHash(code)]);
    if(!inserted.rows.length)throw new KeeperRefusedError('This door is already claimed or belongs to another incarnation');
    await client.query('COMMIT');return {code,expiresAt:inserted.rows[0].expires_at.toISOString(),instruction:`Send claim ${code} as an ordinary message in a private chat with this agent (no slash), then apply connection changes in the console.`};
@@ -78,6 +85,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
    await client.query('BEGIN');await client.query('SELECT pg_advisory_xact_lock(1279349317,12)');await o.namespaceGuard?.();
    const current=await client.query("SELECT 1 FROM agent_resources WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token AND state='ready' FOR UPDATE",[input.name,input.incarnation]);
    if(!current.rows.length)throw new KeeperRefusedError('Agent incarnation changed');
+   await refuseOtherOwner(client,input.name,input.incarnation,ctx.actor);
    const saved=await client.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox,claimed_at)
     VALUES($1,'email',$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(agent,kind) DO UPDATE SET revision=EXCLUDED.revision,principal=EXCLUDED.principal,org=EXCLUDED.org,mailbox=EXCLUDED.mailbox,claimed_at=now()
     WHERE agent_door_connections.incarnation=EXCLUDED.incarnation AND agent_door_connections.owner_email=EXCLUDED.owner_email RETURNING agent`,[input.name,input.incarnation,randomUUID(),ctx.actor,input.principal,input.org,input.mailbox]);

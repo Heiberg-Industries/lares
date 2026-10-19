@@ -123,3 +123,41 @@ it('the console session authenticator the gate trusts matches every role door',(
  for(const role of ['chief-of-staff','creative'])
   expect(readFileSync(resolve(__dirname,`../../${role}/lib/principals.ts`),'utf8')).toContain('console: "lares-console"');
 });
+// One owner per agent: the first member who connects any door.
+const REFUSAL='Another member already connects this agent. Only they can connect its other doors.';
+const alice={actor:'alice@example.com',audit:vi.fn()},bob={actor:'bob@example.com',audit:vi.fn()};
+const incB='33333333-3333-4333-8333-333333333333';
+async function addAssistant() {
+ const d={name:'assistant',role:'chief-of-staff',doors:[{kind:'slack',enabled:true},{kind:'telegram',enabled:true}]};
+ await pool.query("INSERT INTO agent_definitions(name,hash,definition,status)VALUES('assistant','hash2',$1,'valid')",[JSON.stringify(d)]);
+ await pool.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending)VALUES('assistant','172.29.0.11','assistant','owned',$1,$1,'ready',$2,false)",[incB,JSON.stringify(d)]);
+}
+const issueFor=(kind:'slack'|'telegram',who:typeof alice)=>runAction('door.claim_issue',{name:'assistant',kind},who) as Promise<{code:string}>;
+it('refuses a second member on another door once the first member has claimed one',async()=>{
+ await addAssistant();
+ const {code}=await issueFor('slack',alice);
+ await consumeClaim('slack',`/claim ${code}`,'U_ALICE',true,pool,{LARES_AGENT_NAME:'assistant',LARES_AGENT_INCARNATION:incB});
+ await expect(issueFor('telegram',bob)).rejects.toThrow(REFUSAL);
+ await issueFor('telegram',alice);
+});
+it('does not let another member overwrite a pending code, until that code has expired',async()=>{
+ await addAssistant();
+ await issueFor('slack',alice);
+ await expect(issueFor('slack',bob)).rejects.toThrow(REFUSAL);
+ await expect(issueFor('telegram',bob)).rejects.toThrow(REFUSAL);
+ expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant'")).rows).toEqual([{owner_email:'alice@example.com'}]);
+ await pool.query("UPDATE agent_door_connections SET expires_at=now()-interval '1 second' WHERE agent='assistant'");
+ await issueFor('slack',bob);
+ expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant' AND kind='slack'")).rows).toEqual([{owner_email:'bob@example.com'}]);
+});
+it('refuses an email connection by a member when another member owns a door of the agent',async()=>{
+ await addAssistant();
+ await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc)VALUES('install-principal','google','tenant','box@example.com','x')");
+ resetActions();registerDoorActions({pool,secretsDir:'/unused',emailPrincipal:'install-principal',googleOrgs:['tenant']});
+ const connect=(who:typeof alice)=>runAction('email.connect',{name:'assistant',incarnation:incB,principal:'install-principal',org:'tenant',mailbox:'box@example.com'},who);
+ const {code}=await issueFor('slack',alice);
+ await consumeClaim('slack',`/claim ${code}`,'U_ALICE',true,pool,{LARES_AGENT_NAME:'assistant',LARES_AGENT_INCARNATION:incB});
+ await expect(connect(bob)).rejects.toThrow(REFUSAL);
+ await connect(alice);
+ expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant' AND kind='email'")).rows).toEqual([{owner_email:'alice@example.com'}]);
+});

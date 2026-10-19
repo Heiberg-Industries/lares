@@ -254,7 +254,7 @@ export class AgentLifecycle {
     private async connections(a: AgentContainer, apply: boolean): Promise<AgentContainer> {
         const result=await this.pool.query(`SELECT kind,principal,revision,owner_email,org,mailbox,applied_connection FROM agent_door_connections
           WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL
-          `,[a.name,a.incarnation]);
+          ORDER BY claimed_at NULLS LAST,kind`,[a.name,a.incarnation]);
         const rows=result.rows.map(c=>apply?c:c.applied_connection).filter(Boolean);
         a.claims=rows.filter(c=>c.kind!=='email'&&a.doors.some(d=>d.kind===c.kind&&d.enabled)).map(c=>({kind:c.kind,principal:c.principal,revision:c.revision,owner:c.owner_email}));
         if(a.doors.some(d=>d.kind==='email'&&d.enabled)) {
@@ -264,6 +264,10 @@ export class AgentLifecycle {
             if(!token.rows.length)throw new KeeperRefusedError('Selected Google mailbox is no longer connected');
             a.email={principal:e.principal,org:e.org,mailbox:e.mailbox,revision:e.revision,owner:e.owner_email,tokenKeyFile:config.tokenKeyFile,...client};
         }
+        // One approver per agent: the owner of the earliest claim among the connections in use.
+        // The rows are already in claim order, so this is the same answer whatever order they arrive in.
+        const used=rows.filter(c=>c.kind==='email'?!!a.email:a.claims!.some(x=>x.kind===c.kind));
+        a.consoleOwner=used[0]?.owner_email;
         return a;
     }
     /** The prefix every agent derives its purpose model names from (LARES_MODEL_PREFIX). No fallback name. */
