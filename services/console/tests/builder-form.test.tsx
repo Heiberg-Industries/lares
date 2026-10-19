@@ -11,13 +11,13 @@ import {startingPoints,modelAliases,takesEffect} from '../lib/builder';
 vi.mock('next/navigation',()=>({useRouter:()=>({refresh:vi.fn(),push:vi.fn()})}));
 vi.mock('../app/actions/definition',()=>({createAgent:vi.fn(),saveDefinition:vi.fn(),retireAgent:vi.fn(),deleteAgent:vi.fn(),applyConnections:vi.fn(),listConversations:vi.fn(),startFreshConversation:vi.fn()}));
 vi.mock('../app/actions/autonomy',()=>({setAutonomy:vi.fn()}));
-const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true}};
+const base={startingPoints:startingPoints(),aliases:modelAliases('example'),timing:Object.fromEntries(['name','gender','description','startingPoint','duties','voice','language','model','grants','skills','autonomy','schedules','doors'].map(f=>[f,takesEffect(f)])),capacity:{ceiling:6,activeCount:3,approved:true,creationAvailable:true,canChange:true}};
 it('keeps new-agent permission writes unavailable and gives every field its timing',()=>{
  render(<DefinitionForm {...base}/>);
  const html=document.body.innerHTML;
  expect(html).toContain('Create this agent first');expect(html).not.toContain('role="group" aria-label=');
  expect(html).toContain('What is this agent for? Write it the way you would tell a person.');
- expect(html).toContain('This box holds up to 6 agents. You have 3.');
+ expect(html).toContain('This box holds up to 6 agents. You have 3.');expect(html).toContain('Change it in Settings');
  expect(html).toContain('Access and skills');expect(html).toContain('Schedules');
  expect(html).not.toContain('installation-brain');
 });
