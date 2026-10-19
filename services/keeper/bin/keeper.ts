@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     const stops: Array<() => Promise<void>> = [];
     try {
         registerDefinitionActions({
-            namespaceGuard,
+            namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
             ceiling: async () => { const value = await readSetting(pool, "agents.ceiling"); return typeof value === "number" ? value : NaN; },
             compose: lifecycle ?? {stop:async()=>{throw new Error("Lifecycle configuration required");}},
