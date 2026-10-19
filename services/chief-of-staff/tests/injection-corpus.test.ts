@@ -109,15 +109,15 @@ const SLOTS: Slot[] = [
   { name: "morning brief: signal title", build: (p) => buildMorningPrompt(brief({ signals: [signal(p)] }), [], [], null, { tz: "UTC" }) },
   { name: "evening brief: travel row title", build: (p) => buildEveningPrompt(brief({ meetings: [meeting(p, "lodging")] }), [], [], { tz: "UTC" }) },
   { name: "triage reply prompt: thread so far", build: (p) => triagePrompt(1, mail(), [threadMsg({ bodyText: p })]) },
-];
-
-/** Slice 2 deletes these entries. Each one is a place that splices outside text in as prose. */
-const KNOWN_PROSE: Slot[] = [
   { name: "triage classify prompt: mail body", build: (p) => triagePrompt(0, mail({ bodyText: p })) },
   { name: "triage classify prompt: subject", build: (p) => triagePrompt(0, mail({ subject: p })) },
   { name: "triage reply prompt: original body", build: (p) => triagePrompt(1, mail({ bodyText: p })) },
   { name: "reply prompt: original body", build: (p) => replyWith({ body: p }) },
   { name: "reply prompt: original subject", build: (p) => replyWith({ subject: p }) },
+];
+
+/** Slice 2 deletes these entries. Each one is a place that splices outside text in as prose. */
+const KNOWN_PROSE: Slot[] = [
   { name: "morning brief: meeting title", build: (p) => buildMorningPrompt(brief({ meetings: [meeting(p, "in-person")] }), [], [], null, { tz: "UTC" }) },
   { name: "morning brief: obligation subject", build: (p) => buildMorningPrompt(brief({ obligations: [obligation(p)] }), [], [], null, { tz: "UTC" }) },
   { name: "morning brief: ingested pick title", build: (p) => buildMorningPrompt(brief({ picks: [{ title: p, path: "a.md", created: "2026-10-14" }] }), [], [], null, { tz: "UTC" }) },

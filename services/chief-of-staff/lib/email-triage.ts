@@ -228,7 +228,8 @@ export async function triageOneMessage(
     `"automated" = newsletters, no-reply, receipts, notifications. "fyi" = a human message that needs no reply. ` +
     `"needs_reply" = a human who expects a response.\n` +
     `Answer with ONLY that one word — no explanation.\n\n` +
-    `From: ${from}\nSubject: ${subject}\n\n${body}`,
+    // The mail is somebody else's text: only ever inside a flagged block, never in prose.
+    labeledContext([{ label: "Email to classify", content: `From: ${from}\nSubject: ${subject}\n${body}`, thirdParty: true }]),
     { maxOutputTokens: 16 },
   )).toLowerCase();
   const matched = raw.match(/needs_reply|automated|fyi/);
