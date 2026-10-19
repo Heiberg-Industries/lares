@@ -15,7 +15,7 @@ function message(overrides: Partial<MailMessage> = {}): MailMessage {
   return {
     id: "m1", threadId: "t1", from: "Prospect <p@example.com>", to: ["owner@project.example"],
     subject: "Question about pricing", bodyText: "Hi, what does this cost?", sentAt: "2026-08-16",
-    messageId: "<orig@example.com>", references: "", isCalendarNotice: false, cc: [],
+    messageId: "<orig@example.com>", references: "", isCalendarNotice: false, isBulk: false, cc: [],
     ...overrides,
   };
 }
@@ -80,6 +80,35 @@ describe("triageOneMessage", () => {
     const result = await triageOneMessage({ gmail, voice: noVoice }, "owner@project.example", message({ isCalendarNotice: true }));
     expect(result).toEqual({ outcome: "automated", reason: "calendar-notice", from: "Prospect <p@example.com>", subject: "Question about pricing" });
     expect(gatewayComplete).not.toHaveBeenCalled();
+  });
+
+  it("a mailing-list mail is fyi with reason mailing-list - the model is never called", async () => {
+    const gmail = fakeGmail();
+    const result = await triageOneMessage(
+      { gmail, voice: noVoice }, "owner@project.example",
+      message({ isBulk: true, from: "Anna <anna@example.com>", subject: "Weekly notes?" }),
+    );
+    expect(result).toEqual({ outcome: "fyi", reason: "mailing-list", from: "Anna <anna@example.com>", subject: "Weekly notes?" });
+    expect(gatewayComplete).not.toHaveBeenCalled();
+    expect(gmail.draft).not.toHaveBeenCalled();
+  });
+
+  it("a calendar notice still wins over the mailing-list gate", async () => {
+    const result = await triageOneMessage(
+      { gmail: fakeGmail(), voice: noVoice }, "owner@project.example",
+      message({ isBulk: true, isCalendarNotice: true }),
+    );
+    expect(result).toMatchObject({ outcome: "automated", reason: "calendar-notice" });
+  });
+
+  it("the classify prompt keeps newsletters and unsubscribe-only mail as fyi, outside the flagged block", async () => {
+    vi.mocked(gatewayComplete).mockResolvedValueOnce("fyi");
+    await triageOneMessage({ gmail: fakeGmail(), voice: noVoice }, "owner@project.example", message());
+    const prompt = String(vi.mocked(gatewayComplete).mock.calls[0]![0]);
+    const ruleAt = prompt.indexOf("mailing-list");
+    expect(ruleAt).toBeGreaterThan(-1);
+    expect(prompt).toMatch(/removed from a (mailing )?list/i);
+    expect(ruleAt).toBeLessThan(prompt.indexOf("Email to classify"));
   });
 
   it("an automated sender is caught before any model call", async () => {

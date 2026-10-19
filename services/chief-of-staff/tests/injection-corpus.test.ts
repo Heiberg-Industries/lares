@@ -61,7 +61,7 @@ const conflict = (over: Partial<ResolvedConflict>): ResolvedConflict => ({
 const mail = (over: Partial<MailMessage> = {}): MailMessage => ({
   id: "m1", threadId: "t1", from: "Prospect <p@example.com>", to: ["owner@project.example"], subject: "Question",
   bodyText: "Hi, what does this cost?", sentAt: "2026-10-14", messageId: "<o@example.com>", references: "",
-  isCalendarNotice: false, cc: [], ...over,
+  isCalendarNotice: false, isBulk: false, cc: [], ...over,
 });
 const threadMsg = (over: Partial<ThreadMessage>): ThreadMessage => ({
   ...mail({ id: "tm1", from: "them@example.com", sentAt: "2026-10-13T10:00:00Z", messageId: "<tm1@example.com>" }), headers: {}, ...over,

@@ -210,6 +210,8 @@ export function wrapGmailApi(api: GmailApi, mailboxKey = "gmail"): GmailMessages
 export interface MailMessage {
   id: string; threadId: string; from: string; to: string[]; subject: string; bodyText: string;
   sentAt: string; messageId: string; references: string; isCalendarNotice: boolean;
+  /** Mailing-list / newsletter mail by its list headers (see `isBulkMail`). */
+  isBulk: boolean;
   /** The original's Cc line — a reply defaults to everyone on it (lib/reply-recipients.ts). */
   cc: string[];
   /**
@@ -299,6 +301,20 @@ function hasCalendarPart(payload: RawGmailMessage["payload"]): boolean {
   return walkParts(payload).some((p) => (p.mimeType ?? "").toLowerCase().startsWith("text/calendar"));
 }
 
+/**
+ * Mailing-list / newsletter mail, by its own headers: `List-Unsubscribe`, `List-Id` or
+ * `List-Post` present, or `Precedence` of bulk / list / junk. Names and values are matched
+ * case-insensitively; `Precedence: first-class` (and anything else) is not bulk. Pure.
+ */
+export function isBulkMail(headers: RawGmailHeader[] | undefined): boolean {
+  for (const h of headers ?? []) {
+    const name = (h.name ?? "").toLowerCase();
+    if (name === "list-unsubscribe" || name === "list-id" || name === "list-post") return true;
+    if (name === "precedence" && ["bulk", "list", "junk"].includes((h.value ?? "").trim().toLowerCase())) return true;
+  }
+  return false;
+}
+
 function toMailMessage(raw: RawGmailMessage): MailMessage {
   const h = raw.payload?.headers;
   return {
@@ -314,6 +330,7 @@ function toMailMessage(raw: RawGmailMessage): MailMessage {
     messageId: header(h, "Message-ID"),
     references: header(h, "References"),
     isCalendarNotice: hasCalendarPart(raw.payload),
+    isBulk: isBulkMail(h),
   };
 }
 
