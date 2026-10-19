@@ -35,6 +35,7 @@ box="$APP_ROOT/services/box"
 # what the installer and its sibling scripts read by name.
 required=(
   "$box/ops/install.sh"
+  "$box/ops/engine-run.sh"
   "$box/ops/update.sh"
   "$box/ops/rollback.sh"
   "$box/ops/restore.sh"

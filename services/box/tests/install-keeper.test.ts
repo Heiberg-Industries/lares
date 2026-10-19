@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Each case launches the real renderer twice through a shell fixture. CI runs
@@ -65,7 +66,7 @@ function stub(name: string, body = "exit 0") {
   if (name === "docker") {
     body = `case "$*" in *" -tAc "*) ;; *" psql "*) cat >/dev/null ;; esac\n${body}`;
   }
-  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${body}\n`);
+  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${name === "docker" ? engineDockerPrelude() : ""}${body}\n`);
   chmodSync(p, 0o755);
 }
 
@@ -78,7 +79,7 @@ function run(args: string[] = ["--release", ""], input = answers) {
       input,
       encoding: "utf8",
       env: {
-        PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
       },
     });

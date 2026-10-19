@@ -54,6 +54,11 @@ EX_REFUSED=78
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 
+# engine_run: the box's own programs (migrate, the renderers, doctor, first-owner) run in a
+# throwaway container of the engine image, never on this host. See ops/engine-run.sh.
+# shellcheck source=engine-run.sh
+. "$HERE/engine-run.sh"
+
 # `install.sh --backups ...` is the backup setup command: hand over to it with the other arguments.
 for arg in "$@"; do
   if [ "$arg" = "--backups" ]; then
@@ -221,13 +226,14 @@ do_or_say() {
 
 # The box's doctor (W8A-s7 built `--test-model`). A `lares-doctor` on PATH wins — that is how an
 # installation that ships the command uses it, and how a test puts a stub ahead of it; with none,
-# this falls back to the repository's own script, which is what a run from a checkout has. Without
-# the fallback every real install would refuse at the model check with "command not found".
+# this falls back to doctor inside the engine image. Without the fallback every real install
+# would refuse at the model check with "command not found". Doctor reads the key FILE it is
+# given (--key-file), so that file's directory is mounted read-only.
 lares_doctor() {
   if command -v lares-doctor >/dev/null 2>&1; then
     lares-doctor "$@"
   else
-    pnpm -C "$BOX_DIR" run doctor -- "$@"
+    engine_run --ro "$SECRETS_DIR" bin/doctor.ts "$@"
   fi
 }
 
@@ -480,18 +486,15 @@ elif ! docker compose version >/dev/null 2>&1; then
 fi
 
 # --- 5. host tools used later by the real install -----------------------------------------
-# render-stack, migrations and first-owner run from this checkout through pnpm. Check them
-# during the dry run, before generating secrets or starting containers.
-if ! command -v node >/dev/null 2>&1; then
-  problem "Node.js is not installed; this installer needs Node.js 24 on the host." \
-    "install Node.js 24, then run pnpm install --frozen-lockfile in the Lares checkout and retry."
-fi
-if ! command -v pnpm >/dev/null 2>&1; then
-  problem "pnpm is not installed; this installer needs pnpm 9.15.0 on the host." \
-    "install pnpm 9.15.0, run pnpm install --frozen-lockfile in the Lares checkout, and retry."
-elif [ ! -x "$BOX_DIR/node_modules/.bin/tsx" ]; then
-  problem "the Lares checkout's box dependencies are not installed." \
-    "run pnpm install --frozen-lockfile from the Lares repository root, then retry."
+# render-stack, migrations and first-owner run in a container of the engine image (engine_run),
+# so this host needs no Node and no pnpm. Check the image during the dry run, before generating
+# secrets or starting containers.
+if ! engine_resolve_image "$RELEASE_FILE"; then
+  problem "the engine image is not known: there is no digest in LARES_ENGINE_IMAGE, in $BOX_DIR/engine-image, or under images.\"lares-keeper\" in a release file given with --release." \
+    "give --release <release file> (its lares-keeper image is the engine), or unpack the engine files so $BOX_DIR/engine-image exists, then run this again."
+elif command -v docker >/dev/null 2>&1 && ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1; then
+  problem "the engine image is not on this box: $ENGINE_IMAGE." \
+    "fetch it by that exact digest (docker image pull $ENGINE_IMAGE), then run this again."
 fi
 
 # --- 6. ports 80 and 443 ------------------------------------------------------------------
@@ -600,8 +603,9 @@ if [ "$DRY_RUN" -eq 0 ]; then
     echo "install: there is no release file at '$RELEASE_FILE'. Nothing has been changed." >&2
     exit "$EX_USAGE"
   fi
-  # The renderers run through `pnpm -C "$BOX_DIR"`, which changes their working directory.
-  # Anchor a caller-relative release path now, while it still names the file we checked.
+  # The renderers run in a container that mounts the release file at its own path, so the path
+  # must be absolute. Anchor a caller-relative release path now, while it still names the file
+  # we checked.
   case "$RELEASE_FILE" in
     /*) ;;
     *) RELEASE_FILE="$PWD/$RELEASE_FILE" ;;
@@ -1124,7 +1128,7 @@ run_wizard() {
 # THE RENDER IS ENGINE CODE, NOT SHELL. The release rules (lib/release-manifest.ts) and the
 # stack file's shape (lib/stack-compose.ts) are TypeScript, and restating either in awk would
 # be two copies free to drift. `bin/render-stack.ts` is the whole seam, reached the same way
-# this script already reaches `migrate` and `first-owner`: `pnpm -C "$BOX_DIR" render-stack`.
+# this script already reaches `migrate` and `first-owner`: `engine_run bin/render-stack.ts`.
 # (ops/update.sh does its own release read from a temp program under bare `node`; that cannot
 # work here — see that file's own header for why.) A refusal from the release rules — a file
 # that is not JSON, an image named by a tag, a service the release names no image for — is
@@ -1189,7 +1193,13 @@ run_stack() {
   # never a half-written compose file `docker compose` would read as the whole stack.
   tmp="$compose_file.partial"
   rm -f "$tmp"
-  if ! pnpm -C "$BOX_DIR" render-stack \
+  # The renderer writes the compose file's neighbour, the gateway config and its start script
+  # (two directories, mounted read-write) and reads the release file and, when there is one,
+  # the installation's deadline calendar (read-only, mounted only if it exists: docker would
+  # otherwise create the missing source as an empty root-owned folder).
+  local -a render_mounts=(--rw "$(dirname "$compose_file")" --rw "$(dirname "$gateway_config")" --ro "$RELEASE_FILE")
+  [ ! -d "$PREFIX/srv/lares/installation" ] || render_mounts+=(--ro "$PREFIX/srv/lares/installation")
+  if ! engine_run "${render_mounts[@]}" bin/render-stack.ts \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
       "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation"; then
@@ -1345,7 +1355,7 @@ run_database() {
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local db_created_marker="$PREFIX/etc/lares/database-created"
-  local tries=0 db_password code existing
+  local tries=0 code existing
 
   if [ ! -f "$compose_file" ]; then
     die "there is no stack file at $compose_file, so no database can be created. The step before this one writes it from the release file — run this again, and if it still says this, what it printed there is the thing to fix. Nothing has been changed." "$EX_REFUSED"
@@ -1402,17 +1412,16 @@ run_database() {
   # THE RUNNER'S ENVIRONMENT, and why it has to be given one. migrate.ts connects through
   # lib/db.ts's poolFromEnv, whose defaults are for a process INSIDE the fleet: host "db" (a
   # compose service name, which does not resolve on this machine) and the password at
-  # /run/secrets/db_password (a mount that exists only in a container). Run from here with
-  # neither, it cannot connect at all. So this one call — and nothing else — is given the
-  # address and the password, the password read from its file into ONE variable for ONE command
-  # and cleared immediately, never an argument. PGHOST/PGPORT are overridable above because
-  # reaching the database from the host means the stack publishes that port — which the file
-  # run_stack renders does, to 127.0.0.1 only.
-  db_password=$(cat "$SECRETS_DIR/database-password")
+  # /run/secrets/db_password (a mount that exists only in a fleet container). So this call, like
+  # the other database steps, is given the address as plain settings and the password as a FILE:
+  # the secrets folder is mounted read-only and DATABASE_PASSWORD_FILE names the file in it. The
+  # password is never a value in an argument or in the environment. PGHOST/PGPORT are overridable
+  # above because reaching the database from here means the stack publishes that port — which the
+  # file run_stack renders does, to 127.0.0.1 only (the container shares this host's network).
   code=0
-  PGHOST="$db_host" PGPORT="$db_port" PGDATABASE="$db_name" PGUSER="$db_user" \
-    PGPASSWORD="$db_password" pnpm -C "$BOX_DIR" migrate || code=$?
-  db_password=""
+  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
+    migrate.ts || code=$?
   if [ "$code" -eq 0 ]; then
     say "database migrations applied through the runner."
   else
@@ -1465,13 +1474,12 @@ run_workflow_template() {
 run_installation_settings() {
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
-  local db_password code
+  local code
 
-  db_password=$(cat "$SECRETS_DIR/database-password")
   code=0
-  PGHOST="$db_host" PGPORT="$db_port" PGDATABASE="$db_name" PGUSER="$db_user" \
-    PGPASSWORD="$db_password" pnpm -C "$BOX_DIR" installation-settings || code=$?
-  db_password=""
+  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
+    bin/installation-settings.ts || code=$?
   if [ "$code" -ne 0 ]; then
     die "the first-agent settings could not be initialized. Nothing else was applied." "$EX_REFUSED"
   fi
@@ -1520,14 +1528,12 @@ run_first_owner() {
   # function's own comment on why each of these is what it is.
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
-  local db_password code
-  db_password=$(cat "$SECRETS_DIR/database-password")
+  local code
   code=0
-  PGHOST="$db_host" PGPORT="$db_port" PGDATABASE="$db_name" PGUSER="$db_user" \
-    PGPASSWORD="$db_password" \
-    LARES_OWNER_ID="$owner_id" LARES_OWNER_EMAIL="$owner_email" LARES_OWNER_NAME="$owner_name" \
-    pnpm -C "$BOX_DIR" first-owner --apply || code=$?
-  db_password=""
+  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
+    --env LARES_OWNER_ID="$owner_id" --env LARES_OWNER_EMAIL="$owner_email" --env LARES_OWNER_NAME="$owner_name" \
+    bin/first-owner.ts --apply || code=$?
   if [ "$code" -ne 0 ]; then
     die "the owner could not be created. Nothing else was applied." "$EX_REFUSED"
   fi
@@ -1543,15 +1549,13 @@ run_first_owner() {
 run_first_organisation() {
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
-  local db_password domain owner_email code=0
+  local domain owner_email code=0
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   owner_email=$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")
-  db_password=$(cat "$SECRETS_DIR/database-password")
-  PGHOST="$db_host" PGPORT="$db_port" PGDATABASE="$db_name" PGUSER="$db_user" \
-    PGPASSWORD="$db_password" LARES_OWNER_ID="$OWNER_ID" \
-    LARES_OWNER_EMAIL="$owner_email" LARES_DOMAIN="$domain" \
-    pnpm -C "$BOX_DIR" first-organisation || code=$?
-  db_password=""
+  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
+    --env LARES_OWNER_ID="$OWNER_ID" --env LARES_OWNER_EMAIL="$owner_email" --env LARES_DOMAIN="$domain" \
+    bin/first-organisation.ts || code=$?
   if [ "$code" -ne 0 ]; then
     die "the first organisation could not be enrolled. The keeper was not started; review the existing membership before retrying." "$EX_REFUSED"
   fi
@@ -1644,7 +1648,12 @@ run_keeper() {
   env_tmp="$keeper_env.partial"
   rm -f "$tmp" "$env_tmp"
   [ ! -f "$keeper_config" ] || before_sum=$(sha256_of "$keeper_config")
-  if ! pnpm -C "$BOX_DIR" render-keeper-config \
+  # The renderer reads the release file, the keeper.json already on this box and the installation's
+  # deadline calendar, and writes its two outputs next to keeper.json. All of that lives under two
+  # directories; the secrets folder is not needed (the renderer is only told its path).
+  local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE")
+  [ ! -d "$root/installation" ] || keeper_mounts+=(--ro "$root/installation")
+  if ! engine_run "${keeper_mounts[@]}" bin/render-keeper-config.ts \
       "$RELEASE_FILE" "$tmp" "$env_tmp" "$keeper_config" \
       "$LARES_PROJECT" "$root" "$agents_dir" "$retired_dir" "$backup_dir" "$egress_dir" \
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
