@@ -1,12 +1,14 @@
-# rc.11 release notes (draft)
+# rc.11 release notes
 
-rc.11 follows rc.10 (`releases/2026-10-16-rc.10.json`). It is the release after the rc.10
+rc.11 follows rc.10 (`releases/2026-10-16-rc.10.json`) and is recorded in
+`releases/2026-10-19-rc.11.json`. It is the release after the rc.10
 confirmation run: a fresh install of the tested path, checked by hand, with every rough edge it
 found fixed, plus two larger changes to how the owner reaches their agents. Messages an agent
 starts by itself now have a chosen route with web chat as the last resort, and connecting Slack or
 Telegram is a paste and a tap instead of a ten-step ritual. It adds one database file
-(`services/box/sql/004_web_inbox.sql`). The release file for rc.11 is created when the images are
-published; this page is a draft until then, and the security scan section below is not filled in.
+(`services/box/sql/004_web_inbox.sql`). The database image, the gateway and the proxy in front of
+the console are the same as in rc.10. The keeper, console, sync jobs, firewall helper, egress proxy
+and both agent images were rebuilt from the new source.
 
 ## What changed
 
@@ -97,19 +99,47 @@ published; this page is a draft until then, and the security scan section below 
 
 ## Upgrading from rc.10
 
-1. Pull the rc.11 images and swap the digests as for any update, using
-   `./services/box/ops/update.sh --release releases/<rc.11 release file>.json`. It takes a backup first.
-2. **There is one new database file**, `004_web_inbox.sql` (a table for the web chat inbox and a
+1. **If your chief of staff files meeting follow-ups in Notion**, first set
+   `NOTION_MEETINGS_DATA_SOURCE_ID` in `/etc/lares/keeper.json` under
+   `defaultBindings["chief-of-staff"].environment` (the id of your Notion meetings database).
+   Without it the meeting follow-up schedule stops with a clear message; nothing else is affected.
+2. Pull the rc.11 images and swap the digests as for any update, using
+   `./services/box/ops/update.sh --release releases/2026-10-19-rc.11.json`. It takes a backup first.
+3. **There is one new database file**, `004_web_inbox.sql` (a table for the web chat inbox and a
    column for the reason a message went elsewhere). The update applies it; it is safe to run twice.
    A rollback does not undo it: to go back past it, restore the backup the update took.
-3. Open an agent's Schedules tab and look at "Where messages go". Nothing changes until you save,
+4. Open an agent's Schedules tab and look at "Where messages go". Nothing changes until you save,
    except that a message whose door is not connected now goes to web chat instead of being dropped.
-4. Nothing to change for backups, settings or the keeper's configuration.
+5. Nothing else to change for backups, settings or the keeper's configuration.
 
 Check: the sign-in page appears when you are signed out; an agent's Schedules tab shows "Where
 messages go"; the Backup page still reads Protected.
 
 ## Security scan
 
-To be run on the published rc.11 digests before this page is final. The scan method and the
-accepted findings are in [the rc.10 notes](rc.10-notes.md#security-scan).
+Scanner: Trivy 0.75.0 (run as the `aquasec/trivy:0.75.0` container, the same version CI pins), no ignore
+list, high and critical findings only, run on 2026-10-19 against the published rc.11 digests (linux/amd64)
+named in `releases/2026-10-19-rc.11.json`. The result is the same as rc.10: the same 29 advisories, no new
+one and none fixed, and the same count in every image. The Debian base is still 12.15 in every image
+except the egress proxy (Alpine 3.24).
+
+| Image | Critical | High |
+|---|---|---|
+| console | 1 | 56 |
+| keeper | 2 | 77 |
+| egress proxy (Alpine 3.24) | 0 | 0 |
+| firewall helper | 1 | 56 |
+| chief-of-staff runtime | 1 | 68 |
+| creative runtime | 1 | 68 |
+| sync jobs | 1 | 68 |
+
+Every finding is one of those accepted for rc.10, for the reasons given in
+[the rc.10 notes](rc.10-notes.md#accepted-findings), and they are accepted again for rc.11. The base
+image is reviewed again before v0.1.0. Each of the seven rc.11 images was started on 2026-10-19 and
+searched: no `sshd`, `systemd-homed`, `homectl` or `curl` program is present in any of them. No Node
+package in any image has a high or critical finding; the only findings outside Debian's packages are
+the three Go advisories in the keeper's Docker Compose plugin, as in rc.10.
+
+The new repository shows no open Dependabot alerts. The `sprintf-js` versions behind the moderate
+advisory noted for rc.10 (GHSA-hp3w-g68c-fv3c, no patched version) are still in the lockfile, so that
+note still applies.

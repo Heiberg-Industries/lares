@@ -52,7 +52,7 @@ reads it and uses it as the owner's clock for quiet hours and briefs. It does no
 
 Nothing is built on your server. Images are built in CI and pulled by digest. A release is a
 small file that lists the digest of every image. The release candidate in this repository is
-`releases/2026-10-16-rc.10.json`.
+`releases/2026-10-19-rc.11.json`.
 
 On the server, as root:
 
@@ -156,14 +156,14 @@ It prints every problem it finds in one pass, each with a fix to paste. Fix them
 real install from the repository root:
 
 ```bash
-./services/box/ops/install.sh --release releases/2026-10-16-rc.10.json
+./services/box/ops/install.sh --release releases/2026-10-19-rc.11.json
 ```
 
 On a fresh server the real run first asks whether to start fresh or check a backup archive.
 Press Enter to start fresh. (`--dry-run` does not ask.) For an unattended run, add `--yes` and the answers:
 
 ```bash
-./services/box/ops/install.sh --yes --release releases/2026-10-16-rc.10.json \
+./services/box/ops/install.sh --yes --release releases/2026-10-19-rc.11.json \
   --domain example.com --email you@example.com --name "Your Name" \
   --model-key-file /root/model-key.txt
 ```
@@ -260,7 +260,7 @@ chmod 0644 /srv/lares/installation/deadline-calendar.json
 Then run the installer again, with the same release file:
 
 ```bash
-./services/box/ops/install.sh --release releases/2026-10-16-rc.10.json
+./services/box/ops/install.sh --release releases/2026-10-19-rc.11.json
 ```
 
 When `/srv/lares/installation/deadline-calendar.json` exists, the installer mounts it into the

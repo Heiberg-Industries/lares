@@ -1,0 +1,24 @@
+{
+  "release": "2026-10-19-rc.11",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:bc64fee0f30167efb23d8f0fc8f907f9a728bf42f84eb40cab4164e93b413661",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:b9342a3eb56b7f7cc160204836c210ba0cb6843d712df17812c77dddeddb1cc4",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:a88d11e26d64915ab06f8012f9b45706da4d52888d63944d5dd6466f28288b71",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:806dd692c176b0d1e01b11fb9d28ff3008fdb52a489cabf7623b8f8f1f9c8d58",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:bbf140e07dc79db41e0a077c8cabb60dc34ccdb2d32725f0f61070c60dba26f4",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:114ade464d39af8070c5bd50dcdc2044649df44ccc8c3638ac30671bd0c0edf3",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:6590759dfc94b5eb75adc36c8a7610f4c45d2e5b45752b308fa87500e7a536eb"
+  },
+  "migrations": {
+    "box": "004_web_inbox.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "One new database file, 004_web_inbox.sql (the web chat inbox table and a column for why a message went to another door). The update applies it and it is safe to run twice; a rollback does not undo it, so to go back past it restore the backup the update took.",
+    "Meeting follow-ups no longer fall back to a built-in Notion database. Before updating, set NOTION_MEETINGS_DATA_SOURCE_ID in /etc/lares/keeper.json under defaultBindings[\"chief-of-staff\"].environment, or the meeting follow-up schedule stops with a clear message. Nothing else is affected.",
+    "A message whose door is not connected now goes to web chat instead of being dropped."
+  ]
+}
