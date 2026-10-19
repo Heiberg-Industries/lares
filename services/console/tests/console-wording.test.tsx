@@ -71,13 +71,20 @@ async function toReview() {
   await userEvent.click(screen.getByRole("button", { name: "Continue →" }));
 }
 
-it("says why the box has a limit and which setting raises it", () => {
+it("says why the box has a limit and, for the administrator, where to change it", () => {
   const html = renderToStaticMarkup(
     <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false }} />,
   );
   expect(html).toContain("holds up to 1 agent");
-  expect(html).toContain("agents.ceiling");
+  expect(html).not.toContain("agents.ceiling");
+  expect(html).not.toContain("Change it in Settings");
   expect(LIMIT_WHY).toContain("memory");
+  expect(LIMIT_WHY).not.toContain("cannot change it yet");
+  const admin = renderToStaticMarkup(
+    <CeilingNotice capacity={{ ceiling: 1, activeCount: 1, approved: true, creationAvailable: false, canChange: true }} />,
+  );
+  expect(admin).toContain("Change it in Settings");
+  expect(admin).toContain('href="/settings"');
 });
 
 it("explains that instructions and personality are added to a built-in default, and shows it", () => {

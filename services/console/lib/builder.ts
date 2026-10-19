@@ -4,7 +4,8 @@ import type { AgentDefinition } from '@lares/agent-kit/definition';
 import { pool } from './db';
 export type Role = 'chief-of-staff' | 'creative';
 export interface StartingPoint { id: Role; label: string; description: string; capabilities: string[]; schedules: string[]; definition: AgentDefinition; roleMd?: string }
-export interface Capacity { ceiling: number | null; activeCount: number; approved: boolean; creationAvailable: boolean }
+// The last three are optional: an older keeper does not send them (Console upgrade before its keeper).
+export interface Capacity { ceiling: number | null; activeCount: number; approved: boolean; creationAvailable: boolean; serverMemoryBytes?: number | null; suggestedMax?: number | null; canChange?: boolean }
 export interface RuntimeState { pending: boolean; reason: string | null; running?: boolean | null; healthy?: boolean | null }
 // Optional status permits a Console upgrade before its keeper. ok means a Git push occurred,
 // not whether the local save succeeded; disabled is an ordinary informational state.

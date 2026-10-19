@@ -2,7 +2,7 @@
 import { cookies } from 'next/headers';
 import { keeper, KeeperRefusedError, KeeperUnavailableError } from '../../lib/keeper-client';
 import { verify } from '../../lib/auth';
-import type { DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
+import type { Capacity, DefinitionResult, RetirementResult, Role, RuntimeState } from '../../lib/builder';
 async function actor(): Promise<string> {
   const email = await verify((await cookies()).get('lares_session')?.value);
   if (!email) throw new Error('unauthenticated');
@@ -24,6 +24,9 @@ export async function createAgent(input: DefinitionInput & { startingPoint: Role
 }
 export async function saveDefinition(input: DefinitionInput): Promise<DefinitionActionResult<DefinitionResult>> {
   return call('definition.save', input, await actor());
+}
+export async function setAgentLimit(input: {ceiling: number}): Promise<DefinitionActionResult<Capacity>> {
+  return call('definition.capacity_set', {ceiling: input.ceiling}, await actor());
 }
 export async function retireAgent(input: {name: string}): Promise<DefinitionActionResult<RetirementResult>> {
   return call('definition.retire', input, await actor());

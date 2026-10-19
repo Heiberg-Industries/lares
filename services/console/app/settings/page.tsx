@@ -2,6 +2,8 @@ import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
 import { SettingsThemeControl } from "../../components/ThemeControl";
 import { ModelsSection } from "../../components/ModelsSection";
+import { AgentLimitControl } from "../../components/AgentLimitControl";
+import { getAgentLimitView } from "../../lib/agent-limit";
 import { getGatewayStatusView } from "../../lib/gateway-status";
 import {
   getProactivityView,
@@ -10,7 +12,7 @@ import {
 } from "../../lib/proactivity";
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
-  const [view, gateway] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView()]);
+  const [view, gateway, limit] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView()]);
   const quiet =
     view && !view.errors.length
       ? (rowFor(view.settings, "*", "*")?.effective.quiet ??
@@ -44,6 +46,10 @@ export default async function SettingsPage() {
           </div>
         </section>
         <ModelsSection view={gateway} />
+        <section className="lares-surface">
+          <h2 className="lares-section-title">Agents</h2>
+          {limit ? <AgentLimitControl capacity={limit} /> : <p className="lares-muted">The agent limit could not be loaded.</p>}
+        </section>
         <section className="lares-surface">
           <h2 className="lares-section-title">Appearance</h2>
           <div className="lares-setting-row">
