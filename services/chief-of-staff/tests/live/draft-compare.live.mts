@@ -6,8 +6,8 @@
  * TWO drafts through the live `writer` purpose and writes both to one markdown file for the owner
  * to judge:
  *
- *   A — the pre-2026-09-08 prompt, copied verbatim below as `legacyPrompt()` so A stays A, with
- *       the shared `default` voice card (what every draft used until today).
+ *   A — the pre-2026-09-08 prompt, copied verbatim below as `legacyPrompt()` so A stays A (including
+ *       the old no-promises clause, `LEGACY_NO_COMMITMENTS`), with the shared `default` voice card.
  *   B — `buildReplyPrompt` (lib/reply-prompt.ts) with the MAILBOX's own card (sql/001_baseline.sql) and the
  *       mailbox's own examples.
  *
@@ -50,6 +50,16 @@ function arg(name: string, fallback: string): string {
   return i !== -1 && process.argv[i + 1] ? process.argv[i + 1]! : fallback;
 }
 
+/** The no-promises clause as it read before the "suggestions, not promises" change, verbatim, so A stays A. */
+const LEGACY_NO_COMMITMENTS =
+  "Never commit him to a future action on his behalf — no promises about what will happen next, " +
+  'in either language: no "I\'ll send you an invitation", "I will book a time", "I\'ll get back to ' +
+  'you", "jeg sender deg en invitasjon", "jeg booker et møte", "jeg kommer tilbake til deg". ' +
+  "This applies even when the promise is the honest-sounding alternative to a false past-tense " +
+  "claim — swapping tense does not make it his to commit to. State only what is already true, or " +
+  "say plainly that the action is his to take; do not write a promise on his behalf that he then " +
+  "has to go and keep by hand.";
+
 /** The prompt every draft used before 2026-09-08 (lib/email-triage.ts, verbatim). */
 function legacyPrompt(i: {
   account: string; lang: "en" | "no"; voiceBlock: string; examples: string[];
@@ -61,7 +71,7 @@ function legacyPrompt(i: {
   const closing = `\n\nDo NOT write any closing line or sign-off (no "Mvh", no name) — the mailbox signature is appended automatically after your text. End with your final sentence.\n`;
   return (
     `Write a brief, warm, specific reply from ${i.account} to this email. Use the labeled context below if useful.\n` +
-    `\n${contractClauses({ lang: i.lang, noCommitments: true })}\n` +
+    `\n${contractClauses({ lang: i.lang })}\n${LEGACY_NO_COMMITMENTS}\n` +
     voiceClause +
     closing +
     `\nOriginal — From: ${i.from}\nSubject: ${i.subject}\n\n${i.body}\n\n` +
