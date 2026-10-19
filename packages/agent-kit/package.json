@@ -110,7 +110,8 @@
     "./repairs": "./src/repairs.ts",
     "./approval-ledger": "./src/approval-ledger.ts",
     "./approval-stats": "./src/approval-stats.ts",
-    "./untrusted-text": "./src/untrusted-text.ts"
+    "./untrusted-text": "./src/untrusted-text.ts",
+    "./bounded-text": "./src/bounded-text.ts"
   },
   "scripts": {
     "build": "eve extension build",
