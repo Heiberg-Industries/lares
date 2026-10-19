@@ -6,13 +6,6 @@
 //      not count),
 //   2. carry THIRD_PARTY_NOTICE,
 //   3. keep the case's marker out of the instruction half (the prompt with the payload cut out).
-//
-// KNOWN FAILURES. Three builders still splice outside text in as prose: the email-triage classify
-// prompt, the reply prompt, and the two brief prompts (meeting titles, obligation lines, picks).
-// Moving them into flagged blocks is slice 2. Until then their slots are listed in KNOWN_PROSE and
-// run under `it.fails`: the suite is green, and when slice 2 lands, each of those tests turns red
-// ("expected to fail") and the entry is deleted. Also listed: the Clashes block WITHOUT mail
-// evidence, which holds calendar titles but is deliberately unflagged today (see conflictsBlock).
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { THIRD_PARTY_NOTICE, neutraliseHeadings } from "@lares/compose-contract";
 import { loadInjectionCorpus, type InjectionCase } from "../../../packages/compose-contract/tests/injection-corpus.js";
@@ -114,19 +107,16 @@ const SLOTS: Slot[] = [
   { name: "triage reply prompt: original body", build: (p) => triagePrompt(1, mail({ bodyText: p })) },
   { name: "reply prompt: original body", build: (p) => replyWith({ body: p }) },
   { name: "reply prompt: original subject", build: (p) => replyWith({ subject: p }) },
-];
-
-/** Slice 2 deletes these entries. Each one is a place that splices outside text in as prose. */
-const KNOWN_PROSE: Slot[] = [
   { name: "morning brief: meeting title", build: (p) => buildMorningPrompt(brief({ meetings: [meeting(p, "in-person")] }), [], [], null, { tz: "UTC" }) },
   { name: "morning brief: obligation subject", build: (p) => buildMorningPrompt(brief({ obligations: [obligation(p)] }), [], [], null, { tz: "UTC" }) },
   { name: "morning brief: ingested pick title", build: (p) => buildMorningPrompt(brief({ picks: [{ title: p, path: "a.md", created: "2026-10-14" }] }), [], [], null, { tz: "UTC" }) },
   { name: "evening brief: meeting title", build: (p) => buildEveningPrompt(brief({ meetings: [meeting(p, "in-person")] }), [], [], { tz: "UTC" }) },
   { name: "evening brief: obligation subject", build: (p) => buildEveningPrompt(brief({ obligations: [obligation(p)] }), [], [], { tz: "UTC" }) },
-  // Not a prose splice but the same gap: calendar titles inside the unflagged Clashes block.
   { name: "conflictsBlock without mail evidence: explanation", build: (p) => conflictsBlock([conflict({ explanation: p })]) },
+  { name: "digest article classifier: title and link (title)", build: async (p) => { const c = captureLlm(); await classifyArticle({ title: p, url: "https://example.com", ownerNote: "", text: "x" }, { noteNames: [] }, c.llm); return c.seen[0]!; } },
+  { name: "digest article classifier: title and link (url)", build: async (p) => { const c = captureLlm(); await classifyArticle({ title: "T", url: p, ownerNote: "", text: "x" }, { noteNames: [] }, c.llm); return c.seen[0]!; } },
+  { name: "meeting follow-up: recipients", build: followup((p) => ({ recipients: [p] })) },
 ];
-
 function replyWith(original: Partial<{ from: string; subject: string; body: string }>): string {
   return buildReplyPrompt({
     account: "owner@project.example", lang: "en", voiceBlock: "", examples: [], contextBlocks: "", closing: "End with a short closing.",
@@ -166,19 +156,4 @@ describe("injection corpus through the pure prompt builders", () => {
       });
     });
   }
-
-  describe("KNOWN FAILURES until slice 2 moves the prose splices into flagged blocks", () => {
-    for (const slot of KNOWN_PROSE) {
-      describe(slot.name, () => {
-        // The payload does reach the prompt, so the failure below is about placement, not a broken fixture.
-        it("the payload reaches the prompt", async () => {
-          const c = corpus.find((x) => x.id === "gate-bypass-01")!;
-          expect(await slot.build(c.text)).toContain(c.text);
-        });
-        it.fails.each(corpus)("$id stays inside a flagged block (expected to fail)", async (c) => {
-          assertQuarantined(await slot.build(c.text), c);
-        });
-      });
-    }
-  });
 });

@@ -1405,11 +1405,10 @@ const CONFLICT_LABEL: Record<ConflictKind, string> = {
  * included; only once a row actually carries the mail's own sentence does the wording — and the
  * `thirdParty` flag below — change with it.
  *
- * `thirdParty: true` is set ONLY alongside that changed note, i.e. only when at least one SHOWN
- * line carries evidence: the evidence sentence is built from a mail's own sender/date/subject
- * (attacker-controllable words), so the block containing it must carry `THIRD_PARTY_NOTICE`
- * (`@lares/compose-contract`) directly under its heading, per the origin-model spec's in-turn
- * taint rule. A block with no evidence line has nothing mail-derived in it and stays unflagged.
+ * `thirdParty: true` is always set: a clash row carries calendar titles (and, with evidence, a
+ * mail's own sender/date/subject), all of it attacker-controllable words, so the block carries
+ * `THIRD_PARTY_NOTICE` (`@lares/compose-contract`) directly under its heading, per the
+ * origin-model spec's in-turn taint rule.
  */
 export function conflictsBlock(conflicts: readonly ResolvedConflict[], lang: BriefLanguage = "en"): string {
   if (conflicts.length === 0) return "";
@@ -1428,7 +1427,7 @@ export function conflictsBlock(conflicts: readonly ResolvedConflict[], lang: Bri
       label: "Clashes",
       note,
       content: lines.join("\n"),
-      ...(hasEvidence ? { thirdParty: true } : {}),
+      thirdParty: true,
     },
   ]);
 }

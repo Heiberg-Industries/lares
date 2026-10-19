@@ -484,12 +484,18 @@ export function buildMorningPrompt(
   // they never reach the calendar block at all; they get their own labeled block below. The
   // row renderers live in lib/brief-content.ts so this brief and the evening one cannot drift.
   const { commitments, travel } = splitCommitments(content.meetings);
-  const meetingLines = commitments.length > 0
+  // The titles, locations and attendee names are somebody else's words: the rows ride only
+  // inside a flagged block, the owner-side wording stays in the heading's label and note.
+  const meetingLines = labeledContext([{
+    label: "Today's calendar",
+    note: "meetings, and the blocks he set aside",
     // -s4 GOTCHA — `commitments.map(commitmentLine)` would pass the array INDEX as
     // `commitmentLine`'s second argument (`tz`) now that it takes one; wrapped in an arrow so
     // every row gets the real `tz` instead of a number.
-    ? commitments.map((m) => commitmentLine(m, tz)).join("\n")
-    : "(none)";
+    content: commitments.map((m) => commitmentLine(m, tz)).join("\n"),
+    emptyText: "(none)",
+    thirdParty: true,
+  }]);
   const travelSection = travelContextBlock(travel, tz);
   const factsSection = standingFactsBlock(facts);
   // — "" on a day the radar found nothing, which drops the block entirely. Rendered
@@ -506,8 +512,11 @@ export function buildMorningPrompt(
   // distinction Workstream B enforces on the other side of the pipeline.
   const deadlinesSection = deadlinesBlock(content.deadlines ?? [], content.deadlineCandidates ?? [], lang);
 
-  const obligationLines = content.obligations.length > 0
-    ? content.obligations
+  // The counterparty's name and the mail's subject are outside text: flagged block, as above.
+  const obligationLines = labeledContext([{
+    label: "Owed a reply",
+    note: "new or changed since last night's evening pass",
+    content: content.obligations
         .map((o: Obligation) =>
           `- ${o.counterpartyName} <${o.counterpartyAddress}> — waiting ${o.ageHours}h` +
           `${o.isRePing ? ", they've written again since" : ""} — re: ${o.subject || "(no subject)"}` +
@@ -517,13 +526,15 @@ export function buildMorningPrompt(
           // fact (it is owed) without claiming the reading (that it still needs him).
           ` — why: ${o.reason ?? "on the radar"}`,
         )
-        .join("\n")
+        .join("\n"),
     // fix round 1 — an EMPTY obligations list means two different things, and a bare
     // "(none)" only honestly renders one of them. `ContextBlock`'s own docblock
     // (@lares/compose-contract) draws the line: "none" is a factual claim, and a read that threw
     // has not earned it. With Slack unread, "none" is true of Gmail and unknown of Slack, so the
     // line says exactly that much and no more.
-    : content.slackUnavailable ? "(none from Gmail)" : "(none)";
+    emptyText: content.slackUnavailable ? "(none from Gmail)" : "(none)",
+    thirdParty: true,
+  }]);
 
   // — the dropped source, rendered as a LABELED BLOCK rather than loose prose.
   // `@lares/compose-contract` already owns this distinction: `absentBlockClause` spells out
@@ -554,22 +565,25 @@ export function buildMorningPrompt(
       ])}`
     : obligationLines;
 
-  const pickLines = content.picks.length > 0
-    ? content.picks.map((p: IngestedPick) => `- ${p.title}${p.url ? ` — ${p.url}` : ""}`).join("\n")
-    : "(none)";
+  // A saved page's title is the page author's text: flagged block, as above.
+  const pickLines = labeledContext([{
+    label: "Recently entered the Brain",
+    note: "reading, not events or meetings",
+    content: content.picks.map((p: IngestedPick) => `- ${p.title}${p.url ? ` — ${p.url}` : ""}`).join("\n"),
+    emptyText: "(none)",
+    thirdParty: true,
+  }]);
 
   return [
     "[scheduled turn — the morning brief. This is not a message from a person; it is your cue",
     "to show him what's on his plate today.]",
     "",
-    "Today's calendar — meetings, and the blocks he set aside:",
     meetingLines,
     "",
     ...(unavailableSection ? [unavailableSection, ""] : []),
     ...(conflictsSection ? [conflictsSection, ""] : []),
     ...(travelSection ? [travelSection, ""] : []),
     ...(deadlinesSection ? [deadlinesSection, ""] : []),
-    "New or changed since last night's evening pass — owed a reply:",
     obligationsSection,
     "",
     // — what the gate held back since yesterday's brief. Right here, under the
@@ -577,7 +591,6 @@ export function buildMorningPrompt(
     // Absent on any day nothing was held, so a normal day's prompt is byte-identical.
     ...(heldBack ? [heldBack, ""] : []),
     ...(signalsSection ? [signalsSection, ""] : []),
-    "Recently entered the Brain (reading, not events or meetings):",
     pickLines,
     "",
     // — what he has told her, as a labeled block. Empty drops out entirely

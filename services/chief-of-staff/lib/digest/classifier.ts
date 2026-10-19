@@ -160,7 +160,7 @@ function buildArticlePrompt(item: ArticleInput, ctx: ArticleContext): string {
     "",
     labeledContext([
       { label: "Note from the person who saved this link", content: item.ownerNote ? `"${item.ownerNote}"` : "", note: "their own words; use as context" },
-      { label: "Title and link", content: `${item.title}\n${item.url}` },
+      { label: "Title and link", content: `${item.title}\n${item.url}`, thirdParty: true },
       { label: "ARTICLE TEXT (start of the page)", content: item.text.slice(0, BODY_CHARS_FOR_CLASSIFY), thirdParty: true },
     ]),
     "",
