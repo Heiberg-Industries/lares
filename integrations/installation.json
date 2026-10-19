@@ -82,7 +82,7 @@
       "label": "Slack (bot)",
       "custody": "host",
       "instances": [
-        { "id": "shared", "secrets": ["slack-bot-token", "slack-app-token"] }
+        { "id": "shared", "secrets": ["slack-token", "slack-signing-secret"] }
       ]
     },
     {
@@ -90,7 +90,7 @@
       "label": "Telegram (bot)",
       "custody": "host",
       "instances": [
-        { "id": "shared", "secrets": ["telegram-bot-token"] }
+        { "id": "shared", "secrets": ["telegram-token", "telegram-webhook-secret"] }
       ]
     },
     {
@@ -112,33 +112,6 @@
         "Already mountable by the keeper; declared here so it is visible and rotatable like the rest."
       ],
       "instances": [{ "id": "shared", "secrets": ["signal-spine-token", "signal-read-token"], "secretEnv": { "signal-spine-token": "SIGNAL_SPINE_TOKEN_FILE", "signal-read-token": "SIGNAL_READ_TOKEN_FILE" } }]
-    },
-    {
-      "id": "places",
-      "label": "Google Places (API key)",
-      "custody": "host",
-      "note": [
-        "A plain API key, NOT the OAuth client above: different credential, different custody, and",
-        "it is optional. Declared so the secret lint does not report it as read but undeclared."
-      ],
-      "instances": [{ "id": "shared", "secrets": ["google-places-api-key"], "secretEnv": { "google-places-api-key": "GOOGLE_PLACES_API_KEY_FILE" } }]
-    },
-    {
-      "id": "aerodatabox",
-      "label": "AeroDataBox (flight status)",
-      "custody": "host",
-      "note": ["Optional third-party flight-status key the keeper already mounts."],
-      "instances": [{ "id": "shared", "secrets": ["aerodatabox-api-key"], "secretEnv": { "aerodatabox-api-key": "AERODATABOX_API_KEY_FILE" } }]
-    },
-    {
-      "id": "strava",
-      "label": "Strava (OAuth client)",
-      "custody": "host",
-      "note": [
-        "Optional. The keeper sets the environment variables below to the mounted file paths."
-      ],
-      "instances": [{ "id": "shared", "secrets": ["strava-client-id", "strava-client-secret"],
-        "secretEnv": { "strava-client-id": "STRAVA_CLIENT_ID_FILE", "strava-client-secret": "STRAVA_CLIENT_SECRET_FILE" } }]
     }
   ],
 

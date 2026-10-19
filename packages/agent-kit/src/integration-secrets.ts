@@ -24,8 +24,4 @@ export const INTEGRATION_SECRET_FILES = {
   KARAKEEP_API_KEY_FILE: "karakeep-api-key",   // karakeep:shared
   SIGNAL_SPINE_TOKEN_FILE: "signal-spine-token",   // signals:shared
   SIGNAL_READ_TOKEN_FILE: "signal-read-token",   // signals:shared
-  GOOGLE_PLACES_API_KEY_FILE: "google-places-api-key",   // places:shared
-  AERODATABOX_API_KEY_FILE: "aerodatabox-api-key",   // aerodatabox:shared
-  STRAVA_CLIENT_ID_FILE: "strava-client-id",   // strava:shared
-  STRAVA_CLIENT_SECRET_FILE: "strava-client-secret",   // strava:shared
 } as const;
