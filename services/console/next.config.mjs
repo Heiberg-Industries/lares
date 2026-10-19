@@ -10,7 +10,7 @@ export default {
   reactStrictMode: true,
   experimental: { cpus: 1, serverActions: { bodySizeLimit: "3mb" } },
   outputFileTracingIncludes: {
-    "/*": ["../../packages/agent-kit/templates/*/definition.json"],
+    "/*": ["../../packages/agent-kit/templates/*/definition.json", "../../packages/agent-kit/templates/*/role.md"],
   },
   // Skip TS type-checking at build time: workspace sibling devDependencies
   // (e.g. @testcontainers/postgresql in agent-box/tests/) are not installed

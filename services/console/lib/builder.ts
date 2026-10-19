@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import type { AgentDefinition } from '@lares/agent-kit/definition';
 import { pool } from './db';
 export type Role = 'chief-of-staff' | 'creative';
-export interface StartingPoint { id: Role; label: string; description: string; capabilities: string[]; schedules: string[]; definition: AgentDefinition }
+export interface StartingPoint { id: Role; label: string; description: string; capabilities: string[]; schedules: string[]; definition: AgentDefinition; roleMd?: string }
 export interface Capacity { ceiling: number | null; activeCount: number; approved: boolean; creationAvailable: boolean }
 export interface RuntimeState { pending: boolean; reason: string | null; running?: boolean | null; healthy?: boolean | null }
 // Optional status permits a Console upgrade before its keeper. ok means a Git push occurred,
@@ -20,7 +20,9 @@ export function startingPoints(): StartingPoint[] {
   const root = resolve(process.cwd(), '../../packages/agent-kit/templates');
   return ROLES.map(role => {
     const definition = JSON.parse(readFileSync(resolve(root, role.id, 'definition.json'), 'utf8')) as AgentDefinition;
-    return { ...role, definition, capabilities: definition.grants.map(g=>g.capability), schedules: Object.keys(definition.schedules) };
+    // The built-in role text the agent always starts from (read-only in the form).
+    const roleMd = readFileSync(resolve(root, role.id, 'role.md'), 'utf8').trim();
+    return { ...role, definition, roleMd, capabilities: definition.grants.map(g=>g.capability), schedules: Object.keys(definition.schedules) };
   });
 }
 export function modelAliases(prefix: string, configuredAlias?: string): { alias: string; label: string; when: string }[] {

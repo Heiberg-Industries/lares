@@ -36,7 +36,7 @@ import { ConversationControl } from "./ConversationControl";
 import { AutonomyControl } from "./AutonomyControl";
 import { TakesEffect } from "./TakesEffect";
 import { CeilingNotice } from "./CeilingNotice";
-import { scheduleLabel } from "../lib/schedule-labels";
+import { scheduleExplanation, scheduleLabel } from "../lib/schedule-labels";
 import { firstChatPath } from "../lib/first-conversation";
 
 export interface DefinitionFormProps {
@@ -65,6 +65,14 @@ const LANGUAGES = [
   "German",
   "Spanish",
 ];
+// What "Create agent" really does on the server, in order (keeper definition.create): save the
+// definition files and a backup, then start the agent. The console gets one answer at the end, so
+// the first two steps show as in progress together rather than pretending to report each one.
+export const CREATE_STEPS = ["Saving the definition", "Starting the agent", "Ready"] as const;
+export const CREATE_WORKING = "Creating your agent. This can take up to a minute, so please stay on this page.";
+export const CREATE_DONE = "Your agent is ready. Opening its first conversation…";
+export const CREATE_FAILED = "The agent could not be created. The reason is below. Before you try again, check the agents list, because part of it may already exist.";
+
 export function DefinitionForm(p: DefinitionFormProps) {
   const router = useRouter();
   const editing = Boolean(p.initial);
@@ -89,6 +97,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [uncertain, setUncertain] = useState(false);
+  const [creating, setCreating] = useState<"idle" | "working" | "done" | "failed">("idle");
   const [runtime, setRuntime] = useState(p.initial?.runtime);
   const [hash, setHash] = useState(p.initial?.hash ?? "");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
@@ -238,6 +247,8 @@ export function DefinitionForm(p: DefinitionFormProps) {
             return;
           void run(async () => {
             const input = { name: definition.name, definition, duties, voice };
+            if (!editing) setCreating("working");
+            try {
             const result = editing
               ? await saveDefinition(input)
               : await createAgent({
@@ -262,6 +273,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
               router.push(
                 firstChatPath(definition.name, result.result.backup.status ?? (result.result.backup.ok ? "saved" : "failed")),
               );
+            }
+            if (!editing) setCreating("done");
+            } catch (e) {
+              if (!editing) setCreating("failed");
+              throw e;
             }
           });
         }}
@@ -358,6 +374,26 @@ export function DefinitionForm(p: DefinitionFormProps) {
             {timing("description")}
             <details className="lares-disclosure" open={editing}>
               <summary>Instructions and language</summary>
+              <p className="lares-muted">
+                Every agent starts from a built-in description of its role,
+                with its safety rules. What you write here is added after it.
+                It does not replace it, and it cannot loosen the safety rules.
+              </p>
+              {point.roleMd && (
+                <details className="lares-inset-disclosure">
+                  <summary>Show the built-in default</summary>
+                  <pre
+                    className="lares-muted"
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      maxHeight: 240,
+                      overflow: "auto",
+                    }}
+                  >
+                    {point.roleMd}
+                  </pre>
+                </details>
+              )}
               <label>
                 What is this agent for? Write it the way you would tell a
                 person.
@@ -370,6 +406,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </label>
               <label>
                 Personality
+                <span className="lares-muted" style={{ display: "block" }}>
+                  How the agent sounds and writes. Added after the built-in
+                  role, not instead of it.
+                </span>
                 <textarea
                   rows={4}
                   className="lares-editor-field"
@@ -379,6 +419,10 @@ export function DefinitionForm(p: DefinitionFormProps) {
               </label>
               <label>
                 Language
+                <span className="lares-muted" style={{ display: "block" }}>
+                  The agent’s default language. It switches to another one only
+                  when someone asks it to, and only for that conversation.
+                </span>
                 <select
                   required
                   className="lares-editor-field"
@@ -633,6 +677,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
                     }
                   />{" "}
                   {scheduleLabel(name)}
+                  {scheduleExplanation(name) && (
+                    <span className="lares-muted" style={{ display: "block" }}>
+                      {scheduleExplanation(name)}
+                    </span>
+                  )}
                 </label>
               ))}
               {timing("schedules")}
@@ -729,7 +778,11 @@ export function DefinitionForm(p: DefinitionFormProps) {
                   (!editing && !p.capacity.creationAvailable)
                 }
               >
-                {editing ? "Save definition" : "Create agent"}
+                {editing
+                  ? "Save definition"
+                  : creating === "working"
+                    ? "Creating…"
+                    : "Create agent"}
               </Button>
             )}
           </div>
@@ -748,6 +801,18 @@ export function DefinitionForm(p: DefinitionFormProps) {
             setUncertain(true);
           }}
         />
+      )}
+      {!editing && creating !== "idle" && (
+        <div role="status" aria-live="polite" className="lares-create-progress">
+          <ol>
+            <li>{CREATE_STEPS[0]}{creating === "done" ? " ✓" : creating === "working" ? "…" : ""}</li>
+            <li>{CREATE_STEPS[1]}{creating === "done" ? " ✓" : creating === "working" ? "…" : ""}</li>
+            <li>{CREATE_STEPS[2]}{creating === "done" ? " ✓" : ""}</li>
+          </ol>
+          {creating === "working" && <p>{CREATE_WORKING}</p>}
+          {creating === "done" && <p>{CREATE_DONE}</p>}
+          {creating === "failed" && <p>{CREATE_FAILED}</p>}
+        </div>
       )}
       {message && <p role="status">{message}</p>}
       {error && <p role="alert">{error}</p>}
