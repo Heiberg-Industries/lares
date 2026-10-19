@@ -105,6 +105,31 @@ jobs:
       - name: Verify keeper runtime imports without starting sockets or migrations
         run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
 
+      - name: Verify the box tooling loads and the engine unpacks
+        run: |
+          set -euo pipefail
+          tsx=/app/services/box/node_modules/.bin/tsx
+          docker run --rm --network none --entrypoint "$tsx" lares-keeper:test -e "import('/app/services/box/bin/render-stack.ts')"
+          docker run --rm --network none --entrypoint "$tsx" lares-keeper:test -e "import('/app/services/box/migrate.ts')"
+          docker run --rm --network none --entrypoint sh lares-keeper:test -c 'test -f /app/images/gateway-runtime/start.sh'
+          rm -rf "$RUNNER_TEMP/engine-out"
+          mkdir -p "$RUNNER_TEMP/engine-out"
+          digest="example.invalid/engine@sha256:$(printf '%064d' 0)"
+          docker run --rm --network none --user "$(id -u):$(id -g)" --mount "type=bind,src=$RUNNER_TEMP/engine-out,dst=/out" --entrypoint bash lares-keeper:test /app/services/box/ops/unpack-engine.sh ci-check "$digest"
+          # The unpacked tree must hold exactly the repo's ops and sql files, the keeper compose
+          # file, the creative workflow schema and the digest file, and nothing else.
+          (
+            cd services/box
+            ls ops/* | sed 's#^#services/box/#'
+            ls sql/* | sed 's#^#services/box/#'
+            echo services/box/compose.lares-keeper.yaml
+            echo services/box/engine-image
+            echo services/creative/sql/001-eve-workflow.sql
+          ) | LC_ALL=C sort > "$RUNNER_TEMP/engine-expected.txt"
+          (cd "$RUNNER_TEMP/engine-out/ci-check" && find . -type f | sed 's#^\./##' | LC_ALL=C sort) > "$RUNNER_TEMP/engine-actual.txt"
+          diff "$RUNNER_TEMP/engine-expected.txt" "$RUNNER_TEMP/engine-actual.txt"
+          test "$(cat "$RUNNER_TEMP/engine-out/ci-check/services/box/engine-image")" = "$digest"
+
       - uses: docker/build-push-action@v6
         with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
       - uses: docker/build-push-action@v6
