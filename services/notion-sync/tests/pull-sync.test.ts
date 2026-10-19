@@ -1038,6 +1038,9 @@ describe("runPullSync — stale-proposal escalation", () => {
     // DM never landed, so the message must not point only at her.
     expect(d.notified[0]).toContain("console");
     expect(d.notified[0]).toContain("notion-sync approve|reject");
+    // The console's Waiting page lists it from the database even when the agent is down.
+    expect(d.notified[0]).toContain("Waiting on you page (/waiting)");
+    expect(d.notified[0]).toContain("/integrations");
   });
 
   it("words a NEVER-announced proposal differently — that is a broken notification path, not a slow human", async () => {
@@ -1078,7 +1081,7 @@ describe("runPullSync — stale-proposal escalation", () => {
     expect(asked).toBe(6);
 
     await runPullSync(OPTS, d.impl);
-    expect(asked).toBe(24);            // the default: a day
+    expect(asked).toBe(4);             // the default: four hours
   });
 
   it("sends identical text every tick so the spine's fingerprint gate collapses the repeats", async () => {
