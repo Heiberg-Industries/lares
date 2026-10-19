@@ -1,0 +1,284 @@
+/* Sign-in page: a grain-and-gradient panel on the left, the sign-in on the right.
+   The gradient and grain follow the marketing hero, with more grain. */
+.page {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  min-height: 100dvh;
+  background: var(--background);
+  color: var(--foreground);
+}
+
+/* ---- Left: the graphic ---- */
+.panel {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: var(--space-12) clamp(var(--space-8), 5vw, var(--space-16));
+  background: var(--lares-field-mid);
+  border-right: 1px solid var(--border);
+}
+.light {
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+}
+.lightOne {
+  inset: -40%;
+  background: radial-gradient(
+    ellipse at 78% 48%,
+    color-mix(in oklch, var(--lares-field-to) 84%, var(--foreground)) 0%,
+    var(--lares-field-to) 24%,
+    transparent 58%
+  );
+  animation: drift-one 14s ease-in-out infinite alternate;
+}
+.lightTwo {
+  inset: -22%;
+  background:
+    radial-gradient(ellipse at 55% 76%, var(--lares-door-to) 8%, transparent 43%),
+    radial-gradient(ellipse at 20% 12%, var(--lares-field-from) 6%, transparent 42%);
+  animation: drift-two 19s ease-in-out infinite alternate;
+}
+.grain {
+  position: absolute;
+  inset: -3%;
+  width: 106%;
+  height: 106%;
+  z-index: 1;
+  pointer-events: none;
+  /* More grain than the hero (which uses 0.25). */
+  opacity: 0.5;
+  mix-blend-mode: multiply;
+  animation: grain-drift 5s ease-in-out infinite alternate;
+}
+:global(.dark) .grain {
+  opacity: 0.6;
+  mix-blend-mode: screen;
+}
+.brand,
+.message {
+  position: relative;
+  z-index: 2;
+}
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-console-title);
+  color: var(--foreground);
+}
+.brand svg {
+  width: 26px;
+  height: 26px;
+}
+.headline {
+  font: var(--text-display);
+  letter-spacing: var(--tracking-display);
+  margin: 0 0 var(--space-5);
+  max-width: 11ch;
+  text-wrap: balance;
+}
+.lead {
+  font: var(--text-lead);
+  color: var(--foreground);
+  max-width: 40ch;
+  margin: 0;
+}
+
+/* ---- Right: sign in ---- */
+.side {
+  display: grid;
+  place-items: center;
+  padding: var(--space-12) var(--space-6);
+}
+.card {
+  width: 100%;
+  max-width: 380px;
+  display: grid;
+  gap: var(--space-5);
+}
+.title {
+  font: var(--text-h1);
+  letter-spacing: var(--tracking-heading);
+  margin: 0;
+}
+.notice {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--lares-control-radius);
+  background: var(--card);
+  font: var(--text-body-sm);
+}
+.error {
+  border-color: var(--destructive);
+}
+
+.button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  width: 100%;
+  min-height: 48px;
+  padding: 0 var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--lares-control-radius);
+  background: var(--card);
+  color: var(--foreground);
+  font: var(--text-label);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 120ms var(--lares-ease), border-color 120ms var(--lares-ease);
+}
+.button:hover {
+  text-decoration: none;
+}
+.primary {
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-color: var(--primary);
+}
+.primary:hover {
+  background: color-mix(in oklch, var(--primary) 88%, var(--background));
+}
+.googleG {
+  background: #fff;
+  border-radius: 50%;
+  padding: 3px;
+  box-sizing: content-box;
+}
+.button[aria-disabled="true"] {
+  cursor: not-allowed;
+  color: var(--muted-foreground);
+  background: transparent;
+  border-style: dashed;
+}
+.soon {
+  font: var(--text-mono-sm);
+  color: var(--muted-foreground);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.divider {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin: 0;
+  color: var(--muted-foreground);
+  font: var(--text-body-sm);
+}
+.divider::before,
+.divider::after {
+  content: "";
+  flex: 1;
+  border-top: 1px solid var(--border);
+}
+
+.email {
+  display: grid;
+  gap: var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.field {
+  display: grid;
+  gap: var(--space-2);
+  font: var(--text-label);
+  color: var(--muted-foreground);
+}
+.input {
+  width: 100%;
+  min-height: 46px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--input);
+  border-radius: var(--lares-control-radius);
+  background: transparent;
+  color: var(--foreground);
+  font: var(--text-body);
+}
+.input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.textButton {
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: var(--text-label);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: not-allowed;
+}
+.note {
+  margin: 0;
+  font: var(--text-body-sm);
+  color: var(--muted-foreground);
+}
+
+@keyframes drift-one {
+  from { transform: translate(-4%, -3%) rotate(-18deg) scale(1); }
+  to { transform: translate(8%, 5%) rotate(16deg) scale(1.12); }
+}
+@keyframes drift-two {
+  from { transform: translate(5%, 4%) scale(1.05); }
+  to { transform: translate(-7%, -5%) scale(0.95); }
+}
+@keyframes grain-drift {
+  from { transform: translate(-1%, -0.6%); }
+  to { transform: translate(1%, 0.6%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lightOne,
+  .lightTwo,
+  .grain {
+    animation: none;
+  }
+  .button {
+    transition: none;
+  }
+}
+
+/* ---- Phones: the graphic becomes a short band above the sign-in ---- */
+@media (max-width: 860px) {
+  .page {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+  }
+  .panel {
+    gap: var(--space-8);
+    padding: var(--space-6) var(--space-4) var(--space-8);
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .headline {
+    font: var(--text-h1);
+    letter-spacing: var(--tracking-heading);
+    max-width: none;
+    margin: 0;
+  }
+  .lead {
+    display: none;
+  }
+  .side {
+    place-items: start center;
+    padding: var(--space-8) var(--space-4) var(--space-12);
+  }
+}
