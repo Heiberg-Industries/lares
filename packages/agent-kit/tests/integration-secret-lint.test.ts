@@ -25,59 +25,9 @@ const ENGINE_ROOTS = [
   "services/creative/agent/channels",
 ];
 
-// DEVIATION FROM THE SLICE, recorded here rather than silently: the slice's own draft test
-// asserted `lintUndeclaredSecrets(ENGINE_ROOTS)` is `[]` today. Running the finished lint against
-// the real tree contradicts that — it finds six real, pre-existing undeclared secrets, none of
-// them introduced by this slice. Renaming a secret, editing a door or adding a name to a manifest
-// just to make the count zero would be the exact silencing this slice exists to prevent. Instead
-// the check ships this committed allow-list: every entry is a KNOWN gap with a one-line reason,
-// the list may only ever get SHORTER (a future fix removes the entry, it can never grow to cover
-// a new gap), and it rots loudly — the second test below fails the day a fix makes an entry here
-// no longer true, forcing it out of the list in the same change.
-const KNOWN_UNDECLARED_SECRETS: ReadonlyArray<{ secret: string; reason: string }> = [
-  {
-    secret: "runtime-control",
-    reason: "keeper's own runtime-control-plane password, not a vendor credential — no integration manifest is the right home for it",
-  },
-  {
-    secret: "token-enc-key",
-    reason: "the Google-token-at-rest encryption key, not a vendor credential itself — no integration manifest is the right home for it",
-  },
-  {
-    secret: "langfuse-keys",
-    reason: "Langfuse (observability) has no integration manifest yet — outside 6A's three vendors (Notion, Slack, Google)",
-  },
-  // `google-places-api-key` left this list in: it now has a `places` connection entry in
-  // integrations/installation.json, which is what closing an entry looks like.
-  //
-  // Everything below arrived with's two new roots (the keeper's lib and the role doors).
-  // Not one of them is a new hole — they were always there, just unscanned. NOTHING here was
-  // renamed to make the lint quieter: a door's secret file name is what the box already calls it.
-  {
-    secret: "database-password",
-    reason: "the agent container's own Postgres password, written by the keeper — not a vendor credential, so no integration manifest is its home",
-  },
-  {
-    secret: "eve-route-password",
-    reason: "the agent's own HTTP route password — a platform secret declared by hand in services/keeper/lib/runtime-bindings.ts, deliberately not an integration",
-  },
-  {
-    secret: "eve-slack-bot-token",
-    reason: "the Slack doors' bot token file name (chief of staff and creative); installation.json's slack:shared instance declares `slack-bot-token`, a spelling no code reads",
-  },
-  {
-    secret: "eve-slack-signing-secret",
-    reason: "the same doors' signing secret; slack:shared declares `slack-app-token`, which is a different credential, not another spelling",
-  },
-  {
-    secret: "eve-telegram-bot-token",
-    reason: "the chief-of-staff Telegram door's real file name; installation.json's telegram:shared declares `telegram-bot-token`, a spelling no code reads",
-  },
-  {
-    secret: "eve-telegram-webhook-secret",
-    reason: "the same door's webhook secret, never declared for that instance — the exact gap already recorded above for the other Telegram instance",
-  },
-];
+// Every secret the engine reads is declared: integrations (generated), or platform and door
+// secrets (src/platform-secrets.ts). The old allow-list is gone; a new undeclared secret fails.
+const KNOWN_UNDECLARED_SECRETS: ReadonlyArray<{ secret: string; reason: string }> = [];
 
 describe("undeclared secrets", () => {
   it("finds a secret file a manifest never declared", () => {

@@ -2,6 +2,7 @@ import { lstatSync } from 'node:fs';
 import { isAbsolute, normalize } from 'node:path';
 import { z } from 'zod';
 import { INTEGRATION_SECRET_FILES as FROM_INTEGRATIONS } from '@lares/agent-kit/integration-secrets';
+import { PLATFORM_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
 
 // Only the root-owned installation config supplies these bindings. Definitions and
 // Console actions cannot mount host paths, replace core settings or choose credentials.
@@ -43,14 +44,9 @@ const environmentKeys = [
 //
 // PLATFORM secrets: the ones that are not an integration with a vendor at the other end — the
 // agent's own HTTP route password, the key its stored OAuth tokens are encrypted at rest with,
-// and the tracing keys. They belong to the engine, so they are declared HERE by hand and never
+// and the tracing keys. They belong to the engine, so they are declared by hand in the agent kit (`platform-secrets.ts`) and never
 // in `integrations/installation.json` (installation data — taking these with it would leave
 // every installation unable to mount them).
-const PLATFORM_SECRET_FILES = {
-  LANGFUSE_KEY_FILE: 'langfuse-keys',
-  EVE_ROUTE_PASSWORD_FILE: 'eve-route-password',
-  TOKEN_ENC_KEY_FILE: 'token-enc-key',
-} as const;
 // The integration half is GENERATED from `integrations/installation.json`: one source,
 // one command (`pnpm -C packages/agent-kit run generate:connections`), one staleness test, and
 // the console's list can no longer disagree with what is actually mountable. The keeper reads
