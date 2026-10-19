@@ -7,6 +7,9 @@ installer `services/box/ops/install.sh`. Read
 alpha software; there is no tagged release yet, only release candidates. Try it on a disposable
 server first.
 
+Installing through a coding agent (Claude Code, Codex)? Point it at
+[Installing Lares with a coding agent](install-with-an-agent.md); it drives this guide for you.
+
 The installer stops at the console's "create your first agent" page. Creating the first agent
 and talking to it is done in the console; [Using the console](how-to/using-the-console.md) is a
 tour of its pages.

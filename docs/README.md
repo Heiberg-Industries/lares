@@ -2,7 +2,7 @@
 
 The engine's decision records, how-tos and runbooks. The decision records say why the engine is built the way it is; follow them and the runbooks for implementation. Internal planning lives in the project tracker, not in this repository.
 
-To install Lares on a server, follow [`install.md`](install.md).
+To install Lares on a server, follow [`install.md`](install.md), or hand [`install-with-an-agent.md`](install-with-an-agent.md) to a coding agent.
 
 Start with `decisions/0015-…` (agents are definitions), `decisions/0017-the-vault.md` (memory) and `decisions/0022-the-tested-install-path.md` (how Lares is installed).
 
