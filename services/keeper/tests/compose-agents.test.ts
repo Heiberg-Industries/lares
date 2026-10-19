@@ -113,7 +113,16 @@ it('gives a managed agent with no claim the installation administrator as consol
  const inc='22222222-2222-4222-8222-222222222222',o={...opts,consoleAdministrator:'admin@example.test'};
  const none=parse(renderAgentsCompose([{...agent,incarnation:inc}],o)).services['lares-bookkeeper'].environment;
  expect(none.LARES_CONSOLE_PRINCIPAL).toBe('admin@example.test');
- const claimed=parse(renderAgentsCompose([{...agent,incarnation:inc,claims:[{kind:'slack',principal:'U_SELECTED',revision:'11111111-1111-4111-8111-111111111111',owner:'owner@example.test'}]}],o)).services['lares-bookkeeper'].environment;
+ const claimed=parse(renderAgentsCompose([{...agent,incarnation:inc,claims:[{kind:'slack',principal:'U_SELECTED',revision:'11111111-1111-4111-8111-111111111111',owner:'owner@example.test'}],consoleOwner:'owner@example.test'}],o)).services['lares-bookkeeper'].environment;
  expect(claimed.LARES_CONSOLE_PRINCIPAL).toBe('owner@example.test');
  expect(parse(renderAgentsCompose([{...agent,incarnation:inc}],opts)).services['lares-bookkeeper'].environment.LARES_CONSOLE_PRINCIPAL).toBeUndefined();
+});
+it('uses the one computed console owner whatever order the claims arrive in',()=>{
+ const inc='22222222-2222-4222-8222-222222222222',o={...opts,consoleAdministrator:'admin@example.test'};
+ const slack={kind:'slack' as const,principal:'U_A',revision:'11111111-1111-4111-8111-111111111111',owner:'second@example.test'};
+ const telegram={kind:'telegram' as const,principal:'777',revision:'33333333-3333-4333-8333-333333333333',owner:'first@example.test'};
+ const principal=(claims:(typeof slack|typeof telegram)[])=>parse(renderAgentsCompose([{...agent,incarnation:inc,claims,consoleOwner:'first@example.test'}],o)).services['lares-bookkeeper'].environment.LARES_CONSOLE_PRINCIPAL;
+ expect(principal([slack,telegram])).toBe('first@example.test');
+ expect(principal([telegram,slack])).toBe('first@example.test');
+ expect(parse(renderAgentsCompose([{...agent,incarnation:inc}],o)).services['lares-bookkeeper'].environment.LARES_CONSOLE_PRINCIPAL).toBe('admin@example.test');
 });

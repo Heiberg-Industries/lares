@@ -24,6 +24,8 @@ export interface AgentContainer {
     bindings?: RuntimeBindings;
     email?: {principal:string;org:string;mailbox:string;revision:string;owner:string;tokenKeyFile:string;clientIdFile:string;clientSecretFile:string};
     claims?: {kind:'slack'|'telegram';principal:string;revision:string;owner:string}[];
+    /** The one member who may approve in the console: the owner of the earliest claim. Computed once, never by overwriting. */
+    consoleOwner?: string;
     doors: readonly {
         kind: string;
         enabled: boolean;
@@ -102,12 +104,12 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             if (claim.kind === 'slack') environment.SLACK_ALLOWED_USER_IDS = claim.principal;
             else environment.TELEGRAM_PRINCIPAL_ID = claim.principal;
             environment.AGENT_OWNER_USER_ID = claim.owner;
-            // W8B-s5: the same owner ADDRESS (agent_door_connections.owner_email) is who may
-            // answer an approval in web chat. Written under the managed key the agent's own
-            // principals module reads on an incarnation. No claim, no console approver — which is
-            // today's behaviour exactly, and fail-closed by construction.
-            environment.LARES_CONSOLE_PRINCIPAL = claim.owner;
         }
+        // W8B-s5: the owner ADDRESS (agent_door_connections.owner_email) is who may answer an
+        // approval in web chat. It is one value for the agent (the earliest claim's owner, chosen
+        // by the keeper), so the order of the claims here cannot change it. No claim, no console
+        // approver: the administrator fallback below.
+        if (a.consoleOwner) environment.LARES_CONSOLE_PRINCIPAL = a.consoleOwner;
         // A fresh install has no claim yet, so web chat would admit nobody. Fall back to the owner's
         // own console address. A door claim (above) or the email owner (below) takes precedence.
         if (a.incarnation && opts.consoleAdministrator && !environment.LARES_CONSOLE_PRINCIPAL)
@@ -133,9 +135,6 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             environment.GMAIL_PRIMARY_EMAIL=e.mailbox;
             environment.CALENDAR_PRIMARY_EMAIL=e.mailbox;
             environment.AGENT_OWNER_USER_ID=e.owner;
-            // W8B-s5, as for a chat-door claim above: an installation whose only connection is
-            // email still gets a console approver, and it is the same owner address.
-            environment.LARES_CONSOLE_PRINCIPAL=e.owner;
             for (const [key,file,target] of [['TOKEN_ENC_KEY_FILE',e.tokenKeyFile,'google-token-key'],['LARES_GOOGLE_CLIENT_ID_FILE',e.clientIdFile,'google-client-id'],['LARES_GOOGLE_CLIENT_SECRET_FILE',e.clientSecretFile,'google-client-secret']]) {
                 secret(`${a.name}-${target}`,file,target);environment[key]=`/run/secrets/${target}`;
             }
