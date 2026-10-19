@@ -17,6 +17,7 @@
  */
 
 import { crmBrands, type CrmBrand } from "./crm-brands.js";
+import { stripQuoted } from "./voice-learn.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -77,11 +78,14 @@ function buildPrompt(
   activity: RouteActivity[],
   openOpportunities: OpenOpportunity[],
   brands: readonly CrmBrand[],
+  self: { handles: readonly string[]; domains: readonly string[] },
 ): string {
+  // Quoted reply tails carry the owner's own earlier text and signature, which says nothing
+  // about the contact's brand; only what the contact wrote reaches the classifier.
   const activityLines = activity
     .map(
       (a) =>
-        `[${a.at}] ${a.kind.toUpperCase()} | subject: "${a.subject}" | body: "${a.body}"`,
+        `[${a.at}] ${a.kind.toUpperCase()} | subject: "${a.subject}" | body: "${stripQuoted(a.body).trim()}"`,
     )
     .join("\n");
 
@@ -107,9 +111,12 @@ function buildPrompt(
     "",
     "RULES:",
     '- Pick a configured brand only when the content clearly identifies that brand.',
+    "- The owner's own name, signature, addresses and domains are never evidence for a brand.",
     '- Choose action:"move" when an open opportunity for that brand already exists (advance it).',
     '- Choose action:"create" when no open opportunity exists for that brand (start a new one).',
     '- Choose action:"none" when content is off-topic, ambiguous, or there is no clear brand signal.',
+    "",
+    `THE OWNER (never evidence for a brand): addresses ${self.handles.length > 0 ? self.handles.join(", ") : "(none known)"}; domains ${self.domains.length > 0 ? self.domains.join(", ") : "(none known)"}`,
     "",
     "OPEN OPPORTUNITIES for this contact:",
     oppLines,
@@ -160,8 +167,20 @@ export function makeRouteClassifier(deps: {
   llm: (prompt: string) => Promise<string>;
   /** The installation's brands; read from `CRM_BRANDS` when omitted. */
   brands?: readonly CrmBrand[];
+  /** The owner's own email addresses; with their domains, never evidence for a brand. */
+  selfHandles?: readonly string[];
+  /** Extra owner domains (the org's own); domains of `selfHandles` are added automatically. */
+  selfDomains?: readonly string[];
 }) {
   const { llm } = deps;
+  const selfHandles = [...new Set((deps.selfHandles ?? []).map((h) => h.trim().toLowerCase()).filter((h) => h !== ""))];
+  const selfDomains = [
+    ...new Set(
+      [...(deps.selfDomains ?? []), ...selfHandles.map((h) => h.slice(h.lastIndexOf("@") + 1))]
+        .map((d) => d.trim().toLowerCase())
+        .filter((d) => d !== "" && !d.includes("@")),
+    ),
+  ];
 
   return {
     async classify(input: {
@@ -178,7 +197,7 @@ export function makeRouteClassifier(deps: {
         return safeNone("no CRM brands are configured");
       }
 
-      const prompt = buildPrompt(input.activity, input.openOpportunities, brands);
+      const prompt = buildPrompt(input.activity, input.openOpportunities, brands, { handles: selfHandles, domains: selfDomains });
 
       let raw: string;
       try {
