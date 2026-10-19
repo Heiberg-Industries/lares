@@ -41,13 +41,15 @@
  * Server only: it holds the route password. Nothing here is sent to a browser except the items.
  */
 import { approvalArguments } from "./approval-text";
+import { decideProposal, listProposals } from "./waiting-proposals";
 import { bounded, MEMBER_HEADER, ROUTE_USERNAME, vouchedAddress } from "./chat-proxy";
 import { APPROVAL_LIFETIME_MS } from "../components/ChatTranscript";
 
 // ── The generic item ────────────────────────────────────────────────────────────────────────────
 
-/** The kinds of thing the page can show. Only `approval` has a source today. */
-export type WaitingKind = "approval";
+/** The kinds of thing the page can show: `approval` is an agent's card; `proposal` is read from
+ *  the database (`lib/waiting-proposals.ts`). */
+export type WaitingKind = "approval" | "proposal";
 
 /** One part of an item's body. A page renders each as plain text, never as HTML. */
 export type WaitingBody =
@@ -66,7 +68,9 @@ export interface WaitingItem {
   readonly id: string;
   readonly kind: WaitingKind;
   readonly agent: string;
-  readonly channel: "Telegram" | "Slack" | "Web chat";
+  readonly channel: "Telegram" | "Slack" | "Web chat" | "Console";
+  /** What the page calls this kind of item, when the kind alone is too general. */
+  readonly kindLabel?: string;
   /** When the agent asked, ISO 8601, or null when the event carried no time. */
   readonly createdAt: string | null;
   readonly title: string;
@@ -625,7 +629,20 @@ const approvals: WaitingSource = {
   },
 };
 
-const SOURCES: Record<WaitingKind, WaitingSource> = { approval: approvals };
+const proposals: WaitingSource = {
+  list: (_member, deps) => listProposals(deps, (parts) => itemId("proposal", parts)),
+  async decide(_member, key, actionId, deps) {
+    let parts: unknown;
+    try {
+      parts = JSON.parse(Buffer.from(key, "base64url").toString("utf8"));
+    } catch {
+      return { ok: false, reason: "gone", message: "That item could not be found." };
+    }
+    return decideProposal(parts, actionId, deps);
+  },
+};
+
+const SOURCES: Record<WaitingKind, WaitingSource> = { approval: approvals, proposal: proposals };
 
 // ── The page's two calls ────────────────────────────────────────────────────────────────────────
 

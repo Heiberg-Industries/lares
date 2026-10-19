@@ -22,7 +22,7 @@ export default async function WaitingPage({ searchParams }: { searchParams: Prom
     <div className="lares-page lares-stack">
       <PageHeader
         title="Waiting on you"
-        description="What your agents have asked you, from every conversation, with everything they would do. Decide here or where it was asked."
+        description="What your agents have asked you, from every conversation, with everything they would do, plus Notion and shared notes changes waiting for your yes or no. Decide here or where it was asked."
       />
       <WaitingList
         items={list.items}
