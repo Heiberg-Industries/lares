@@ -1,6 +1,7 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
+import { boundText, DEFAULT_READ_LIMIT } from "./bounded-text.js";
 import { getPool } from "./db.js";
 import { resolveUser, type ResolvedUser } from "./identity.js";
 import {
@@ -246,16 +247,36 @@ export function readTool(deps?: ReadToolDeps) {
       `Read one note from one area of the Vault by its store-relative path, exactly as ` +
       `returned by the search tool (for example "ventures/harbor.md"). Absolute ` +
       `paths are refused — this tool reaches nothing outside the area it is given. ` +
+      `A long note comes back one page at a time (${DEFAULT_READ_LIMIT} characters): when the ` +
+      `result says there are more characters, call again with the same path and \`offset\` set ` +
+      `to the \`nextOffset\` it gave. ` +
       AREA_INPUT_DOC,
-    inputSchema: z.object({ area: areaInput, path: z.string() }),
-    async execute({ area, path }, ctx) {
+    inputSchema: z.object({
+      area: areaInput,
+      path: z.string(),
+      offset: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Character to start reading from; omit for the start. Use the nextOffset of the previous page."),
+    }),
+    async execute({ area, path, offset }, ctx) {
       const store = await storeForGrantedArea(area, deps, ctx);
       const note = readNote(path, storeRootForArea(area), await readerFor(store, ctx));
       if (deps?.onRead) {
         const { sessionId, turnId } = sessionTurnFrom(ctx);
         deps.onRead(store, path, sessionId, turnId);
       }
-      return note;
+      const page = boundText(note.content, { limit: DEFAULT_READ_LIMIT, offset: offset ?? 0 });
+      if (!page.truncated && page.note === undefined && (offset ?? 0) === 0) return note;
+      return {
+        ...note,
+        content: page.text,
+        totalChars: page.totalChars,
+        ...(page.truncated ? { truncated: true, nextOffset: page.nextOffset } : {}),
+        ...(page.note !== undefined ? { note: page.note } : {}),
+      };
     },
   });
 }
