@@ -1114,7 +1114,7 @@ export const SETTINGS: readonly SettingDef[] = [
     fallback: null,
     secret: false,
     breaksWithout: "The meeting-followup schedule has no Notion database to read meeting notes from, and fails with a clear message each time it runs (there is no default).",
-    readAt: ["services/chief-of-staff/agent/schedules/meeting-followup.ts:691"],
+    readAt: ["services/chief-of-staff/agent/schedules/meeting-followup.ts:693"],
   },
   {
     name: "NOTION_SYNC_CONFIG",
