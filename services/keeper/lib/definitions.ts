@@ -245,7 +245,7 @@ export function registerDefinitionActions(o: DefinitionOptions): void {
                 refused("Only the installation's owner can change the agent limit.");
             const count = countActive();
             if (ceiling < count)
-                refused(`You have ${count} agents. Retire one before lowering the limit below ${count}.`);
+                refused(`You have ${count} ${count === 1 ? 'agent' : 'agents'}. Retire one before lowering the limit below ${count}.`);
             await (o.setCeiling ?? ((v, actor) => writeSetting(o.pool, 'agents.ceiling', v, actor)))(ceiling, ctx.actor);
             return capacity(ctx);
         }) });
