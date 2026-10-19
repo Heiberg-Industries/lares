@@ -164,3 +164,62 @@ describe("readTool's onRead dep", () => {
     expect((result as { content: string }).content).toContain("plain");
   });
 });
+
+describe("readTool pages long notes", () => {
+  let dir: string;
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env["VAULT_PATH"];
+  });
+  function fixture(path: string, content: string): void {
+    dir = mkdtempSync(join(tmpdir(), "eve-note-tools-"));
+    const abs = join(dir, path);
+    mkdirSync(join(abs, ".."), { recursive: true });
+    writeFileSync(abs, content);
+    process.env["VAULT_PATH"] = dir;
+  }
+  const ctx = { session: { id: "s1", turn: { id: "t1" }, auth: null } } as never;
+  type Page = { content: string; truncated?: boolean; totalChars?: number; nextOffset?: number; note?: string; lines: number };
+  const read = async (offset?: number): Promise<Page> =>
+    (await readTool({ areas: PRIVATE_ONLY }).execute(
+      { area: "private", path: "long.md", ...(offset === undefined ? {} : { offset }) },
+      ctx,
+    )) as Page;
+
+  it("a short note comes back whole, with no paging fields", async () => {
+    fixture("long.md", "# Short\n");
+    const r = await read();
+    expect(r.content).toBe("# Short\n");
+    expect(r.truncated).toBeUndefined();
+    expect(r.note).toBeUndefined();
+  });
+
+  it("a long note is cut at 12,000 characters with a note and the next offset", async () => {
+    fixture("long.md", "a".repeat(30000));
+    const r = await read();
+    expect(r.content).toHaveLength(12000);
+    expect(r.truncated).toBe(true);
+    expect(r.totalChars).toBe(30000);
+    expect(r.nextOffset).toBe(12000);
+    expect(r.note).toContain("offset=12000");
+  });
+
+  it("offset returns the next page, and the last page carries no note", async () => {
+    const text = "x".repeat(12000) + "y".repeat(12000) + "z".repeat(500);
+    fixture("long.md", text);
+    const second = await read(12000);
+    expect(second.content).toBe("y".repeat(12000));
+    expect(second.nextOffset).toBe(24000);
+    const last = await read(24000);
+    expect(last.content).toBe("z".repeat(500));
+    expect(last.truncated).toBeUndefined();
+    expect(last.note).toBeUndefined();
+  });
+
+  it("an offset past the end gives empty content and an explanation", async () => {
+    fixture("long.md", "short");
+    const r = await read(999);
+    expect(r.content).toBe("");
+    expect(r.note).toContain("past the end");
+  });
+});
