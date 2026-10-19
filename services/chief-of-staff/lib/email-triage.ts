@@ -48,7 +48,7 @@ export type ContextStatus = "ok" | "empty" | "failed" | "skipped";
 
 export type TriageResult =
   | { outcome: "automated"; reason: "calendar-notice" | "automated-sender" | "model"; from: string; subject: string }
-  | { outcome: "fyi"; from: string; subject: string }
+  | { outcome: "fyi"; reason?: "mailing-list"; from: string; subject: string }
   | { outcome: "drafted"; from: string; subject: string; account: string; context?: Record<string, ContextStatus>;
       /** The Gmail draft just created (sql/001_baseline.sql remembers it so its recipients can be changed later). */
       draftId?: string; threadId?: string }
@@ -215,10 +215,14 @@ export async function triageOneMessage(
   msg: MailMessage,
   thread: ThreadMessage[] = [],
 ): Promise<TriageResult> {
-  const { from, subject, bodyText: body, threadId, isCalendarNotice, messageId: origMessageId, references: origReferences } = msg;
+  const { from, subject, bodyText: body, threadId, isCalendarNotice, isBulk, messageId: origMessageId, references: origReferences } = msg;
 
   // Calendar-notice guard FIRST — see module header.
   if (isCalendarNotice) return { outcome: "automated", reason: "calendar-notice", from, subject };
+
+  // Mailing-list mail (List-* / Precedence headers) is FYI, even when it comes from a person's own
+  // address or asks a question: no model call, never a draft.
+  if (isBulk) return { outcome: "fyi", reason: "mailing-list", from, subject };
 
   // Deterministic sender pre-filter — closes the "drafted a reply to a newsletter" incident.
   if (classifySender(from) === "automated") return { outcome: "automated", reason: "automated-sender", from, subject };
@@ -227,6 +231,8 @@ export async function triageOneMessage(
     `Classify this inbound email as one of: needs_reply | fyi | automated.\n` +
     `"automated" = newsletters, no-reply, receipts, notifications. "fyi" = a human message that needs no reply. ` +
     `"needs_reply" = a human who expects a response.\n` +
+    `Newsletters and mailing-list mail are "fyi" even when they ask questions or come from a named person. ` +
+    `Mail whose only possible reply would be a request to be removed from a list is "fyi" too.\n` +
     `Answer with ONLY that one word — no explanation.\n\n` +
     // The mail is somebody else's text: only ever inside a flagged block, never in prose.
     labeledContext([{ label: "Email to classify", content: `From: ${from}\nSubject: ${subject}\n${body}`, thirdParty: true }]),
