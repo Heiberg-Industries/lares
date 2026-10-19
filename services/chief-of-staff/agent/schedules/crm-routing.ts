@@ -52,6 +52,7 @@ import { scheduleHours } from "../../lib/schedule-hours.js";
 import { configuredOwnerId, listAliases, listOrgDomains } from "../../lib/identity-client.js";
 import { ensureRouteTables, makeRouteStore, type RouteProposalInput } from "../../lib/route-store.js";
 import { makeRouteTwentyClient } from "../../lib/route-twenty.js";
+import { crmBrandIds } from "../../lib/crm-brands.js";
 import { makeRouteClassifier } from "../../lib/route-classify.js";
 import { makeRouteEngine, type RouteProposal, type ScanResult } from "../../lib/route-engine.js";
 import { gatewayComplete } from "../../lib/llm-complete.js";
@@ -87,6 +88,7 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     ? `Then call twenty_create_opportunity with { name: "${p.brand} — ${p.personName}", stage: "${p.stage}", brand: "${p.brand}", pointOfContactId: "${p.personId}" }.`
     : `Then call twenty_set_stage with { opportunityId: "${p.opportunityId}", stage: "${p.stage}" }.`;
 
+  const brandList = crmBrandIds().join(", ");
   return [
     "[scheduled check — CRM routing. This is not a message from a person; it is your cue to",
     "propose a pipeline move based on recent activity.]",
@@ -108,9 +110,13 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     "card directly under your sentence — do not wait for a reply first, the tool call itself",
     "is the ask.",
     "",
-    "If the activity above does not actually support this move, reply with at most ONE short sentence",
-    "saying so and stop — no analysis, no bullets, no offers to draft or look things up. Do not call",
-    "the tool. The owner reads these every morning; a decline should cost him one line.",
+    "If the activity above does not actually support this move, do not call the tool, and keep it to",
+    "one line — no analysis, no bullets, no offers to draft or look things up:",
+    `- If another configured brand plausibly fits (${brandList}), ask ONE short question naming the`,
+    '  candidate brands, e.g. "Is this about A or B, or something else — tell me which?".',
+    "  A project may deliberately not be a CRM brand, so always leave room for something else.",
+    "- Otherwise reply with at most ONE short sentence saying so and stop.",
+    "The owner reads these every morning; a decline should cost one line.",
   ].join("\n");
 }
 
@@ -344,6 +350,8 @@ export default defineSchedule({
 
       const routeStore = makeRouteStore(pool);
       const routeClassifier = makeRouteClassifier({
+        selfHandles,
+        selfDomains: internalDomains,
         llm: (prompt) => gatewayComplete(prompt, { model: process.env["ROUTE_MODEL"], maxOutputTokens: 512 }),
       });
       const engine = makeRouteEngine({

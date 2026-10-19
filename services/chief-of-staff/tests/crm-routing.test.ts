@@ -477,6 +477,16 @@ describe("buildRouteProposalPrompt", () => {
     expect(text).not.toContain("twenty_set_stage");
   });
 
+  it("asks one question when another configured brand fits, allows something else, and calls no tool", () => {
+    const text = buildRouteProposalPrompt(proposal());
+    expect(text).toContain("ALPHA, BETA, GAMMA");
+    expect(text).toMatch(/another configured brand plausibly fits/);
+    expect(text).toMatch(/ONE short question/);
+    expect(text).toContain("or something else — tell me which");
+    expect(text).toMatch(/deliberately not be a CRM brand/);
+    expect(text).not.toContain("say so and stop");
+  });
+
   it("names a created opportunity after the person's real name, not the email handle", () => {
     const text = buildRouteProposalPrompt(proposal());
     expect(text).toContain('name: "ALPHA — Contact Example"');
