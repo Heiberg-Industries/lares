@@ -116,7 +116,7 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     '  candidate brands, e.g. "Is this about A or B, or something else — tell me which?".',
     "  A project may deliberately not be a CRM brand, so always leave room for something else.",
     "- Otherwise reply with at most ONE short sentence saying so and stop.",
-    "The owner reads these every morning; a decline should cost him one line.",
+    "The owner reads these every morning; a decline should cost one line.",
   ].join("\n");
 }
 
