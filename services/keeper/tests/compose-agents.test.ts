@@ -42,7 +42,8 @@ it('passes the actual Docker Compose config parser without contacting or changin
   const doc=JSON.parse(execFileSync('docker',['compose','--project-name','task14-parser','-f',file,'config','--format','json'],{encoding:'utf8',timeout:15000}));
   expect(doc.services['lares-bookkeeper'].read_only).toBe(true);expect(doc.services['lares-bookkeeper'].user).toBe('10001:10001');
  } finally {rmSync(dir,{recursive:true,force:true});}
-});
+// The docker call may take up to 15 s on a cold CI runner; the default 5 s test limit cut it off.
+},20000);
 
 it('does not render an adapter absent from its role and carries only explicit claimed principal fields',()=>{
  expect(()=>renderAgentsCompose([{...agent,doors:[{kind:'telegram',enabled:true}]}],opts)).toThrow('Role');
