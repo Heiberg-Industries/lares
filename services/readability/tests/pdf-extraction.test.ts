@@ -4,7 +4,9 @@ import { extractPdf } from "../lib/extract.js";
 // A complete tiny PDF with a real cross-reference table: exercises the installed
 // parser, not a mock of unpdf's API, and contains no customer document data.
 function samplePdf(): Uint8Array {
-  const stream = 'BT /F1 12 Tf 72 720 Td (Lares PDF extraction) Tj ET';
+  return samplePdfWithStream('BT /F1 12 Tf 72 720 Td (Lares PDF extraction) Tj ET');
+}
+function samplePdfWithStream(stream: string): Uint8Array {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
@@ -30,4 +32,20 @@ it('extracts text and metadata through the real installed PDF parser', async () 
 });
 it('rejects invalid PDF bytes as a parse failure', async () => {
   await expect(extractPdf('not a PDF', 'https://example.org/invalid.pdf')).rejects.toMatchObject({ status: 502 });
+});
+
+it('reports when the text was cut at the size limit, and how long it was', async () => {
+  const { MAX_PDF_TEXT_CHARS } = await import('../lib/extract.js');
+  const line = `(${'word '.repeat(40)}) Tj 0 -0.05 Td `;
+  const stream = `BT /F1 12 Tf 72 720 Td ${line.repeat(12000)} ET`;
+  const pdf = samplePdfWithStream(stream);
+  const result = await extractPdf(pdf, 'https://example.org/long.pdf');
+  expect(result.text.length).toBe(MAX_PDF_TEXT_CHARS);
+  expect(result.truncated).toBe(true);
+  expect(result.totalChars).toBeGreaterThan(MAX_PDF_TEXT_CHARS);
+});
+it('does not mention truncation for a short PDF', async () => {
+  const result = await extractPdf(samplePdf(), 'https://example.org/fixture.pdf');
+  expect(result).not.toHaveProperty('truncated');
+  expect(result).not.toHaveProperty('totalChars');
 });

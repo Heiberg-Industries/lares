@@ -20,6 +20,8 @@
 import { readFileSync } from "node:fs";
 import { toolOutput, toolOutputPart } from "eve/tools";
 
+import { boundText, DEFAULT_READ_LIMIT } from "./bounded-text.js";
+
 export class ReadabilityUnavailableError extends Error {
   constructor(
     message: string,
@@ -74,6 +76,34 @@ export function readUrlModelOutput(output: { title: string; text: string; image?
   ]);
 }
 
+/**
+ * One page of a read_url result. The model reads `DEFAULT_READ_LIMIT` characters at a time;
+ * `offset` is where this page starts (pass the previous page's `nextOffset`). A short page
+ * from the start comes back exactly as it was read. An image is left alone. When the reader
+ * itself cut the document (`sourceCut`), a plain `sourceNote` says so, separately from the
+ * paging note: that part cannot be fetched with a bigger offset.
+ */
+export function pageReadUrlResult<T extends { text: string; image?: unknown; sourceCut?: { totalChars: number } }>(
+  result: T,
+  offset = 0,
+) {
+  if (result.image) return result;
+  const { sourceCut, ...rest } = result;
+  const page = boundText(result.text, { limit: DEFAULT_READ_LIMIT, offset });
+  return {
+    ...rest,
+    text: page.text,
+    ...(page.truncated || page.note !== undefined || offset > 0 ? { totalChars: page.totalChars } : {}),
+    ...(page.truncated ? { truncated: true, nextOffset: page.nextOffset } : {}),
+    ...(page.note !== undefined ? { pagingNote: page.note } : {}),
+    ...(sourceCut
+      ? {
+          sourceNote: `The reader stopped at ${result.text.length.toLocaleString("en-US")} of ${sourceCut.totalChars.toLocaleString("en-US")} characters of this document; the rest cannot be read through this tool.`,
+        }
+      : {}),
+  };
+}
+
 // Below this many characters of extracted text, the old client treated the page as
 // unreadable (paywall stub, listing page, …) rather than a real article. Ported verbatim.
 const MIN_ARTICLE_CHARS = 300;
@@ -104,7 +134,13 @@ function extractUrl(): string {
  * transport/HTTP/parse failure, `ReadabilityNoContentError` when the page yields too
  * little text to be a usable article (paywall, non-article page).
  */
-export async function readUrl(url: string): Promise<{ title: string; text: string; image?: ReadImage }> {
+export async function readUrl(url: string): Promise<{
+  title: string;
+  text: string;
+  image?: ReadImage;
+  /** Set when the reader cut the document at its own size limit; carries the full length. */
+  sourceCut?: { totalChars: number };
+}> {
   const token = readToken();
   let res: Response;
   try {
@@ -133,9 +169,9 @@ export async function readUrl(url: string): Promise<{ title: string; text: strin
     }
     throw new ReadabilityUnavailableError(`readability extract → ${res.status} ${text.slice(0, 160)}`);
   }
-  let data: { title?: string; text?: string; image?: ReadImage };
+  let data: { title?: string; text?: string; image?: ReadImage; truncated?: unknown; totalChars?: unknown };
   try {
-    data = (await res.json()) as { title?: string; text?: string; image?: ReadImage };
+    data = (await res.json()) as typeof data;
   } catch (err) {
     throw new ReadabilityUnavailableError("readability extract — malformed JSON response", err);
   }
@@ -143,5 +179,10 @@ export async function readUrl(url: string): Promise<{ title: string; text: strin
     return { title: data.title ?? "Image", text: data.text ?? "", image: data.image };
   }
   if (!data.text || data.text.length < MIN_ARTICLE_CHARS) throw new ReadabilityNoContentError(url);
-  return { title: data.title ?? "Untitled", text: data.text };
+  // Older readers never send these two fields; a cut is reported only when both are sane.
+  const sourceCut =
+    data.truncated === true && typeof data.totalChars === "number" && data.totalChars > data.text.length
+      ? { sourceCut: { totalChars: data.totalChars } }
+      : {};
+  return { title: data.title ?? "Untitled", text: data.text, ...sourceCut };
 }

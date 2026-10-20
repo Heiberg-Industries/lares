@@ -225,6 +225,24 @@ describe("read_url", () => {
     expect(result).toEqual({ title: "A Real Article", text: longText });
   });
 
+  it("returns a long page one page at a time and continues from offset", async () => {
+    const longText = "A".repeat(20_000);
+    readabilityServer = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ title: "Long", text: longText }));
+    });
+    const port = await new Promise<number>((resolve) => {
+      readabilityServer!.listen(0, "127.0.0.1", () => resolve((readabilityServer!.address() as AddressInfo).port));
+    });
+    process.env["READABILITY_URL"] = `http://127.0.0.1:${port}`;
+
+    const first = (await readUrl.execute({ url: "https://example.com/long" }, ctx)) as Record<string, unknown>;
+    expect(first).toMatchObject({ truncated: true, totalChars: 20_000, nextOffset: 12_000 });
+    const second = (await readUrl.execute({ url: "https://example.com/long", offset: 12_000 }, ctx)) as Record<string, unknown>;
+    expect((second["text"] as string).length).toBe(8_000);
+    expect(second["truncated"]).toBeUndefined();
+  });
+
   it("throws ReadabilityNoContentError for a page with no usable article text", async () => {
     readabilityServer = createServer((_req, res) => {
       res.writeHead(200, { "content-type": "application/json" });

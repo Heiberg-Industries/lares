@@ -97,7 +97,7 @@ describe("board wiring", () => {
   it("read_url asks after untrusted text, through a policy that is a function", () => {
     const text = src("read_url.ts");
     expect(text).toContain("asksAfterUntrustedText");
-    expect(text).toMatch(/approval:\s*asksAfterUntrustedText\(\)/);
+    expect(text).toMatch(/approval:\s*asksAfterUntrustedTextUnlessNextPage\(\)/);
     expect(/approval:\s*\{/.test(text)).toBe(false);
   });
 
@@ -154,6 +154,7 @@ describe("read_url's card, where there is one, is re-checked before the fetch", 
         return { title: "t", text: "x" };
       },
       readUrlModelOutput: (r: unknown) => r,
+      pageReadUrlResult: (r: unknown) => r,
     }));
     return { fetched, checked };
   };
@@ -204,6 +205,7 @@ describe("read_url's card, where there is one, is re-checked before the fetch", 
         return { title: "t", text: "x" };
       },
       readUrlModelOutput: (r: unknown) => r,
+      pageReadUrlResult: (r: unknown) => r,
     }));
     await (await readUrlTool()).execute({ url: "https://example.test/a" }, ctx);
     expect(fetched).toEqual(["https://example.test/a"]);

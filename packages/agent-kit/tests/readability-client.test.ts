@@ -8,6 +8,7 @@ import { join } from "node:path";
 import { AddressInfo } from "node:net";
 
 import {
+  pageReadUrlResult,
   readUrl,
   ReadabilityNoContentError,
   ReadabilityTargetError,
@@ -159,5 +160,76 @@ describe("readUrl", () => {
 
   it("throws ReadabilityUnavailableError when READABILITY_URL is unset", async () => {
     await expect(readUrl("https://example.com/post")).rejects.toThrow(ReadabilityUnavailableError);
+  });
+});
+
+describe("readUrl: a document the reader cut", () => {
+  const serve = (body: unknown) =>
+    listen((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body));
+    });
+
+  it("carries the full length when the reader says it stopped early", async () => {
+    const port = await serve({ title: "Big PDF", text: "B".repeat(500), truncated: true, totalChars: 900_000 });
+    process.env["READABILITY_URL"] = `http://127.0.0.1:${port}`;
+    expect(await readUrl("https://example.com/big.pdf")).toEqual({
+      title: "Big PDF",
+      text: "B".repeat(500),
+      sourceCut: { totalChars: 900_000 },
+    });
+  });
+
+  it("accepts a response without the new fields (an older reader)", async () => {
+    const port = await serve({ title: "Old", text: LONG_ARTICLE });
+    process.env["READABILITY_URL"] = `http://127.0.0.1:${port}`;
+    expect(await readUrl("https://example.com/a")).toEqual({ title: "Old", text: LONG_ARTICLE });
+  });
+});
+
+describe("pageReadUrlResult", () => {
+  const long = "x".repeat(30_000);
+
+  it("leaves a short page exactly as it was read", () => {
+    expect(pageReadUrlResult({ title: "T", text: LONG_ARTICLE })).toEqual({ title: "T", text: LONG_ARTICLE });
+  });
+
+  it("returns the first page with a note and the next offset", () => {
+    const out = pageReadUrlResult({ title: "T", text: long }) as Record<string, unknown>;
+    expect((out["text"] as string).length).toBe(12_000);
+    expect(out).toMatchObject({ title: "T", truncated: true, totalChars: 30_000, nextOffset: 12_000 });
+    expect(out["pagingNote"]).toContain("offset=12000");
+  });
+
+  it("returns the page at an offset, and the last page is not truncated", () => {
+    const out = pageReadUrlResult({ title: "T", text: long }, 24_000) as Record<string, unknown>;
+    expect((out["text"] as string).length).toBe(6_000);
+    expect(out["truncated"]).toBeUndefined();
+    expect(out["nextOffset"]).toBeUndefined();
+    expect(out["totalChars"]).toBe(30_000);
+  });
+
+  it("says so when the offset is past the end", () => {
+    const out = pageReadUrlResult({ title: "T", text: long }, 99_000) as Record<string, unknown>;
+    expect(out["text"]).toBe("");
+    expect(out["pagingNote"]).toContain("past the end");
+  });
+
+  it("leaves an image untouched", () => {
+    const image = { mediaType: "image/png", base64: "AAAA" };
+    expect(pageReadUrlResult({ title: "Pic", text: "", image }, 5)).toEqual({ title: "Pic", text: "", image });
+  });
+
+  it("adds a plain note, apart from the paging note, when the reader cut the document", () => {
+    const out = pageReadUrlResult({ title: "T", text: long, sourceCut: { totalChars: 900_000 } }) as Record<string, unknown>;
+    expect(out["sourceNote"]).toBe(
+      "The reader stopped at 30,000 of 900,000 characters of this document; the rest cannot be read through this tool.",
+    );
+    expect(out["pagingNote"]).toContain("offset=12000");
+    expect(out).not.toHaveProperty("sourceCut");
+  });
+
+  it("gives no source note for a document the reader did not cut", () => {
+    expect(pageReadUrlResult({ title: "T", text: long })).not.toHaveProperty("sourceNote");
   });
 });

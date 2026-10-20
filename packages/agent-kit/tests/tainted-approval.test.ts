@@ -15,8 +15,8 @@
 import type { ApprovalContext } from "eve/tools/approval";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { asksAfterUntrustedText, TAINTED_FETCH_REASON } from "../src/tainted-approval.js";
-import { resetTaintForTests, taintTurn } from "../src/origin-taint.js";
+import { asksAfterUntrustedText, asksAfterUntrustedTextUnlessNextPage, TAINTED_FETCH_REASON } from "../src/tainted-approval.js";
+import { clearTurn, noteUrlRead, resetTaintForTests, taintTurn } from "../src/origin-taint.js";
 
 afterEach(() => resetTaintForTests());
 const ctx = (sessionId: string, turnId: string) => ({ session: { id: sessionId, turn: { id: turnId } } });
@@ -95,5 +95,60 @@ describe("a fetch after untrusted text", () => {
     expect(await asksAfterUntrustedText()(real)).toBe("not-applicable");
     taintTurn({ sessionId: "s9", turnId: "t9" }, "third_party");
     expect(await asksAfterUntrustedText()(real)).toBe("user-approval");
+  });
+});
+
+describe("the next page of a link already read this turn", () => {
+  const key = { sessionId: "s1", turnId: "t1" };
+  const withInput = (toolInput: unknown, sessionId = "s1", turnId = "t1") => ({
+    session: { id: sessionId, turn: { id: turnId } },
+    toolInput,
+  });
+  const A = "https://example.com/a";
+  const policy = asksAfterUntrustedTextUnlessNextPage();
+
+  it("does not ask for offset above zero on a link read earlier in this turn", async () => {
+    taintTurn(key, "third_party");
+    noteUrlRead(key, A);
+    expect(await policy(withInput({ url: A, offset: 12000 }))).toBe("not-applicable");
+  });
+
+  it("still asks for an offset-0 re-read, an omitted offset, and a different link", async () => {
+    taintTurn(key, "third_party");
+    noteUrlRead(key, A);
+    expect(await policy(withInput({ url: A, offset: 0 }))).toBe("user-approval");
+    expect(await policy(withInput({ url: A }))).toBe("user-approval");
+    expect(await policy(withInput({ url: "https://example.com/b", offset: 12000 }))).toBe("user-approval");
+    expect(await policy(withInput({ url: A + " ", offset: 12000 }))).toBe("user-approval");
+  });
+
+  it("asks when the link was never read, or was read in another turn or session", async () => {
+    taintTurn(key, "third_party");
+    expect(await policy(withInput({ url: A, offset: 12000 }))).toBe("user-approval");
+    noteUrlRead(key, A);
+    taintTurn({ sessionId: "s1", turnId: "t2" }, "third_party");
+    expect(await policy(withInput({ url: A, offset: 12000 }, "s1", "t2"))).toBe("user-approval");
+    taintTurn({ sessionId: "s2", turnId: "t1" }, "third_party");
+    expect(await policy(withInput({ url: A, offset: 12000 }, "s2", "t1"))).toBe("user-approval");
+  });
+
+  it("forgets the link when the turn ends", async () => {
+    taintTurn(key, "third_party");
+    noteUrlRead(key, A);
+    clearTurn(key);
+    taintTurn(key, "third_party");
+    expect(await policy(withInput({ url: A, offset: 12000 }))).toBe("user-approval");
+  });
+
+  it("asks when it cannot tell which turn it is in, and behaves as before without an input", async () => {
+    expect(await policy(undefined)).toBe("user-approval");
+    expect(await policy({ session: {}, toolInput: { url: A, offset: 5 } })).toBe("user-approval");
+    taintTurn(key, "third_party");
+    expect(await policy(withInput(undefined))).toBe("user-approval");
+    expect(await policy(withInput({ url: A, offset: "12000" }))).toBe("user-approval");
+  });
+
+  it("is a function of one context", () => {
+    expect(policy.length).toBeLessThanOrEqual(1);
   });
 });

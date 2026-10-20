@@ -93,7 +93,7 @@ describe("calendar_list_events taints only when it can be somebody else's calend
 
 describe("read_url taints at the level the branch earned", () => {
   it("a web page is third_party", async () => {
-    vi.doMock("@lares/agent-kit/readability-client", () => ({ readUrl: async () => ({ title: "t", text: "x" }), readUrlModelOutput: (r: unknown) => r }));
+    vi.doMock("@lares/agent-kit/readability-client", () => ({ readUrl: async () => ({ title: "t", text: "x" }), readUrlModelOutput: (r: unknown) => r, pageReadUrlResult: (r: unknown) => r }));
     const tool = (await import("../catalogue/read_url.js")).default;
     await tool.execute({ url: "https://example.test/a" }, ctx);
     expect((await freshTaint()).currentTaint(key)).toBe("third_party");
