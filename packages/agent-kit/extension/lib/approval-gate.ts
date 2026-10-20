@@ -1,30 +1,29 @@
 /**
  * The approver re-check the extension's gated vault writes call — `vault_write`,
- * `vault_file`, `vault_drop` Task 2).
+ * `vault_file`, `vault_drop`).
  *
- * Ported from `services/chief-of-staff/lib/approvals.ts`'s `approverFrom`/`assertApprover`/
- * `UnauthorizedApproverError`, which stays live there unchanged for every OTHER gated tool
- * (`gmail_send`, `twenty_*`, `calendar_*`, `remind_*`, `echo_note`, `*_resolve_proposal`) —
- * none of those move in this task. This IS a second, parallel copy: `UnauthorizedApproverError`
+ * This mirrors `services/chief-of-staff/lib/approvals.ts`'s `approverFrom`/`assertApprover`/
+ * `UnauthorizedApproverError`, which every OTHER gated tool uses
+ * (`gmail_send`, `twenty_*`, `calendar_*`, `remind_*`, `echo_note`, `*_resolve_proposal`).
+ * This IS a second, parallel copy: `UnauthorizedApproverError`
  * here is a DIFFERENT class than the chief-of-staff service's (different module, different prototype), so an
  * `instanceof` check against one never matches an error thrown by the other. Nothing in the
- * codebase does that check across the boundary — verified by grep before this file was
- * written — each gated tool file imports its OWN approval helpers and nothing compares
- * error identity between tools. If that ever changes, check here first.
+ * codebase does that check across the boundary — each gated tool file imports its OWN approval
+ * helpers and nothing compares error identity between tools. If that ever changes, check here first.
  *
  * The one substantive difference from the chief-of-staff service original: `assertApprover` here takes
  * the actual allowlist check as an INJECTED parameter (`isApprovedPrincipal`) instead of
  * importing `isAllowedPrincipal` from `lib/principals.ts` directly. That import is exactly
  * what this extension must never make — `lib/principals.ts`/`lib/approvals.ts` are a
- * deliberate least-privilege boundary that stays local to the chief-of-staff service (the parent plan's hard
+ * deliberate least-privilege boundary that stays local to the chief-of-staff service (a hard
  * constraint, not a style choice): they know the chief-of-staff service's channel allowlist env vars
  * (`SLACK_ALLOWED_USER_IDS`, `TELEGRAM_PRINCIPAL_ID`), which this package has no business
  * reading. `principalFromAuth` has no such coupling — it only shapes a raw `ctx.session.auth`
- * value into `{authenticator, userId, absent}`, so it's ported verbatim with no injection
- * needed.
+ * value into `{authenticator, userId, absent}`, so it is identical to the original with no
+ * injection needed.
  *
- * `makeApprovalGate(resolveIsApprovedPrincipal)` follows the injected-resolver pattern
- * Task 1, review round 1, "config-based path had zero test coverage"): the core check logic is a plain function taking its
+ * `makeApprovalGate(resolveIsApprovedPrincipal)` follows the injected-resolver pattern, so
+ * the config-based path is testable: the core check logic is a plain function taking its
  * resolver as an explicit parameter, so `tests/approval-gate.test.ts` can construct one with
  * a fake in-test predicate — no `globalThis`/`eve.ext-config-scope` binding, no eve loader
  * involved. Production binds the resolver to this extension's own `config.brain` at the
@@ -63,7 +62,7 @@ export interface SessionAuthLike {
 
 /**
  * Extracts `{authenticator, userId}` from an eve session auth context — the shape
- * `ctx.session.auth.current` carries. Ported verbatim from `lib/principals.ts`: pure
+ * `ctx.session.auth.current` carries. Identical to `lib/principals.ts`'s: pure
  * shaping, no allowlist knowledge, so no injection is needed for this half.
  *
  * `absent: true` marks the one shape that is deliberately NOT refused: a null/undefined
@@ -80,8 +79,8 @@ export function principalFromAuth(auth: unknown): ApprovalPrincipal {
 }
 
 /**
- * The approver for a gated tool call, resolved from the session's auth contexts. Ported
- * verbatim from `lib/approvals.ts` — see that file's docblock for the full Telegram
+ * The approver for a gated tool call, resolved from the session's auth contexts. Identical
+ * to `lib/approvals.ts`'s — see that file's docblock for the full Telegram
  * null-auth rationale (eve resumes Telegram HITL taps with `.respond(..., { auth: null })`,
  * so an anonymous resume is attributed to the session's verified INITIATOR, never exempted).
  */

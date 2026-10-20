@@ -1,9 +1,9 @@
 /**
  * Outbound routing for Telegram Bot API traffic.
  *
- * Each eve agent on the box is sealed to its own fixed egress set — the gateway, the db,
+ * Each eve agent on the server is sealed to its own fixed egress set — the gateway, the db,
  * DNS, and the shared `slack-proxy` squid container, nothing else — each agent has its own
- * sealed IP and its own nft egress rule (`services/box/ops/egress-*.nft`).
+ * sealed IP and its own nft egress rule (`services/box/ops/egress.nft`).
  * `api.telegram.org` resolves inside Telegram's documented `149.154.160.0/20` block, which
  * an agent's egress rule already allows directly — but the squid proxy is the one path an
  * agent's outbound calls are meant to converge on (it is also where the domain-level
@@ -12,16 +12,16 @@
  *
  * Unlike Slack, eve gives Telegram an explicit per-call fetch seam
  * (`TelegramApiOptions.fetch`, wired through `telegramChannel({ api: { fetch } })`), so
- * this does NOT install a global undici dispatcher the way `lib/slack-dispatcher.ts`
+ * this does NOT install a global undici dispatcher the way `slack-dispatcher.ts`
  * does. It is a plain function, injected once, at the one call site that needs it.
  *
  * Note that proxy environment variables are NOT an option: Node's built-in fetch ignores
- * them outright (a lesson `lib/slack-dispatcher.ts` and the Atlas sync job paid for
+ * them outright (a lesson `slack-dispatcher.ts` and the Atlas sync job paid for
  * first). Routing has to be explicit, not implicit.
  */
 import { ProxyAgent, fetch as undiciFetch } from "undici";
 
-/** Where squid listens on the box's internal network. Matches the `slack-proxy` service —
+/** Where squid listens on the server's internal network. Matches the `slack-proxy` service —
  *  there is no separate Telegram proxy container; every agent shares this one. */
 const DEFAULT_PROXY_URL = "http://slack-proxy:8888";
 
@@ -38,7 +38,7 @@ export interface TelegramFetchOptions {
  * Builds a `fetch`-shaped function bound to the squid `ProxyAgent`, for eve's
  * `TelegramApiOptions.fetch` seam. Constructing the `ProxyAgent` connects to nothing
  * until a call is actually dispatched, so this is safe to do at module scope — it reads
- * no secret, matching `lib/gateway-provider.ts`'s "no I/O until called" reasoning.
+ * no secret, matching `gateway-provider.ts`'s "no I/O until called" reasoning.
  */
 export function createTelegramFetch(opts?: TelegramFetchOptions): typeof fetch {
   const proxyUrl =

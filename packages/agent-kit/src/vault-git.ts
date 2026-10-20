@@ -7,20 +7,17 @@ import { withNoteLock } from "./note-lock.js";
 import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
 /**
- * The git mechanics behind the vault write tools (`vault_write`, `vault_file`, `vault_drop`
- * — Task 9). Ported from `services/box/lib/brain-source.ts`'s `commitNote`,
- * `moveNote`, `removeNote` and `serializeFrontmatter` — same git invocations, same argument
- * shapes (`git add`, `git commit -q -m <msg>`, `git rev-parse --short HEAD`,
- * `git push -q origin HEAD`, `git mv`, `git rm -q`).
+ * The git mechanics behind the vault write tools (`vault_write`, `vault_file`, `vault_drop`):
+ * the git invocations are `git add`, `git commit -q -m <msg>`, `git rev-parse --short HEAD`,
+ * `git push -q origin HEAD`, `git mv` and `git rm -q`.
  *
- * Path safety reuses `lib/notes-store.ts`'s `resolveInStore` (the traversal- and
- * symlink-safe containment check already proven by every read tool) instead of
- * reimplementing `brain-source.ts`'s simpler prefix-only `assertSafe`.
+ * Path safety reuses `notes-store.ts`'s `resolveInStore` (the traversal- and
+ * symlink-safe containment check already proven by every read tool) rather than a
+ * simpler prefix-only check.
  *
- * ONE DELIBERATE DEPARTURE from `brain-source.ts`: that file catches a `git push` failure,
- * `console.warn`s, and returns success anyway — reasoning "the nightly mirror reconciles".
- * the chief-of-staff service has no such backstop wired up yet, so a silent local-only commit would be a real
- * silent-failure gap: the vault would look updated to the caller while the bare
+ * A PUSH FAILURE IS NEVER SWALLOWED. Logging a warning and returning success anyway would
+ * trust a mirror to reconcile later, and nothing here guarantees one, so a silent local-only
+ * commit would be a real silent-failure gap: the vault would look updated to the caller while the bare
  * remote never got it. Here a push failure throws `VaultPushFailedError` instead, carrying
  * the local commit hash it durably made — the caller/model learns the commit exists, but
  * is not (yet) synced to the bare remote.
@@ -46,7 +43,7 @@ export class VaultPushFailedError extends Error {
   }
 }
 
-// ── YAML frontmatter serialiser (no external deps) — ported verbatim from brain-source.ts ──
+// ── YAML frontmatter serialiser (no external deps) ──
 
 export function serializeFrontmatter(fm: Record<string, unknown>): string {
   const lines: string[] = ["---"];

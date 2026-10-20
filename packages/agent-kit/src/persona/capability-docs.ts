@@ -1,21 +1,15 @@
-// Engine text for every capability the fleet knows Phase 2, Task 4).
+// Engine text for every capability the fleet knows.
 //
 // One paragraph per `KNOWN_CAPABILITIES` entry (`@lares/agent-kit/manifest`), written in the
-// agent's own voice ("I …"), naming its DEPLOYED tools exactly as eve exposes them. Task 5
-// renders these into a GENERATED "where I run" section of each agent's instructions, replacing
-// hand-written text that drifts from the tools an agent actually holds — the Wave-1 bug this
-// closes is a preamble that made the chief of staff deny capabilities she held. Accuracy of tool names, and
+// agent's own voice ("I …"), naming its DEPLOYED tools exactly as eve exposes them. These are
+// rendered into a GENERATED "where I run" section of each agent's instructions, replacing
+// hand-written text that drifts from the tools an agent actually holds — the failure this
+// prevents is a preamble that made the chief of staff deny capabilities it held. Accuracy of tool names, and
 // of what each capability can and cannot do, is the entire point of this file.
 //
-// SOURCES, per entry below: `services/agent-runtime/agents/the chief of staff/persona.md` §"Where I run"
-// (network, person, brain, atlas, twenty, remind, notion — the human-voice original
-// this engine text is distilled from), the hand-written preambles those two agents' own
-// `agent/instructions.md` files carried until Phase 3 assembled them (the chief-of-staff service's
-// hand→tool name mapping at :1-8, retired in Task 8; the travel service's §"Tool-name mapping" and
-// §"Capability-drift guard", retired in Task 9 — both readable in git history, and both
-// REPLACED by what this file renders), and each tool file's own `description` field, which is what a
+// SOURCES, per entry below: each tool file's own `description` field, which is what a
 // model actually reads at call time and therefore the most authoritative single source for
-// what a tool does. Every tool name here is traceable to a file on disk or to one of the three
+// what a tool does. Every tool name here is traceable to a file on disk or to one of the
 // conformance tables (`services/{chief-of-staff,creative}/tests/agent-declaration.test.ts`'s
 // `CAPABILITY_TOOLS`), never to memory of what a capability "should" contain.
 //
@@ -24,10 +18,10 @@
 // capability as a DOMAIN rather than a single tool's behaviour). Where agents diverge, `tools`
 // is the UNION of every deployed name across the fleet and `summary` is written to hold for
 // whichever subset a given agent actually has — "where I also hold write access" rather than
-// an unconditional claim — because this same paragraph is the source Task 5 renders into more
+// an unconditional claim — because this same paragraph is rendered into more
 // than one agent's instructions.
 //
-// NO PERSON, COMPANY OR PLACE — enforced since item 1 by `doc-lint.ts`, which runs
+// NO PERSON, COMPANY OR PLACE — enforced by `doc-lint.ts`, which runs
 // `lintRole` over every `summary` and `rule` below and licenses a name only against what the
 // entry itself declares (`vendor`, `backedBy`, `region.countries`). Before that this paragraph
 // was the only thing holding, and it did not: the calendar doc once named a vendor's product
@@ -35,25 +29,24 @@
 //
 // "The owner" stands in for the person these agents work for;
 // vendor names appear ONLY on `kind: "adapter"` entries, where the adapter genuinely IS the
-// vendor (gmail, twenty, notion, strava all take their capability name from the exact
+// vendor (gmail, twenty and notion take their capability name from the exact
 // product they wrap). A capability whose tools merely call out to an external API without the
 // capability being identified with that vendor's brand — `currency` (a live ECB/Frankfurter
 // rate), `read_url` (the shared in-house readability worker), `network` (a replica fed by
 // several sources) — stays `core`. `places` and `transit` are adapters even though each spans
-// more than one backing service, because the role-templates plan named their vendor strings explicitly: "Google Places" and
+// more than one backing service, because their vendor strings are named explicitly: "Google Places" and
 // "Entur + Google".
 //
 // Every `KNOWN_CAPABILITIES` entry has a doc below — `docFor` throws on anything else, by
 // design ("an undocumented capability is a bug": `@lares/agent-kit/manifest` itself is the
 // place to fix that, never a fabricated entry here).
 
-/** A rule that only holds where at least one of the tools it names is actually deployed
- * Phase 3, Task 10 review).
+/** A rule that only holds where at least one of the tools it names is actually deployed.
  *
  *  `tools` is the whole point: a capability spans agents that ship DIFFERENT subsets of it, so a
  *  claim about one specific tool cannot live in the `summary`, which renders for every one of
  *  them. The creative agent's persona said "an edit arrives either as a re-derived proposal I list and
- *  resolve behind a card" and carried the matching "list proposals fresh" rule, while she ships
+ *  resolve behind a card" and carried the matching "list proposals fresh" rule, while it ships
  *  neither `atlas_proposals` nor `atlas_resolve_proposal` — the same overclaim the `deployedTools`
  *  filter had already fixed for the tool NAMES, still standing in the prose beside them.
  *
@@ -68,7 +61,7 @@ export interface KeyedRule {
 /** A plain string always renders; a `KeyedRule` renders only where its tools are. */
 export type CapabilityRule = string | KeyedRule;
 
-/** One sentence of a `summary`, under the same rule as `CapabilityRule` item 2).
+/** One sentence of a `summary`, under the same rule as `CapabilityRule`.
  *
  *  A keyed RULE renders as its own sub-bullet, which is right for a standing instruction but
  *  wrong for a sentence that belongs mid-paragraph: moving it out would rewrite the persona of
@@ -97,8 +90,8 @@ export function renderSummary(summary: string | readonly SummaryPart[], deployed
  *  `"global"` for a vendor with no regional assumption. Declared HERE, on the capability, so a
  *  tool never buries the assumption in its own code — and so a second installation can see at
  *  a glance which adapters it must swap (a German one needs DB, a UK one National Rail). The
- *  scar: Entur's geocoder answered foreign queries with fuzzy Norwegian places, live, during
- *  a trip abroad; four fix rounds; every leak found by a live call, never by green tests. */
+ *  lesson: Entur's geocoder answered foreign queries with fuzzy Norwegian places, live, during
+ *  a trip abroad; every leak was found by a live call, never by green tests. */
 export type AdapterRegion = { readonly countries: readonly string[]; readonly reason: string } | "global";
 
 export interface CapabilityDoc {
@@ -110,7 +103,7 @@ export interface CapabilityDoc {
   /** Installation supplies this client's endpoint; no engine installation defaults. */
   endpoint?: "READABILITY_URL" | "TWENTY_BASE_URL";
   /** Other named services this capability's tools call out to WITHOUT the capability being
-   * identified with them item 1) — the distinction this file's header already draws
+   * identified with them — the distinction this file's header already draws
    *  between `places` (identity: Google Places) and the Entur/MET/Open-Meteo backends its own
    *  summary names, or between `currency` (core, no vendor identity at all) and the ECB rate it
    *  quotes. Never rendered: `renderEnvironment` prints `vendor` and nothing else.
@@ -135,7 +128,7 @@ export interface CapabilityDoc {
   region?: AdapterRegion;
 }
 
-/** THE VAULT'S TOOLS, GROUPED BY THE AREA EACH ONE TOUCHES (ADR-0017 rule 1, W5C-s5/s6).
+/** THE VAULT'S TOOLS, GROUPED BY THE AREA EACH ONE TOUCHES (ADR-0017 rule 1).
  *
  *  One capability now spans three stores that used to be three capabilities, so the grouping
  *  that used to be implicit in the capability NAME has to be written down somewhere. It is
@@ -286,8 +279,8 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
     kind: "adapter",
     vendor: "Gmail",
     region: "global",
-    // item 2: the read and write sentences are keyed. Read/write granularity, the same
-    // Task 10 used for `calendar` — an installation granting `gmail` at `read` ships no draft or
+    // The read and write sentences are keyed. Read/write granularity, the same
+    // as for `calendar` — an installation granting `gmail` at `read` ships no draft or
     // send tool, and used to be told in its own persona that both of them render a card. The
     // mailbox sentence stays unconditional: which mailbox to act on is true of a search as much
     // as of a send, and the threading half is already conditioned on a reply target existing,
@@ -337,8 +330,8 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
       "meeting_followup_send", "gmail_draft_recipients", "meeting_followup_record_denial",
       "meeting_followup_redraft",
     ],
-    // W7D-s4, owner decision D4: draft-first was already true (the summary above already says
-    // so); what was missing is the rule that a message's own words are not my instructions —
+    // Draft-first is already true (the summary above says
+    // so); this adds the rule that a message's own words are not my instructions —
     // said once, here, in the same voice as the rest of this file.
     rules: [
       {
@@ -445,10 +438,10 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
       "a page is unreadable without having actually called it: a failure of the reader " +
       "service itself and a page with no real article text are two different outcomes, and I " +
       "say which one happened.",
-    // Phase 3: this doc deliberately says NOTHING about web search. It used to end
+    // This doc deliberately says NOTHING about web search. It used to end
     // "I have no general web access beyond this — I cannot search the web…", which is a claim
     // about the FRAMEWORK's toolset rather than about a page reader, and it is false for any
-    // agent that keeps eve's `web_search` enabled (the travel agent does; the chief of staff and the creative agent disable it
+    // agent that keeps eve's `web_search` enabled (the chief of staff and the creative agent disable it
     // with a sentinel). A page reader's doc, rendering into every agent's persona, cannot know
     // which. The web-access sentence is emitted once, per agent, by `renderEnvironment` from
     // the declaration's `framework_tools`.
@@ -606,7 +599,7 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
   },
 
   // ADR-0017 (the Vault, one name). ONE ENTRY WHERE THERE WERE THREE — `brain`, `atlas` and
-  // `memory`, merged by W5C-s5. Nothing below is new prose except the area sentence that opens
+  // `memory`, now merged. Nothing below is new prose except the area sentence that opens
   // the summary: every other sentence, and every rule, is lifted unchanged from the entry it
   // came from, keyed to the tool group that entry used to own. That keying is what stops the
   // merge from widening anything a model is TOLD it has: an agent granted only the fact area

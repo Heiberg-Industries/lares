@@ -5,15 +5,14 @@
  * implementations has one of them wrong. It knows nothing about any role service: it takes a
  * `LearningStore` and a list of `LearnableObservation`s and answers what may be applied.
  *
- * WHAT CHANGED, AND WHY IT MATTERS. Until this module the rule was
- * `confidence >= 0.8 || recurring`:
+ * WHY THE RULE IS NOT `confidence >= 0.8 || recurring`, which is what it used to be:
  *
  *   - `confidence` is the MODEL's own estimate of its own work. Nothing decides on it now
  *     (ADR-0018 rule 4). It is still recorded, so a later reader can see what the model claimed.
  *   - `recurring` asked only whether the same sentence had been seen before — never who said it.
  *     Anyone who can send the agent an email could therefore write a standing preference by
  *     sending the same message twice ("prompt laundering"; three emails were enough in the
- *     August 2026 report this ADR cites). Recurrence now counts ONLY distinct owner-origin
+ *     report this ADR cites). Recurrence now counts ONLY distinct owner-origin
  *     sightings, and a `third_party`, `synced` or `system` observation is not a candidate at
  *     all, at any confidence, at any recurrence.
  *
@@ -24,7 +23,7 @@
  *      to `proposeSupersede` for the owner to approve; with no proposal route wired it is simply
  *      refused. In both cases nothing is inserted and nothing is closed, so a proposal can never
  *      leave a half-applied change behind.
- *   3. Only a row the AGENT itself wrote is superseded unattended (owner decision C1). Any other
+ *   3. Only a row the AGENT itself wrote is superseded unattended. Any other
  *      class on the standing row — including one this code cannot read — takes the proposal
  *      branch, because a row the agent did not write is not the agent's to close.
  */
@@ -60,7 +59,7 @@ export type RejectionReason =
   | "below-recurrence"      // owner-origin, but said once so far
   | "already-held"          // same subject, same text, already standing
   | "supersede-awaits-owner" // would replace what the owner stated: the owner decides, not the run
-  | "do-not-learn";         // W4C-s3's list
+  | "do-not-learn";         // the do-not-learn list
 
 export interface Rejection {
   observation: LearnableObservation;
@@ -70,7 +69,7 @@ export interface Rejection {
 }
 
 /** The promoter's view of an observation — deliberately NOT chief-of-staff's `Observation`,
- *  so the kit does not depend on a role service and the travel role can present its own. */
+ *  so the kit does not depend on a role service and each role can present its own. */
 export interface LearnableObservation {
   text: string;
   kind: string;
@@ -92,7 +91,7 @@ export interface LearningStore {
   }): Promise<{ id: string; subject: string; text: string; origin: Origin }>;
   activePreferences(): Promise<ReadonlyArray<{ id: string; subject: string; text: string; origin: Origin }>>;
   /** Close an existing row and link it. Called ONLY for a row the agent itself wrote; a row
-   *  the owner stands behind goes to `proposeSupersede` instead (W4C-s5). */
+   *  the owner stands behind goes to `proposeSupersede` instead. */
   supersede(id: string, byId: string): Promise<void>;
 }
 
@@ -103,7 +102,7 @@ export interface PromoterResult {
   held: LearnableObservation[];
   /** Agent-origin, or persona-level: offered to the owner, never applied. */
   needsConfirm: LearnableObservation[];
-  /** Everything that will never be promoted, with the reason. New in wave 4. */
+  /** Everything that will never be promoted, with the reason. */
   rejected: Rejection[];
   /** Changes filed for the owner to answer, by proposal id. Empty when nothing was filed —
    *  including when this installation has not applied the migration for the queue. */
@@ -151,11 +150,11 @@ function classOf(obs: LearnableObservation): Origin {
 export function makeLearningPromoter(deps: {
   store: LearningStore;
   isIdentityShift?: (obs: LearnableObservation) => boolean;
-  /** W4C-s3's list, injected so the kit carries the rule and the role carries the wording. */
+  /** The do-not-learn list, injected so the kit carries the rule and the role carries the wording. */
   doNotLearn?: (obs: LearnableObservation) => boolean;
-  /** W4C-s5 injects this; absent, an unattended supersede of an owner-origin row is REFUSED
+  /** Injected by the role; absent, an unattended supersede of an owner-origin row is REFUSED
    *  and reported, never silently applied. Fail closed. Returns the filed proposal's id when
-   *  one route records one (W5X-s6); a caller still returning `Promise<void>` type-checks —
+   *  one route records one; a caller still returning `Promise<void>` type-checks —
    *  `void` is not itself a candidate id, so nothing is recorded for it. */
   proposeSupersede?: (existingId: string, obs: LearnableObservation) => Promise<number | null | void>;
 }): { run(observations: readonly LearnableObservation[], opts?: { source?: string }): Promise<PromoterResult> } {
@@ -185,7 +184,7 @@ export function makeLearningPromoter(deps: {
           continue;
         }
 
-        // 2. Count AFTER recording, the reverse of the pre-wave-4 order (which checked
+        // 2. Count AFTER recording, the reverse of the earlier order (which checked
         //    recurrence first, so the first sighting never counted itself). The count is
         //    therefore "owner-origin sightings including this one", which is the number
         //    PROMOTE_MIN_OWNER_RECURRENCE is written against.

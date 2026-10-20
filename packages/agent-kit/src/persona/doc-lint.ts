@@ -1,9 +1,9 @@
-// lintCapabilityDocs() — the genericness lint, pointed at the ENGINE TEXT item 1).
+// lintCapabilityDocs() — the genericness lint, pointed at the ENGINE TEXT.
 //
 // `lintRole` proves a role template carries no person, company, vendor, place or language. Until
 // now nothing proved the same of `CAPABILITY_DOCS`, even though those paragraphs render into
 // EVERY agent's instructions.md and are therefore the text most likely to carry one owner's world
-// into a second installation. `tests/persona-docs.test.ts` only asserted that tools exist, that a
+// into a second installation. `tests/persona-docs.test.ts` only asserts that tools exist, that a
 // summary is longer than 40 characters, and that no owner's name appears
 // anywhere. The calendar doc once named a vendor's product as if it were the calendar and
 // shipped that into three personas; it was caught by a human rewriting the entry for another reason, not by a check.
@@ -107,13 +107,13 @@ export function assertCapabilityDocsAreGeneric(docs: Record<string, CapabilityDo
   );
 }
 
-// --- instruction skills item 7) -------------------------------------------------------
+// --- instruction skills -------------------------------------------------------
 //
 // An instruction skill is an `agent/skills/<name>/SKILL.md` file eve loads on demand and appends verbatim to
 // the turn. It is prose the model reads, exactly like a role template — and, exactly like a role
 // template, it is the sort of thing that gets copied to a second installation with a role. Nothing
-// held it to the role's bar: `sales-outreach.md` hard-coded the owner's two mailbox addresses and
-// named him five times.
+// used to hold it to the role's bar: one skill hard-coded the owner's two mailbox addresses and
+// named the owner five times.
 //
 // The one licence a skill gets, and it is derived from the skill's OWN text rather than declared
 // anywhere: it may name the vendor of a capability whose tools it instructs the agent to call. A

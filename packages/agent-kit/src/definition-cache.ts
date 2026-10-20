@@ -1,4 +1,4 @@
-// Fail closed, never half-configured (ADR-0015 rule 8; spec Part 2).
+// Fail closed, never half-configured (ADR-0015 rule 8).
 //
 // The definition folder is mounted READ-ONLY and can be hand-edited by anyone with Claude Code
 // on the box. A broken edit must not take the agent down and must not silently demote it to the
@@ -97,7 +97,7 @@ export async function resolveDefinition(opts: ResolveOptions): Promise<Resolved>
     loaded = await loadDefinition({ serviceDir: opts.serviceDir, env });
     // A definition that parses and validates but names a DIFFERENT agent than the one this
     // folder is mounted for is a definition sitting in the wrong folder — e.g. someone copied
-    // the chief of staff/ over the travel agent/. Refused exactly like any other invalid definition: fall back if there
+    // one agent's folder over another's. Refused exactly like any other invalid definition: fall back if there
     // is a remembered row for THIS agent, throw if there is not. Never silently repersonate.
     if (loaded.definition.name !== opts.agentName) {
       throw new Error(

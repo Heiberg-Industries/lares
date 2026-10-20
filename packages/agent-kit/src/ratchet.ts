@@ -1,5 +1,5 @@
 /**
- * Reading and writing the fleet's autonomy ratchet (ADR-0009) from an agent-kit consumer.
+ * Reading and writing the fleet's autonomy ratchet from an agent-kit consumer.
  *
  * ⚠️ TWIN. `packages/agent-kit/src/ratchet-store.ts` is the same accessor over the same
  * `ratchet` table. If the RESOLUTION ORDER below changes, change it in the twin in the
@@ -7,7 +7,7 @@
  * governance means two things.
  *
  * THE TABLE IS THE SOURCE OF TRUTH. The resolution order is the whole safety property:
- * the fine-grained `action` (for, a calendar recurring-event id), then the
+ * the fine-grained `action` (for example, a calendar recurring-event id), then the
  * capability's own default (`action = ''`), then **"gated"**. So a meeting series nobody
  * opted in is gated because nothing was ever written about it, not because a default
  * happened to be set correctly somewhere.
@@ -64,7 +64,7 @@ export type ApprovalDecision = "asked" | "autonomous" | "denied" | "locked" | "f
 /** The board's evidence. Fire-and-forget by contract: a failure here is logged and swallowed, because
  *  evidence must never be the reason an agent's action fails or waits. One row per `callId`: eve
  *  consults the policy again when an answered card resumes, with the same id, and that second
- *  answer is not a second decision (final review F6). A call without an id is always recorded. */
+ *  answer is not a second decision. A call without an id is always recorded. */
 export async function recordApprovalEvent(
   pool: Pool,
   e: { agent: string; capability: string; tool: string; decision: ApprovalDecision; reason?: string; callId?: string },

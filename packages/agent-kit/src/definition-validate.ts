@@ -1,4 +1,4 @@
-// The checks that ran at BUILD time until step 2, run now on every save and again at
+// The checks that used to run only at BUILD time, run now on every save and again at
 // every session start (ADR-0015 rule 8). They must be at least as strict as the build's, and
 // each one has a test proving an invalid definition is refused.
 //

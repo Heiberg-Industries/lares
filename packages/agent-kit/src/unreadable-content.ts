@@ -1,7 +1,7 @@
 /**
  * The note a door adds when part of a message cannot reach the model as content.
  *
- * Measured 2026-09-14, eve 0.32:
+ * Measured against eve 0.32:
  *  - Telegram: eve's parser knows only `photo` and `document`. A voice note, audio, video, round
  *    video, sticker, contact or location arrives as an EMPTY message, and the door's gate drops it
  *    — no reply at all.
@@ -66,7 +66,7 @@ function wrap(items: string[]): string | null {
 
 /**
  * A note for everything in a Telegram message the model will not get as content, or null.
- * `includeLocation: false` for a door that consumes locations itself (the travel agent tracks them).
+ * `includeLocation: false` for a door that consumes locations itself.
  */
 export function telegramUnreadableNote(
   message: { raw: unknown; attachments: readonly TelegramAttachmentLike[] },

@@ -6,17 +6,15 @@
  * evaluated at server startup) can name the path a write is about to touch without pulling
  * `node:child_process` and the lockfile machinery into its module graph.
  *
- * WHY THIS IS SHARED RATHER THAN LOCAL fix round 1). The write tools do not accept a
+ * WHY THIS IS SHARED RATHER THAN LOCAL. The write tools do not accept a
  * path from the model — they derive one — which is what makes a traversal argument
  * *unrepresentable* rather than merely refused. The approval card must therefore show the
  * DERIVED path, because that is the thing that says whether an existing note is about to be
  * overwritten. Two copies of the derivation is exactly the drift that ends with a card naming
  * one file while the tool writes another, so there is one copy and both sides import it.
  *
- * Ported verbatim from `services/agent-runtime/lib/adapters/hands/atlas.ts:21-23` (identical to
- * `hands/brain.ts`'s and to the kit's own `extension/lib/note-write-tools.ts`'s private copy —
- * that third copy is left alone here only because this round is additive; folding it in is a
- * one-line follow-up).
+ * The kit's own `extension/lib/note-write-tools.ts` keeps a private copy of the same derivation;
+ * folding it into this module is a one-line follow-up.
  */
 
 /** A title reduced to a filename-safe slug. Empty or fully-punctuation titles become "note",

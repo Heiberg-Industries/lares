@@ -29,7 +29,7 @@ export function getPool(env: NodeJS.ProcessEnv = process.env): Pool {
     // node-postgres emits 'error' on the pool when an IDLE client's connection dies
     // underneath it (a Postgres restart, an admin-terminated connection, a container
     // stopping). A Pool with no 'error' listener turns that into an uncaught exception
-    // that kills the process — on a box, a Postgres restart would crash the agent
+    // that kills the process — on a server, a Postgres restart would crash the agent
     // instead of letting the pool quietly discard the client and reconnect on the next
     // query. Never log the connection string, only the driver's own message.
     pool.on("error", (err: Error) => {

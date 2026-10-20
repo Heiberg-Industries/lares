@@ -1,10 +1,10 @@
 // lintRole() — proves a role template names no person, vendor, place or language, and none of
-// the words on the installation's own deny-list Phase 2, Task 6). The vocabulary, the
+// the words on the installation's own deny-list. The vocabulary, the
 // structural person rule's allowlist and its stopword list live in vocabulary.ts, the deny-list
 // loader in denylist.ts; this file is purely scanning and reporting.
 //
-// `doc-lint.ts` runs the same scan over CAPABILITY_DOCS with per-entry licensing item
-// 1), so anything added here is inherited by the engine text as well as by role templates.
+// `doc-lint.ts` runs the same scan over CAPABILITY_DOCS with per-entry licensing,
+// so anything added here is inherited by the engine text as well as by role templates.
 
 import {
   RULES,
@@ -58,7 +58,7 @@ interface Span {
 }
 
 /** Every literal-vocabulary hit on `line`, with overlaps resolved LONGEST-FIRST so one piece of
- * text is claimed by exactly one rule item 1).
+ * text is claimed by exactly one rule.
  *
  *  This generalises what `blank()` already did for `address`/`url` to all seven rules, and the
  *  reason is the same one written on `blank()`: a span already read by one rule must not be read
@@ -91,7 +91,7 @@ function literalSpans(line: string, reserved: Array<[number, number]>): Span[] {
 }
 
 /** Where a known tool name sits on the line — claimed before any rule and never reported, the
- * exemption class documented on `TOOL_NAME_PATTERNS` item 3). Reserving the span, rather
+ * exemption class documented on `TOOL_NAME_PATTERNS`. Reserving the span, rather
  *  than relying on `_` happening to block a word boundary, is what makes it a decision. */
 function toolNameSpans(line: string): Array<[number, number]> {
   return TOOL_NAME_PATTERNS.flatMap((p) =>
@@ -102,7 +102,7 @@ function toolNameSpans(line: string): Array<[number, number]> {
 function scanLine(line: string, lineNumber: number, out: LintFinding[]): void {
   const seen = new Set<string>();
   const add = (rule: LintRule, match: string): void => {
-    // Lowercased item 5): every vocabulary pattern is case-INSENSITIVE, so "Notion" and
+    // Lowercased: every vocabulary pattern is case-INSENSITIVE, so "Notion" and
     // "notion" on one line are one finding about one word. A case-sensitive key reported it
     // twice, which reads as two separate leaks. The reported `match` keeps the first spelling
     // seen, so the message still quotes the text as written.
@@ -155,11 +155,10 @@ export function assertRoleIsGeneric(roleMd: string, label: string): void {
   throw new Error(`${label}: this role isn't generic yet — remove the following before it can ship as a template:\n${detail}`);
 }
 
-// --- role text vs the tools that actually ship item 3) --------------------------------
+// --- role text vs the tools that actually ship --------------------------------
 //
-// A role template is generic about people and places but NOT about tools: `travel/role.md` tells
-// the agent to call `place_link`, `nearby_places`, `strava_routes`, `shopping_add`,
-// `shopping_remove` and `info` by name, `chief-of-staff/role.md` names `read_url`. Drop the grant
+// A role template is generic about people and places but NOT about tools: `chief-of-staff/role.md`
+// names `read_url` and other tools by name. Drop the grant
 // behind one of those and the generated "where I run" section simply stops naming the tool while
 // the role text keeps demanding it — an agent instructed, in the same file, to call something the
 // same file says it does not have.

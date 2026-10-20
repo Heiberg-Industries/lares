@@ -1,19 +1,11 @@
 /**
- * PROMOTED into @lares/agent-kit 2026-09-01: the chief-of-staff service and the travel service carried two
- * byte-identical copies of this file, and the engine/overlay inventory names `read_url` an
- * engine-core capability — one client, one home. History: the copies came from the
- * era, before the kit existed as the shared layer. Original header follows.
- */
-/**
  * Thin client for the shared `@lares/readability` worker.
  *
- * Ported from `services/agent-runtime/lib/adapters/digest/enrich.ts`'s
- * `makeReadabilityClient`: POST `{baseUrl}/extract`, header `x-readability-token`, body
- * `{url}`.
+ * POST `{baseUrl}/extract`, header `x-readability-token`, body `{url}`. `read_url` is an
+ * engine-core capability, so this one client is its single home.
  *
- * Deliberate behavior change from the old client: the old client returned `null` on every failure — network error,
- * non-2xx, or an article too short to be useful. This wave distinguishes
- * `ReadabilityUnavailableError` (transport/HTTP/parse failure) from
+ * Failures are told apart rather than collapsed into `null`: `ReadabilityUnavailableError`
+ * (transport/HTTP/parse failure) is distinct from
  * `ReadabilityNoContentError` (a 200 with no usable article text), so a caller can tell
  * "the worker is down" from "that page just isn't an article".
  */
@@ -43,7 +35,7 @@ export class ReadabilityNoContentError extends Error {
  * The worker is up and answered, but could not fetch or read THAT link — the target refused,
  * timed out, was too large, or is a format it can't read. Before this, every such
  * answer was a `ReadabilityUnavailableError`, and the chief of staff told the owner "the reader is down" while the
- * worker was healthy (2026-09-14). The worker marks these with status 400 or 502 plus a JSON
+ * worker was healthy. The worker marks these with status 400 or 502 plus a JSON
  * `{ error }` body; anything else stays "unavailable".
  */
 export class ReadabilityTargetError extends Error {
@@ -66,7 +58,7 @@ export interface ReadImage {
  * `toModelOutput` for a read_url tool: an image link reaches the model as the picture
  * itself, through eve's content parts (eve docs, tools/overview.mdx "Send images to the model").
  * Before this, the chief of staff answered an image link with "I have no vision capability" — false, because
- * attached photos reach her. Anything else goes to the model as the JSON it always did.
+ * attached photos reach it. Anything else goes to the model as the JSON it always did.
  */
 export function readUrlModelOutput(output: { title: string; text: string; image?: ReadImage }) {
   if (!output.image) return toolOutput.json(output as never);
@@ -104,8 +96,8 @@ export function pageReadUrlResult<T extends { text: string; image?: unknown; sou
   };
 }
 
-// Below this many characters of extracted text, the old client treated the page as
-// unreadable (paywall stub, listing page, …) rather than a real article. Ported verbatim.
+// Below this many characters of extracted text, the page is treated as
+// unreadable (paywall stub, listing page, …) rather than a real article.
 const MIN_ARTICLE_CHARS = 300;
 
 const DEFAULT_TOKEN_FILE = "/run/secrets/readability-token";

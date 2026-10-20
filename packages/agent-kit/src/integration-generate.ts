@@ -1,4 +1,4 @@
-// The generator behind `src/connections.ts` (W6A-s3).
+// The generator behind `src/connections.ts`.
 //
 // WHY A GENERATOR AT ALL. `connections.ts` decides which secret files every connection is believed
 // to hold and which connections every capability needs. Hand-maintained, it drifted: its own
@@ -10,7 +10,7 @@
 // WHAT COMES FROM WHERE. An integration manifest (`integrations/<id>/integration.json`) describes
 // the VENDOR: it is the same for every installation, so it cannot carry an instance list, a secret
 // file name, a custody or a base URL. Those are installation data and live in ONE file,
-// `integrations/installation.json`, which wave 9 moves out of the engine. The manifest's job here
+// `integrations/installation.json`. The manifest's job here
 // is to be CHECKED against: every manifest must have a connection, and a manifest that declares
 // secret names must agree with that connection's instances exactly. (Slack's and Google's manifests
 // declare `secrets: []` on purpose — their real secret file names are per agent instance, which is
@@ -55,12 +55,12 @@ export interface InstallationConsumer extends ConsumerDef {
  * The installation-shaped half a manifest cannot carry: which instances exist, what each one's
  * secret files are called, which capability needs which connection, and the consumers that have no
  * grants to derive their connections from. Read from `integrations/installation.json` beside the
- * manifests, so the generator is pure and the wave-9 move is ONE `git mv`.
+ * manifests, so the generator is pure and the file can be moved with ONE `git mv`.
  *
- * DEVIATION from the wave-6 plan's sketch, which typed this as
+ * It is not typed as
  * `{ instances: Record<string, ConnectionInstanceDef[]>; consumers: ConsumerDef[] }`: that shape
  * cannot carry a connection's `label`, `custody` or `configEnv`, and no manifest carries them
- * either, so the committed file could not have been reproduced from it.
+ * either, so the committed file could not be reproduced from it.
  */
 export interface InstallationConnections {
   connections: readonly InstallationConnection[];

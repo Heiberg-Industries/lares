@@ -1,4 +1,4 @@
-// Barrel for the `./persona` subpath export Phase 2, Task 5).
+// Barrel for the `./persona` subpath export.
 export { assemblePersona, renderEnvironment, renderOutsideTools } from "./assemble.js";
 export type { AssembleInput, RenderOptions } from "./assemble.js";
 export { deployedToolsFor } from "./deployed-tools.js";

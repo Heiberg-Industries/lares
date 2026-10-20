@@ -13,7 +13,7 @@
  *
  * BEST-EFFORT BY CONSTRUCTION, modelled line for line on `recordUse`
  * (`services/chief-of-staff/lib/dream/store.ts`) and `recordRead`
- * (`services/chief-of-staff/lib/memory-reads.ts`, W5A-s1). NEVER throws, never blocks, and a
+ * (`services/chief-of-staff/lib/memory-reads.ts`). NEVER throws, never blocks, and a
  * failure is logged at most once per process: noticing (or missing) a repair must not be able to
  * cost the turn that noticed it.
  */
@@ -98,10 +98,10 @@ function toRepair(row: {
  * Opens a repair, or touches the one already open for (kind, ref) — an upsert, not an append.
  * A row that had recovered and breaks again is re-opened rather than left closed.
  *
- * BEST-EFFORT. Never throws; warns once per process when box 079 is missing and names the file
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing and names the file
  * to apply.
  */
-/** The schema's own limits (box 079, `repairs_short_text`). A writer that hands over a stack
+/** The schema's own limits (`repairs_short_text`). A writer that hands over a stack
  *  trace gets it cut here rather than refused by the database — a repair that fails to open
  *  because its sentence was too long would hide the very problem it reports. */
 export const REPAIR_TEXT_LIMITS = { kind: 64, ref: 128, what: 400, howToFix: 400, breaksIn: 64 } as const;
@@ -140,7 +140,7 @@ export async function openRepair(db: Queryable, r: RepairInput): Promise<void> {
  * Closes the open repair for (kind, ref) if there is one. A close with no open repair is a
  * no-op, not an insert.
  *
- * BEST-EFFORT. Never throws; warns once per process when box 079 is missing.
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
  */
 export async function resolveRepair(db: Queryable, kind: string, ref: string): Promise<void> {
   try {
@@ -154,7 +154,7 @@ export async function resolveRepair(db: Queryable, kind: string, ref: string): P
 }
 
 /**
- * Every open repair, worst and freshest first. Answers `[]` (never throws) when box 079 is
+ * Every open repair, worst and freshest first. Answers `[]` (never throws) when the table is
  * missing, warning once per process.
  */
 export async function openRepairs(db: Queryable): Promise<Repair[]> {

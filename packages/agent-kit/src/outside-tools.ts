@@ -33,7 +33,7 @@ const SERVICE_NAME_RE = /^[a-z][a-z0-9-]{0,62}$/;
 /** The same rules for everyone who reads an outside tool's URL. `https` needs a public hostname
  *  (never an IP address), the default port, no credentials and no fragment, exactly the keeper's
  *  `endpointHost`. `http` is accepted only for a single-label compose service name (inside the
- *  box's own network, which the egress seal already allows). */
+ *  server's own network, which the egress seal already allows). */
 export function checkOutsideUrl(value: string): OutsideUrlCheck {
   if (typeof value !== "string" || /[\s\\]/.test(value)) return { ok: false, reason: "the address contains spaces or backslashes" };
   let url: URL;

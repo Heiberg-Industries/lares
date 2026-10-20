@@ -1,4 +1,4 @@
-// Always-ask by engine policy (agent-definitions spec, decisions + Part 3; the owner 2026-09-15): moving
+// Always-ask by engine policy: moving
 // money, deleting data, first contact with someone the owner has never been in touch with, publishing.
 // No agent.json level and no board setting loosens these. Every engine tool has a line — `[]` when none
 // applies — and tests/always-ask.test.ts fails when a tool is added without one.
@@ -10,19 +10,17 @@
 //   contact  — sends something to a person (mail, an invitation, a message) — unless the recipients
 //              are established by construction (CONTACT_BY_CONSTRUCTION), in which case the board decides.
 //              A history-checked contact tool (RECIPIENTS_OF, below) may ALSO skip the ask, but only
-//              when the board says autonomous AND every recipient is already "known" — the owner's
-//              rulings from the fix-round-1 review (2026-09-15, task-3b-fix1-findings.md), which
-//              REPLACE the original brief's decision 3:
-//                D-A: the CRM (Twenty) does not count, at all — its own contact history is built
+//              when the board says autonomous AND every recipient is already "known". The rules:
+//                - the CRM (Twenty) does not count, at all — its own contact history is built
 //                     from the same mail this check already reads, so counting it too would let
 //                     the agent mark a prospect "emailed" via a CRM write and then mail them for
 //                     real without ever asking.
-//                D-B: "known" means the OWNER wrote to THEM first, not the reverse — inbound mail
+//                - "known" means the OWNER wrote to THEM first, not the reverse — inbound mail
 //                     no longer counts (a stranger, or a prompt-injection email dressed as a
 //                     reply, must never become "known" just by writing in). Known = (network) an
 //                     OUTBOUND interaction to an identity with that address, or (mail) a message
 //                     the owner SENT to that address (To, Cc, or Bcc) from the sending account.
-//                D-C: `calendar_create_event` with `notify: false` is NOT "contacts nobody" —
+//                - `calendar_create_event` with `notify: false` is NOT "contacts nobody" —
 //                     Google guests still see the event on their own calendars regardless of
 //                     `notify`. Attendees are checked whether or not `notify` is set; only an
 //                     empty/absent attendee list contacts nobody.
@@ -33,8 +31,8 @@
 // And, apart from the categories: a tool that changes an agent's OWN autonomy (SELF_AUTONOMY_TOOLS) —
 // an agent never raises its own autonomy without the owner's 👍.
 // 🚫 on the board still refuses any of these (board-approval.ts): no setting loosens always-ask, 🚫 only tightens it.
-// Reviewed by the owner 2026-09-15: approved as proposed, including forget as delete; the vault delete tool (agent-kit__vault_drop) added as delete on review.
-// meeting_followup_auto always asks — the owner 2026-09-15.
+// `forget` counts as delete, and so does the vault delete tool (agent-kit__vault_drop).
+// meeting_followup_auto always asks.
 import {
   CAPABILITY_DOCS,
   VAULT_FACT_TOOLS,
@@ -46,11 +44,11 @@ import type { VaultArea } from "./skill-grants.js";
 export type AlwaysAskCategory = "money" | "delete" | "contact" | "publish";
 
 export const TOOL_CATEGORIES: Readonly<Record<string, readonly AlwaysAskCategory[]>> = {
-  // atlas. `atlas_proposals`/`atlas_resolve_proposal` keep their names (owner decision C5) —
+  // `atlas_proposals`/`atlas_resolve_proposal` keep their names —
   // they are the sync job's proposal lane, not a note operation.
   atlas_proposals: [], atlas_resolve_proposal: [],
-  // W5C-s3: one set of note tools, told which area to read. These three replaced `atlas_search`,
-  // `atlas_read` and `atlas_list`; reads, so nothing here either. W5C-s4: `vault_write` is the
+  // One set of note tools, told which area to read. These three replaced `atlas_search`,
+  // `atlas_read` and `atlas_list`; reads, so nothing here either. `vault_write` is the
   // unprefixed shared-area write that used to be `atlas_write` — the same empty category it had.
   vault_search: [], vault_read: [], vault_list: [], vault_write: [],
   // autonomy / meeting follow-ups
@@ -94,8 +92,8 @@ export const TOOL_CATEGORIES: Readonly<Record<string, readonly AlwaysAskCategory
   // for a reject as well, which changes nothing at all.
   memory_proposals: [], memory_resolve_proposal: [],
   remember: [], forget: ["delete"], facts_list: [], memory_used: [],
-  // save_note (W4B-s5) is ungated for the same reason `remember` is: writing its own note
-  // reaches nobody outside this box, and it deliberately does not refuse a tainted turn — the
+  // save_note is ungated for the same reason `remember` is: writing its own note
+  // reaches nobody outside this server, and it deliberately does not refuse a tainted turn — the
   // stamp (computed by stampFor, never the model) is the answer, not a refusal.
   save_note: [],
 };
@@ -107,8 +105,8 @@ export const CONTACT_BY_CONSTRUCTION: ReadonlySet<string> = new Set([
   "meeting_followup_send",
 ]);
 
-/** Tools that change an agent's OWN autonomy: always ask, whatever the board says (owner decision,
- *  final review O1, 2026-09-15). `meeting_followup_auto` is what switches a meeting series to
+/** Tools that change an agent's OWN autonomy: always ask, whatever the board says.
+ *  `meeting_followup_auto` is what switches a meeting series to
  *  auto-send — the level `meeting_followup_send` later reads. */
 export const SELF_AUTONOMY_TOOLS: ReadonlySet<string> = new Set(["meeting_followup_auto"]);
 const SELF_AUTONOMY_REASON = "changing its own autonomy always asks first";
@@ -126,10 +124,10 @@ const DANGEROUS_OUTSIDE_ADDR = /[,;<>@"]/;
 /**
  * Parses ONE `to`/`attendees` ENTRY into a lowercase bare address, or `null` if it is not
  * EXACTLY one of: a bare address, or a display name (containing none of `, ; < > @ "`) followed
- * by exactly one `<addr>` with nothing after the closing `>`. Fix-round-1 review, C1: the
- * original version took the FIRST `<…>` match anywhere in the string, so
+ * by exactly one `<addr>` with nothing after the closing `>`. A parser that took the
+ * FIRST `<…>` match anywhere in the string would let
  * `"Alice <a@x.com>, Bob <b@evil.com>"`, `"b@evil.com, <a@x.com>"` and
- * `"<a@x.com>\r\nBcc: b@evil.com"` all silently resolved to `a@x.com` alone — each one hides a
+ * `"<a@x.com>\r\nBcc: b@evil.com"` all silently resolve to `a@x.com` alone — each one hides a
  * second, unapproved recipient (or a raw header injection) behind a single "known" address.
  *
  * CR/LF anywhere is an immediate reject, before anything else — a real single-line header
@@ -180,8 +178,8 @@ function extractAddresses(field: unknown): string[] | null {
 
 /** True for a plain, non-array object — eve hands tools like `RECIPIENTS_OF` a `toolInput` that
  *  may be genuinely absent (e.g. `boardApproval(...)()` called with no ctx at all, which eve
- *  does for a non-object call input). Fix-round-1 review, I3: reading `i?.attendees ?? []` off
- *  a non-object `i` silently produced `[]` — "no attendees", read as "contacts nobody" — for an
+ *  does for a non-object call input). Reading `i?.attendees ?? []` off
+ *  a non-object `i` would silently produce `[]` — "no attendees", read as "contacts nobody" — for an
  *  input that was actually UNREADABLE, not empty. Every RECIPIENTS_OF entry checks this FIRST
  *  and returns `null` (asks) rather than treating "can't read the input" as "empty list". */
 function isPlainObject(x: unknown): x is Record<string, unknown> {
@@ -194,12 +192,12 @@ function isPlainObject(x: unknown): x is Record<string, unknown> {
 const GMAIL_SEND_FREEFORM_FIELDS: ReadonlySet<string> = new Set(["bodyText", "signatureText", "signatureHtml"]);
 
 /** True if any string value — or any string entry of an array value — on a non-freeform field
- *  of `obj` contains a CR or LF. Fix-round-2 review, item 2b (Critical, controller ruling): a
+ *  of `obj` contains a CR or LF. A
  *  clean `to` is not enough on its own — `services/chief-of-staff/lib/google.ts`'s
  *  `buildMimeEnvelope` writes `from`, `subject`, `inReplyTo` and `references` verbatim into the
  *  raw RFC-5322 header block, so `subject: "Hi\r\nBcc: stranger@evil.example"` (with a
- *  perfectly clean `to`) can still reach an unapproved recipient once Task 5 wires this board
- *  to `gmail_send` — this engine-side check has no idea `buildMimeEnvelope` exists, so it
+ *  perfectly clean `to`) can still reach an unapproved recipient once this board
+ *  gates `gmail_send` — this engine-side check has no idea `buildMimeEnvelope` exists, so it
  *  refuses on ANY non-freeform field carrying CR/LF, not a curated list of "the dangerous
  *  ones". `google.ts` carries the SAME guard independently (belt and suspenders — that one
  *  protects every caller of `buildMimeEnvelope`, not only a board-approved send). */
@@ -221,7 +219,7 @@ export const RECIPIENTS_OF: Readonly<Record<string, (input: unknown) => string[]
     if (hasCRLFOutsideFreeform(input)) return null;
     return extractAddresses(input["to"]);
   },
-  // D-C (controller ruling, fix round 1): `notify` does NOT decide whether this contacts
+  // `notify` does NOT decide whether this contacts
   // anybody — Google guests see the event on their own calendars regardless of `notify`.
   // Attendees are read unconditionally; only an empty/absent list contacts nobody.
   calendar_create_event: (input) => (isPlainObject(input) ? extractAddresses(input["attendees"] ?? []) : null),
@@ -259,10 +257,10 @@ export function mustAlwaysAsk(tool: string): { ask: true; reason: string } | { a
 
 /**
  * `mustAlwaysAsk`, minus the CONTACT category — for a `RECIPIENTS_OF` tool, whose contact lock
- * is decided per-recipient by board-approval.ts instead of statically here. Fix-round-1 review,
- * I8: the original code skipped `mustAlwaysAsk` WHOLESALE for a `RECIPIENTS_OF` tool, which
- * would have silently bypassed money/delete/publish too if such a tool ever carried one of
- * those categories — a real bypass risk, not a hypothetical one, since nothing enforced it.
+ * is decided per-recipient by board-approval.ts instead of statically here. Skipping
+ * `mustAlwaysAsk` WHOLESALE for a `RECIPIENTS_OF` tool would
+ * silently bypass money/delete/publish too if such a tool ever carried one of
+ * those categories — a real bypass risk, not a hypothetical one.
  * Every `RECIPIENTS_OF` tool is contact-only today (`tests/always-ask.test.ts`'s own invariant
  * test proves it), so this never actually fires differently from `mustAlwaysAsk` right now —
  * but a future tool that is BOTH history-checked and, say, a delete must still be caught here.
@@ -290,7 +288,7 @@ export function capabilityOfTool(tool: string): string | undefined {
 /**
  * THE TOOL→AREA TABLE, BESIDE THE TOOL→CAPABILITY ONE ABOVE — and for the same reason.
  *
- * Until W5C-s5 the capability a vault tool was registered under WAS its area: `brain` meant the
+ * The capability a vault tool used to be registered under WAS its area: `brain` meant the
  * personal store, `atlas` the shared one, `memory` the standing facts, and an agent granted one
  * of the three was thereby offered that store's tools and no others. One `vault` capability
  * spanning all three would have lost that distinction — a grant of `vault` for the facts alone

@@ -1,8 +1,8 @@
 /**
  * Entur — Norwegian public-transport journey planning. No API key is required, only a
- * client-identification header (`ET-Client-Name`); confirmed live against the real API on
- * 2026-08-25 (geocoder + `trip` GraphQL query, including `arriveBy`, which this file confirmed
- * by a live introspection + live call rather than trusting the ticket's guess at its name).
+ * client-identification header (`ET-Client-Name`); confirmed live against the real API
+ * (geocoder + `trip` GraphQL query, including `arriveBy`, which this file confirmed
+ * by a live introspection + live call rather than by guessing its name).
  *
  * POSTURE (shared with the other injected-config clients): a typed `Unavailable` error for anything that is not a real
  * answer, a second typed error for "the geocoder legitimately found nothing" (a genuine 200, not
@@ -11,16 +11,15 @@
  * inject for testability is the transport, which is what lets the test suite run entirely off
  * recorded fixtures with zero live network.
  *
- * THE SECOND TRAP, found on the deployed system after shipped: the geocoder is
+ * THE SECOND TRAP, found only on a deployed system: the geocoder is
  * NORWAY-BIASED and does not answer "no match" for a foreign place — it answers a fuzzy
- * NORWEGIAN one carrying `country_a: "NOR"`. Measured live on 2026-08-25 from inside
- * example-host: "Gare du Nord, Paris" → `{ name: "Olav Duuns gate", layer: "address",
+ * NORWEGIAN one carrying `country_a: "NOR"`. Measured live: "Gare du Nord, Paris" → `{ name: "Olav Duuns gate", layer: "address",
  * country_a: "NOR", id: "KVE:TopographicPlace:1820-Olav Duuns gate" }`. "Eiffel Tower" correctly
  * returned zero features and "Berlin Hauptbahnhof" correctly returned `country_a: "DEU"`, so the
  * behaviour is inconsistent rather than uniformly wrong — which is why it survived a suite whose
  * foreign-place fixtures all assumed the well-behaved shapes. `country_a` is exactly what
- * the travel service's Norway detection keys off, so that one guess sent a PARIS journey to Entur's
- * planner instead of Google. There is no confidence or match_type to lean on (the geocoder runs
+ * the Norway detection in `extension/tools/transit_plan.ts` keys off, so that one guess sent a PARIS journey to Entur's
+ * planner. There is no confidence or match_type to lean on (the geocoder runs
  * Photon; both are null on the live responses), so `resolvePlace` judges whether the geocoder
  * UNDERSTOOD the question — a whole word in common between the query and the result set, read
  * across the returned features rather than off the one that is returned — and treats a guess as
@@ -39,13 +38,12 @@
 const GEOCODER_URL = "https://api.entur.io/geocoder/v1/autocomplete";
 const JOURNEY_PLANNER_URL = "https://api.entur.io/journey-planner/v3/graphql";
 
-/** Defined in exactly one place — the ticket's own requirement. The extension's `transit` config
- *  key (Task 2, `extension/extension.ts`) may override it via `EnturClientConfig.clientName`. */
+/** Defined in exactly one place. The extension's `transit` config
+ *  key (`extension/extension.ts`) may override it via `EnturClientConfig.clientName`. */
 const DEFAULT_CLIENT_NAME = "lares";
 
 /** How long ONE Entur request may take before it is aborted and reported as unavailable.
- *  Matches `services/travel/lib/transit.ts`'s `AbortSignal.timeout(8000)` on the Google
- *  client it sits beside, so the two providers behave the same way under a dead hop.
+ *  A conventional eight seconds.
  *
  *  This bound is not optional politeness. Every caller here is sealed behind the shared squid
  *  container and reaches Entur through `createTelegramFetch()`'s undici `ProxyAgent`, whose
@@ -106,7 +104,7 @@ export interface ResolvedPlace {
   name: string;
   locality: string | null;
   county: string | null;
-  /** ISO 3166-1 alpha-3, e.g. "NOR" — what Task 3's Norway detection keys off. */
+  /** ISO 3166-1 alpha-3, e.g. "NOR" — what the Norway detection in `transit_plan.ts` keys off. */
   countryA: string | null;
   lat: number;
   lon: number;
@@ -149,7 +147,7 @@ export interface PlanArgs {
   dateTime: string;
   /** `true` = "arrive by `dateTime`"; omitted/`false` = "depart after `dateTime`". Confirmed as
    *  the `trip` query's exact argument name via live introspection (`Query.trip.args`) and a live
-   *  call on 2026-08-25 — not taken from the plan. */
+   *  call. */
   arriveBy?: boolean;
   numTripPatterns?: number;
 }
@@ -166,7 +164,7 @@ export interface EnturClientConfig {
 }
 
 /** Per-call transport options. A caller that runs several requests under ONE overall budget
- *  (the travel service's `transit_directions` geocodes two endpoints under a single deadline) passes its
+ *  (`transit_plan.ts` geocodes two endpoints under a single deadline) passes its
  *  own signal here; it is combined with this client's per-request timeout, so whichever fires
  *  first wins and neither can be defeated by the other. */
 export interface EnturCallOptions {
@@ -532,8 +530,7 @@ export function makeEntur(config: EnturClientConfig) {
     const locality = typeof props["locality"] === "string" ? (props["locality"] as string) : null;
     // The Norway-bias guard (module header, and `geocoderUnderstood` for the rule). A guess that
     // has nothing to do with the question is not a resolution, and it must fail the SAME way an
-    // empty response does — the travel service then falls through to Google, which abroad is the only
-    // provider there is, and `agent-kit__transit_plan` returns its `notFound`.
+    // empty response does — `agent-kit__transit_plan` returns its `notFound`.
     if (!geocoderUnderstood(text, candidates, top)) {
       throw new EnturPlaceNotFoundError(text, name);
     }

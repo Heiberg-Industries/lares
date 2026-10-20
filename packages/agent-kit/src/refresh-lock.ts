@@ -35,11 +35,10 @@ import { join } from "node:path";
  * is what makes one process's two callers behave the same as two processes' callers.
  *
  * NOT a distributed lock. It is box-local, and it depends on every agent seeing the same
- * `root` — on the box that means a shared tmpfs, and in wave 8 it means one the installer
- * creates. That limitation is deliberate, not an oversight.
+ * `root` — a shared tmpfs that the install creates. That limitation is deliberate, not an oversight.
  *
- * Nothing is wired to this in this wave. Moving `google-auth.ts`'s five Google wirings onto
- * it is a later change; doing it here would be a refactor bundled into a foundation.
+ * Nothing is wired to this yet. Moving `google-auth.ts`'s five Google wirings onto
+ * it is a later change.
  */
 
 const DEFAULT_ROOT = join(tmpdir(), "lares-refresh-locks");

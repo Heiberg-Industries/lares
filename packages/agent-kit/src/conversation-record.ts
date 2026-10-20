@@ -141,8 +141,7 @@ export function cutoffFor(months: RetentionMonths, now: Date): Date | undefined 
  * conversation history, and the only table it may ever touch is `conversation_entries`.
  *
  * IT DOES NOT TOUCH EVE'S OWN TABLES. `workflow.workflow_*` and `graphile_worker.*` hold turn
- * content too, and tonight's finding (the session-rows retention research)
- * says plainly that pruning them is unknown-until-measured on this version of the framework:
+ * content too, and pruning them is unknown-until-measured on this version of the framework:
  * that schema has no foreign keys, so a delete the framework still needs succeeds silently and
  * surfaces as a wedged chat or an approval button that fails under the owner's finger. Rule 5 of
  * the ADR keeps them out of the retention setting entirely. Do not widen this function.
@@ -156,7 +155,7 @@ export function cutoffFor(months: RetentionMonths, now: Date): Date | undefined 
  * pattern (`deadlines-store.ts`'s `readLadderEnabled` treats an unreadable switch as OFF): a
  * schedule that reads an outage as "ladder off" loses a nudge, while a prune that reads an
  * outage as "keep nothing" loses the record for ever. So:
- *   - the setting cannot be read (outage, or migration 061 not applied)  -> refuse, delete nothing;
+ *   - the setting cannot be read (outage, or its migration not applied)  -> refuse, delete nothing;
  *   - the stored setting is NULL ("keep forever")                        -> delete nothing, no query;
  *   - no row at all                                                      -> twelve months, the
  *     documented default — never "delete everything" and never "keep forever";
@@ -174,7 +173,7 @@ export interface PruneOutcome {
   outcome: "pruned" | "kept-forever" | "refused";
   deleted: number;
   /** `memory_reads` rows removed on the same cutoff — 0 whenever `deleted` is 0, and 0 (not
-   *  undefined) on a box that has not applied `services/box/sql/001_baseline.sql`. */
+   *  undefined) on a box that has not applied the schema (`services/box/sql/001_baseline.sql`). */
   deletedReads: number;
   /** The instant actually used — the owner's window, or the floor, whichever is earlier. */
   cutoff?: Date;
@@ -277,7 +276,7 @@ export async function pruneForOwner(
 
   // `memory_reads` (see the header) is pruned on this same cutoff — not batched: the table is
   // tiny beside `conversation_entries` and a partial read-record prune has no meaning. A missing
-  // table (a box that has not applied 075) means nothing was ever recorded, not a failure; any
+  // table (a box that has not applied the schema) means nothing was ever recorded, not a failure; any
   // other error is unexpected and is left to propagate rather than be reported as "refused" —
   // the conversation entries above were already deleted, so that word would be a lie.
   let deletedReads = 0;

@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 /**
  * What the console's Clipping card sends (`POST /api/clipping`) and the shapes of the answers the
- * chief of staff writes into `clipping_requests.result` (box/sql/092). Kept here, beside
+ * chief of staff writes into `clipping_requests.result`. Kept here, beside
  * credential-lifecycle.ts, because the console has no direct zod dependency and these are the
  * only shapes it must not trust. The ENGINE side (services/chief-of-staff/lib/clipping/requests.ts)
  * does not import this file: the result shapes are mirrored by hand and pinned by the console's

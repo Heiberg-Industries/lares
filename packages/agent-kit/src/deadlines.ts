@@ -1,5 +1,5 @@
 /**
- * the deadline engine: the standing statutory calendar, the per-year mint, and the
+ * The deadline engine: the standing statutory calendar, the per-year mint, and the
  * escalation ladder's one step.
  *
  * WHAT THIS IS: the machinery for a STANDING calendar — the dates that repeat every year because
@@ -23,7 +23,7 @@
  *     refreshed. A rule is a date this file believes, and a belief can go stale — a deadline that
  *     lands on a weekend or a public holiday commonly moves, terminal dates change, and a company
  *     can be assigned a different reporting frequency. That is why the mint is a CARD the owner
- *     confirms per year (Ruling 3) rather than a silent insert: the confirmation is the moment
+ *     confirms per year rather than a silent insert: the confirmation is the moment
  *     the year's dates are checked against the authority by a human, and every rule carries an
  *     `evidenceRule` (default `"owner confirms"`) for the same reason.
  *   - **Not a per-company profile.** Some rules apply only to some companies (a VAT-registered
@@ -37,7 +37,7 @@
  *
  * All day arithmetic is on the OWNER's clock, reusing `proactivity.ts`'s `ownerDay`/`wallClock`
  * (`Intl.DateTimeFormat("sv-SE")`, no library) so a deadline's "tomorrow" and a gate's "today" can
- * never come off two different clocks — the/128/204 mistake. `daysToDue` counts WHOLE
+ * never come off two different clocks. `daysToDue` counts WHOLE
  * calendar days between two `YYYY-MM-DD` strings, so 23:30 the night before is one day out and
  * 00:30 the same night is zero, which is what a person means by "tomorrow".
  */
@@ -194,7 +194,7 @@ export interface MintYearResult {
  * rather than being ignored: a silently-ignored typo leaves a deadline standing that the owner
  * believed they had dropped, and neither side would ever see it.
  *
- * A MID-YEAR MINT SKIPS WHAT IS ALREADY PAST (review fix,. Minting 2026 in September
+ * A MID-YEAR MINT SKIPS WHAT IS ALREADY PAST. Minting a year in September
  * inserts every term from January onwards, and each of those rows is overdue the moment it lands —
  * so the brief's Frister block, which names an overdue row EVERY day, opens the next morning with a
  * wall of filings that were made months ago. They are returned in `skippedPast` rather than
@@ -290,7 +290,7 @@ function hourIn(now: Date, tz: string): number {
 export const MENTION_DAYS: readonly number[] = [30, 16, 8, 4, 2, 1, 0];
 
 /**
- * True when the brief should list this deadline today (Ruling 1): a mention day, or overdue and
+ * True when the brief should list this deadline today: a mention day, or overdue and
  * not yet stopped. Once the ladder has rung its final stop the brief goes quiet too — the owner
  * has been told, in the loudest way the system has, and repeating it is nagging rather than news.
  */
@@ -306,7 +306,7 @@ export interface LadderStep {
 }
 
 /**
- * The rung due NOW for an open deadline, or null (Ruling 1's table). Pure; the caller gates it.
+ * The rung due NOW for an open deadline, or null. Pure; the caller gates it.
  *
  *   rung 1 — 15:00 the day before, any source: "this is tomorrow".
  *   rung 2 — 09:00 on the day, STATUTORY only: a self-imposed date does not earn a second ring.

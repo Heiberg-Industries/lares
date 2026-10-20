@@ -2,7 +2,7 @@
 // generated output). Pure data, mapped straight from the integration manifests — no I/O beyond
 // what `loadIntegrationManifests` already did, no secrets, no tokens, nothing box-shaped.
 //
-// `tier` is hard-wired `null`: W6C-s2's checker is what COMPUTES a tier from a `quality.yaml`'s
+// `tier` is hard-wired `null`: the checker in `integration-quality.ts` is what COMPUTES a tier from a `quality.yaml`'s
 // actual rule statuses (the tier a manifest's `quality` file points at is a CLAIM, never a fact
 // until that checker has run it) — so this module does not read a `quality.yaml` at all yet.
 

@@ -9,8 +9,8 @@ function scopeInWords(scope: Scope, level: AutonomyLevel): string {
   if (scope === "read") return "read-only";
   if (scope === "write-with-confirm") return level === "autonomous" ? "writes directly (autonomy: autonomous)" : "writes behind a confirmation card";
   // No parenthetical rationale here. It used to read "(it only affects the owner)", which is
-  // true of `memory`/`digest`/`outreach` but FALSE of `travel:write` — `nytur`, `link_group`
-  // and `predeparture_pack` all post into a family group chat Phase 3, Task 9). The
+  // true of `memory`/`digest`/`outreach` but FALSE of any capability that posts into a shared
+  // group chat. The
   // scope's real content is that no card is rendered; why that is safe belongs to the
   // capability's own doc, which knows what the tool touches.
   if (scope === "write") return "writes directly — no card";
@@ -19,8 +19,8 @@ function scopeInWords(scope: Scope, level: AutonomyLevel): string {
 
 /** Options for the two renderers. `deployedTools` narrows each capability's fleet-wide tool
  *  union to what THIS agent actually ships (see `deployed-tools.ts` for why the union alone
- *  overclaims). Omitted, every doc renders its full union — the behaviour before the Task 9
- *  review, kept so a caller with no folder to read from still gets a complete picture. */
+ *  overclaims). Omitted, every doc renders its full union — kept so a caller with no folder
+ *  to read from still gets a complete picture. */
 export interface RenderOptions {
   deployedTools?: string[];
 }
@@ -30,7 +30,7 @@ export interface RenderOptions {
  *  A plain string is a rule of the capability itself and always renders. A keyed rule names the
  *  tools it is about, and renders only where at least one of them is deployed — because the claim
  *  is false anywhere else, which is exactly how the creative agent's persona came to describe an Atlas
- *  proposal flow she has no tools for.
+ *  proposal flow it has no tools for.
  *
  *  With no `deployed` set the caller has asked for the UNION view (see `RenderOptions`), so
  *  everything renders — same contract as the tool list above it: no filter, no filtering. */
@@ -46,20 +46,20 @@ function rulesFor(rules: CapabilityRule[] | undefined, deployed: Set<string> | u
 export function renderEnvironment(m: AgentManifest, opts: RenderOptions = {}): string {
   const lines: string[] = [];
   // The web-access sentence is PER AGENT, from the declaration's `framework_tools` — never a
-  // fixed string. The travel agent keeps eve's `web_search` enabled; the chief of staff and the creative agent disable it. A
+  // fixed string. An agent may keep eve's `web_search` enabled; the chief of staff and the creative agent disable it. A
   // single hard-coded "I cannot search the web" (which is where this sentence used to live, in
-  // read_url's capability doc) would have told the travel agent he lacks a tool he actually holds — the
-  // Wave-1 bug this whole section exists to end, generated rather than hand-written this time.
+  // read_url's capability doc) would tell an agent it lacks a tool it actually holds — the
+  // false denial this whole section exists to end, generated rather than hand-written this time.
   const canSearchTheWeb = m.framework_tools.includes("web_search");
   const deployed = opts.deployedTools ? new Set(opts.deployedTools) : undefined;
-  // THE AREA NARROWING, ALONGSIDE THE DEPLOYED-TOOLS ONE (ADR-0017 rule 1, W5C-s5).
+  // THE AREA NARROWING, ALONGSIDE THE DEPLOYED-TOOLS ONE (ADR-0017 rule 1).
   //
   // `deployedTools` is a FILE-name list, and it counts an `agent-kit__*` disable sentinel as a
   // file like any other (`deployed-tools.ts`'s own docblock says so). That was harmless while
   // the kit's vault tools sat under a `brain` capability the trip and studio roles do not
   // grant: the bullet never rendered. Under one `vault` capability every role that holds any
-  // area would otherwise have been told it holds the personal store's seven tools — the Wave-1
-  // overclaim, returning by the back door on the very commit that merged the capability.
+  // area would otherwise have been told it holds the personal store's seven tools — an
+  // overclaim returning by the back door.
   //
   // So a tool whose AREA the declaration does not grant is rendered nowhere: not in the tool
   // list, not in the keyed summary sentence that describes it, not in its rule. Same derivation
@@ -111,7 +111,7 @@ export function renderEnvironment(m: AgentManifest, opts: RenderOptions = {}): s
     for (const s of m.skills) {
       // A skill has no capability doc, so its tool would be named nowhere without this — and a
       // section headed "My only capabilities are the tools below" that omits a compiled,
-      // callable tool is the Wave-1 bug whole-branch review, Critical #1). Same filter
+      // callable tool is an under-claim. Same filter
       // as the capability bullets above: intersect with what ships here, union when the caller
       // gave no list, and say so plainly rather than trailing off when nothing of it is here.
       const skillTools = deployed ? skillToolsFor(s.name).filter((t) => deployed.has(t)) : skillToolsFor(s.name);
@@ -143,7 +143,7 @@ export interface AssembleInput extends RenderOptions {
   displayName: string;
   /** The owner's words about what this agent is for (definition `duties.md`). EMPTY renders no
    *  section at all — which is what makes a definition-assembled persona byte-identical to the
-   * build-assembled one every agent shipped with before step 2. */
+   * build-assembled one every agent used to ship with. */
   dutiesMd?: string;
   /** The definition's outside tools that take effect. Absent or empty renders nothing, which
    *  keeps a neutral persona byte-identical. */
@@ -151,7 +151,7 @@ export interface AssembleInput extends RenderOptions {
 }
 
 export function assemblePersona({ manifest, roleMd, voiceMd, dutiesMd, displayName, deployedTools, outsideTools }: AssembleInput): string {
-  // The order is the spec's instruction stack (Part 3) and is load-bearing: the engine's rules
+  // The order is the instruction stack and is load-bearing: the engine's rules
   // come BEFORE the owner's words, and the owner's words can only add. 1 who I am, 2 where I
   // run, 3 memory precedence (engine-owned and rule-bearing, not descriptive — ADR-0015 rule 5:
   // the safety parts are engine-owned and no definition loosens them; ADR-0018 rule 9's
@@ -188,7 +188,7 @@ export function assemblePersona({ manifest, roleMd, voiceMd, dutiesMd, displayNa
 
   out.push(`# ${displayName} — voice`, voiceMd.trim(), ``);
 
-  // ABSENT is a real third state, not a synonym for English (plan D3). No language field means
+  // ABSENT is a real third state, not a synonym for English. No language field means
   // no instruction, which is what every agent did before this release: follow the counterpart.
   const language = (manifest as { language?: string }).language;
   if (language !== undefined && language.trim() !== "") {

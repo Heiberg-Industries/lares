@@ -4,15 +4,12 @@ import { basename, extname, join, relative, resolve, sep } from "node:path";
 import type { VaultArea } from "./skill-grants.js";
 
 /**
- * The engine behind the Brain and Atlas hands.
+ * The engine behind the personal ("brain") and shared ("atlas") note stores.
  *
  * Both stores are the same shape — a directory of markdown, synced from elsewhere — so
- * they share one implementation and differ only in the env var naming their root. Brain is
- * personal and the chief of staff-only; Atlas is the per-brand business store. Keeping them in one module
- * is what the plan asks for, and it means the posture below is written once.
- *
- * Ported from `services/box/lib/brain-source.ts` (walk, exclusions, tokenised search,
- * backlinks) as a read-only reference — the box is untouched by this plan.
+ * they share one implementation and differ only in the env var naming their root. The personal store is
+ * for the chief of staff only; the shared store is the per-brand business store. Keeping them in one module
+ * means the posture below is written once.
  */
 
 export type StoreName = "brain" | "atlas";
@@ -22,10 +19,10 @@ const STORE_ENV: Record<StoreName, string> = {
   atlas: "ATLAS_PATH",
 };
 
-/** The Vault area an agent is granted, resolved to the legacy store axis above (ADR-0017 rule 1,
- *  Owner decision C4 — `VAULT_PATH`/`ATLAS_PATH` keep their names; only what an agent is GRANTED
- *  changes). `taste` and `facts` are NOT file stores: `taste` has no mount yet (Owner decision
- *  C2) and `facts` names database tables (`standing_facts` and friends), not markdown — every
+/** The Vault area an agent is granted, resolved to the legacy store axis above (ADR-0017 rule 1:
+ *  `VAULT_PATH`/`ATLAS_PATH` keep their names; only what an agent is GRANTED
+ *  changes). `taste` and `facts` are NOT file stores: `taste` has no mount yet
+ *  and `facts` names database tables (`standing_facts` and friends), not markdown — every
  *  caller gets `undefined` for those two and must handle it rather than defaulting to the
  *  personal store. */
 export function storeForArea(area: VaultArea): StoreName | undefined {
@@ -45,9 +42,9 @@ export function areaForStore(store: StoreName): VaultArea {
   return store === "brain" ? "private" : "shared";
 }
 
-// `_meta` is excluded as of, and the reason outgrew the ticket that added it. It began
+// `_meta` is excluded, and the reason outgrew the first one. It began
 // as a QUALITY bug — searchNotes surfaced the chief of staff's own conversation logs under `_meta/conversations`
-// and cited them as Brain knowledge (three of three hits for one name were her own transcripts). Under
+// and cited them as Brain knowledge (three of three hits for one name were its own transcripts). Under
 // the multi-user design it is a PRIVACY bug: those logs are one user's private conversations, and
 // search would hand them to whoever asked. The exclusion applies to every store uniformly; a
 // consumer that genuinely needs `_meta` (the dream cycle) reads it by its own path, never through
@@ -63,11 +60,11 @@ export class StorePathNotConfiguredError extends Error {
 }
 
 /**
- *'s whole point. A store with no markdown under it — an unmounted volume, a wrong
+ * Failing loudly is the whole point. A store with no markdown under it — an unmounted volume, a wrong
  * path, an empty clone — must fail loudly. An LLM cannot tell "the vault is broken" from
  * "your query matched nothing" if both come back as an empty list, and the failure mode
- * that produces is the worst kind: she reports, confidently, that the owner has no notes on
- * something he has written about for a year.
+ * that produces is the worst kind: the agent reports, confidently, that the owner has no notes on
+ * something the owner has written about for a year.
  */
 export class StoreUnhealthyError extends Error {
   constructor(readonly root: string) {
@@ -261,10 +258,10 @@ export function searchNotes(query: string, root: string, reader?: Reader): Searc
  * form alone. It reads nothing, and the caller reports it as missing in its own words
  * rather than as a permission refusal.
  *
- * This began life in lib/fs-allowlist.ts, the fence around eve's built-in
- * read_file/glob/grep. Those tools were disabled outright on 2026-08-13 (see
+ * This began life as the fence around eve's built-in
+ * read_file/glob/grep. Those tools are disabled outright (see
  * agent/tools/read_file.ts) and the fence went with them; only this primitive survives,
- * here, where it is actually used. `git show cee7a998` has the fence if it is ever needed.
+ * here, where it is actually used.
  */
 function resolvesWithin(candidate: string, root: string): boolean {
   const resolvedRoot = resolve(root);
@@ -295,9 +292,9 @@ function resolvesWithin(candidate: string, root: string): boolean {
  * tools take store-relative paths, and accepting both forms is how a caller ends up
  * reasoning about container paths it should never see.
  *
- * Exported (Task 9 / so the Brain write path (`lib/vault-git.ts`) reuses this
- * traversal/symlink-safe containment check rather than reimplementing the old
- * `brain-source.ts`'s simpler prefix-only `assertSafe`.
+ * Exported so the vault write path (`vault-git.ts`) reuses this
+ * traversal/symlink-safe containment check rather than reimplementing a simpler
+ * prefix-only one.
  */
 export function resolveInStore(notePath: string, root: string): string {
   const absRoot = resolve(root);
@@ -322,7 +319,7 @@ export interface NoteContent {
   lines: number;
 }
 
-// ── Knowledge scope (multi-user substrate, spec Part 2) ────────────────────────────────
+// ── Knowledge scope (multi-user substrate) ────────────────────────────────
 // Three scopes, assigned by frontmatter with a per-store default — policy-per-source, not
 // per-document ACLs. Parsed with a small hand parser, NOT a YAML library: the store already
 // avoids heavyweight deps, and the grammar here is three known keys.
@@ -344,7 +341,7 @@ export function noteScope(raw: string, store: StoreName): ScopeInfo {
   // A CRLF-saved file ("---\r\n") used to defeat this LF-only check and fall back to the store
   // default — in atlas that meant an explicit `scope: private` silently WIDENED to `org`, the one
   // malformed-input path that widened past a declared value rather than narrowing. Normalised
-  // here, once, so every read below sees LF. (LAR pre-launch wave 3A.)
+  // here, once, so every read below sees LF.
   const text = raw.replace(/\r\n/g, "\n");
   if (!text.startsWith("---\n")) return fallback;
   const end = text.indexOf("\n---", 4);
@@ -369,7 +366,7 @@ export function noteScope(raw: string, store: StoreName): ScopeInfo {
   return { ...fallback, participants, owner };
 }
 
-// ── Reader scope filter (multi-user substrate, spec Part 2, Task 5) ────────────────────
+// ── Reader scope filter (multi-user substrate) ────────────────────
 // Applied ONCE, here, below every tool — a tool that forgets to pass a reader gets the
 // legacy unfiltered path, never a leak. `reader` absent is the single-user default.
 export interface Reader {
@@ -433,8 +430,8 @@ export interface BacklinkResult {
  * Notes that wikilink to this one.
  *
  * Obsidian's link form is `[[note-name]]`, optionally with `|an alias` or `#a-heading`.
- * The reference implementation in the box interpolates the note name straight into a
- * RegExp; here it is escaped, because a note called `c++ (notes)` is either a syntax error
+ * The note name is escaped before it goes into a
+ * RegExp, because a note called `c++ (notes)` is either a syntax error
  * or a pattern matching the wrong thing.
  */
 export function findBacklinks(notePath: string, root: string, reader?: Reader): BacklinkResult {

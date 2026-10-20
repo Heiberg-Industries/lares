@@ -1,6 +1,6 @@
 //
 // FORWARD identity resolution: a channel-native address (a Slack user id, a Telegram numeric
-// id, an email) to the canonical org member behind it, via the box's user_aliases registry
+// id, an email) to the canonical org member behind it, via the `user_aliases` registry
 // (001_baseline.sql) and org membership (001_baseline.sql). The REVERSE direction (canonical id →
 // aliases) lives in the chief-of-staff service's identity-client and is a different consumer's concern.
 //

@@ -19,7 +19,7 @@ import type { VaultArea } from "./skill-grants.js";
 /**
  * Tool factories for the Vault's note areas.
  *
- * ONE SET OF TOOLS, TOLD WHICH AREA TO READ (ADR-0017 rule 1, W5C-s3). There used to be two
+ * ONE SET OF TOOLS, TOLD WHICH AREA TO READ (ADR-0017 rule 1). There used to be two
  * sets — four tools bound to the personal store at construction and three more bound to the
  * shared one — which is how the two drifted: a fix landed on one and not the other, and the
  * difference was invisible until someone asked the shared store a question only the personal
@@ -32,18 +32,17 @@ import type { VaultArea } from "./skill-grants.js";
  * All three read via `node:fs` directly, NOT through eve's sandbox. That is not a style
  * preference: eve's own `read_file`/`glob`/`grep` proxy into a `just-bash` sandbox that
  * wants a writable `<appRoot>/.eve/sandbox-cache`, and this container's rootfs is
- * read-only — so those tools fail with ENOENT here (see the runbook). These hands work.
+ * read-only — so those tools fail with ENOENT here. These tools work.
  *
- * Task 2: relocated here from `services/chief-of-staff/lib/note-tools.ts` as a PLAIN
- * shared module — not extension-scoped. No factory function touches extension config: each
- * resolves `storeRootForArea(area)`, which reads `VAULT_PATH`/`ATLAS_PATH` from `process.env`
- * directly (Owner decision C4 — the settings keep their names; only what an agent is GRANTED
+ * This is a PLAIN shared module — not extension-scoped. No factory function touches extension
+ * config: each resolves `storeRootForArea(area)`, which reads `VAULT_PATH`/`ATLAS_PATH` from
+ * `process.env` directly (the settings keep their names; only what an agent is GRANTED
  * changes), so this module works identically whether the tool it builds ends up mounted in an
  * extension or not.
  */
 
 /** The areas a NOTE tool can open: the two that are backed by a markdown store. `taste` has no
- *  mount (Owner decision C2) and `facts` names database tables, so neither is offered to the
+ *  mount and `facts` names database tables, so neither is offered to the
  *  model here — `storeForArea` returns `undefined` for both and the guard below refuses them
  *  even when something bypasses this schema. */
 export const NOTE_AREAS = ["private", "shared"] as const satisfies readonly VaultArea[];
@@ -58,7 +57,7 @@ export const DESCRIBE_AREA: Record<VaultArea, string> = {
   facts: "the standing-facts tables — dated facts and preferences, not markdown notes",
 };
 
-// ── Reader resolution (multi-user substrate, spec Part 2, Task 6) ──────────────────────
+// ── Reader resolution (multi-user substrate) ──────────────────────
 
 /** The speaking human this turn, in the identity registry's own vocabulary — see
  *  `speakerFromAuth` below for where this comes from. */
@@ -86,7 +85,7 @@ const SYSTEM_FOR_AUTHENTICATOR: Readonly<Record<string, string>> = {
 /**
  * Decodes `ctx.session?.auth?.current` into the `{system, alias}` pair the identity
  * registry resolves — mirroring the access pattern and caveats documented at
- * `services/chief-of-staff/agent/tools/remember.ts:20-80`: `current` is null/undefined on a
+ * `services/chief-of-staff/catalogue/remember.ts`: `current` is null/undefined on a
  * turn with no human in it (a schedule turn — the 08:00/20:00 briefs run as the app
  * principal), and only THAT case means "no speaker". Any other value is a real caller and
  * is always handed to `readerForTurn` for resolution, even if the shape here can't be
@@ -102,7 +101,7 @@ export function speakerFromAuth(auth: { current?: unknown } | null | undefined):
   // eve's own app principal — what a schedule's `to(...).send(prompt, { auth: appAuth })` lands
   // in `auth.current` (authenticator "app", principalType "runtime", no user attribute) — is the
   // AGENT acting, not a person asking. Decoding it as a speaker made every scheduled Atlas/vault
-  // read fail as "unknown is not a member of this installation" (2026-09-07, crm-routing). With
+  // read fail as "unknown is not a member of this installation". With
   // no member named it is "no speaker", so `readerForTurn`'s rule (a) applies and the agent reads
   // as its configured owner. A per-member schedule that DOES name a member in `attributes.user_id`
   // keeps resolving that member — the multi-user shape, unchanged.
@@ -115,7 +114,7 @@ export function speakerFromAuth(auth: { current?: unknown } | null | undefined):
 
 /**
  * ALL the branching for "who is this store being read for?" lives here, so the tool
- * factories below stay thin single calls into it. Resolution rules (spec Part 2 Task 6):
+ * factories below stay thin single calls into it. Resolution rules:
  *
  * (a) no speaker (a schedule turn) → the agent reads as its OWN configured user, via
  *     `AGENT_OWNER_USER_ID` (set per agent in compose); unset → the legacy unfiltered
@@ -156,7 +155,7 @@ async function readerFor(store: StoreName, ctx: { session?: { auth?: { current?:
   return readerForTurn(speaker, store, process.env, (system, alias) => resolveUser(getPool(), system, alias));
 }
 
-// ── The area guard (W5C-s3) ───────────────────────────────────────────────────────────────
+// ── The area guard ───────────────────────────────────────────────────────────────
 
 /**
  * Which Vault areas THIS session may open, injected by whichever catalogue file builds the
@@ -231,7 +230,7 @@ export interface ReadToolDeps extends NoteToolDeps {
   /**
    * Fired after a read SUCCEEDS — a read that threw opened nothing, so this never runs for one.
    * `sessionId`/`turnId` are `undefined` when `ctx` cannot name them; the caller decides what
-   * that means (W5A-s3's callers record nothing rather than guess).
+   * that means (callers record nothing rather than guess).
    *
    * Deliberately NOT a call into `services/chief-of-staff/lib/memory-reads.ts` from here:
    * agent-kit is shared by every role service and must not depend on one service's lib. Each
@@ -290,14 +289,14 @@ export function listTool(deps?: NoteToolDeps) {
       `volume, wrong path, empty clone), never a valid "nothing here" answer, and throws ` +
       `instead of returning an empty list. ${AREA_INPUT_DOC}`,
     inputSchema: z.object({ area: areaInput }),
-    // STAYS ON THE LEGACY, UNFILTERED PATH (multi-user substrate Task 6, deliberate cut).
+    // STAYS ON THE LEGACY, UNFILTERED PATH (a deliberate cut in the multi-user substrate).
     // `searchNotes`/`readNote`/`findBacklinks` filter by scope for free because they
     // already open every candidate file's content for scoring/reading; a plain listing
     // does not — filtering it would mean reading every note's frontmatter just to build a
     // directory index, the same cost as a full-store search on every call. A leaked TITLE
     // is a smaller wound than a leaked BODY, so this is an honest, recorded cut rather
-    // than a silent one. The second-user runbook (Task 10/11) re-checks this call
-    // specifically before a second real member is ever seated.
+    // than a silent one. Re-check this call specifically before a second real member is
+    // ever seated.
     async execute({ area }, ctx) {
       await storeForGrantedArea(area, deps, ctx);
       const notes = listNotes(storeRootForArea(area));

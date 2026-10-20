@@ -1,18 +1,17 @@
 /**
- * The gateway's budget refusal, made legible on every door item 2).
+ * The gateway's budget refusal, made legible on every door.
  *
  * When a LiteLLM virtual key crosses its `max_budget`, the gateway refuses the model call
  * with a body whose `error.type` is `budget_exceeded`. Before this module, nothing in the
  * fleet recognised that: eve classified it as an ordinary terminal 4xx, and the door posted
- * its generic "I hit an error while handling your request" — a capped the chief of staff looked broken
+ * its generic "I hit an error while handling your request" — a capped agent looked broken
  * rather than capped.
  *
  * ## The measured contract — and why it moved
  *
  * This is observation, not a documented API, and the observation has already changed once.
  *
- * **400 — measured 2026-09-01**, the per-user spend-cap measurements, "Transcript — run
- * 2026-09-01, against the live gateway", a throwaway key with `max_budget: 0.01`:
+ * **400 — measured 2026-09-01** against a live gateway, with a throwaway key with `max_budget: 0.01`:
  *
  * ```
  * call   6 -> HTTP 400
@@ -59,7 +58,7 @@
  *
  * **What breaks silently if LiteLLM changes:** rename the type, or reword the sentence, and
  * every door falls back to the generic failure text — legible-but-wrong, never a wrong action.
- * Re-run the runbook's throwaway-key proof (or the live probe below) to re-measure; that
+ * Re-run a throwaway-key proof against the live gateway (or the live probe below) to re-measure; that
  * transcript is the acceptance bar for this file, not the fixtures below (which are copied
  * from it, plus a 429 fixture shaped from LiteLLM's source pending its own live measurement).
  *
@@ -85,8 +84,8 @@
  * is composed — on the door — and `GatewayBudgetExceededError` exists for callers that want
  * to raise the condition themselves (and for tests).
  *
- * And it never retries. An uncapped retry loop around a paid call is the founding incident
- * (2026-08-14/15, the August 2026 spend-leak write-up); a budget
+ * And it never retries. An uncapped retry loop around a paid call is the classic way to leak
+ * spend; a budget
  * refusal is the one failure where retrying is most obviously wrong. This is precisely what
  * the move to 429 threatens from a direction this module cannot reach: eve's own
  * `classifyModelCallError` (`dist/src/harness/model-call-error.js`) treats a bare 4xx of 400
@@ -98,8 +97,8 @@
  * before `turn.failed` ever fires and this module gets a chance to recognise anything. Verified
  * by executing the installed eve's own `classifyModelCallError` against a 429-shaped budget
  * refusal (`tests/gateway-budget-eve-retry-classification.test.ts`). Fixing that is a change to
- * eve's retry policy or to `createGatewayProvider`'s fetch seam, not to this file — out of
- * scope for this slice; see that test's header for the smallest follow-up.
+ * eve's retry policy or to `createGatewayProvider`'s fetch seam, not to this file; see that
+ * test's header for the smallest follow-up.
  */
 
 /** LiteLLM's `error.type` on a budget refusal. Measured 2026-09-01 (see this file's header). */
@@ -110,7 +109,7 @@ export const LITELLM_BUDGET_EXCEEDED_MESSAGE_PREFIX = "Budget has been exceeded!
 
 /**
  * The HTTP statuses LiteLLM has answered a budget refusal with, across measurements: 400
- * (measured 2026-09-01, the per-user spend-cap measurements) and 429 (LiteLLM's own
+ * (measured 2026-09-01) and 429 (LiteLLM's own
  * source, `litellm/exceptions.py` / `litellm/proxy/auth/auth_exception_handler.py`, read
  * 2026-09-18 — not yet re-measured against our gateway with a live probe). When a numeric
  * status is visible anywhere in an error, it must be one of these or `isBudgetExceeded`

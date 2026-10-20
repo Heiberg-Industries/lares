@@ -28,8 +28,8 @@
  * this file's BELIEF, not a documented contract, chosen because it is the natural reading of
  * "no key given = the caller's own" and the cheapest way for a capped, non-admin key to see
  * its own spend. This belief, and the shape of whatever it actually returns, is exactly what
- * `tests/live/litellm-key-info.live.mts` exists to settle against the real gateway (root
- * CLAUDE.md's fixture rule) — its step 1 is the no-parameter form, step 2 is the documented
+ * `tests/live/litellm-key-info.live.mts` exists to settle against the real gateway (the
+ * fixture rule in AGENTS.md) — its step 1 is the no-parameter form, step 2 is the documented
  * `?key=<the same key>` fallback if step 1 doesn't answer the same way.
  *
  * Until that probe has run, this client is written to be honest about the uncertainty: it

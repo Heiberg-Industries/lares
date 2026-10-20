@@ -1,11 +1,11 @@
-// Which tools an agent actually SHIPS, read off its own folder Phase 3, Task 9 review).
+// Which tools an agent actually SHIPS, read off its own folder.
 //
 // A capability doc's `tools` list is the fleet-wide UNION across every agent that grants the
 // capability — `calendar` names all six Google Calendar tools because one agent holds write
-// access, `travel` names the whole trip lifecycle because one agent runs it. Rendered unfiltered
+// access. Rendered unfiltered
 // into a second agent's persona, under "**My only capabilities are the tools below.**", that
-// union names tools the agent cannot call: The travel agent was told he had `calendar_create_event` and
-// `travel_read`, the chief of staff that she had `sveip` and `nytur`. Same defect as the Wave-1 bug the
+// union names tools the agent cannot call: an agent without write access would be told it had
+// `calendar_create_event`. Same defect as the under-claiming the
 // generated section exists to end, pointing the other way — a persona overclaiming rather than
 // underclaiming, which is worse, because the model discovers it by calling something that isn't
 // there.
@@ -19,13 +19,13 @@
 //   <agentDir>/catalogue/<name>.ts                           -> "<name>"
 //   <agentDir>/agent/extensions/agent-kit/tools/<name>.ts    -> "agent-kit__<name>"
 //
-// `catalogue/` joined the list in step 2 (ADR-0015 rule 3): a role service's real tools
+// `catalogue/` is on the list because of ADR-0015 rule 3: a role service's real tools
 // are a POOL the definition picks from at session start, reached through one `defineDynamic` in
 // agent/tools/catalogue.ts, and what stays in agent/tools/ is the `disableTool()` sentinels plus
-// that resolver. Reading only agent/tools/ after the move would have dropped `atlas_search`,
-// `atlas_read`, `atlas_list`, `atlas_write` and `studio_ideate` out of the creative agent's persona — the
-// generated section would have told her she has no Atlas, the Wave-1 underclaim bug returning by
-// the back door. `index.ts` is excluded because it is the pool's manifest, not a tool.
+// that resolver. Reading only agent/tools/ would drop the pool's tools (`atlas_search`,
+// `atlas_read`, `atlas_list`, `atlas_write` and `studio_ideate` for the creative agent) out of the
+// persona — the generated section would tell the agent it has no Atlas, the under-claim
+// returning by the back door. `index.ts` is excluded because it is the pool's manifest, not a tool.
 //
 // This is deliberately the NAIVE view, and it is one of two guards rather than the only one. A
 // file can be present and still not ship — a `disableTool()` sentinel, or an extension tool the
@@ -53,17 +53,17 @@ function tsBasenames(dir: string): string[] {
  *  sorted, in the exact spelling eve exposes — extension tools carry the `agent-kit__` prefix.
  *
  *  A FILE COUNT, not a tool count. A `disableTool()` sentinel is a `.ts` file like any other, so
- *  The chief of staff's 66 file names cover the 58 tools `eve build` compiles plus the eight she ships to
+ *  The chief of staff's file names cover the tools `eve build` compiles plus the sentinels it ships to
  *  switch framework and kit tools off. That is harmless for rendering — the extra names simply
  *  never match a capability doc's list — but it is why the CLI's success line says "tool files"
  *  and why the compiled manifest, not this function, is the authority on what shipped. */
 export function deployedToolsFor(agentDir: string): string[] {
-  // DEDUPED, not just concatenated (review follow-up on Task 8). A PREFIXED tool a service has
+  // DEDUPED, not just concatenated. A PREFIXED tool a service has
   // moved into its own catalogue names its file `catalogue/agent-kit__<bare>.ts` — the basename
   // is ALREADY the prefixed name, by construction (catalogue/index.ts's own import list) — while
   // its mount file, still present as a disabled sentinel, produces the SAME prefixed name through
   // the third spread's `agent-kit__${n}` mapping. Concatenating both listed `agent-kit__
-  // transit_plan` twice for the travel agent: harmless for rendering (a capability doc's list still matches
+  // transit_plan` twice: harmless for rendering (a capability doc's list still matches
   // it once), but it fed `assertNoUngatedWrites` the same name twice, and it gets noisier with
   // every prefixed tool a future service moves. A `Set` is the whole fix — nothing here needs to
   // know WHY a name repeated, only that a file count is not obligated to double-count a name two

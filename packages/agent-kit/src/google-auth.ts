@@ -1,30 +1,26 @@
 /**
  * google-auth — the Google OAuth *plumbing* every agent that reads the fleet's shared
- * `oauth_tokens` table needs, and nothing above that line Step D).
+ * `oauth_tokens` table needs, and nothing above that line.
  *
  * WHAT THIS MODULE IS, AND WHAT IT DELIBERATELY IS NOT
  *
- * the chief-of-staff service and the travel service both authenticate against the same `oauth_tokens` Postgres table,
+ * Every agent that talks to Google authenticates against the same `oauth_tokens` Postgres table,
  * with the same AES-256-GCM storage format, the same `TOKEN_ENC_KEY_FILE` docker-secret
- * convention, and the same sealed-egress proxy requirement. Before this module, roughly 180
- * lines of that were byte-identical duplication between the two files — including the SQL
- * text and the error-message strings. That duplication is what this module removes: a fix to
- * the decrypt path, the secret-file convention, or the proxy pinning now lands once.
+ * convention, and the same sealed-egress proxy requirement. That shared plumbing lives here once:
+ * a fix to the decrypt path, the secret-file convention, or the proxy pinning lands in one place.
  *
- * ABOVE that line the two agents share ZERO code, and their policies actively CONTRADICT each
- * other in three places, each a deliberate safety decision. None of it lives here:
+ * ABOVE that line each agent keeps its own policy, and policies may differ, each a deliberate
+ * safety decision. None of it lives here:
  *
- *   - **The org registry stays per-agent.** the chief-of-staff service has a two-org table (`the owner`, `Example Co`);
- *     the travel service is hardcoded to `the owner` alone. A shared org table would be one line of
+ *   - **The org registry stays per-agent.** A shared org table would be one line of
  *     config away from giving a deliberately-restricted agent reach into another org's
  *     Gmail/Calendar. This module therefore never learns an org's name: it takes an already-
  *     resolved `{ clientId, clientSecret }` from the caller and asks no questions.
- *   - **Mailbox-selection policy stays per-agent.** the chief-of-staff service falls back to the most-recently-
- *     updated mailbox on a miss; the travel service is fatal-no-fallback by design. The functions
+ *   - **Mailbox-selection policy stays per-agent.** One caller may fall back to the most-recently-
+ *     updated mailbox on a miss while another is fatal-no-fallback by design. The functions
  *     below return token ROWS; what a caller does with them is that caller's policy.
- *   - **Scope gating stays per-agent.** the travel service refuses to hand out a Calendar client when
- *     the token's `scopes` column lacks calendar access; the chief-of-staff service has no such check. That
- *     asymmetry is deliberate, and reconciling it is not this module's business.
+ *   - **Scope gating stays per-agent.** A caller may refuse to hand out a Calendar client when
+ *     the token's `scopes` column lacks calendar access. That is the caller's policy, not this module's business.
  *
  * ONE MORE DELIBERATE CEILING: `buildOAuth2Client` returns an authenticated `OAuth2Client` and
  * stops there. It does NOT call `google.gmail(...)` or `google.calendar(...)` — each agent
@@ -32,7 +28,7 @@
  * never, on its own, construct a live Gmail or Calendar API object; it can only hand back a
  * client that still needs an agent-local call to become one.
  *
- * LAZINESS (the door-provisioning crash-loop lesson, preserved from both sources):
+ * LAZINESS (the door-provisioning crash-loop lesson):
  * nothing here reads a credential at module scope. Every secret file is read inside the
  * function that needs it, on every call. A missing or malformed secret surfaces as a typed
  * `GoogleConfigError` the first time a caller actually needs it — never as the framework
@@ -53,9 +49,7 @@ import { getPool } from "./db.js";
  *
  *  Deliberately the ONLY error type in this module. Each agent keeps its own "not enrolled"
  *  and "scope missing" errors local, because their arity, semantics and messages differ:
- *  the chief-of-staff service's `GoogleUnenrolledError(principal, account?)` names a mailbox, the travel service's
- *  `GoogleUnenrolledError(principal, org)` names an org and is fatal by design, and
- *  `GoogleScopeMissingError` exists only on the travel service. */
+ *  the chief-of-staff service's `GoogleUnenrolledError(principal, account?)` names a mailbox. */
 export class GoogleConfigError extends Error {
   constructor(message: string) {
     super(message);
@@ -64,8 +58,7 @@ export class GoogleConfigError extends Error {
 }
 
 // -----------------------------------------------------------------------------------------
-// Crypto — ported verbatim from services/box/lib/crypto.ts's decryptSecret (the shape
-// both the chief-of-staff service and the travel service had copied byte-for-byte). Storage format:
+// Crypto — the same `decryptSecret` as services/box/lib/crypto.ts. Storage format:
 // base64(IV(12 bytes) || ciphertext || authTag(16 bytes)). `encryptSecret` is NOT here: this
 // stack only ever READS tokens that oauth-enroll.ts already wrote.
 // -----------------------------------------------------------------------------------------
@@ -131,8 +124,8 @@ export function readSecretFile(envVar: string, defaultPath: string, label: strin
 }
 
 // -----------------------------------------------------------------------------------------
-// oauth_tokens store — the read half only, SQL included, ported verbatim from
-// services/box/lib/oauth-tokens.ts (via both agents' identical copies). `storeToken` /
+// oauth_tokens store — the read half only, SQL included (the write half is
+// services/box/lib/oauth-tokens.ts). `storeToken` /
 // `encryptSecret` are not here: this stack only ever reads.
 //
 // Both functions return ROWS. Neither has an opinion about which row a caller should use —
@@ -149,7 +142,7 @@ export interface DecryptedGoogleToken {
 
 // ── "I looked, and there was nothing" is the quietest way this can break ────────────────────
 //
-// Box 085 (services/box/sql/001_baseline.sql) renamed every legacy
+// The schema baseline (services/box/sql/001_baseline.sql) renamed every legacy
 // `principal` spelling onto the identity register's id. A deployment that applies it but leaves
 // `GOOGLE_PRINCIPAL_ID` at the old spelling does not crash: the SELECTs below simply match no
 // row, and the caller turns that into "not enrolled with Google". That is the ONE failure this
@@ -183,7 +176,7 @@ interface OAuthTokenRow {
 /** The most-recently-updated token row for (principal, provider), or `null` when there is
  *  none. A raw data read, NOT a selection policy: "most recent" is simply what `ORDER BY
  *  updated_at DESC LIMIT 1` means, and turning a `null` into an error — or refusing to accept
- *  a most-recent answer at all, as the travel service deliberately does — is the caller's decision. */
+ *  a most-recent answer at all — is the caller's decision. */
 export async function getMostRecentRefreshToken(principal: string, provider: string): Promise<DecryptedGoogleToken | null> {
   const keyHex = readTokenEncKey();
   const { rows } = await getPool().query<OAuthTokenRow>(
@@ -216,8 +209,7 @@ export async function listDecryptedRefreshTokens(principal: string, provider: st
 }
 
 // -----------------------------------------------------------------------------------------
-// Egress proxy + OAuth2 client construction — ported verbatim from
-// services/agent-runtime/lib/adapters/google-proxy.ts, via both agents' identical copies.
+// Egress proxy + OAuth2 client construction.
 //
 // Every agent using this module is sealed: Google's API IPs are broad/rotating and can't be
 // IP-allow-listed, so Google OAuth/API traffic tunnels through the shared squid proxy
@@ -255,8 +247,8 @@ export interface OAuth2ClientConfig {
 export function buildOAuth2Client(cfg: OAuth2ClientConfig, refreshToken: string): OAuth2Client {
   // `OAuth2Client` is imported from `googleapis-common` rather than from `googleapis` itself,
   // and it is the SAME class: `googleapis-common`'s AuthPlus assigns `OAuth2 =
-  // google_auth_library_1.OAuth2Client`, so `new google.auth.OAuth2(...)` — what both agents
-  // wrote before — and this construct the identical object. Taking it from the smaller package
+  // google_auth_library_1.OAuth2Client`, so `new google.auth.OAuth2(...)` and this construct
+  // the identical object. Taking it from the smaller package
   // keeps `googleapis` (a 26 MB bundle chunk with an enormous type surface) out of this
   // package's module graph; importing it from a second package boundary pushed the chief-of-staff service's
   // `eve build` past Node's default heap limit even though the emitted bundle was unchanged.
@@ -265,8 +257,8 @@ export function buildOAuth2Client(cfg: OAuth2ClientConfig, refreshToken: string)
   // `googleapis` itself uses.
   //
   // Constructed WITHOUT a third argument when the caller has no redirectUri, rather than
-  // passing `undefined` — exactly reproducing the travel service's two-argument call, while the chief-of-staff service
-  // keeps passing its (possibly empty-string) redirectUri as before.
+  // passing `undefined`, while a caller with a (possibly empty-string) redirectUri keeps
+  // passing it as before.
   const auth = cfg.redirectUri === undefined
     ? new OAuth2Client(cfg.clientId, cfg.clientSecret)
     : new OAuth2Client(cfg.clientId, cfg.clientSecret, cfg.redirectUri);

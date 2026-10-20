@@ -44,7 +44,7 @@ function term(word: string): RegExp {
 // split on its separator so each half matches on its own; a new adapter in CAPABILITY_DOCS
 // extends this list for free, with nothing to keep in sync by hand.
 //
-// `backedBy` item 1) contributes on the same footing, from adapters AND core entries: a
+// `backedBy` contributes on the same footing, from adapters AND core entries: a
 // service a capability merely calls is still a vendor name a ROLE TEMPLATE must never carry, even
 // though the capability is not identified with it.
 const STATIC_VENDOR_NAMES: string[] = ["Slack", "Telegram", "Linear", "Karakeep", "Ghost", "Hetzner", "Coolify"];
@@ -73,12 +73,12 @@ export const VENDOR_NAMES: string[] = deriveVendorNames();
 export const PLACE_NAMES: string[] = ["Norway", "Norge"];
 
 /** How a country an adapter declares in `region.countries`, ISO 3166-1 alpha-3) is
- * actually SPELLED in prose — the country's names and its demonym item 1).
+ * actually SPELLED in prose — the country's names and its demonym.
  *
  *  A `place` or `language` word is banned in a role template because a role must be portable; it
  *  is REQUIRED in the doc of an adapter whose coverage genuinely stops at a border. Entur's
- *  summary has to say "Norwegian", because the whole Entur scar
- *  (the geocoder-bias write-up) is the agent not knowing that.
+ *  summary has to say "Norwegian", because the whole geocoder-bias lesson
+ *  is the agent not knowing that.
  *  So the doc lint licenses exactly the words that name a country the entry already declares —
  *  never a free pass on places, and nothing an entry has not declared.
  *
@@ -93,17 +93,17 @@ export const COUNTRY_TERMS: Record<string, readonly string[]> = {
 export const LANGUAGE_NAMES: string[] = ["Norwegian", "norsk", "bokmål", "nynorsk", "English"];
 
 // --- tool names ------------------------------------------------------------------------------
-// TOOL NAMES ARE AN EXEMPTION CLASS, matched as whole identifiers item 3).
+// TOOL NAMES ARE AN EXEMPTION CLASS, matched as whole identifiers.
 //
-// This was already true by accident and is now true on purpose. `strava_routes` passed the vendor
-// rule only because WORD_END below counts `_` as a word character, so `\bStrava\b`-style matching
+// This was first true by accident and is now true on purpose. A tool such as `twenty_lookup` passes the vendor
+// rule only because WORD_END below counts `_` as a word character, so `\bTwenty\b`-style matching
 // could never fire inside a snake_case identifier — an accident that would silently reverse the
 // day someone dropped `_` from that class. It is a decision, and it is the right one: a role
-// template that says "call `strava_routes`" is naming an INTERFACE the agent holds, not choosing
+// template that says "call `twenty_lookup`" is naming an INTERFACE the agent holds, not choosing
 // a vendor. Renaming the tool is the only thing that can change it, and a portable role template
 // still has to call the tool by the name eve exposes.
 //
-// The bare word is untouched: "Strava" in prose is still a vendor finding. Only the identifier is
+// The bare word is untouched: "Twenty" in prose is still a vendor finding. Only the identifier is
 // exempt, and only as a whole identifier — `_` and `-` count as identifier characters here, so a
 // mention of `read_urls` is not licensed by the existence of `read_url`.
 //
@@ -171,7 +171,7 @@ const PREPOSITIONS = [
 const AUXILIARIES = ["Is", "Am", "Are", "Was", "Were", "Be", "Been", "Being", "Have", "Has", "Had", "Do", "Does", "Did", "Will", "Would", "Shall", "Should", "May", "Might", "Must", "Can", "Could"];
 const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-// Named explicitly in Phase 2's plan — words that read as role prose, not a name.
+// Words that read as role prose, not a name.
 const ROLE_NOUNS = [
   "Chief", "Staff", "Site", "Reliability", "Brain", "Atlas", "Owner", "Store", "Answers",
   "Duties", "Discipline", "Before", "After", "Always", "Never", "How", "What", "When", "Where", "Why",

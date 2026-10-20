@@ -1,7 +1,6 @@
 // The write-shape lint — a mutating tool under a `read` grant fails the build.
 //
-// left a standing finding and the 2026-09-01 sweep re-confirmed it
-// (the engine security sweep, layer 4): **no live instance, and
+// A security sweep of the fleet found: **no live instance, and
 // nothing structural to catch the next one.** `assertClassMatchesScope` in `./manifest.ts`
 // already fails the build in one direction — a tool that CARRIES an approval gate under a
 // grant that is not `write-with-confirm`. This file is the other direction: a tool that
@@ -41,68 +40,55 @@
 // ---------------------------------------------------------------------------------------
 //
 //   own-door         The agent's own conversational output is not an external mutation. This
-//                    is the sweep's own lesson, verbatim: The travel agent's three layer-4 flags "dissolve
-//                    on inspection — Telegram channel sends (the agent's own conversational
-//                    output), not external mutations". So a call whose URL names the Telegram
-//                    Bot API or Slack's chat.* methods is NOT write-shape, at any verb.
-//                    Evidence: `services/travel/lib/telegram-photo.ts:120` (`/bot${token}/
-//                    sendPhoto`), `services/travel/lib/telegram-commands.ts:57` (`${TELEGRAM
-//                    _API}/bot${token}/setMyCommands`).
+//                    is the sweep's own lesson: layer-4 flags on Telegram channel sends
+//                    "dissolve on inspection — the agent's own conversational
+//                    output, not external mutations". So a call whose URL names the Telegram
+//                    Bot API or Slack's chat.* methods is NOT write-shape, at any verb
+//                    (for example `/bot${token}/sendPhoto` or `/bot${token}/setMyCommands`).
 //                    THE LIMIT, stated plainly: a channel send addressed to a THIRD PARTY is
 //                    indistinguishable from one addressed to the owner here. This exemption
 //                    trusts the door, not the recipient.
 //
 //   graphql-query    A POST carrying a GraphQL document that is a `query` (no `mutation`
 //                    keyword) is a read. GraphQL has no read verb — every read is a POST.
-//                    Evidence: `packages/agent-kit/src/entur-client.ts:566-570`
+//                    Evidence: `packages/agent-kit/src/entur-client.ts`
 //                    (`body: JSON.stringify({ query: TRIP_QUERY, variables })`), reached by
-//                    `agent-kit__transit_plan` and `transit_directions`, both under
-//                    `transit: read`.
+//                    `agent-kit__transit_plan` under `transit: read`.
 //
 //   read-endpoint    A POST whose ENDPOINT names a lookup rather than a mutation. Judged on a
 //                    window built from the request URL expression, the module-local constants
 //                    and helper functions that expression resolves through, the enclosing
 //                    function's name, and the names of the module's own functions that call it
 //                    (that last hop exists solely because a transport helper is often named for
-//                    its verb, not its job — see `google-places.ts` below). A write-shaped token
+//                    its verb, not its job — a helper called `post` whose only callers,
+//                    `searchText` and `searchNearby`, say what it is). A write-shaped token
 //                    anywhere in the call vetoes the exemption.
 //                    Evidence, all reached at depth 1 from a `read`-granted tool:
-//                      - `packages/agent-kit/src/readability-client.ts:74` — POST to
+//                      - `packages/agent-kit/src/readability-client.ts` — POST to
 //                        `extractUrl()` → `/extract`; tool `read_url` under `read_url: read`.
-//                      - `services/travel/lib/google-places.ts:82` — POST to
-//                        `` `${BASE}/${path}` ``, inside a transport helper literally named
-//                        `post`. Only its callers say what it is: `searchText`, `searchNearby`.
-//                        Tools `nearby_places` and `place_link` under `places: read`. This one
-//                        file is the entire reason for the caller hop.
-//                      - `services/travel/lib/nearby.ts:41` — POST to `OVERPASS_URL` →
-//                        `…/api/interpreter`; enclosing function `search`. Same two tools.
-//                      - `services/chief-of-staff/lib/embeddings-gateway.ts:23` — POST to
+//                      - `services/chief-of-staff/lib/embeddings-gateway.ts` — POST to
 //                        `/v1/embeddings`. An inference call, not a mutation.
 //
 //   oauth-token      A POST to a token/OAuth endpoint is authentication, not a mutation of
 //                    anyone's records — and a read tool may be REQUIRED to make it.
-//                    Evidence: `services/travel/lib/strava.ts:61` posts to `TOKEN_URL`
-//                    to refresh, and `strava.ts:76` says why it cannot be avoided: the refresh
-//                    token is "ROTATED — persist or lose access". Tool `strava_routes` under
-//                    `strava: read`. (Folded into read-endpoint's token list; named separately
+//                    Example: a client that posts to a `TOKEN_URL` to refresh, where the refresh
+//                    token is "ROTATED — persist or lose access", so the read tool cannot avoid
+//                    it. (Folded into read-endpoint's token list; named separately
 //                    here because the reasoning is different.)
 //
 //   raw fs writes    `node:fs` writes OUTSIDE the note store are deliberately NOT write-shape.
 //                    A file inside the container is not a third party and not what "ungated
-//                    write" means. Evidence: `services/travel/lib/trip-store.ts:88-175`
-//                    (the travel agent's own trip files — read by `weather_forecast`, `trip_status`,
-//                    `place_link` and `nearby_places`, three of which are `read`-granted) and
-//                    `services/travel/agent/tools/strava_routes.ts:93-94` (the rotated
-//                    OAuth token cache, under `strava: read`). The vault is the one local store
+//                    write" means. Examples: an agent's own data files read by several
+//                    `read`-granted tools, and a rotated OAuth token cache under a `read`
+//                    grant. The vault is the one local store
 //                    that publishes outward, and it is reached through NAMED helpers — which is
 //                    why those names, not `node:fs`, are the marker.
 //
 //   in-memory `.delete`/`.update`  The two-segment requirement on `vendor-mutation` exists to
 //                    exclude collection and crypto calls that share the vendor verbs.
-//                    Evidence: `packages/agent-kit/src/notes-store.ts:135,144`
-//                    (`CONTENT_CACHE.delete(abs)` — a `Map`), `services/travel/lib/
-//                    live-location.ts:60,70` (`store.delete(chatId)` — a `Map`),
-//                    `packages/agent-kit/src/google-auth.ts:94` (`decipher.update(ct)` — Node
+//                    Evidence: `packages/agent-kit/src/notes-store.ts`
+//                    (`CONTENT_CACHE.delete(abs)` — a `Map`), a `store.delete(chatId)` on a
+//                    `Map`, and `packages/agent-kit/src/google-auth.ts` (`decipher.update(ct)` — Node
 //                    crypto). All three are one segment; `api.events.insert(` is two.
 //
 //   comments         Comments are stripped before ANY rule runs. Evidence:
@@ -250,8 +236,8 @@ const VENDOR_MUTATION =
   /\.\s*([\w$]+)\s*\.\s*(send|insert|patch|update|delete|create|batchUpdate|batchDelete|batchCreate)\s*\(/g;
 
 /** Receiver names that make a `.send(` the agent's own door rather than a vendor mutation —
- *  the sweep's lesson, applied to the member-call rule. Evidence:
- *  `services/travel/lib/bookings.ts:767` (`this.deps.tg.send(adminId, …)`), which is two
+ *  the sweep's lesson, applied to the member-call rule. Example:
+ *  `this.deps.tg.send(adminId, …)`, which is two
  *  segments and would otherwise read exactly like Gmail's `api.users.messages.send(`. */
 const CHANNEL_RECEIVERS: ReadonlySet<string> = new Set([
   "tg", "telegram", "slack", "chat", "bot", "channel", "dm", "door", "notifier",
@@ -480,7 +466,7 @@ function enclosingDeclName(decls: FunctionDecl[], index: number): string {
 }
 
 /** Names of module functions whose region calls `name`. One level, and only within the module.
- *  This exists for `services/travel/lib/google-places.ts`, whose POST sits in a transport
+ *  This exists for a POST that sits in a transport
  *  helper called `post` and whose only callers — `searchText`, `searchNearby` — say what it is. */
 function callersOf(code: string, decls: FunctionDecl[], name: string): string[] {
   if (name === "") return [];
@@ -579,7 +565,7 @@ export function classifyWriteShape(source: string, opts: ClassifyOptions = {}): 
 
   // --- Named write helpers. The optional `<…>` is TypeScript type arguments:
   // `twentyPost<unknown>("/opportunities", payload)` is the live call shape
-  // (services/chief-of-staff/agent/tools/twenty_create_opportunity.ts:39).
+  // (services/chief-of-staff/catalogue/twenty_create_opportunity.ts).
   {
     const names = [...WRITE_HELPERS, ...(opts.writeHelpers ?? [])];
     if (names.length > 0) {
@@ -728,18 +714,17 @@ export function isDisabledSentinel(source: string): boolean {
 export function sourcesForTool(agentDir: string, tool: string): ToolSource[] | null {
   const isExtension = tool.startsWith("agent-kit__");
   const bare = isExtension ? tool.slice("agent-kit__".length) : tool;
-  // A local tool lives in `agent/tools/` OR, since step 2 (ADR-0015 rule 3), in the
+  // A local tool lives in `agent/tools/` OR, since ADR-0015 rule 3, in the
   // service's `catalogue/` pool — the same file, moved, reached through one dynamic resolver
   // instead of by filename. Looking in only one of the two would have made this lint return `[]`
   // for every moved tool and pass vacuously, which is the opposite of what it is for.
   const local = [join(agentDir, "agent", "tools", `${bare}.ts`), join(agentDir, "catalogue", `${bare}.ts`)];
-  // A PREFIXED tool has the SAME two-home problem, discovered the hard way (review follow-up on
-  // Task 8): its usual home is the extension MOUNT (`agent/extensions/agent-kit/tools/<bare>.ts`,
-  // `resolveExtensionTool` against this agent's own agent.json) — but since Task 8 a service may
+  // A PREFIXED tool has the SAME two-home problem: its usual home is the extension MOUNT
+  // (`agent/extensions/agent-kit/tools/<bare>.ts`, `resolveExtensionTool` against this agent's
+  // own agent.json) — but a service may
   // instead answer that prefixed key from its OWN catalogue (`catalogue/agent-kit__<bare>.ts`)
-  // and turn the mount into an unconditional `disableTool()` sentinel (the travel agent's
-  // `agent-kit__transit_plan`; the chief-of-staff role's gated `vault_write`/`vault_drop`/`vault_file` are the next
-  // ones, Task 9). Reading only the mount made `sourcesForTool` return `null` — "disabled, skip"
+  // and turn the mount into an unconditional `disableTool()` sentinel (as the chief-of-staff
+  // role does for its gated `vault_write`/`vault_drop`/`vault_file`). Reading only the mount made `sourcesForTool` return `null` — "disabled, skip"
   // — for every prefixed tool a service moves, which is backwards: the write-shape lint matters
   // MOST on a moved GATED tool like `vault_write`, not least. Both homes can exist for the same
   // key at once (the mount stays present, disabled, once its key moves) — pick whichever one is
@@ -761,7 +746,7 @@ export function sourcesForTool(agentDir: string, tool: string): ToolSource[] | n
   if (isExtension) {
     // Whichever home resolved above, the entry file is a THIN RE-EXPORT, not a hop: the mount is
     // `resolveExtensionTool(manifest, cap, <kit tool>)`, and a service's own catalogue entry
-    // (Task 8) is `import { X } from "@lares/agent-kit/tools"; export default X;` — same kit
+    // is `import { X } from "@lares/agent-kit/tools"; export default X;` — same kit
     // tool, same non-hop shape. The kit body joins it at depth 0 either way, and ITS imports are
     // the one hop.
     const body = join(KIT_EXTENSION_TOOLS, `${bare}.ts`);
@@ -836,9 +821,8 @@ export function lintWriteShape(opts: LintWriteShapeOptions): WriteShapeFinding[]
     if (opts.skip && Object.hasOwn(opts.skip, tool)) continue;
     // An eve FRAMEWORK tool is not a capability tool and has no grant to check. `./manifest.ts`
     // is explicit about it: framework tools "are NOT capabilities and NOT grants: they are eve's
-    // own built-ins, which `agent.json` does not govern". `services/travel/agent/tools/
-    // web_search.ts` is the fleet's only live one, and it is declared in the travel agent's
-    // `framework_tools` — so the declaration, not a hardcoded name list, is what excuses it.
+    // own built-ins, which `agent.json` does not govern". An agent that keeps `web_search` live
+    // declares it in `framework_tools` — so the declaration, not a hardcoded name list, is what excuses it.
     if (frameworkTools.has(tool)) continue;
     const sources = resolve_(tool);
     if (sources === null) continue; // a disableTool() sentinel is not a tool

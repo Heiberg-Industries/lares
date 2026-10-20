@@ -1,10 +1,10 @@
 /**
- * THE VAULT'S THREE WRITE TOOLS, AS FACTORIES (W5C-s4) — `vault_write`, `vault_file`,
+ * THE VAULT'S THREE WRITE TOOLS, AS FACTORIES — `vault_write`, `vault_file`,
  * `vault_drop` — the three tools the personal store used to name after itself.
  *
- * W5C-s3 did this for the four READ tools: they stopped binding a store at construction and
- * took the area as an input plus an injected "which areas may this session open?" authority.
- * These three follow, and the bar is higher because they change the owner's notes.
+ * The four READ tools stopped binding a store at construction and
+ * take the area as an input plus an injected "which areas may this session open?" authority.
+ * These three follow the same shape, and the bar is higher because they change the owner's notes.
  *
  * WHY THE FACTORIES LIVE HERE AND NOT IN `src/note-tools.ts`. The approver re-check
  * (`assertApprover`) resolves through `../lib/approval-gate.ts`, which reads THIS extension's
@@ -27,7 +27,7 @@
  *       chief-of-staff already had both `vault_read` and `atlas_read`; writes cannot, because
  *       it never had an `atlas_write`. That asymmetry is the whole reason this constant exists.
  *
- *   (b) the injected `areas` authority — the SAME one W5C-s3 introduced, read per session from
+ *   (b) the injected `areas` authority — the SAME one the read tools use, read per session from
  *       the same definition the tool list resolved from (`services/<role>/lib/vault-areas.ts`).
  *       Omitted ⇒ NO area is open: the mounted `extension/tools/vault_*.ts` copies have no
  *       authority and every role service supersedes them.
@@ -35,32 +35,32 @@
  * The two are intersected, so the answer is never wider than either. A revoked grant closes the
  * door mid-session; the constant keeps it shut even when the grant is wide.
  *
- * ORDER OF GUARDS IS UNCHANGED. `assertApprover` runs FIRST, exactly as it did in the three
- * `brain_*.ts` files, before any area is resolved and before any store root is read — so a call
+ * ORDER OF GUARDS. `assertApprover` runs FIRST, before any area is resolved and before any
+ * store root is read — so a call
  * from a principal who may not approve is refused for that reason, not for an area one. Every
  * other guard on the write path (`origin-taint`'s `stampFor`/`turnKeyFrom` on the new note, the
- * git containment inside `commitNote`/`moveNote`/`removeNote`) is carried across verbatim.
+ * git containment inside `commitNote`/`moveNote`/`removeNote`) comes after.
  *
- * W7A-s2 — THE APPROVAL IS INJECTABLE NOW, AND THAT IS THE POINT. These three hard-coded eve's
- * `always()`, so the permissions board was never consulted for them: a 🚫 on "Private notes" did
- * not refuse a note write, and none of the three ever wrote an `approval_events` row, leaving the
- * console's evidence column for that row permanently blank. A mounting service now passes its own
+ * THE APPROVAL IS INJECTABLE, AND THAT IS THE POINT. If these three hard-coded eve's
+ * `always()`, the permissions board would never be consulted for them: a 🚫 on "Private notes" would
+ * not refuse a note write, and none of the three would write an `approval_events` row, leaving the
+ * console's evidence column for that row permanently blank. A mounting service passes its own
  * `approvalFor("<the tool's own name>")` — the same policy every other gated tool of that role
  * carries — and `boardApproval` keys it on `(agent, "vault", "private")`, the row the console
  * already renders as "Private notes".
  *
- * NOTHING BECAME EASIER. Omitting `approval` still means `always()` (the mounted
+ * NOTHING GOT EASIER. Omitting `approval` still means `always()` (the mounted
  * `../tools/vault_*.ts` copies have no board to reach), and on a box with no `ratchet` row the
- * board falls back to the definition's own `vault: "gated"` — the same card as before. What
- * changed is that the dial now works in both directions, and that `agent-kit__vault_drop` keeps
- * asking even at ✓, because deleting is an always-ask `delete` category (owner decision A1).
+ * board falls back to the definition's own `vault: "gated"` — the same card as `always()`. The dial
+ * works in both directions, and `agent-kit__vault_drop` keeps
+ * asking even at ✓, because deleting is an always-ask `delete` category.
  *
- * W7A-s6 — THE CARD IS CHECKED TOO, NOT ONLY THE APPROVER, AND THE CHECK COMES IN THROUGH
- * `NoteWriteDeps` RATHER THAN THROUGH `./approval-gate.ts`. Every OTHER gated tool in this wave
- * grew one shared `assertApproval(ctx, toolName, input)` beside its own copy of the approver
+ * THE CARD IS CHECKED TOO, NOT ONLY THE APPROVER, AND THE CHECK COMES IN THROUGH
+ * `NoteWriteDeps` RATHER THAN THROUGH `./approval-gate.ts`. Every OTHER gated tool
+ * has one shared `assertApproval(ctx, toolName, input)` beside its own copy of the approver
  * re-check (`services/chief-of-staff/lib/approvals.ts`, `services/creative/lib/approvals.ts`),
  * wrapping `assertApprover` and the new `assertApprovedCall`
- * (`@lares/agent-kit/approval-ledger`, W7A-s5) in one place. `./approval-gate.ts` — this
+ * (`@lares/agent-kit/approval-ledger`) in one place. `./approval-gate.ts` — this
  * extension's own copy — deliberately does NOT: `assertApprovedCall`/`approvalLedger` live in
  * `../../src/approval-ledger.ts`, and `../../src/db.ts` underneath it, and that module is
  * reached by every OTHER consumer as `@lares/agent-kit/approval-ledger` → plain TypeScript, one
@@ -70,8 +70,8 @@
  * `warnedAboutApprovalAsks` flag, unable to agree with the first about anything) bundled into
  * code the build step itself loads with no `DATABASE_URL` and no live Postgres, exactly the
  * thing `getPool()`'s own laziness exists to keep out of `eve build` (see `../../src/db.ts`'s
- * header) — and the one thing this factory has never done (see "NO CREDENTIAL OR PATH READ AT
- * MODULE SCOPE" above; `storeRootForArea` is deferred for the identical reason). So the check
+ * header) — and the one thing this factory must never do (`storeRootForArea` is deferred
+ * at call time for the identical reason). So the check
  * for these three tools is INJECTED instead, exactly like `approval` above: the mounting
  * service — which already imports `@lares/agent-kit/approval-ledger` directly for its other
  * gated tools — passes `assertApprovedCall` bound to its own `approvalLedger()`/`callIdFrom`,
@@ -105,7 +105,7 @@ import { approverFrom, assertApprover } from "./approval-gate.js";
  * `CatalogueEntry.tool` is structural in `@lares/agent-kit/manifest`, and the reason each
  * catalogue entry is cast `as never` in `services/<role>/agent/tools/catalogue.ts`.
  *
- * ADAPTED FROM THE SLICE'S `(ctx?: unknown) => unknown`, which does not compile under this
+ * A plain `(ctx?: unknown) => unknown` does not compile under this
  * package's `strict` (and therefore `strictFunctionTypes`): a policy declaring a concrete
  * context parameter — `approvalFor`'s `(ctx?: ApprovalCallContext) => Promise<ApprovalStatus>` —
  * is not assignable to one declaring `unknown`, because the check on parameters runs the other
@@ -117,12 +117,12 @@ import { approverFrom, assertApprover } from "./approval-gate.js";
  * UNAUTHENTICATED_APPROVAL_FEEDBACK), and every role's durable descriptor — the resolver in
  * `services/<role>/agent/tools/catalogue.ts` re-stamps the policy by CALLING `tool.approval`,
  * and an object called as a function fails the descriptor, which eve punishes by dropping the
- * WHOLE resolver result (the 4/2/3-tools incident). Recorded so nobody "modernises" it.
+ * WHOLE resolver result (a role once went from 77 tools to 4). Recorded so nobody "modernises" it.
  */
 export type NoteWriteApproval = (...args: never[]) => unknown;
 
 /**
- * The card-freshness/payload check a MOUNTING SERVICE supplies (W7A-s6) — in practice a closure
+ * The card-freshness/payload check a MOUNTING SERVICE supplies — in practice a closure
  * over `assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName: "<its own
  * name>", input })` from `@lares/agent-kit/approval-ledger`, which the service already imports
  * directly (never through this extension). See this file's header for why the extension cannot
@@ -142,13 +142,13 @@ export type NoteWriteApprovedCallCheck = (ctx: unknown, input: unknown) => Promi
  * that, leaving `NoteToolDeps` as `any` for every consumer — and an INTERFACE extending it
  * publishes only its own members, so `writeTool({ areas, approval })` fails the excess-property
  * check on `areas` in all three catalogue files. An intersection with `any` stays `any`, which is
- * exactly the (unchecked) treatment `areas` has had since W5C-s4. Noticed, not fixed here:
- * making the published declarations resolvable is a build change, not this slice's.
+ * exactly the (unchecked) treatment `areas` has always had. Known gap, not fixed here:
+ * making the published declarations resolvable is a build change.
  */
 export type NoteWriteDeps = NoteToolDeps & {
   /** Omitted ⇒ eve's `always()`, which is what these three tools have always carried. */
   approval?: NoteWriteApproval;
-  /** Omitted ⇒ no check — what these three have always had (W7A-s6, see this file's header). */
+  /** Omitted ⇒ no check — what these three have always had (see this file's header). */
   assertApprovedCall?: NoteWriteApprovedCallCheck;
 };
 
@@ -197,15 +197,13 @@ function slug(title: string): string {
 /**
  * Propose a new note for the vault. GATED WRITE — requires the owner's 👍 on every call.
  *
- * Ported from the chief-of-staff role's own `agent/tools/` write hand Task 2), itself
- * ported from `services/agent-runtime/lib/adapters/hands/brain.ts`'s "write" action
- * (hands/brain.ts:32): writes into the `_inbox/<slug>.md` convention with frontmatter, then
- * commits + pushes via `@lares/agent-kit/vault-git`'s `commitNote`. The `slug()` helper is
- * ported verbatim (hands/brain.ts:17). The approval re-check is routed through this package's
+ * Writes into the `_inbox/<slug>.md` convention with frontmatter, then
+ * commits + pushes via `@lares/agent-kit/vault-git`'s `commitNote`. The approval re-check is
+ * routed through this package's
  * own `approval-gate.ts` instead of importing `assertApprover`/`approverFrom` from the chief-of-staff service's
  * `lib/approvals.ts` directly — see `./approval-gate.ts`'s docblock for why.
  *
- * W3A-s6 — stamps `lares_origin` at the source (the origin model).
+ * Stamps `lares_origin` at the source (the origin model).
  * The intended class is `agent` (the model wrote this note); `stampFor` narrows it to
  * `third_party` for a turn that has already read somebody else's words. No usable turn key is
  * the fail-closed case: the least-trusted class, and the write still goes through — a hook or
@@ -254,9 +252,7 @@ export function writeTool(deps?: NoteWriteDeps) {
  * Move an existing vault note into a folder, as-is. GATED WRITE — requires the owner's 👍 on
  * every call.
  *
- * Ported from the chief-of-staff role's own `agent/tools/` file hand Task 2), itself
- * ported from `services/agent-runtime/lib/adapters/hands/brain.ts`'s "file" action
- * (hands/brain.ts:41): moves `path` to `<destination>/<basename(path)>` via `git mv`
+ * Moves `path` to `<destination>/<basename(path)>` via `git mv`
  * (`@lares/agent-kit/vault-git`'s `moveNote`), preserving the note's bytes and git history.
  */
 export function fileTool(deps?: NoteWriteDeps) {
@@ -288,9 +284,7 @@ export function fileTool(deps?: NoteWriteDeps) {
 /**
  * Delete a vault note. GATED WRITE — requires the owner's 👍 on every call.
  *
- * Ported from the chief-of-staff role's own `agent/tools/` drop hand Task 2), itself
- * ported from `services/agent-runtime/lib/adapters/hands/brain.ts`'s "drop" action
- * (hands/brain.ts:48): removes the note via `git rm` (`@lares/agent-kit/vault-git`'s
+ * Removes the note via `git rm` (`@lares/agent-kit/vault-git`'s
  * `removeNote`), committed + pushed so the removal is canonical and reversible via git history.
  */
 export function dropTool(deps?: NoteWriteDeps) {
