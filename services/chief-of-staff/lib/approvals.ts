@@ -1,8 +1,8 @@
 /**
  * The approver re-check every gated write calls, on both channels.
  *
- * Extracted from `agent/tools/echo_note.ts`'s original local `assertApproverAllowed` (Task
- * 9) and widened from Slack-only to whichever channel `lib/principals.ts` knows about.
+ * Extracted from `catalogue/echo_note.ts`'s original local `assertApproverAllowed` and widened
+ * from Slack-only to whichever channel `lib/principals.ts` knows about.
  */
 import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
 
@@ -90,7 +90,7 @@ export function approverFrom(
 
 /**
  * The check an UNGATED, model-called write needs when its authority is "the owner just said so"
- * (fix). Returns a refusal sentence, or null when this turn really is his.
+ * (fix). Returns a refusal sentence, or null when this turn really is the owner's.
  *
  * WHY THIS IS NOT `assertApprover`. That one answers "may this principal APPROVE an external
  * action" and is reached from a card tap, so it accepts the Telegram null-auth resume via
@@ -102,7 +102,7 @@ export function approverFrom(
  *
  * A RETURNED SENTENCE, NOT A THROW, matching `rejectFact`'s posture in lib/standing-facts.ts:
  * these tools are ungated precisely because a wrong call must be cheap. Refusing the write and
- * telling the model why costs nothing; throwing would cost the owner the turn he is in.
+ * telling the model why costs nothing; throwing would cost the owner the turn the owner is in.
  */
 export function humanTurnRefusal(
   auth: SessionAuthLike | null | undefined,
@@ -143,8 +143,8 @@ export function assertApprover(
   // Strict, including ABSENT: an approval with no identity refuses. The Telegram
   // null-auth reality is handled UPSTREAM by `approverFrom` (below), which attributes an
   // anonymous resume to the session's verified INITIATOR — never by exempting
-  // absence itself (an in-band bypass any null-auth path would inherit; flagged by
-  // security review 2026-08-16).
+  // absence itself (an in-band bypass any null-auth path would inherit; flagged in a
+  // security review).
   if (!isAllowedPrincipal(approval.authenticator, approval.userId, env)) {
     const label =
       approval.userId !== undefined && approval.userId.length > 0
@@ -155,12 +155,12 @@ export function assertApprover(
 }
 
 /**
- * The one call a gated tool makes before it acts (W7A-s6): WHO answered (unchanged,
+ * The one call a gated tool makes before it acts: WHO answered (unchanged,
  * unconditional — `assertApprover` first, exactly as every call site had it), then WHICH CARD
  * they answered — the same arguments, and not a stale one (`assertApprovedCall`,
- * `@lares/agent-kit/approval-ledger`, W7A-s5). Never a replacement for `assertApprover`: a
+ * `@lares/agent-kit/approval-ledger`). Never a replacement for `assertApprover`: a
  * missing call id or a missing row PASSES here (evidence never fails an action — see that
- * module's header), so an autonomous call or a box without 086 applied is unaffected.
+ * module's header), so an autonomous call or a box without the approval ledger applied is unaffected.
  *
  * `input` MUST be the tool's own raw first argument, unmodified — never a destructured-and-
  * rebuilt object. `payloadFingerprint` treats a key present with an `undefined` value as
@@ -168,7 +168,7 @@ export function assertApprover(
  * whose optional field was never supplied would mismatch the hash the card was shown with and
  * refuse a call nothing actually changed about.
  *
- * DEVIATION FROM THE PLAN'S SNIPPET: `ctx`'s type drops the plan's
+ * `ctx`'s type deliberately has no
  * `& Record<string, unknown>` — eve's real `ToolContext` (what every call site actually
  * passes) has no index signature, so that intersection does not compile against it
  * (`tsc`: "Index signature for type 'string' is missing in type 'ToolContext'"). `{ session?:

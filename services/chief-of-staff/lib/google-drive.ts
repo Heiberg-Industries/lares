@@ -10,9 +10,9 @@ import { GoogleUnenrolledError, orgConfig, type GoogleOrgConfig } from "./google
 
 const PROVIDER = "google";
 
-// ─── Drive, read-only (batch 6) ────────────────────────────────────────────────────
+// ─── Drive, read-only ────────────────────────────────────────────────────
 // For Google Docs/Sheets/Slides links the owner sends: the readability worker can't sign in and
-// only ever saw the login shell. Scope: drive.readonly (the owner, 2026-09-14) — granted by
+// only ever saw the login shell. Scope: drive.readonly — granted by
 // re-consenting through the console, whose GOOGLE_SCOPES carries it. A token enrolled before that
 // answers 403 insufficient-scope, which lib/google-doc.ts turns into a plain sentence.
 

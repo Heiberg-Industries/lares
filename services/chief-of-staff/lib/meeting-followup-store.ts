@@ -2,7 +2,7 @@ import { configuredOwnerId } from "./identity-client.js";
 /**
  * The meeting follow-up send log — services/box/sql/001_baseline.sql.
  *
- * Four jobs in one table (spec Q3): exactly-once, the per-tick billed-call ceiling's counter,
+ * Four jobs in one table : exactly-once, the per-tick billed-call ceiling's counter,
  * the polling trigger's memory, and the audit trail. The trigger reads it INSTEAD of diffing
  * Notion property values across ticks, which is what makes the trigger edge-free: "no row for
  * this page" survives a missed tick, a restart, a backfill, and a meeting summarised while
@@ -15,13 +15,13 @@ import { createHash } from "node:crypto";
 import type { Pool } from "pg";
 
 /**
- * `"queued"` (fix round 2): a schedule turn dispatched successfully, but the card may
+ * `"queued"`: a schedule turn dispatched successfully, but the card may
  * still be pending a human's 👍/👎 — `to(...).send()` resolves once the model's turn ends, not
  * once mail leaves. Only `meeting_followup_send`'s own `execute()` ever writes `"sent"`,
  * because only it runs at the moment a send is genuinely authorised (approved, or autonomous)
  * and only it knows `gmail.send` actually resolved. Recording `"sent"` from the schedule for a
  * turn that merely rendered a card made a declined or never-clicked card look permanently
- * done — no retry, no error, no signal — which is the exact silent-failure class this ticket
+ * done — no retry, no error, no signal — which is the exact silent-failure class this status
  * exists to end.
  *
  * `"denied"`: a human declined the approval card. Before this, a declined card left the
@@ -69,7 +69,7 @@ export function fingerprintRecipients(recipients: readonly string[]): string {
  * `summaryHash` — the page's LIVE `<meeting-notes><summary>` block hash
  * (`lib/meeting-followup.ts`'s `hashSummaryBlock`), recorded on every attempt so a LATER tick can
  * tell "the owner corrected the page" apart from "nothing has changed". REQUIRED, and refused if
- * `""` (review fix round 1): a caller that could not compute a real hash must not silently
+ * `""`: a caller that could not compute a real hash must not silently
  * store a placeholder — `""` stored today is indistinguishable from a real (if unlikely) empty
  * hash tomorrow, and would make a genuinely-unchanged page look "changed" the moment a caller
  * DID pass a real one. `hashSummaryBlock` itself never returns `""` (sha256 of even an empty
@@ -80,22 +80,22 @@ export function fingerprintRecipients(recipients: readonly string[]): string {
  * file is — `'sent'` is never in either list, so a sent row is never re-claimed, ever, and
  * `attempts < $2` still caps both paths at the existing `MAX_ATTEMPTS`:
  *
- *   1. `outcome = 'error'` past the retry window — unchanged from before this ticket.
+ *   1. `outcome = 'error'` past the retry window — the original rule.
  *   2. `outcome IN ('denied', 'queued')` AND the STORED hash is neither NULL nor `''` AND it
- *      differs from the live one — the new rule this ticket adds. No time gate here on purpose:
+ *      differs from the live one — the changed-page rule. No time gate here on purpose:
  *      once the owner has corrected the page, the very next five-minute tick should pick it up, not
  *      wait out `RETRY_ELIGIBLE_AFTER` the way a genuine failure does.
  *
- * THE NULL/EMPTY GUARD (review fix round 1, deploy hazard): every row that exists before
- * 048's migration lands has `summary_hash IS NULL` — the column is brand new. `NULL IS DISTINCT
+ * THE NULL/EMPTY GUARD (deploy hazard): any row that predates the `summary_hash` column
+ * has `summary_hash IS NULL`. `NULL IS DISTINCT
  * FROM <anything>` is TRUE in Postgres, so without this guard the very first tick after deploy
  * would read that as "the page changed" for EVERY `queued` row inside the recency window and
  * re-compose/re-card every one of them — a burst of duplicate approval cards for meetings the owner
  * already has a card for. A NULL/empty stored hash means "unknown", never "changed": such a row
  * is NOT reclaimed by this path. Instead (see the `adopt` step below) its `summary_hash` is set
  * to the current live hash WITHOUT claiming it, so it becomes a normal, comparable baseline —
- * only a REAL later edit reclaims it, on some later tick, exactly as original design
- * intended for a fresh page.
+ * only a REAL later edit reclaims it, on some later tick, exactly as
+ * for a fresh page.
  *
  * Either reclaim path resets `outcome` to `'error'` on success — the same sentinel a brand-new
  * INSERT uses for "claimed, not yet decided" — so `releaseClaim`'s and `recordOutcome`'s existing
@@ -163,7 +163,7 @@ export async function claimMeeting(
 }
 
 /**
- * Records a human's decline (review fix round 1) — narrower than `recordOutcome`'s own
+ * Records a human's decline — narrower than `recordOutcome`'s own
  * `outcome <> 'sent'` guard, and deliberately so: `meeting_followup_record_denial` (catalogue/)
  * is UNGATED and model-callable, so a confused or prompt-injected turn calling it against a
  * `'skipped'` (internal-only) or already-`'denied'` page must be a harmless no-op, not a way to
@@ -247,13 +247,14 @@ export async function recordSeriesKey(db: Pool, notionPageId: string, seriesKey:
 }
 
 /**
- * Give back the attempt a claim just took, because nothing was attempted (fix round 1).
+ * Give back the attempt a claim just took, because nothing was attempted.
  *
  * The claim budget (`MAX_ATTEMPTS`) exists to stop a page that keeps FAILING from being retried
  * forever. A page the proactivity gate held back has not failed: the send turn never started and
- * nothing was said. (The COMPOSE call before the gate did bill — this lane composes first and gates
- * the send, which ADR-0014's open questions name as a known cost of ~30 billed calls per held item
- * per night. What a release gives back is the attempt, not the money.) Counting a hold as an attempt
+ * nothing was said. (The schedule's `FollowupDeps.precheck` asks the gate BEFORE the billed
+ * compose call, so a held item normally costs no model call — see ADR-0014's amendment on
+ * the two-lanes-bill-a-model gap. What a release gives back is the attempt, not the money.)
+ * Counting a hold as an attempt
  * is how a follow-up composed at 21:30 under the DEFAULT quiet hours (21:00–07:00) reached
  * `MAX_ATTEMPTS` before 22:30 and was dropped for good, hours before the gate would have let it
  * through.
@@ -277,14 +278,14 @@ export async function releaseClaim(db: Pool, notionPageId: string): Promise<void
 }
 
 /**
- * `INSERT … ON CONFLICT DO UPDATE`, not a bare `UPDATE` (finding 2). `meeting_followup_send`
+ * `INSERT … ON CONFLICT DO UPDATE`, not a bare `UPDATE`. `meeting_followup_send`
  * is reachable CONVERSATIONALLY, not only from the schedule: ask the chief of staff directly to send a
  * follow-up and this runs with a `notionPageId` that has no claim row yet, because only the
  * schedule's `claimMeeting` ever INSERTs one. A bare `UPDATE` against a page with no row
  * touches zero rows and logs nothing — the poller then has no memory that this page was
  * already handled and claims it again on its next tick, sending the SAME follow-up to the
  * same externals a second time, and `lastRecipientsFingerprint` for that series stays null
- * forever, permanently disarming the "recipients changed → ask once" valve (spec Q3). Correct
+ * forever, permanently disarming the "recipients changed → ask once" valve. Correct
  * whether or not a claim row already exists, for both the schedule path and the conversational
  * one.
  */
@@ -303,7 +304,7 @@ export async function recordSent(
 }
 
 /**
- * `AND outcome <> 'sent'` (fix round 3, CRITICAL): guarded in the STORE, not left to
+ * `AND outcome <> 'sent'` : guarded in the STORE, not left to
  * every caller, because a caller getting this wrong is exactly what happened. On an
  * auto-approved send, `meeting_followup_send`'s `execute()` runs `recordSent` (writing `'sent'`
  * plus the recipients fingerprint) INSIDE the same turn the schedule's `to(...).send()` is
@@ -349,7 +350,7 @@ export async function lastRecipientsFingerprint(db: Pool, seriesKey: string): Pr
 }
 
 /**
- * Reads a row's current `outcome` back (finding 1) — the schedule's own read, not raw SQL in
+ * Reads a row's current `outcome` back — the schedule's own read, not raw SQL in
  * the schedule file. `to(...).send()` resolving proves the model's TURN ended, never that mail
  * left: eve hands a thrown tool error (Gmail 5xx, an expired token, a blocked egress call)
  * back to the MODEL rather than rejecting that promise, so a failed autonomous send still

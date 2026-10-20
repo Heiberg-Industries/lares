@@ -1,11 +1,10 @@
 /**
- * Email triage — the actual behavior port, from
- * services/agent-runtime/lib/workflows/email-triage.ts. Given one inbound message on the
+ * Email triage. Given one inbound message on the
  * mailbox it arrived on: classify it (needs_reply | fyi | automated), and for needs_reply,
- * draft a voice-matched reply on that SAME mailbox (autonomous-with-audit — no 👍, matching
- * today's behavior exactly; reversible, since it's a draft, never a send) and ping Slack.
+ * draft a voice-matched reply on that SAME mailbox (autonomous-with-audit — no 👍;
+ * reversible, since it's a draft, never a send) and ping Slack.
  *
- * Ported behavior, simplified where noted:
+ * What it does, in order:
  *  - calendar-notice guard FIRST, before classifySender even runs — Google generates
  *    "Accepted: …" from the real attendee's address, so classifySender cannot catch it and
  *    an instruction-only guard is not enough (the model may weigh it against everything
@@ -13,14 +12,14 @@
  *  - deterministic sender pre-filter (classifySender) before any model call.
  *  - per-thread draft dedup (hasDraftForThread) so a second inbound message on an
  *    already-drafted thread does not draft again.
- *  - voice-matched draft (voice.ts/voice-store.ts, shared port), real Gmail
+ *  - voice-matched draft (voice.ts/voice-store.ts), real Gmail
  *    signature appended, proper In-Reply-To/References threading.
- *  - context gathering SIMPLIFIED from the old workflow: CRM lookup (twentyLookup) and
+ *  - context gathering is deliberately SIMPLE: CRM lookup (twentyLookup) and
  *    calendar busy windows are included (both best-effort — a failed read never blocks the
- *    draft); network-history and Brain-notes lookups are NOT ported for this v1 (lower
+ *    draft); network-history and vault-notes lookups are NOT done here (lower
  *    value for a one-shot triage reply, and neither has a ready chief-of-staff equivalent to call
  *    without its own scoping pass) — flagged here rather than silently dropped.
- *  - booking-link injection dropped, per the approved plan (no chief-of-staff config for it yet).
+ *  - no booking-link injection (there is no chief-of-staff config for it).
  */
 import { classifySender } from "@lares/junk";
 import { gatewayComplete } from "./llm-complete.js";
@@ -64,7 +63,7 @@ export interface EmailTriageDeps {
   /** The owner's display name from the identity registry; absent reads as "the owner". */
   ownerName?: string | null;
   /** Bounded person-360 text for the counterpart (`renderDossier(d, { bounded: true })` is the
-   *  caller's job — Task 3 only consumes the rendered text). Optional so every
+   *  caller's job— this file only consumes the rendered text). Optional so every
    *  existing caller/test keeps constructing deps unchanged; best-effort. Text is passed
    *  through verbatim, including any "COULD NOT READ" markers — a gap in OUR reading is not
    *  an absence in the world. */
@@ -73,7 +72,7 @@ export interface EmailTriageDeps {
    *  (`detectProposedWindow`) — otherwise the calendar is never touched. Best-effort. */
   freeBusy?: (o: { timeMin: string; timeMax: string }) => Promise<Array<{ start: string; end: string }>>;
   /** What `freeBusy` actually checks, e.g. "owner@owner.example's primary calendar" — threaded
-   *  into `renderBusyBlock`'s rendered text (review, Important finding 2). Optional so
+   *  into `renderBusyBlock`'s rendered text. Optional so
    *  every existing caller/test keeps constructing deps unchanged; when omitted the rendered
    *  text falls back to the generic "availability" wording it always had. The live wiring's
    *  `freeBusy` resolves exactly ONE calendar of the TWO enrolled Google accounts (the
@@ -173,9 +172,8 @@ function excerpt(text: string, max = 200): string {
 
 // Total-character ceiling on the rendered thread block. Email bodies routinely re-quote the
 // whole prior thread, so an uncapped block grows roughly quadratically with thread length —
-// this file already lives in the shadow of the August cost leak
-// (the August 2026 spend-leak write-up), and "always in full" in
-// the plan was about not date-slicing the thread, not about accepting unbounded billed input.
+// this file is sensitive to runaway spend, so an unbounded block is a cost risk, and "always in
+// full" was about not date-slicing the thread, not about accepting unbounded billed input.
 // 8000 chars (~2000 tokens) is generously above BODY_CHARS_FOR_CLASSIFY (6000, digest/types.ts)
 // and DEFAULT_MAX_CHARS (1500, dream/context.ts) — it covers the large majority of real threads
 // in full while still being a real ceiling, not a nominal one.
@@ -212,7 +210,7 @@ function renderThreadContext(thread: ThreadMessage[], currentId: string): string
 
 /** What the account sent this counterpart in the last 30 days — subject/date/short excerpt,
  *  so the drafter can see an artefact it already delivered instead of promising it again
- *  (Task 3 — a promised artefact repeated). Excludes messages already in the CURRENT thread — the
+ * (a promised artefact repeated). Excludes messages already in the CURRENT thread — the
  *  thread block above already carries those in full, so repeating them here is duplicate
  *  content that only spends tokens. */
 function renderSentHistory(msgs: MailMessage[]): string {
@@ -224,7 +222,7 @@ function renderSentHistory(msgs: MailMessage[]): string {
  *  `busy === null` means the read never happened at all — no window was proposed, no
  *  `freeBusy` dep was wired, or the fetch failed — and renders as "", the correct rendering
  *  for a claim that was never earned (same empty-vs-missing doctrine as absentBlockClause,
- *  @lares/compose-contract:140-152).
+ *  @lares/compose-contract).
  *
  *  `busy` as an EMPTY ARRAY is a different thing entirely: the read succeeded and found no
  *  conflicts. Collapsing that into the same "" as the null case was the bug — the one fact
@@ -232,7 +230,7 @@ function renderSentHistory(msgs: MailMessage[]): string {
  *  on the conflict half, so a successful clear check looked byte-identical to a fetch that
  *  never ran (the shape: a fetched fact and a failure rendering the same way).
  *
- *  `calendarLabel` (review, Important finding 2) names what was actually checked —
+ *  `calendarLabel` names what was actually checked —
  *  the live wiring only ever reads ONE calendar of the TWO Google accounts enrolled, and
  *  "Checked availability" without it reads as a claim about all of them. Falls back to the
  *  old generic wording when omitted, so a caller/test with no label keeps working unchanged. */
@@ -263,7 +261,7 @@ export async function triageOneMessage(
   // address or asks a question: no model call, never a draft.
   if (isBulk) return { outcome: "fyi", reason: "mailing-list", from, subject };
 
-  // Deterministic sender pre-filter — closes the "drafted a reply to a newsletter" incident.
+  // Deterministic sender pre-filter— never draft a reply to a newsletter.
   if (classifySender(from) === "automated") return { outcome: "automated", reason: "automated-sender", from, subject };
 
   const raw = (await gatewayComplete(
@@ -298,9 +296,9 @@ export async function triageOneMessage(
   const proposedWindow = detectProposedWindow(body, clockNow);
 
   // Independent, best-effort context fetches — none depends on another's result, so they run
-  // concurrently (efficiency finding: these used to be sequential awaits). Each is
-  // best-effort: a hiccup on any one must never fail the draft. Task 3 adds
-  // sent-history, dossier, and free/busy to the original four — still exactly one billed
+  // concurrently. Each is
+  // best-effort: a hiccup on any one must never fail the draft. Sent-history, dossier and
+  // free/busy come on top of the original four — still exactly one billed
   // model call per message (these are tool reads, not gatewayComplete calls); the thread
   // block itself costs no fetch at all (rendered synchronously below from the `thread` param
   // already in hand).
@@ -353,9 +351,9 @@ export async function triageOneMessage(
     { label: "CRM record", content: asJson(crm) },
     { label: "Thread so far", content: renderThreadContext(thread, msg.id), thirdParty: true },
     { label: "Sent history (last 30 days)", content: sentHistoryMsgs ? renderSentHistory(sentHistoryMsgs) : "" },
-    // review, Important finding 1: renderDossier is authored as a tool result for
-    // The chief of staff-the-conversationalist talking to the owner — even the RESOLVED branch this text is
-    // gated to still carries clauses like "mention this in one clause so he knows a choice
+    // `renderDossier` is authored as a tool result for
+    // the conversational assistant talking to the owner — even the RESOLVED branch this text is
+    // gated to still carries clauses like "mention this in one clause so the owner knows a choice
     // was made" and "say so in those terms" that are instructions to a DIFFERENT assistant,
     // not facts about the counterpart. The note is the mitigation; cleaning render.ts's own
     // clauses is a follow-up (a drafting-mode option on renderDossier), out of scope here.
@@ -364,7 +362,7 @@ export async function triageOneMessage(
       content: dossierText ?? "",
       note: "internal notes written for a different assistant, not for this reply — never quote it, and never name the CRM, its sources, or any tool to the counterpart; take only the plain facts as background",
     },
-    // review, Important finding 2: the live wiring's freeBusy checks exactly ONE
+    // The live wiring's freeBusy checks exactly ONE
     // calendar of the TWO Google accounts enrolled, and only when a time was actually
     // detected in the inbound message — a detector that is itself loose enough to fire on a
     // past reference ("jeg nevnte det i forrige uke"). The note scopes the claim on both axes so
@@ -414,7 +412,7 @@ export async function triageOneMessage(
   );
   const { subject: replySubject, body: replyBody } = splitDraft(draft, subject);
 
-  // 2026-09-08: everyone on the original — sender first, other To recipients, Cc kept — minus
+  // Everyone on the original — sender first, other To recipients, Cc kept — minus
   // the member's own addresses. The owner edits the list in Gmail or by telling the chief of staff.
   const recipients = replyRecipients(msg, deps.selfEmails ?? [account]);
   const created = await deps.gmail.draft({

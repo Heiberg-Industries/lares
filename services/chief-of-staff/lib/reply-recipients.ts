@@ -1,6 +1,6 @@
 /**
- * Who a reply goes to. The owner wants a reply to default to all recipients of the email, to
- * remove or add himself. So a reply defaults to EVERYONE on the original: the sender first, then the other To
+ * Who a reply goes to. A reply defaults to all recipients of the email; the owner can remove
+ * or add recipients on the draft afterwards. So a reply defaults to EVERYONE on the original: the sender first, then the other To
  * recipients; the original Cc stays Cc. The member's own addresses are removed — they come from
  * the identity registry's email aliases (plus the mailbox itself), never a literal, so the same
  * code serves the next member. Compared by bare address, case-insensitive, de-duplicated; Cc never

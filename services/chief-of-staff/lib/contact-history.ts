@@ -1,35 +1,33 @@
 /**
- * step 1, Task 3b (fix round 1, 2026-09-15) — who counts as "been in touch with the
+ * Who counts as "been in touch with the
  * owner before". This is the `ContactHistory` the engine's `board-approval.ts` calls, per
  * recipient, ONLY when a history-checked contact tool (`RECIPIENTS_OF`,
  * `@lares/agent-kit/always-ask`) is set to `autonomous` on the permissions board — see that
  * module's header for the decided contract.
  *
- * Owner rulings from the fix-round-1 review (task-3b-fix1-findings.md) REPLACE the original
- * brief's decision 3:
- *   - D-A: the CRM (Twenty) does not count, at all. Twenty's own contact history is BUILT from
+ * The rules:
+ *   - The CRM (Twenty) does not count, at all. Twenty's own contact history is BUILT from
  *     the same mail this file already checks — counting it too would let the agent mark a
- *     prospect "emailed" via a CRM write and then mail them for real without ever asking. (The
- *     earlier version of this file had a Twenty leg and `tests/live/contact-history-twenty.live.mts`;
- *     both are removed.)
- *   - D-B: "been in touch" means the owner wrote to THEM first, not the other way round. Inbound
- *     mail no longer counts — a stranger, or a prompt-injection email dressed as a reply, must
+ *     prospect "emailed" via a CRM write and then mail them for real without ever asking.
+ *   - "Been in touch" means the owner wrote to THEM first, not the other way round. Inbound
+ *     mail does not count — a stranger, or a prompt-injection email dressed as a reply, must
  *     never become "known" just by writing in. Known = (mail) a message the owner SENT to that
  *     address — in To, Cc, or Bcc — from the sending account.
- * D-C (`calendar_create_event`'s `notify:false` no longer means "contacts nobody") lives entirely
- * in `@lares/agent-kit/always-ask`'s `RECIPIENTS_OF` — nothing in this file changes for it.
+ * Separately, a `calendar_create_event` call with `notify:false` does not mean "contacts nobody";
+ * that lives entirely in `@lares/agent-kit/always-ask`'s `RECIPIENTS_OF` — nothing in this file
+ * changes for it.
  *
  * Mail is the one source today (one Gmail search plus a bounded number of header reads); the
  * list below is where another source would be added, known as soon as ONE source says yes.
  *
  * A source that THROWS is logged — the source name and the error's CLASS only, never its own
- * message and never the recipient address (fix-round-1 review, I4: a client error can embed
+ * message and never the recipient address (a client error can embed
  * the request it was making, which can embed the address) — and the next source is tried. If no
  * source says yes and at least one threw, the whole call THROWS, so `board-approval.ts` records
  * "contact history could not be read" rather than the false negative "never in touch"; if every
  * source answered cleanly with no evidence, this returns `false`.
  *
- * Not wired into any tool by this task: `lib/board.ts` binds it in Task 5.
+ * Bound to the permissions board by `lib/board.ts`.
  */
 import type { ContactHistory } from "@lares/agent-kit/board-approval";
 
@@ -40,22 +38,21 @@ import { googleClients } from "./google.js";
  * there are no angle brackets.
  *
  * Deliberately the LAST `<…>` pair ENDING the (trimmed) entry, not the first `<…>` found
- * anywhere — fix-round-2 review, item 1: the fix-round-1 shape of this function took the FIRST
- * match, so a crafted entry like `"<victim@target.example>" <stranger@evil.example>` (a fake
- * address inside a quoted display name, the REAL recipient trailing it) misread as
+ * anywhere. A version that took the FIRST
+ * match would be fooled by a crafted entry like `"<victim@target.example>" <stranger@evil.example>` (a fake
+ * address inside a quoted display name, the REAL recipient trailing it): it would misread as
  * `victim@target.example` — one reply from a complete stranger, using that display name, would
  * make an unrelated victim's address count as "known". Any entry whose display-name PORTION
  * itself contains `<`, `>` or `@` is either crafted or malformed either way, so it now counts as
  * NO match (`""`, which can never equal a real recipient) rather than guessing which `<…>` is
- * the genuine one. One exception (final review F10): a display name that, unquoted and
+ * the genuine one. One exception: a display name that, unquoted and
  * lowercased, IS the bracketed address exactly (`"a@x.com" <a@x.com>`, common) names the same
  * recipient, so it counts — anything else in the display name still counts as no match.
  *
- * EXPORTED (was private) so `tests/live/contact-history-gmail.live.mts` imports this SAME
+ * EXPORTED so `tests/live/contact-history-gmail.live.mts` imports this SAME
  * function instead of keeping its own copy — a second, silently-diverging copy of exactly this
- * logic is how this bug reached the verification side in the first place: fix round 1 fixed
- * `always-ask.ts`'s address PARSING (C1) but this file's separate address-header VERIFICATION
- * helper still had the old, unfixed shape.
+ * logic would let the address PARSING in `always-ask.ts` and this file's separate address-header
+ * VERIFICATION helper drift apart.
  */
 export function addressOf(header: string): string {
   const s = header.trim();
@@ -81,7 +78,7 @@ const MAIL_CANDIDATE_LIMIT = 10;
  * `toolInput.account` names the sending account when the call carries one, else the primary
  * mailbox (the same default `googleClients().gmail()` uses everywhere else).
  *
- * Gmail's own address search is NOT trusted to be exact — fix-round-1 review, C2: a known
+ * Gmail's own address search is NOT trusted to be exact — a known
  * `jim.bob@example.com` can satisfy a search for `bob@example.com`, and the search also has no
  * way to promise it matched the field it looks like it matched. Every candidate message the
  * search returns is READ and its own To/Cc/Bcc headers are parsed and compared to the EXACT
@@ -108,7 +105,7 @@ function sendingAccountOf(toolInput: unknown): string | undefined {
 }
 
 /** The engine's `ContactHistory` (`@lares/agent-kit/board-approval`) — typed directly against
- *  the engine's own contract (fix-round-1 review, I9) so any drift between the two shapes fails
+ *  the engine's own contract so any drift between the two shapes fails
  *  typecheck here, not silently at runtime. */
 export const isKnownRecipient: ContactHistory = async (recipient, toolInput) => {
   const email = recipient.trim().toLowerCase();

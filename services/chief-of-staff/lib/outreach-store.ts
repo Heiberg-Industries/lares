@@ -34,13 +34,13 @@ const SEND_TIME_SKEW_ALLOWANCE_MS = 30_000;
  * Starts tracking a sent thread. Idempotent on (threadId, account) — calling this twice for
  * the same send (e.g. a retried tool call) does not create a duplicate tracking row.
  *
- * re-tracking used to be a total no-op (`SET thread_id = thread_id`) — a follow-up
- * send on an already-replied thread left `status='replied'` standing, so the reply-watch
- * schedule's `listAwaitingReply` never saw it again and the next reply was never detected,
- * while the tool call that "sent the follow-up" still reported `{ok:true}`. Re-tracking now
- * re-arms the row: status back to 'awaiting_reply', sent_at to this new send, resolved_at
- * cleared, and any stale triage checkpoint (beginTriage, below) cleared so the next reply on
- * this thread isn't blocked by a leftover checkpoint from the previous round.
+ * Re-tracking must re-arm the row rather than be a no-op (`SET thread_id = thread_id` would
+ * leave `status='replied'` standing after a follow-up send on an already-replied thread, so the
+ * reply-watch schedule's `listAwaitingReply` would never see it again and the next reply would
+ * never be detected, while the tool call that "sent the follow-up" still reported `{ok:true}`).
+ * Re-tracking therefore sets status back to 'awaiting_reply', sent_at to this new send,
+ * resolved_at cleared, and any stale triage checkpoint (beginTriage, below) cleared so the next
+ * reply on this thread isn't blocked by a leftover checkpoint from the previous round.
  *
  * `sentAt`, when given (the ISO timestamp `gmail_send` returned), replaces the
  * database's own `now()` default. Without it, a message's tracked send time was whenever

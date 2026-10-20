@@ -1,6 +1,5 @@
 // services/chief-of-staff/lib/person/render.ts
 // CORE — vendor-neutral. Turns the dossier into the text the model reads.
-// Ported verbatim from services/agent-runtime/lib/person/render.ts (Task 8) — logic unchanged.
 //
 // This file is where the honesty rules stop being types and become words. A failed
 // source must READ as failed by the time it reaches a prompt; a union that is correct
@@ -47,17 +46,17 @@ function section(title: string, lines: string[]): string[] {
  *
  * Rendered in both the resolved and the UNKNOWN branch, because the shape it exists for lives in
  * the unknown one: a first-contact address where "no record of the person" is the right answer
- * and "you know nothing about them" is not — the morning this was filed, the chief of staff told the owner to go
- * read up on the vendor his own dev agent runs on.
+ * and "you know nothing about them" is not — a first-contact brief once told the owner to go
+ * read up on a vendor the owner already self-hosts.
  *
  * Every hit carries its STORE and its PATH, and the closing sentence says what they are: notes to
  * READ, not facts to restate. A path is not a claim, and a list of paths must never become one —
- * the whole point of naming them is that she can open the note before she says anything about the
+ * the whole point of naming them is that the agent can open the note before the agent says anything about the
  * relationship.
  *
  * `not-applicable` prints nothing at all here (the source line below still reports it): a personal
  * mailbox has no organisation, and a heading over that non-question is precisely the "company
- * unknown" the ticket forbids.
+ * unknown" this module must never print.
  */
 function organisationSection(r: SourceResult<OrgFacts>): string[] {
   if (r.status !== "found") return [];
@@ -84,12 +83,12 @@ function organisationSection(r: SourceResult<OrgFacts>): string[] {
 /**
  * `bounded: true` drops the three `EARLIER — …` sections and the ORGANISATION section.
  *
- * Later tasks feed this text into a prompt that already carries the thread, his sent
+ * Later tasks feed this text into a prompt that already carries the thread, the owner's sent
  * mail, and free/busy — a full multi-history dump on top of that is bulk, not context, and
  * EARLIER is exactly the part a prompt with its own history elsewhere does not need repeated.
- * `NEW SINCE` stays: it is what he has not seen yet regardless of what else is in the prompt.
+ * `NEW SINCE` stays: it is what the owner has not seen yet regardless of what else is in the prompt.
  *
- * fix round 1 — the ORGANISATION section is dropped under bounded too, for a different
+ * The ORGANISATION section is dropped under bounded too, for a different
  * and sharper reason. The one bounded caller is the OUTBOUND EMAIL DRAFTER
  * (`agent/schedules/email-triage.ts`), whose prompt writes a reply to an external counterparty.
  * The org section carries internal vault paths (`ventures/<project>/…md`), CRM org numbers, and an
@@ -104,7 +103,7 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
   const out: string[] = [];
   // Same precedence as resolvePerson's own branch order: a merge query supplies no single
   // `email`/`name`, so without this an UNKNOWN or AMBIGUOUS header from an emails-only query
-  // would read "(no query)" — true of the OTHER two fields, false of what he actually asked.
+  // would read "(no query)" — true of the OTHER two fields, false of what the owner actually asked.
   const label = d.query.emails?.length ? d.query.emails.join(", ") : d.query.email ?? d.query.name ?? "(no query)";
 
   if (d.resolution.kind === "ambiguous") {
@@ -122,7 +121,7 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
   if (d.resolution.kind === "unknown") {
     // ONLY `failed` breaks a lookup. A `not-applicable` source answered the only way it
     // honestly can — "not in this form" — and treating that as an outage is what turned every
-    // new meeting participant in the 20:00 pass into a message telling him his tools are down.
+    // new meeting participant in the 20:00 pass into a message telling the owner the tools are down.
     const lookupIntact = d.sources.crm.status !== "failed";
     const brokenSources = [d.sources.crm]
       .filter((s): s is Extract<typeof s, { status: "failed" }> => s.status === "failed")
@@ -204,8 +203,8 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
   out.push(`Addresses on file: ${p.emails.join(", ") || "none"}`);
   out.push(`Matched in: ${[p.source, ...d.resolution.alsoSeenIn].join(", ")}`);
 
-  // He typed part of a name and got a whole one. One clause makes the inference his to
-  // correct; silence would make it look like the record was called what he typed.
+  // The owner typed part of a name and got a whole one. One clause makes the inference the owner's to
+  // correct; silence would make it look like the record was called what the owner typed.
   if (d.resolution.matchedLoosely) {
     out.push(
       `MATCHED LOOSELY: you asked for "${d.resolution.matchedLoosely.asked}" and this is the record for ` +
@@ -232,8 +231,8 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
     d.anchor
       ? `Last engagement: ${day(d.anchor.at)} (${d.anchor.kind}). Everything under NEW SINCE is what he has not seen.`
       // Scoped to the window, not to all of history: nothing was searched beyond it, so
-      // "he does not know them" is an assertion about the relationship that this lookup
-      // never established. Someone he last met nine months ago lands here.
+      // "the owner does not know them" is an assertion about the relationship that this lookup
+      // never established. Someone the owner last met nine months ago lands here.
       : "No prior engagement found in the window searched (see the windows below) — give the full picture, " +
         "but say it as 'nothing in that period', never as 'he has never dealt with them'.",
   );

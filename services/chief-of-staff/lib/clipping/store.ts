@@ -235,7 +235,7 @@ export type ClippingMode = "notion" | "karakeep" | "both";
 
 /**
  * The owner's choice of source, or null for "no choice recorded" (today's behaviour: each source
- * runs if it is set up). A missing table (migration 092 not applied) is also null; any other
+ * runs if it is set up). A missing table (the schema not yet applied) is also null; any other
  * error is a real fault and is thrown.
  */
 export async function readClippingChoice(db: Queryable): Promise<ClippingMode | null> {

@@ -4,20 +4,20 @@
  * the one per-owner switch the ladder schedule reads (`deadline_settings`). Shaped like every
  * sibling store in this package (`lib/reminders-store.ts`, `lib/obligations-store.ts`): plain
  * functions taking `db: Pool` first, `owner` defaulting to `ownerId()` (`lib/principals.ts` —
- * ONE owner key for this feature's reads and writes alike, review fix the split where
- * writes used the identity registry's canonical id and reads used `ownerId()` was invisible until
+ * ONE owner key for this feature's reads and writes alike: a split where
+ * writes used the identity registry's canonical id and reads used `ownerId()` would be invisible until
  * the day `AGENT_OWNER_USER_ID` is set to anything else, at which point every deadline written
  * would be unreadable by the brief that asked for it), parameterised SQL, `owner` in the WHERE of
  * every UPDATE.
  *
- * `DeadlineSource`/`DeadlineRecurrence`/`nextDue` come from `@lares/agent-kit/deadlines`
- * (Task 1) — this file never redefines them.
+ * `DeadlineSource`/`DeadlineRecurrence`/`nextDue` come from `@lares/agent-kit/deadlines`;
+ * this file never redefines them.
  *
  * DATE HANDLING: `due_date` is a Postgres `date`. Every query that returns it uses
  * `to_char(due_date, 'YYYY-MM-DD')` rather than letting node-postgres parse the column, so a
  * `2026-08-31` row reads back as the string `"2026-08-31"` regardless of the process's local
  * timezone — pg's default DATE parser builds a JS `Date` at local midnight, which is exactly
- * the kind of implicit-timezone step /128/204 already got bitten by once (see
+ * the kind of implicit-timezone step that has bitten before (see
  * `packages/agent-kit/src/deadlines.ts`'s header). `nextDue` and the store both work in this
  * same `YYYY-MM-DD` string currency, never a `Date`, for due dates.
  */

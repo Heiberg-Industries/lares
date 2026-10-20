@@ -1,11 +1,10 @@
 // services/chief-of-staff/lib/person/resolve.ts
 // CORE — vendor-neutral.
-// Ported verbatim from services/agent-runtime/lib/person/resolve.ts (Task 8) — logic unchanged.
 //
 // The whole of this file is one decision: when two humans might be meant, ASK.
 // But ask only answerable questions.
 //
-// spent four fix rounds on identity logic, and every one of its defects had the
+// Identity logic has been the most defect-prone part of this dossier, and every one of its defects had the
 // same shape — a surface that quietly picked a plausible answer. A wrong merge here is
 // worse than a wrong lookup, because it does not look wrong: two people's histories
 // arrive as one confident narrative, and nothing in the output says a choice was made.
@@ -27,9 +26,9 @@ export type Resolution =
       alsoSeenIn: string[];
       setAside: Candidate[];
       /**
-       * Set when the name he typed is not the name on the record — "Per" answered with
+       * Set when the name the owner typed is not the name on the record — "Per" answered with
        * "Per Hansen". Present so the render can say so in one clause: the inference is
-       * his to accept or correct, and an inference nobody is told about is a guess.
+       * the owner's to accept or correct, and an inference nobody is told about is a guess.
        */
       matchedLoosely?: { asked: string; matched: string };
     }
@@ -40,12 +39,12 @@ const norm = (s: string) => s.trim().toLowerCase();
 
 /**
  * Every address a candidate carries, normalised. A candidate can carry more than one — a
- * record with two email rows, or (Task 10) a person merged from a plural `emails`
+ * record with two email rows, or a person merged from a plural `emails`
  * query — so "this candidate's address" is a SET, not just its first entry.
  *
- * Carry-forward from Task 2's review: the address-conflict check below used to compare only
- * `emails[0]`, which was harmless while every source emitted one address per candidate. It
- * is not harmless once a candidate can carry two: comparing first-elements would call two
+ * The address-conflict check below must not compare only `emails[0]`: that is harmless
+ * while every source emits one address per candidate, but not once a candidate can carry
+ * two: comparing first-elements would call two
  * same-name candidates "different people" whenever the address they actually share is not
  * each one's first in list order — a false AMBIGUOUS the file's own header warns against.
  */
@@ -71,10 +70,10 @@ function sharesAddress(addrs: Set<string>, c: Candidate): boolean {
  *      middle initial defeats rule 1 in BOTH directions, and a middle initial is the single
  *      most common reason a CRM record is not spelled the way a human types the name.
  *
- * Both are deliberately symmetric: he types more than the record holds about as often as he
+ * Both are deliberately symmetric: the owner types more than the record holds about as often as the owner
  * types less. And both are only ever a FALLBACK — an exact match, where one exists, wins
  * before this function is consulted, and whatever this returns is disclosed as a loose match
- * rather than presented as the name he asked for.
+ * rather than presented as the name the owner asked for.
  */
 function looselyMatches(want: string, name: string): boolean {
   if (name.length === 0) return false;
@@ -101,16 +100,16 @@ function describe(c: Candidate): string {
  * shares a name is the merge this file exists to prevent.
  */
 export function resolvePerson(query: PersonQuery, candidates: Candidate[]): Resolution {
-  // He supplied the addresses, so the identity question is already answered — by him, with
+  // The owner supplied the addresses, so the identity question is already answered — by the owner, with
   // knowledge the sources do not have. Union everything that matches into one person and
-  // never return ambiguous: asking again would be asking him to repeat himself.
+  // never return ambiguous: asking again would be asking the owner to repeat the answer.
   if (query.emails && query.emails.length > 0) {
     const want = new Set(query.emails.map(norm));
     const hits = candidates.filter((c) => c.emails.some((e) => want.has(norm(e))));
     if (hits.length === 0) return { kind: "unknown" };
     const first = hits[0]!;
     // Union every matching candidate's addresses, keeping each one's ORIGINAL casing — every
-    // sibling path in this file shows him the address as the source spelled it, not a
+    // sibling path in this file shows the owner the address as the source spelled it, not a
     // lowercased form. De-duplication still has to be case-insensitive, so it is keyed on
     // `norm(e)` while the value pushed is `e` itself; first occurrence wins.
     const seen = new Set<string>();
@@ -155,7 +154,7 @@ export function resolvePerson(query: PersonQuery, candidates: Candidate[]): Reso
     // So: fall back to the same looseness the sources themselves used (see looselyMatches)
     // and DISCLOSE it. Never guess silently; but never ask an unanswerable question either
     // (see the header): with exactly one person behind the loose hits, "did you mean Per
-    // Hansen?" is a question whose answer he already gave by typing "Per".
+    // Hansen?" is a question whose answer the owner already gave by typing "Per".
     if (want.length === 0) return { kind: "unknown" };
     const loose = candidates.filter((c) => looselyMatches(want, norm(c.displayName)));
     if (loose.length === 0) return { kind: "unknown" };
@@ -163,7 +162,7 @@ export function resolvePerson(query: PersonQuery, candidates: Candidate[]): Reso
     // "How many loose matches" counts PEOPLE, not rows: two sources both holding
     // "Per Hansen" is one human found twice, and the exact path below already knows how to
     // merge or set aside those. Two DIFFERENT names both matching "Per" is the real
-    // ambiguity, and it is the one case where he has to choose.
+    // ambiguity, and it is the one case where the owner has to choose.
     const distinctNames = [...new Set(loose.map((c) => norm(c.displayName)))];
     if (distinctNames.length > 1) {
       return {
@@ -189,7 +188,7 @@ export function resolvePerson(query: PersonQuery, candidates: Candidate[]): Reso
 
 /**
  * Decide between candidates that all carry the SAME name — whether they were reached by an
- * exact match on what he typed or by the loose fallback above. Split out so the loose path
+ * exact match on what the owner typed or by the loose fallback above. Split out so the loose path
  * cannot quietly acquire different merge semantics from the exact one: there is one rule for
  * "these share a name, now what", and both callers run it.
  */

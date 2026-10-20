@@ -1,15 +1,14 @@
 /**
  * ICP (Ideal Customer Profile) markdown reader for the commercial radar.
  *
- * Ported from `services/agent-runtime/lib/commercial/icp.ts`, which reads
- * `${ATLAS_PATH}/icp/<brand>.md` via a plain injected `readFile` (returns null on any read
+ * Reads `${ATLAS_PATH}/icp/<brand>.md` via a plain injected `readFile` (returns null on any read
  * failure — no ICP configured for a brand is a normal, expected outcome, not an error).
  *
- * chief-of-staff already has an Atlas-store abstraction (`lib/notes-store.ts`): `storeRoot("atlas")`
+ * chief-of-staff already has an Atlas-store abstraction (`@lares/agent-kit/notes-store`): `storeRoot("atlas")`
  * resolves the SAME `ATLAS_PATH` env var, and `resolveInStore` gives traversal/symlink-safe
  * containment for free. This reuses those two primitives rather than a bare
  * `${ATLAS_PATH}/icp/${brand}.md` string join — but deliberately does NOT call
- * `notes-store.ts`'s `readNote`: that function requires the WHOLE store to be "healthy" (at
+ * `notes-store`'s `readNote`: that function requires the WHOLE store to be "healthy" (at
  * least one .md file anywhere under the root) before it will read anything, and throws
  * `NoteNotFoundError`/`StoreUnhealthyError` rather than returning null. Neither matches this
  * function's contract — "no ICP file for this brand" must stay a quiet, expected null, not an

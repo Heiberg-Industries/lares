@@ -51,7 +51,7 @@ export interface Observation {
    * cites (`originForObservation` below), never by the model, which is not asked for it and
    * could not be trusted with it.
    *
-   * It is the LEAST trusted class among the cited turns (the origin spec's narrowest-origin
+   * It is the LEAST trusted class among the cited turns (the origin model's narrowest-origin
    * rule), and `third_party` in all three fail-closed directions: an evidence ref naming a turn
    * that is not in the batch, a cited turn that carries no class at all (a legacy markdown
    * entry), and an observation that cites nothing.
@@ -61,7 +61,7 @@ export interface Observation {
 
 /**
  * The class an observation inherits from the turns it cites — ADR-0018 rule 4's input, and the
- * origin spec's narrowest-origin rule applied to consolidation.
+ * origin model's narrowest-origin rule applied to consolidation.
  *
  * Pure, and exported so the test and the promoter can both assert on it without a model. The
  * model may say WHICH turns it drew on; it can never say what they were worth.
@@ -247,11 +247,10 @@ export function isDoNotLearn(text: string, subject: string): boolean {
   return DO_NOT_LEARN_PATTERNS.some(({ pattern }) => pattern.test(haystack));
 }
 
-/** Who produced the input line, for the prompt below. Inlined here (rather than imported) since
- *  `lib/conversation-log.ts`, which used to export this, was retired by W3B-s8. W4C-s1 rewrote
- *  this line and the turn rendering below, so both come back role-neutral; W4C-s3 rewrote the
- *  instruction prose further down the same way, using `agentLabel` and "the owner" in place of
- *  one installation's persona and owner names. */
+/** Who produced the input line, for the prompt below. Inlined here (rather than imported)
+ *  since the conversation-log module that used to export this is retired. The speaker label and
+ *  turn rendering below are role-neutral, and so is the instruction prose further down: it uses
+ *  `agentLabel` and "the owner" in place of any installation's persona and owner names. */
 function speakerLabel(e: Pick<TurnLogEntry, "lane">): string {
   return e.lane ? `${e.lane} (scheduled)` : "the owner";
 }

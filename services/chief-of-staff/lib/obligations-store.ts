@@ -1,9 +1,7 @@
 /**
- * The obligation radar's read state — ported from
- * `services/agent-runtime/lib/adapters/obligations/store.ts` (`makeObligationStore`), reshaped
- * to standalone functions taking `db: Pool` directly, matching every sibling store in this
- * package (`lib/reminders-store.ts`, `lib/proposals-store.ts`) rather than the old file's
- * factory shape.
+ * The obligation radar's read state, as standalone functions taking `db: Pool` directly,
+ * matching every sibling store in this
+ * package (`lib/reminders-store.ts`, `lib/proposals-store.ts`).
  *
  * Table and column names match `services/box/sql/001_baseline.sql` EXACTLY — that
  * migration already ran on the box's shared `lares_state` Postgres (the same database
@@ -12,8 +10,8 @@
  *
  * WHAT IS DELIBERATELY ABSENT: message bodies, snippets, subject text. This table stores
  * POINTERS ONLY — a thread id, timestamps, who spoke last, a dismissal flag. If a column you
- * are about to add would hold something a person wrote, stop — read the migration's own
- * header banner (sql/001_baseline.sql:3-10) first.
+ * are about to add would hold something a person wrote, stop — read the schema's own
+ * header banner (sql/001_baseline.sql) first.
  */
 import type { Pool } from "pg";
 
@@ -21,9 +19,9 @@ import type { Obligation } from "./brief-content.js";
 import type { Intent } from "./obligation-intent.js";
 
 /**
- * Idempotent — safe to call at boot. The agent box has no auto-migrate
- * (`project_agent_box_no_auto_migrate`), so `001_baseline.sql` is applied by hand; this is
- * the net under a forgotten manual step, not a replacement for the file. Mirrors the file
+ * Idempotent — safe to call at boot. `001_baseline.sql` is the schema's source of truth and
+ * is applied separately; this is
+ * the net under a forgotten step, not a replacement for the file. Mirrors the file
  * exactly, index included — a net that only rebuilds the table and not the index it is
  * queried through is not actually a net.
  */
@@ -48,7 +46,7 @@ export async function ensureObligationsTable(db: Pool): Promise<void> {
     CREATE INDEX IF NOT EXISTS obligation_threads_open_idx
       ON obligation_threads (last_message_at DESC)
       WHERE dismissed_at IS NULL`);
-  // Task 10 (box sql 030) — resolution + intent, both pointers only. Mirrors
+  // Resolution + intent, both pointers only. Mirrors
   // sql/001_baseline.sql exactly; see that file's header for what these hold.
   await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS resolved_elsewhere_at TIMESTAMPTZ`);
   await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS resolution_via        TEXT`);
@@ -72,8 +70,8 @@ export function ensureObligationsTableOnce(db: Pool): Promise<void> {
  * Note what is NOT written here: no subject, no body. This is the only function that touches
  * an `Obligation`, and it reads only structural fields off it.
  *
- * `principal` is the canonical user id this obligation belongs to (One Brain W5's schema
- * guard) — pass the canonical id, never a raw channel address.
+ * `principal` is the canonical user id this obligation belongs to (the schema guard) —
+ * pass the canonical id, never a raw channel address.
  *
  * The SET clause updates `counterparty_address` (and `source`) on every conflict, not just
  * insert: `markRePingAnnounced`/`markNightBeforeDelivered` can create a row first with a ''
@@ -104,7 +102,7 @@ export async function dismissedThreads(db: Pool): Promise<Set<string>> {
 }
 
 /**
- * He said "handled". Never resurface it — see the migration header.
+ * The owner said "handled". Never resurface it — see the migration header.
  *
  * Reports what it actually did. `WHERE thread_id = $1` on an id that is not in the table — a
  * mistyped one, or one reconstructed from a brief the model can no longer see — updates ZERO
@@ -124,12 +122,12 @@ export async function dismissObligation(
 }
 
 /**
- * thread id → the unanswered count that was true when this thread last nudged him.
+ * thread id → the unanswered count that was true when this thread last nudged the owner.
  *
- * A SET of "threads that ever nudged" would mean one thread could only ever interrupt him
+ * A SET of "threads that ever nudged" would mean one thread could only ever interrupt the owner
  * once, no matter how many times they bumped it — while the escalating thread is precisely
  * the motivating case. Carrying the count turns the dedupe into "this BUMP already interrupted
- * him", not "this thread, ever". Rows announced before this column existed read as 0, so their
+ * the owner", not "this thread, ever". Rows announced before this column existed read as 0, so their
  * next real bump (count ≥ 2) is allowed through once — the safe direction: one extra nudge,
  * never a missed one.
  */
@@ -145,7 +143,7 @@ export async function announcedRePings(db: Pool): Promise<Map<string, number>> {
 
 /**
  * Dedupe lives here, in the database, on purpose: an in-memory set re-announces every bumped
- * thread on each deploy, which is the fastest way to teach him to ignore the messages. Upserts
+ * thread on each deploy, which is the fastest way to teach the owner to ignore the messages. Upserts
  * (rather than requiring a prior `upsertSeen` row) so a re-ping can be recorded even if called
  * out of order.
  */
@@ -161,14 +159,14 @@ export async function markRePingAnnounced(
 }
 
 /**
- * Last night's 20:00 pass actually TOLD him about this thread, in a message that actually
- * arrived, as part of preparing him for `opts.day` (tomorrow on the owner's clock, as of that
+ * Last night's 20:00 pass actually TOLD the owner about this thread, in a message that actually
+ * arrived, as part of preparing the owner for `opts.day` (tomorrow on the owner's clock, as of that
  * pass; it was the home clock's tomorrow).
  *
  * This is what the morning brief's suppression is spent against — only a real delivery may
  * buy silence, so only a real delivery writes this row. Upserts, and mirrors
  * `markRePingAnnounced` exactly (same '' placeholder address, healed by the next `upsertSeen`
- * via its SET clause). The SET overwrites rather than preserves: a thread owed to someone he
+ * via its SET clause). The SET overwrites rather than preserves: a thread owed to someone the owner
  * meets again next month must be markable again for THAT day, and an old day is inert either
  * way.
  */
@@ -203,11 +201,11 @@ export async function nightBeforeDelivered(db: Pool, day: string): Promise<Set<s
   return new Set(rows.map((r: { thread_id: string }) => r.thread_id));
 }
 
-// ─── Task 10 (B4): resolution + intent, both pointers only (box sql 030) ──────────────
+// ─── Resolution + intent, both pointers only ──────────────
 
 /**
  * thread id → the `resolved_elsewhere_at` timestamp, for every thread found answered on another
- * channel. A Map rather than a Set (unlike `dismissedThreads`) because the caller (Task B5)
+ * channel. A Map rather than a Set (unlike `dismissedThreads`) because the caller
  * needs to compare the resolution's timestamp against a NEWER `last_message_at` — "they wrote
  * again since I resolved this" must not stay silently resolved — and a Set would throw that
  * timestamp away.
@@ -221,12 +219,12 @@ export async function resolvedThreads(db: Pool): Promise<Map<string, Date>> {
   );
 }
 
-/** `resolution_evidence` is a one-line sentence (Task B2's `Resolution.evidence`), never a
+/** `resolution_evidence` is a one-line sentence (`Resolution.evidence`), never a
  *  body — this is a defensive ceiling, not the expected length. */
 const RESOLUTION_EVIDENCE_MAX_CHARS = 200;
 
 /**
- * Records that the owner already handled this thread on another channel — see Task B2's
+ * Records that the owner already handled this thread on another channel — see
  * `Resolution`. UPDATE only, never upsert: the row is created by `upsertSeen` first (it alone
  * knows `principal`/`counterparty_address`/`last_message_at`), so a thread id this store has
  * never seen has nothing to mark and this is a silent no-op, matching `recordIntent` below.
@@ -240,7 +238,7 @@ export async function markResolved(db: Pool, threadId: string, r: { via: string;
 }
 
 /**
- * The cached intent read (Task B3) for this thread's LAST message — but only when
+ * The cached intent read for this thread's LAST message — but only when
  * `intent_for_message_at` still equals `lastMessageAt`. A thread that got a new message since
  * the cached read must not hand back a verdict about a message that is no longer the last one;
  * `null` tells the caller to read again.

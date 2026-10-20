@@ -1,16 +1,13 @@
 /**
- * Reminders store — ported VERBATIM from `services/box/lib/reminders.ts`'s
- * `createReminder`, `dueReminders`, `markDelivered`, `listPending`, `cancelReminder`. Table
+ * Reminders store: `createReminder`, `dueReminders`, `markDelivered`, `listPending`,
+ * `cancelReminder`. Table
  * and column names must match exactly: chief-of-staff shares the box's `db` service and its
  * `lares_state` database (the same Postgres `services/box/sql/001_baseline.sql` already
- * provisioned the `reminders` table on), so this reads and writes the SAME rows the old
- * daemon's delivery loop does — no new SQL migration needed here, matching the precedent set
+ * provisioned the `reminders` table on), so this reads and writes the SAME rows the box's
+ * delivery loop does — no new SQL migration needed here, matching the precedent set
  * by `lib/identity-client.ts` reading the box's existing `user_aliases` table.
  *
- * The payload shape is `{ text, door, threadRef }` — this file's own ground truth, not
- * `services/agent-runtime/lib/adapters/hands/remind.ts`'s older, inconsistent
- * `{message, channel}` shape (that hand predates the current loop+store pairing and is
- * vestigial; its field names are never used here).
+ * The payload shape is `{ text, door, threadRef }` — this file's own ground truth.
  *
  * `owner` defaults to `CANONICAL_USER_ID` (`lib/identity-client.ts`) rather than a second
  * hardcoded `"owner"` literal — the identity registry fixes the canonical id there, and this

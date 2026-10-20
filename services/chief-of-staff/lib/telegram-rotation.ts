@@ -5,9 +5,9 @@
  * `dist/src/public/channels/telegram/api.js`) collapses to `<chatId>::` for a private chat
  * whose `onMessage` never sets a `conversationId` — one session per chat, bounded only by
  * the framework's 30-day default session timeout, which releases with no summary (verified
- * live). This ports the old runtime's
- * day-boundary rotation (`services/agent-runtime/lib/adapters/brain-ai-sdk.ts`
- * `ROTATE_MIN_MESSAGES`/`ROTATE_HARD_CAP`) onto eve's public channel-event seams:
+ * live). This module adds
+ * day-boundary rotation (a minimum message count and a hard cap on a session's length)
+ * on top of eve's public channel-event seams:
  *
  *   - `onMessage` (`agent/channels/telegram.ts`) logs the inbound turn and, if a PRIOR
  *     turn's rotation left a carry-forward summary waiting, consumes it into this turn's
@@ -15,7 +15,7 @@
  *     ...(onMessage-returned context)]`, `telegramChannel.js` `dispatchMessage`).
  *   - the `message.completed` event (terminal replies only — gated on
  *     `finishReason === "stop"`) logs the assistant's reply, writes down WHICH durable session
- *     answered and on which Oslo day, then checks whether the day has rolled over since the
+ *     answered and on which home-zone day, then checks whether the day has rolled over since the
  *     live session was last anchored. If so, it summarizes the day's exchanges and leaves that
  *     summary waiting as the carry-forward context for the next inbound message.
  *   - the webhook front door (`agent/channels/telegram-webhook.ts`) reads that recorded session
@@ -48,8 +48,8 @@ import { gatewayComplete } from "./llm-complete.js";
 import { configuredOwnerId } from "./identity-client.js";
 import { homeTz, osloDate } from "./recurrence.js";
 
-/** Oslo calendar date as `YYYY-MM-DD` — the rotation boundary. was its own
- *  Intl.DateTimeFormat call, duplicating recurrence.ts's osloDate (which additionally
+/** Home-zone calendar date as `YYYY-MM-DD` — the rotation boundary. A separate
+ *  Intl.DateTimeFormat call, would duplicate recurrence.ts's osloDate (which additionally
  *  handles the midnight-renders-as-24 ICU quirk on its hour field — a date-string caller
  *  like this one was never exposed to that quirk, but there's no reason to compute the same
  *  value two different ways). */
@@ -69,7 +69,7 @@ export function osloDayBefore(day: string): string {
 export interface RotationState {
   osloDay: string;
   pendingContext: string | null;
-  /** The day whose hand-over summary has already been written (migration 081), or null when
+  /** The day whose hand-over summary has already been written, or null when
    *  no day has been handed over for this chat yet. */
   handoverDay: string | null;
 }
@@ -128,7 +128,7 @@ export async function recordExchange(
   );
 }
 
-const SUMMARY_WINDOW = 40; // matches brain-ai-sdk.ts's ROTATE_SUMMARY_WINDOW precedent
+const SUMMARY_WINDOW = 40; // at most this many recent exchanges feed a day summary
 const SUMMARY_PROMPT = [
   "Summarize this Telegram conversation for your own continuity in ~200 words or less.",
   "Capture: decisions made, open threads, and standing preferences the user mentioned.",
@@ -167,7 +167,7 @@ async function summarizeExchanges(rows: { role: string; body: string }[]): Promi
 
 /** The day's own exchanges, newest `SUMMARY_WINDOW` first, summarized. Unlike
  *  `summarizeRecentExchanges` — which takes the last N rows whatever day they fall on, because
- *  it runs inside a turn that has just closed a day — this is bounded to ONE Oslo day, the one
+ *  it runs inside a turn that has just closed a day — this is bounded to ONE home-zone day, the one
  *  being handed over, and never bleeds an older day into it. */
 export async function summarizeDay(db: Pool, chatId: string, day: string): Promise<string | null> {
   const { rows } = await db.query<{ role: string; body: string }>(
@@ -179,7 +179,7 @@ export async function summarizeDay(db: Pool, chatId: string, day: string): Promi
   return summarizeExchanges(rows);
 }
 
-/** The chats with at least one logged exchange on that Oslo day — the job's whole worklist, and
+/** The chats with at least one logged exchange on that home-zone day — the job's whole worklist, and
  *  the reason a chat that said nothing yesterday costs no model call at all: it is never in it. */
 export async function chatsThatTalkedOn(db: Pool, day: string): Promise<string[]> {
   const { rows } = await db.query<{ chat_id: string }>(
@@ -234,7 +234,7 @@ export async function pruneOldExchanges(db: Pool): Promise<void> {
 
 /** True once this chat's hand-over for `day` has been written — by the overnight job or, when
  *  it did not run, by the on-completion path that closed the day. Read BEFORE the model call, so
- *  a second pass over the same night costs nothing. A box that has not applied 081 yet throws
+ *  a second pass over the same night costs nothing. A box that has not applied the schema yet throws
  *  here, which `runDayHandover` turns into a skipped chat and one log line. */
 export async function handoverWrittenFor(db: Pool, chatId: string, day: string): Promise<boolean> {
   const { rows } = await db.query<{ handover_day: string | null }>(
@@ -293,7 +293,7 @@ export interface DayHandoverRun {
  * prices the `brain` alias only, and this summary has always gone through the gateway's
  * `utility` purpose, which it would refuse outright as unpriced.
  *
- * NEVER THROWS FOR ONE CHAT. A failure — the gateway, or a box that has not applied 081 — costs
+ * NEVER THROWS FOR ONE CHAT. A failure — the gateway, or a box that has not applied the schema — costs
  * one log line, leaves the day unstamped, and hands it back to the on-completion path, which
  * then behaves exactly as it does today.
  */
@@ -331,8 +331,8 @@ export async function runDayHandover(db: Pool, closingDay: string): Promise<DayH
 
 // ── The day boundary: record the live session, retire it at the door ─────────────────────
 
-/** Writes down the durable session that just answered in this chat, and the Oslo day it
- *  answered on (migration 078). The row is created by `getRotationState`, which the caller
+/** Writes down the durable session that just answered in this chat, and the home-zone day it
+ *  answered on. The row is created by `getRotationState`, which the caller
  *  runs first on the same turn — this only ever updates it. */
 export async function recordServingSession(
   db: Pool, chatId: string, today: string, sessionId: string,
@@ -423,7 +423,7 @@ async function withBudget<T>(work: Promise<T>, ms: number, what: string): Promis
 }
 
 /**
- * The front door's half of the rotation: on the first update of a new Oslo day for this chat,
+ * The front door's half of the rotation: on the first update of a new home-zone day for this chat,
  * retire the conversation that served the previous one, so the update opens a fresh session.
  *
  * NEVER THROWS, NEVER STALLS. Every fault — an unreadable body, an unreachable database, a

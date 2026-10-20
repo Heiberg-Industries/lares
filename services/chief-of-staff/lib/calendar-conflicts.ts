@@ -1,39 +1,39 @@
 /**
  * lib/calendar-conflicts.ts — the calendar's clashes, found by CODE (detection half).
  *
- * WHY THIS EXISTS, in incident terms. The chief of staff once listed the coming week and, entirely
- * unprompted, caught two overlapping hotel bookings and a status meeting whose Oslo
- * clock time landed at 06:00 where he actually was. Both catches were genuinely useful and
- * both were LUCK: a grep for conflict/overlap/double-book across the brief, the calendar
- * fan-out and every instruction file returned nothing. The model happened to notice. A
- * behaviour that exists only because a model happened to notice is a behaviour that will be
- * missing on the morning it matters, with no red test and no log line to say so.
+ * WHY THIS EXISTS. A model listing the coming week can, entirely unprompted, catch two
+ * overlapping hotel bookings, or a status meeting whose clock time in another zone lands at
+ * 06:00 where the owner actually is. Both catches are genuinely useful and
+ * both are LUCK: nothing in the brief, the calendar fan-out or any instruction file asked the
+ * model to look for conflicts. A behaviour that exists only because a model happened to notice
+ * is a behaviour that will be missing on the morning it matters, with no red test and no log
+ * line to say so.
  *
  * So this module is deterministic, pure and total: same events in, same findings out, no I/O,
  * no model call, no eve import. It answers ONE question — "what on this calendar contradicts
- * itself?" — and it never proposes a fix. Resolving a clash from evidence he already has
- * (which hotel the confirmation mail actually kept) is a LATER ticket on purpose; detection is
- * useful on its own and ships on its own.
+ * itself?" — and it never proposes a fix. Resolving a clash from evidence the owner already has
+ * (which hotel the confirmation mail actually kept) is a separate step on purpose
+ * (`lib/conflict-resolution.ts`); detection is useful on its own.
  *
  * WHAT IT DOES NOT DO, and must not grow into: it never deletes, declines, moves or answers
  * anything. It returns rows. Everything downstream of it is prose.
  *
- * THREE CLASSES, in the priority the ticket names them (a fourth, travel-time impossibility,
- * is explicitly NOT in this ticket — see {@link CONFLICT_PRIORITY}):
+ * THREE CLASSES, in priority order (a fourth, travel-time impossibility,
+ * is explicitly NOT implemented — see {@link CONFLICT_PRIORITY}):
  *
  *  1. `double-booked` — two TIMED commitments overlapping.
  *  2. `overlapping-stay` — two beds booked for the same night.
- *  3. `timezone-trap` — an event whose wall-clock time is nonsense where he will actually be.
+ *  3. `timezone-trap` — an event whose wall-clock time is nonsense where the owner will actually be.
  *
  * THE FALSE-POSITIVE BUDGET IS THE POINT. A radar that cries wolf gets ignored, and an ignored
  * radar is worse than none because it also costs the attention of every true finding beside
  * it. Every exclusion below is therefore a rule with a reason, written down and tested, not
  * defensive filtering:
  *
- *   - an all-day placeholder overlapping a meeting is NOT a double booking (he is not in two
+ *   - an all-day placeholder overlapping a meeting is NOT a double booking (the owner is not in two
  *     places; one of them is a label on the day);
  *   - a declined or cancelled event is not a commitment;
- *   - an event he marked FREE (`transparency: "transparent"`) is not a commitment — but see
+ *   - an event the owner marked FREE (`transparency: "transparent"`) is not a commitment — but see
  *     {@link staysOf}, where that same flag is deliberately ignored, because a booking
  *     confirmation Gmail files is nearly always "free" and excluding it would delete the whole
  *     overlapping-stay class;
@@ -41,8 +41,8 @@
  *     meeting (the same reasoning `lib/brief-content.ts`'s `classifyEvent` already records);
  *   - two TENTATIVE events do not clash with each other — nothing has been committed yet;
  *   - the SAME commitment read off two calendars is one commitment, not a clash (see
- *     {@link dedupeEvents} — his briefs read every calendar of both accounts plus the
- *     read-only one he subscribes to, so this is the common case, not an edge case);
+ *     {@link dedupeEvents} — the owner's briefs read every calendar of both accounts plus the
+ *     read-only one the owner subscribes to, so this is the common case, not an edge case);
  *   - a 06:00 event on an ordinary home-timezone day is an early start, not a trap.
  *
  * WHY IT DOES NOT IMPORT `classifyEvent` FROM `lib/brief-content.ts`, though the lodging
@@ -57,21 +57,20 @@
  * `googleapis`' own typings). Every comparison below is written so an UNKNOWN value falls
  * through to "an ordinary committed event": a seventh status Google invents tomorrow makes
  * this radar noisier, never blinder. That direction is chosen on purpose — a missed clash is
- * the failure this ticket exists to fix.
+ * the failure this radar exists to prevent.
  */
 import type { CalendarEvent } from "./google.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
 
-/** The clock he keeps when nothing says otherwise. Every "which day is it" question in this
- *  module is answered on THIS zone, never on a trip's own — the same rule
- *  `agent/instructions/travel-context.ts` records at length, so the chief of staff and the travel agent can never
- *  disagree about which day a booking belongs to. */
+/** The clock the owner keeps when nothing says otherwise. Every "which day is it" question in this
+ *  module is answered on THIS zone, never on a trip's own, so every consumer of this module
+ *  agrees about which day a booking belongs to. */
 export function defaultHomeTimezone(): string {
   return homeTzFromEnv();
 }
 
-/** The waking hours a scheduled event is expected to land in, where he actually is. Outside
- *  this, a meeting is something he has to be told about before he sleeps through it. */
+/** The waking hours a scheduled event is expected to land in, where the owner actually is. Outside
+ *  this, a meeting is something the owner has to be told about before the owner sleeps through it. */
 export const WAKING_HOURS_START = 7;
 export const WAKING_HOURS_END = 22;
 
@@ -88,10 +87,10 @@ export const MAX_CONFLICT_EVENTS = 400;
 export type ConflictKind = "double-booked" | "overlapping-stay" | "timezone-trap";
 
 /**
- * The ticket's own priority order, and the ordering key for the results.
+ * The priority order, and the ordering key for the results.
  *
- * `travel-time impossibility` — back-to-back commitments in places he cannot get between — is
- * the fourth class the ticket names and is deliberately NOT implemented here. It needs a
+ * `travel-time impossibility` — back-to-back commitments in places the owner cannot get between — is
+ * a fourth class and is deliberately NOT implemented here. It needs a
  * journey-time lookup (the `transit` capability), which makes it neither pure nor free, and
  * that is a different shape of change from this one. Two flights that overlap in TIME are
  * still caught, by `double-booked`, because they are two timed commitments like any other.
@@ -127,12 +126,12 @@ export interface CalendarConflict {
   /** The events in the clash, in the order they start. Always at least two. */
   readonly events: readonly ConflictEventRef[];
   /** One line, plain language, quotable as-is — states what was found and nothing more. It
-   *  never proposes a fix: that is the resolution half, and a later ticket. */
+   *  never proposes a fix: that is the resolution half, in `lib/conflict-resolution.ts`. */
   readonly explanation: string;
 }
 
-/** One trip, reduced to what a clash needs to know: which days, and whose clock. Structurally
- *  a `lib/travel-store.ts` `TravelTrip`, declared here so this module depends on no store. */
+/** One trip, reduced to what a clash needs to know: which days, and whose clock. Declared here
+ *  so this module depends on no store. */
 export interface ConflictTrip {
   /** Inclusive ISO date. */
   readonly start: string;
@@ -150,8 +149,8 @@ export interface ConflictContext {
    * them: an unbounded default is how a brief block quietly becomes a month's audit.
    */
   readonly days: readonly string[];
-  /** Where he actually is, per day (the travel agent's trip store, via `readBriefTravel`). Absent or
-   *  empty means "home all week", which is the honest default — not "unknown, so say nothing". */
+   /** Where the owner actually is, per day, when the caller knows (for example from a trip store). Absent or
+    *  empty means "home all week", which is the honest default — not "unknown, so say nothing". */
   readonly trips?: readonly ConflictTrip[];
   /** Defaults to {@link defaultHomeTimezone}. */
   readonly homeTimezone?: string;
@@ -251,7 +250,7 @@ function coveredDays(e: CalendarEvent, home: string): { first: string; last: str
   return { first: a.date, last: b.date < a.date ? a.date : b.date };
 }
 
-/** The zone he is in on `day` — the first trip whose inclusive span covers it, else home. */
+/** The zone the owner is in on `day` — the first trip whose inclusive span covers it, else home. */
 export function timezoneOn(day: string, ctx: ConflictContext): string {
   const home = ctx.homeTimezone ?? defaultHomeTimezone();
   for (const trip of ctx.trips ?? []) {
@@ -265,7 +264,7 @@ export function timezoneOn(day: string, ctx: ConflictContext): string {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // De-duplication — the same commitment, seen more than once.
 //
-// His briefs read EVERY calendar of BOTH Google accounts plus the read-only one he subscribes
+// The owner's briefs read EVERY calendar of BOTH Google accounts plus the read-only one the owner subscribes
 // to (`lib/calendar-fanout.ts`, `includeReadOnly`), and an invitation accepted on one calendar
 // and copied to another is the normal case, not an edge case. Without this pass, the single
 // most common "conflict" this module would report is a meeting clashing with itself.
@@ -321,9 +320,9 @@ function compareEvents(a: CalendarEvent, b: CalendarEvent): number {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * How firmly an event is on his day.
+ * How firmly an event is on the owner's day.
  *
- * `excluded` covers five different reasons that all mean the same thing downstream — he is not
+ * `excluded` covers five different reasons that all mean the same thing downstream — the owner is not
  * held to this — and they are folded on purpose: a rule that had to name each one separately
  * at every call site is a rule that will miss one.
  */
@@ -333,7 +332,7 @@ export type Commitment = "committed" | "tentative" | "excluded";
  *  `LODGING_TITLE` (typical titles: "Stay at Hotel A
  *  Airport", "Stay at Hotel B"), plus the Norwegian and apartment-rental words a
  *  stay can also arrive under. Deliberately NOT the bare word "reservation": a
- *  "Reservation at …" row is usually a restaurant, and calling that a bed would assert he sleeps
+ *  "Reservation at …" row is usually a restaurant, and calling that a bed would assert the owner sleeps
  *  there. */
 const STAY_TITLE =
   /\b(stay at|hotel|hotell|motel|motell|hostel|resort|airbnb|lodging|overnatting|opphold|guest ?house|pensjonat|b ?& ?b|bed and breakfast|apartment|leilighet|check[-\s]?in|innsjekk)\b/iu;
@@ -354,7 +353,7 @@ function isNotAMeetingType(e: CalendarEvent): boolean {
 export function commitmentOf(e: CalendarEvent): Commitment {
   if (lower(e.status) === "cancelled") return "excluded";
   if (lower(e.myResponse) === "declined") return "excluded";
-  // He marked it FREE. Read only here — `staysOf` ignores this flag deliberately.
+  // The owner marked it FREE. Read only here — `staysOf` ignores this flag deliberately.
   if (lower(e.transparency) === "transparent") return "excluded";
   if (isNotAMeetingType(e)) return "excluded";
   // A bed is not a meeting; two of them are an overlapping STAY, which is its own class.
@@ -368,16 +367,16 @@ export function commitmentOf(e: CalendarEvent): Commitment {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * Two TIMED events that overlap, where both are on his day.
+ * Two TIMED events that overlap, where both are on the owner's day.
  *
  * THE ALL-DAY RULE, which is the whole false-positive story for this class: an all-day entry
- * is a LABEL on the day ("Oslo", "holiday", a hotel booking Gmail filed), not a place he is
+ * is a LABEL on the day ("City A", "holiday", a hotel booking Gmail filed), not a place the owner is
  * standing in, so it can never double-book a meeting. It is excluded here and handled — where
  * it belongs — by the overlapping-stay class below.
  *
  * THE TENTATIVE RULE, stated once so it can be tested: a tentative event counts as a
  * commitment only when the OTHER side of the pair is committed. Two tentatives are two
- * maybes, and reporting them as a clash is how a radar teaches him to skip its findings.
+ * maybes, and reporting them as a clash is how a radar teaches the owner to skip its findings.
  *
  * Touching ends do not overlap: 10:00–11:00 beside 11:00–12:00 is a well-packed morning.
  */
@@ -429,8 +428,8 @@ function nightsOf(e: CalendarEvent, home: string): string[] {
   if (!days) return [];
   // `coveredDays` returns the last day the entry TOUCHES. For an all-day booking that is
   // already the last night (Google's `end` is the exclusive next midnight, and `coveredDays`
-  // has stepped back off it). For a timed one it is the CHECK-OUT day, which is a morning he
-  // leaves, not a night he sleeps — so the nights stop one day short of it.
+  // has stepped back off it). For a timed one it is the CHECK-OUT day, which is a morning the owner
+  // leaves, not a night the owner sleeps — so the nights stop one day short of it.
   const allDay = e.allDay === true || isDateOnly(e.start);
   const lastNight = allDay ? days.last : addDays(days.last, -1);
   return daySpan(days.first, lastNight < days.first ? days.first : lastNight);
@@ -441,11 +440,11 @@ function nightsOf(e: CalendarEvent, home: string): string[] {
  *
  * `transparency` is deliberately NOT read here, unlike everywhere else in this file: Gmail
  * files a booking confirmation as a FREE all-day entry, so excluding "free" events would
- * delete this entire class and with it the 2026-08-20 finding the ticket was opened for.
+ * delete this entire class.
  * Cancelled and declined still exclude — a cancelled reservation is not a bed.
  *
  * The title is what identifies a stay, and that is the false-positive guard: two ordinary
- * all-day placeholders overlapping ("Oslo", "vacation") are NOT a conflict, and only a title
+ * all-day placeholders overlapping ("City A", "vacation") are NOT a conflict, and only a title
  * that names lodging can produce one.
  */
 function staysOf(events: readonly CalendarEvent[], home: string): Array<{ e: CalendarEvent; nights: string[] }> {
@@ -469,7 +468,7 @@ function overlappingStays(
       if (shared.length === 0) continue;
       // The SHARED NIGHT has to fall inside the window, not merely the two bookings. Two long
       // stays can both reach into today and still have overlapped only on a night last week,
-      // and a brief that opens with a clash he already slept through is the noise this class
+      // and a brief that opens with a clash the owner already slept through is the noise this class
       // was supposed to be worth interrupting for.
       if (!shared.some((n) => days.has(n))) continue;
       const nights = shared.length === 1
@@ -492,19 +491,19 @@ function overlappingStays(
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * An event booked in one zone that lands at an impossible hour in the zone he will be in.
+ * An event booked in one zone that lands at an impossible hour in the zone the owner will be in.
  *
- * THE GUARD THAT MATTERS: the event's OWN zone must differ from where he is. A 06:00 event on
- * an ordinary day at home is an early start he chose, not a trap, and reporting it would be
+ * THE GUARD THAT MATTERS: the event's OWN zone must differ from where the owner is. A 06:00 event on
+ * an ordinary day at home is an early start the owner chose, not a trap, and reporting it would be
  * the radar's first wolf. "Differ" is measured as the WALL CLOCK, not the zone STRING — two
  * zones that name different cities but read the same clock at that instant (a neighbouring
  * country, a zone alias) are the same zone for this purpose, and comparing strings would have
  * flagged every early morning.
  *
  * An event with no zone of its own is read as HOME. That is an assumption, and it is the
- * right-shaped one: these events come off his own calendars, whose default zone is the one he
+ * right-shaped one: these events come off the owner's own calendars, whose default zone is the one the owner
  * keeps, and the founding case is exactly that — a recurring status meeting booked at home
- * time that follows him to another time zone.
+ * time that follows the owner to another time zone.
  *
  * Bookings Gmail filed (`fromGmail`) are excluded: a flight that boards at 06:00 local is a
  * flight, not a trap, and a hotel check-in has no clock meaning at all.

@@ -1,6 +1,6 @@
-// lib/memory-reads.ts — which remembered things one answer actually opened (box 075).
+// lib/memory-reads.ts — which remembered things one answer actually opened.
 //
-// Two tables, two questions: `memory_use` (073) is the retirement clock — one row per
+// Two tables, two questions: `memory_use` is the retirement clock — one row per
 // (kind, ref, owner) for all time, no session, no turn. This table is append-only and answers
 // "which memories did THIS answer use" instead of "has this ever been used". See
 // services/box/sql/001_baseline.sql for the full rationale.

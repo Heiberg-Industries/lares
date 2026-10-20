@@ -11,8 +11,7 @@
  * Short-circuits to a safe "none" decision when activity is empty — no LLM call. Gracefully
  * returns a safe fallback on any parse failure — never throws.
  *
- * Ported verbatim from `services/agent-runtime/lib/adapters/route/classify.ts`. The `llm`
- * interface is a plain `(prompt: string) => Promise<string>`, so `lib/llm-complete.ts`'s
+ * The `llm` interface is a plain `(prompt: string) => Promise<string>`, so `lib/llm-complete.ts`'s
  * `gatewayComplete` is a drop-in and tests can inject a fake.
  */
 

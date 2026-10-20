@@ -3,8 +3,8 @@
  * anything other than the agent superseding its own earlier guess (ADR-0018 rule 2), and the ONE
  * place an inference the agent drew on its own becomes something this system keeps (rule 4).
  *
- * WHAT THE owner APPROVES IS WHAT GETS APPLIED. This function takes an `id` and, since box 084
- * (ruling D5), an explicit `owner` for the row an approved `add` inserts — defaulted to
+ * WHAT THE owner APPROVES IS WHAT GETS APPLIED. This function takes an `id` and an explicit
+ * `owner` for the row an approved `add` inserts — defaulted to
  * `ownerId()`, this installation's one fail-soft owner key, so every real caller still passes
  * just the id and `applyMemoryProposal.length` stays 2 (a default parameter is not counted;
  * `tests/memory-proposal-apply.test.ts` pins that). A multi-user caller only has to supply the
@@ -103,7 +103,7 @@ const MOVED =
 export async function applyMemoryProposal(
   db: Pool,
   id: number,
-  // Explicit, not guessed inside the write below (box 084, ruling D5) — a default so every real
+  // Explicit, not guessed inside the write below— a default so every real
   // caller keeps passing just the id (see this file's header on why `.length` still reads 2).
   owner: string = ownerId(),
 ): Promise<{ applied: boolean; message: string }> {

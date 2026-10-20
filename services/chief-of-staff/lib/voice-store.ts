@@ -3,15 +3,14 @@
  * language-tagged exemplar corpus (voice_exemplar, included rows only) — the latter scoped
  * to ONE MAILBOX.
  *
- * The card and the corpus split differently on purpose (an owner ruling): the card holds
+ * The card and the corpus split differently on purpose : the card holds
  * the RULES, which describe one human and are shared across mailboxes; the corpus holds
  * EXAMPLES, which are audience-specific — two mailboxes write to
  * different people. Grounding a draft for one organisation in examples from the other is the thing this scoping
  * prevents; before it, both were pooled into one indistinguishable blend
  * (sql/001_baseline.sql explains what happened to those rows).
  *
- * Ported from
- * services/agent-runtime/lib/voice/store.ts — reads the SAME existing tables
+ * Reads the existing tables
  * (services/box/sql/001_baseline.sql), shared Postgres, no new migration for this piece.
  * Loaded fresh per draft (a handful of drafts/day) so console edits + re-learns take effect
  * without a restart.

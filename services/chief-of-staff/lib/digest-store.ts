@@ -1,17 +1,15 @@
 /**
  * The digest queue's CONSUMER half, plus the skip ledger.
  *
- * Ported VERBATIM (same SQL text, same column names) from
- * `services/box/lib/digest-store.ts` — the counterpart to this service's existing
- * `lib/digest-client.ts`, which writes the rows `claimDigestRequests` reads. The two must agree
- * exactly: `digest-client` is what `agent/tools/digest_run.ts` calls when the owner asks for a
- * digest now, and it has been enqueueing into a queue only the old digest container
- * could drain.
+ * Same SQL text and column names as the box's `services/box/lib/digest-store.ts` — the
+ * counterpart to this service's `lib/digest-client.ts`, which writes the rows
+ * `claimDigestRequests` reads. The two must agree
+ * exactly: `digest-client` is what `catalogue/digest_run.ts` calls when the owner asks for a
+ * digest now, and the queue needs a consumer to drain it.
  *
  * `claimDigestRequests` is a DELETE … RETURNING, i.e. the claim IS the consumption — whichever
- * process runs it owns the row. That is why the cutover stops the old digest container and enables this
- * schedule in ONE change: with two live consumers an on-demand digest goes to whichever won the
- * race, and a scheduled pass fires twice.
+ * process runs it owns the row. That is why exactly one consumer may be live at a time: with
+ * two, an on-demand digest goes to whichever won the race, and a scheduled pass fires twice.
  *
  * `enqueueDigestRequest` is deliberately NOT re-exported here; it already lives in
  * `lib/digest-client.ts` and duplicating it would give the row shape two definitions.

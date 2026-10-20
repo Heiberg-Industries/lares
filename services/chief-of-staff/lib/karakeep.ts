@@ -1,8 +1,8 @@
 /**
  * Karakeep sync — pulls new "save for later" bookmarks from a self-hosted Karakeep
- * instance into the Brain `_inbox` as metadata-only notes (link + title + tags, NO
+ * instance into the vault `_inbox` as metadata-only notes (link + title + tags, NO
  * article body), so the existing digest enriches + files them. Read-only against
- * Karakeep; the only writes are new `_inbox` notes. See the clipper tool sweep.
+ *Karakeep; the only writes are new `_inbox` notes.
  */
 
 export interface KarakeepBookmark {

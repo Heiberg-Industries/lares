@@ -3,7 +3,7 @@ import {managedGoogleSelection} from './managed-google.js';
  * Google (Gmail/Calendar) OAuth stack — decrypt existing `oauth_tokens` refresh tokens and
  * build authed googleapis clients from them.
  *
- * AUTH PLUMBING NOW LIVES IN THE KIT (Step D): `decryptSecret`, `readTokenEncKey`,
+ * AUTH PLUMBING LIVES IN THE KIT: `decryptSecret`, `readTokenEncKey`,
  * `readSecretFile`, the `oauth_tokens` row reads, the egress-proxy pinning and the
  * `OAuth2Client` construction live once in `@lares/agent-kit/google-auth`.
  * What deliberately did NOT move to the kit: the per-org client lookup
@@ -14,52 +14,43 @@ import {managedGoogleSelection} from './managed-google.js';
  * file's own test-factory seams. The kit hands back an authenticated `OAuth2Client` and stops
  * there; the `google.gmail(...)`/`google.calendar(...)` calls stay here.
  *
- * Ported from three old-runtime sources, kept together in one file (matching the Wave-1
- * plan's file structure — `lib/google.ts` is the ONE new lib module this task adds):
- *   - `services/box/lib/crypto.ts`'s `decryptSecret` — AES-256-GCM, storage format
- *     `base64(IV(12) || ciphertext || authTag(16))`. Ported byte-for-byte: get this wrong
+ * One file holds the whole Google stack, in these parts:
+ *   - `decryptSecret` — AES-256-GCM, storage format
+ *     `base64(IV(12) || ciphertext || authTag(16))`. Get this wrong
  *     and every stored Google refresh token becomes silently undecryptable or decrypts to
- *     garbage. `encryptSecret` is NOT ported — this stack only ever reads existing tokens.
+ *     garbage. `encryptSecret` does not exist here — this stack only ever reads existing tokens.
  *     (Now in the kit, unchanged.)
- *   - `services/box/lib/oauth-tokens.ts`'s `getDecryptedRefreshToken` /
- *     `listDecryptedRefreshTokens` — the exact SQL against `oauth_tokens`, verbatim. (Now in
- *     the kit as `getMostRecentRefreshToken` / `listDecryptedRefreshTokens`, unchanged apart
- *     from taking `provider` as a parameter, which this file already did.)
- *   - `services/agent-runtime/lib/adapters/gmail-oauth.ts` (`wrapGmailApi`,
- *     `buildAuthedGmail`), `gmail-client.ts` (`makeGmailClient`'s search/read/send/draft/
- *     getSignature, PLUS searchThreadIds/readThread — added by Task 12 (the obligation
- *     radar), the first caller in this wave that needs a complete paged scan and a whole
- *     thread's messages. `poll`/`hasDraftForThread` remain unported: they belong to the
- *     separate email-watcher container, untouched by this wave), `gmail-mime.ts` (the MIME
- *     envelope builder), `calendar-oauth.ts`
- *     (`wrapCalendarApi`, `buildAuthedCalendar`) and `calendar-client.ts`
- *     (`makeCalendarClient`) — the client-construction half only; hand-level gating
- *     (approval, `sendUpdates` defaults) is Task 7's job for calendar and this file's
- *     gmail tools' job for gmail, never this module's.
+ *   - the exact SQL against `oauth_tokens` for `getDecryptedRefreshToken` /
+ *     `listDecryptedRefreshTokens`. (Now in the kit as `getMostRecentRefreshToken` /
+ *     `listDecryptedRefreshTokens`, taking `provider` as a parameter, which this file already did.)
+ *   - the Gmail client construction (`wrapGmailApi`, `buildAuthedGmail`), the Gmail adapter
+ *     (`makeGmailClient`'s search/read/send/draft/getSignature, plus searchThreadIds/readThread
+ *     for the obligation radar, which needs a complete paged scan and a whole thread's
+ *     messages), the MIME envelope builder, and the calendar client construction
+ *     (`wrapCalendarApi`, `buildAuthedCalendar`) and adapter (`makeCalendarClient`) — the
+ *     client-construction half only; hand-level gating (approval, `sendUpdates` defaults) is the
+ *     calendar tools' job for calendar and the gmail tools' job for gmail, never this module's.
+ *     Polling for new mail belongs to a separate watcher, not to this file.
  *
- * DEVIATION FROM THE OLD RUNTIME (deliberate, landed with Task 2): the old adapters read a
- * PLAIN `TOKEN_ENC_KEY` env var (`keyFromEnv`). chief-of-staff's compose block instead mounts a
+ * THE TOKEN KEY IS A SECRET FILE: chief-of-staff's compose block mounts a
  * Docker secret FILE at `TOKEN_ENC_KEY_FILE` (default `/run/secrets/token-enc-key`),
- * matching every other secret in this codebase (`lib/twenty-client.ts`). The kit's `readTokenEncKey` reads that file, lazily, on every
+ * matching every other secret in this codebase (`lib/twenty-client.ts`), not a plain
+ * `TOKEN_ENC_KEY` env var. The kit's `readTokenEncKey` reads that file, lazily, on every
  * call — never at module load — so a missing/malformed key surfaces as a typed error the
  * first time a Google tool actually runs, not at container boot.
  *
  * PRINCIPAL: `googleClients()` defaults its principal from `GOOGLE_PRINCIPAL_ID` and uses it
  * AS-IS — this file never canonicalises, never consults the identity register, and never
- * rewrites what it was given. `oauth_tokens.principal` used to be keyed by a channel-style
- * spelling that differed from the register's id; box 085
- * (`services/box/sql/001_baseline.sql`, ruling D4) renamed those rows
- * onto the register's id, and the environment value moves with them in the same maintenance
- * window (the OAuth principal rename note). That is deliberately a
- * configuration change and not a code change: whatever string the environment names is the
- * string this file looks under, and a lookup that finds nothing says so once in the log.
+ * rewrites what it was given. `oauth_tokens.principal` rows are keyed by the register's id
+ * (`services/box/sql/001_baseline.sql`), and the environment value must name that same id.
+ * That is deliberately a configuration matter and not a code one: whatever string the
+ * environment names is the string this file looks under, and a lookup that finds nothing says
+ * so once in the log.
  *
  * LAZINESS (the trap this file must not reproduce): `googleClients(principal)` returns
  * immediately — it does no I/O. Only calling `.gmail()` / `.calendar()` touches the
- * secret files, the DB, or googleapis. Old Calendar registry wiring resolved a client
- * EAGERLY at hand-build time and threw synchronously for an unenrolled principal — a
- * documented crash-loop incident. Gmail's old wiring was already lazy; this file follows
- * that precedent for both.
+ * secret files, the DB, or googleapis. Resolving a client EAGERLY at construction time throws
+ * synchronously for an unenrolled principal and crash-loops the service.
  */
 import { google } from "googleapis";
 
@@ -71,17 +62,15 @@ import {
   readSecretFile,
 } from "@lares/agent-kit/google-auth";
 
-// GoogleUnenrolledError and the per-org OAuth client registry live in ./google-orgs.ts (
-// batch 6) so a READ tool can resolve a Drive client without importing this file, which also
+// GoogleUnenrolledError and the per-org OAuth client registry live in ./google-orgs.ts, so
+// a READ tool can resolve a Drive client without importing this file, which also
 // holds Gmail send and Calendar writes — the write-shape lint follows imports.
 export { GoogleUnenrolledError, type GoogleOrgConfig } from "./google-orgs.js";
 import { GoogleUnenrolledError, orgConfig, type GoogleOrgConfig } from "./google-orgs.js";
 
 // -----------------------------------------------------------------------------------------
-// Gmail — client construction (gmail-oauth.ts) + adapter (gmail-client.ts) + MIME
-// (gmail-mime.ts), ported. The egress-proxy pinning that used to live here (a verbatim port
-// of services/agent-runtime/lib/adapters/google-proxy.ts, duplicated byte-for-byte in
-// travel) now lives inside the kit's `buildOAuth2Client` — chief-of-staff is sealed, and both
+// Gmail — client construction + adapter + MIME. The egress-proxy pinning lives inside the
+// kit's `buildOAuth2Client` — chief-of-staff is sealed, and both
 // the token refresh and every API call still tunnel through the same squid proxy via the
 // OAuth2 client's own gaxios transporter.
 // -----------------------------------------------------------------------------------------
@@ -94,11 +83,10 @@ interface RawGmailMessage { id?: string; threadId?: string; payload?: RawGmailPa
 interface RawGmailThread { id?: string; messages?: RawGmailMessage[] }
 
 /** The structural surface this file's adapter needs from `google.gmail(...)` — narrowed to
- *  what `search`/`read`/`signature`/`draft`/`send` actually call, PLUS `list`'s `pageToken`
- *  and `getThread` — added by Task 12 (the obligation radar), which is the first caller in
- *  this wave that actually needs a complete paged scan and a whole thread's messages. `poll`
- *  remains unported (belongs to the separate email-watcher container this task does not
- *  touch); `hasDraftForThread` is now ported (needs it for per-thread draft dedup). */
+ *  what `search`/`read`/`signature`/`draft`/`send` actually call, plus `list`'s `pageToken`
+ *  and `getThread` (the obligation radar needs a complete paged scan and a whole thread's
+ *  messages), and `hasDraftForThread` (per-thread draft dedup). Polling for new mail is not
+ *  here: that belongs to a separate watcher. */
 export interface GmailMessagesClient {
   /** `pageToken`/`nextPageToken` are what make a COMPLETE scan of a query possible — Gmail
    *  caps a page at 500 and hands back a token whenever more matched. Omitted `pageToken`
@@ -120,8 +108,8 @@ export interface GmailMessagesClient {
   updateDraft(id: string, raw: string, threadId?: string): Promise<{ id: string; messageId: string; threadId: string }>;
   getSignature(sendAsEmail: string): Promise<string>;
   /** The complete thread: every message it contains, regardless of which per-message label
-   *  (INBOX, SENT, …) each one individually carries — needed to see a reply he already sent,
-   *  which `list`/`get` alone cannot (his own replies carry SENT, never INBOX). Only
+   *  (INBOX, SENT, …) each one individually carries — needed to see a reply the owner already sent,
+   *  which `list`/`get` alone cannot (the owner's own replies carry SENT, never INBOX). Only
    *  `readThread` (below) calls this. */
   getThread(threadId: string): Promise<RawGmailThread>;
   /** True if this mailbox already has a draft on this thread. was a single
@@ -151,13 +139,12 @@ export function __setTestGmailApiFactory(factory: typeof testGmailApiFactory): v
 }
 
 /** Adapt the googleapis `gmail.users.messages` surface to the structural
- *  `GmailMessagesClient`. Ported from `gmail-oauth.ts`'s `wrapGmailApi`, narrowed to the
+ *  `GmailMessagesClient`, narrowed to the
  *  methods `search`/`read`/`signature`/`draft`/`send` use (see `GmailMessagesClient`'s
- *  doc-comment for what's deliberately not ported). Rate-limit backoff
- *  (`gmail-ratelimit.ts`'s per-mailbox 429 handling) is NOT ported — a known gap flagged
- *  in the task report, not silently dropped. */
+ *  doc-comment for what's deliberately not here). Rate-limit backoff
+ *  (a per-mailbox 429 handling) is NOT implemented — a known gap, not silently dropped. */
 export function wrapGmailApi(api: GmailApi, mailboxKey = "gmail"): GmailMessagesClient {
-  void mailboxKey; // kept for signature parity with the old adapter; no rate-limit gate keys on it here
+  void mailboxKey; // kept for the stable signature; no rate-limit gate keys on it here
   return {
     async list(params: { q: string; maxResults: number; pageToken?: string }) {
       const res = await api.users.messages.list({
@@ -206,7 +193,7 @@ export function wrapGmailApi(api: GmailApi, mailboxKey = "gmail"): GmailMessages
 }
 
 /** RFC-5322 headers (NOT Gmail's internal id) — needed to build a properly-threaded reply
- *  (In-Reply-To/References). Ported from gmail-client.ts. */
+ *  (In-Reply-To/References).*/
 export interface MailMessage {
   id: string; threadId: string; from: string; to: string[]; subject: string; bodyText: string;
   sentAt: string; messageId: string; references: string; isCalendarNotice: boolean;
@@ -219,7 +206,7 @@ export interface MailMessage {
    * own stored copy of a message they sent (a Bcc recipient's own copy carries no such header,
    * and the header is stripped entirely from every other recipient's copy). Optional, not
    * merely often-empty: most callers never look at it, so this stays untouched everywhere but
-   * `lib/contact-history.ts`'s mail-header verification (step 1, fix round 1, C2),
+   * `lib/contact-history.ts`'s mail-header verification (step 1),
    * which is the one caller reading the SENDER's own Sent copy specifically to see who was on
    * it. `toMailMessage` below always sets it (possibly `[]`), never omits it.
    */
@@ -242,7 +229,7 @@ export interface MailSendInput extends MimeEnvelopeInput { threadId?: string; ac
  * Headers ride along because the caller already paid for them: `threads.get` returns every
  * message's full payload, headers included. Fetching a message AGAIN just to look at one
  * header (e.g. the obligation radar's automated-sender check) would be a round trip spent
- * re-downloading something already in hand. Ported from gmail-client.ts's `ThreadMessage`.
+ * re-downloading something already in hand.
  */
 export interface ThreadMessage extends MailMessage { headers: Record<string, string> }
 
@@ -268,8 +255,7 @@ function header(headers: RawGmailHeader[] | undefined, name: string): string {
   return headers?.find((h) => (h.name ?? "").toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
-/** Every header as a flat name→value record, in Gmail's original casing. Ported from
- *  gmail-client.ts's `toHeaderRecord`. */
+/** Every header as a flat name→value record, in Gmail's original casing. */
 function toHeaderRecord(headers: RawGmailHeader[] | undefined): Record<string, string> {
   const out: Record<string, string> = {};
   for (const h of headers ?? []) {
@@ -280,7 +266,7 @@ function toHeaderRecord(headers: RawGmailHeader[] | undefined): Record<string, s
 
 const decodeB64Url = (d?: string) => (d ? Buffer.from(d, "base64url").toString("utf8") : "");
 
-/** Depth-first over the MIME tree — ported from gmail-client.ts's `walkParts`. */
+/** Depth-first over the MIME tree. */
 function walkParts(payload: RawGmailPart | undefined): RawGmailPart[] {
   if (!payload) return [];
   return [payload, ...(payload.parts ?? []).flatMap(walkParts)];
@@ -340,7 +326,7 @@ function toThreadMessage(raw: RawGmailMessage): ThreadMessage {
 
 const ASCII_ONLY = /^[\x00-\x7F]*$/;
 
-/** RFC-2047 encode a non-ASCII subject. Ported from gmail-mime.ts. */
+/** RFC-2047 encode a non-ASCII subject.*/
 function encodeSubject(subject: string): string {
   if (ASCII_ONLY.test(subject)) return subject;
   return `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
@@ -355,7 +341,7 @@ const HEADER_INJECTION_RE = /[\r\n]/;
 
 /**
  * Refuses to build a MIME envelope carrying a raw CR or LF in ANY header-bound field.
- * Fix-round-2 review, item 2a (Critical, controller ruling): `encodeSubject` above passes an
+ * `encodeSubject` above passes an
  * all-ASCII subject through UNCHANGED — `ASCII_ONLY`'s `\x00-\x7F` range includes CR and LF —
  * so a caller-supplied `subject: "Hi\r\nBcc: stranger@evil.example"` (or the same trick via
  * `from`, a `to`/`cc` entry, `inReplyTo`, `references`, or `boundarySeed`) would write a
@@ -388,8 +374,7 @@ function assertNoHeaderInjection(input: MimeEnvelopeInput): void {
   }
 }
 
-/** Build the RFC-5322 MIME envelope. Ported verbatim from gmail-mime.ts's
- *  `buildMimeEnvelope`. */
+/** Build the RFC-5322 MIME envelope. */
 export function buildMimeEnvelope(input: MimeEnvelopeInput): string {
   assertNoHeaderInjection(input);
   const headersBase = [
@@ -430,8 +415,7 @@ export function buildMimeEnvelope(input: MimeEnvelopeInput): string {
   return [...headersBase, 'Content-Type: text/plain; charset="UTF-8"', "", textBody, ""].join("\r\n");
 }
 
-/** Encode a MIME string for Gmail's `raw` field: base64url, no padding. Ported verbatim
- *  from gmail-mime.ts's `encodeForGmail`. */
+/** Encode a MIME string for Gmail's `raw` field: base64url, no padding. */
 function encodeForGmail(mime: string): string {
   return Buffer.from(mime, "utf8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
@@ -439,7 +423,7 @@ function encodeForGmail(mime: string): string {
 /**
  * Hard bound on `list` calls in one paged search, independent of how many messages those
  * pages actually contained — a fault detector, not a working limit (reaching it means the
- * cursor is not advancing). Ported verbatim from gmail-client.ts's `MAX_SEARCH_PAGES`.
+ * cursor is not advancing).
  */
 const MAX_SEARCH_PAGES = 100;
 
@@ -447,16 +431,16 @@ export interface GmailClient {
   search(query: string, max: number): Promise<string[]>;
   /**
    * EVERY thread id matching `query`, paged to the end (never a silently truncated first
-   * page) — Task 12's obligation radar needs this to see weeks-old obligations, not just the
+   * page) — the obligation radar needs this to see weeks-old obligations, not just the
    * newest page. THROWS rather than truncating when `ceiling` messages have been scanned and
-   * Gmail still offers another page, or when the page cursor stops making progress. Ported
-   * verbatim from gmail-client.ts's `searchThreadIds`.
+   * Gmail still offers another page, or when the page cursor stops making progress.
+   * 
    */
   searchThreadIds(query: string, ceiling: number): Promise<string[]>;
   read(id: string): Promise<MailMessage | null>;
   /** EVERY message in a thread, both directions — `search`+`read` alone cannot tell whether
-   *  he already replied, because his own SENT messages never carry the INBOX label an
-   *  `in:inbox` search matches. Ported verbatim from gmail-client.ts's `readThread`. */
+   *  the owner already replied, because the owner's own SENT messages never carry the INBOX label an
+   *  `in:inbox` search matches.*/
   readThread(threadId: string): Promise<ThreadMessage[]>;
   /** `sentAt` — pass straight through to `outreach_track`'s `sentAt` input so a thread's
    *  recorded send time reflects the actual send, not whatever later moment a caller gets
@@ -471,10 +455,9 @@ export interface GmailClient {
   updateDraftRaw(draftId: string, raw: string, threadId?: string): Promise<{ gmailDraftId: string }>;
 }
 
-/** Ported from gmail-client.ts's `makeGmailClient`, narrowed to what this task's tools use
- *  (search/read/send/draft/getSignature) plus `searchThreadIds`/`readThread`, added for
- *  Task 12's obligation radar (the first caller in this wave that needs a complete paged
- *  scan and a whole thread's messages). */
+/** The Gmail client over a `GmailMessagesClient`: search/read/send/draft/getSignature plus
+ *  `searchThreadIds`/`readThread`, which the obligation radar needs for a complete paged
+ *  scan and a whole thread's messages. */
 export function makeGmailClient(messages: GmailMessagesClient): GmailClient {
   return {
     async search(query: string, max: number): Promise<string[]> {
@@ -548,10 +531,9 @@ export function makeGmailClient(messages: GmailMessagesClient): GmailClient {
 }
 
 // -----------------------------------------------------------------------------------------
-// Calendar — client construction (calendar-oauth.ts) + adapter (calendar-client.ts),
-// ported. No calendar TOOLS land in this task (that's Task 7); this half exists so
-// `googleClients(principal): { gmail, calendar }` is the complete, lazy interface Task 7
-// consumes — never resolved unless a caller actually calls `.calendar()`.
+// Calendar — client construction + adapter. `googleClients(principal): { gmail, calendar }`
+// is the complete, lazy interface the calendar tools consume — never resolved unless a
+// caller actually calls `.calendar()`.
 // -----------------------------------------------------------------------------------------
 
 type CalendarApi = ReturnType<typeof google.calendar>;
@@ -606,7 +588,7 @@ export interface CalendarEvent {
   status?: string;
   /**
    * Google's `transparency`, verbatim: `opaque` (busy — the API's default, and usually absent)
-   * | `transparent` (free). "Free" means he is not held to it, so it cannot double-book him.
+   * | `transparent` (free). "Free" means the owner is not held to it, so it cannot double-book the owner.
    * ABSENT means busy, which is why the radar tests for the transparent value rather than for
    * the absence of the opaque one.
    */
@@ -614,9 +596,9 @@ export interface CalendarEvent {
   /**
    * THE owner's own `responseStatus` on this event — the `attendees[]` entry Google marks
    * `self: true` for the calendar being read: `needsAction` | `declined` | `tentative` |
-   * `accepted`. Absent whenever there is no attendee list at all, which on his calendar is the
-   * common case (he blocks his own time, and copied invitations arrive bare), and an
-   * absent response therefore reads as "his own event", never as "unanswered".
+   * `accepted`. Absent whenever there is no attendee list at all, which on the owner's calendar is the
+   * common case (the owner blocks the owner's own time, and copied invitations arrive bare), and an
+   * absent response therefore reads as "the owner's own event", never as "unanswered".
    */
   myResponse?: string;
   /**
@@ -667,13 +649,13 @@ export function __setTestCalendarApiFactory(factory: typeof testCalendarApiFacto
   testCalendarApiFactory = factory;
 }
 
-/** The API's own default for `sendUpdates` is `"none"` (/1: a guest attached to an
- *  event and never told). Ported verbatim from calendar-oauth.ts: notify unless explicitly
+/** The API's own default for `sendUpdates` is `"none"` (a guest attached to an
+ *  event and never told). Notify unless explicitly
  *  told not to. */
 const sendUpdatesFor = (notify: boolean | undefined): "all" | "none" => (notify === false ? "none" : "all");
 const calFor = (calendarId: string | undefined): string => calendarId || "primary";
 
-/** Ported verbatim from calendar-oauth.ts's `wrapCalendarApi`. */
+/** Adapt the googleapis calendar surface to `CalendarApiClient`. */
 export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
   return {
     async listEvents(params) {
@@ -691,8 +673,8 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
           (e.conferenceData?.entryPoints ?? []).some((p) => typeof p.uri === "string" && p.uri !== "");
         // off the RAW attendee list, before the resource/blank filter above: `self`
         // marks the entry belonging to the calendar this request read, which is the only place
-        // his own accept/decline lives. A room resource can carry a responseStatus too, and
-        // reading one of those as HIS answer would silence a real double booking.
+        // the owner's own accept/decline lives. A room resource can carry a responseStatus too, and
+        // reading one of those as the owner's answer would silence a real double booking.
         const myResponse = (e.attendees ?? []).find((a) => a.self === true)?.responseStatus;
         return {
           id: e.id ?? "", summary: e.summary ?? "",
@@ -769,7 +751,7 @@ export interface CalendarClient {
   listCalendars(opts?: { includeReadOnly?: boolean }): Promise<CalendarSummary[]>;
 }
 
-/** Ported verbatim from calendar-client.ts's `makeCalendarClient`. */
+/** The calendar client over a `CalendarApiClient`. */
 export function makeCalendarClient(calendar: CalendarApiClient): CalendarClient {
   return {
     async listEvents(opts) {
@@ -794,18 +776,18 @@ export function makeCalendarClient(calendar: CalendarApiClient): CalendarClient 
 
 const PROVIDER = "google";
 
-/** Token lookup happens BEFORE org-config secret reads, deliberately — matching
- *  gmail-oauth.ts's `resolve()` (which never touches an OAuth client config until it
- *  already has a token row to act on). An unenrolled principal must surface as
+/** Token lookup happens BEFORE org-config secret reads, deliberately: the resolver never
+ *  touches an OAuth client config until it
+ *  already has a token row to act on. An unenrolled principal must surface as
  *  `GoogleUnenrolledError` even when this host has no Google client secrets mounted at
  *  all, not as a confusing `GoogleConfigError` about a file that was never going to be
  *  needed for this call. */
 async function resolveGmailApi(principal: string, account?: string): Promise<{ api: GmailApi; mailboxKey: string }> {
-  // Default mailbox is PINNED by env, not the `updated_at DESC` lottery (2026-08-16 walk-up
-  // finding): with two enrolled mailboxes, "most recently updated" silently flipped to
+  // Default mailbox is PINNED by env, not the `updated_at DESC` lottery: with two enrolled
+  // mailboxes, "most recently updated" silently flipped to
   // owner@project.example — an org whose OAuth client is deliberately not mounted here — and every
-  // gmail tool failed. GMAIL_PRIMARY_EMAIL mirrors the old runtime's CALENDAR_PRIMARY_EMAIL
-  // precedent ("picks the mailbox when 2 enrolled"); an explicit `account` argument wins.
+  // gmail tool failed. GMAIL_PRIMARY_EMAIL pins the mailbox when two are enrolled (the calendar side
+  // does the same with CALENDAR_PRIMARY_EMAIL); an explicit `account` argument wins.
   const selected=await managedGoogleSelection(principal,account);
   const wanted = selected?.mailbox ?? account ?? process.env["GMAIL_PRIMARY_EMAIL"] ?? undefined;
   const tok = wanted
@@ -818,8 +800,8 @@ async function resolveGmailApi(principal: string, account?: string): Promise<{ a
 }
 
 async function resolveCalendarApi(principal: string, account?: string): Promise<{ api: CalendarApi }> {
-  // Same env-pinned default as resolveGmailApi above — CALENDAR_PRIMARY_EMAIL is the OLD
-  // runtime's own env for exactly this ("picks the calendar mailbox when 2 enrolled").
+  // Same env-pinned default as resolveGmailApi above — CALENDAR_PRIMARY_EMAIL picks the
+  // calendar mailbox when two are enrolled.
   const selected=await managedGoogleSelection(principal,account);
   const wanted = selected?.mailbox ?? account ?? process.env["CALENDAR_PRIMARY_EMAIL"] ?? undefined;
   const tok = wanted
@@ -833,20 +815,20 @@ async function resolveCalendarApi(principal: string, account?: string): Promise<
 
 export interface GoogleClients {
   /** The primary (most-recently-updated) mailbox's Gmail client, or a specific `account`
-   *  (an email address) — mirrors gmail-oauth.ts's `resolve()`/`resolveForEmail()`. Throws
+   *  (an email address). Throws
    *  `GoogleUnenrolledError` if the principal (or that specific account) has no token row. */
   gmail(account?: string): Promise<GmailClient>;
-  /** Same resolution shape for Calendar. Task 7 owns picking a sensible default account
-   *  (e.g. via `CALENDAR_PRIMARY_EMAIL`, mirroring the old registry's calendar hand) — this
-   *  layer, like calendar-oauth.ts's resolver, has no opinion beyond "most recently
-   *  updated" when `account` is omitted. */
+   /** Same resolution shape for Calendar. The calendar tools own picking a sensible default account
+    *  (e.g. via `CALENDAR_PRIMARY_EMAIL`) — this
+    *  layer has no opinion beyond "most recently
+    *  updated" when `account` is omitted. */
   calendar(account?: string): Promise<CalendarClient>;
 }
 
 /**
  * The lazy, per-call Google client builder. `principal` defaults to `GOOGLE_PRINCIPAL_ID`,
  * whatever the environment sets it to, and is used AS-IS — never canonicalised here, and never
- * looked up in the identity register (see this file's header on box 085). Calling this function
+ * looked up in the identity register (see this file's header). Calling this function
  * does no I/O; only calling `.gmail()`/`.calendar()` touches secrets, the DB, or Google.
  */
 export function googleClients(principal?: string): GoogleClients {

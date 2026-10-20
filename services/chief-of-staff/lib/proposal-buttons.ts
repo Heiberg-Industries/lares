@@ -1,7 +1,6 @@
 /**
- * One-tap proposal resolution on Telegram — the old runtime's `np:a:`/`ap:r:` inline
- * buttons, restored (the announce-then-gate flow asked him to
- * approve twice; the old door was one tap).
+ * One-tap proposal resolution on Telegram — `np:a:`/`ap:r:` inline buttons (an
+ * announce-then-gate flow would ask the owner to approve twice; a single tap is the goal).
  *
  * Three deliberate properties:
  *
@@ -45,7 +44,7 @@ export interface ProposalCallback {
   id: number;
 }
 
-/** The old runtime's exact callback convention: `np:a:61`, `ap:r:7`. */
+/** The callback convention: `np:a:61`, `ap:r:7`. */
 const CALLBACK_RE = /^(np|ap):(a|r):(\d+)$/;
 
 export function proposalCallbackData(lane: ProposalLane, action: ProposalAction, id: number): string {
@@ -145,7 +144,7 @@ export function buildAtlasAnnouncement(row: AtlasUnannouncedRow): Announcement {
 }
 
 /**
- * The memory lane's announcement — DELIBERATELY WITHOUT BUTTONS (W4C-s5).
+ * The memory lane's announcement — DELIBERATELY WITHOUT BUTTONS.
  *
  * The two lanes above resolve on a tap, because a tap is enough: approving a Notion or Atlas
  * proposal hands the row to a sync engine that applies it on its own tick. A memory proposal has

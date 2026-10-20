@@ -1,22 +1,19 @@
 /**
- * Notion + Atlas proposal stores — ported from `services/box/lib/notion-proposals.ts`
- * and `services/box/lib/atlas-proposals.ts`. Table and column names match exactly:
+ * Notion + Atlas proposal stores. Table and column names match the box's schema exactly:
  * chief-of-staff shares the box's `lares_state` Postgres (same convention as
  * `lib/reminders-store.ts`), so this reads and writes the SAME rows notion-sync and the
- * Atlas job already write via `services/box/sql/001_baseline.sql`,
- * `001_baseline.sql`, `001_baseline.sql`,
- * `001_baseline.sql` and `001_baseline.sql` — no new migration here.
+ * Atlas job write, defined in `services/box/sql/001_baseline.sql` — no new migration here.
  *
- * Scope: only what Task 11's tools + watch schedule need — the OPEN-queue read, the guarded
+ * Scope: only what the tools and the watch schedule need — the OPEN-queue read, the guarded
  * approve/reject transition, and the announce ledger (unannounced read + first-stamp-wins
  * mark) for both lanes. The sync engines' own apply-pass queries
  * (getRejectedUnexecuted/markProposalReverted, getAtlasProposalsAwaitingApply/
  * completeAtlasProposal/supersedeAtlasProposal, atlas_notes bookkeeping, getStaleProposals,
- * getRecentlyClosedProposals) are NOT ported — those still belong to notion-sync/atlas-sync,
+ * getRecentlyClosedProposals) are NOT here — those belong to notion-sync/atlas-sync,
  * not to this approval surface.
  *
- * Typed against `Pool` from "pg", not the `Queryable` structural interface
- * services/box/lib/db.ts defines — chief-of-staff has no such abstraction and every sibling
+ * Typed against `Pool` from "pg", not a structural `Queryable` interface:
+ * chief-of-staff has no such abstraction and every sibling
  * store here (lib/reminders-store.ts) takes a `Pool` directly.
  */
 import type { Pool } from "pg";
@@ -27,7 +24,7 @@ import type { Origin } from "@lares/agent-kit/origin";
 export type ProposalState = "pending" | "approved" | "rejected" | "applied" | "superseded";
 
 /** 'update' — an edit to a vault file that already exists (the default). 'create' — a
- *  Notion row/page with no vault file yet, asking for one (migration 018). */
+ *  Notion row/page with no vault file yet, asking for one. */
 export type ProposalKind = "update" | "create";
 
 export interface ProposalInput {
@@ -64,8 +61,7 @@ export interface ProposalRow {
  *   update, mirror/two-way  → approve writes the vault; reject ALSO reverts the Notion page
  * These live beside ProposalRow, as pure functions, because every surface that states a
  * consequence (list tool output, the resolve tool's result, the watch schedule's prompt)
- * must quote the SAME sentence — six independently-written sentences is the defect class
- * the old system hit twice (see the source file's own history).
+ * must quote the SAME sentence — independently-written sentences drift apart.
  */
 export type RejectOutcome = "not-created" | "notion-untouched" | "notion-reverted";
 
@@ -163,7 +159,7 @@ export type ProposalAction = "approve" | "reject";
 /**
  * THE guarded state transition — ONE statement, not read-then-write, so a resolve racing
  * the sync engine's own apply pass cannot silently land a decision on an already-moved row
- * (see the ported source file's TOCTOU walkthrough). Throws if `id` is not currently open.
+ * (a time-of-check/time-of-use race). Throws if `id` is not currently open.
  */
 export async function resolveProposal(db: Pool, id: number, action: ProposalAction): Promise<ProposalRow> {
   const state: ProposalState = action === "approve" ? "approved" : "rejected";
@@ -347,7 +343,7 @@ export async function markAtlasProposalAnnounced(db: Pool, id: number): Promise<
 // process (the dream cycle) may only ADD — it may never UPDATE or delete an existing standing
 // row. This table is where it records the change it WANTS to make, so an approval card can
 // show the owner the literal before/after, and only `memory_resolve_proposal`'s apply pass
-// (a later slice) ever closes the row it names, and only on a 👍.
+// (`lib/memory-proposal-apply.ts`) ever closes the row it names, and only on a 👍.
 
 export type MemoryProposalState = "pending" | "approved" | "rejected" | "applied" | "superseded";
 
@@ -449,7 +445,7 @@ function toMemoryRow(r: MemoryDbRow): MemoryProposalRow {
   };
 }
 
-/** Plain INSERT. The dream cycle's proposeSupersede adapter (a later slice) owns the real
+/** Plain INSERT. The dream cycle's proposeSupersede adapter owns the real
  *  inserts; this is also the test/seed helper. Refuses (at the table, not here) a second open
  *  proposal for the same `existingId`, and a `proposedText`/`action` pair that does not match
  *  see `memory_proposals_open_idx` and `memory_proposals_text_check` in
@@ -482,7 +478,7 @@ export type MemoryProposalDecision = "approve" | "reject";
  *  `resolveProposal`/`resolveAtlasProposal` above, but a NARROWER guard than either: only a
  *  `'pending'` row is open here. Unlike the Notion/Atlas lanes, where an 'approved' row stays
  *  "open" awaiting a background sync engine's own apply tick and so may still be flipped, a
- *  memory proposal's approval hands off to `applyMemoryProposal` (a later slice) almost
+ *  memory proposal's approval hands off to `applyMemoryProposal`almost
  *  immediately — the owner decides exactly once, and a second decision on an already-decided
  *  id (approved OR rejected) throws rather than silently overwriting the first one. */
 export async function resolveMemoryProposal(

@@ -2,8 +2,8 @@
  * The neutral clip record. Any saved-link source maps into this; nothing here knows
  * more about Notion than "a page has typed properties". Pure code: no network, no model.
  *
- * WHERE A CLIP LANDS follows the SOURCE's owner and visibility, never the page's content
- * (the Notion clipping plan section 8). `mapPageToClip` copies both from the
+ * WHERE A CLIP LANDS follows the SOURCE's owner and visibility, never the page's content:
+ * `mapPageToClip` copies both from the
  * source row and ignores every column of the page for that purpose.
  */
 import { classifyInbound } from "../digest/detect.js";
@@ -177,7 +177,7 @@ export function mapPageToClip(page: RawPage, source: ClipSource): MappedPage {
       note: note || null,
       tags: tagsOf(byId(page, source.tagsPropertyId)),
       capturedAt: savedOf(page, byId(page, source.savedPropertyId)),
-      // From the source row, never from the page (plan section 8, rule 5).
+      // From the source row, never from the page (visibility and owner follow the source).
       owner: source.owner,
       visibility: source.visibility,
     },

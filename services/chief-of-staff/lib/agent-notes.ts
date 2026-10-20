@@ -1,12 +1,12 @@
 /**
- * lib/agent-notes.ts — the store behind `catalogue/save_note.ts` (W4B-s5, ADR-0018 rule 9).
+ * lib/agent-notes.ts — the store behind `catalogue/save_note.ts` (ADR-0018 rule 9).
  *
  * WHAT A NOTE IS, AND IS NOT. A working note the agent leaves for itself mid-conversation — "the
  * owner prefers the summary first", "waiting on the supplier's reply about X" — because a
  * conversation can be interrupted at any time. It is never a fact about the owner
  * (`lib/standing-facts.ts` is that store) and it is never a standing instruction the dream cycle
  * may promote: `agent_notes` has no reader anywhere near `@lares/agent-kit/learning`'s promotion
- * gate, and none is added by this slice.
+ * gate, and none is added.
  *
  * ADD-ONLY, BY CONSTRUCTION. There is no `UPDATE` and no `DELETE` anywhere in this module, and
  * none in `services/box/sql/001_baseline.sql` either — a wrong or stale note is superseded by
@@ -18,16 +18,18 @@
  * is handed, the same posture `rememberFact` takes toward `remember.ts`'s own gate.
  *
  * WHY A TABLE, NOT A MARKDOWN FILE. `_meta/` is excluded from vault search
- * (`packages/agent-kit/src/notes-store.ts:30`, ADR-0017 rule 1), so a note written there would be
+ * (`packages/agent-kit/src/notes-store.ts`, ADR-0017 rule 1), so a note written there would be
  * unfindable; `duties.md`/`voice.md` are definition files, hashed at session start
- * (`packages/agent-kit/src/definition.ts:143`), so appending to them would change the agent's own
+ * (`packages/agent-kit/src/definition.ts`), so appending to them would change the agent's own
  * definition hash mid-conversation.
  *
- * WHERE THIS SLICE STOPS. Nothing outside the session that wrote a note reads it back yet —
+ * WHERE THIS STOPS. Nothing outside the session that wrote a note reads it back —
  * `agent/instructions/standing-facts.ts`'s turn-scoped correction block surfaces a session's own
  * notes on a LATER TURN of the SAME conversation, and only the ones safe to reflect back (see
- * that file's header); a later session cannot read any note at all. That is wave 5A's job
- * ("which memories did you use?"), named here rather than implied.
+ * that file's header); a later session cannot read any note at all.
+ * `catalogue/memory_used.ts` answers "which memories did you use?" from ids recorded at read
+ * time (`lib/memory-reads.ts`), never from a note's body — a different thing from reading
+ * notes back. Named here rather than implied.
  */
 import type { Pool } from "pg";
 import type { Origin } from "@lares/agent-kit/origin";
@@ -143,7 +145,7 @@ export async function notesForSession(db: Pool, sessionId: string): Promise<Agen
   return rows.map(toNote).reverse();
 }
 
-/** Postgres `undefined_table` (42P01) — the shape an unapplied 071 migration produces. The same
+/** Postgres `undefined_table` (42P01) — the shape an unapplied schema produces. The same
  *  code `lib/turn-capture.ts`'s own (private) check reads for `conversation_entries`. Exported so
  *  `catalogue/save_note.ts` can fail soft instead of throwing on an installation that has not
  *  applied `services/box/sql/001_baseline.sql` yet. */

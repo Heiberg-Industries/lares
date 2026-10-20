@@ -12,7 +12,7 @@
  * shapes in, the kit's role-free shapes out, and the exported names
  * (`makePromoter`, `PromoterStore`, `PromoterResult`) unchanged so no caller had to move.
  *
- * ONE THING HERE IS NOT TRANSLATION (W4C-s5): `proposeSupersede`. The gate hands a change it
+ * ONE THING HERE IS NOT TRANSLATION : `proposeSupersede`. The gate hands a change it
  * refuses to apply — one that would replace something the owner stated — to this route, which
  * RECORDS it in `memory_proposals` for the owner to answer. Recording is all it does. Nothing
  * in this file, and nothing the nightly run can reach, ever closes a standing preference on
@@ -49,10 +49,10 @@ import { deriveRef } from "./surface.js";
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 /**
- * @deprecated Decides nothing since W4C-s2. The model's own confidence stopped being a
+ * @deprecated Decides nothing. The model's own confidence stopped being a
  * promotion signal (ADR-0018 rule 4 — "agents grade their own work generously"); it is still
- * recorded on the row, and this constant is kept only so no caller breaks in this wave.
- * Wave 9's sweep removes it.
+ * recorded on the row, and this constant is kept only so no caller breaks.
+ * Remove it once nothing imports it.
  */
 export const PROMOTE_CONFIDENCE = 0.8;
 
@@ -76,7 +76,7 @@ export type ProposeOutcome =
   | "no-standing-row";
 
 /**
- * Why an inference the gate held for the owner did not become a row they can answer (W5X-s4).
+ * Why an inference the gate held for the owner did not become a row they can answer.
  * A separate set from `ProposeOutcome` because an `add` closes nothing, so `no-standing-row`
  * cannot arise — and because it has one of its own: an observation that is not the agent's
  * own inference is not an add candidate at all (see `makeProposeAdd`).
@@ -115,7 +115,7 @@ export interface PromoterResult {
   held: Observation[];
   needsConfirm: Observation[];
   /** Everything that will never be promoted, with a machine-readable reason and a sentence
-   *  (ADR-0018 rule 6). The dream report renders these; W4C-s6 owns that half. */
+   *  (ADR-0018 rule 6). The dream report renders these. */
   rejected: Rejection[];
   /** Changes filed for the owner to answer, by proposal id. Empty when nothing was filed —
    *  including when this installation has not applied the migration for the queue. */
@@ -139,8 +139,9 @@ function isUniqueViolation(err: unknown): boolean {
 }
 
 /**
- * The two shapes a box that has 072 but NOT `services/box/sql/001_baseline.sql`
- * answers an `add` with: `23514` (the row breaks a CHECK — 072's `action` check does not know
+ * The two shapes a box whose `memory_proposals` table predates the `add` action (the schema in
+ * `services/box/sql/001_baseline.sql` is newer)
+ * answers an `add` with: `23514` (the row breaks a CHECK — the old `action` check does not know
  * the word 'add', and its origin check admits only 'owner') and `42703` (there is no `ref` or
  * `kind` column to write). Both mean the same thing operationally — this installation cannot
  * hold a confirmation yet — so both read as `not-installed` and the confirmation is HELD, never
@@ -161,7 +162,7 @@ function runSource(): string {
 
 /**
  * The route the gate hands an unattended supersede of an owner-stated preference to. Records
- * the change and nothing else — but returns the new row's id on success (W5X-s6), so the
+ * the change and nothing else — but returns the new row's id on success, so the
  * promoter and, from there, the dream note can name what it filed for the owner. `null` on
  * every other outcome: nothing was recorded, so there is no id to carry.
  *
@@ -239,16 +240,16 @@ export function makeProposeSupersede(
 
 /**
  * The route an observation the gate will NOT apply — the agent's own inference — takes instead
- * of being shouted at the owner in a message nothing can answer (W5X-s4, ADR-0018 rule 4).
+ * of being shouted at the owner in a message nothing can answer (ADR-0018 rule 4).
  *
  * It records an `add` proposal and nothing else. The row is `agent`-origin, because that is
  * what it is; only the owner's tap turns it into a standing preference, and only
- * `lib/memory-proposal-apply.ts` writes that, stamped `owner` (W5X-s3).
+ * `lib/memory-proposal-apply.ts` writes that, stamped `owner`.
  *
  * THREE GUARDS, in this order, and the order is the design:
  *
  *   1. ONLY THE AGENT'S OWN INFERENCE. `needsConfirm` can also carry an owner-origin
- *      persona-level remark (the gate's identity-shift branch), and 074's CHECK admits only
+ *      persona-level remark (the gate's identity-shift branch), and the table's CHECK admits only
  *      `agent` on an add — filing an owner's words under `origin = 'agent'` would be exactly
  *      the origin laundering the whole memory design exists to prevent. Anything else is
  *      refused here, before any SQL runs. Somebody else's words never even reach this route:
@@ -266,14 +267,15 @@ export function makeProposeSupersede(
  *      (`getOpenMemoryProposals` is action-blind), because the owner reads one queue, not
  *      three. Past the cap nothing is filed; the caller counts what it could not file.
  *
- * It fails soft the same three ways `makeProposeSupersede` does, plus one more: a box carrying
- * 072 but not 074 raises a CHECK or undefined-column error, which reads as `not-installed`.
+ * It fails soft the same three ways `makeProposeSupersede` does, plus one more: a box whose
+ * table predates the `add` action raises a CHECK or undefined-column error, which reads as
+ * `not-installed`.
  * The confirmation is then HELD — the owner hears nothing that night, which is silence rather
  * than a wrong answer, so the warning names the file to apply.
  *
  * ORDER OF DEPLOY: apply `services/box/sql/001_baseline.sql` to the box BEFORE the
- * image carrying this code runs. The dream's own capped notice is gone with this change, so
- * until 074 is applied nothing tells the owner about an inference at all.
+ * image carrying this code runs: until it is applied nothing tells the owner about an
+ * inference at all.
  */
 export function makeProposeAdd(
   db: Pool,
@@ -311,7 +313,7 @@ export function makeProposeAdd(
 
       const id = await insertMemoryProposal(db, {
         action: "add",
-        // An add closes nothing: no existing row, no existing text. 074's CHECK repeats it.
+        // An add closes nothing: no existing row, no existing text. The table's CHECK repeats it.
         existingId: "",
         existingText: "",
         proposedText: obs.text,
@@ -359,12 +361,12 @@ export function resetProposeWarningForTests(): void {
 export function makePromoter(deps: {
   store: PromoterStore;
   isIdentityShift?: (obs: Observation) => boolean;
-  /** The do-not-learn list (W4C-s3): the kit carries the rule, this role carries the wording. */
+  /** The do-not-learn list: the kit carries the rule, this role carries the wording. */
   doNotLearn?: (obs: Observation) => boolean;
-  /** Where a supersede of an owner-origin preference goes instead of being applied (W4C-s5).
+  /** Where a supersede of an owner-origin preference goes instead of being applied.
    *  Defaults to recording it in `memory_proposals` for the owner to answer; pass one to point
    *  it somewhere else, or to watch what it did. Either way the change is never applied here.
-   *  Returns the filed proposal's id when one is recorded (W5X-s6); a fake still returning
+   *  Returns the filed proposal's id when one is recorded; a fake still returning
    *  `Promise<void>` keeps working — nothing is counted as filed for it. */
   proposeSupersede?: (existingId: string, obs: Observation) => Promise<number | null | void>;
 }) {

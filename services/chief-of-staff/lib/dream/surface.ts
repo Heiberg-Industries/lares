@@ -7,7 +7,7 @@
  * observations one run may file (`DREAM_CONFIRM_MAX_PER_RUN`), and the function to select which
  * ones to show (`selectForConfirmation`). The `makeIdentitySurfacer` factory and confirmation
  * message builders were deleted when the confirmation machinery moved to the memory-proposals
- * lane (wave 5, slice 4).
+ * lane.
  */
 
 import type { Observation } from "./reflect.js";
@@ -29,7 +29,7 @@ function djb2(s: string): number {
 }
 
 /**
- * THE DEDUP KEY an `add` proposal is filed under (W5X-s4). Exported because it is no longer an
+ * THE DEDUP KEY an `add` proposal is filed under. Exported because it is no longer an
  * internal detail of the surfacer: `memory_proposals.ref` carries this string, and
  * `memory_proposals_add_open_idx` (services/box/sql/001_baseline.sql) is UNIQUE on it, so two nights that
  * derive the same observation cannot queue the same question twice.
@@ -50,7 +50,7 @@ export function deriveRef(obs: Pick<Observation, "subject" | "text">): string {
   return `identity-${djb2(key).toString(16).padStart(8, "0")}`;
 }
 
-// ─── Selecting what to show (W4C-s2b) ──────────────────────────────────────────
+// ─── Selecting what to show ──────────────────────────────────────────
 
 /**
  * How many `needsConfirm` items a single dream run may surface to the owner in one notice.

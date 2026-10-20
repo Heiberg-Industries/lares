@@ -1,12 +1,11 @@
 // services/chief-of-staff/lib/person/anchor.ts
 // CORE — vendor-neutral.
-// Ported verbatim from services/agent-runtime/lib/person/anchor.ts (Task 8) — logic unchanged.
 import type { DatedItem, EngagementEvent } from "./types.js";
 
 /**
- * The most recent thing the owner actually did with this person, or null if he never has.
+ * The most recent thing the owner actually did with this person, or null if the owner never has.
  *
- * This single value is what lets one rule produce both shapes the spec asks for: with a
+ * This single value is what lets one rule produce both shapes the dossier needs: with a
  * recent anchor almost nothing is fresh and the answer is three lines; with an old anchor
  * nearly everything is fresh and the answer is a dossier; with no anchor at all the person
  * is a stranger and everything is new. Nothing classifies the person, so there is no mode

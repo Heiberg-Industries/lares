@@ -1,6 +1,5 @@
 /**
- * lib/initiation.ts — the one line every proactive message in this service passes through
- * (Task 3).
+ * lib/initiation.ts — the one line every proactive message in this service passes through.
  *
  * The gate itself lives in `@lares/agent-kit/proactivity` (`gatedSend`: quiet hours on the owner's
  * clock, do-not-disturb, already-seen, and the per-door/per-owner daily ceilings, all recorded in
@@ -14,17 +13,17 @@
  *    the string an operator greps when a message did not arrive. A per-schedule phrasing would
  *    make that grep miss exactly the lane that went quiet.
  * 3. **Three answers, not two.** A lane's next move is one of three things, and the distinction is
- *    load-bearing (fix round 1, CRITICAL): SENT (do the bookkeeping), ALREADY SEEN (he was told on
+ *    load-bearing: SENT (do the bookkeeping), ALREADY SEEN (the owner was told on
  *    an earlier tick and only the bookkeeping failed — do it now, and do NOT re-send), or HELD (mark
  *    nothing, stay eligible, land when the gate reopens). A boolean read `already-seen` as "held",
- *    which in three lanes meant re-detecting — and twice re-BILLING — the same item every tick
+ *    which meant re-detecting — and re-BILLING — the same item every tick
  *    forever. `InitiationOutcome.handled` is the flag; every call site converting `Decision` itself
  *    would be a copy of that rule, and the copies are where it would drift back.
  *
  * FAIL-OPEN, all the way down. `gatedSend` never throws (a dead ledger logs and sends); this
  * wrapper adds the same posture for its own two inputs — an unresolvable owner clock falls back
  * to home inside `ownerTz()`, and a pool that cannot be built means the message goes out
- * ungated with a warning. A missed suppression is an annoyance; a silent stop is .
+ * ungated with a warning. A missed suppression is an annoyance; a silent stop is worse.
  */
 import { getPool } from "@lares/agent-kit/db";
 import {
@@ -63,12 +62,12 @@ export interface SagaInitiation {
 export type InitiationReason = Extract<Decision, { reason: string }>["reason"];
 
 /**
- * What a schedule needs to know after asking the gate. NOT a boolean, and that is the whole point
- * (fix round 1, CRITICAL): `suppress`/`already-seen` and `defer`/`door-ceiling` are opposite
+ * What a schedule needs to know after asking the gate. NOT a boolean, and that is the whole point:
+ * `suppress`/`already-seen` and `defer`/`door-ceiling` are opposite
  * instructions to the caller, and a boolean collapses them into one.
  *
  *   - `sent` — the callback ran on THIS call.
- *   - `alreadySeen` — a `sent` row for this item key already exists. He WAS told, on an earlier tick
+ *   - `alreadySeen` — a `sent` row for this item key already exists. The owner WAS told, on an earlier tick
  *     or an earlier process; the only reason this lane is here again is that its own bookkeeping
  *     write failed after that send. Re-sending would be a duplicate; leaving the item "eligible"
  *     would loop forever, re-detecting and (in two lanes) re-BILLING the same item on every tick.
@@ -118,7 +117,7 @@ export const SEND_UNGATED: DoorInitiate = async (_init, send) => {
 
 /** `<schedule>: initiation <verdict> (<reason>) for <itemKey>` — one line, one wording, and
  *  nothing at all on a normal send. An `already-seen` suppression says a second line, because it
- *  means something a reader would otherwise guess wrong: he was told, and the lane is about to
+ *  means something a reader would otherwise guess wrong: the owner was told, and the lane is about to
  *  finish the bookkeeping that failed last time. */
 export function logInitiation(schedule: string, d: Decision, itemKey: string): void {
   if (d.verdict === "send") return;

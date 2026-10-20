@@ -1,13 +1,10 @@
 /**
  * nextOccurrence — compute the next due Date for a reminder recurrence string.
  *
- * Ported from `services/agent-runtime/lib/adapters/reminders/recurrence.ts`, which in turn
- * reuses Oslo-timezone helpers from that package's `reminders/parse.ts`. Those two files pull
- * in a large natural-language time parser (`parseWhen`) that Task 10 deliberately does NOT
- * port (see `agent/tools/remind_set.ts`'s header) — this module carries only the small slice
- * of `parse.ts` that `nextOccurrence` itself depends on: the Oslo wall-clock helpers and the
- * day-of-week table, copied verbatim rather than re-derived, so the recurrence math matches
- * the old system's bit for bit.
+ * This module carries only the small slice of time handling that `nextOccurrence` itself
+ * depends on: the home-zone wall-clock helpers and the day-of-week table. A large
+ * natural-language time parser (`parseWhen`) is deliberately NOT part of it (see
+ * `catalogue/remind_set.ts`'s header).
  *
  * Supported formats:
  *   "weekly:<dow>:<HH>:<MM>"   — e.g. "weekly:mon:11:30"
@@ -24,14 +21,14 @@ import { clockParts, homeTzFromEnv, slotKey } from "@lares/agent-kit/owner-clock
 /**
  * The HOME clock, and now only a default.
  *
- * parameterised these helpers by timezone: every one of the chief of staff's slot schedules used to
- * compute its slot from this constant, and four of them carried their own copy of `osloSlotNow`,
- * so "08:00" meant 08:00 in Oslo whatever continent the owner was standing on (the /128/204
- * class: a job that fired mid-flight). The tz-taking helpers below are what Task 3 moves those
- * schedules onto; `osloParts`/`osloDate` stay as wrappers over them because the recurrence math
+ * The tz-taking helpers below are parameterised by timezone: every one of the chief of
+ * staff's slot schedules used to compute its slot from this constant, so "08:00" meant 08:00
+ * at home whatever continent the owner was standing on (a job that fired mid-flight). Those
+ * schedules now take the owner's current zone; `osloParts`/`osloDate` stay as wrappers over
+ * the helpers because the recurrence math
  * in this file is deliberately still on the home clock — a repeating reminder the owner set as
  * "weekdays 09:00" means 09:00 at home, and re-basing it mid-trip would silently move every
- * standing reminder he owns.
+ * standing reminder the owner owns.
  */
 export function homeTz(): string {
   return homeTzFromEnv();
@@ -61,8 +58,8 @@ export function dateIn(d: Date, tz: string): string {
 }
 
 /**
- * `"<date>T<hour>"` on minute 0 of `hour` in `tz`, else `null` — the exact shape the four
- * hand-copied `osloSlotNow` helpers return, so a schedule moving onto this keeps comparing slot
+ * `"<date>T<hour>"` on minute 0 of `hour` in `tz`, else `null` — a stable shape, so
+ * a schedule moving onto this keeps comparing slot
  * keys with its own history rather than starting a new numbering. One definition, in the kit
  * (`@lares/agent-kit/owner-clock`'s `slotKey`); this is the seam the chief of staff's schedules call.
  */
@@ -73,7 +70,7 @@ export function slotIn(now: Date, tz: string, hour: number): string | null {
 /**
  * 0=Sun … 6=Sat for `d`, read in `tz` — derived from `partsIn`'s own date string rather than from
  * a second `Intl` call with a `weekday` option, so the day-of-week and the slot hour can never
- * come off two different formatters (the /128/204 class of bug). The date string is ALREADY
+ * come off two different formatters. The date string is ALREADY
  * the local calendar date, so all that is left is "which weekday is 2026-09-08" — read back in UTC,
  * the one zone in which reading a bare date cannot shift it into the day before or after.
  */
@@ -86,33 +83,33 @@ export function osloParts(d: Date): { date: string; hour: number; minute: number
   return partsIn(d, homeTz());
 }
 
-/** Oslo date-string (YYYY-MM-DD) for a given Date. */
+/** Home-zone date-string (YYYY-MM-DD) for a given Date. */
 export function osloDate(d: Date): string {
   return dateIn(d, homeTz());
 }
 
-/** 0=Sun,1=Mon,...,6=Sat — Oslo day-of-week for a Date. */
+/** 0=Sun,1=Mon,...,6=Sat — home-zone day-of-week for a Date. */
 function osloDow(d: Date): number {
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: homeTz(), weekday: "short" });
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   return names.indexOf(fmt.format(d));
 }
 
-/** Add N calendar days to an Oslo date string, return the new YYYY-MM-DD. */
+/** Add N calendar days to a home-zone date string, return the new YYYY-MM-DD. */
 export function addOsloDays(dateStr: string, n: number): string {
   const [y, mo, day] = dateStr.split("-").map(Number);
   const d = new Date(Date.UTC(y, mo - 1, day + n));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-/** Build a Date from an Oslo local "YYYY-MM-DD HH:MM" string. */
+/** Build a Date from a home-zone local "YYYY-MM-DD HH:MM" string. */
 export function osloLocalToDate(localIso: string): Date {
   const [datePart, timePart] = localIso.split(" ");
   const [year, month, day] = datePart.split("-").map(Number);
   const [hour, minute] = timePart.split(":").map(Number);
 
   // Start with a rough UTC guess (assume UTC+1, i.e. CET), then refine once by checking
-  // what Oslo actually says about that instant and correcting for the offset.
+  // what the home zone actually says about that instant and correcting for the offset.
   const guess = Date.UTC(year, month - 1, day, hour - 1, minute);
   const parts = osloParts(new Date(guess));
   const localFromGuess = `${parts.date} ${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
@@ -131,7 +128,7 @@ function minuteDiff(a: string, b: string): number {
   return toMin(a) - toMin(b);
 }
 
-/** Next Oslo date string (>= `now`) landing on `targetDow`, always strictly after `now`'s
+/** Next home-zone date string (>= `now`) landing on `targetDow`, always strictly after `now`'s
  *  clock time on that day (callers pre-advance `now` by one day, so "today" never matches). */
 export function nextDowDate(now: Date, targetDow: number, targetHour: number, targetMinute: number): string {
   const todayStr = osloDate(now);

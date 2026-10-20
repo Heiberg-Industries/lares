@@ -1,10 +1,10 @@
 /**
- * Read a Google Docs / Sheets / Slides / Drive link the owner sends (batch 6).
+ * Read a Google Docs / Sheets / Slides / Drive link the owner sends.
  *
- * Measured 2026-09-14: a private Doc link went to the readability worker, which got Google's
- * sign-in shell and nothing else. The chief of staff answered honestly ("needs a sign-in") but a user expects
+ * A private Doc link sent to the readability worker gets Google's
+ * sign-in shell and nothing else. The chief of staff would answer honestly ("needs a sign-in") but a user expects
  * their own document to open. So Google links go through the Drive API with the owner's own enrolled
- * accounts, read-only (`drive.readonly`, his decision 2026-09-14).
+ * accounts, read-only (`drive.readonly`).
  *
  * Export formats — documented Drive v3 behaviour, not measured here: Docs → text/plain,
  * Sheets → text/csv (the FIRST sheet only; the text says so), Slides → text/plain. A PDF or text

@@ -2,14 +2,13 @@
  * One-shot text completion over the LiteLLM gateway — the `think`/`llm` dependency both the
  * commercial radar (`ICP`-fit scoring) and the CRM routing classifier need.
  *
- * The old runtime's equivalent (`services/agent-runtime/lib/adapters/digest/gateway-llm.ts`)
- * hand-rolled a raw fetch against the gateway's `/v1/messages` endpoint with an
- * `x-api-key` header. chief-of-staff already has an established, single way to obtain a model —
- * `lib/gateway-provider.ts`'s `gatewayModel()`, which every other model call in this service
- * goes through — so this wraps that with the AI SDK's `generateText` instead of re-deriving
- * a second HTTP client for the gateway.
+ * The gateway could be called with a hand-rolled raw fetch against its `/v1/messages`
+ * endpoint with an `x-api-key` header. chief-of-staff already has an established, single way
+ * to obtain a model — `lib/gateway-provider.ts`'s `gatewayModel()`, which every other model
+ * call in this service goes through — so this wraps that with the AI SDK's `generateText`
+ * instead of re-deriving a second HTTP client for the gateway.
  *
- * this service names PURPOSES, not models. Every call site passes (or omits) a
+ * This service names PURPOSES, not models. Every call site passes (or omits) a
  * `purpose` — `"utility"` (the default: classification, filing, summaries, obligation-intent
  * reads), `"writer"` (a drafted reply a human will read and send), or `"brain"` (reflection,
  * ideation, commercial scoring) — and `resolveModelForPurpose` turns that into a model id in
@@ -55,12 +54,12 @@ export function resolveModelForPurpose(
 
 /**
  * THINKING SHARES `max_tokens`. The `writer` and `brain` aliases sit on models that think before
- * they answer (Fable 5.1: always, cannot be switched off; Opus 5: on by default), and every
+ * they answer (some always, with no way to switch it off; others by default), and every
  * thinking token is spent out of the same output cap as the visible text. A cap sized for the
  * visible text alone is therefore a cap the model cannot meet.
  *
- * the meeting, 2026-09-07 — the first real writer call after pointed the writer alias at
- * Fable 5.1: the compose call asked for 1024 tokens, the model spent 540–630 of them thinking
+ * A real failure: the first writer call after the writer alias was pointed at such a model
+ * asked for 1024 tokens, the model spent 540–630 of them thinking
  * (gateway spend log, `completion_tokens_details.reasoning_tokens`), and the email JSON came back
  * cut off mid-string on all three attempts. Nothing in this service named the cap; the only trace
  * was a `SyntaxError` in the schedule log.
@@ -94,10 +93,10 @@ export interface GatewayCompleteOptions {
    * attempts at the wire, silently, which is the right default for a call whose failure costs
    * the caller a feature and whose retry costs a few cents.
    *
-   * It is the WRONG default for a capped, per-pass budget: Task 10's obligation intent
+   * It is the WRONG default for a capped, per-pass budget: the obligation intent
    * read documents itself as "no retry, one bounded read per item", and
    * `INTENT_MAX_PER_PASS = 8` is sized as a spend ceiling on that basis. Without this option
-   * that claim was false at the wire and the real ceiling was 24 calls. Both intent call sites
+   * that claim would be false at the wire and the real ceiling would be 24 calls. Both intent call sites
    * (`agent/schedules/morning-brief.ts`, `agent/schedules/evening-brief.ts`) now pass 0.
    */
   maxRetries?: number;
@@ -131,8 +130,8 @@ export async function gatewayComplete(prompt: string, opts: GatewayCompleteOptio
     opts.onUsage({ inputTokens: usage.inputTokens, outputTokens: usage.outputTokens });
   }
   // A reply that stopped on length is a truncated reply, and the caller will usually fail on it
-  // downstream in a way that does not name the cause (the meeting compose failed as a JSON
-  // SyntaxError three times). Say what happened here, where the cap and the model are known.
+  // downstream in a way that does not name the cause (a JSON compose call failing as a
+  // SyntaxError). Say what happened here, where the cap and the model are known.
   // Warn, don't throw — the text is still returned, exactly as before.
   if (finishReason === "length") {
     console.warn(

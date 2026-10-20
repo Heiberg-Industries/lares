@@ -6,10 +6,9 @@
  * senders. These pass a `!doNotContact`-only filter on recency alone, surfacing as
  * "Reservation", "Office", "Hello Example", "Contact", etc.
  *
- * Ported verbatim from `services/agent-runtime/lib/commercial/junk.ts`. The email-shape
- * check (`isJunkEmail`) lives in the shared `@lares/junk` workspace package (ADR-0007), the
- * same dependency `services/agent-runtime` already used — the chief of staff
- * picks up the same package rather than re-deriving the regexes.
+ * The email-shape
+ * check (`isJunkEmail`) lives in the shared `@lares/junk` workspace package, so the chief of
+ * staff picks up the same package rather than re-deriving the regexes.
  *
  * Pure, no I/O. Deliberately conservative: junk ONLY when ALL hold —
  *   1. the email looks transactional/generic, OR the email is missing AND the display name

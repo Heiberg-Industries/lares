@@ -1,5 +1,5 @@
 /**
- * The voice-learn engine, ported from services/agent-runtime/lib/voice/learn.ts.
+ * The voice-learn engine.
  *
  * Take a mailbox's Sent mail, keep genuine email prose (drop forwards, one-liners,
  * quoted-only replies and long-form essays), embed and upsert each kept email as a
@@ -7,21 +7,21 @@
  * written here — proposals are accepted by a human in the console. That separation is the
  * whole safety model of this job: it can only ever add examples and suggest wording.
  *
- * Two changes from the original, both deliberate:
+ * Two deliberate design choices:
  *
- *  - **Per-mailbox.** The old job resolved every Google account, split its cap across them
- *    and pooled the results into one corpus (`bin/voice-learn.ts:73-82`), so one blended
- *    voice stood in for two audiences. This engine learns ONE mailbox per call; the schedule
- *    runs it once per enrolled mailbox. See `sql/001_baseline.sql`.
- *  - **Batched embedding.** The original embedded one email per gateway call inside the keep
- *    loop — up to `learn_cap` (300) billed round trips per run. Same vectors, same order,
- *    far fewer calls. It also bounds the blast radius differently: a failed batch loses that
- *    batch rather than one email, which is fine because upserts are idempotent by
- *    (mailbox, id) and a re-run redoes only what is missing.
+ *  - **Per-mailbox.** Resolving every Google account, splitting a cap across them and pooling
+ *    the results into one corpus would let one blended voice stand in for two audiences. This
+ *    engine learns ONE mailbox per call; the schedule runs it once per enrolled mailbox. See
+ *    `sql/001_baseline.sql`.
+ *  - **Batched embedding.** Embedding one email per gateway call inside the keep loop would
+ *    cost up to `learn_cap` (300) billed round trips per run. Batching gives the same vectors,
+ *    in the same order, with far fewer calls. It also bounds the blast radius differently: a
+ *    failed batch loses that batch rather than one email, which is fine because upserts are
+ *    idempotent by (mailbox, id) and a re-run redoes only what is missing.
  *
  * The card distillation is the only LLM call, and it is made ONCE per run over a capped
- * sample — not per email. That matters: the Aug-14/15 incident was a billed call inside an
- * uncapped retry, and this job's cost must stay proportional to mail volume, nothing else.
+ * sample — not per email. That matters: a billed call inside an uncapped retry is how a job's
+ * cost runs away, and this job's cost must stay proportional to mail volume, nothing else.
  */
 import { detectLanguage } from "./voice.js";
 
@@ -39,7 +39,7 @@ const FORWARD_BODY_RE = /-{3,}\s*forwarded message|videresendt melding/i;
 const QUOTE_TAIL_RE = /(?:^|\n)\s*(on .+wrote:|den .+skrev:)\s*\n[\s\S]*$/i;
 
 /** Drop quoted reply tails and >-prefixed lines so we score only what the owner actually wrote.
- *  Without this the corpus would mostly learn the voices of the people he replies TO. */
+ *  Without this the corpus would mostly learn the voices of the people the owner replies TO. */
 export function stripQuoted(body: string): string {
   const noTail = body.replace(QUOTE_TAIL_RE, "");
   return noTail.split(/\r?\n/).filter((l) => !l.trimStart().startsWith(">")).join("\n");
@@ -113,7 +113,7 @@ const QUOTA_ERROR = /quota exceeded|rateLimitExceeded|userRateLimitExceeded|\b42
  * failed twice on "Units per minute per user" — up to 300 `messages.get` calls in a tight loop).
  * Pauses after every `batch` reads; on a quota error backs off ONCE and retries that id — a second
  * failure propagates, so a run that cannot proceed ends as `error` on the mailbox's card instead of
- * hammering the API every minute (the Aug-14/15 lesson). `null` reads are dropped.
+ * hammering the API every minute. `null` reads are dropped.
  */
 export async function readPaced<T>(
   ids: readonly string[],
@@ -146,7 +146,7 @@ function distillPrompt(kept: SentMessage[], mailbox: string): string {
   const sample = [...kept.filter(isReply), ...kept.filter((m) => !isReply(m))].slice(0, 40);
   const block = sample.map((m, i) => `--- email ${i + 1} ---\n${m.bodyText}`).join("\n\n");
   // one card per mailbox. The owner writes differently from one mailbox than from another — the card must describe THIS
-  // mailbox, not "his email voice" in general.
+  // mailbox, not "the owner's email voice" in general.
   return (
     `Below are real emails the owner has sent FROM ${mailbox}. Distil how they write from this mailbox ` +
     `specifically — their EMAIL voice for these correspondents (NOT essay/long-form voice) — into a short, ` +

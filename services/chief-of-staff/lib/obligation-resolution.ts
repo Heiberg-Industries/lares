@@ -1,19 +1,19 @@
 /**
- * Task 10, B2 — resolveElsewhere: before a stale thread reaches the brief, check whether
+ * resolveElsewhere: before a stale thread reaches the brief, check whether
  * the owner already answered this counterparty on ANOTHER channel after their last message. Three
- * metadata-only lookups (Gmail sent, calendar attendance, Slack own messages) run in parallel, each best-effort and individually bounded (`RESOLUTION_LOOKUP_TIMEOUT_MS`)
+ * metadata-only lookups (Gmail sent, calendar attendance, Slack own messages) run in parallel,
+ * each best-effort and individually bounded (`RESOLUTION_LOOKUP_TIMEOUT_MS`):
  * a lookup that throws or times out contributes nothing (fails OPEN: it never blocks a real
- * answer elsewhere from clearing the obligation) and is named in `unreadable`. Task B5 wires the
- * real deps (Gmail/Calendar/Slack scan) and decides what a caller does with a
- * resolved obligation; this module only answers "did he already handle this, and how do we know".
+ * answer elsewhere from clearing the obligation) and is named in `unreadable`. The pipeline
+ * (`lib/obligation-pipeline.ts`) wires the real deps (Gmail/Calendar/Slack scan) and decides what
+ * a caller does with a resolved obligation; this module only answers "did the owner already handle this, and how do we know".
  *
  * No lookup here reads a message body — every hit is a timestamp (+ a calendar summary, itself
  * metadata).
  */
-// `withTimeout` moved to its own leaf module. It used to come from
-// `./brief-content.js`, which imported `RESOLUTION_LOOKUP_TIMEOUT_MS` back out of this file: a
-// value-level ESM cycle that only stayed harmless because neither binding is read at module
-// init. What is left is a TYPE-only edge to `brief-content.js`, which erases at compile time.
+// `withTimeout` lives in its own leaf module (`./timeout.js`) so this file needs no value
+// import from `./brief-content.js`, which would risk an ESM cycle. What is left is a
+// TYPE-only edge to `brief-content.js`, which erases at compile time.
 import { withTimeout } from "./timeout.js";
 import type { Obligation } from "./brief-content.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
@@ -34,7 +34,7 @@ export interface Resolution {
 }
 
 export interface ResolutionDeps {
-  /** Latest message FROM him TO any of `addresses`, sent after `since` — or null. */
+  /** Latest message FROM the owner TO any of `addresses`, sent after `since` — or null. */
   gmailSentAfter(addresses: string[], since: Date): Promise<Date | null>;
   /** A calendar event with them that ENDED in (since, now] — or null. */
   calendarEndedWith(addresses: string[], since: Date, now: Date): Promise<{ at: Date; summary: string } | null>;
@@ -81,7 +81,7 @@ interface LookupResult<T> {
 /** Runs one source through the shared timeout/try path. A sync dep (slack) is lifted
  *  into a promise so all three sources go through Promise.all uniformly — the timeout can't fire
  *  before a sync function returns, but wrapping it anyway keeps every source's failure handling
- *  identical, per the task decision. */
+ *  identical. */
 async function runLookup<T>(name: Source, fn: () => Promise<T> | T): Promise<LookupResult<T>> {
   try {
     const value = await withTimeout(

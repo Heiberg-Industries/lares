@@ -2,20 +2,17 @@
  * The chief of staff's adapter to the fleet's Signal Spine. Failure calls keep their original defaults and
  * fingerprint; callers may opt into lightweight activity events through `EmitSignalOptions`.
  *
- * Ported VERBATIM from `services/agent-runtime/lib/adapters/signal-emit.ts`: the wire
- * payload shape (`toSpinePayload` there), `POST {SIGNAL_SPINE_URL}/ingest` with
+ * The wire payload shape, `POST {SIGNAL_SPINE_URL}/ingest` with
  * `Authorization: Bearer {SIGNAL_SPINE_TOKEN}`, the sha256 fingerprint composition
  * (`source|event|summary`), the 3s `AbortSignal.timeout`, and the silent-no-op-when-env-unset
  * / never-throws-into-caller contract.
  *
- * This wave's `emitSignal(event, summary, detail?, opts?)` is the thin single-caller variant of the
- * old file's `FailureSignal`/`makeSignalEmitter` factory: `source` is hardcoded
- * `"chief-of-staff"` (there is exactly one caller — this service — so no per-call `source` or
- * env-injection factory is needed).
+ * `emitSignal(event, summary, detail?, opts?)` is a thin single-caller emitter: `source` is
+ * hardcoded `"chief-of-staff"` (there is exactly one caller — this service — so no per-call
+ * `source` or env-injection factory is needed).
  *
- * `SIGNAL_SPINE_TOKEN_FILE` preferred since (the box mounts it as a Docker secret);
- * the plain `SIGNAL_SPINE_TOKEN` env var stays supported until the box's `.env` line is
- * retired.
+ * `SIGNAL_SPINE_TOKEN_FILE` is preferred (the box mounts it as a Docker secret); the plain
+ * `SIGNAL_SPINE_TOKEN` env var stays supported as a fallback.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -33,7 +30,7 @@ let cachedFileToken: string | undefined;
 
 /**
  * The signal-spine bearer token: `SIGNAL_SPINE_TOKEN_FILE` wins when set — trimmed file
- * content, or THROWS if the file cannot be read or is blank after trimming (fix round 1: a
+ * content, or THROWS if the file cannot be read or is blank after trimming (a
  * blank file is a deploy error, not "unconfigured", mirroring atlas's `readSpineToken`; the
  * plain env var is a fallback ONLY when `_FILE` is unset, never a rescue for a broken FILE) —
  * else the plain `SIGNAL_SPINE_TOKEN` env var, else `undefined`. `spineToken()` itself can
@@ -93,7 +90,7 @@ function toSpinePayload(
     body: (detail ?? summary).slice(0, 4000),
     // Alerts/reports retain the legacy sha256(source|event|summary) dedupe key. Events append
     // a nonce because each occurrence must become its own grey line, never a repeat/thread.
-    // the spine's own fingerprintOf, ported verbatim from the old adapter. Only summary is
+    // the spine's own fingerprintOf. Only summary is
     // hashed; detail goes to body unhashed — callers keep per-run ids out of summary.
     fingerprint: createHash("sha256")
       .update(`${SOURCE}|${event}|${opts.fingerprintKey ?? summary}${kind === "event" ? `|${randomUUID()}` : ""}`)
@@ -118,7 +115,7 @@ function toSpinePayload(
  * level — ~15 call sites (schedules' `catch` blocks, e.g. `agent/schedules/morning-brief.ts`)
  * call `emitSignal` specifically to report an already-caught failure; a configured-but-broken
  * `SIGNAL_SPINE_TOKEN_FILE` throwing OUT of this function would turn the failure-reporter
- * itself into an unhandled rejection (fix round 1). A 3s `AbortSignal` timeout bounds how long
+ * itself into an unhandled rejection. A 3s `AbortSignal` timeout bounds how long
  * a caller can be blocked once the spine is actually reachable.
  */
 export function emitSignal(event: string, summary: string, detail?: string): Promise<void>;

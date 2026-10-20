@@ -1,12 +1,11 @@
 /**
  * Generic Twenty CRM REST helpers.
  *
- * Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`: REST base
- * `{baseUrl}/rest`, `Authorization: Bearer <apiKey>`. Only the generic verbs land here —
- * domain-specific methods (people/companies/notes/opportunities) are a later task's job;
- * this task is the shared plumbing they'll all import.
+ * REST base `{baseUrl}/rest`, `Authorization: Bearer <apiKey>`. Only the generic verbs live
+ * here — domain-specific methods (people/companies/notes/opportunities) import this shared
+ * plumbing.
  *
- * a caller must never conflate "Twenty is unreachable" with "Twenty said no such
+ * A caller must never conflate "Twenty is unreachable" with "Twenty said no such
  * record" — `TwentyUnavailableError` (network failure, non-404 HTTP error,
  * misconfiguration) is always distinct from `TwentyNotFoundError` (a real 404).
  */
@@ -47,7 +46,7 @@ export class TwentyNotFoundError extends Error {
 
 const DEFAULT_KEY_FILE = "/run/secrets/twenty-key";
 
-// Security review: callers like meeting_followup_send run this AFTER the mail has
+// Callers like meeting_followup_send run this AFTER the mail has
 // already gone out, sequentially over several recipients — a hung Twenty must not be able to
 // stall the model turn (or, on the autonomous path, the schedule tick behind it) whose real
 // work is already done. A bounded timeout, not a retry: a slow/down Twenty should fail fast

@@ -13,7 +13,7 @@ export function osloParts(d: Date, tz: string = homeTzFromEnv()): { date: string
  *
  * `tz` is the owner's timezone, resolved per tick by the schedule (`ownerTz()`). At home
  * that is the installation's home zone and the 09:00/17:00 slots are exactly the ones this has always returned;
- * on a trip the digest lands at 09:00 where he actually is. `hours` moved to the THIRD argument
+ * on a trip the digest lands at 09:00 where the owner actually is. `hours` moved to the THIRD argument
  * when `tz` was added, so a caller that passed hours explicitly had to pass `tz` before them.
  *
  * `hours` is now REQUIRED, not defaulted to `[9, 17]`: the digest's hours are a

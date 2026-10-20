@@ -7,7 +7,7 @@
  *                    promote → write dated reflection note → return result.
  *
  * The weekly learning summary used to live here as a one-shot LLM prompt. It is now a
- * scheduled brain-turn in the entry script (its persona, its tools, the door thread), so the
+ * scheduled agent turn (its persona, its tools, the door thread), so the
  * cycle no longer reasons about preferences: it needs neither an llm nor the preference
  * store of its own (the promoter owns the store writes).
  *
@@ -386,7 +386,7 @@ export function makeDreamCycle(deps: {
   reflector: DreamCycleReflector;
   promoter: DreamCyclePromoter;
   brain: DreamCycleBrain;
-  /** `conversation_entries` (ADR-0020) — the dream cycle's primary source since W3B-s3.
+  /** `conversation_entries` (ADR-0020) — the dream cycle's primary source.
    *  `readConversationEntries` falls back to `brain`'s markdown for the one gap the table
    *  cannot itself answer for; see that function's doc comment in `log-reader.ts`. */
   entries: EntryReader;
@@ -396,7 +396,7 @@ export function makeDreamCycle(deps: {
   agent: string;
   /** The running agent's own label, for matching a legacy markdown reply line — resolved by
    *  the caller from the agent's own definition (`lib/definition.ts`'s `thisAgent()`), never a
-   *  literal name here (W3B-s7). Passed straight through to `readConversationEntries`. */
+   * literal name here. Passed straight through to `readConversationEntries`. */
   agentLabel: string;
   clock?: () => Date;
 }) {
@@ -453,7 +453,7 @@ export function makeDreamCycle(deps: {
 
       // The ids the commit records (ADR-0018 rule 6 again, from the other end: not just what
       // was rejected and why, but exactly which rows a promotion or a supersede touched).
-      // `proposed` names the SUPERSEDES this run filed for the owner (W5X-s6) — a
+      // `proposed` names the SUPERSEDES this run filed for the owner — a
       // `supersede-awaits-owner` rejection already appears, by reason and count, in the "Not
       // learned" section above; this is the id behind it. An `add` confirmation is filed by the
       // SCHEDULE, after this note is already committed (`agent/schedules/dream.ts`'s

@@ -2,29 +2,27 @@
  * Capture one completed turn into ADR-0020's conversation record — the one place this service
  * writes a finished exchange.
  *
- * chief-of-staff shipped without a capture path once already. The retired entry script (line 118)
- * wired the (since-retired) markdown writer, and when that container stopped, capture stopped
- * with it — six days before anyone noticed. Two things broke at once: the vault stopped holding
- * a conversation history at all, and the dream cycle (whose ONLY input was those files at the
- * time) produced all-zeros every night since. Nothing here may repeat that.
+ * A capture path that is missing fails silently: if the writer stops, the vault stops holding
+ * a conversation history at all, and the dream cycle (whose input is that record) produces
+ * all-zeros every night, with nothing to notice. Nothing here may let that happen quietly.
  *
  * ADR-0020 (docs/decisions/0020-conversations.md) names `conversation_entries`
  * (`services/box/sql/001_baseline.sql`) THE record: one row per exchange, an
  * `Origin` stamped at write time, never edited after. `originForTurn` below computes that
  * stamp; `captureTurn` is the write.
  *
- * THE MARKDOWN LOG IS GONE (W3B-s8). `_meta/conversations/` was the dream cycle's only input
- * until W3B-s3 pointed it at this table instead; W3B-s8 imports the existing corpus once, by
- * hand (`bin/import-conversation-logs.ts` — not yet run on any installation) and this file stops
- * writing that format. The legacy PARSER (`lib/dream/log-reader.ts`) is kept — the importer and
- * the dream cycle's own gap-fill, for an installation that has not yet run the importer, both
- * still need it — but nothing writes that format any more.
+ * THE MARKDOWN LOG IS GONE. `_meta/conversations/` used to be the dream cycle's only input;
+ * the dream cycle now reads this table instead. `bin/import-conversation-logs.ts` imports an
+ * existing markdown corpus once, by hand, and this file does not write that format. The legacy
+ * PARSER (`lib/dream/log-reader.ts`) is kept — the importer and the dream cycle's own
+ * gap-fill, for an installation that has not yet run the importer, both still need it — but
+ * nothing writes that format any more.
  *
  * FAIL SOFT. This hook runs on every turn of a live agent — a problem writing the conversation
  * record must never cost the owner their reply. The write is bounded by
  * `CONVERSATION_RECORD_TIMEOUT_MS` the way `agent/instructions/standing-facts.ts` bounds its own
  * read with `withTimeout` (see that file's header: a stall is a failure too, and eve applies no
- * timeout of its own here). An installation that has not yet applied migration 060 hits a
+ * timeout of its own here). An installation that has not yet applied the schema (`001_baseline.sql`) hits a
  * missing-table error on every single turn until it does — logging that every time would be
  * exactly the noise that hides a real problem, so it is logged loudly once per process and then
  * at most once every ten minutes. Every OTHER kind of write failure logs every time.
@@ -53,7 +51,7 @@ export interface TurnLogEntry {
   turnId?: string;
   /** The session this exchange ran in (ADR-0020) — same reason, same caveat. */
   sessionId?: string;
-  /** Where this entry's content came from (ADR-0020 rule 2 / the origin spec), computed once
+  /** Where this entry's content came from (ADR-0020 rule 2 / the origin model), computed once
    *  by `originForTurn` below at write time — never inferred here or later. Absent for the
    *  same legacy-markdown reason as `turnId`; `captureTurn` fails closed to `third_party` if it
    *  ever sees this unset. */
@@ -65,14 +63,14 @@ export interface TurnLogEntry {
 export const CONVERSATION_RECORD_TIMEOUT_MS = 2000;
 
 /**
- * Which class a door turn's entry carries — ADR-0020 rule 2 and the origin spec's
+ * Which class a door turn's entry carries — ADR-0020 rule 2 and the origin model's
  * narrowest-origin rule, in one function. A scheduled lane is `system`: nobody wrote it (origin
- * spec class 5, not `agent` — the schedule authored the prompt, not the agent). Anything else
+ * class 5, not `agent` — the schedule authored the prompt, not the agent). Anything else
  * starts as `owner`, UNLESS the turn read outside content during the exchange, in which case
  * `stampFor` narrows it — a summary of a fetched email does not launder the read into an
  * owner-said entry. A turn key this process cannot use (no session, no turn id) fails closed to
  * `third_party`, the least trusted class, exactly like `stampFor` itself does for every other
- * write path in this wave — but the entry is still written; an unattributable turn is not a
+ * write path — but the entry is still written; an unattributable turn is not a
  * lost one.
  *
  * Exported so the test can drive this without a database.
@@ -98,7 +96,7 @@ function defaultRecord(): ConversationRecordSink {
   return lazyRecord;
 }
 
-/** Postgres' "relation does not exist" (42P01) — the shape an unapplied 060 migration
+/** Postgres' "relation does not exist" (42P01) — the shape an unapplied schema
  *  produces, and the one failure this module throttles specially (see the module header). */
 function isMissingTableError(err: unknown): boolean {
   return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "42P01";

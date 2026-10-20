@@ -1,13 +1,11 @@
-// lib/adapters/dream/context.ts — ContextProvider that folds active preferences into the chief of staff's turn context.
+// lib/dream/context.ts — ContextProvider that folds active preferences into the chief of staff's turn context.
 //
 // At each turn, loads the currently active preferences from the dream store and
 // renders a compact bounded block for injection into the system prompt. Returns
 // undefined when there are no active preferences (so the seam is cleanly omitted).
 //
-// `ContextProvider` is inlined rather than imported: the upstream source
-// (services/agent-runtime/lib/runtime.ts) is on the retired runtime, and chief-of-staff
-// must not take a dependency on it. chief-of-staff has no equivalent type yet — wiring
-// this into the actual turn-context-building path is a later task.
+// `ContextProvider` is declared locally: chief-of-staff has no equivalent shared type.
+// Nothing wires this into the actual turn-context-building path yet.
 
 import type { PreferenceRow } from "./store.js";
 

@@ -1,11 +1,11 @@
-// The permissions board's check, bound to THIS agent's declaration (step 1). A tool writes
+// The permissions board's check, bound to THIS agent's declaration. A tool writes
 // `approval: approvalFor("<its own name>")`; board-wiring.test.ts keeps that honest.
 //
 // `contactHistory` is bound here, not left to the default: the chief of staff ships the only contact tools whose
 // recipients are checked per-call (`gmail_send`, `calendar_create_event` — @lares/agent-kit/always-ask's
-// RECIPIENTS_OF), so this is where first contact actually gets decided for her.
+// RECIPIENTS_OF), so this is where first contact actually gets decided for the agent.
 //
-// step 2: `startingLevel` makes the DEFINITION's level the fallback where the permissions
+// `startingLevel` makes the DEFINITION's level the fallback where the permissions
 // board has no `ratchet` row. The manifest provides unmanaged defaults; boardApproval
 // uses the verified managed runtime identity for board lookups and audit attribution.
 import { boardApproval } from "@lares/agent-kit/board-approval";

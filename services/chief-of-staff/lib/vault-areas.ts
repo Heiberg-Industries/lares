@@ -1,4 +1,4 @@
-// WHICH AREAS OF THE VAULT THIS SESSION MAY OPEN (ADR-0017 rule 1, W5C-s3).
+// WHICH AREAS OF THE VAULT THIS SESSION MAY OPEN (ADR-0017 rule 1).
 //
 // The four note tools take an `area` and refuse one they were not given. This is what they ask.
 // It reads the SAME per-session definition the tool list itself resolved from
@@ -6,11 +6,10 @@
 // session seam uses (`grantedVaultAreas`), so the list of tools this agent was handed and each
 // tool's own refusal can never disagree.
 //
-// NEVER WIDEN. Between this slice and W5C-s6 the definitions still grant `brain`/`atlas`/
-// `memory`, so `grantedVaultAreas` reads those three names as one area each; after s6 they
-// grant `vault` with explicit areas and it reads those instead. Neither spelling adds an area
-// the other did not have, and an agent that today can open only one of the two note areas can
-// open only that one after this slice.
+// NEVER WIDEN. `grantedVaultAreas` reads either spelling of a definition: older definitions
+// grant `brain`/`atlas`/`memory` (read as one area each), newer ones grant `vault` with
+// explicit areas. Neither spelling adds an area the other did not have, and an agent that
+// can open only one of the two note areas can open only that one.
 //
 // A definition that cannot be read is NOT an open door: the rejection propagates out of the
 // tool, which eve renders as that tool's failure — the same shape a missing store root has
@@ -28,7 +27,7 @@ export async function vaultAreasForTurn(
 }
 
 /**
- * THE SAME QUESTION, FOR A WRITE (W5C-s4) — and the answer is narrower, because reads and
+ * THE SAME QUESTION, FOR A WRITE — and the answer is narrower, because reads and
  * writes were never symmetrical here.
  *
  * This role reads BOTH note areas today (it had `agent-kit__vault_read` and `atlas_read` side by

@@ -1,8 +1,8 @@
 /**
- * W7D-s2 — owner decision D3: every mail read
+ * Every mail read
  * says whether its sender is someone the owner has written to before, in one of exactly three
  * sentences. It never says "trusted" — being in the owner's own outbox is not a vouch for the
- * sender, only a fact about the relationship the owner can weigh for himself.
+ * sender, only a fact about the relationship that the owner can weigh.
  *
  * The lookup is `isKnownRecipient` (`./contact-history.js`) — the SAME function
  * `board-approval.ts` already uses to decide whether a send may skip its "first contact" card.
@@ -22,7 +22,7 @@
  * "I could not check" without ever calling the lookup.
  *
  * A lookup that throws, or one that has not settled within `SENDER_STANDING_TIMEOUT_MS`, also
- * answers "I could not check" — never a throw that costs the owner his mail, and never "nobody
+ * answers "I could not check" — never a throw that costs the owner the mail, and never "nobody
  * you have written to" (a false statement) for a sender that could not actually be checked.
  */
 import { addressOf, isKnownRecipient } from "./contact-history.js";
@@ -38,7 +38,7 @@ export const SENDER_STANDING_TIMEOUT_MS = 5_000;
  * A loose, LOCAL check that `addressOf`'s result is exactly one plausible email address — not
  * a second copy of `always-ask.ts`'s stricter `ADDRESS_RE`/`parseSingleAddress`. That parser
  * stays exactly as strict as it is for recipients the agent is about to WRITE to (this file
- * does not touch it, per the plan); this one only has to reject the "several addresses, or
+ * does not touch it); this one only has to reject the "several addresses, or
  * none" case for a sender the agent is reading FROM, where `addressOf` has already collapsed
  * anything it cannot resolve to one address down to `""`.
  */

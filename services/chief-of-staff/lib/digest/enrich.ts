@@ -8,10 +8,10 @@ export type ReadabilityClient = (url: string) => Promise<{ title: string; text: 
 /** The article-length floor below which a fetch does not count as enrichment. Exported
  *  because `lib/digest/readability.ts` re-implements the client against the chief of staff's own
  *  worker and MUST apply the same threshold — dropping it would silently start enriching
- *  short pages the old service left alone. */
+ *  short pages the original left alone. */
 export const MIN_ARTICLE_CHARS = 300;
 
-// `makeReadabilityClient` is deliberately NOT ported. The chief of staff already owns the readability
+// `makeReadabilityClient` is deliberately NOT built here. The chief of staff already owns the readability
 // worker's HTTP contract in `@lares/agent-kit/readability-client` (auth, error taxonomy, egress via
 // squid); a second client would be a second place to keep that correct. The adapter that
 // satisfies `ReadabilityClient` from it lives in `lib/digest/readability.ts`.
@@ -80,7 +80,7 @@ export function makeEnrich(opts: {
   readFile: (rel: string) => Promise<Buffer>;
   /**
    * The turn this pass runs in, when there is one — threaded straight to `extractAttachment` so
-   * an attachment it extracts taints that turn (W3A-s5). The digest schedule's own call site has
+   * an attachment it extracts taints that turn. The digest schedule's own call site has
    * no turn to pass; a future interactive caller wires this without the extractor's own callers
    * needing to change again.
    */
