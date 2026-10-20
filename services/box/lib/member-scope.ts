@@ -755,6 +755,14 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     createdBy: `${BOX}/004_web_inbox.sql`,
     reason: "messages an agent wrote for one owner's web chat; `owner` is the same canonical id the proactivity ledger (`initiations.owner`) uses.",
   },
+
+  // ── Per-model-call token counts, created by services/box/sql/005_model_steps.sql ──
+  {
+    table: "model_steps",
+    scope: "operational",
+    createdBy: `${BOX}/005_model_steps.sql`,
+    reason: "token counts and ids for each model call, keyed by agent and session; no message text and no person column, pruned after 90 days.",
+  },
 ];
 
 export function scopeOf(table: string): ScopedTable | undefined {
