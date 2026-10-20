@@ -731,7 +731,7 @@ export function assertPullSafe(markdown: string): void {
     const line = normalized.slice(0, expiring.index).split("\n").length;
     throw new Error(
       `notion-sync: refusing to pull — Notion-signed expiring URL ("${expiring[0]}") at line ${line}; ` +
-        `it will go stale in the vault (spec §4.4, freeze the row)`,
+        `it will go stale in the vault (freeze the row)`,
     );
   }
 

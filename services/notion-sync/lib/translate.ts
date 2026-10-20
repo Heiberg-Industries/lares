@@ -145,11 +145,11 @@ function attrSafe(url: string): string {
  * partially-written page.
  */
 const REFUSED_TAGS: Record<string, string> = {
-  page: "<page>/<database> move content and delete it on removal (spec §4.3)",
-  database: "<page>/<database> move content and delete it on removal (spec §4.3)",
+  page: "<page>/<database> move content and delete it on removal",
+  database: "<page>/<database> move content and delete it on removal",
   transcript:
     "a <transcript> block cannot be written by the API, and transcripts are one-way " +
-    "Notion→vault permanently (spec §17.2)",
+    "Notion→vault permanently",
 };
 
 /**

@@ -2480,7 +2480,7 @@ export function tickPasses(runners: TickRunners): SyncPass[] {
 }
 
 export function registerNotionSyncCommands(program: Command): void {
-  const cmd = program.command("notion-sync").description("Keep the Brain vault and Notion in step");
+  const cmd = program.command("notion-sync").description("Keep the vault and Notion in step");
 
   cmd
     .command("attendees")
@@ -2587,7 +2587,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("transcripts")
     .description(
-      "T4 (Phase 4): propose Notion Meetings transcripts into the vault, one-way " +
+      "Propose Notion Meetings transcripts into the vault, one-way " +
       "and 👍-gated. Writes nothing itself — every file lands through the proposal queue.",
     )
     .option("--dry-run", "report the plan without writing", false)
@@ -2607,7 +2607,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("notion-born")
     .description(
-      "T6 (Phase 4): propose Notion Docs pages a human created there — pages with no " +
+      "Propose Notion Docs pages a human created there — pages with no " +
       "vault file — into the vault as NEW FILES, 👍-gated. Writes nothing itself. " +
       "Run --dry-run first: it prints every page it would create and every one it " +
       "refuses, with the reason.",
@@ -2630,7 +2630,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("people")
     .description(
-      "T7 (Phase 4): project the people your Meetings rows name from the source of " +
+      "Project the people your Meetings rows name from the source of " +
       "truth into the Notion People database, and link each meeting to them. " +
       "READ-MOSTLY: it creates and updates People rows and never deletes one, and it " +
       "never writes back to the source. An attendee it cannot match is left out of " +
@@ -2672,7 +2672,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("adoption-report")
     .description(
-      "T5 (Phase 4): match the pre-existing vault transcripts against the Notion Meetings " +
+      "Match the pre-existing vault transcripts against the Notion Meetings " +
       "rows by page id / date+title / title-only, and report Confident / title-only / " +
       "Ambiguous / Unmatched. REPORT ONLY — writes nothing, anywhere, ever. The owner rules on " +
       "adoption from this output.",
@@ -2696,7 +2696,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("archive-excluded")
     .description(
-      "T3 (Phase 4): trash the Notion pages for Docs rows the current config's " +
+      "Trash the Notion pages for Docs rows the current config's " +
       "deskDirs[].exclude has carved out of desk scope, and mark their state rows " +
       "orphaned. Dry-run by DEFAULT — pass --no-dry-run to actually write.",
     )
@@ -2720,7 +2720,7 @@ export function registerNotionSyncCommands(program: Command): void {
   cmd
     .command("reconcile")
     .description(
-      "One-time go-live pass (spec §18.5): re-read every page, handle anything that " +
+      "One-time go-live pass: re-read every page, handle anything that " +
       "diverged the normal way, stamp Sync/icon/lock, then take the notion_last_edited " +
       "baseline from a fresh query. Idempotent — safe to re-run.",
     )
@@ -2738,7 +2738,7 @@ export function registerNotionSyncCommands(program: Command): void {
     .command("enable-two-way")
     .description(
       "Turn a desk folder's rows from 🔒 Mirror into ✍️ Desk, per file, only where both " +
-      "fidelity legs pass (spec §4.5/§18.3). Everything else stays Mirror and is reported.",
+      "fidelity legs pass. Everything else stays Mirror and is reported.",
     )
     .requiredOption("--dir <dir>", "the desk dir to enable — must be listed in twoWayDirs")
     .option("--dry-run", "report which files would be enabled, without writing", false)
@@ -2758,7 +2758,7 @@ export function registerNotionSyncCommands(program: Command): void {
     .command("fidelity")
     .description(
       "Round-trip every vault markdown file push->pull offline and report byte fidelity " +
-      "(spec §4.5/§18.3 — the precondition for `enable-two-way`). Every file is checked and " +
+      "(the precondition for `enable-two-way`). Every file is checked and " +
       "reported, but the exit code only fails on SYNC-ELIGIBLE files: wikiDir (from config) " +
       "counts automatically, and --eligible names any other vault-path prefixes that must " +
       "pass (desk dirs land in a later phase). With no wiki config and no --eligible, nothing " +
@@ -2766,7 +2766,7 @@ export function registerNotionSyncCommands(program: Command): void {
     )
     .option(
       "--vault <path>",
-      "vault root to scan — overrides config vaultPath (runs without a box config); " +
+      "vault root to scan — overrides config vaultPath (runs without a server config); " +
       "skips config load entirely, so wikiDir auto-eligibility does not apply unless --eligible is also given",
     )
     .option("--eligible <prefixes>", "comma-separated vault-path prefixes whose failures must fail the command")
@@ -2852,7 +2852,7 @@ export function registerNotionSyncCommands(program: Command): void {
 
   cmd
     .command("proposals")
-    .description("List open Notion→vault edits awaiting approve/reject (spec §18.4)")
+    .description("List open Notion→vault edits awaiting approve/reject")
     .action(async () => {
       const rows = await listOpenProposals();
       if (rows.length === 0) {
@@ -2895,7 +2895,7 @@ export function registerNotionSyncCommands(program: Command): void {
 
   cmd
     .command("resolve <path>")
-    .description("Resolve a frozen row by choosing which side wins (spec §6)")
+    .description("Resolve a frozen row by choosing which side wins")
     .requiredOption("--keep <side>", "md | notion")
     .action(async (path: string, opts: { keep: string }) => {
       if (opts.keep !== "md" && opts.keep !== "notion") {

@@ -834,7 +834,7 @@ export async function runTranscriptSync(
       mediaDeferred += 1;
       console.warn(
         `notion-sync: transcripts: ${vaultPath} carries a Notion-signed media URL that expires ` +
-        `within the hour (spec §4.4) — the note is still proposed; the image will need the Notion page`,
+        `within the hour — the note is still proposed; the image will need the Notion page`,
       );
     }
 
