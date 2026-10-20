@@ -33,20 +33,20 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
   if (msg.startsWith(SEAM)) {
     const rest = msg.slice(SEAM.length);
 
-    // Q1/Q2: the exact tool set this model call was given.
+    // The exact tool set this model call was given.
     if (rest === "tools") return `TOOLS ${tools.map((t) => t.name).sort().join(" ")}`;
 
-    // Q1: which copy of a contested name the model is looking at.
+    // Which copy of a contested name the model is looking at.
     if (rest.startsWith("describe ")) {
       const name = rest.slice("describe ".length);
       const matches = tools.filter((t) => t.name === name);
       return `DESCRIBE ${name} count=${matches.length} ${matches.map((t) => t.description ?? "<none>").join(" | ")}`;
     }
 
-    // Q4: the system prompt as assembled for this call, after the instruction resolvers ran.
+    // The system prompt as assembled for this call, after the instruction resolvers ran.
     if (rest === "system") return `SYSTEM ${messages.filter((m) => m.role === "system").map((m) => m.text).join(" ¶ ")}`;
 
-    // Q3/Q4: call one tool by name and read its result back. Call FIRST, then report — reading
+    // Call one tool by name and read its result back. Call FIRST, then report — reading
     // `toolResults` first would find the same tool's result from an EARLIER turn (it stays in the
     // prompt) and answer without calling anything this turn.
     const key = `${userMessageCount}|${msg}`;
@@ -62,7 +62,7 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
       return done ? `RESULT ${name} ${JSON.stringify(done.output)}` : `NORESULT ${name}`;
     }
 
-    // Q4: store a value in session state.
+    // Store a value in session state.
     if (rest.startsWith("lang ")) {
       const lang = rest.slice("lang ".length);
       if (!seamActed.has(key)) {
@@ -73,7 +73,7 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
       return done ? `RESULT seam_language ${JSON.stringify(done.output)}` : "NORESULT seam_language";
     }
 
-    // Task 6: call the REAL production-shaped set_language tool, not the seam_language fixture.
+    // Call the REAL production-shaped set_language tool, not the seam_language fixture.
     if (rest.startsWith("setlang ")) {
       const lang = rest.slice("setlang ".length);
       if (!seamActed.has(key)) {
@@ -95,8 +95,8 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
   return `DONE:${msg}`;
 });
 
-// Q5: the same control file the tool catalogue reads selects a different model. A distinct mock is
-// the only way to SEE a runtime selection in a fixture with no provider — its reply is unmistakable.
+// Model selection: the same control file the tool catalogue reads selects a different model.
+// A distinct mock is the only way to SEE a runtime selection in a fixture with no provider — its reply is unmistakable.
 //
 // eve 0.60.1 removed `defineDynamic({ fallback, events })`'s `fallback`, and confines a live
 // provider-object model selection to `step.started` — a `session.started`/`turn.started` selection
@@ -108,12 +108,12 @@ const scripted = mockModel(({ lastUserMessage, messages, tools, toolResults, use
 //
 // This agent is shared by every eval file in the package (evals.config.ts: "one local dev process"),
 // so a `session.started` model handler — whatever it returned — would run on every session any eval
-// creates, not only this one's Q5 probe. Combined with the two throws above, that leaves exactly one
-// usable flag:
+// creates, not only this one's model-selection probe. Combined with the two throws above,
+// that leaves exactly one usable flag:
 //   alt_model_step  step.started returning a provider object (an AI SDK LanguageModel)
-// The 0.32-era `alt_model_object` and `alt_model_id` flags are retired, not ported — see the Q5
-// comment in evals/seams.eval.ts for what each proved and why neither survives on 0.60.1. In
-// particular: a model-id STRING at session/turn scope is the one shape this project forbids
+// The 0.32-era `alt_model_object` and `alt_model_id` flags are retired, not ported — see the model-selection
+// comment in evals/seams.eval.ts for what each proved and why neither survives on 0.60.1.
+// In particular: a model-id STRING at session/turn scope is the one shape this project forbids
 // everywhere (eve would route it through the Vercel AI Gateway, bypassing the self-hosted LiteLLM
 // gateway — packages/agent-kit/src/definition-model.ts), so no code path here may ever hand eve one.
 // No flag ⇒ `resolveAlias` picks "scripted", the same default every other eval in this package relies

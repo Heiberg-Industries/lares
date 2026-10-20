@@ -56,7 +56,7 @@ it('pins the alias as durable data and reconstructs a direct provider without re
  *
  * eve 0.33.0 removed `defineDynamic({ fallback })` ("Dynamic models and subagents now resolve
  * without compiled fallbacks or placeholder configs. `defineDynamic` accepts only `events`",
- * node_modules/eve/CHANGELOG.md, ccaa596), and 0.60.1 refuses both halves of the old shape at
+ * node_modules/eve/CHANGELOG.md), and 0.60.1 refuses both halves of the old shape at
  * runtime: a handler returning nothing throws ("Every matching dynamic model handler must
  * return a concrete model selection") and a session- or turn-scoped handler may not return a
  * provider object at all ("durable model selections must be serializable. Return a model id

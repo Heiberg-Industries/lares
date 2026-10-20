@@ -1,9 +1,9 @@
 # @lares/memory-evals
 
-A recall test set for the Brain/Atlas markdown store's **search and read**
+A recall test set for the private/shared markdown note stores' **search and read**
 layer (`packages/agent-kit/src/notes-store.ts`), with a recorded baseline —
-built ahead of a planned change to how the agents' memory works, so we have
-a yardstick for whether that change makes recall better or worse.
+a yardstick for whether a change to how the agents' memory works makes recall
+better or worse.
 
 ## What this measures
 
@@ -21,8 +21,8 @@ on top of.
 
 ## What this does NOT measure
 
-- **Not a live model.** Nothing here asks an LLM anything. A later slice
-  adds a model layer that reads the notes search returns and checks whether
+- **Not a live model.** Nothing here asks an LLM anything. A model layer
+  could be added that reads the notes search returns and checks whether
   the *answer* it gives is correct — that is a different, and strictly
   harder, question than "did search return the right file."
 - **Not the same question as the poisoning suite below.** This measures

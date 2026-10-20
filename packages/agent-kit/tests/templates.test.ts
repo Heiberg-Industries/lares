@@ -1,7 +1,7 @@
 // The role templates themselves, held to the same bar every real agent's declaration is
-// Phase 3). A template is EXTRACTED from a running agent, never invented, so the
-// properties below are the ones that could quietly stop holding as one gets extracted from a
-// second and a third agent: a role whose grants drift out of the schema, a write that lost its
+// A template is EXTRACTED from a running agent, never invented, so the
+// properties below are the ones that could quietly stop holding as templates are extracted
+// from further agents: a role whose grants drift out of the schema, a write that lost its
 // gate, an unsealed egress, prose that kept the owner's world, or a README that says what the
 // role does without saying what it deliberately refuses to do.
 //
@@ -34,7 +34,7 @@ const PLAIN_WRITE_GRANTS: Record<string, readonly string[]> = {
   creative: ["studio"],
 };
 
-/** `loadManifest`, deferred to test-run time and memoised item 5).
+/** `loadManifest`, deferred to test-run time and memoised.
  *
  *  This used to be a bare `const m = loadManifest(...)` in each `describe` body, which vitest
  *  evaluates while COLLECTING the file. A template with a malformed `agent.json` therefore threw
@@ -80,7 +80,7 @@ describe("role templates", () => {
       it("declares sealed egress", () => { expect(manifestOf(t).egress.sealed).toBe(true); });
       it("role.md passes the genericness lint", () => { expect(lintRole(roleOf(t))).toEqual([]); });
       it("names no tool the template's OWN grants cannot serve", () => {
-        // item 3, one layer earlier than the assemble-time check. That one compares the
+        // One layer earlier than the assemble-time check. That one compares the
         // role text against a real agent's shipped tool FILES; this one compares it against the
         // template's own declaration, so a role.md and an agent.json that disagree are caught in
         // this package rather than in whichever service copies them next.
@@ -102,7 +102,7 @@ describe("role templates", () => {
       });
     });
   }
-  // W5C-s6 — the per-file values, held as one table so a drifting grant is one red line.
+  // The per-file values, held as one table so a drifting grant is one red line.
   it("grants vault, with exactly the areas each role needs", () => {
     expect(grantFor(manifestOf("chief-of-staff"), "vault"))
       .toMatchObject({ scope: "write-with-confirm", areas: ["private", "shared", "facts"] });

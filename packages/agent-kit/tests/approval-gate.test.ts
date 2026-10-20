@@ -3,17 +3,16 @@ import { describe, it, expect } from "vitest";
 import { approverFrom, makeApprovalGate, principalFromAuth, UnauthorizedApproverError } from "../extension/lib/approval-gate.js";
 
 /**
- * The extension's Brain-write approval re-check Task 2).
+ * The extension's note-write approval re-check.
  *
- * Ported from `services/chief-of-staff/tests/gate.test.ts` and `services/chief-of-staff/tests/
- * brain-writes.test.ts`'s "gating" describe block — same auth shapes, same cases — adapted
+ * Same auth shapes and cases as `services/chief-of-staff/tests/gate.test.ts`, adapted
  * to this module's injected-resolver design: `makeApprovalGate` is constructed here with a
  * plain fake `isApprovedPrincipal`, exactly mirroring the
  * injected-resolver pattern of the other clients. No eve loader, no `globalThis`/`ext-config-scope` binding
  * involved — the bound production export (`extension.config.brain.isApprovedPrincipal`,
- * ultimately `lib/principals.ts`'s `isAllowedPrincipal`) is exercised instead by the live
- * `eve dev` check and the direct `summarizeApproval` check documented in task-2-report.md,
- * since the chief-of-staff service's own allowlist policy is out of scope for this package.
+ * ultimately `lib/principals.ts`'s `isAllowedPrincipal`) is exercised instead by a live
+ * `eve dev` check, since the chief-of-staff service's own allowlist policy is out of scope
+ * for this package.
  */
 
 const OWNERONE = "U_EXAMPLE_OWNER";

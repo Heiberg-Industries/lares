@@ -20,12 +20,11 @@ import {
 } from "../src/owner-clock.js";
 
 /**
- * Task 2 — one owner clock, three sources in a fixed priority: the trip the travel agent already
- * knows about, then the timezone Slack reports off the owner's own device, then the configured home.
+ * One owner clock, three sources in a fixed priority: the trip the agent already knows about,
+ * then the timezone Slack reports off the owner's own device, then the configured home.
  *
- * The failure this replaces is documented and paid for:/128 and each fired a job
- * on a clock nobody was standing on (09:00 New York, mid-air), because every schedule read
- * `Europe/Oslo` from a constant. The tests below pin the two things that make the answer
+ * The failure this replaces: every schedule fired its job on a clock nobody was standing on
+ * (09:00 New York, mid-air), because every schedule read a fixed home zone from a constant. The tests below pin the two things that make the answer
  * trustworthy — the priority order, and the fact that a SIGNAL WITH NO AGE is not a signal.
  */
 
@@ -73,7 +72,7 @@ describe("slotKey — the fleet's slot shape, on the owner's clock", () => {
     expect(slotKey(new Date("2026-09-08T07:00:00Z"), OSLO, 8)).toBeNull();
   });
 
-  it("moves with the owner: the same 08:00 slot fires six hours later when he is in New York", () => {
+  it("moves with the owner: the same 08:00 slot fires six hours later when the owner is in New York", () => {
     expect(slotKey(new Date("2026-09-08T06:00:00Z"), NY, 8)).toBeNull();
     expect(slotKey(new Date("2026-09-08T12:00:00Z"), NY, 8)).toBe("2026-09-08T8");
   });
@@ -169,7 +168,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
   });
 });
 
-describe("loadOwnerClockTrips — traveler's config.json, read by whoever mounts it", () => {
+describe("loadOwnerClockTrips — the trips config file, read by whoever mounts it", () => {
   let dir: string;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "owner-clock-")); });
   afterAll(() => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ } });

@@ -10,7 +10,7 @@ const ROOT = join(import.meta.dirname, "..", "..", "..");
 const manifests = loadIntegrationManifests(join(ROOT, "integrations"));
 
 describe("a manifest and the registries it will generate", () => {
-  it("ships exactly the three integrations wave 6 collapses onto an SDK", () => {
+  it("ships exactly the three integrations that sit on an SDK", () => {
     expect(manifests.map((m) => m.id).sort()).toEqual(["google", "notion", "slack"]);
   });
 
@@ -54,11 +54,11 @@ describe("a manifest and the registries it will generate", () => {
   });
 
   // A manifest that names a live probe which is not on disk is claiming a check nobody can run.
-  // Two are missing today (wave 6B writes them, one per vendor). The list may only SHRINK: a new
+  // Two are missing today (one per vendor). The list may only SHRINK: a new
   // manifest with a missing probe fails, and so does an entry here whose file has since appeared.
   const KNOWN_MISSING_PROBES: Record<string, string> = {
-    notion: "W6B writes services/notion-sync/tests/live/notion.live.mts with the one Notion client",
-    slack: "W6B writes services/chief-of-staff/tests/live/slack.live.mts with the one Slack client",
+    notion: "still to write: services/notion-sync/tests/live/notion.live.mts, with the one Notion client",
+    slack: "still to write: services/chief-of-staff/tests/live/slack.live.mts, with the one Slack client",
   };
 
   it("names a live probe that is really on disk, or is on the shrinking list of ones still to write", () => {

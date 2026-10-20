@@ -51,9 +51,9 @@ describe("agent registry", () => {
     await registerAgent({ manifest, serviceDir: d, pool });
     await registerAgent({ manifest: { ...manifest, autonomy: { vault: "autonomous" } }, serviceDir: d, pool });
     const { rows } = await pool.query("SELECT name, role, autonomy, doors, tools FROM agent_registry");
-    // step 2: the registry parses a DEFINITION and stores `doorsOf(m)` — each door's
+    // The registry parses a DEFINITION and stores `doorsOf(m)` — each door's
     // kind plus whether it is switched on — where it stored the bare `channels` list before. A
-    // definition with no `doors` array (this one, and all three shipped agents today) derives
+    // definition with no `doors` array (this one, and every shipped agent) derives
     // them from `channels`, every one enabled.
     expect(rows).toEqual([{
       name: "creator", role: "creative", autonomy: { vault: "autonomous" },

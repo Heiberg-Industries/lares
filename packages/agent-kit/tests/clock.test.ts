@@ -3,10 +3,10 @@ import { describe, it, expect } from "vitest";
 import { buildClockMarkdown } from "../src/clock.js";
 
 /**
- * The reminder that started this : the owner said "tomorrow" late in the evening of the 17th,
- * The chief of staff confirmed "tomorrow at 07:00", and stored 2026-08-20 — two days out. She had no clock
- * at all: eve injects no date, `defineAgent` declares none, `instructions.md` is static, and
- * unlike the travel service she had no `agent/instructions/` resolver. `remind_set` delegates date
+ * The reminder that started this: the owner said "tomorrow" late in the evening of the 17th,
+ * the chief of staff confirmed "tomorrow at 07:00", and stored 2026-08-20 — two days out. It had
+ * no clock at all: eve injects no date, `defineAgent` declares none, `instructions.md` is static,
+ * and there was no `agent/instructions/` resolver to supply one. `remind_set` delegates date
  * arithmetic to the model by design, so the absolute date came from training priors, and the
  * tool's guard only rejects dueAt in the PAST — a wrong guess landing in the future is stored
  * silently.
@@ -145,7 +145,7 @@ describe("the clock and the prompt cache", () => {
 /**
  * the block takes the OWNER's timezone, not a constant. The chief of staff's per-turn resolver passes
  * `await ownerTz()` (`services/chief-of-staff/agent/instructions/clock.ts`), so on a trip abroad the
- * date, the weekday and the time she states are the ones the owner would read off his own phone. The
+ * date, the weekday and the time the agent states are the ones the owner would read off their own phone. The
  * default stays `Europe/Oslo`, which is why every case above is untouched.
  */
 describe("buildClockMarkdown(now, tz) — the clock follows the owner", () => {
@@ -164,7 +164,7 @@ describe("buildClockMarkdown(now, tz) — the clock follows the owner", () => {
     expect(buildClockMarkdown(instant)).toContain("2026-09-09"); // the Oslo default, unchanged
   });
 
-  it("states the owner's weekday too — 'på fredag' is relative to where he is", () => {
+  it("states the owner's weekday too — 'på fredag' is relative to where the owner is", () => {
     expect(buildClockMarkdown(instant, "America/New_York")).toMatch(/Tuesday/);
     expect(buildClockMarkdown(instant)).toMatch(/Wednesday/);
   });

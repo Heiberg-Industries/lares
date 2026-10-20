@@ -1,6 +1,6 @@
-// W5C-s4 — the three personal WRITE tools take the one name, and take an area.
+// The three personal WRITE tools take the one name, and take an area.
 //
-// This file is the slice's guard, and it has three jobs, in descending order of how much a
+// This file is the guard for that change, and it has three jobs, in descending order of how much a
 // regression would cost:
 //
 //   1. NEVER WIDEN, FOR WRITES. A write tool used to be bound to one store at construction
@@ -8,7 +8,7 @@
 //      the permission has to be somewhere else — and it is in two places at once: the kit's
 //      write tools serve the personal area and nothing else (`KIT_WRITE_AREAS`), and on top of
 //      that the session's own declaration must grant the area (`areas`, the same injected
-//      authority W5C-s3 gave the reads). Both are asserted below against the REAL committed
+//      authority the reads use). Both are asserted below against the REAL committed
 //      declarations, not fixtures: chief-of-staff is granted `brain` AND `atlas`, so the
 //      declaration alone would open the shared area to its `vault_write` — the tool's own
 //      constant is what keeps that shut.
@@ -17,9 +17,9 @@
 //      capability, action)` it was gated under. The expected values below are LITERALS, read
 //      out of the pre-rename tree with `git show`, so this test cannot drift with the code it
 //      is watching. A rename that turned an approved `brain`/`atlas` level into a lookup miss,
-//      or a gated tool into an ungated one, is the failure this slice exists to avoid.
-//   3. The old names are gone from `packages/` and `services/` — the plan's grep, scoped the
-//      way the plan scopes it. Historical prose under `docs/` is NOT rewritten.
+//      or a gated tool into an ungated one, is the failure this guards against.
+//   3. The old names are gone from `packages/` and `services/`. Historical prose under `docs/`
+//      is NOT rewritten.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -105,20 +105,20 @@ describe("the three vault write tools exist under the one name", () => {
 });
 
 /**
- * WHAT EACH WRITE TOOL WAS GATED UNDER BEFORE THE RENAME — literals, read out of the tree at
- * `21c5db3` (W5C-s3) with `git show`, never computed from the code this test is watching.
+ * WHAT EACH WRITE TOOL WAS GATED UNDER BEFORE THE RENAME — literals, recorded from the tree
+ * before the rename, never computed from the code this test is watching.
  *
  * `action` is the third column of the ratchet key `(agent, capability, action)`. `actionBefore`
  * is the row each tool USED to resolve — the capability's own default, `action = ''` — and
- * `action` is the row it resolves today: W5C-s8's ruling makes a vault tool's AREA its action, so
+ * `action` is the row it resolves today: a vault tool's AREA is its action, so
  * `(agent, "atlas", "")` became `(agent, "vault", "shared")` and not the merged `(agent, "vault",
  * "")`. None of the four passes `boardApproval`'s `action` option; the key is derived in
  * `boardApproval` itself. `services/box/sql/001_baseline.sql` re-keys the old rows the
  * same way. The chief-of-staff three do not reach the board at all: their approval is eve's
- * unconditional `always()`, which is stricter than any board level and is why W5C-s7 has
+ * unconditional `always()`, which is stricter than any board level, so there is
  * nothing of theirs to migrate.
  *
- * W5C-s5 MOVED ALL FOUR ONTO ONE CAPABILITY, `vault` — so `capability` below is what the board
+ * ALL FOUR SIT ON ONE CAPABILITY, `vault` — so `capability` below is what the board
  * row is keyed on TODAY, and `areaBefore` records the thing that name used to carry on its own:
  * which store the tool touches. That is now `areaOfTool`'s answer, and it is what decides
  * whether a session is offered the tool at all, so it is pinned here beside the capability it
@@ -158,9 +158,9 @@ describe("the approval gate carries over exactly", () => {
     });
   }
 
-  // CHANGED DELIBERATELY BY W7A-s2, and the `gate: "always()"` literals above stay as history.
-  // The unconditional gate was stricter than any board level, which is why W5C-s7 had nothing of
-  // theirs to migrate — but it also meant a 🚫 on "Private notes" did not refuse a note write and
+  // Changed deliberately later, and the `gate: "always()"` literals above stay as history.
+  // The unconditional gate was stricter than any board level, so there was nothing of theirs to
+  // migrate — but it also meant a 🚫 on "Private notes" did not refuse a note write and
   // no evidence row was ever recorded. The factory's DEFAULT is still `always()` (the mounted
   // copies have no board to reach); the chief of staff's three now inject the board's own check.
   it("the chief-of-staff three default to always(), and the role injects the board instead", () => {
@@ -178,7 +178,7 @@ describe("the approval gate carries over exactly", () => {
   it("creative's vault_write still names ITSELF to the board, with no per-action key", () => {
     const src = readFileSync(join(REPO, "services", "creative", "catalogue", "vault_write.ts"), "utf8");
     expect(src).toContain('approvalFor("vault_write")');
-    // No `action:` option anywhere in the file — and it needs none. Since W5C-s8 the ratchet row
+    // No `action:` option anywhere in the file — and it needs none. The ratchet row
     // is `(agent, "vault", "shared")`, derived from the tool's own area inside `boardApproval`,
     // which is 1:1 with the `(agent, "atlas", "")` row `approvalFor("atlas_write")` used to read.
     // A tool that named its own action here would be overriding that derivation, not completing it.

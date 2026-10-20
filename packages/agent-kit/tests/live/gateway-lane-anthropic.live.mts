@@ -1,8 +1,7 @@
 /**
  * packages/agent-kit/tests/live/gateway-lane-anthropic.live.mts — the LIVE probe for the
- * ANTHROPIC lane of `../../src/gateway-provider.js`'s `gatewayModel()` (F8, wave 8F: the two-
- * lane ruling in `.claude/plans/2026-09-20-prelaunch-wave-8f-neutral-stack.md`, "RULED:
- * vendor-agnostic, and the two lanes").
+ * ANTHROPIC lane of `../../src/gateway-provider.js`'s `gatewayModel()` (the engine is
+ * vendor-agnostic, with two lanes).
  *
  * NOT part of `pnpm test` (this file's `.live.mts` extension is not vitest's `*.test.*` glob,
  * the same convention every other file under a `tests/live/` directory in this repository
@@ -17,7 +16,7 @@
  *     PROBE_MODEL=lares-brain \
  *       npx tsx packages/agent-kit/tests/live/gateway-lane-anthropic.live.mts
  *
- * WHY THIS FILE EXISTS. Per the root CLAUDE.md's fixture rule ("a fixture is what we believe an
+ * WHY THIS FILE EXISTS. Per AGENTS.md's fixture rule ("a fixture is what we believe an
  * API does; only a live call is what it does"), `tests/gateway-provider.test.ts` only asserts on
  * the shape of the request this lane BUILDS (headers, baseURL, provider name) — it never sends
  * one. This file sends two real ones: a tool call and a streaming turn, the owner's own PROOF

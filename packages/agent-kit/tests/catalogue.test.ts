@@ -56,8 +56,7 @@ describe("the catalogue resolver", () => {
   });
 
   // ---------------------------------------------------------------------------
-  // THE TWO POLARITIES OF THE CLASS/SCOPE CHECK, and why they differ (controller ruling,
-  // 2026-09-16). A gated tool — one carrying its own approval — is a write-with-confirm-class
+  // THE TWO POLARITIES OF THE CLASS/SCOPE CHECK, and why they differ. A gated tool — one carrying its own approval — is a write-with-confirm-class
   // action. What the grant does about that depends on WHICH WAY the two disagree:
   //
   //   scope `read`  + gated tool -> DROP, silently. The grant is merely NARROW. `read` does not
@@ -95,9 +94,9 @@ describe("the catalogue resolver", () => {
     }))).toThrow(/write-with-confirm/);
   });
 
-  // W7D-s3 — the third case the two polarities above did not have: a READ that asks first.
+  // The third case beyond the two polarities above: a READ that asks first.
   //
-  // `read_url` fetches and returns text and writes nothing, but since W7D-s3 it carries an
+  // `read_url` fetches and returns text and writes nothing, but it carries an
   // approval, because a link met in a turn that has already read somebody else's words is the
   // cheapest outbound request an attacker can buy. Read as "write class" it vanished from a
   // `read`-scoped installation — silently, with every unit test green; only the tool-list
@@ -223,7 +222,7 @@ describe("the catalogue resolver", () => {
 });
 
 // ---------------------------------------------------------------------------
-// THE AREA GATE (ADR-0017 rule 1, W5C-s5/s6). One `vault` capability spans three stores that
+// THE AREA GATE (ADR-0017 rule 1). One `vault` capability spans three stores that
 // used to be three capabilities, so the grant alone stopped being enough to decide a vault
 // tool: a role granted `vault` for the standing facts must not thereby be handed the owner's
 // personal note tools. The area each tool touches is required against the areas the
@@ -260,9 +259,9 @@ describe("grantedToolNames — the vault area gate", () => {
       .toEqual(["remember", "set_language"]);
   });
 
-  it("a facts-only grant is offered NO note tool — the case owner decision C1 exists for", () => {
-    // A trip agent holds standing facts and no note store. Before the merge that was the
-    // absence of a `brain`/`atlas` grant; one capability over three stores would have handed it
+  it("a facts-only grant is offered NO note tool", () => {
+    // A narrow role holds standing facts and no note store. Before the merge that was the
+    // absence of a note-store grant; one capability over three stores would have handed it
     // both note areas on the strength of the one grant it does need.
     const names = grantedToolNames(AREAS_CATALOGUE, areaDef(["facts"]));
     expect(names).not.toContain("agent-kit__vault_read");

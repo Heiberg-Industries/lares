@@ -7,14 +7,13 @@
  *     npx tsx packages/agent-kit/tests/live/entur.live.mts
  *
  * WHY THIS FILE EXISTS AT ALL. Entur's geocoder does not answer "no match" for a foreign place —
- * it answers with a fuzzy NORWEGIAN one carrying country_a "NOR". The travel agent routes on that field.
- * The bug shipped three times, on 858, 860 and 288 green tests, because every fixture encoded the
+ * it answers with a fuzzy NORWEGIAN one carrying country_a "NOR". A transit planner routes on that field.
+ * The bug shipped three times, past hundreds of green tests, because every fixture encoded the
  * assumption that a foreign query comes back foreign. Each leak was found by a sweep like this
- * one and by nothing else — and for four rounds the sweep lived in a scratchpad and was rebuilt
- * from scratch each time. See the geocoder-bias write-up and
- * the "Third-party APIs" section of the root CLAUDE.md.
+ * one and by nothing else — and the sweep used to live in a scratchpad and be rebuilt
+ * from scratch each time. See the "fixture is what we believe an API does" rule in AGENTS.md.
  *
- * IT MUST COVER BOTH DIRECTIONS. Every round that fixed the leak broke the over-rejection or the
+ * IT MUST COVER BOTH DIRECTIONS. Fixing the leak can break the over-rejection, and the
  * reverse; only a sweep carrying both sets catches that. An over-rejection is a real Norwegian
  * journey the owner cannot ask about, and it surfaces as "not found", which reads like the place
  * does not exist.
@@ -26,7 +25,7 @@ import { makeEntur, EnturPlaceNotFoundError } from "../../src/entur-client.js";
 
 const entur = makeEntur({ fetch: globalThis.fetch });
 
-/** Real Norwegian places that MUST resolve. Includes the shapes each fix round broke:
+/** Real Norwegian places that MUST resolve. Includes the shapes earlier fixes broke:
  *  an alias (Gardermoen -> Oslo lufthavn), definite-form variation (Majorstua -> Majorstuen),
  *  the single-word Oslo metro set, an all-generic name (Sentrum), and a POI-only island. */
 const MUST_RESOLVE = [

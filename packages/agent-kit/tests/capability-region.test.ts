@@ -4,8 +4,8 @@ import { CAPABILITY_DOCS, adapterRegion, coversCountry } from "../src/persona/ca
 
 // an adapter declares the region it answers for, and fails closed outside it.
 // The scar: Entur's geocoder answered FOREIGN queries with fuzzy Norwegian places carrying
-// `country_a: "NOR"` (live during a trip abroad, four fix rounds, every leak found by a
-// live call and never by 288 green tests). A German installation needs DB, a UK one National
+// `country_a: "NOR"` (seen live during a trip abroad; every leak was found by a
+// live call and none by the green unit tests). A German installation needs DB, a UK one National
 // Rail — so the region is a DECLARATION on the adapter, not a string buried in one tool.
 describe("adapter regions", () => {
   it("every adapter declares a region — countries or 'global' — and no core capability does", () => {

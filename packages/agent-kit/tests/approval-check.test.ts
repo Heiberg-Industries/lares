@@ -1,6 +1,6 @@
 /**
  * tests/approval-check.test.ts — the freshness and payload binding on an approval card
- * (`src/approval-ledger.ts`, W7A-s5). No Docker: the ledger reader is injected.
+ * (`src/approval-ledger.ts`). No Docker: the ledger reader is injected.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -213,7 +213,7 @@ describe("assertApprovedCall", () => {
   });
 });
 
-describe("assertApprovedCall — use counting (W7A-s5b, observe don't enforce)", () => {
+describe("assertApprovedCall — use counting (observe, don't enforce)", () => {
   let warn: ReturnType<typeof vi.spyOn>;
   beforeEach(() => { warn = vi.spyOn(console, "warn").mockImplementation(() => undefined); });
   afterEach(() => { warn.mockRestore(); });

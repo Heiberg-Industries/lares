@@ -1,4 +1,4 @@
-// the travel agent's replies arrived with literal ** in the NYC group. eve sends text with no
+// An agent's replies arrived with literal ** in a group chat. eve sends text with no
 // parse_mode, so markdown renders as itself. These pin the converter and, above all, the
 // invariant that makes chunking safe: no tag ever spans a newline.
 import { describe, it, expect } from "vitest";

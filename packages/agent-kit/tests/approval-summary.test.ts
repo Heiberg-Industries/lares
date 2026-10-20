@@ -26,7 +26,7 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
       .toBe('Send email to tor@ledgerly.example — "Re: outside-service"');
   });
 
-  // 2026-09-08: changing who an existing draft goes to. Every address named, never counted —
+  // Changing who an existing draft goes to. Every address named, never counted —
   // the card is the moment to see exactly who is added to or dropped from a real email.
   it("names every address a recipients change adds or removes", () => {
     expect(summarizeApproval("gmail_draft_recipients", { draftId: "d1", add: ["Mats <mats@example.com>"], remove: ["una@example.com"] }))
@@ -69,10 +69,9 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
       .toBe('CRM: mark DO-NOT-CONTACT — "unsubscribed"');
   });
 
-  // the delete-event card names the reason a stale booking is being removed, and
-  // which calendar/account it lives on's fields), so the owner sees WHY and WHERE
-  // before he taps Approve. The pinned assertion two lines above this block (a bare `eventId`)
-  // is the "byte-identical without one" acceptance case — it is not touched by this addition.
+  // The delete-event card names the reason a stale booking is being removed, and which
+  // calendar/account it lives on, so the owner sees WHY and WHERE before approving.
+  // The card for a bare `eventId` is the "byte-identical without a reason" case.
   describe("calendar_delete_event names the reason", () => {
     it("shows the reason, verbatim, with the honesty marker", () => {
       const reason = 'Cancellation mail from Hotel A: "Your reservation has been cancelled".';
@@ -138,7 +137,7 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
 
   describe(" — creative's two gated tools", () => {
     it("names the title AND the derived path on a Shared notes write", () => {
-      // The tool takes a TITLE and derives the path (fix round 1). The card shows both: the
+      // The tool takes a TITLE and derives the path. The card shows both: the
       // title is what the owner recognises, the path is what says whether an existing _inbox note
       // is about to be replaced.
       expect(summarizeApproval("vault_write", { title: "example-co positioning", body: "…" }))
@@ -228,7 +227,7 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
       // if a future edit re-adds a "vault_file" (bare) key alongside the mounted one, this
       // starts failing loudly instead of the degradation staying invisible.
       //
-      // `vault_file`, not `vault_write`: since W5C-s4 the bare `vault_write` IS a real tool of
+      // `vault_file`, not `vault_write`: the bare `vault_write` IS a real tool of
       // its own (the creative role's shared-area write) with its own formatter, so it is no
       // longer an example of a name that must fall through.
       expect(summarizeApproval("vault_file", { path: "_inbox/x.md", destination: "writing-seeds" }))
@@ -262,10 +261,10 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
 });
 
 describe("dates on a card are for a human, not a machine", () => {
-  // Live 2026-08-18: the card read `Set reminder "Test klokka" for
+  // Seen live: the card read `Set reminder "Test klokka" for
   // 2026-08-19T09:00:00+02:00 via slack`. The DATE was correct — but an ISO timecode is
   // exactly the raw-JSON illegibility this whole feature exists to remove, and the owner read
-  // it as the date bug returning. The chief of staff's own confirmation line right below it already said
+  // it as a date bug. The agent's own confirmation line right below it already said
   // "onsdag 2026-08-19 kl 09:00 (Europe/Oslo)". The card must not be the least readable
   // thing in the thread.
   it("renders a reminder's dueAt as a weekday and time, not an ISO string", () => {
@@ -438,9 +437,9 @@ describe("coversApproval across coordinator's gated writes", () => {
   });
 });
 
-// 2026-09-07: the an example meeting follow-up card named the meeting and two recipients and not one word
-// of the email. had removed the raw "Tool input" JSON from every card with a dedicated
-// title — and for a mail send that JSON was the only place the subject and body ever appeared.
+// A meeting follow-up card must show more than the meeting and two recipients. The raw
+// "Tool input" JSON is not shown on a card with a dedicated title — and for a mail send that
+// JSON was the only place the subject and body ever appeared.
 // The draft is the thing being authorised; it belongs under the card, from the same registry
 // that produces the title, so the two cannot drift on which tools count as mail.
 describe("detailsForApproval — the draft itself, rendered under a mail card", () => {
@@ -495,10 +494,10 @@ describe("detailsForApproval — the draft itself, rendered under a mail card", 
   });
 });
 
-// ── W7D-s3 — the link card ────────────────────────────────────────────────────────────────────
+// ── the link card ────────────────────────────────────────────────────────────────────
 //
 // `read_url` asks whenever the turn has already read somebody else's words, and the ONE thing
-// that card has to do is let the owner see the address he is about to have fetched. Every case
+// that card has to do is let the owner see the address that is about to be fetched. Every case
 // below is an address that reads as one thing and resolves as another; each is a published
 // phishing shape, not a hypothetical. The rule the cases share: the card never shortens the
 // address, never shows only the host, and never renders a character the owner cannot see.

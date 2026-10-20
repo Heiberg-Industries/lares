@@ -1,7 +1,7 @@
 /**
- * W2-s7 — the dynamic catalogue survives a replay under eve 0.59.0's durability rules.
+ * The dynamic catalogue survives a replay under eve's durability rules.
  *
- * eve 0.59.0 (`7973fa2`) stopped trusting a dynamic tool it cannot rebuild in a fresh process.
+ * Since eve 0.59.0 the framework stopped trusting a dynamic tool it cannot rebuild in a fresh process.
  * Every callback phase an entry uses must carry a DURABLE DESCRIPTOR — `{ callback, closure }`
  * stamped under `Symbol.for("eve:durable-dynamic-callback")`. `execute` always needs one; an
  * approval policy, an `approvalKey`, a `toModelOutput` and a LIVE (validating) input or output
@@ -122,7 +122,7 @@ describe("the catalogue resolver's entries are replay-durable (eve 0.59.0)", () 
     await expect(approval({})).resolves.toBe("user-approval");
   });
 
-  it("eve still rejects the un-stamped shape this slice replaced", () => {
+  it("eve still rejects the un-stamped shape", () => {
     // The 0.32 shape: the schema and the approval handed straight through, and an `execute`
     // arrow that eve's transform never saw (this test file is not authored eve source, and the
     // resolvers' `defineTool({…} as never)` is not an ObjectExpression argument either).

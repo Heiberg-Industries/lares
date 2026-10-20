@@ -55,13 +55,13 @@ describe("decideApproval", () => {
     const f = fakeDeps({ "coordinator/calendar": "autonomous" });
     const d = await decideApproval({ agent: "coordinator", tool: "calendar_delete_event", capability: "calendar", startingLevel: "autonomous" }, f.deps);
     expect(d).toEqual({ status: "user-approval", decision: "locked", reason: "deleting data always asks first" });
-    // Final review F3: a locked tool still reads the level — only so that 🚫 can refuse it.
+    // A locked tool still reads the level — only so that 🚫 can refuse it.
     expect(f.reads).toEqual(["coordinator/calendar"]);
   });
 
-  // Final review F3 (controller ruling): 🚫 stops always-ask tools too. No setting loosens always-ask;
+  // 🚫 stops always-ask tools too. No setting loosens always-ask;
   // 🚫 only tightens it.
-  describe("always-ask tools and the board's level (F3)", () => {
+  describe("always-ask tools and the board's level", () => {
     const del = (startingLevel: AutonomyLevel = "gated") =>
       ({ agent: "coordinator", tool: "calendar_delete_event", capability: "calendar", startingLevel });
     it("🚫 on the board refuses an always-ask tool, with the usual reason", async () => {
@@ -94,14 +94,14 @@ describe("decideApproval", () => {
     });
   });
 
-  // Final review F4 (owner decision O1): switching a meeting series to auto-send always asks.
+  // Switching a meeting series to auto-send always asks.
   it("meeting_followup_auto asks even when its capability is set to act on its own", async () => {
     const f = fakeDeps({ "coordinator/autonomy": "autonomous" });
     const d = await decideApproval({ agent: "coordinator", tool: "meeting_followup_auto", capability: "autonomy", startingLevel: "autonomous" }, f.deps);
     expect(d).toEqual({ status: "user-approval", decision: "locked", reason: "changing its own autonomy always asks first" });
   });
 
-  // Final review F8: a hung table read costs a click, never the whole turn.
+  // A hung table read costs a click, never the whole turn.
   it("a table read that never resolves times out and fails closed", async () => {
     vi.useFakeTimers();
     try {
@@ -163,7 +163,7 @@ describe("decideApproval", () => {
       expect(d).toEqual({ status: "user-approval", decision: "locked", reason: "first contact with someone always asks first" });
     });
 
-    // Fix round 1, I5: pin that EVERY recipient is actually checked, not just the first.
+    // Pin that EVERY recipient is actually checked, not just the first.
     it("autonomous + a mix of known and unknown → locked, and BOTH recipients were queried", async () => {
       const f = fakeDeps({ "coordinator/gmail": "autonomous" });
       const queried: string[] = [];
@@ -200,7 +200,7 @@ describe("decideApproval", () => {
       expect(d).toEqual({ status: "user-approval", decision: "locked", reason: "could not read who this goes to — asking first" });
     });
 
-    // Fix round 1, I3: non-object toolInput must never read as "no attendees" → autonomous.
+    // Non-object toolInput must never read as "no attendees" → autonomous.
     it("autonomous + non-object toolInput (e.g. absent) → locked, not 'contacts nobody'", async () => {
       const f = fakeDeps({ "coordinator/calendar": "autonomous" });
       const d = await decideApproval(
@@ -219,9 +219,9 @@ describe("decideApproval", () => {
       expect(d).toEqual({ status: "user-approval", decision: "locked", reason: "first contact with someone always asks first" });
     });
 
-    // D-C (controller ruling, fix round 1): notify:false no longer means "contacts nobody" —
+    // notify:false does not mean "contacts nobody" —
     // attendees are checked regardless.
-    it("calendar_create_event with notify:false still checks attendees (D-C)", async () => {
+    it("calendar_create_event with notify:false still checks attendees", async () => {
       const f = fakeDeps({ "coordinator/calendar": "autonomous" });
       const d = await decideApproval(
         {
@@ -255,7 +255,7 @@ describe("decideApproval", () => {
       expect(f.reads).toEqual(["coordinator/calendar"]);
     });
 
-    // Fix round 1, I7: a hung history check must not hang approval — it counts as "could not
+    // A hung history check must not hang approval — it counts as "could not
     // be read" once it exceeds CONTACT_HISTORY_TIMEOUT_MS.
     it("a recipient check that never resolves times out and locks", async () => {
       vi.useFakeTimers();
@@ -309,7 +309,7 @@ describe("boardApproval — the value a tool puts in `approval`", () => {
     expect(await boardApproval(manifest, "no_such_tool")()).toBe("user-approval");
   });
 
-  // Final review F6: eve consults the policy again when an answered card resumes, with the same
+  // eve consults the policy again when an answered card resumes, with the same
   // callId — the evidence is keyed on it so one card counts once.
   it("records eve's callId with the decision", async () => {
     const f = fakeDeps({ "creator/vault": "gated" });
@@ -320,7 +320,7 @@ describe("boardApproval — the value a tool puts in `approval`", () => {
     expect(f.callIds).toEqual(["call-1", undefined]);
   });
 
-  // Final review F7: evidence never fails an action — a rejecting record is not an unhandled rejection.
+  // Evidence never fails an action — a rejecting record is not an unhandled rejection.
   it("a record that rejects neither fails the call nor leaks an unhandled rejection", async () => {
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
@@ -352,9 +352,9 @@ describe("boardApproval — the value a tool puts in `approval`", () => {
     expect(seenInput).toEqual({ to: ["person@example.com"] });
   });
 
-  // Fix round 1, I3: eve calls the returned function with NO ctx at all for a non-object call
+  // eve calls the returned function with NO ctx at all for a non-object call
   // input — that must ask, not read as "no attendees".
-  it("calendar_create_event with no ctx at all → locked (fix round 1, I3)", async () => {
+  it("calendar_create_event with no ctx at all → locked", async () => {
     const calendarManifest = {
       name: "coordinator", model: "lares-brain", persona: "agent/instructions.md",
       grants: [{ capability: "calendar", scope: "write-with-confirm" }], autonomy: { calendar: "gated" },
@@ -367,10 +367,10 @@ describe("boardApproval — the value a tool puts in `approval`", () => {
   });
 });
 
-// step 2 (Task 5, step 8b): the DEFINITION's level is the approval fallback, not the
-// image's. The chief of staff has 16 `ratchet` rows and those still win; the travel agent and the creative agent have none, so for
-// two of the three agents this injected resolver is the only thing deciding.
-describe("boardApproval — the definition's level as the fallback step 2)", () => {
+// The DEFINITION's level is the approval fallback, not the image's. The chief of staff has
+// `ratchet` rows and those still win; a role with none is decided only by this injected
+// resolver.
+describe("boardApproval — the definition's level as the fallback", () => {
   // The image was built GATED. Every case below proves the injected resolver, not this, decided.
   const gatedManifest = {
     name: "creator", model: "lares-brain", persona: "agent/persona.md",
@@ -435,7 +435,7 @@ describe("boardApproval — the definition's level as the fallback step 2)", () 
     expect(status).toBe("not-applicable");
   });
 
-  // Review finding 3: the level applied must come from the SAME read of the definition the
+  // The level applied must come from the SAME read of the definition the
   // conversation's persona and model came from, or an agent can describe one set of duties while
   // acting on another. eve's ApprovalContext extends SessionContext, so `session.id` is there.
   it("passes eve's session id to the resolver, so one conversation shares one definition", async () => {

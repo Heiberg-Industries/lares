@@ -45,8 +45,8 @@ describe("always-ask table", () => {
   it("finds a tool's capability, extension prefix included", () => {
     expect(capabilityOfTool("gmail_send")).toBe("gmail");
     expect(capabilityOfTool("agent-kit__vault_write")).toBe("vault");
-    // The bare name is a DIFFERENT tool since W5C-s4: the creative role's own shared-area write.
-    // Since W5C-s5 both spellings answer `vault`, so this pair no longer discriminates the
+    // The bare name is a DIFFERENT tool: the creative role's own shared-area write.
+    // Both spellings answer `vault`, so this pair no longer discriminates the
     // capability — what still separates them is the AREA each is offered under, which
     // `areaOfTool` answers and `vault-tool-names.test.ts` pins. The `agent-kit__` fallback is
     // still exercised here, by a prefixed tool with no unprefixed twin:
@@ -54,7 +54,7 @@ describe("always-ask table", () => {
     expect(capabilityOfTool("vault_backlinks")).toBe("vault");
     expect(capabilityOfTool("no_such_tool")).toBeUndefined();
   });
-  // Final review F11: the console's fallback when an agent registered no tool list.
+  // The console's fallback when an agent registered no tool list.
   it("lists a capability's documented tools — exactly the tools capabilityOfTool maps to it", () => {
     expect(toolsOfCapability("gmail")).toContain("gmail_send");
     expect(toolsOfCapability("calendar")).toEqual(expect.arrayContaining(["calendar_delete_event", "calendar_create_event"]));
@@ -63,7 +63,7 @@ describe("always-ask table", () => {
   });
 });
 
-// Final review F4 (owner decision O1, 2026-09-15): an agent never raises its own autonomy without
+// An agent never raises its own autonomy without
 // the owner's 👍 — switching a meeting series to auto-send always asks, whatever the board says.
 describe("tools that change an agent's own autonomy", () => {
   it("meeting_followup_auto always asks, with its own reason", () => {
@@ -77,12 +77,12 @@ describe("tools that change an agent's own autonomy", () => {
   });
 });
 
-// Final review F2: the console shows this for a history-checked contact tool, not the first-contact lock.
+// The console shows this for a history-checked contact tool, not the first-contact lock.
 it("the history-checked reason the console shows", () => {
   expect(RECIPIENT_CHECK_REASON).toBe("asks for anyone you haven't written to");
 });
 
-describe("mustAlwaysAskExceptContact (fix round 1, I8)", () => {
+describe("mustAlwaysAskExceptContact", () => {
   it("still locks money/delete/publish categories, same as mustAlwaysAsk", () => {
     expect(mustAlwaysAskExceptContact("calendar_delete_event")).toEqual({ ask: true, reason: "deleting data always asks first" });
     expect(mustAlwaysAskExceptContact("agent-kit__vault_drop")).toEqual({ ask: true, reason: "deleting data always asks first" });
@@ -94,7 +94,7 @@ describe("mustAlwaysAskExceptContact (fix round 1, I8)", () => {
   it("an unknown tool still fails closed", () => {
     expect(mustAlwaysAskExceptContact("no_such_tool")).toEqual({ ask: true, reason: "unknown tool — asking first" });
   });
-  it("every RECIPIENTS_OF tool is contact-only today — the invariant I8's skip-only-contact fix relies on", () => {
+  it("every RECIPIENTS_OF tool is contact-only today — the invariant the skip-only-contact rule relies on", () => {
     for (const tool of Object.keys(RECIPIENTS_OF)) {
       expect(TOOL_CATEGORIES[tool]).toEqual(["contact"]);
     }
@@ -118,7 +118,7 @@ describe("RECIPIENTS_OF", () => {
     it("returns null when `to` is not an array", () => {
       expect(RECIPIENTS_OF["gmail_send"]!({ to: "person@example.com" })).toBeNull();
     });
-    it("returns null for non-object input (fix round 1, I3) — never treats an unreadable call as empty", () => {
+    it("returns null for non-object input — never treats an unreadable call as empty", () => {
       expect(RECIPIENTS_OF["gmail_send"]!(undefined)).toBeNull();
       expect(RECIPIENTS_OF["gmail_send"]!(null)).toBeNull();
       expect(RECIPIENTS_OF["gmail_send"]!("not an object")).toBeNull();
@@ -155,7 +155,7 @@ describe("RECIPIENTS_OF", () => {
       });
     });
 
-    // Fix round 2, item 2b: a clean `to` is not enough — a header-bound field of the call can
+    // A clean `to` is not enough — a header-bound field of the call can
     // smuggle a header-injected Bcc once google.ts's buildMimeEnvelope assembles the raw
     // message (e.g. subject: "Hi\r\nBcc: stranger@evil.example"), reaching someone this check
     // never saw. This is a belt-and-suspenders check alongside google.ts's own guard: the
@@ -163,7 +163,7 @@ describe("RECIPIENTS_OF", () => {
     // Free-form CONTENT fields (bodyText, signatureText, signatureHtml) are exempt — a normal
     // multi-paragraph email legitimately contains newlines in its body, and rejecting every one
     // of those would defeat the whole point of a history-checked autonomous send.
-    describe("item 2b — CR/LF in a header-bound field locks, not just in `to`", () => {
+    describe("CR/LF in a header-bound field locks, not just in `to`", () => {
       it("rejects when subject carries a CR/LF header-injection attempt, even with a clean `to`", () => {
         expect(RECIPIENTS_OF["gmail_send"]!({
           to: ["alice@example.com"], subject: "Hi\r\nBcc: stranger@evil.example",
@@ -193,9 +193,9 @@ describe("RECIPIENTS_OF", () => {
   });
 
   describe("calendar_create_event", () => {
-    // D-C (controller ruling, fix round 1): notify does NOT decide "contacts nobody" — Google
+    // notify does NOT decide "contacts nobody" — Google
     // guests still see the event on their own calendars regardless of notify.
-    it("checks attendees regardless of notify:false (D-C)", () => {
+    it("checks attendees regardless of notify:false", () => {
       expect(RECIPIENTS_OF["calendar_create_event"]!({ attendees: ["person@example.com"], notify: false })).toEqual(["person@example.com"]);
     });
     it("checks attendees when notify is true or omitted, same as notify:false", () => {
@@ -213,7 +213,7 @@ describe("RECIPIENTS_OF", () => {
     it("returns null for a garbage attendee", () => {
       expect(RECIPIENTS_OF["calendar_create_event"]!({ attendees: ["not-an-email"] })).toBeNull();
     });
-    it("returns null for non-object input (fix round 1, I3) — never reads as 'no attendees'", () => {
+    it("returns null for non-object input — never reads as 'no attendees'", () => {
       expect(RECIPIENTS_OF["calendar_create_event"]!(undefined)).toBeNull();
       expect(RECIPIENTS_OF["calendar_create_event"]!(null)).toBeNull();
     });

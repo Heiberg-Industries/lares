@@ -19,7 +19,7 @@ describe("renderEnvironment", () => {
     expect(env).toMatch(/read_url[\s\S]*read-only/);
     expect(env).toMatch(/remind[\s\S]*directly/);
   });
-  it("names NO ungranted capability (the Wave-1 bug in reverse)", () => {
+  it("names NO ungranted capability (the reverse of an overclaiming persona)", () => {
     expect(env).not.toMatch(/gmail|calendar|twenty/);
   });
   it("states the sandbox posture and the egress seal", () => {
@@ -31,10 +31,10 @@ describe("renderEnvironment", () => {
   });
 });
 
-// whole-branch review, Critical #1. `renderEnvironment` names tools only through the
+// `renderEnvironment` names tools only through the
 // capability docs, and a skill has no doc — so the skills block used to end at "composes
 // twenty:read, read_url:read." and never name `commercial_who_to_contact`. The chief of staff's instructions.md
-// therefore said "**My only capabilities are the tools below.**" over 57 of her 58 compiled
+// therefore said "**My only capabilities are the tools below.**" over 57 of its 58 compiled
 // tools, the 58th being a skill tool the model was never told it had. Both branches are pinned
 // here so neither can rot.
 describe("renderEnvironment — a skill names its own tools", () => {
@@ -63,12 +63,12 @@ describe("renderEnvironment — a skill names its own tools", () => {
   });
 });
 
-// Phase 3, Task 9. The web-access sentence is the one claim in this section that
-// differs BETWEEN today's agents: The travel agent keeps eve's `web_search` enabled, the chief of staff and the creative agent
-// disable it. It used to be a fixed sentence inside read_url's capability doc, which meant any
-// agent granting read_url was told it cannot search the web — false for the travel agent, and exactly the
-// Wave-1 failure (an environment section denying a capability the agent holds) that generating
-// this section was supposed to make impossible. One case per branch, so neither can rot.
+// The web-access sentence is the one claim in this section that differs BETWEEN roles: one
+// may keep eve's `web_search` enabled while the chief of staff and the creative agent disable
+// it. It used to be a fixed sentence inside read_url's capability doc, which meant any agent
+// granting read_url was told it cannot search the web — false for a role that keeps it, and
+// exactly the failure (an environment section denying a capability the agent holds) that
+// generating this section was supposed to make impossible. One case per branch, so neither can rot.
 describe("renderEnvironment — the web-access sentence follows framework_tools", () => {
   const base = {
     name: "t", model: "m", persona: "x", channels: [], egress: { sealed: true },
@@ -95,11 +95,11 @@ describe("renderEnvironment — the web-access sentence follows framework_tools"
   });
 });
 
-// Phase 3, Task 9 review. A capability doc's `tools` is the fleet-wide UNION across
+// A capability doc's `tools` is the fleet-wide UNION across
 // every agent granting that capability, so rendering it unfiltered names tools the agent cannot
-// call — the travel agent was told he held `calendar_create_event`, `travel_read` and `forget`; the chief of staff that
-// she held `sveip` and `nytur`. Under "**My only capabilities are the tools below**" that is the
-// Wave-1 bug pointing the other way: a persona that OVERclaims, which the model only discovers
+// call — one role was told it held `calendar_create_event` and `forget`, another that it held
+// tools that belong to a different role. Under "**My only capabilities are the tools below**" that is the
+// same bug pointing the other way: a persona that OVERclaims, which the model only discovers
 // by calling something that isn't there.
 describe("renderEnvironment — deployedTools narrows each capability's tool union", () => {
   const m = parseManifest({
@@ -208,7 +208,7 @@ describe("the memory precedence rule is engine-owned (ADR-0018 rule 9)", () => {
   });
 });
 
-describe("renderEnvironment — exclusion branches (review follow-up)", () => {
+describe("renderEnvironment — exclusion branches", () => {
   const excluded = parseManifest({
     name: "t2", model: "m", persona: "x", channels: [], egress: { sealed: false },
     grants: [
@@ -238,11 +238,11 @@ describe("renderEnvironment — exclusion branches (review follow-up)", () => {
   });
 });
 
-describe("renderEnvironment — rules keyed to the tools they concern (Task 10 review)", () => {
+describe("renderEnvironment — rules keyed to the tools they concern", () => {
   // The defect: `atlas`'s doc described a re-derived-proposal flow in its SUMMARY, and carried
   // the matching "list proposals fresh" rule, for every agent granting the capability. The creative agent
-  // ships neither `atlas_proposals` nor `atlas_resolve_proposal`, so her generated section told
-  // her — under "**My only capabilities are the tools below**" — to use a flow she has no tools
+  // ships neither `atlas_proposals` nor `atlas_resolve_proposal`, so its generated section told
+  // it — under "**My only capabilities are the tools below**" — to use a flow it has no tools
   // for. `deployedTools` had already fixed the tool NAMES beside it; the prose was still the
   // fleet-wide union.
   const sharedAreaOnly = parseManifest({
@@ -287,14 +287,14 @@ describe("renderEnvironment — rules keyed to the tools they concern (Task 10 r
     const bullet = env.split("\n").filter((l) => l.includes("**vault**")).join("\n");
     expect(bullet).toContain("I search, read and list its notes");
     expect(bullet).not.toMatch(/proposal|approval card/i);
-    // ...and, since W5C-s5 put three stores under one capability, the two areas this
+    // ...and, since three stores sit under one capability, the two areas this
     // declaration does NOT grant are not described to it either — the personal store's own
     // sentence and the standing facts' both key on tools that are not deployed here.
     expect(bullet).not.toMatch(/second brain|a fact worth remembering/i);
   });
 });
 
-// item 2. `gmail` and `twenty` described their specific write tools unconditionally, so
+// `gmail` and `twenty` described their specific write tools unconditionally, so
 // an installation granting either at `read` was told in its own persona that a draft renders a
 // card and that five CRM writes exist. Keying those sentences inside the SUMMARY rather than
 // moving them out to rules is what keeps the fix invisible to an agent that holds everything: the

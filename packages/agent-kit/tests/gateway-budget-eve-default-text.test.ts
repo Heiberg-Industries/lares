@@ -3,10 +3,10 @@
  * is actually installed.
  *
  * A door that supplies `events["turn.failed"]` REPLACES eve's default handler outright —
- * object spread in `slackChannel`/`telegramChannel`. The 2026-08-17 outage is the cost of
- * getting that wrong in the other direction (`services/chief-of-staff/tests/telegram-delivery.test.ts`):
- * a `message.completed` override shipped without reproducing the default's post, and every
- * Telegram reply was silently undelivered for days.
+ * object spread in `slackChannel`/`telegramChannel`. Getting that wrong in the other direction
+ * is costly (see `services/chief-of-staff/tests/telegram-delivery.test.ts`):
+ * a `message.completed` override that does not reproduce the default's post leaves every
+ * Telegram reply silently undelivered.
  *
  * eve exports neither `defaultEvents` nor the `formatErrorHint`/`extractErrorId` helpers
  * behind them (`#internal/...`, `#public/...` — no deep-path export), so

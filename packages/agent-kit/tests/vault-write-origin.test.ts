@@ -17,21 +17,20 @@ beforeEach(() => {
 });
 
 /**
- * DEVIATION FROM THE SLICE'S GIVEN TEST CODE, and why (reported per BUILDER.md) — the same fix
- * W3A-s5 already made to `origin-taint-reads.test.ts` (its own header explains the mechanism at
- * length): a static, file-top import of `../src/origin-taint.js` is bound BEFORE any
+ * WHY THE TAINT MODULE IS IMPORTED FRESH — the same approach `origin-taint-reads.test.ts` uses
+ * (its own header explains the mechanism at length): a static, file-top import of `../src/origin-taint.js` is bound BEFORE any
  * `vi.resetModules()` runs, so it is a DIFFERENT module instance — with its own separate
  * `taints` Map — than the one the dynamically re-imported tool resolves to after
- * `vi.resetModules()`. Confirmed by running the slice's given test verbatim first: "stamps
- * third_party once the turn has read somebody else's words" failed with "expected 'agent' to be
- * 'third_party'" — the taint was set on a module instance the tool never reads from.
+ * `vi.resetModules()`. With a static import, "stamps third_party once the turn has read
+ * somebody else's words" fails with "expected 'agent' to be 'third_party'" — the taint was set
+ * on a module instance the tool never reads from.
  * `taintTurn` must come from the SAME fresh import the tool itself will use.
  */
 async function freshTaint() {
   return import("../src/origin-taint.js");
 }
 
-/** W5C-s4: the write tool is a FACTORY now, and the mounted copy deliberately carries no area
+/** The write tool is a FACTORY, and the mounted copy deliberately carries no area
  *  authority (it would refuse every area). Every case here builds its own instance with the
  *  personal area open — the same thing
  *  `services/chief-of-staff/catalogue/agent-kit__vault_write.ts` does with the session's real

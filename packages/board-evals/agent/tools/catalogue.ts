@@ -6,12 +6,12 @@
 // closure variables on replay and does not detect `execute: someFunction`
 // (eve/docs/guides/dynamic-capabilities.md, "execute must be an inline function").
 //
-// step 2, Task 7 adds the second half: `POOL`, a catalogue of REAL tools carrying their own
+// The second half is `POOL`, a catalogue of REAL tools carrying their own
 // input schemas, executors and board approvals, emitted through the exact shape
 // `services/creative/agent/tools/catalogue.ts` uses — the description and schema copied across, the
 // approval spread across, and an inline `execute` that reaches the pool entry through the captured
 // name. `evals/replay.eval.ts` drives it. The constant-result entries above are untouched, so
-// Q1–Q3's committed output is unchanged.
+// the seam probes' committed output is unchanged.
 //
 // EVERY POOL CALLBACK BELOW CARRIES A DURABLE DESCRIPTOR (eve 0.59.0+), FOR THE SAME REASON
 // `services/creative/agent/tools/catalogue.ts` does: eve refuses a dynamic tool whose `execute`,
@@ -45,13 +45,13 @@ const poolValueOf = (name: string): PoolToolValue => POOL[name]!.tool as unknown
 const CATALOGUE: Record<string, { description: string; result: unknown }> = {
   cat_alpha: { description: "Catalogue tool alpha.", result: { from: "catalogue", tool: "alpha" } },
   cat_beta: { description: "Catalogue tool beta.", result: { from: "catalogue", tool: "beta" } },
-  // Q3: emitted under the probe extension's reserved prefix, from the AGENT's own catalogue, while
+  // Emitted under the probe extension's reserved prefix, from the AGENT's own catalogue, while
   // agent/extensions/probe/tools/probe_extension_tool.ts is a disableTool() sentinel.
   probe__probe_extension_tool: {
     description: "Catalogue's copy of the probe extension tool.",
     result: { from: "catalogue", tool: "probe_extension_tool" },
   },
-  // Q1: the same name as the authored agent/tools/vault_write.ts. The description is the tell —
+  // The same name as the authored agent/tools/vault_write.ts. The description is the tell —
   // whichever copy the model is shown names its own origin.
   vault_write: {
     description: "Catalogue's own vault_write.",

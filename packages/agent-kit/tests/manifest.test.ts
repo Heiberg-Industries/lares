@@ -25,13 +25,7 @@ import {
 import { docFor } from "../src/persona/capability-docs.js";
 
 /**
- * The agent-declaration module Task 1).
- *
- * The manifest format is PORTED from `services/agent-runtime/lib/adapters/loader.ts`
- * (`manifestSchema`, loader.ts:7-19); the autonomy semantics are ported from
- * `services/agent-runtime/lib/governance/decide.ts` (`decideAction`, decide.ts:17-43) and
- * `governance/ratchet.ts` (`AutonomyLevel`, ratchet.ts:3; the "gated" safe baseline,
- * ratchet.ts:25).
+ * The agent-declaration module: manifest format, autonomy semantics and the "gated" safe baseline.
  *
  * The load-bearing case is the last one in the "autonomy only bites on the confirm class"
  * block: a `read` grant carrying `autonomy: gated` must come back UNGATED. That is the
@@ -103,10 +97,8 @@ function approvalPolicy<TInput>(approval: Approval<TInput> | undefined): Approva
 const VALID = {
   name: "coordinator",
   model: "claude-opus-4-8",
-  // item 5: was "../agent-runtime/agents/the chief of staff/persona.md", a path abandoned when Phase 3
-  // moved every agent to an assembled `agent/instructions.md`. Nothing reads this string (the
-  // schema only requires it to be a non-empty string), so it was pure documentation — and it
-  // documented a layout that no longer exists. This is what the three live agent.json files say.
+  // Nothing reads this string (the schema only requires it to be a non-empty string); it is
+  // documentation of the assembled persona file. This is what the shipped agent.json files say.
   persona: "agent/instructions.md",
   channels: ["slack", "telegram", "email"],
   egress: { sealed: true },
@@ -140,7 +132,7 @@ describe("manifestSchema / parseManifest", () => {
     expect(m.autonomy).toEqual({ read_url: "gated", vault: "gated" });
   });
 
-  it("round-trips the optional role, and leaves it undefined when unset Phase 3)", () => {
+  it("round-trips the optional role, and leaves it undefined when unset", () => {
     // `role` names the shared template under packages/agent-kit/templates/ that an agent's
     // assembled instructions are built from. Optional on purpose: an agent that has not been
     // moved onto a template yet is still a valid declaration, and a strictObject schema would
@@ -152,7 +144,7 @@ describe("manifestSchema / parseManifest", () => {
   it("round-trips framework_tools, defaults it empty, and rejects a name eve does not have", () => {
     // eve's own built-ins are not capabilities and not grants — `agent.json` does not govern
     // them. The field exists so the generated environment section can say truthfully whether
-    // the agent can search the web Phase 3); the enum is closed so a typo fails here
+    // the agent can search the web; the enum is closed so a typo fails here
     // rather than silently restoring the false "I cannot search the web".
     expect(parseManifest(manifestWith({ framework_tools: ["web_search"] })).framework_tools).toEqual(["web_search"]);
     expect(parseManifest(VALID).framework_tools).toEqual([]);
@@ -301,7 +293,7 @@ describe("grantFor / autonomyOf / isGranted", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveExtensionTool — disable paths", () => {
-  it("disables a tool whose capability is not granted at all (traveler's ten)", () => {
+  it("disables a tool whose capability is not granted at all (a role that holds only a few tools)", () => {
     const resolved = resolveExtensionTool(manifestWith({ grants: [], autonomy: {} }), "read_url", makeReadTool());
     expect(isDisabledToolSentinel(resolved)).toBe(true);
   });
@@ -471,7 +463,7 @@ describe("assertClassMatchesScope", () => {
     expect(() => resolveExtensionTool(m, "vault", makeConfirmTool())).toThrow(/vault/);
   });
 
-  it("is NOT reached for an ungranted or 'never' capability — traveler's disables need no scope truth", () => {
+  it("is NOT reached for an ungranted or 'never' capability — a disable needs no scope truth", () => {
     const ungranted = manifestWith({ grants: [], autonomy: {} });
     expect(isDisabledToolSentinel(resolveExtensionTool(ungranted, "vault", makeConfirmTool()))).toBe(true);
   });
@@ -482,7 +474,7 @@ describe("assertClassMatchesScope", () => {
 // ---------------------------------------------------------------------------
 
 describe("KNOWN_CAPABILITIES", () => {
-  it("carries every capability the old runtime's hands registered", () => {
+  it("carries every core capability", () => {
     for (const name of [
       "calendar", "digest", "gmail", "identity",
       "notion", "obligation", "person", "read_url", "remind",
@@ -490,8 +482,8 @@ describe("KNOWN_CAPABILITIES", () => {
     ]) {
       expect(KNOWN_CAPABILITIES).toContain(name);
     }
-    // The old runtime's `brain` and `atlas` hands are carried forward too, but under ONE name
-    // and as two AREAS of it (ADR-0017 rule 1, W5C-s5/s6) — see the `vault` block below.
+    // The private and shared note stores are carried as two AREAS of ONE `vault` capability
+    // (ADR-0017 rule 1) — see the `vault` block below.
     expect(KNOWN_CAPABILITIES).toContain("vault");
   });
 
@@ -499,13 +491,13 @@ describe("KNOWN_CAPABILITIES", () => {
     expect(KNOWN_CAPABILITIES).not.toContain("markets");
   });
 
-  it("carries the three coordinator tools the old declaration missed (Ruling 3)", () => {
+  it("carries the coordinator tools echo, outreach and voice", () => {
     expect(KNOWN_CAPABILITIES).toContain("echo");
     expect(KNOWN_CAPABILITIES).toContain("outreach");
     expect(KNOWN_CAPABILITIES).toContain("voice");
   });
 
-  it("no longer carries the capabilities only the removed travel role held", () => {
+  it("carries no capability that only a removed role held", () => {
     for (const gone of ["travel", "places", "strava", "shopping", "persona", "currency", "admin"]) {
       expect(KNOWN_CAPABILITIES, gone).not.toContain(gone);
     }
@@ -514,10 +506,9 @@ describe("KNOWN_CAPABILITIES", () => {
   });
 
   it("keeps standing facts one name — and that name is now an AREA, not a capability", () => {
-    // collapsed `facts` into `memory`, one name fleet-wide; ADR-0017 rule 1 finished the
-    // job in the other direction. `memory` is gone as a capability too: what an agent has been
-    // told is the `facts` AREA of the one `vault` capability, which is what lets a trip agent
-    // hold standing facts without being handed a note store (owner decision C1).
+    // ADR-0017 rule 1: `memory` is not a capability. What an agent has been told is the
+    // `facts` AREA of the one `vault` capability, which is what lets a narrow role hold
+    // standing facts without being handed a note store.
     expect(KNOWN_CAPABILITIES).toContain("vault");
     for (const gone of ["brain", "atlas", "memory", "facts"]) {
       expect(KNOWN_CAPABILITIES, gone).not.toContain(gone);
@@ -529,8 +520,8 @@ describe("KNOWN_CAPABILITIES", () => {
   });
 });
 
-// ADR-0017 (the Vault, one name). W5C-s1 added `vault` beside `brain`, `atlas` and `memory`;
-// W5C-s5/s6 merged the three into it and took their names out of KNOWN_CAPABILITIES.
+// ADR-0017 (the Vault, one name). `vault` replaced `brain`, `atlas` and `memory`, and their
+// names are not in KNOWN_CAPABILITIES.
 describe("vault (ADR-0017)", () => {
   it("knows vault, and still refuses a capability nobody declared", () => {
     expect(KNOWN_CAPABILITIES).toContain("vault");
@@ -609,10 +600,9 @@ describe("assertDeclarationIntegrity", () => {
   });
 });
 
-// Lares repo split: the display name moved out of each service's package.json
-// `assemble` script and into agent.json, so the engine's neutral default and an overlay's
+// The display name lives in agent.json, so the engine's neutral default and an installation's
 // persona can each carry their own. Optional — an agent without one displays as its `name`.
-describe("agent.json display (lares split, hook 30)", () => {
+describe("agent.json display", () => {
   const base = {
     name: "chief-of-staff", model: "x", persona: "agent/instructions.md", role: "chief-of-staff",
     scope: "personal", channels: [], egress: { sealed: true }, grants: [], autonomy: {},

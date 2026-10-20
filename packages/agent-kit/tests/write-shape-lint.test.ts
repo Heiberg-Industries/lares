@@ -139,7 +139,7 @@ describe("read-shaped POSTs", () => {
   });
 
   it("a search endpoint reached through a transport helper named for its verb is read-shape", () => {
-    // The shape of services/travel/lib/google-places.ts:79-93: the POST sits in a helper
+    // The shape of a Places client: the POST sits in a helper
     // called `post`; only its callers — searchText, searchNearby — say what it is for.
     const src = `
       const BASE = "https://places.googleapis.com/v1";
@@ -188,12 +188,12 @@ describe("read-shaped POSTs", () => {
 });
 
 // ---------------------------------------------------------------------------
-// (d) — the agent's own door is not a write (the 2026-09-01 sweep's lesson)
+// (d) — the agent's own door is not a write
 // ---------------------------------------------------------------------------
 
 describe("the agent's own door is not write-shape", () => {
   it("(d) a Telegram send is not write-shape", () => {
-    // The shape of services/travel/lib/telegram-photo.ts:120.
+    // The shape of a Telegram photo upload.
     const src = `
       const base = "https://api.telegram.org";
       await fetchFn(\`\${base}/bot\${token}/sendPhoto\`, { method: "POST", body: form });
@@ -208,8 +208,8 @@ describe("the agent's own door is not write-shape", () => {
   });
 
   it("a channel `.send(` is not a vendor mutation, but Gmail's is", () => {
-    // services/travel/lib/bookings.ts:767 is `this.deps.tg.send(...)` — two member segments,
-    // exactly like Gmail's `api.users.messages.send(` at services/chief-of-staff/lib/google.ts:241.
+    // `this.deps.tg.send(...)` has two member segments, exactly like Gmail's
+    // `api.users.messages.send(` in services/chief-of-staff/lib/google.ts.
     expect(classifyWriteShape(`await this.deps.tg.send(adminId, "hei");`)).toEqual([]);
     expect(classifyWriteShape(`await api.users.messages.send({ userId: "me" });`).map((f) => f.rule)).toEqual([
       "vendor-mutation",
@@ -279,7 +279,7 @@ describe("the tool -> capability map", () => {
   });
 
   it("an eve FRAMEWORK tool has no grant to check and is skipped", () => {
-    // services/travel/agent/tools/web_search.ts — declared in the travel agent's `framework_tools`.
+    // A web_search tool declared in an agent's `framework_tools`.
     // manifest.ts: framework tools "are NOT capabilities and NOT grants".
     expect(
       lintWriteShape({
@@ -421,8 +421,8 @@ describe("vendor mutations, write helpers and fs writes", () => {
   });
 
   it("counts an fs write only inside the note store — a container-local file is not a third party", () => {
-    // services/travel/lib/trip-store.ts:88-175 and agent/tools/strava_routes.ts:93-94 are
-    // both container-local, and both are reached from `read`-granted tools.
+    // A trip store and a route-file writer are both container-local, and both are reached
+    // from `read`-granted tools.
     expect(classifyWriteShape(`fs.writeFileSync(path.join(trip.dir, file), content);`)).toEqual([]);
     const inStore = `
       import { resolveInStore } from "./notes-store.js";
@@ -451,11 +451,10 @@ describe("stripComments keeps offsets exact", () => {
 
 describe("the depth rule", () => {
   it("reads the tool file plus what it imports directly, and no further", () => {
-    // Run against the real tree. Task 9 step 2) moved chief-of-staff's `read_url` out
-    // of `agent/tools/` and into her own `catalogue/` — same tool, same one-hop shape, new home
-    // (`sourcesForTool`'s own "local" candidate list already looks in both, exactly for this).
+    // Run against the real tree. chief-of-staff's `read_url` lives in its own `catalogue/`
+    // (`sourcesForTool`'s "local" candidate list looks in both `agent/tools/` and `catalogue/`).
     // The catalogue file still imports @lares/agent-kit/readability-client, one hop, plus three
-    // of her own relative libs (notion-page.js, google-doc.js, google-drive.js) reading a Notion
+    // of its own relative libs (notion-page.js, google-doc.js, google-drive.js) reading a Notion
     // or Google Docs link instead. One of those, google-drive.js, imports
     // @lares/agent-kit/google-auth — a REAL two-hop dependency from the tool file, which is what
     // proves "and no further" rather than just asserting it in prose.
@@ -468,13 +467,12 @@ describe("the depth rule", () => {
   });
 
   it("treats a service's extension re-export as a re-export, not a hop — the kit body joins it", () => {
-    // NOT chief-of-staff any more: Task 9 step 2) moved her `agent-kit__transit_plan`
-    // into her own catalogue and turned THIS EXACT mount into an unconditional `disableTool()`
-    // sentinel — the same shape Task 8 already gave the other copy, which the "resolves a
-    // prefixed tool from the SERVICE'S OWN CATALOGUE…" case just below this one already covers
-    // (using the chief of staff's tree). Creative is the one service left that has not made that move for
-    // any agent-kit-prefixed tool — her `catalogue/` holds only her own authored tools
-    // (atlas_*, set_language, studio_ideate; no `agent-kit__*` entries at all) — so her
+    // NOT chief-of-staff: it answers `agent-kit__transit_plan` from its own catalogue and its
+    // copy of THIS EXACT mount is an unconditional `disableTool()` sentinel — a shape the
+    // "resolves a prefixed tool from the SERVICE'S OWN CATALOGUE…" case just below this one
+    // covers (using the chief of staff's tree). Creative is the one service that does not
+    // answer any agent-kit-prefixed tool itself — its `catalogue/` holds only its own authored tools
+    // (atlas_*, set_language, studio_ideate; no `agent-kit__*` entries at all) — so its
     // `agent/extensions/agent-kit/tools/transit_plan.ts` mount is still a genuinely LIVE,
     // unmoved re-export (`resolveExtensionTool(manifest, "transit", transit_plan)`, not a
     // `disableTool()` sentinel — the depth rule's static read does not care that the creative agent's own
@@ -499,10 +497,10 @@ describe("the depth rule", () => {
 
   it(
     "resolves a prefixed tool from the SERVICE'S OWN CATALOGUE when the mount is a disabled " +
-      "sentinel step 2, Task 8) — not from the now-dead mount",
+      "sentinel — not from the dead mount",
     () => {
       // The chief of staff's real, committed shape: agent/extensions/agent-kit/tools/transit_plan.ts is
-      // an unconditional disableTool() (Task 8), and agent-kit__transit_plan is answered instead
+      // an unconditional disableTool(), and agent-kit__transit_plan is answered instead
       // from services/chief-of-staff/catalogue/agent-kit__transit_plan.ts. Before the fix this returned
       // `null` — "disabled, skip" — because sourcesForTool only ever looked at the mount.
       const found = sourcesForTool(new URL("../../../services/chief-of-staff", import.meta.url).pathname, "agent-kit__transit_plan");
@@ -517,10 +515,10 @@ describe("the depth rule", () => {
   );
 
   describe("a moved prefixed tool is still inspected by the write-shape lint", () => {
-    // THE REGRESSION THIS GUARDS (review follow-up on Task 8). Before the fix above,
+    // THE REGRESSION THIS GUARDS. Before the fix above,
     // `sourcesForTool(agentDir, "agent-kit__vault_write")` returned `null` the moment a service
     // turned vault_write's MOUNT into an unconditional disableTool() and answered the key from
-    // its own catalogue instead — exactly Task 8's shape, applied to a tool that actually writes.
+    // its own catalogue instead — the same shape as above, applied to a tool that actually writes.
     // `lintWriteShape` treats `null` as "not a tool, skip", so the ungated-write check went
     // completely blind on the one class of tool it exists to watch: a moved, GATED,
     // vault-writing tool. This fixture reproduces that shape with a REAL kit tool

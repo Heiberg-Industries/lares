@@ -44,11 +44,11 @@ describe("createGatewayProvider", () => {
   });
 
   it("forces Accept-Encoding: identity on gateway requests", async () => {
-    // 2026-08-14/15 cost incident: LiteLLM's /anthropic passthrough forwarded the upstream's
+    // LiteLLM's /anthropic passthrough once forwarded the upstream's
     // compressed body but DROPPED the Content-Encoding header, so any client advertising
     // compression received compressed bytes labeled plain and failed "Invalid JSON" after the
     // call was billed. The router route never had this defect, but the header is retained
-    // (harmless, load-bearing history) — this test keeps it in place.
+    // (harmless) — this test keeps it in place.
     const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
     const model = gatewayModel("claude-opus-4-8") as unknown as {
       config: { fetch?: typeof globalThis.fetch };
@@ -194,8 +194,8 @@ describe("createGatewayProvider", () => {
     it("GATEWAY_LANE=openai-compatible builds a model on the gateway's own /v1 route, provider named for this engine, not a vendor", () => {
       process.env["GATEWAY_LANE"] = "openai-compatible";
       // An explicit gateway URL, not the module's hardcoded default: a test that asserts the
-      // default would restate one installation's own hostname, and that default is itself on
-      // wave 9's list to remove. Same neutral host the defaultGatewayUrl test above uses.
+      // default would restate a deployment-specific hostname. Same neutral host the
+      // defaultGatewayUrl test above uses.
       const { gatewayModel, gatewayLane } = createGatewayProvider({
         defaultKeyFile: keyPath,
         defaultGatewayUrl: "https://gw.example.test",
@@ -222,7 +222,7 @@ describe("createGatewayProvider", () => {
       expect(() => gatewayModel("mistral/mistral-small-latest")).not.toThrow();
     });
 
-    it("injects Authorization fresh, per request — never baked in at construction (the real seam this slice exists to close: createOpenAICompatible's own `headers` option is captured once, synchronously, at construction, unlike @ai-sdk/anthropic's per-request getHeaders() closure)", async () => {
+    it("injects Authorization fresh, per request — never baked in at construction (the real seam: createOpenAICompatible's own `headers` option is captured once, synchronously, at construction, unlike @ai-sdk/anthropic's per-request getHeaders() closure)", async () => {
       process.env["GATEWAY_LANE"] = "openai-compatible";
       const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
       const model = gatewayModel("mistral/mistral-small-latest") as unknown as {

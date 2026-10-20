@@ -1,5 +1,5 @@
 /**
- * tests/memory-read.test.ts — W4A-s4, the read model and export behind a future Memory page.
+ * tests/memory-read.test.ts — the read model and export behind a future Memory page.
  *
  * Against a REAL disposable Postgres running the REAL migration files (`services/box/sql`
  * `001_baseline.sql` and `002_standing_facts.sql`, read from disk, container style copied from `packages/agent-kit/tests/conversation-record.test.ts`)

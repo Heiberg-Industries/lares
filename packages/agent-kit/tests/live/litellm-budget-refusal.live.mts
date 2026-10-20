@@ -1,8 +1,8 @@
 /**
  * tests/live/litellm-budget-refusal.live.mts — the LIVE probe for `../../src/gateway-budget.ts`
- * (LAR-… "budget refusal recognised by type, on HTTP 400 and 429").
+ * (budget refusal recognised by type, on HTTP 400 and 429).
  *
- * NOT part of `pnpm test`, and NOT run by whoever/whatever built this slice — it needs a real
+ * NOT part of `pnpm test`, and not run in CI — it needs a real
  * gateway and a real admin (master) key, neither of which are reachable from here. Run it by
  * hand, against a real installation's gateway, whenever LiteLLM is upgraded or its budget-
  * refusal shape is next in doubt:
@@ -13,7 +13,7 @@
  *     PROBE_MODEL=lares-brain \
  *       npx tsx packages/agent-kit/tests/live/litellm-budget-refusal.live.mts
  *
- * WHY THIS FILE EXISTS. Per the root CLAUDE.md's fixture rule ("a fixture is what we believe
+ * WHY THIS FILE EXISTS. Per AGENTS.md's fixture rule ("a fixture is what we believe
  * an API does; only a live call is what it does"), `src/gateway-budget.ts`'s whole header is a
  * belief about two DIFFERENT measurements that were never the same live gateway: 400 was
  * measured against a real gateway on 2026-09-01 (the per-user spend-cap measurements); 429

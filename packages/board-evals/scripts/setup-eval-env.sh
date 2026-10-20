@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # The five control files packages/board-evals's evals and probes read from `process.env`
-# (lib/file-board.ts, lib/seam-grants.ts). There has never been a committed setup script for
-# them (Task 7's brief names this as a known gap) — this is it.
+# (lib/file-board.ts, lib/seam-grants.ts). This script sets them up.
 #
 # Usage: `source scripts/setup-eval-env.sh` from `packages/board-evals`. Sourcing (not executing)
 # is required: the exports must land in the CALLING shell, since every later step — `pnpm run

@@ -1,9 +1,9 @@
 /**
  * the note a door adds for content that can't reach the model.
  *
- * Measured 2026-09-14: a Telegram voice note and a video each got no reply at all (eve's parser
+ * Measured: a Telegram voice note and a video each got no reply at all (eve's parser
  * knows only photo/document, so they arrived empty and the door dropped them), and a Slack audio
- * clip reached the chief of staff as "an empty message". Raw update shapes below follow the Bot API's field
+ * clip reached the agent as "an empty message". Raw update shapes below follow the Bot API's field
  * names (shaped, not recorded).
  */
 import { describe, it, expect } from "vitest";

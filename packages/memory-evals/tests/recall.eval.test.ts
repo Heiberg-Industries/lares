@@ -1,6 +1,6 @@
 // packages/memory-evals/tests/recall.eval.test.ts
 //
-// W0-4a — the recall baseline. See README.md for what this measures (and
+// The recall baseline. See README.md for what this measures (and
 // does not). No model, no Docker, no network: this is `searchNotes` from
 // @lares/agent-kit/notes-store run over a fixed fixture vault and a fixed
 // question set, scored deterministically.

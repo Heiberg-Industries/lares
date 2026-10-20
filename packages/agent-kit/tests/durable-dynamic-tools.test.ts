@@ -55,14 +55,14 @@ describe('registerDurableDynamicTools on eve 0.60.1', () => {
   });
 
   it('is INERT for dynamic-tool replay: eve 0.60.1 rejects a session persisted on 0.32 rather than reading these keys back', () => {
-    // This is the new truth this wave established (W2-s7): eve's own `requireCurrentDynamicToolMetadata`
+    // This is the current truth: eve's own `requireCurrentDynamicToolMetadata`
     // throws on the 0.32 metadata shape before this module's registrations are ever consulted, so a
     // session parked across the upgrade cannot be replayed — it must start over. This module is kept
-    // anyway per owner decision 6 (it is harmless, and still used for eve's other registered-step
+    // anyway (it is harmless, and still used for eve's other registered-step
     // consumers), but for dynamic tools specifically it does nothing on 0.60.1.
     // The real proof that dynamic-tool REPLAY still works on 0.60.1 — for tools that carry the new
     // durable descriptors instead of this module's keys — is a genuine process restart:
-    // packages/board-evals/scripts/restart-probe.sh (W2-s13), not a unit test.
+    // packages/board-evals/scripts/restart-probe.sh, not a unit test.
     world[registryKey] = new Map();
     registerDurableDynamicTools('catalogue', {selected: {execute: async () => 'selected'}});
     expect(() => replay([saved0dot32])).toThrow(/persisted metadata was converted to the current schema/);

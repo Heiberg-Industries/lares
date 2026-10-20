@@ -1,5 +1,5 @@
 /**
- * The promotion gate (ADR-0018 rules 2 and 4), W4C-s2.
+ * The promotion gate (ADR-0018 rules 2 and 4).
  *
  * What this pins, in one sentence each:
  *   - Only what the OWNER said can ever become a preference. `third_party`, `synced`, `system`
@@ -128,8 +128,7 @@ describe("the promotion gate", () => {
     expect(r.rejected.map((x) => x.reason)).toEqual(["do-not-learn", "do-not-learn"]);
   });
 
-  // ── The four cases the slice's own test list does not cover, each one a hole a reader would
-  //    otherwise have to take on trust (W4C-s2's dispatch brief asks for each to be proved). ──
+  // ── Four further cases, each one a hole a reader would otherwise have to take on trust. ──
 
   it("treats an observation with no class, or an unreadable one, as third-party", async () => {
     const p = makeLearningPromoter({ store: fakeStore() });

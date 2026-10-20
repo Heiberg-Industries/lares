@@ -21,7 +21,7 @@ describe("the definition", () => {
     const d = parseDefinition({ ...MINIMAL });
     expect(d.gender).toBeUndefined();
     expect(d.description).toBeUndefined();
-    expect(d.language).toBeUndefined();   // D3: absent, not "en"
+    expect(d.language).toBeUndefined();   // absent, not "en"
     expect(d.duties).toBe("duties.md");
     expect(d.schedules).toEqual({});
     expect(d.doors).toBeUndefined();

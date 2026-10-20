@@ -1,4 +1,4 @@
-// Q4's other half: a per-turn instruction resolver that reads eve session state. If eve refuses
+// The reading half of the session-state probe: a per-turn instruction resolver that reads eve session state. If eve refuses
 // state access here, eve logs the failure and omits this fragment — the marker simply never reaches
 // the system prompt and the eval reports NO rather than crashing.
 //

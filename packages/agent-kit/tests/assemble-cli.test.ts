@@ -1,6 +1,6 @@
-// bin/assemble-instructions.ts — the build hook Phase 2, Task 7). Spawned for real,
-// the same way notion-sync's entrypoint test spawns bin/notion-sync.ts: this is the file three
-// Phase-3 services actually run before `eve build`, so a mistake in its argv wiring or its
+// bin/assemble-instructions.ts — the build hook. Spawned for real,
+// the same way notion-sync's entrypoint test spawns bin/notion-sync.ts: this is the file the
+// role services actually run before `eve build`, so a mistake in its argv wiring or its
 // success/failure contract would be invisible to every test that only imports lib/ functions.
 //
 // The two properties under test:
@@ -22,10 +22,10 @@ import { assemblePersona } from "../src/persona/index.js";
 const PACKAGE_ROOT = join(import.meta.dirname, "..");
 const SCRIPT = "bin/assemble-instructions.ts";
 
-// The Task 5 manifest fixture (tests/persona-assemble.test.ts), verbatim, with `persona`
+// The manifest fixture from tests/persona-assemble.test.ts, verbatim, with `persona`
 // pointed at a real file the fixture dir below creates — assemble-instructions.ts never reads
-// that file itself, but assertDeclarationIntegrity is read fresh for this task per the brief,
-// and a fixture that assumes nothing about whether it checks the path is the safer one to ship.
+// that file itself, but a fixture that assumes nothing about whether
+// assertDeclarationIntegrity checks the path is the safer one.
 const FIXTURE_MANIFEST = {
   name: "t", model: "m", persona: "persona.md", channels: ["slack"], egress: { sealed: true },
   grants: [
@@ -120,7 +120,7 @@ function check(f: Fixture, display = "Agent One"): { status: number; stdout: str
   ]);
 }
 
-describe("bin/assemble-instructions.ts — the build hook Phase 2, Task 7)", () => {
+describe("bin/assemble-instructions.ts — the build hook", () => {
   it("writes an instructions.md byte-identical to assemblePersona() in-process, and reports bytes/capabilities/skills", () => {
     const f = makeFixture(CLEAN_ROLE);
     const { status, stdout, stderr } = run(f);
@@ -145,7 +145,7 @@ describe("bin/assemble-instructions.ts — the build hook Phase 2, Task 7)", () 
   });
 
   it("names only the tools the agent folder actually holds, not the capability docs' unions", () => {
-    // The Task 9 review finding, end to end through the real CLI: `remind`'s doc names three
+    // End to end through the real CLI: `remind`'s doc names three
     // tools and this agent ships two of them, so the written file must name exactly those two.
     const f = makeFixture(CLEAN_ROLE);
     expect(run(f).status).toBe(0);
@@ -225,7 +225,7 @@ describe("bin/assemble-instructions.ts — the build hook Phase 2, Task 7)", () 
     expect(existsSync(f.outPath)).toBe(false);
   });
 
-  // item 5. The success line's capability count and the number of bullets in the written
+  // The success line's capability count and the number of bullets in the written
   // file are DIFFERENT numbers on purpose: the line reports what the declaration GRANTS (scope
   // not "none"), while renderEnvironment also drops a capability whose autonomy is "never". The
   // source says so in a comment; nothing said it in a test, so the day someone "fixed" the
@@ -247,7 +247,7 @@ describe("bin/assemble-instructions.ts — the build hook Phase 2, Task 7)", () 
   });
 
   it("refuses a role that names a tool this agent does not ship, and writes nothing", () => {
-    // item 3, through the real CLI. `place_link` is a documented tool of `places`, which
+    // Through the real CLI. `place_link` is a documented tool of `places`, which
     // this fixture neither grants nor ships a file for.
     const f = makeFixture("## Duties\nI fetch the link with `place_link`.\n");
     const { status, stderr } = run(f);
@@ -259,9 +259,9 @@ describe("bin/assemble-instructions.ts — the build hook Phase 2, Task 7)", () 
   });
 });
 
-// Lares repo split: the display name left the services' package.json scripts. With no
+// The display name lives in agent.json. With no
 // `--display`, the assembler reads agent.json's own `display`, and without one uses `name`.
-describe("bin/assemble-instructions.ts — display default (lares split, hook 30)", () => {
+describe("bin/assemble-instructions.ts — display default", () => {
   function runWithoutDisplay(f: Fixture): { status: number; stdout: string; stderr: string } {
     return runRaw(["--agent", f.agentDir, "--role", f.rolePath, "--voice", f.voicePath, "--out", f.outPath]);
   }

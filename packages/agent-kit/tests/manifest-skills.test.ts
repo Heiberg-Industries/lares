@@ -50,7 +50,7 @@ describe("skills declaration", () => {
     expect(() => assertSkillsWithinGrants(m)).not.toThrow();
   });
 
-  // item 5. `requires` defaults to [], and the never-widen check is a loop over it — so
+  // `requires` defaults to [], and the never-widen check is a loop over it — so
   // an empty list asks for nothing and passes whatever the grants are. That is CORRECT (a skill
   // can never widen access, and one requiring nothing widens nothing), but it was the untested
   // corner of the check that fails a build, and "requires nothing" reads close enough to
@@ -138,7 +138,7 @@ describe("signals", () => {
   });
 });
 
-// ADR-0017 (the Vault, one name), W5C-s1. A skill can require a specific AREA of the `vault`
+// ADR-0017 (the Vault, one name). A skill can require a specific AREA of the `vault`
 // capability, and the never-widen check compares area sets exactly as it compares scopes —
 // requiring an area the grant does not list is a widening, whether or not the capability itself
 // is granted.

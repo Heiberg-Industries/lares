@@ -71,7 +71,7 @@ one real safety property, so it is worth re-checking after any edit to the grant
 
 `vault` is `write-with-confirm`, not plain `write`, even though its `facts` area also reaches only
 the owner: `remember` still writes directly (remembering a fact the owner just
-said carries no decision worth interrupting him for), but `forget` always asks first — retiring a
+said carries no decision worth an interruption), but `forget` always asks first — retiring a
 fact is a delete by the permissions board's own policy, and no level set for `vault` loosens that.
 
 ## What it deliberately cannot do

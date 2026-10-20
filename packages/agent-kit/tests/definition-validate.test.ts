@@ -78,9 +78,8 @@ describe("validateDefinition", () => {
     expect(doorSecretName("coordinator", "telegram")).toBe("coordinator-telegram-token");
   });
 
-  // Review fix (2026-09-16, Task 3 "needs fixes"): the manifest-view strip used to name the six
-  // definition-only fields by hand. This pins the set those fields actually are, against the
-  // schemas themselves rather than a second hand-written list — a definition-only field added to
+  // The manifest-view strip must not name the definition-only fields by hand. This pins the set
+  // those fields actually are, against the schemas themselves rather than a second hand-written list — a definition-only field added to
   // `definitionSchema.extend({...})` without being added here (or removed from manifestSchema)
   // fails this test, forcing whoever adds it to look at `definition-validate.ts`'s
   // `MANIFEST_KEYS` derivation rather than silently trusting it.
@@ -90,7 +89,7 @@ describe("validateDefinition", () => {
     expect(new Set(extraKeys)).toEqual(new Set(["gender", "description", "language", "duties", "schedules", "doors", "outsideTools", "delivery"]));
   });
 
-  // Review fix: a throwing `secretExists` (a real filesystem permission error, say) used to
+  // A throwing `secretExists` (a real filesystem permission error, say) used to
   // propagate out of `validateDefinition` uncaught — the one check not wrapped in `capture()`.
   // That crashes the save instead of refusing it, which is exactly the outcome this module
   // exists to prevent.
@@ -105,8 +104,7 @@ describe("validateDefinition", () => {
     expect(f.map((x) => x.message).join(" ")).toMatch(/permission denied/);
   });
 
-  // Review fix: the write-shape check (behind `if (opts.serviceDir)`) was never exercised by any
-  // test in this file. `toolNames` (forwarded to `assertNoUngatedWrites`) lets a test drive it
+  // The write-shape check (behind `if (opts.serviceDir)`) needs its own case. `toolNames` (forwarded to `assertNoUngatedWrites`) lets a test drive it
   // without a real service tree on disk: an empty list is the clean pass, and a tool name no
   // capability doc maps is the smallest failing case `lintWriteShape` has — it does not need a
   // real source file, only a name `capabilitiesForTool` does not recognise.

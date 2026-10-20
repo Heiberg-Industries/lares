@@ -2,7 +2,7 @@
  * Conformance: the INSTALLED eve carries the attachment-staging hunk from patches/eve.patch.
  *
  * Without it, eve 0.32 inlines any `image/*` (a HEIC photo reached the Anthropic API as
- * `image/heic`, which it refuses, and the session died — 2026-09-14), and every other staged file
+ * `image/heic`, which it refuses, and the session died), and every other staged file
  * reaches the model as a bare sandbox path. An eve bump that drops the hunk fails here, not in a
  * chat. The inline rule is evaluated from the installed file's own source, not restated.
  */

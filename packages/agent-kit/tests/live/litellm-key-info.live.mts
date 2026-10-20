@@ -20,11 +20,11 @@
  * SAME endpoint, called with NO `key` parameter and an ordinary (non-admin, budget-capped)
  * virtual key as the bearer token, answers. The shipped client believes it answers 200 with the
  * calling key's own `spend`/`max_budget`/`budget_duration`/`budget_reset_at`/`key_alias`, under
- * the documented `{ info: {...} }` envelope. Per the root CLAUDE.md's fixture rule ("a fixture
+ * the documented `{ info: {...} }` envelope. Per the fixture rule in AGENTS.md ("a fixture
  * is what we believe an API does; only a live call is what it does"), this file is what
  * actually asks.
  *
- * WHAT THIS CHECKS, per the slice spec, in order:
+ * WHAT THIS CHECKS, in order:
  *   1. GET /key/info with NO query parameter — the self-read form the client believes in.
  *      Records the status and which of the five fields the client needs are present.
  *   2. If step 1's status was not 200, retries the SAME endpoint with the documented
@@ -34,12 +34,12 @@
  *      mint new keys of its own. A 200 here would be a real security surprise, not a shape
  *      question, so it counts toward this script's exit code.
  *   4. GET /spend/logs?limit=1 and GET /user/daily/activity — recorded WITHOUT asserting
- *      anything, since the slice spec does not depend on either. This is deliberate: LiteLLM's
+ *      anything, since nothing depends on either. This is deliberate: LiteLLM's
  *      docs describe `/spend/keys` and `/spend/users` as scoped to the caller's own data for a
  *      non-admin key by default (docs.litellm.ai/docs/proxy/cost_tracking) but make no such
  *      statement for `/spend/logs` or `/user/daily/activity` specifically, and two open
  *      (unverified, non-doc) GitHub issues report inconsistent 403s on both for non-"Default"
- *      key roles — so this step is pure observation for whoever designs a later slice that
+ *      key roles — so this step is pure observation for whoever later designs something that
  *      might want them, never a check this probe can honestly assert on.
  *
  * Exit code is 0 only when step 1 or step 2 produced every field `readOwnKeyInfo` needs (a
@@ -61,7 +61,7 @@
  * page built on "each agent key reads its own spend" cannot work as designed. The two
  * ways out: widen `allowed_routes` on agent keys to include `/key/info`, or have the console
  * read spend server-side with the master key it already holds for the gateway surface. That is
- * an owner decision, not a builder's.
+ * a decision for the owner.
  * Step 3 PASSED (POST /key/generate -> 403): an ordinary key cannot mint keys. Note it passed
  * for a broader reason than intended — this key cannot reach any admin route at all.
  * Step 4, informational: /spend/logs and /user/daily/activity both 403, same restriction.

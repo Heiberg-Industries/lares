@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# THE INDEPENDENT BYTE-IDENTICAL PROBE (review follow-up on Task 7, step 2).
+# THE INDEPENDENT BYTE-IDENTICAL PROBE.
 #
-# Task 7's own gate — "the creative agent's resolved tool list is IDENTICAL before and after" — is measured
+# The gate "the creative agent's resolved tool list is IDENTICAL before and after" is measured
 # with `readResolvedTools({ dynamic })`, and `dynamic` can only be fed by `grantedToolNames(...)`,
 # the SAME pure function the production resolver (`agent/tools/catalogue.ts`) and the registry
 # (`agent/instrumentation.ts`) both call. That proves internal consistency, not ground truth: a
@@ -13,9 +13,8 @@
 # THE TECHNIQUE, AND WHY IT ISN'T A WIRE CAPTURE. The first attempt here was a fake LiteLLM
 # gateway server, redirected to via `GATEWAY_URL`/`GATEWAY_KEY_FILE`
 # (`@lares/agent-kit/gateway-provider`'s own override contract). It does not work for the creative agent:
-# her `agent/agent.ts` resolves the model at `session.started` and MUST return a serializable
-# STRING there (eve 0.32 refuses a constructed provider object at session/turn scope — Task 1's
-# Q5a). eve's runtime treats ANY string-valued dynamic model selection as a reference into its OWN
+# its `agent/agent.ts` resolves the model at `session.started` and MUST return a serializable
+# STRING there (eve 0.32 refuses a constructed provider object at session/turn scope). eve's runtime treats ANY string-valued dynamic model selection as a reference into its OWN
 # built-in AI Gateway (`internal/gateway.js`: `GATEWAY_BASE_URL = "https://ai-gateway.vercel.sh"`,
 # hard-coded, no env override for the base URL — only `AI_GATEWAY_API_KEY`/`VERCEL_OIDC_TOKEN` for
 # auth) — NEVER through the agent's own custom-constructed `fallback` provider, which anchors
@@ -58,24 +57,24 @@
 # `services/creative`). A durable session cannot start at all without a reachable Postgres
 # carrying that package's schema, so this script raises one disposable container for the
 # duration of the probe and tears it down unconditionally in a `trap`. `sql/001-eve-workflow.sql`
-# is the creative agent's own hand-extracted schema (her header: "the box has no auto-migrate ... this file
-# is the hand-extracted equivalent") — applied here exactly as documented, into a throwaway
+# is the creative agent's own hand-extracted schema (its header explains that there is no auto-migrate and
+# this file is the hand-extracted equivalent) — applied here exactly as documented, into a throwaway
 # database nobody else touches. Nothing about this reaches a shared or production database:
 # `docker run --rm`, ephemeral port, gone at exit.
 #
 # GENERALITY, HONESTLY STATED. This relies on `createParallelAuthoredToolCallsResult`'s
 # all-or-nothing behaviour to make "more than one tool dispatched" mean "every named tool is
-# present." That reasoning holds for ANY eve agent, not just the creative agent — Tasks 8/9 can point this
-# at their own service dir and expected-tools file unchanged. What is creative-specific is nothing
-# structural; it is only that her `experimental.workflow.world` happens to be postgres, so THIS
+# present." That reasoning holds for ANY eve agent, not just the creative agent — any service can point this
+# at its own service dir and expected-tools file unchanged. What is creative-specific is nothing
+# structural; it is only that its `experimental.workflow.world` happens to be postgres, so THIS
 # run pays the container cost. An agent on the default local-disk world (no override) needs no
 # Postgres at all — this script still starts one unconditionally for simplicity today; a caller on
 # the default world can skip straight to setting `EVE_MOCK_AUTHORED_MODELS=1` and invoking. Said
-# here rather than built, per the instruction not to over-generalise a script only one task uses so far.
+# here rather than built, to avoid over-generalising a script only one service uses so far.
 #
 # Usage: `bash scripts/model-visible-tools-probe.sh [service-dir] [expected-tools-file]`
 #   service-dir           default: services/creative
-#   expected-tools-file   default: the Task 7 baseline (.superpowers/sdd/.../baseline/creative-tools.txt)
+#   expected-tools-file   default: a baseline list of tool names captured before the change (see EXPECTED_FILE below)
 # Also runs a negative control (two names known to be ABSENT — capabilities creative never grants)
 # to prove the technique is discriminating, not just optimistic.
 set -uo pipefail
@@ -139,8 +138,7 @@ WORKFLOW_URL="postgres://postgres:postgres@127.0.0.1:$PGPORT/probe"
 # just that trailing pretty-printed object (from the LAST line that is exactly `{` to EOF) before
 # anything tries to `jq` it. The raw, uncleaned capture is kept alongside as `.raw` for debugging.
 #
-# THE EXIT CODE IS SAVED, NOT DISCARDED (review follow-up, folded in while generalising this
-# script). The script does not `set -e`, and until now nothing downstream ever
+# THE EXIT CODE IS SAVED, NOT DISCARDED. The script does not `set -e`, and until now nothing downstream ever
 # looked at whether `eve invoke` itself succeeded — a crash isolated to the NEGATIVE leg alone
 # (a bad flag, a dead postgres connection, `eve invoke` segfaulting before it dispatches anything)
 # would leave `$out_err`/`$out_json` empty, `distinct_dispatch_count` would read that as

@@ -20,7 +20,7 @@ let db: Pool;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   db = new Pool({ connectionString: container.getConnectionUri() });
-  // CI FLAKE FIXED (WAVE-3-NOTES): a Pool with no 'error' listener turns a stopped container's
+  // A Pool with no 'error' listener turns a stopped container's
   // idle-client error into an uncaught exception that fails the run. Register both, the way
   // packages/agent-kit/tests/approval-ledger.test.ts does.
   db.on("error", () => undefined);

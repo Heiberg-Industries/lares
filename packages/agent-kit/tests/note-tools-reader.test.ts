@@ -6,18 +6,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readerForTurn, readTool, speakerFromAuth } from "../src/note-tools.js";
 
-/** W5C-s3: a note tool now asks which areas the session may open, and refuses every one when
+/** A note tool asks which areas the session may open, and refuses every one when
  *  nobody answers. These tests are about `onRead` and the reader, so they grant the private
  *  area and nothing else — `tests/vault-areas.test.ts` is where the guard itself is proved. */
 const PRIVATE_ONLY = () => ["private"] as const;
 
-// 2026-09-07: every crm-routing turn that touched Atlas failed with "unknown is not a member of
+// A schedule turn that touched the shared store failed with "unknown is not a member of
 // this installation". A schedule's `to(...).send(prompt, { auth: appAuth })` lands eve's own app
 // principal in `auth.current` — authenticator "app", no user attribute — and the decoder turned
 // that into a speaker called "unknown", which the registry rightly refused. The app principal is
 // the AGENT acting, not a person asking: with no member named it is "no speaker", so rule (a)
 // applies and the agent reads as its configured owner. A per-member schedule that names a member
-// in attributes keeps resolving that member — the Lares shape.
+// in attributes keeps resolving that member.
 describe("speakerFromAuth — a schedule turn's app principal is not a speaker", () => {
   it("app principal with no user attribute → undefined (resolves as the agent's owner)", () => {
     expect(speakerFromAuth({ current: { authenticator: "app", principalId: "eve:app", principalType: "runtime" } }))
@@ -82,13 +82,13 @@ describe("readerForTurn — who is the store being read for?", () => {
   });
 });
 
-// ── readTool's onRead dep (W5A-s3) ─────────────────────────────────────────────────
+// ── readTool's onRead dep ─────────────────────────────────────────────────
 //
 // A service (chief-of-staff) needs to know when its own reads succeed, to record them —
 // but agent-kit is shared by every role service and must not import a service's lib. The
 // injected `onRead` callback is the seam: optional, called only after a read SUCCEEDS, and
 // the default (no deps) is today's behaviour exactly, so every caller that does not pass
-// `deps` (services/creative, services/travel, the mounted `vault_read` extension tool) is
+// `deps` (services/creative, the mounted `vault_read` extension tool) is
 // unaffected.
 describe("readTool's onRead dep", () => {
   let dir: string;

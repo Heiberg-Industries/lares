@@ -1,16 +1,15 @@
 #!/usr/bin/env node
-// W2-s12: how eve 0.60.1's OWN `workflow` schema tables grow, per turn, against a disposable
-// Postgres. See the session-rows retention research, whose 0.32 verdict was
-// "UNKNOWN UNTIL MEASURED" and whose candidate prune predicate keyed on `$eve.type='turn'` —
-// a value 0.60.1 no longer writes (`buildTurnAttributes` is gone from eve's own dist; see
+// How eve 0.60.1's OWN `workflow` schema tables grow, per turn, against a disposable
+// Postgres. On 0.32 the answer was "unknown until measured", and a candidate prune predicate
+// keyed on `$eve.type='turn'` — a value 0.60.1 no longer writes (`buildTurnAttributes` is gone from eve's own dist; see
 // node_modules/eve/dist/src/execution/eve-workflow-attributes.js, which now exports only
 // `buildSessionAttributes` and `buildSubagentRootAttributes`). This script re-measures the shape
-// so a later wave can size and write a prune against what is actually there.
+// so a later change can size and write a prune against what is actually there.
 //
 // THE HARNESS. This reuses the technique proven by services/keeper/tests/conversation-runtime.probe.mts
 // (real installed eve, real `eve build` + `eve start`, a disposable Postgres via testcontainers, no
 // mock-model flag) rather than `capture-snapshot.sh`'s technique (`EVE_MOCK_AUTHORED_MODELS=1`),
-// because W2-s3b's notes record that the mock discards the live provider object. It does NOT reuse
+// because the mock discards the live provider object. It does NOT reuse
 // that probe's committed fixture (services/keeper/tests/fixtures/conversation-agent) directly,
 // though: that fixture deliberately runs on eve's DEFAULT local-disk workflow world (it exists to
 // prove definition/model/duties resolution and a Postgres-backed *projection*, neither of which
@@ -26,7 +25,7 @@
 // dispatches the identical `{kind:'reset'}` workflow command that a server-side
 // `attachSession(id).reset()` does (both route through `dispatchWorkflowCommand` in
 // node_modules/eve/dist/src/execution/workflow-runtime.js) — so calling it from the client here
-// measures the same reset the slice was asked to observe.
+// measures the same reset.
 //
 // SAFETY. This script must never reach a real installation's database. It refuses to run if
 // WORKFLOW_POSTGRES_URL or DATABASE_URL is already set in its environment, and it always drives
@@ -310,14 +309,14 @@ try {
 
   const titlesBeforeReset = await titleLengths(db);
 
-  const resetResult = await one.session.reset({ reason: 'session-rows-measure W2-s12' });
+  const resetResult = await one.session.reset({ reason: 'session-rows-measure' });
   if (!['reset', 'no_active_session'].includes(resetResult.status)) {
     throw new Error('Unexpected reset outcome: ' + JSON.stringify(resetResult));
   }
   await waitQuiet(db, 'after reset');
   const afterReset = await record('4-after-reset');
 
-  // --- answer the slice's five questions, with numbers -------------------------------------------
+  // --- answer the five questions, with numbers -------------------------------------------
   console.log('\n=== ANSWERS ===');
   console.log(
     '(a) child runs per turn, or one session run that grows? runsByName after turn 3: ' +

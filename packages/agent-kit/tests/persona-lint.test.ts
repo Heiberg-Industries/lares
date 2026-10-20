@@ -89,7 +89,7 @@ describe("lintRole", () => {
   });
 });
 
-// item 3, first half. `notion_proposals` passed the vendor rule only because WORD_END counts
+// `notion_proposals` passed the vendor rule only because WORD_END counts
 // `_` as a word character — an accident that would have reversed itself the day someone changed
 // that class. Tool names are now an exemption class ON PURPOSE, claimed before any rule and
 // matched as whole identifiers, and these cases pin both directions of it.
@@ -112,8 +112,8 @@ describe("lintRole — tool names are an exemption class", () => {
   });
 });
 
-// item 3, second half. templates/README.md said in prose that dropping a grant means
-// editing role.md in the same change, and nothing enforced it: the generated section would stop
+// templates/README.md says in prose that dropping a grant means
+// editing role.md in the same change, and without a check the generated section would stop
 // naming the tool while the role text kept instructing the agent to call it. This is the check
 // bin/assemble-instructions.ts now runs before it writes anything.
 describe("assertRoleToolsAreDeployed", () => {

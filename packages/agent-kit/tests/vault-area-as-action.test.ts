@@ -1,7 +1,7 @@
 /**
- * W5C-s8 — THE AREA IS THE ACTION (controller ruling, 2026-09-19).
+ * THE AREA IS THE ACTION.
  *
- * WHAT WENT WRONG WITHOUT THIS. Until W5C-s5 a board-approved vault tool's ratchet key was the
+ * WHAT WENT WRONG WITHOUT THIS. Before the three names were folded into `vault`, a board-approved vault tool's ratchet key was the
  * capability it was registered under: chief-of-staff's `atlas_resolve_proposal` read
  * `(agent, "atlas", "")` and `forget` / `memory_resolve_proposal` read `(agent, "memory", "")`.
  * Folding the three names into one `vault` left all three reading ONE row, `(agent, "vault", "")` —
@@ -9,7 +9,7 @@
  * 🚫 on the facts would have switched off the shared store. A rename is not allowed to merge two
  * permissions the owner set apart.
  *
- * THE RULING: the tool's AREA is the ratchet `action`. `(agent, "vault", "shared")`,
+ * THE RULE: the tool's AREA is the ratchet `action`. `(agent, "vault", "shared")`,
  * `(agent, "vault", "facts")`, `(agent, "vault", "private")` — one row each, 1:1 with the three old
  * `(agent, <old capability>, "")` rows, so nothing merges and nothing widens.
  *
@@ -84,7 +84,7 @@ describe("a board-approved vault tool looks its level up under its AREA", () => 
     // The owner switched the shared-store proposal lane on…
     expect(await boardApproval(template("chief-of-staff"), "atlas_resolve_proposal")()).toBe("not-applicable");
     // …and the facts lane is untouched: no row of its own, so it falls back to the definition's
-    // own `vault: gated`. Before the ruling both tools read one row and this was "not-applicable".
+    // own `vault: gated`. Without the area as the action both tools would read one row and this was "not-applicable".
     expect(await boardApproval(template("chief-of-staff"), "memory_resolve_proposal")()).toBe("user-approval");
     expect(f.reads).toEqual(["chief-of-staff/vault/shared", "chief-of-staff/vault/facts"]);
   });
