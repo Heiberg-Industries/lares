@@ -1,11 +1,15 @@
 # Installing Lares on your own server
 
 This guide takes a technical self-hoster from an empty server to a running console with the
-backup jobs in place. It follows the one **tested path**: a fresh Ubuntu server and the
-installer `services/box/ops/install.sh`. Read
+backup jobs in place. It follows the one **tested path**: a fresh Ubuntu server with Docker, and one downloaded script,
+`get-lares.sh`, which sets everything else up. Read
 [ADR-0022](decisions/0022-the-tested-install-path.md) for what "tested path" means. Lares is
 alpha software; there is no tagged release yet, only release candidates. Try it on a disposable
 server first.
+
+**This way of installing, updating and rolling back works for rc.12 and later only.** Earlier
+release candidates do not carry the files `get-lares.sh` needs. A server installed before rc.12
+switches over once; see the [rc.12 notes](releases/rc.12-notes.md#switching-a-server-installed-before-rc12).
 
 Installing through a coding agent (Claude Code, Codex)? Point it at
 [Installing Lares with a coding agent](install-with-an-agent.md); it drives this guide for you.
@@ -29,15 +33,12 @@ tour of its pages.
   project and register the redirect address `https://example.com/api/auth/callback` (with your
   own domain). You need its client id and client secret. Connecting Gmail and Calendar later
   needs a second client with those scopes; that is done from the console, not at install time.
-- **On the server:** Docker with Compose v2, Node.js 24, pnpm 9.15.0, `curl`, and `git`. The
-  installer runs small Node commands from the checkout, so Node is needed on the server itself.
-  Ubuntu 24.04's own `nodejs` package is version 18 and is too old. As root:
+- **On the server:** Docker with Compose v2, `curl`, and `python3`. That is all. There is no Node.js,
+  no pnpm and no checkout of the code on the server. `python3` is only used by a few repair helpers
+  that the restore steps name; Ubuntu 24.04 already has it. As root:
 
   ```bash
-  apt-get install -y docker.io docker-compose-v2 curl git
-  curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
-  apt-get install -y nodejs
-  npm install -g pnpm@9.15.0
+  apt-get install -y docker.io docker-compose-v2 curl python3
   ```
 - **A place for backups** that is not this server: an SFTP host, an S3-compatible bucket, or a
   second disk. See section 9.
@@ -48,26 +49,35 @@ tour of its pages.
 Set the server's time zone before you install (`timedatectl set-timezone <zone>`). The installer
 reads it and uses it as the owner's clock for quiet hours and briefs. It does not ask.
 
-## 2. Getting the code and the images
+## 2. Getting the installer and the images
 
-Nothing is built on your server. Images are built in CI and pulled by digest. A release is a
-small file that lists the digest of every image. The release candidate in this repository is
-`releases/2026-10-19-rc.11.json`.
+Nothing is built on your server, and you do not clone the code. Images are built in CI and pulled
+by digest. A release is a small file that lists the digest of every image. It lives in the
+[`releases/`](https://github.com/Heiberg-Industries/lares/tree/main/releases) folder of this
+repository. A release is named by its full file name without `.json`, for example
+`2026-10-19-rc.11`: the date, then `rc.` and a number. Use the whole name; a short name such as
+`rc.12` or the word `latest` is refused. Use rc.12 or a later one (see the note at the top).
 
-On the server, as root:
+On the server, as root, download the one script and read it before you run it:
 
 ```bash
-git clone https://github.com/Heiberg-Industries/lares.git
-cd lares
-pnpm install --frozen-lockfile
+curl -fsSLO https://raw.githubusercontent.com/Heiberg-Industries/lares/main/services/box/ops/get-lares.sh
+less get-lares.sh
 ```
 
-The installer runs a few small commands from this checkout (rendering the stack file,
-migrating the database), so it needs the dependencies installed from the lockfile. That is the
-only install step on the server. No image is built there.
+Running it with a release name (section 5) does this, in order:
 
-You do not pull images yourself. The installer renders a Compose file from the release file and
-starts it, and Docker pulls each image by its digest.
+1. checks the server and prints every problem it finds in one pass, changing nothing;
+2. downloads that release's file from the `releases/` folder;
+3. pulls the release's engine image by its digest and unpacks the installer scripts from it into
+   `/opt/lares/releases/<name>/`;
+4. runs the installer from there (`install.sh`);
+5. only when the installer succeeded, points `/opt/lares/current` at that release and installs the
+   `lares` command in `/usr/local/bin`.
+
+It reaches two hosts only, `raw.githubusercontent.com` and `ghcr.io`, and only when you run it.
+Nothing is piped into a shell, and nothing is sent anywhere. The installer renders a Compose
+file from the release file and starts it; Docker pulls each image by its digest.
 
 ## 3. The folder layout
 
@@ -80,6 +90,9 @@ folder in section 7.
 | `/etc/lares/installation.env` | The answers to the installer's questions (section 4). |
 | `/etc/lares/console-oauth.env` | The Google sign-in client for the console. You create it (section 5). |
 | `/etc/lares/keeper.json` | The keeper's configuration, rendered from the release file. |
+| `/opt/lares/releases/<name>/` | The installer and update scripts of each release you have installed, one folder per release. |
+| `/opt/lares/current` | A link to the release in use. `/usr/local/bin/lares` points through it. |
+| `/opt/lares/previous` | A link to the release before the last `lares update`. One level only (section 10). |
 | `/opt/lares/compose.yaml` | The rendered stack: database, console, gateway, Caddy. |
 | `/opt/lares/compose.lares-keeper.yaml` | The keeper and the egress proxy. |
 | `/srv/lares/agents/<name>/` | One folder per agent: `agent.json`, `duties.md`, `voice.md`. Written by the keeper when you save an agent in the console. |
@@ -146,24 +159,27 @@ you connected earlier, and it restarts the keeper only when its settings file
 (`/etc/lares/keeper.json`) actually changed. If that file has been damaged by hand and cannot be
 read, the installer stops and says so, without touching it.
 
-Check the box without changing anything:
+Check the server without changing anything. Use the full release name from section 2 (shown here
+as `<release-name>`):
 
 ```bash
-./services/box/ops/install.sh --dry-run
+bash get-lares.sh --release <release-name> --dry-run
 ```
 
-It prints every problem it finds in one pass, each with a fix to paste. Fix them, then run the
-real install from the repository root:
+This still downloads the release's engine image, because the installer's checks live in it. It
+writes nothing under `/etc`, `/srv` or `/opt/lares`. It prints every problem it finds in one pass,
+each with a fix to paste. Fix them, then run the real install:
 
 ```bash
-./services/box/ops/install.sh --release releases/2026-10-19-rc.11.json
+bash get-lares.sh --release <release-name>
 ```
 
 On a fresh server the real run first asks whether to start fresh or check a backup archive.
-Press Enter to start fresh. (`--dry-run` does not ask.) For an unattended run, add `--yes` and the answers:
+Press Enter to start fresh. (`--dry-run` does not ask.) For an unattended run, add `--yes` and the
+answers. Every option that `get-lares.sh` does not use itself is handed to the installer unchanged:
 
 ```bash
-./services/box/ops/install.sh --yes --release releases/2026-10-19-rc.11.json \
+bash get-lares.sh --release <release-name> --yes \
   --domain example.com --email you@example.com --name "Your Name" \
   --model-key-file /root/model-key.txt
 ```
@@ -171,17 +187,20 @@ Press Enter to start fresh. (`--dry-run` does not ask.) For an unattended run, a
 The installer then, in order: generates the secrets, writes the four answers, renders and starts
 the stack, proves the model key with a real call through the gateway, creates and migrates the
 database, makes you the first member of the installation, configures and starts the keeper, and
-checks that the console answers at `https://example.com`.
+checks that the console answers at `https://example.com`. Only after it succeeds does
+`get-lares.sh` switch `/opt/lares/current` to the release and install the `lares` command.
 
-It is safe to run again after any failure. A secret or answer that already exists is left as it is.
-An existing `/srv/lares` makes the run an update of what is there, not a fresh start.
+It is safe to run again after any failure, with the same command. A secret or answer that already
+exists is left as it is. An existing `/srv/lares` makes the run an update of what is there, not a
+fresh start. A failed download or image pull changes nothing.
 
-Exit codes: 64 bad arguments, 75 a service did not become ready in time, 77 not root, 78 a
-check failed (the reason is printed).
+Exit codes (both `get-lares.sh` and the installer): 64 bad arguments, 75 a download, an image
+pull or a service did not work or become ready in time, 77 not root, 78 a check failed (the reason
+is printed).
 
 `--restore <archive>` only checks that a backup archive is genuine and reports what it holds. It
-does not restore. Restoring is a manual procedure in
-[the export and restore runbook](runbooks/export-and-teardown.md), section 5.
+does not restore. To restore onto a new server, see section 9. The
+[export and restore runbook](runbooks/export-and-teardown.md) has the by-hand background.
 
 ## 6. First start and checking it worked
 
@@ -207,13 +226,15 @@ plain sentences what is wrong and what to type to fix it (settings, database, mi
 backup record, open repairs, gateway):
 
 ```bash
-PGHOST=127.0.0.1 DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
-  pnpm -C services/box doctor
+lares doctor
 ```
 
-It changes nothing and makes no network call. Add `--test-model --gateway <url> --alias <name>
---key-file <path>` to also send one tiny, paid completion through your gateway. Exit code 0 means
-nothing failed; 1 means at least one check did. More in [`services/box/README.md`](../services/box/README.md#lares-doctor).
+It runs in a short-lived container of the engine image, so it needs nothing installed on the
+server. It changes nothing and makes no network call. Add `--test-model --gateway <url> --alias
+<name> --key-file <path>` to also send one tiny, paid completion through your gateway. The key
+file must be inside `/etc/lares/secrets/`, the only folder the check can see. Exit code 0 means
+nothing failed; 1 means at least one check did. More in
+[`services/box/README.md`](../services/box/README.md#lares-doctor).
 
 ## 7. The console and the deadline calendar file
 
@@ -257,10 +278,10 @@ cp deadline-calendar.json /srv/lares/installation/deadline-calendar.json
 chmod 0644 /srv/lares/installation/deadline-calendar.json
 ```
 
-Then run the installer again, with the same release file:
+Then run the installer again, with the same release name:
 
 ```bash
-./services/box/ops/install.sh --release releases/2026-10-19-rc.11.json
+bash get-lares.sh --release <release-name>
 ```
 
 When `/srv/lares/installation/deadline-calendar.json` exists, the installer mounts it into the
@@ -322,7 +343,7 @@ client with Gmail and Calendar scopes, which is separate from the sign-in client
    (an explicit lower-case organisation id), and register
    `https://example.com/api/accounts/google/callback` (your domain) as a redirect address on that
    client.
-2. Run `sudo python3 services/box/ops/configure-google-keeper.py --org <org>`, then restart the
+2. Run `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` as root, then restart the
    keeper and recreate the console. The commands are in
    [`integrations-and-accounts.md`](../services/console/docs/integrations-and-accounts.md#connecting-a-google-account).
 3. With the agent running, open it in the console, and under Email type the mailbox and press
@@ -378,8 +399,9 @@ Optional: back up agent definitions to a private Git repository. It is off by de
 
 ## 9. Backups and the restore drill
 
-The base install does not switch backups on; `install.sh --backups` does, and the installer's last
-message points there. Do not rely on the installation for data you need to keep until backups are
+The base install does not switch backups on; `lares backups` does. (The installer's last message
+may still name `install.sh --backups`; it hands over to the same thing, but `lares backups` is the
+command to use.) Do not rely on the installation for data you need to keep until backups are
 switched on and proven.
 
 One command does it. Before you run it:
@@ -393,10 +415,10 @@ One command does it. Before you run it:
    second disk. Create an uptime check (period 1 day, grace 2 hours) at a service such as
    healthchecks.io and note its https address.
 
-Then, as root, from the checkout:
+Then, as root:
 
 ```bash
-./services/box/ops/install.sh --backups
+lares backups
 ```
 
 It asks four things: where backups go, the public age key, the uptime check address and, for an
@@ -417,7 +439,16 @@ backup setup in `/etc/agent-box` (pass `--reconfigure` to replace either; the ol
 kept beside the new one as `<name>.previous`), and password or credentials files that are not
 owned by root or are readable by others. A repository on this server's own disk, when you accept
 it, works but is reported as NOT off-site, never as Protected.
-You can run it again safely; with the same answers it changes nothing.
+You can run it again safely; with the same answers it changes nothing. A re-run with only `--yes`
+reuses the answers saved in `/etc/lares/backup.env`.
+
+**When `lares update` says the backup scripts are older, run `lares backups --yes` once.** The backup scripts are copied into
+`/opt/lares/` when backups are switched on, and an update does not replace them. When one of the
+copies differs from the new release's, `lares update` finishes with a line like "the backup scripts
+in /opt/lares are older than this release's: backup.sh ... They were left as they are". Running
+`lares backups --yes` copies the new scripts and units into place (an old file is kept beside it as
+`<name>.previous` where it is replaced) and then runs the backup, the restore rehearsal and the
+check once more; add `--skip-first-run` if you do not want that.
 
 At the end it runs a backup, a restore rehearsal and the daily check once, and prints
 **Protected** only if all three passed. Protected means: a snapshot exists, a restore from it
@@ -426,7 +457,7 @@ and where to read why (`journalctl -u <unit>`). The console's Backup page shows 
 
 What the command does, for those who want to know:
 
-- Copies `backup.sh`, `backup-verify.sh` and `restore-drill.sh` to `/opt/lares/` (mode 0750, root)
+- Copies `backup.sh`, `backup-verify.sh` and `restore-drill.sh` from the current release to `/opt/lares/` (mode 0750, root)
   and the six `lares-backup*` and `lares-restore-drill*` units to `/etc/systemd/system/`.
 - Writes `/etc/lares/backup.env` (mode 0400) with `LARES_CURRENT_LAYOUT=1`, `RESTIC_REPOSITORY`,
   `RESTIC_PASSWORD_FILE`, `AGE_SECRETS_RECIPIENT`, `HC_URL` and, for S3, the key pair.
@@ -448,7 +479,7 @@ older snapshots; the first nightly backup after updating adds it.
 
 You need: the repository address and password (`/etc/lares/backup.env` and
 `/etc/lares/restic-password` are inside the bundle), your age private key file, and a fresh
-Ubuntu server with the tools from section 1. The age key never goes onto the new server.
+Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y restic`). The age key never goes onto the new server.
 
 1. **Switch the old server off** (power it down, or stop its services). Two live servers would both
    answer chat and both write to the same backup repository.
@@ -483,37 +514,38 @@ Ubuntu server with the tools from section 1. The age key never goes onto the new
    Send exactly those paths. Never `keeper.json` or `keeper.env`: they name the old server's image
    versions. (With `RESTIC_PASSWORD` set, `restic dump` does not ask; for `latest` add
    `--tag nightly`.)
-5. **On the new server**, install the same release or a newer one. It reuses the files you just
-   sent, so the database comes up with the old password:
+5. **On the new server**, download `get-lares.sh` (section 2) and install the same release or a
+   newer one, rc.12 or later. It reuses the files you just sent, so the database comes up with the
+   old password:
 
    ```bash
-   ./services/box/ops/install.sh --yes --release releases/<release-file>.json
+   bash get-lares.sh --release <release-name> --yes
    ```
 
-6. **Restore**, as root, from the checkout. `--dry-run` first reads the snapshot and checks
-   everything without changing the server:
+6. **Restore**, as root, with the `lares` command that step 5 installed. `--dry-run` first reads
+   the snapshot and checks everything without changing the server:
 
    ```bash
-   ./services/box/ops/restore.sh --snapshot latest --dry-run
-   ./services/box/ops/restore.sh --snapshot latest
+   lares restore --snapshot latest --dry-run
+   lares restore --snapshot latest
    ```
 
    It asks you to confirm the old server is off (for an unattended run pass
    `--yes --old-server-stopped`). It refuses, changing nothing, unless this server is a fresh
    install: no agents, no conversations, no agent running. It also refuses a snapshot written by a
-   newer release than this checkout, a snapshot with an unsafe database name or no main database,
+   newer release than the one installed here, a snapshot with an unsafe database name or no main database,
    too little free disk, a missing token folder, and a restored address that differs from the one
-   the server was installed with (restoring to a different address is not supported yet).
+   the server was installed with (restoring to a different address is not possible yet).
 7. **Do what it prints**, in order. The list below is what `restore.sh` prints; steps that do not
    apply to your snapshot are left out of its list and the numbers shift:
    1. Google, once per organisation: add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>`
       to `/etc/lares/console-oauth.env` if they are not already there, then run
-      `python3 services/box/ops/configure-google-keeper.py --org <org>` and restart only the
+      `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` and restart only the
       keeper: `docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart`.
    2. Point DNS for your domain at this server. You already did in step 2; check it still holds.
    3. Only when the snapshot held a deadline calendar: run the installer again with the same
       release so it mounts the calendar:
-      `./services/box/ops/install.sh --yes --release releases/<release-file>.json`.
+      `bash get-lares.sh --release <release-name> --yes`.
    4. Sign in to the console and open each agent.
    5. Model gateway keys: nothing to do when every agent's key file came back with the token
       folder. For an agent without one, `restore.sh` prints the two
@@ -527,7 +559,7 @@ Ubuntu server with the tools from section 1. The age key never goes onto the new
       where you press it.)
    8. Only when `backup.env` names retained file volumes: copying those back is still a manual job.
    9. Check: sign in, send one chat message to an agent and read the reply, and open the Backup
-      page to confirm the next backup is scheduled (run `install.sh --backups` again if it is not).
+      page to confirm the next backup is scheduled (run `lares backups` again if it is not).
 
 The agents' model keys come back with the token folder, so the old key-repair helper is only
 printed for an agent whose key file is missing. If a step fails after the restore has begun, the
@@ -537,31 +569,42 @@ written to by a restore).
 This path has been tested with stand-ins only. Treat the first real restore as a rehearsal:
 do it on a spare server before you need it.
 
-To take everything with you, `services/box/ops/export.sh` writes one archive; the runbook explains
+To take everything with you, `/opt/lares/current/services/box/ops/export.sh` writes one archive; the runbook explains
 how to check it before relying on it.
 
 ## 10. Upgrading
 
 Updates are dated releases, each with release notes that list what breaks and how to fix it
 ([ADR-0021](decisions/0021-releases-and-upgrades.md)). Read the notes for the release first,
-for example [rc.11](releases/rc.11-notes.md). To move to a release:
+for example [rc.11](releases/rc.11-notes.md). The `lares update` command works from rc.12 on; a
+server installed before rc.12 switches over once (see the [rc.12 notes](releases/rc.12-notes.md#switching-a-server-installed-before-rc12)).
+To move to a release, as root, with its full name from the `releases/` folder (section 2):
 
 ```bash
-./services/box/ops/update.sh --release releases/<release-file>.json --dry-run
-./services/box/ops/update.sh --release releases/<release-file>.json
+lares update --release <release-name>
 ```
 
-The update checks that last night's backup was verified, takes a backup, records which images
-were running, and pulls the new ones by digest.
+It downloads that release and its engine image, then runs the update: it checks that last night's
+backup was verified, takes a backup, records which images were running, and pulls the new ones by
+digest. Then it runs the installer once more in repair mode, so the keeper and its settings
+update too. Only when both worked does it make the new release the current one and print
+"now on <release-name>". If either step stops, the server stays marked as the old release and you
+can run the same command again. Switch on backups (section 9) before your first update; without a
+verified backup the update refuses.
 
-**Rolling back.** To put the previous images back, run `./services/box/ops/rollback.sh` (add
-`--dry-run` to see what it would do). It reads the record of the last update, shows what it would
-put back and what it would not, asks, writes the previous digests into the compose file, pulls
-and starts them. It goes back exactly one step and refuses to run a second time. It does **not**
-undo database changes: it runs no migration in either direction, and it names the backup that
-was taken before the update. To go back past a database change, restore that backup. If the
-keeper renders an agent's compose file from its own configuration, the keeper's configured image
-comes back the next time it applies the agent, so change that configuration too.
+If `lares update` says the backup scripts are older than the release's, **run `lares backups --yes`**
+to refresh them (section 9).
+
+**Rolling back.** To put the previous images back, run `lares rollback` (add `--dry-run` to see
+what it would do). It reads the record of the last update, shows what it would put back and what
+it would not, asks, writes the previous digests into the compose file, pulls and starts them, and
+then points `/opt/lares/current` back at the earlier release. It goes back **one level only**,
+to the release called `previous`; it refuses to run a second time, and there is no way to name an
+older release. It does **not** undo database changes: it runs no migration in either direction,
+and it names the backup that was taken before the update. To go back past a database change,
+restore that backup. If the keeper renders an agent's compose file from its own configuration,
+the keeper's configured image comes back the next time it applies the agent, so change that
+configuration too.
 
 **Disk space.** An optional `disk-guard` timer can report root-disk usage to an uptime monitor;
 `install.sh` does not install it (see [`services/box/ops/README.md`](../services/box/ops/README.md#disk-guard-optional)).

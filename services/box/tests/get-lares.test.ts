@@ -218,6 +218,17 @@ describe("lares", () => {
     expect(current()).toBe(`releases/${RC12}`);
   });
 
+  it("update --dry-run asks update.sh for a dry run and stops there: no install.sh, current unchanged", () => {
+    const r = lares(["update", "--release", RC12, "--dry-run"]);
+    expect(r.code, r.stderr).toBe(0);
+    const c = calls();
+    expect(c.find((l) => l.startsWith("update.sh "))).toContain("--dry-run");
+    expect(names()).not.toContain("install.sh");
+    expect(current()).toBe(`releases/${RC11}`);
+    expect(existsSync(join(root(), "previous"))).toBe(false);
+    expect(r.stdout).toMatch(/dry run/i);
+  });
+
   it("still updates when the unpacked get-lares.sh has no exec bit", () => {
     chmodSync(join(root(), "releases", RC11, "services/box/ops/get-lares.sh"), 0o644);
     const r = lares(["update", "--release", RC12]);

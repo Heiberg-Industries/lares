@@ -30,6 +30,7 @@ export function AgentDetail({
   schedules,
   routing,
   outsideTools = { tools: [], inEffect: true },
+  promptCache = null,
 }: {
   agent: AgentFolder;
   board: Reading<BoardRowDTO[]>;
@@ -38,6 +39,8 @@ export function AgentDetail({
   /** The delivery grid's inputs; absent when the definition could not be read or the agent sends nothing on its own. */
   routing?: Omit<DeliveryGridProps, "agent">;
   outsideTools?: { tools: OutsideToolView[]; inEffect: boolean; evidence?: OutsideToolEvidence };
+  /** The finished prompt-cache sentence; null when it could not be read (the line is then left out). */
+  promptCache?: string | null;
 }) {
   const edit = `/agents/${encodeURIComponent(agent.name)}/edit`;
   const groups = [
@@ -107,6 +110,7 @@ export function AgentDetail({
                 {agent.grants.filter((g) => g.scope !== "none").length} granted
                 capabilities · {agent.skills.length} skills
               </p>
+              {promptCache && <p className="lares-muted">{promptCache}</p>}
               <Link href={edit}>
                 Edit instructions, personality and model →
               </Link>

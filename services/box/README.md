@@ -4,10 +4,13 @@ The installation's **state store** and the commands that install and look after 
 Postgres schema (PostgreSQL 16 with pgvector), a small typed data layer over it, the stack
 renderer the installer uses, and the install, update, backup and restore scripts under `ops/`.
 
-You do not deploy this package by hand. A server is installed with `ops/install.sh`, which renders
-the stack from a release file and pulls every image by digest; nothing is built on the server. The
-step-by-step guide is [`docs/install.md`](../../docs/install.md), and `ops/README.md` describes the
-scripts.
+You do not deploy this package by hand. A server is installed by downloading one script,
+`ops/get-lares.sh`, and running it with a release name. It pulls the release's engine image by
+digest, unpacks the installer from it and runs `ops/install.sh`, which renders the stack from the
+release file and pulls every image by digest. Nothing is built on the server, and the server needs
+no Node.js, no pnpm and no copy of this repository. The step-by-step guide is
+[`docs/install.md`](../../docs/install.md), and `ops/README.md` describes the scripts. This works
+for rc.12 and later.
 
 ## What is in here
 
@@ -28,8 +31,10 @@ installer renders it from the release file with `bin/render-stack.ts` into
 
 ## The commands
 
-Run from the repository root, normally by the installer. Each takes `--help` or documents itself in
-its file header.
+These are the programs inside the engine image. On a server you do not type these `pnpm` lines:
+the installer and the `lares` command run them for you in a short-lived container (`lares doctor`
+is the one you run yourself). The lines are the form for a developer working in a checkout of this
+repository. Each takes `--help` or documents itself in its file header.
 
 | Command | What it does |
 |---|---|
@@ -46,10 +51,12 @@ its file header.
 ### `lares doctor`
 
 ```bash
-cd lares      # the checkout on the server
-PGHOST=127.0.0.1 DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
-  pnpm -C services/box doctor
+lares doctor
 ```
+
+(In a developer checkout the same program is `pnpm -C services/box doctor`, with `PGHOST` and
+`DATABASE_PASSWORD_FILE` set.) On a server, `lares doctor` runs it in the current release's engine
+image, so any `--key-file` you give must be inside `/etc/lares/secrets/`.
 
 It reads the installation's settings and database and prints, in plain sentences, what is wrong
 and what to type to fix it: the settings list, the database, the migrations, the owner, the backup
