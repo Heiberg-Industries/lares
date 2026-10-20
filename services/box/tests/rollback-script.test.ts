@@ -431,3 +431,103 @@ describe("putting the previous version back", () => {
     expect(() => execFileSync("/bin/bash", ["-n", SCRIPT])).not.toThrow();
   });
 });
+
+// IMAGE MODE. On a box whose engine came from an image the record is read and closed by a
+// program run in a throwaway container of this box's own engine image (a rollback applies no
+// migration, so there is no "target" release to switch to). No node, no pnpm, no secret in argv.
+describe("rolling back a box whose engine is an image", () => {
+  const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+  let prefix: string;
+
+  beforeEach(() => {
+    prefix = join(dir, "root");
+    mkdirSync(prefix);
+    mkdirSync(join(binDir, "real"));
+    const base = join(binDir, "real", "docker");
+    writeFileSync(base, readFileSync(join(binDir, "docker"), "utf8"));
+    chmodSync(base, 0o755);
+    const prevImages = [
+      `image\tlares-console\t${CONSOLE}@sha256:${PREV}`,
+      `image\tlares-chief-of-staff\t${ROLE}@sha256:${PREV}`,
+    ].join("\\n");
+    stub(
+      "docker",
+      [
+        'if [ "$1" = run ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  args=("$@"); at=-1',
+        '  for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[i]}" = --entrypoint ] && at=$i; done',
+        '  rest=("${args[@]:at+4}")',
+        '  case "${rest[0]}" in',
+        `    previous-images) printf 'record\\t41\\tok\\t2026-10-01\\t9f8e7d6c\\n${prevImages}\\n' ;;`,
+        "  esac",
+        "  exit 0",
+        "fi",
+        'if [ "$1 $2" = "image inspect" ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  [ -z "${STUB_NO_ENGINE_IMAGE:-}" ]; exit $?',
+        "fi",
+        'if [ "$1" = pull ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  [ -z "${STUB_ENGINE_PULL_FAIL:-}" ] || { echo "denied" >&2; exit 1; }',
+        "  exit 0",
+        "fi",
+        `exec "${base}" "$@"`,
+      ].join("\n"),
+    );
+  });
+
+  const imageRun = (args: string[], env: Record<string, string> = {}) =>
+    run(args, { LARES_ENGINE_IMAGE: ENGINE, LARES_PREFIX: prefix, LARES_UPDATE_RECORDER: "", ...env });
+  const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker run "));
+
+  it("reads and closes the record in the box's engine image, and puts the previous digests back", () => {
+    const r = imageRun(["--yes"]);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    const runs = engineRuns();
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatch(/update-record\.ts previous-images$/);
+    expect(runs[1]).toMatch(/update-record\.ts finish 41 rolled-back /);
+    for (const line of runs) {
+      expect(line).toContain(ENGINE);
+      expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(line).not.toContain("docker.sock");
+    }
+    expect(compose()).toMatch(new RegExp(`@sha256:b{64}`));
+    expect(compose()).not.toContain(CUR);
+  });
+
+  it("hands the database password over as a file in a read-only mount, never as a value", () => {
+    imageRun(["--yes"]);
+    const secrets = join(prefix, "etc", "lares", "secrets");
+    for (const line of engineRuns()) {
+      expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+      expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+      expect(line).not.toContain("PGPASSWORD");
+    }
+  });
+
+  it("applies no migration and calls no pnpm, in either direction", () => {
+    imageRun(["--yes"]);
+    expect(calls()).not.toMatch(/migrate/);
+    expect(calls()).not.toMatch(/^pnpm/m);
+  });
+
+  it("refuses, changing nothing, when no engine image is known or it cannot be fetched", () => {
+    const missing = imageRun(["--yes"], { LARES_ENGINE_IMAGE: "registry.example/lares-keeper:latest" });
+    expect(missing.code).toBe(78);
+    expect(missing.stderr).toMatch(/engine image is not known/);
+    const refused = imageRun(["--yes"], { STUB_NO_ENGINE_IMAGE: "1", STUB_ENGINE_PULL_FAIL: "1" });
+    expect(refused.code).toBe(78);
+    expect(refused.stderr).toMatch(/could not download the engine image/);
+    expect(calls()).not.toMatch(/docker compose/);
+    expect(compose()).toBe(composeYaml(CUR));
+  });
+
+  it("a box without an engine image still rolls back on the host, exactly as before", () => {
+    const r = run(["--yes"]);
+    expect(r.code).toBe(0);
+    expect(engineRuns()).toEqual([]);
+  });
+});

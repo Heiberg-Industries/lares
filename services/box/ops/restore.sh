@@ -44,6 +44,16 @@ EX_REFUSED=78
 HERE="$(cd "$(dirname "$0")" && pwd)"
 BOX_DIR="$(cd "$HERE/.." && pwd)"
 
+# The migration runner runs in the engine image when this box's engine came from one (an
+# `engine-image` file in the box folder, or LARES_ENGINE_IMAGE; ops/engine-run.sh), and through
+# pnpm on a checkout exactly as before. Only the checkout mode needs pnpm on this host.
+ENGINE_MODE=host
+if [ -r "$HERE/engine-run.sh" ]; then
+  # shellcheck source=engine-run.sh
+  . "$HERE/engine-run.sh"
+  if engine_image_mode; then ENGINE_MODE=image; fi
+fi
+
 say() { printf 'restore: %s\n' "$1"; }
 die() { printf 'restore: %s\n' "$1" >&2; exit "$2"; }
 
@@ -155,13 +165,21 @@ trap cleanup EXIT INT TERM
 [ -f "$ENV_FILE" ] || die "/etc/lares/backup.env is missing, and it names the backup repository to restore from. Copy it from the decrypted bundle (with /etc/lares/restic-password). Nothing was changed." "$EX_REFUSED"
 
 missing=""
-for tool in restic docker pnpm; do
+ENGINE_TOOLS="restic docker pnpm"
+[ "$ENGINE_MODE" = image ] && ENGINE_TOOLS="restic docker"
+for tool in $ENGINE_TOOLS; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
 if [ -n "$missing" ]; then
   msg="these tools are missing:$missing."
   case "$missing" in *restic*) msg="$msg Install restic with: apt-get install -y restic." ;; esac
   die "$msg Nothing was changed." "$EX_REFUSED"
+fi
+if [ "$ENGINE_MODE" = image ]; then
+  engine_resolve_image "" || die "the engine image is not known: there is no digest in LARES_ENGINE_IMAGE or in $BOX_DIR/engine-image. Nothing was changed." "$EX_REFUSED"
+  if ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1 && ! docker pull "$ENGINE_IMAGE" >/dev/null; then
+    die "could not download the engine image $ENGINE_IMAGE. Nothing was changed." "$EX_REFUSED"
+  fi
 fi
 
 # --- 2. the backup settings (repository, password file) -----------------------------------------
@@ -373,8 +391,17 @@ done
 say "applying any newer database changes"
 DB_PASSWORD=$(cat "$ETC_LARES/secrets/database-password")
 code=0
-PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" \
-  PGPASSWORD="$DB_PASSWORD" pnpm -C "$BOX_DIR" migrate || code=$?
+if [ "$ENGINE_MODE" = image ]; then
+  # The password stays in its file: the secrets folder is mounted read-only and named by
+  # DATABASE_PASSWORD_FILE. Nothing secret is an argument or an environment value.
+  DB_PASSWORD=""
+  engine_run --ro "$ETC_LARES/secrets" --env "DATABASE_PASSWORD_FILE=$ETC_LARES/secrets/database-password" \
+    --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
+    --env "PGDATABASE=$DB_NAME" --env "PGUSER=$DB_USER" migrate.ts || code=$?
+else
+  PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" \
+    PGPASSWORD="$DB_PASSWORD" pnpm -C "$BOX_DIR" migrate || code=$?
+fi
 DB_PASSWORD=""
 [ "$code" -eq 0 ] || midway "The database migration did not finish (exit $code)."
 CHANGED="$CHANGED; migrations applied"

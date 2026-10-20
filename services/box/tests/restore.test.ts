@@ -385,3 +385,66 @@ describe("restore.sh: arguments and failures", () => {
     expect(scratchLeft()).toEqual([]);
   });
 });
+
+// IMAGE MODE. On a box whose engine came from an image there is no pnpm: the migration runner
+// runs in a throwaway container of that image, with the database password as a file.
+describe("restore.sh: a box whose engine is an image", () => {
+  const ENGINE = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+
+  beforeEach(() => {
+    rmSync(join(binDir, "pnpm"));
+  });
+
+  it("does not need pnpm, and migrates in the engine image after the last restore and before the stack starts", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code, r.all).toBe(0);
+    const secrets = join(prefix, "etc", "lares", "secrets");
+    const migrate = idx(/^docker run .*migrate\.ts$/);
+    expect(migrate).toBeGreaterThan(lastIdx(/pg_restore .*--exit-on-error/));
+    expect(migrate).toBeLessThan(idx(/compose -f \S+compose\.yaml up -d$/));
+    const line = logLines()[migrate]!;
+    expect(line).toContain(ENGINE);
+    expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+    expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+    expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+    expect(line).not.toContain("PGPASSWORD");
+    expect(line).not.toContain("docker.sock");
+    expect(logLines().join("\n")).not.toContain("not-a-real-db-password");
+    expect(idx(/pnpm/)).toBe(-1);
+  });
+
+  it("refuses, changing nothing, when the named engine image is not a digest", () => {
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: "registry.example/lares-keeper:latest" } });
+    expect(r.code).toBe(78);
+    expect(r.all).toContain("engine image is not known");
+    expect(changes()).toEqual([]);
+  });
+
+  it("refuses, changing nothing, when the engine image is absent and cannot be fetched", () => {
+    stub("docker", `
+case " $* " in
+  *" image inspect "*|*" pull "*) exit 1 ;;
+esac
+exit 0`);
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code).toBe(78);
+    expect(r.all).toContain("could not download the engine image");
+    expect(changes()).toEqual([]);
+  });
+
+  it("a failed migration in the image leaves the keeper stopped", () => {
+    stub("docker", `
+case " $* " in
+  *" pg_isready "*) exit 0 ;;
+  *" psql "*) echo "0 0 0"; exit 0 ;;
+  *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE"; exit 0 ;;
+  *" pg_restore "*) cat >/dev/null; exit 0 ;;
+  *"/migrate.ts"*) exit 3 ;;
+esac
+exit 0`);
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
+    expect(r.code).toBe(75);
+    expect(r.all).toContain("migration did not finish");
+    expect(idx(/ up -d$/)).toBe(-1);
+  });
+});

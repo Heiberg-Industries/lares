@@ -27,7 +27,8 @@
     "render-stack": "tsx bin/render-stack.ts",
     "render-keeper-config": "tsx bin/render-keeper-config.ts",
     "export-person": "tsx bin/export-person.ts",
-    "doctor": "tsx bin/doctor.ts"
+    "doctor": "tsx bin/doctor.ts",
+    "update-record": "tsx bin/update-record.ts"
   },
   "dependencies": {
     "@lares/vault-format": "workspace:^",

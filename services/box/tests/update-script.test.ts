@@ -451,3 +451,177 @@ describe("updating this installation", () => {
     expect(() => execFileSync("/bin/bash", ["-n", SCRIPT])).not.toThrow();
   });
 });
+
+// IMAGE MODE. On a box whose engine came from an image there is no node and no pnpm: the
+// release file is read, the update recorded and the migrations applied by programs run in a
+// throwaway container of the engine image. For an update that image must be the TARGET
+// release's keeper image (the new release's own migrations are the ones that have to run),
+// never the one the box was unpacked from. The docker stub below answers `docker run` by
+// running the real release parser from this checkout and logging everything else.
+describe("updating a box whose engine is an image", () => {
+  const KEEPER_OLD = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+  const KEEPER_NEW = `registry.example/lares-keeper@sha256:${"e".repeat(64)}`;
+  const BOX = join(here, "..");
+  let boxDir: string;
+  let prefix: string;
+
+  function releaseWithKeeper(keeper?: string) {
+    return JSON.stringify({
+      release: "2026-10-01",
+      images: { console: CONSOLE_NEW, "chief-of-staff": ROLE_NEW, ...(keeper ? { "lares-keeper": keeper } : {}) },
+      migrations: { box: "001_baseline.sql" },
+      breaking: [],
+    });
+  }
+
+  beforeEach(() => {
+    // The box was unpacked from the OLD keeper image: its own engine-image file says so.
+    boxDir = join(dir, "box");
+    mkdirSync(boxDir);
+    writeFileSync(join(boxDir, "engine-image"), `${KEEPER_OLD}\n`);
+    prefix = join(dir, "root");
+    mkdirSync(prefix);
+    writeFileSync(release, releaseWithKeeper(KEEPER_NEW));
+    // Wrap the shared docker stub: `docker run` is answered here, the rest passes through.
+    mkdirSync(join(binDir, "real"));
+    const base = join(binDir, "real", "docker");
+    writeFileSync(base, readFileSync(join(binDir, "docker"), "utf8"));
+    chmodSync(base, 0o755);
+    stub(
+      "docker",
+      [
+        'if [ "$1" = run ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  args=("$@"); at=-1',
+        '  for ((i = 0; i < ${#args[@]}; i++)); do [ "${args[i]}" = --entrypoint ] && at=$i; done',
+        '  script="${args[at+3]#/app/services/box/}"; rest=("${args[@]:at+4}")',
+        '  case "$script" in',
+        "    bin/update-record.ts)",
+        '      case "${rest[0]}" in',
+        `        release) exec node "${BOX}/bin/update-record.ts" release "\${rest[1]}" ;;`,
+        "        begin) echo 41 ;;",
+        "        previous-release) echo 2026-09-01 ;;",
+        "      esac ;;",
+        '    migrate.ts) [ -z "${STUB_MIGRATE_FAIL:-}" ] || { echo "migrations: refused" >&2; exit 1; } ;;',
+        "  esac",
+        "  exit 0",
+        "fi",
+        'if [ "$1 $2" = "image inspect" ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  [ -z "${STUB_NO_ENGINE_IMAGE:-}" ]; exit $?',
+        "fi",
+        'if [ "$1" = pull ]; then',
+        '  printf "docker %s\\n" "$*" >> "$STUB_LOG"',
+        '  [ -z "${STUB_ENGINE_PULL_FAIL:-}" ] || { echo "denied" >&2; exit 1; }',
+        "  exit 0",
+        "fi",
+        `exec "${base}" "$@"`,
+      ].join("\n"),
+    );
+    // Nothing of the box's own may go through pnpm in image mode.
+    stub("pnpm", 'printf "pnpm %s\\n" "$*" >> "$STUB_LOG"; exit 0');
+  });
+
+  const imageRun = (args: string[], env: Record<string, string> = {}) =>
+    run(args, { LARES_BOX_DIR: boxDir, LARES_PREFIX: prefix, LARES_UPDATE_RECORDER: "", ...env });
+  const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker run "));
+
+  it("runs every program of the box in the TARGET release's digest, never the box's own", () => {
+    const r = imageRun(["--release", release, "--yes"]);
+    expect(r.stderr).toBe("");
+    expect(r.code).toBe(0);
+    const runs = engineRuns();
+    const programs = runs.map((l) => [...l.matchAll(/\/app\/services\/box\/(\S+)/g)].pop()![1]!);
+    expect(programs).toEqual([
+      "bin/update-record.ts", // release
+      "bin/update-record.ts", // previous-release
+      "bin/update-record.ts", // begin
+      "migrate.ts",
+      "bin/update-record.ts", // finish
+    ]);
+    for (const line of runs) {
+      expect(line).toContain(KEEPER_NEW);
+      expect(line).not.toContain(KEEPER_OLD);
+      expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(line).not.toContain("docker.sock");
+    }
+    expect(calls()).not.toMatch(/^pnpm /m);
+  });
+
+  it("applies the migrations after the backup and the record, and before the switch", () => {
+    imageRun(["--release", release, "--yes"]);
+    const migrate = at(/docker run .*migrate\.ts/);
+    expect(migrate).toBeGreaterThan(at(BACKUP));
+    expect(migrate).toBeGreaterThan(at(/update-record\.ts begin/));
+    expect(migrate).toBeGreaterThan(at(PULL));
+    expect(migrate).toBeLessThan(at(UP));
+  });
+
+  it("hands the database password over as a file in a read-only mount, never as a value", () => {
+    imageRun(["--release", release, "--yes"]);
+    const secrets = join(prefix, "etc", "lares", "secrets");
+    const dbRuns = engineRuns().filter((l) => !/update-record\.ts release/.test(l));
+    expect(dbRuns).toHaveLength(4);
+    for (const line of dbRuns) {
+      expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+      expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+      expect(line).not.toContain("PGPASSWORD");
+    }
+    // The release file is mounted read-only, at the same path inside.
+    const releaseRun = engineRuns().find((l) => /update-record\.ts release/.test(l))!;
+    expect(releaseRun).toContain(`-v ${release}:${release}:ro`);
+  });
+
+  it("uses LARES_ENGINE_IMAGE when it is set (the test override), still not the box's own file", () => {
+    const named = `registry.example/lares-keeper@sha256:${"f".repeat(64)}`;
+    imageRun(["--release", release, "--yes"], { LARES_ENGINE_IMAGE: named });
+    expect(engineRuns().length).toBeGreaterThan(0);
+    for (const line of engineRuns()) expect(line).toContain(named);
+  });
+
+  it("refuses, changing nothing, when the release names no engine image", () => {
+    writeFileSync(release, releaseWithKeeper());
+    const r = imageRun(["--release", release, "--yes"]);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toMatch(/names no engine image/);
+    expect(calls()).not.toMatch(BACKUP);
+    expect(engineRuns()).toEqual([]);
+    expect(compose()).toBe(composeYaml());
+  });
+
+  it("refuses a keeper image named by a tag", () => {
+    writeFileSync(release, releaseWithKeeper("registry.example/lares-keeper:latest"));
+    const r = imageRun(["--release", release, "--yes"]);
+    expect(r.code).toBe(78);
+    expect(calls()).not.toMatch(BACKUP);
+  });
+
+  it("fetches the target engine image first when it is not on the box, and a failed fetch changes nothing", () => {
+    const fetched = imageRun(["--release", release, "--yes"], { STUB_NO_ENGINE_IMAGE: "1" });
+    expect(fetched.code).toBe(0);
+    expect(at(new RegExp(`docker pull ${KEEPER_NEW}`))).toBeGreaterThan(-1);
+    expect(at(new RegExp(`docker pull ${KEEPER_NEW}`))).toBeLessThan(at(/docker run /));
+
+    rmSync(log);
+    writeFileSync(composeFile, composeYaml());
+    const refused = imageRun(["--release", release, "--yes"], { STUB_NO_ENGINE_IMAGE: "1", STUB_ENGINE_PULL_FAIL: "1" });
+    expect(refused.code).toBe(78);
+    expect(refused.stderr).toMatch(/could not download the engine image/);
+    expect(calls()).not.toMatch(BACKUP);
+    expect(compose()).toBe(composeYaml());
+  });
+
+  it("a refused migration puts the compose file back and never starts the new images", () => {
+    const r = imageRun(["--release", release, "--yes"], { STUB_MIGRATE_FAIL: "1" });
+    expect(r.code).toBe(70);
+    expect(calls()).not.toMatch(UP);
+    expect(compose()).toBe(composeYaml());
+  });
+
+  it("a box without an engine-image file still updates on the host, with pnpm, exactly as before", () => {
+    const r = run(["--release", release, "--yes"]);
+    expect(r.code).toBe(0);
+    expect(calls()).toMatch(MIGRATE);
+    expect(engineRuns()).toEqual([]);
+  });
+});

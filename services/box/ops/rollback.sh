@@ -52,7 +52,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Where update.sh and backup.sh live. Defaults to this script's own directory, which is true
 # both in the repository and on a box where the ops scripts are copied together.
 OPS_DIR="${LARES_OPS_DIR:-$HERE}"
-# Where lib/ lives — the update record's rules are engine code, not restated here.
+# Where bin/ and lib/ live — the update record's rules are engine code, not restated here.
 BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same names ops/update.sh uses, so a rollback reads exactly the files the update wrote —
 # the installer's own path (F1: $PREFIX/opt/lares/compose.yaml — one file, no override).
@@ -98,61 +98,47 @@ trap 'rm -rf "$WORK"' EXIT
 TAB=$(printf '\t')
 
 # --- the seam into this repository's own TypeScript ----------------------------------------
-# The update record (lib/update-history.ts) is engine code. This temp program is the one place
+# The update record (lib/update-history.ts) is engine code. bin/update-record.ts is the one place
 # that calls it. LARES_UPDATE_RECORDER replaces it in tests. Mirrors ops/update.sh's seam
-# deliberately: the two scripts stay independent files, and the duplication is three small
+# deliberately: the two scripts stay independent files, and the duplication is a few small
 # helpers rather than a shared library nobody can read on its own at two in the morning.
-cat > "$WORK/record.mts" <<'TS'
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+#
+# TWO MODES, as in ops/update.sh. On a box whose engine came from an image (an `engine-image`
+# file in the box folder, or LARES_ENGINE_IMAGE) the record program runs in a throwaway
+# container of that image — this box's own engine, since a rollback moves no database and
+# applies no migration. On a checkout it runs on the host with node, exactly as it always has.
+ENGINE_MODE=host
+if [ -r "$HERE/engine-run.sh" ]; then
+  # shellcheck source=engine-run.sh
+  . "$HERE/engine-run.sh"
+  if engine_image_mode; then ENGINE_MODE=image; fi
+fi
+PG_USER="${PGUSER:-lares}"
+PG_DATABASE="${PGDATABASE:-lares_state}"
+# The database password is a FILE handed to the container, never a value in argv or the environment.
+SECRETS_DIR="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets"
+DB_ENV=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password"
+  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
 
-const argv = process.argv.slice(2);
-const boxDir = argv[0]!;
-const op = argv[1];
-const rest = argv.slice(2);
-const lib = (name: string) => import(pathToFileURL(join(boxDir, "lib", name)).href);
-
-async function main(): Promise<void> {
-  const { poolFromEnv } = await lib("db.ts");
-  const history = await lib("update-history.ts");
-  const pool = poolFromEnv();
-  try {
-    if (op === "previous-images") {
-      // Exactly one record: the newest. Going further back is not an option this command has.
-      const [last] = await history.recentUpdates(pool, 1);
-      if (!last) return; // nothing written down — the caller refuses
-      // previousImages() is the module's own answer to "what was running before the newest
-      // update that finished ok". When the newest record IS that update, it is the source. An
-      // update that failed after switching is the other case a rollback exists for, and its
-      // own row holds the same map.
-      const images = last.outcome === "ok" ? await history.previousImages(pool) : last.images;
-      let out =
-        ["record", String(last.id), last.outcome, last.toRelease, last.snapshotId ?? ""].join("\t") + "\n";
-      for (const service of Object.keys(images ?? {})) {
-        out += ["image", service, (images as Record<string, string>)[service]].join("\t") + "\n";
-      }
-      process.stdout.write(out);
-    } else if (op === "finish") {
-      await history.finishUpdate(pool, Number(rest[0]), rest[1], rest[2] === "" ? undefined : rest[2]);
-    } else {
-      throw new Error("rollback: unknown operation '" + String(op) + "'");
-    }
-  } finally {
-    await pool.end();
-  }
-}
-
-main().catch((error: unknown) => {
-  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\n");
-  process.exit(1);
-});
-TS
+if [ "$ENGINE_MODE" = image ]; then
+  if ! engine_resolve_image ""; then
+    echo "rollback: the engine image is not known: there is no digest in LARES_ENGINE_IMAGE or in $BOX_DIR/engine-image. Nothing has been changed." >&2
+    exit "$EX_REFUSED"
+  fi
+  if ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1 && ! docker pull "$ENGINE_IMAGE" >/dev/null; then
+    echo "rollback: could not download the engine image $ENGINE_IMAGE, so nothing was changed." >&2
+    exit "$EX_REFUSED"
+  fi
+fi
 
 recorder() {
   if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
     "$LARES_UPDATE_RECORDER" "$@"
+  elif [ "$ENGINE_MODE" = image ]; then
+    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
-    node "$WORK/record.mts" "$BOX_DIR" "$@"
+    node "$BOX_DIR/bin/update-record.ts" "$@"
   fi
 }
 
