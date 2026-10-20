@@ -54,8 +54,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Where backup.sh and rollback.sh live. Defaults to this script's own directory, which is
 # true both in the repository and on a box where the ops scripts are copied together.
 OPS_DIR="${LARES_OPS_DIR:-$HERE}"
-# Where migrate.ts and lib/ live — `pnpm -C "$BOX_DIR" migrate` is the ONLY way this script
-# applies a migration (never a file applied by hand: the ledger is what makes an update
+# Where migrate.ts and lib/ live — the ledger runner (`pnpm -C "$BOX_DIR" migrate`, or the same
+# program in the engine image) is the ONLY way this script applies a migration (never a file applied by hand: the ledger is what makes an update
 # repeatable).
 BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same variable name ops/backup-verify.sh and ops/restore-drill.sh already use, but
@@ -136,73 +136,72 @@ TAB=$(printf '\t')
 
 # --- the seam into this repository's own TypeScript ----------------------------------------
 # The release rules (lib/release-manifest.ts) and the update record (lib/update-history.ts)
-# are engine code, not something to restate in shell where the two copies would drift. This
-# temp program is the one place that calls them. LARES_UPDATE_RECORDER replaces it for the
-# database half in tests — the release half always runs for real.
-cat > "$WORK/record.mts" <<'TS'
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+# are engine code, not something to restate in shell where the two copies would drift.
+# bin/update-record.ts is the one place that calls them. LARES_UPDATE_RECORDER replaces it for
+# the database half in tests — the release half always runs for real.
+#
+# TWO MODES. On a box whose engine came from an image (ops/engine-run.sh: an `engine-image` file
+# in the box folder, or LARES_ENGINE_IMAGE) there is no node and no pnpm: every program runs in
+# a throwaway container of the engine image, and for an update that image is the TARGET
+# release's keeper image, so the new release's own parser and migrations are the ones that run.
+# On a checkout (no such file) everything runs on the host exactly as it always has.
+ENGINE_MODE=host
+if [ -r "$HERE/engine-run.sh" ]; then
+  # shellcheck source=engine-run.sh
+  . "$HERE/engine-run.sh"
+  if engine_image_mode; then ENGINE_MODE=image; fi
+fi
+# Where the database password FILE is, for a container that reaches the database (never a value
+# in argv or in the environment — see engine-run.sh).
+SECRETS_DIR="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets"
+DB_ENV=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password"
+  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
 
-const argv = process.argv.slice(2);
-const boxDir = argv[0]!;
-const op = argv[1];
-const rest = argv.slice(2);
-const lib = (name: string) => import(pathToFileURL(join(boxDir, "lib", name)).href);
-
-async function main(): Promise<void> {
-  if (op === "release") {
-    const { parseReleaseManifest } = await lib("release-manifest.ts");
-    const manifest = parseReleaseManifest(readFileSync(rest[0]!, "utf8"));
-    let out = "release\t" + manifest.release + "\n";
-    for (const service of Object.keys(manifest.images)) {
-      out += "image\t" + service + "\t" + manifest.images[service] + "\n";
-    }
-    for (const sentence of manifest.breaking) out += "breaking\t" + sentence + "\n";
-    process.stdout.write(out);
-    return;
-  }
-  const { poolFromEnv } = await lib("db.ts");
-  const history = await lib("update-history.ts");
-  const pool = poolFromEnv();
-  try {
-    if (op === "previous-release") {
-      const rows = await history.recentUpdates(pool);
-      const last = rows.find((row: { outcome: string }) => row.outcome === "ok");
-      process.stdout.write((last ? last.toRelease : "") + "\n");
-    } else if (op === "begin") {
-      const id = await history.beginUpdate(pool, {
-        fromRelease: rest[0] === "" ? null : rest[0],
-        toRelease: rest[1],
-        images: JSON.parse(rest[2]!),
-        snapshotId: rest[3] === "" ? null : rest[3],
-      });
-      process.stdout.write(String(id) + "\n");
-    } else if (op === "finish") {
-      await history.finishUpdate(pool, Number(rest[0]), rest[1], rest[2] === "" ? undefined : rest[2]);
-    } else {
-      throw new Error("update: unknown operation '" + String(op) + "'");
-    }
-  } finally {
-    await pool.end();
-  }
+# Reading a release file needs no database, only the file.
+release_program() {
+  if [ "$ENGINE_MODE" = image ]; then
+    local file="$RELEASE_FILE"
+    case "$file" in /*) ;; *) file="$PWD/$file" ;; esac
+    engine_run --ro "$file" bin/update-record.ts release "$file"
+  else
+    node "$BOX_DIR/bin/update-record.ts" release "$RELEASE_FILE"
+  fi
 }
-
-main().catch((error: unknown) => {
-  process.stderr.write((error instanceof Error ? error.message : String(error)) + "\n");
-  process.exit(1);
-});
-TS
 
 # The database half of the seam. A non-zero exit here is never swallowed: a lost update
 # record is exactly the failure the table exists to prevent.
 recorder() {
   if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
     "$LARES_UPDATE_RECORDER" "$@"
+  elif [ "$ENGINE_MODE" = image ]; then
+    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
-    node "$WORK/record.mts" "$BOX_DIR" "$@"
+    node "$BOX_DIR/bin/update-record.ts" "$@"
   fi
 }
+
+# The migration runner: in the target release's engine image, or (on a checkout) through pnpm.
+run_migrations() {
+  if [ "$ENGINE_MODE" = image ]; then
+    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" migrate.ts
+  else
+    pnpm -C "$BOX_DIR" migrate
+  fi
+}
+
+# In image mode the engine is the TARGET release's keeper image. It is fetched now, before
+# anything is read or changed, so a registry problem is a plain refusal and not a half-update.
+if [ "$ENGINE_MODE" = image ]; then
+  if ! engine_resolve_target_image "$RELEASE_FILE"; then
+    echo "update: this release file names no engine image (images.\"lares-keeper\" as a full digest), so the new migrations cannot be run. Nothing has been changed." >&2
+    exit "$EX_REFUSED"
+  fi
+  if ! docker image inspect "$ENGINE_IMAGE" >/dev/null 2>&1 && ! docker pull "$ENGINE_IMAGE" >/dev/null; then
+    echo "update: could not download the engine image $ENGINE_IMAGE, so nothing was changed." >&2
+    exit "$EX_REFUSED"
+  fi
+fi
 
 is_digest_reference() {
   printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$'
@@ -270,7 +269,7 @@ rewrite_compose() {
 }
 
 # --- 1. the release file -------------------------------------------------------------------
-if ! recorder_out=$(node "$WORK/record.mts" "$BOX_DIR" release "$RELEASE_FILE" 2>"$WORK/release.err"); then
+if ! recorder_out=$(release_program 2>"$WORK/release.err"); then
   echo "update: this release file was refused, so nothing has been changed." >&2
   sed 's/^/update: /' "$WORK/release.err" >&2
   exit "$EX_REFUSED"
@@ -490,7 +489,7 @@ fi
 # Through the ledger runner, never by applying a file by hand. There is no way back from a
 # migration except the backup taken in step 6 — which is why that step is not optional.
 echo "update: applying migrations."
-if ! pnpm -C "$BOX_DIR" migrate; then
+if ! run_migrations; then
   restore_compose_files
   close_record failed "the migrations were refused"
   echo "update: the migrations were refused, so the new images have not been started and the software you were running is still running." >&2

@@ -42,6 +42,33 @@ engine_resolve_image() {
   return 1
 }
 
+# engine_image_mode — true when this box runs the engine from an image (its own `engine-image`
+# file, or LARES_ENGINE_IMAGE), false for a checkout that still has node and pnpm. Used by the
+# scripts that also have to keep working on a checkout (update, rollback, restore).
+engine_image_mode() {
+  [ -n "${LARES_ENGINE_IMAGE:-}" ] || [ -r "$BOX_DIR/engine-image" ]
+}
+
+# engine_resolve_target_image RELEASE_FILE — for a script that moves to ANOTHER release (update).
+# The engine to use is the TARGET release's, never the one this box was unpacked from, so the
+# unpacked `engine-image` file is deliberately not consulted: LARES_ENGINE_IMAGE (tests), else
+# the release file's images["lares-keeper"]. Sets ENGINE_IMAGE, or leaves it empty and returns 1.
+engine_resolve_target_image() {
+  local candidate="" release_file="${1:-}"
+  ENGINE_IMAGE=""
+  if [ -n "${LARES_ENGINE_IMAGE:-}" ]; then
+    candidate="$LARES_ENGINE_IMAGE"
+  elif [ -n "$release_file" ] && [ -r "$release_file" ]; then
+    candidate=$(grep -o '"lares-keeper"[[:space:]]*:[[:space:]]*"[^"]*"' "$release_file" 2>/dev/null \
+      | head -n 1 | sed -e 's/^[^:]*:[[:space:]]*"//' -e 's/"$//') || candidate=""
+  fi
+  if printf '%s' "$candidate" | grep -Eq "$ENGINE_DIGEST_PATTERN"; then
+    ENGINE_IMAGE="$candidate"
+    return 0
+  fi
+  return 1
+}
+
 # engine_run [--ro PATH]... [--rw PATH]... [--env NAME=VALUE]... SCRIPT [ARGS...]
 #   SCRIPT is relative to services/box inside the image (migrate.ts, bin/render-stack.ts, ...).
 #   --env is for plain settings only; a secret is handed over as a file under a --ro mount.
