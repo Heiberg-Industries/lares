@@ -61,12 +61,10 @@ download or image pull changes nothing. The old copy of the repository on the se
 by anything from here on.
 
 **Going back.** The switch is not recorded as an update, so `lares rollback` cannot undo it (there
-is no `previous` release yet). To go back past it, restore the backup you took before. If you would
-rather have the switch recorded and roll-back-able, first move the server to rc.12 the old way
-with `update.sh` from your existing copy (it needs `git pull` and `pnpm install --frozen-lockfile`
-there, for the last time), and then run steps 1 to 5 above with the same release name.
+is no `previous` release yet). To go back past it, restore the backup you took before.
 
 From then on:
 
-- `lares update --release <release-name>` moves to a new release. Run `lares backups --yes` after it.
+- `lares update --release <release-name>` moves to a new release. If it says the backup scripts
+  are older than the release's, run `lares backups --yes` to refresh them.
 - `lares rollback` goes back **one level only**, to the release called `previous`.

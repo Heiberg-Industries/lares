@@ -67,9 +67,8 @@ restic snapshot (encrypted, deduplicated)
 
 To switch all of this on and prove it once, run `lares backups` (it runs `setup-backups.sh`;
 `docs/install.md` section 9 explains what it asks). `install.sh --backups` hands over to the same
-script. The backup scripts are copied to `/opt/lares` and an update does not replace them: after
-every `lares update`, run `lares backups --yes` to refresh them. `lares update` prints which copies
-are out of date.
+script. The backup scripts are copied to `/opt/lares` and an update does not replace them. `lares update` prints which copies
+are out of date; then run `lares backups --yes` to refresh them.
 
 The target is chosen at install time. Any repository restic supports works; the examples in
 `backup.env.example` use placeholder hosts. Prefer a target that is append-only for the box's

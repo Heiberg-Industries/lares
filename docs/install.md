@@ -442,7 +442,7 @@ it, works but is reported as NOT off-site, never as Protected.
 You can run it again safely; with the same answers it changes nothing. A re-run with only `--yes`
 reuses the answers saved in `/etc/lares/backup.env`.
 
-**After every `lares update`, run `lares backups --yes` once.** The backup scripts are copied into
+**When `lares update` says the backup scripts are older, run `lares backups --yes` once.** The backup scripts are copied into
 `/opt/lares/` when backups are switched on, and an update does not replace them. When one of the
 copies differs from the new release's, `lares update` finishes with a line like "the backup scripts
 in /opt/lares are older than this release's: backup.sh ... They were left as they are". Running
@@ -592,8 +592,8 @@ update too. Only when both worked does it make the new release the current one a
 can run the same command again. Switch on backups (section 9) before your first update; without a
 verified backup the update refuses.
 
-After the update, **run `lares backups --yes`** so the backup scripts are the new release's
-(section 9). `lares update` prints which copies are out of date.
+If `lares update` says the backup scripts are older than the release's, **run `lares backups --yes`**
+to refresh them (section 9).
 
 **Rolling back.** To put the previous images back, run `lares rollback` (add `--dry-run` to see
 what it would do). It reads the record of the last update, shows what it would put back and what
