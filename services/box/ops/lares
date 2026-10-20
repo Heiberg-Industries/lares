@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# lares — the one command for looking after an installation that get-lares.sh set up.
+# It is installed as /usr/local/bin/lares, a link to this file inside the CURRENT release's
+# folder, so when `current` moves to a new release this command moves with it.
+#
+#   lares update --release <name> [update.sh options]   fetch that release, run its update.sh, then
+#                                                       its install.sh --yes (repair mode, so the
+#                                                       keeper and its settings update too), and
+#                                                       only then make it the current release
+#   lares rollback [rollback.sh options]                ops/rollback.sh of the current release
+#   lares restore  [restore.sh options]                 ops/restore.sh of the current release
+#   lares doctor   [doctor options]                     what is wrong with this installation, run
+#                                                       in a container of the current engine image
+#   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
+#
+# Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
+#   $PREFIX/opt/lares/releases/<name>/   unpacked engine files, one folder per release
+#   $PREFIX/opt/lares/current            link to the release in use
+#   $PREFIX/opt/lares/previous           link to the release `lares update` left; one level only.
+#                                        `lares rollback` moves current back to it and removes it.
+#                                        An update run with update.sh directly does not set it.
+# LARES_PREFIX moves all of it (tests). Nothing phones home; `update` reaches only what
+# get-lares.sh reaches, and only when you ask it to.
+#
+# Exit codes: 0 ok · 64 bad usage · 77 not root · otherwise the exit code of the script it ran.
+set -euo pipefail
+
+PREFIX="${LARES_PREFIX:-}"
+while [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX="${PREFIX%/}"; done
+ROOT="$PREFIX/opt/lares"
+CUR="$ROOT/current"
+OPS="$CUR/services/box/ops"
+EX_USAGE=64
+EX_NOTROOT=77
+
+die() { printf 'lares: %s\n' "$1" >&2; exit "$2"; }
+
+usage() {
+  cat <<'EOF' >&2
+Usage: lares update --release <name> [--yes] [--even-though-the-backup-is-unproven]
+       lares rollback [--dry-run] [--yes]
+       lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
+       lares doctor [--help]
+       lares backups [--dry-run] [--yes] [setup-backups.sh options]
+
+<name> is the full release name from the repository's releases folder, for example
+2026-10-19-rc.11. Run as root.
+EOF
+}
+
+[ "$#" -ge 1 ] || { usage; exit "$EX_USAGE"; }
+cmd="$1"
+shift
+case "$cmd" in
+  update|rollback|restore|doctor|backups) ;;
+  -h|--help) usage; exit "$EX_USAGE" ;;
+  *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
+esac
+
+ROOT_ID=$(id -u 2>/dev/null) || ROOT_ID=""
+[ "$ROOT_ID" = "0" ] || die "this needs to run as root (found user id '${ROOT_ID:-unknown}'). Try again with: sudo lares $cmd" "$EX_NOTROOT"
+[ -d "$OPS" ] || die "no Lares release is installed here ($CUR is missing). Install one first with get-lares.sh. Nothing was changed." "$EX_USAGE"
+
+export LARES_PREFIX="$PREFIX"
+# update.sh and rollback.sh read the installation's compose file from here.
+export DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-$ROOT}"
+
+cmd_update() {
+  local name="" extra=() new on code
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --release)
+        [ "$#" -ge 2 ] || die "--release needs a release name. Nothing was changed." "$EX_USAGE"
+        name="$2"; shift 2 ;;
+      *) extra+=("$1"); shift ;;
+    esac
+  done
+  [ -n "$name" ] || die "tell me which release to update to: lares update --release <name>, for example 2026-10-19-rc.11. Nothing was changed." "$EX_USAGE"
+  on=$(readlink "$CUR" 2>/dev/null || true)
+  on="${on##*/}"
+
+  code=0
+  bash "$OPS/get-lares.sh" --release "$name" --fetch-only || code=$?
+  [ "$code" -eq 0 ] || exit "$code"
+  new="$ROOT/releases/$name"
+
+  code=0
+  bash "$new/services/box/ops/update.sh" --release "$new/release.json" ${extra[@]+"${extra[@]}"} || code=$?
+  if [ "$code" -ne 0 ]; then
+    printf 'lares: the update stopped (exit %s). This server is still on %s; read what update.sh printed above. It is safe to run again.\n' "$code" "${on:-the previous release}" >&2
+    exit "$code"
+  fi
+  code=0
+  bash "$new/services/box/ops/install.sh" --yes --release "$new/release.json" || code=$?
+  if [ "$code" -ne 0 ]; then
+    printf 'lares: the images were updated but refreshing the keeper and its settings stopped (exit %s). This server is still marked as %s; run lares update again with the same release to finish.\n' "$code" "${on:-the previous release}" >&2
+    exit "$code"
+  fi
+
+  if [ -n "$on" ] && [ "$on" != "$name" ]; then ln -sfn "releases/$on" "$ROOT/previous"; fi
+  ln -sfn "releases/$name" "$CUR"
+  printf 'lares: now on %s.\n' "$name"
+
+  # setup-backups.sh copied the backup scripts into /opt/lares once; an update does not replace them.
+  local f stale=""
+  for f in backup.sh backup-verify.sh restore-drill.sh; do
+    if [ -f "$ROOT/$f" ] && [ -f "$new/services/box/ops/$f" ] && ! cmp -s "$ROOT/$f" "$new/services/box/ops/$f"; then
+      stale="$stale $f"
+    fi
+  done
+  if [ -n "$stale" ]; then
+    printf 'lares: the backup scripts in %s are older than this release'"'"'s:%s. They were left as they are; see the release notes for how to refresh them.\n' "$ROOT" "$stale"
+  fi
+}
+
+cmd_rollback() {
+  local code=0 a dry=0 target
+  for a in "$@"; do [ "$a" != "--dry-run" ] || dry=1; done
+  bash "$OPS/rollback.sh" "$@" || code=$?
+  if [ "$code" -eq 0 ] && [ "$dry" -eq 0 ]; then
+    if [ -L "$ROOT/previous" ] && [ -d "$ROOT/$(readlink "$ROOT/previous")" ]; then
+      target=$(readlink "$ROOT/previous")
+      ln -sfn "$target" "$CUR"
+      rm -f "$ROOT/previous"
+      printf 'lares: now on %s.\n' "${target##*/}"
+    else
+      printf 'lares: the rollback finished, but this command does not know which release'"'"'s files to mark as current. Run get-lares.sh --release <name> --fetch-only for the release now running, and point %s at it.\n' "$CUR"
+    fi
+  fi
+  exit "$code"
+}
+
+cmd_doctor() {
+  # shellcheck source=engine-run.sh
+  . "$OPS/engine-run.sh"
+  BOX_DIR="$CUR/services/box"
+  engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
+  local secrets="$PREFIX/etc/lares/secrets"
+  engine_run --ro "$secrets" \
+    --env "DATABASE_PASSWORD_FILE=$secrets/database-password" \
+    --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
+    --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=${PGUSER:-lares}" \
+    bin/doctor.ts "$@"
+}
+
+case "$cmd" in
+  update) cmd_update "$@" ;;
+  rollback) cmd_rollback "$@" ;;
+  restore) exec bash "$OPS/restore.sh" "$@" ;;
+  backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+esac
