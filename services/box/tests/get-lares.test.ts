@@ -48,7 +48,7 @@ beforeEach(() => {
   // the fake engine: stub scripts, plus the real ones under test
   script(join(fake, "install.sh"), 'if [ -n "${FAIL_INSTALL:-}" ]; then exit 1; fi');
   script(join(fake, "update.sh"), 'if [ -n "${FAIL_UPDATE:-}" ]; then exit 1; fi');
-  script(join(fake, "rollback.sh"), "exit 0");
+  script(join(fake, "rollback.sh"), 'if [ -n "${FAIL_ROLLBACK:-}" ]; then exit 3; fi');
   script(join(fake, "restore.sh"), "exit 0");
   script(join(fake, "setup-backups.sh"), "exit 0");
   writeFileSync(join(fake, "backup.sh"), "# new backup script\n");
@@ -274,6 +274,46 @@ describe("lares", () => {
     expect(d).toContain(`${prefix}/etc/lares/secrets:${prefix}/etc/lares/secrets:ro`);
     expect(d).toContain("DATABASE_PASSWORD_FILE=");
     expect(d).not.toMatch(/PGPASSWORD/);
+  });
+
+  describe("previous and rollback", () => {
+    const prev = () => readlinkSync(join(root(), "previous"));
+    beforeEach(() => { expect(lares(["update", "--release", RC12]).code).toBe(0); writeFileSync(log, ""); });
+
+    it("update records the release it left as previous", () => {
+      expect(prev()).toBe(`releases/${RC11}`);
+      expect(current()).toBe(`releases/${RC12}`);
+    });
+
+    it("a successful rollback makes the previous release current and clears previous", () => {
+      const r = lares(["rollback", "--yes"]);
+      expect(r.code, r.stderr).toBe(0);
+      expect(current()).toBe(`releases/${RC11}`);
+      expect(existsSync(join(root(), "previous"))).toBe(false);
+      expect(r.stdout).toContain(`now on ${RC11}`);
+    });
+
+    it("a dry run changes nothing", () => {
+      expect(lares(["rollback", "--dry-run"]).code).toBe(0);
+      expect(current()).toBe(`releases/${RC12}`);
+      expect(prev()).toBe(`releases/${RC11}`);
+    });
+
+    it("a failed rollback changes nothing and keeps its exit code", () => {
+      const r = lares(["rollback", "--yes"], { FAIL_ROLLBACK: "1" });
+      expect(r.code).toBe(3);
+      expect(current()).toBe(`releases/${RC12}`);
+      expect(prev()).toBe(`releases/${RC11}`);
+    });
+
+    it("with no previous release says so plainly, leaves current alone and exits 0", () => {
+      rmSync(join(root(), "previous"));
+      const r = lares(["rollback", "--yes"]);
+      expect(r.code).toBe(0);
+      expect(r.stdout).toMatch(/does not know which release/);
+      expect(r.stdout).toContain("--fetch-only");
+      expect(current()).toBe(`releases/${RC12}`);
+    });
   });
 
   it("refuses an unknown command, a missing or short release name, and a user who is not root", () => {

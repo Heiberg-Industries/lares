@@ -16,6 +16,9 @@
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
 #   $PREFIX/opt/lares/releases/<name>/   unpacked engine files, one folder per release
 #   $PREFIX/opt/lares/current            link to the release in use
+#   $PREFIX/opt/lares/previous           link to the release `lares update` left; one level only.
+#                                        `lares rollback` moves current back to it and removes it.
+#                                        An update run with update.sh directly does not set it.
 # LARES_PREFIX moves all of it (tests). Nothing phones home; `update` reaches only what
 # get-lares.sh reaches, and only when you ask it to.
 #
@@ -94,6 +97,7 @@ cmd_update() {
     exit "$code"
   fi
 
+  if [ -n "$on" ] && [ "$on" != "$name" ]; then ln -sfn "releases/$on" "$ROOT/previous"; fi
   ln -sfn "releases/$name" "$CUR"
   printf 'lares: now on %s.\n' "$name"
 
@@ -107,6 +111,23 @@ cmd_update() {
   if [ -n "$stale" ]; then
     printf 'lares: the backup scripts in %s are older than this release'"'"'s:%s. They were left as they are; see the release notes for how to refresh them.\n' "$ROOT" "$stale"
   fi
+}
+
+cmd_rollback() {
+  local code=0 a dry=0 target
+  for a in "$@"; do [ "$a" != "--dry-run" ] || dry=1; done
+  bash "$OPS/rollback.sh" "$@" || code=$?
+  if [ "$code" -eq 0 ] && [ "$dry" -eq 0 ]; then
+    if [ -L "$ROOT/previous" ] && [ -d "$ROOT/$(readlink "$ROOT/previous")" ]; then
+      target=$(readlink "$ROOT/previous")
+      ln -sfn "$target" "$CUR"
+      rm -f "$ROOT/previous"
+      printf 'lares: now on %s.\n' "${target##*/}"
+    else
+      printf 'lares: the rollback finished, but this command does not know which release'"'"'s files to mark as current. Run get-lares.sh --release <name> --fetch-only for the release now running, and point %s at it.\n' "$CUR"
+    fi
+  fi
+  exit "$code"
 }
 
 cmd_doctor() {
@@ -124,7 +145,7 @@ cmd_doctor() {
 
 case "$cmd" in
   update) cmd_update "$@" ;;
-  rollback) exec bash "$OPS/rollback.sh" "$@" ;;
+  rollback) cmd_rollback "$@" ;;
   restore) exec bash "$OPS/restore.sh" "$@" ;;
   backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
   doctor) cmd_doctor "$@" ;;

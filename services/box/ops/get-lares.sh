@@ -29,6 +29,8 @@
 #                    services/box/ops/...    install.sh, update.sh, rollback.sh, restore.sh, lares, this file
 #                    services/box/engine-image   one line: the keeper digest they came from
 #   current        $PREFIX/opt/lares/current -> releases/<name>, switched only after install.sh succeeds
+#   previous       $PREFIX/opt/lares/previous -> the release `lares update` left (one level only; set by
+#                  `lares update`, not by update.sh run directly; `lares rollback` uses and removes it)
 #   wrapper        $PREFIX/usr/local/bin/lares -> $PREFIX/opt/lares/current/services/box/ops/lares
 #                  so switching `current` also switches the wrapper. Subcommands: update, rollback,
 #                  restore, doctor, backups (each one existing script; see ops/lares).
