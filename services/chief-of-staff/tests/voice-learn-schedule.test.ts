@@ -34,7 +34,8 @@ vi.mock("../lib/voice-learn.js", async (importOriginal) => {
 vi.mock("../lib/gateway-provider.js", () => ({ gatewayUrl: () => "http://gateway.test", gatewayKey: () => "k" }));
 let embedMock: ReturnType<typeof vi.fn>;
 vi.mock("../lib/embeddings-gateway.js", () => ({ makeGatewayEmbedder: (deps: { model: string }) => ({ embed: (t: string[]) => embedMock(deps.model, t) }) }));
-vi.mock("../lib/llm-complete.js", () => ({ gatewayComplete: async () => "" }));
+const gatewayCompleteMock = vi.fn(async (..._args: unknown[]) => "");
+vi.mock("../lib/llm-complete.js", () => ({ gatewayComplete: (...args: unknown[]) => gatewayCompleteMock(...args) }));
 
 const { learnAllMailboxes, setProposedFor, setStatusFor } = await import("../agent/schedules/voice-learn.js");
 
@@ -80,6 +81,12 @@ describe("learnAllMailboxes ( fix round 1)", () => {
       "voice-learn: the gateway did not answer for lares-embed (gateway embeddings → 400 no such model); this installation may have no embedding model yet — skipping voice learning this pass",
     );
     warn.mockRestore();
+  });
+
+  it("distils the card with the writer model", async () => {
+    runVoiceLearnMock = vi.fn(async (deps: { think: (p: string) => Promise<string> }) => { await deps.think("distil prompt"); return { kept: 1, dropped: 0 }; });
+    await learnAllMailboxes();
+    expect(gatewayCompleteMock).toHaveBeenCalledWith("distil prompt", expect.objectContaining({ purpose: "writer" }));
   });
 
   it("probes with the explicit EMBED_MODEL when one is set, and with the prefix otherwise", async () => {

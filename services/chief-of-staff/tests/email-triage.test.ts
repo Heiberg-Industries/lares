@@ -189,6 +189,7 @@ describe("triageOneMessage", () => {
         Calendar: "skipped", // no proposed time, so never attempted
         "Voice profile": "empty",
         "Voice examples": "empty",
+        "Voice examples (this person)": "empty",
       },
     });
     expect((result as { context?: Record<string, string> }).context?.["Thread so far"]).toMatch(/^(ok|empty)$/);
@@ -652,5 +653,81 @@ describe("notifyTextFor", () => {
   it("returns null for fyi/automated — no ping", () => {
     expect(notifyTextFor({ outcome: "fyi", from: "a", subject: "s" })).toBeNull();
     expect(notifyTextFor({ outcome: "automated", reason: "model", from: "a", subject: "s" })).toBeNull();
+  });
+});
+
+describe("examples to this person first", () => {
+  const sent = (id: string, threadId: string, sentAt: string, bodyText: string): MailMessage => ({
+    id, threadId, from: "owner@project.example", to: ["p@example.com"], subject: "Re: hello", bodyText, sentAt,
+    messageId: `<${id}@x>`, references: "", isCalendarNotice: false, isBulk: false, cc: [],
+  });
+  const prose = (tag: string) => `Hei ${tag}, takk for sist, dette ble veldig bra og jeg setter stor pris på det. Hilsen Owner`;
+  const examplesOf = (p: string) => [...p.matchAll(/<example>\n([\s\S]*?)\n<\/example>/g)].map((m) => m[1]!);
+  const draftPrompt = () => String(vi.mocked(gatewayComplete).mock.calls.find((c) => !String(c[0]).includes("Classify"))![0]);
+
+  beforeEach(() => {
+    vi.mocked(gatewayComplete).mockImplementation(async (prompt: string) =>
+      prompt.includes("Classify") ? "needs_reply" : "Subject: Re: hi\n\nBody text.");
+  });
+
+  it("puts mail the owner sent the sender first, labelled as the same person, ahead of topic examples", async () => {
+    const msgs = new Map([
+      ["s1", sent("s1", "ta", "2026-07-01T09:00:00Z", prose("Eldst"))],
+      ["s2", sent("s2", "tb", "2026-08-01T09:00:00Z", prose("Nyest"))],
+    ]);
+    const gmail = fakeGmail({ search: vi.fn(async () => ["s1", "s2"]), read: vi.fn(async (id: string) => msgs.get(id) ?? null) });
+    const voice: VoiceAccess = { getProfile: async () => null, retrieve: async () => ["Topic example one two three four five six seven eight nine"] };
+    await triageOneMessage({ gmail, voice }, "owner@project.example", message());
+    expect(gmail.search).toHaveBeenCalledWith("to:p@example.com from:me", 8);
+    const p = draftPrompt();
+    const same = p.indexOf("sent to this same person");
+    expect(same).toBeGreaterThan(-1);
+    expect(p.indexOf("Hei Nyest")).toBeGreaterThan(same);
+    expect(p.indexOf("Hei Eldst")).toBeGreaterThan(p.indexOf("Hei Nyest"));
+    expect(p.indexOf("Topic example one")).toBeGreaterThan(p.indexOf("Hei Eldst"));
+    expect(p.indexOf("Other emails")).toBeLessThan(p.indexOf("Topic example one"));
+  });
+
+  it("falls back to topic examples when the owner never wrote to this person", async () => {
+    const gmail = fakeGmail();
+    const voice: VoiceAccess = { getProfile: async () => null, retrieve: async () => ["Topic example one two three four five six seven eight nine"] };
+    const result = await triageOneMessage({ gmail, voice }, "owner@project.example", message());
+    const p = draftPrompt();
+    expect(p).not.toContain("same person");
+    expect(p).toContain("Topic example one");
+    expect((result as { context?: Record<string, string> }).context?.["Voice examples (this person)"]).toBe("empty");
+  });
+
+  it("a failed search marks the block failed and still drafts", async () => {
+    const gmail = fakeGmail({ search: vi.fn(async () => { throw new Error("search down"); }) });
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await triageOneMessage({ gmail, voice: noVoice }, "owner@project.example", message());
+    err.mockRestore();
+    expect(result.outcome).toBe("drafted");
+    expect((result as { context?: Record<string, string> }).context?.["Voice examples (this person)"]).toBe("failed");
+  });
+
+  it("never uses the current thread as an example, and caps at three, each cut to about 800 characters", async () => {
+    const long = "ord ".repeat(150); // 600 chars of prose, well under the word limit
+    const msgs = new Map<string, MailMessage>([
+      ["cur", sent("cur", "t1", "2026-08-10T09:00:00Z", prose("DenneTråden"))],
+      ...["a", "b", "c", "d"].map((k, i): [string, MailMessage] => [k, sent(k, `x${k}`, `2026-08-0${i + 1}T09:00:00Z`, `Hei ${k} ${long.repeat(2)}`)]),
+    ]);
+    const gmail = fakeGmail({ search: vi.fn(async () => [...msgs.keys()]), read: vi.fn(async (id: string) => msgs.get(id) ?? null) });
+    await triageOneMessage({ gmail, voice: noVoice }, "owner@project.example", message());
+    const p = draftPrompt();
+    expect(p).not.toContain("DenneTråden");
+    expect(p.match(/<example>/g)).toHaveLength(3);
+    expect(examplesOf(p).join("\n")).not.toContain("Hei a "); // the oldest of four is dropped
+    const first = /<example>\n([\s\S]*?)\n<\/example>/.exec(p)![1]!;
+    expect(first.length).toBeLessThanOrEqual(801);
+  });
+
+  it("does not repeat a topic example that is already mail to this person", async () => {
+    const body = prose("Samme");
+    const gmail = fakeGmail({ search: vi.fn(async () => ["s1"]), read: vi.fn(async () => sent("s1", "ta", "2026-08-01T09:00:00Z", body)) });
+    const voice: VoiceAccess = { getProfile: async () => null, retrieve: async () => [body] };
+    await triageOneMessage({ gmail, voice }, "owner@project.example", message());
+    expect(examplesOf(draftPrompt())).toHaveLength(1);
   });
 });

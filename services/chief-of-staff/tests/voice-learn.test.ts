@@ -178,6 +178,18 @@ describe("runVoiceLearn", () => {
     expect(prompt).toMatch(/from this mailbox/i);
   });
 
+  it("asks for short prose plus verbatim quotes, and fills the sample with replies before new threads", async () => {
+    const body = "Hei, takk for sist, dette ble veldig bra og jeg setter stor pris på det. Hilsen Owner";
+    const fresh = Array.from({ length: 40 }, (_, i) => msg({ id: `n${i}`, subject: "New thread", bodyText: `NYTRAD${i} ${body}` }));
+    const { deps } = harness([...fresh, msg({ id: "r1", subject: "Re: hello", bodyText: `SVARET ${body}` })]);
+    await runVoiceLearn(deps as never);
+    const prompt = String(deps.think.mock.calls[0]![0]);
+    expect(prompt).toMatch(/verbatim quotes/i);
+    expect(prompt).not.toMatch(/bullet/i);
+    expect(prompt).toContain("SVARET");
+    expect(prompt).not.toContain("NYTRAD39");
+  });
+
   it("proposes the card but NEVER writes the active one — acceptance stays human", async () => {
     const { deps } = harness([msg()]);
     await runVoiceLearn(deps as never);

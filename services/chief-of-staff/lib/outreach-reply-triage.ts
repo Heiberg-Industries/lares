@@ -19,13 +19,20 @@
 import { gatewayComplete } from "./llm-complete.js";
 import { detectLanguage, buildVoiceBlock, pickModel } from "./voice.js";
 import { buildReplyPrompt } from "./reply-prompt.js";
+import { mergeExamples } from "./email-triage.js";
 import type { VoiceAccess } from "./voice-store.js";
 import type { OutreachThread } from "./outreach-store.js";
 import type { ThreadMessage } from "./google.js";
 
 export type ReplyClassification = "positive" | "negative" | "meeting_request" | "unsubscribe" | "not_now" | "bounce";
 
-type ReplyLike = Pick<ThreadMessage, "from" | "subject" | "bodyText">;
+/** The address inside "Name <email>", lowercased. */
+function addressOf(header: string): string {
+  const m = /<([^>]+)>/.exec(header);
+  return (m?.[1] ?? header).trim().toLowerCase();
+}
+
+type ReplyLike =Pick<ThreadMessage, "from" | "subject" | "bodyText">;
 
 async function tryOrNull<T>(fn: () => Promise<T>): Promise<T | null> {
   try { return await fn(); } catch { return null; }
@@ -61,7 +68,14 @@ function splitDraft(draft: string, fallbackSubject?: string): DraftedReply {
 /** Tool-free, voice-matched draft — only called for positive/meeting_request. Same contract
  *  clauses as email-triage.ts's draft step. */
 export async function draftReply(
-  deps: { voice: VoiceAccess; ownerName?: string | null }, thread: OutreachThread, reply: ReplyLike,
+  deps: {
+    voice: VoiceAccess;
+    ownerName?: string | null;
+    /** The owner's own recent mail to one address, newest first (`recipientExamples`). Absent:
+     *  the draft is grounded in topic examples alone, as before. Best-effort. */
+    recentToPerson?: (addr: string) => Promise<string[]>;
+  },
+  thread: OutreachThread, reply: ReplyLike,
 ): Promise<DraftedReply> {
   const lang = detectLanguage(reply.bodyText || reply.subject);
   const profile = await tryOrNull(() => deps.voice.getProfile());
@@ -69,10 +83,19 @@ export async function draftReply(
   // NOT tryOrNull — see the identical note in lib/email-triage.ts: a swallowed
   // retrieval failure is indistinguishable from an empty corpus, which is how this went
   // unnoticed for six weeks.
-  const examples = await deps.voice.retrieve(`reply to: ${reply.bodyText}`, 3, lang).catch((err: unknown) => {
-    console.error(`outreach-reply-triage: voice examples unavailable for ${thread.account} — drafting from the card alone`, err);
-    return [] as string[];
-  });
+  const [topicExamples, toPerson] = await Promise.all([
+    deps.voice.retrieve(`reply to: ${reply.bodyText}`, 3, lang).catch((err: unknown) => {
+      console.error(`outreach-reply-triage: voice examples unavailable for ${thread.account} — drafting from the card alone`, err);
+      return [] as string[];
+    }),
+    deps.recentToPerson
+      ? deps.recentToPerson(addressOf(reply.from)).catch((err: unknown) => {
+          console.error(`outreach-reply-triage: mail to this person unavailable for ${thread.account}`, err);
+          return [] as string[];
+        })
+      : Promise.resolve([] as string[]),
+  ]);
+  const examples = mergeExamples(toPerson, topicExamples);
   const model = pickModel(profile, lang, undefined);
 
   // the one reply prompt both drafters share (lib/reply-prompt.ts). The contract here

@@ -165,7 +165,7 @@ export async function learnAllMailboxes(): Promise<boolean> {
         mailbox,
         listSentMessages: () => listSentMessages(mailbox, cfg),
         embedder,
-        think: (prompt) => gatewayComplete(prompt, { maxOutputTokens: 1024 }),
+        think: (prompt) => gatewayComplete(prompt, { maxOutputTokens: 1024, purpose: "writer" }),
         upsertExemplar,
         setProposed: (p) => setProposedFor(mailbox, p),
         setStatus: (status, message) => setStatusFor(mailbox, status, message),
