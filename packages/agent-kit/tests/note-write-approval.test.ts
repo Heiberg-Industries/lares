@@ -1,4 +1,4 @@
-// W7A-s2 — THE PERMISSIONS BOARD DECIDES THE VAULT'S OWN WRITES TOO.
+// THE PERMISSIONS BOARD DECIDES THE VAULT'S OWN WRITES TOO.
 //
 // The hole this closes: the three tools the chief of staff actually uses to write, move and
 // delete notes in the personal area (`agent-kit__vault_write` / `_file` / `_drop`) were built by
@@ -15,7 +15,7 @@
 // row, the definition's own `vault: "gated"` is the fallback and all three ask exactly as they
 // did under `always()`. The two directions the owner CAN now move are pinned too: 🚫 refuses,
 // and ✓ acts on its own for the two non-destructive tools while `_drop` keeps asking, because
-// deleting is an always-ask `delete` category that no setting can loosen (owner decision A1).
+// deleting is an always-ask `delete` category that no setting can loosen.
 //
 // WHY THE FACTORY STILL DEFAULTS TO `always()`: the mounted `../extension/tools/vault_*.ts`
 // copies have no policy to inject (an extension has no per-session definition read), and every
@@ -93,14 +93,14 @@ describe("the Vault's own write tools answer to the permissions board", () => {
     }
   });
 
-  it("the chief of staff's three vault writes also inject the card check (W7A-s6)", () => {
+  it("the chief of staff's three vault writes also inject the card check", () => {
     for (const name of THREE) {
       expect(readFileSync(join(COS, `${name}.ts`), "utf8"), name).toContain("assertApprovedCall:");
     }
   });
 });
 
-// W7A-s6 — the extension bundle cannot import @lares/agent-kit/approval-ledger (see
+// The extension bundle cannot import @lares/agent-kit/approval-ledger (see
 // note-write-tools.ts's own header), so the freshness/payload check is injected through
 // `NoteWriteDeps.assertApprovedCall`. These cases pin the ORDER inside `execute`: the approver
 // check (bound, in production, to `extension.config.brain?.isApprovedPrincipal`) runs first and
@@ -151,7 +151,7 @@ describe("the injected card check runs after the approver and before any git wri
     expect(written).toBeUndefined();
   });
 
-  it("when the injected check passes, the write proceeds exactly as it did before this slice", async () => {
+  it("when the injected check passes, the write proceeds exactly as it did before the check existed", async () => {
     const { writeTool } = await import("../extension/lib/note-write-tools.js");
     const order: string[] = [];
     const tool = writeTool({
@@ -218,7 +218,7 @@ describe("deleting a note always asks, whatever the dial says", () => {
   it("✓ on Private notes lets a save and a move act alone, but never a delete", async () => {
     const f = board({ "chief-of-staff/vault/private": "autonomous" });
     setBoardDeps(f.deps);
-    // Owner decision A1: setting the dial to "act on its own" is allowed to remove the card from
+    // Setting the dial to "act on its own" is allowed to remove the card from
     // the two non-destructive tools…
     expect(await boardApproval(DECLARATION, "agent-kit__vault_write")()).toBe("not-applicable");
     expect(await boardApproval(DECLARATION, "agent-kit__vault_file")()).toBe("not-applicable");

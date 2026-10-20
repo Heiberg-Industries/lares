@@ -1,4 +1,4 @@
-// W7D-s3 — a link met in a tainted turn asks first.
+// A link met in a tainted turn asks first.
 //
 // The policy under test is the whole control: there is no second check inside `execute` that
 // could catch a mistake here, because the in-turn taint is NOT readable there (a turn parked on
@@ -6,7 +6,7 @@
 // `src/origin-taint.ts`'s `TAINT_MAX_AGE_MS` docblock). So every property the card depends on is
 // pinned here, on the policy itself.
 //
-// THE CONTEXT SHAPES ARE EVE'S OWN. WAVE-3-NOTES point 18: a control that depends on what the
+// THE CONTEXT SHAPES ARE EVE'S OWN. A control that depends on what the
 // FRAMEWORK passes in is proven on a real framework run, and a hand-built context proves nothing
 // about field names. The last case below is typed as eve 0.60.1's real `ApprovalContext`, so a
 // renamed field fails `pnpm -C packages/agent-kit run typecheck` rather than silently reading
@@ -47,10 +47,10 @@ describe("a fetch after untrusted text", () => {
     expect(await asksAfterUntrustedText()({ session: {} })).toBe("user-approval");
   });
 
-  // Owner decision D1: "a link the owner sent himself, in a turn where nothing else was read,
-  // does not ask." That is exactly the untainted case above — stated here as the decision, so a
-  // future change that makes every link ask fails a test that names the decision.
-  it("a link the owner sent himself, in a turn where nothing else was read, does not ask", async () => {
+  // The rule: a link the owner sent, in a turn where nothing else was read, does not ask.
+  // That is exactly the untainted case above — stated here as the rule, so a future change
+  // that makes every link ask fails a test that names it.
+  it("a link the owner sent, in a turn where nothing else was read, does not ask", async () => {
     expect(await asksAfterUntrustedText()(ctx("owner-session", "first-turn"))).toBe("not-applicable");
   });
 

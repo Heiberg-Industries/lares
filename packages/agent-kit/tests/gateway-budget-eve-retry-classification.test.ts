@@ -30,16 +30,14 @@
  * eve version: 0.32.0 (matches `gateway-budget-eve-default-text.test.ts` and the version this
  * repo has installed at the time this test was written, 2026-09-18).
  *
- * PROPOSED FOLLOW-UP (not built here — out of scope for this slice; retry configuration is
- * explicitly excluded): the smallest fix is in `createGatewayProvider`'s fetch seam
+ * POSSIBLE FOLLOW-UP (not built here; retry configuration is out of scope for this test): the smallest fix is in `createGatewayProvider`'s fetch seam
  * (`packages/agent-kit/src/gateway-provider.ts`) — recognise a budget refusal on the response
  * BEFORE returning it to the AI SDK, and throw a `GatewayBudgetExceededError` there instead of
  * letting the raw response reach eve's classifier. `GatewayBudgetExceededError` already
  * presents a fixed 400 to a `Gateway*`-named-error status read (see its own doc comment), so
  * eve would classify it as terminal on the first attempt, no retries. That is a request-path
- * change to a file this slice was told not to widen scope into, and touches the exact seam
- * `gateway-budget.ts`'s header currently says deliberately stays a pass-through — worth a
- * dedicated ticket, not a rider on this one.
+ * change, and touches the exact seam `gateway-budget.ts`'s header currently says deliberately
+ * stays a pass-through — worth its own change.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";

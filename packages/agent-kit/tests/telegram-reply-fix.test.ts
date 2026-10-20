@@ -1,11 +1,10 @@
-// a reply to an eve agent's Telegram bot must reach that agent. Found on
-// the travel service first (see lib/telegram-reply-fix.ts for the live incident); same eve version,
-// same channel, same swallow on every other agent using this fix.
+// A reply to an eve agent's Telegram bot must reach that agent. The same swallow affects
+// every agent using this eve version and channel (see lib/telegram-reply-fix.ts).
 //
 // eve 0.32.0 routes ANY reply to a bot message as an input response and then drops it when no
 // freeform prompt is pending, so the turn parks with nothing to deliver: no model call, no
-// answer, no error. Live case: Example Group group, 2026-08-17 15:31:50Z, the owner replied to
-// The travel agent's intro and the message vanished. See lib/telegram-reply-fix.ts for the upstream lines.
+// answer, no error. Live case: the owner replied to an agent's intro in a group chat and the
+// message vanished. See lib/telegram-reply-fix.ts for the upstream lines.
 import { describe, it, expect } from "vitest";
 
 import { neutralizeBotReplyMarker } from "../src/telegram-reply-fix.js";

@@ -21,12 +21,9 @@ import {
 } from "../src/notes-store.js";
 
 /**
- * The engine behind the Brain and Atlas hands. Both stores are the same thing — a directory
- * of markdown — so they share one implementation and differ only in which env var names
- * their root.
- *
- * Ported from the vault_search tests (Task 3) when the second store arrived, keeping every
- * case: the posture is the reason this file is long.
+ * The engine behind the private and shared note stores. Both stores are the same thing — a
+ * directory of markdown — so they share one implementation and differ only in which env var
+ * names their root. Every case is kept for both: the posture is the reason this file is long.
  */
 
 let dir: string;
@@ -66,8 +63,8 @@ describe("storeRoot", () => {
   });
 });
 
-// W5C-s2 — the Vault's areas resolve to the two file stores that exist today (ADR-0017 rule 1,
-// Owner decisions C1/C2/C4). `VAULT_PATH`/`ATLAS_PATH` keep their names; only what an agent is
+// The Vault's areas resolve to the two file stores that exist today (ADR-0017 rule 1).
+// `VAULT_PATH`/`ATLAS_PATH` keep their names; only what an agent is
 // GRANTED changes.
 describe("storeForArea / areaForStore / storeRootForArea", () => {
   it("maps the two areas that are file stores, and only those", () => {

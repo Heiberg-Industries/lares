@@ -1,11 +1,10 @@
 /**
- * The gateway's budget refusal, recognised item 2).
+ * The gateway's budget refusal, recognised.
  *
  * Every 400 fixture below is copied from a LIVE probe, not invented: the transcript in
- * the per-user spend-cap measurements ("Transcript — run 2026-09-01, against the live
- * gateway"), which minted a throwaway key with `max_budget: 0.01`, looped completions, and
+ * a measurement against a live gateway (2026-09-01), which minted a throwaway key with `max_budget: 0.01`, looped completions, and
  * recorded call 6's refusal verbatim. The 429 fixtures are SHAPED, not live-measured: LiteLLM
- * changed its status between the 2026-09-01 measurement and 2026-09-18, when its own source
+ * changed its status between that measurement and 2026-09-18, when its own source
  * (`litellm/exceptions.py`, `litellm/proxy/auth/auth_exception_handler.py`) was read and shown
  * to set `status_code = 429` with `type = "budget_exceeded"` intact — same envelope, same
  * markers, different status. `tests/live/litellm-budget-refusal.live.mts` re-measures this by

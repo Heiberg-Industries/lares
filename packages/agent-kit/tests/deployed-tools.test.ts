@@ -1,10 +1,10 @@
-// deployedToolsFor Phase 3, Task 9 review; step 2, Task 8 review follow-up).
+// deployedToolsFor.
 //
 // A FILE COUNT that must still be a NAME SET: once a service moves a prefixed `agent-kit__*`
-// tool into its own catalogue (Task 8's shape), that tool's basename in `catalogue/` is ALREADY
+// tool into its own catalogue, that tool's basename in `catalogue/` is ALREADY
 // the prefixed name (`catalogue/agent-kit__<bare>.ts`), while its still-present, now-disabled
 // mount file (`agent/extensions/agent-kit/tools/<bare>.ts`) produces the SAME prefixed name
-// through the `agent-kit__${n}` mapping on the third spread. Before the fix this repo's own
+// through the `agent-kit__${n}` mapping on the third spread. Before the fix,
 // `services/chief-of-staff` produced `agent-kit__transit_plan` twice.
 import { describe, it, expect } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
@@ -16,7 +16,7 @@ import { deployedToolsFor } from "../src/persona/deployed-tools.js";
 describe("deployedToolsFor", () => {
   it("names every real committed catalogue/mount PREFIXED collision exactly once — services/chief-of-staff", () => {
     // The one real instance of the shape in the fleet today: agent-kit__transit_plan lives in
-    // BOTH catalogue/ (Task 8's live re-export) and the extension mount (now a disabled
+    // BOTH catalogue/ (a live re-export) and the extension mount (now a disabled
     // sentinel, still a file). A plain concatenation names it twice; the fixed function must not.
     const serviceDir = new URL("../../../services/chief-of-staff", import.meta.url).pathname;
     const names = deployedToolsFor(serviceDir);
@@ -30,7 +30,7 @@ describe("deployedToolsFor", () => {
       mkdirSync(join(dir, "agent", "tools"), { recursive: true });
       mkdirSync(join(dir, "agent", "extensions", "agent-kit", "tools"), { recursive: true });
       mkdirSync(join(dir, "catalogue"), { recursive: true });
-      // The mount, present but disabled — Task 8's shape after a prefixed tool moves.
+      // The mount, present but disabled, as after a prefixed tool moves.
       writeFileSync(
         join(dir, "agent", "extensions", "agent-kit", "tools", "vault_write.ts"),
         'import { disableTool } from "eve/tools";\nexport default disableTool();\n',

@@ -64,8 +64,8 @@ describe("resolveDefinition", () => {
 
   it("falls back when the folder parses but does not VALIDATE", async () => {
     // Own agent name, own seed row: this test must not ride on an earlier test's write to the
-    // shared container. Review finding step 2, second pass): the previous version used
-    // the default "bookkeeper" and relied on an earlier test having already remembered it.
+    // shared container: relying on the default "bookkeeper" would depend on an earlier test
+    // having already remembered it.
     const agentName = "modelbad";
     await rememberValid(pool, await loadDefinition({
       serviceDir: "/nowhere",
@@ -99,16 +99,15 @@ describe("resolveDefinition", () => {
       .rejects.toThrow(/model-alias/);
   });
 
-  // Review finding step 2, Task 4 fix report): the sketch this test was reviewed against
-  // inferred identity from the broken file itself and only passed because an EARLIER test in the
-  // same file had left a process-lifetime memo behind. Proving this test is self-contained — it
+  // Identity must not be inferred from the broken file itself: that would only pass because an
+  // EARLIER test in the same file had left a process-lifetime memo behind. This test is self-contained — it
   // remembers its own "bookkeeper" row and passes `agentName` explicitly — is the point: run with
   // `vitest run tests/definition-cache.test.ts -t "stops parsing"` and it must still pass alone.
 
   it("refuses a definition that names a different agent than the one this folder is mounted for, and falls back", async () => {
     await rememberValid(pool, await loadDefinition({ serviceDir: "/nowhere", env: { LARES_DEFINITION_DIR: folder({ ...GOOD, name: "traveler" }, "traveler's duties.\n") } }));
     const reasons: string[] = [];
-    // This folder's own agent.json says "the chief of staff" — but it is mounted (agentName) for "the travel agent".
+    // This folder's own agent.json says "the chief of staff" — but it is mounted (agentName) for "traveler".
     const wrongFolder = folder({ ...GOOD, name: "coordinator" });
     const r = await resolveDefinition(opts(wrongFolder, "traveler", (_a, why) => reasons.push(why)));
     expect(r.usedFallback).toBe(true);
@@ -126,7 +125,7 @@ describe("resolveDefinition", () => {
   });
 
   // the remembered row passed the rules of the engine that stored it, not necessarily
-  // today's. On the existing server those rows are old-style (`brain`, `atlas`, `memory`): run on,
+  // today's. An older installation's rows can be old-style (`brain`, `atlas`, `memory`): run on,
   // they gave an agent with no note or fact tools that failed to describe itself every turn.
   // Through a variable, as in the keeper's tests: this is old DATA, which one-name.test.ts's
   // tripwire is not about.

@@ -3,10 +3,10 @@ import { describe, it, expect } from "vitest";
 import { buildClockMarkdown } from "../src/clock.js";
 
 /**
- * The reminder that started this : the owner said "tomorrow" late in the evening of the 17th,
- * The chief of staff confirmed "tomorrow at 07:00", and stored 2026-08-20 — two days out. She had no clock
- * at all: eve injects no date, `defineAgent` declares none, `instructions.md` is static, and
- * unlike the travel service she had no `agent/instructions/` resolver. `remind_set` delegates date
+ * The reminder that started this: the owner said "tomorrow" late in the evening of the 17th,
+ * the chief of staff confirmed "tomorrow at 07:00", and stored 2026-08-20 — two days out. It had
+ * no clock at all: eve injects no date, `defineAgent` declares none, `instructions.md` is static,
+ * and there was no `agent/instructions/` resolver to supply one. `remind_set` delegates date
  * arithmetic to the model by design, so the absolute date came from training priors, and the
  * tool's guard only rejects dueAt in the PAST — a wrong guess landing in the future is stored
  * silently.

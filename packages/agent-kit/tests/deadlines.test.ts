@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mintYear, jurisdictionFor, statutoryCalendar, parseStatutoryCalendar, daysToDue, mentionsToday, ladderStep, nextDue, MENTION_DAYS } from "../src/deadlines.js";
-const TZ = "Europe/Oslo";
+const TZ = "Europe/Berlin";
 const open = (over: Partial<Parameters<typeof ladderStep>[0]> = {}) => ({ id: "d1", title: "VAT return, term 3", source: "statutory" as const, dueDate: "2026-08-31", rung: 0, status: "open" as const, ...over });
 
 // The calendar is installation data. These rules are made up for the tests: eight rules, four of
@@ -86,7 +86,7 @@ describe("mintYear", () => {
     expect(() => mintYear("XX-CO", 2026, { ...AHEAD, omit: ["vat-t9"] })).toThrow(/vat-t9/);
   });
 
-  // ── The already-past skip review fix) ───────────────────────────────────────────
+  // ── The already-past skip ───────────────────────────────────────────
   //
   // A mid-year mint used to insert every term from January onwards, each one overdue on arrival —
   // and the brief names an overdue row EVERY day, so the next morning opened with a wall of
@@ -125,9 +125,9 @@ describe("mintYear", () => {
 });
 
 describe("daysToDue (owner clock)", () => {
-  it("counts whole owner days, so 23:30 Oslo the night before is 1 day, not 0", () => {
-    expect(daysToDue("2026-08-31", new Date("2026-08-30T21:30:00Z"), TZ)).toBe(1); // 23:30 Oslo
-    expect(daysToDue("2026-08-31", new Date("2026-08-30T22:30:00Z"), TZ)).toBe(0); // 00:30 Oslo on the day
+  it("counts whole owner days, so 23:30 Berlin the night before is 1 day, not 0", () => {
+    expect(daysToDue("2026-08-31", new Date("2026-08-30T21:30:00Z"), TZ)).toBe(1); // 23:30 Berlin
+    expect(daysToDue("2026-08-31", new Date("2026-08-30T22:30:00Z"), TZ)).toBe(0); // 00:30 Berlin on the day
     expect(daysToDue("2026-08-31", new Date("2026-09-02T10:00:00Z"), TZ)).toBe(-2);
   });
 });
@@ -145,9 +145,9 @@ describe("mentionsToday", () => {
   });
 });
 
-describe("ladderStep (Ruling 1)", () => {
+describe("ladderStep", () => {
   it("rung 1 at 15:00 owner clock on T-1, not before", () => {
-    expect(ladderStep(open(), new Date("2026-08-30T12:59:00Z"), TZ)).toBeNull();               // 14:59 Oslo
+    expect(ladderStep(open(), new Date("2026-08-30T12:59:00Z"), TZ)).toBeNull();               // 14:59 Berlin
     expect(ladderStep(open(), new Date("2026-08-30T13:00:00Z"), TZ)).toEqual({ rung: 1, finalStop: false });
   });
   it("rung 2 at 09:00 on the due day, statutory only", () => {

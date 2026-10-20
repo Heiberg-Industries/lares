@@ -18,14 +18,11 @@ import { getPool, closePool } from "../src/db.js";
 import { quiet } from "./helpers/quiet-pool.js";
 
 /**
- * Step D — the Google auth PLUMBING, shared by the chief-of-staff service and the travel service.
+ * The Google auth PLUMBING, shared by the role services.
  *
- * The `decryptSecret` and `readTokenEncKey` suites below are the coverage that previously
- * lived — identically — in BOTH `services/chief-of-staff/tests/google.test.ts` and
- * `services/travel/tests/google.test.ts`, moved here once rather than left duplicated.
- * The egress-proxy suite is the travel service's (the chief-of-staff service had none), now exercised through the real
- * `buildOAuth2Client` path rather than the `__applyEgressProxyForTest` seam it needed when the
- * function was module-private.
+ * The `decryptSecret` and `readTokenEncKey` suites below cover the shared helpers once, rather
+ * than per service. The egress-proxy suite is exercised through the real `buildOAuth2Client`
+ * path.
  *
  * What is deliberately NOT tested here, because it deliberately does not live here: which org
  * a token belongs to, which mailbox a caller should pick, and whether a token carries calendar
@@ -186,7 +183,7 @@ describe("buildOAuth2Client", () => {
     expect((auth as unknown as ProxyProbe).transporter.defaults.proxy).toBeUndefined();
   });
 
-  it("carries an explicit redirectUri through (chief-of-staff's shape) and omits it otherwise (travel's)", () => {
+  it("carries an explicit redirectUri through and omits it otherwise", () => {
     const withUri = buildOAuth2Client({ clientId: "id", clientSecret: "secret", redirectUri: "https://example/cb" }, "rt");
     expect((withUri as unknown as { redirectUri?: string }).redirectUri).toBe("https://example/cb");
     const withoutUri = buildOAuth2Client({ clientId: "id", clientSecret: "secret" }, "rt");

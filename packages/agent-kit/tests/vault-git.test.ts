@@ -8,25 +8,22 @@ import { commitNote, moveNote, removeNote, VaultPushFailedError } from "../src/v
 import { NotePathEscapesStoreError } from "../src/notes-store.js";
 
 /**
- * The git mechanics behind the Brain write tools, against a REAL fixture git repo (a working
+ * The git mechanics behind the note write tools, against a REAL fixture git repo (a working
  * clone + a bare "origin", both real `git init`/`git init --bare` repos) — proves the actual
  * git invocations (add/commit/push/mv/rm) land, that an escaping path is refused before any
  * git command runs, and the push-failure posture: a push failure throws
  * `VaultPushFailedError` (never a silent success) while the local commit remains durably
  * present in the working clone's `git log`.
  *
- * Task 2: relocated from `services/chief-of-staff/tests/brain-writes.test.ts`, which
- * exercised this same logic indirectly through `vault_write`/`vault_file`/`vault_drop`'s
- * `.execute()`. Those three tools now live mounted in the @lares/agent-kit eve extension
- * (`agent-kit__brain_*`), and — unlike this module — their approval check DOES depend on
+ * The three write tools (`vault_write`/`vault_file`/`vault_drop`) are mounted in the
+ * @lares/agent-kit eve extension, and — unlike this module — their approval check DOES depend on
  * extension config (`extension.config.brain.isApprovedPrincipal`), which only binds through
  * eve's own compiled-agent loader (see `extension/lib/approval-gate.ts` and
  * `tests/approval-gate.test.ts`, which now cover that half). `commitNote`/`moveNote`/
  * `removeNote` themselves have ZERO extension-config dependency — they're plain functions
  * taking a `vaultRoot` argument — so this file tests them directly, the honest and simpler
  * replacement for going through a tool wrapper that added nothing to this half of the
- * coverage. The gating/approval-refusal tests that also lived in the old file are NOT
- * duplicated here; see `tests/approval-gate.test.ts`.
+ * coverage. The gating/approval-refusal tests are NOT duplicated here; see `tests/approval-gate.test.ts`.
  */
 
 let tmp: string;
@@ -108,7 +105,7 @@ describe("commitNote", () => {
 
   it("defaults the commit message to a role-neutral note:, and lets a caller override it", async () => {
     // The default is asserted rather than assumed. It carries no persona name — this repo ships
-    // no persona (CLAUDE.md) — so every caller that names nobody still commits a message that
+    // no persona (AGENTS.md) — so every caller that names nobody still commits a message that
     // attributes the write to nobody in particular.
     await commitNote({ vaultRoot: workDir, path: "_inbox/default-msg.md", frontmatter: {}, body: "b" });
     expect(git(workDir, "log", "-1", "--pretty=%s").trim()).toBe("note: _inbox/default-msg.md");

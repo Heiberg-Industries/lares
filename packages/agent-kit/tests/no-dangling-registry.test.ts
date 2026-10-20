@@ -20,9 +20,8 @@ describe("references to a registry that does not exist", () => {
     expect(hits).toEqual([]);
   });
 
-  // NOT checked here, on purpose: about 140 comments say "ported from services/agent-runtime/…".
-  // They are history notes about where code came from, not pointers a reader is sent to follow;
-  // sweeping them belongs with the naming sweep, not with this slice.
+  // NOT checked here, on purpose: only pointers to the registry file are checked, not every
+  // comment that names a path.
 
   it("the decision record may still describe the drift it was written about", () => {
     expect(grep("integrations/registry.ts", "docs").length).toBeGreaterThan(0);

@@ -1,9 +1,7 @@
 /**
  * packages/agent-kit/tests/live/gateway-lane-openai-compatible.live.mts — the LIVE probe for
- * the OPENAI-COMPATIBLE lane of `../../src/gateway-provider.js`'s `gatewayModel()` (F8, wave
- * 8F: the two-lane ruling in
- * `.claude/plans/2026-09-20-prelaunch-wave-8f-neutral-stack.md`, "RULED: vendor-agnostic, and
- * the two lanes").
+ * the OPENAI-COMPATIBLE lane of `../../src/gateway-provider.js`'s `gatewayModel()` (the engine is
+ * vendor-agnostic, with two lanes).
  *
  * NOT part of `pnpm test` (this file's `.live.mts` extension is not vitest's `*.test.*` glob,
  * the same convention every other file under a `tests/live/` directory in this repository
@@ -21,7 +19,7 @@
  * This file does not guess or hard-code a model — the owner supplies a real, non-Anthropic
  * alias from his own gateway when he runs it by hand.
  *
- * WHY THIS FILE EXISTS. Per the root CLAUDE.md's fixture rule ("a fixture is what we believe an
+ * WHY THIS FILE EXISTS. Per AGENTS.md's fixture rule ("a fixture is what we believe an
  * API does; only a live call is what it does"), `tests/gateway-provider.test.ts` only asserts on
  * the shape of the request this lane BUILDS (the Authorization header injected via the fetch
  * closure, the `/v1/chat/completions` route, the provider name) — it never sends one, and it
@@ -43,7 +41,7 @@
  * streaming turn (2 chunks, 6 chars). This is the first time this lane has ever been spoken to
  * a real gateway: before this run it was shipped, typed and unit-tested but never exercised.
  * A non-Anthropic vendor is reachable through the gateway in OpenAI format, which is the whole
- * claim F8 exists to make. NOTE ON ALIAS CHOICE: do NOT point this probe at a very small model
+ * claim this lane exists to make. NOTE ON ALIAS CHOICE: do NOT point this probe at a very small model
  * (e.g. a 3B) — the tool-call assertion would then be testing the model's competence rather
  * than the lane, and a failure would be unreadable. mistral-small handles it and costs little.
  */

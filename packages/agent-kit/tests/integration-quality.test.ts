@@ -74,7 +74,7 @@ describe("a quality file", () => {
       "live-probe", "region-declared", "outbound-declared", "secrets-declared",
       "no-telemetry", "contract-tests", "shared-request-path", "credential-tested",
     ]);
-    // Owner decision C1 (2026-09-19): a fourth, lowest tier `none` — ship honestly instead of
+    // A fourth, lowest tier `none` — ship honestly instead of
     // claiming `bronze` before every bronze rule is `done`.
     expect([...TIERS]).toEqual(["none", "bronze", "silver", "gold"]);
   });
@@ -87,7 +87,7 @@ describe("a quality file", () => {
   });
 
   it("none of the three integrations claims a tier its rules do not back yet", () => {
-    // As of this slice, credential-tested is todo for all three (credential.ts's test-call
+    // Today, credential-tested is todo for all three (credential.ts's test-call
     // machinery is unused) so none can honestly claim bronze yet.
     for (const id of ["notion", "slack", "google"]) {
       expect(read(id).tier, id).toBe("none");

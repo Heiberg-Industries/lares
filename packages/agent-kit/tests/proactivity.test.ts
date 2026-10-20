@@ -34,7 +34,7 @@ import {
  * is exercised before the box.
  */
 
-const base: InitiationRequest = { owner: "owner-1", agent: "agent-a", door: "telegram:1", cls: "event", itemKey: "msg-1", now: new Date("2026-09-08T10:00:00Z"), tz: "Europe/Oslo" };
+const base: InitiationRequest = { owner: "owner-1", agent: "agent-a", door: "telegram:1", cls: "event", itemKey: "msg-1", now: new Date("2026-09-08T10:00:00Z"), tz: "Europe/Berlin" };
 const defaults: ProactivitySettings = { quietStart: "21:00", quietEnd: "07:00", eventPerDoorPerDay: 10, escalationPerDoorPerDay: 3, perOwnerPerDay: 15, dnd: false };
 const fresh: LedgerState = { sentTodayDoorEvent: 0, sentTodayDoorEscalation: 0, sentTodayOwner: 0, alreadySeen: false };
 
@@ -50,7 +50,7 @@ describe("decideInitiation (pure rules)", () => {
     expect(decideInitiation(base, { ...defaults, dnd: true }, fresh)).toEqual({ verdict: "suppress", reason: "dnd" });
     const d = decideInitiation({ ...base, finalStop: true }, { ...defaults, dnd: true }, fresh);
     expect(d.verdict).toBe("defer"); expect((d as any).reason).toBe("dnd-final-stop");
-    expect((d as any).until).toBe("2026-09-08T22:00:00.000Z"); // next Oslo midnight
+    expect((d as any).until).toBe("2026-09-08T22:00:00.000Z"); // next Berlin midnight
   });
 
   it("already-seen wins over quiet hours and ceilings", () => {
@@ -66,18 +66,18 @@ describe("decideInitiation (pure rules)", () => {
   });
 
   it("quiet hours: a scheduled slot is dropped for good; an event is deferred to quiet end; an owner-set reminder passes", () => {
-    const night = new Date("2026-09-08T20:30:00Z"); // 22:30 Oslo (CEST)
+    const night = new Date("2026-09-08T20:30:00Z"); // 22:30 Berlin (CEST)
     expect(decideInitiation({ ...base, cls: "scheduled", itemKey: "brief/2026-09-08T22", now: night }, defaults, fresh)).toEqual({ verdict: "suppress", reason: "quiet-hours" });
     const d = decideInitiation({ ...base, now: night }, defaults, fresh);
-    expect(d).toMatchObject({ verdict: "defer", reason: "quiet-hours", until: "2026-09-09T05:00:00.000Z" }); // 07:00 Oslo
+    expect(d).toMatchObject({ verdict: "defer", reason: "quiet-hours", until: "2026-09-09T05:00:00.000Z" }); // 07:00 Berlin
     expect(decideInitiation({ ...base, now: night, ownerSetTime: true }, defaults, fresh)).toEqual({ verdict: "send" });
   });
 
   it("a quiet-hours defer past midnight rolls to the NEXT slot (quiet end), not to the next owner day", () => {
-    const late = new Date("2026-09-08T21:30:00Z"); // 23:30 Oslo
+    const late = new Date("2026-09-08T21:30:00Z"); // 23:30 Berlin
     expect(decideInitiation({ ...base, now: late }, defaults, fresh))
       .toMatchObject({ verdict: "defer", reason: "quiet-hours", until: "2026-09-09T05:00:00.000Z" });
-    const small = new Date("2026-09-08T23:30:00Z"); // 01:30 Oslo on the 9th
+    const small = new Date("2026-09-08T23:30:00Z"); // 01:30 Berlin on the 9th
     expect(decideInitiation({ ...base, now: small }, defaults, fresh))
       .toMatchObject({ verdict: "defer", reason: "quiet-hours", until: "2026-09-09T05:00:00.000Z" });
   });
@@ -155,8 +155,8 @@ describe("decideInitiation (pure rules)", () => {
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
-  it("DST: the 25-hour day of 2026-10-25 in Europe/Oslo", () => {
-    const tz = "Europe/Oslo";
+  it("DST: the 25-hour day of 2026-10-25 in Europe/Berlin", () => {
+    const tz = "Europe/Berlin";
     // Midnight starting the 25th is CEST (+02:00); midnight starting the 26th is CET (+01:00).
     expect(nextOwnerDayStart(new Date("2026-10-24T12:00:00Z"), tz).toISOString()).toBe("2026-10-24T22:00:00.000Z");
     expect(nextOwnerDayStart(new Date("2026-10-25T12:00:00Z"), tz).toISOString()).toBe("2026-10-25T23:00:00.000Z");
@@ -166,9 +166,9 @@ describe("decideInitiation (pure rules)", () => {
   });
 
   it("a wall clock inside the spring-forward gap resolves to the instant BEFORE it (documented, not desired)", () => {
-    // 02:30 never happens on 2026-03-29 in Oslo; the search cannot converge and stops early rather
+    // 02:30 never happens on 2026-03-29 in Berlin; the search cannot converge and stops early rather
     // than late. Pinned so a change to the correction loop is visible.
-    expect(instantAt("2026-03-29", "02:30", "Europe/Oslo").toISOString()).toBe("2026-03-29T00:30:00.000Z");
+    expect(instantAt("2026-03-29", "02:30", "Europe/Berlin").toISOString()).toBe("2026-03-29T00:30:00.000Z");
   });
 
   it("the owner clock is the request's tz, not the box's: 10:00 UTC is quiet in Auckland", () => {
@@ -369,7 +369,7 @@ describe("the ledger, against a real Postgres", () => {
   });
 
   describe("the daily counters are counted on the OWNER clock", () => {
-    // 2026-09-08T21:30Z = 23:30 Oslo on the 8th; 2026-09-08T22:30Z = 00:30 Oslo on the 9th.
+    // 2026-09-08T21:30Z = 23:30 Berlin on the 8th; 2026-09-08T22:30Z = 00:30 Berlin on the 9th.
     const yesterdayLate = new Date("2026-09-08T21:30:00Z");
     const todayEarly = new Date("2026-09-08T22:30:00Z");
     const today = new Date("2026-09-09T08:00:00Z");
@@ -380,7 +380,7 @@ describe("the ledger, against a real Postgres", () => {
       return d;
     };
 
-    it("a row at 23:30 Oslo yesterday does not count today; a row at 00:30 Oslo today does", async () => {
+    it("a row at 23:30 Berlin yesterday does not count today; a row at 00:30 Berlin today does", async () => {
       await send({ itemKey: "a", now: yesterdayLate });
       expect(await loadLedgerState(pool, { ...base, now: today, itemKey: "z" })).toMatchObject({ sentTodayDoorEvent: 0, sentTodayDoorEscalation: 0, sentTodayOwner: 0 });
       await send({ itemKey: "b", now: todayEarly });
@@ -430,9 +430,9 @@ describe("the ledger, against a real Postgres", () => {
   });
 
   describe("an open deferral is reused, never re-written", () => {
-    const night = new Date("2026-09-08T20:30:00Z");   // 22:30 Oslo — quiet
+    const night = new Date("2026-09-08T20:30:00Z");   // 22:30 Berlin — quiet
     const aMinuteLater = new Date("2026-09-08T20:31:00Z");
-    const afterQuietEnd = new Date("2026-09-09T06:00:00Z"); // 08:00 Oslo, past the 07:00 hold
+    const afterQuietEnd = new Date("2026-09-09T06:00:00Z"); // 08:00 Berlin, past the 07:00 hold
 
     it("a poller re-asking about a held item costs one row per HOLD, not one per tick", async () => {
       const first = await gateInitiation(pool, { ...base, now: night });
@@ -473,12 +473,12 @@ describe("the ledger, against a real Postgres", () => {
   });
 
   describe("a same-day dnd/quiet suppression is reused, never re-written", () => {
-    // The lanes that pay for this: The chief of staff keeps a reminder eligible under DND and the travel agent ticks every
+    // The lanes that pay for this: a reminder stays eligible under DND, and a scheduled agent ticks every
     // minute. One suppressed row per tick is up to ~1,440 rows a day for ONE item.
-    const night = new Date("2026-09-08T20:30:00Z");        // 22:30 Oslo — quiet
+    const night = new Date("2026-09-08T20:30:00Z");        // 22:30 Berlin — quiet
     const aMinuteLater = new Date("2026-09-08T20:31:00Z");
-    const yesterdayLate = new Date("2026-09-08T21:30:00Z"); // 23:30 Oslo on the 8th
-    const todayEarly = new Date("2026-09-08T22:30:00Z");    // 00:30 Oslo on the 9th
+    const yesterdayLate = new Date("2026-09-08T21:30:00Z"); // 23:30 Berlin on the 8th
+    const todayEarly = new Date("2026-09-08T22:30:00Z");    // 00:30 Berlin on the 9th
 
     it("two DND gates for one item on one owner day cost ONE suppressed row", async () => {
       await pool.query("insert into proactivity_settings (owner, dnd) values ('owner-1', true)");
@@ -503,7 +503,7 @@ describe("the ledger, against a real Postgres", () => {
       expect(rows).toEqual([{ status: "suppressed", reason: "dnd" }, { status: "sent", reason: null }]);
     });
 
-    it("the reuse ends with the OWNER day, not with 24 h — 23:30 Oslo and 00:30 Oslo each get a row", async () => {
+    it("the reuse ends with the OWNER day, not with 24 h — 23:30 Berlin and 00:30 Berlin each get a row", async () => {
       await pool.query("insert into proactivity_settings (owner, dnd) values ('owner-1', true)");
       await gateInitiation(pool, { ...base, now: yesterdayLate });
       await gateInitiation(pool, { ...base, now: todayEarly }); // one hour later, a new owner day
@@ -582,7 +582,7 @@ describe("the ledger, against a real Postgres", () => {
 
   describe("wouldSend: the same verdict, never a sent row", () => {
     it("inside quiet hours: defer, and exactly one deferred row — a second call reuses it", async () => {
-      const night = new Date("2026-09-08T20:30:00Z"); // 22:30 Oslo — quiet
+      const night = new Date("2026-09-08T20:30:00Z"); // 22:30 Berlin — quiet
       const aMinuteLater = new Date("2026-09-08T20:31:00Z");
       const first = await wouldSend(pool, { ...base, now: night });
       expect(first).toEqual({ verdict: "defer", reason: "quiet-hours", until: "2026-09-09T05:00:00.000Z" });

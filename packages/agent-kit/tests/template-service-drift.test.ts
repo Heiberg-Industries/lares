@@ -1,12 +1,12 @@
-// The role TEMPLATES are the neutral defaults every role service and every overlay is built from
-// (repo CLAUDE.md). When a service's own declaration moves and its template does not, an overlay
-// authored from the documentation ships broken — and nothing in the repo notices, because no
+// The role TEMPLATES are the neutral defaults every role service and every installation is built
+// from (repo AGENTS.md). When a service's own declaration moves and its template does not, an
+// installation authored from the documentation ships broken — and nothing in the repo notices, because no
 // test reads both.
 //
-// That is exactly what step 2's rename nearly did: the persona moved from
+// That is what a rename can do: the persona moved from
 // `agent/instructions.md` to `agent/persona.md` in all three services (eve reads a root
 // `agent/instructions.md` AND `agent/instructions/` together, so leaving it there injected the
-// whole persona twice), while the three templates still said `agent/instructions.md`. An overlay
+// whole persona twice), while the templates could still say `agent/instructions.md`. An installation
 // built from one would have named a file that does not exist — and "fixing" that by creating
 // `agent/instructions.md` reintroduces the double injection.
 import { readFileSync } from "node:fs";
@@ -43,7 +43,7 @@ describe("role templates do not drift from the services built on them", () => {
     );
   });
 
-  it("the templates README does not still instruct an overlay to use the old path", () => {
+  it("the templates README does not still instruct an installation to use the old path", () => {
     const readme = readFileSync(`${templates}/README.md`, "utf8");
     expect(readme).not.toMatch(/"persona":\s*"agent\/instructions\.md"/u);
     expect(readme).not.toMatch(/--out agent\/instructions\.md/u);

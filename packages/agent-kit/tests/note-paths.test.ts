@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { inboxNotePath, slug } from "../src/note-paths.js";
 
 /**
- * The title → `_inbox/<slug>.md` derivation fix round 1).
+ * The title → `_inbox/<slug>.md` derivation.
  *
  * This module carries a SECURITY property, not just a formatting one: because a write tool
  * derives its path instead of accepting one, a traversal argument is unrepresentable rather
@@ -63,7 +63,7 @@ describe("inboxNotePath — traversal is unrepresentable", () => {
   });
 
   it("drops non-ASCII letters rather than smuggling them through", () => {
-    // Recorded, not celebrated: `slug` is ASCII-only (ported verbatim from the old runtime), so
+    // Recorded, not celebrated: `slug` is ASCII-only, so
     // a Norwegian title loses its æøå. "Årsmøte" → "rsm-te" is ugly but safe and stable; the
     // frontmatter `title` keeps the real text, which is what a reader sees.
     expect(inboxNotePath("Årsmøte 2026")).toBe("_inbox/rsm-te-2026.md");

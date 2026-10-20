@@ -44,8 +44,7 @@ function slackAuth(userId: string) {
   return { attributes: { user_id: userId, channel_id: "D123", thread_ts: "1.0" }, authenticator: "slack-webhook" };
 }
 
-/** Mirrors `services/chief-of-staff/tests/brain-writes.test.ts` (pre--Task-2)'s `ctx()` — a
- *  minimal fake `ToolContext`; only `session.auth` is read before the gate throws. */
+/** A minimal fake `ToolContext`; only `session.auth` is read before the gate throws. */
 function ctx(auth: unknown) {
   return { session: { id: "wrun_test", auth: { current: auth, initiator: auth } } } as never;
 }

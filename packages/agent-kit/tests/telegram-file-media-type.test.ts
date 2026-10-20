@@ -2,12 +2,12 @@
  * Conformance: a Telegram file must reach the model under the type Telegram DECLARED
  * in the message — not the generic header Telegram's file server sends with every download.
  *
- * Verbatim, Telegram, 2026-09-14: a photo the owner sent the chief of staff failed with `Telegram file rejected —
+ * Verbatim from Telegram: a photo the owner sent an agent failed with `Telegram file rejected —
  * photo.jpg has media type "application/octet-stream" which is not allowed by this route`. The
  * file server answers every `/file/bot…` download with `Content-Type: application/octet-stream`,
  * and eve 0.32's `createTelegramFetchFile` preferred that header over the type it had already
- * parsed (`photo` → image/jpeg, `document.mime_type`). Every Telegram attachment on the chief of staff and
- * The travel agent failed until `patches/eve.patch` added `laresTelegramMediaType`.
+ * parsed (`photo` → image/jpeg, `document.mime_type`). Every Telegram attachment failed until
+ * `patches/eve.patch` added `laresTelegramMediaType`.
  *
  * This runs the INSTALLED (patched) eve, so an eve bump that drops the hunk fails here, not in a
  * chat. Both directions: a declared type wins over the generic header, a real header is kept,
@@ -16,7 +16,7 @@
 import { describe, it, expect } from "vitest";
 import { createTelegramFetchFile, createTelegramFileUrl } from "eve/channels/telegram";
 
-/** The upload policy both Telegram doors use (the chief-of-staff service telegram.ts, the travel service telegram.ts). */
+/** The upload policy both Telegram doors use (the chief-of-staff service's telegram.ts). */
 const POLICY = { allowedMediaTypes: ["image/*", "application/pdf", "text/*"], maxBytes: 10 * 1024 * 1024 };
 
 /** A stand-in for api.telegram.org: getFile answers a file_path, the download answers `header`. */

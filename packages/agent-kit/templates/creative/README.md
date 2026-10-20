@@ -1,12 +1,12 @@
 # creative
 
-The creative-director role, extracted from the fleet's production ideation agent. `role.md` is the engine text — generic, lint-enforced, naming no person,
+The creative-director role. `role.md` is the engine text — generic, lint-enforced, naming no person,
 company, vendor, place or language. `agent.json` is the declaration this role assumes: every
 capability at the scope the role's prose relies on, every autonomy level at the safe baseline,
 egress sealed.
 
 An installation uses it by pointing its own service at this `role.md` and supplying its own
-`voice.md` overlay — the assembler (`bin/assemble-instructions.ts`) turns the service's own
+`voice.md` — the assembler (`bin/assemble-instructions.ts`) turns the service's own
 `agent.json` + this role + that voice into `agent/persona.md`, and the "where I run"
 section of the result is GENERATED from the declaration, never hand-written.
 
@@ -15,7 +15,7 @@ knows which member is talking, not one instance per member. That follows from wh
 on — the business knowledge store is the same store for everyone in the organisation, where a
 personal vault is not.
 
-The overlay carries two things this role deliberately refuses. One is the tone. The other is
+The voice file carries two things this role deliberately refuses. One is the tone. The other is
 every FACT about the owner's own ventures — which one has no note, which was renamed and when —
 because the role's whole point is that there is no list of brands in it.
 

@@ -1,8 +1,8 @@
-// W5C-s3. One set of note tools, told which area to read.
+// One set of note tools, told which area to read.
 //
 // The rule proved here: the areas a session may open are derived from the declaration's own
-// `vault` grant, and only from it — W5C-s9 removed the window where `brain`, `atlas` and
-// `memory` each opened one area of their own; a definition that still spells one of them now
+// `vault` grant, and only from it — `brain`, `atlas` and
+// `memory` no longer each open one area of their own; a definition that still spells one of them now
 // fails `assertDeclarationIntegrity` before `grantedVaultAreas` ever runs (`one-name.test.ts`
 // proves that side). The tools enforce the area they ARE granted themselves — a refusal is a
 // rejected promise naming the area, not a description in a persona.

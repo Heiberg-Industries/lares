@@ -79,7 +79,7 @@ describe("the ratchet, for the board", () => {
     ]);
   });
 
-  // Final review F9: a set-then-cleared actor reads back as '' — that must say 'unknown', not ''.
+  // A set-then-cleared actor reads back as '' — that must say 'unknown', not ''.
   it("a delete after lares.actor was set and then reset audits 'unknown'", async () => {
     const r = new KitRatchet(pool);
     await r.setLevel("deleter", "cleared", "gated", undefined, "setup");
@@ -106,7 +106,7 @@ describe("the ratchet, for the board", () => {
     await broken.end();
   });
 
-  // Final review F6: eve re-invokes the policy when an answered card resumes, with the same callId —
+  // eve re-invokes the policy when an answered card resumes, with the same callId —
   // one card is one piece of evidence. Calls without an id (older paths) are all kept.
   it("one row per callId; rows without a callId are all kept", async () => {
     const e = { agent: "dedupe", capability: "vault", tool: "vault_write", decision: "asked" as const, reason: "set to ask first" };

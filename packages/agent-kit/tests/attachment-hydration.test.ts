@@ -1,8 +1,8 @@
 /**
  * what the model sees for a staged file eve does not inline.
  *
- * Measured 2026-09-14 before this module: a .txt, .md, .docx and .xlsx each reached the chief of staff as a bare
- * `/workspace/attachments/<hash>/<name>` path she could not open, and a HEIC photo ended the
+ * Measured before this module: a .txt, .md, .docx and .xlsx each reached the agent as a bare
+ * `/workspace/attachments/<hash>/<name>` path it could not open, and a HEIC photo ended the
  * session. The Office fixtures below are built in-test as minimal OOXML packages (shaped, not
  * recorded): the same parts Word/Excel/PowerPoint write, with one code word each.
  */

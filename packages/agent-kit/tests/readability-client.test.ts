@@ -1,5 +1,4 @@
-// MOVED into @lares/agent-kit with the client itself — the chief-of-staff service and the travel service
-// carried identical copies of this test alongside identical copies of the code.
+// The readability client is shared by every role service, so its test lives here with it.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -113,7 +112,7 @@ describe("readUrl", () => {
   });
 
   it("throws ReadabilityTargetError when the worker is up but couldn't read that link", async () => {
-    // Verbatim shape, the worker, 2026-09-14: 502 {"error":"fetch failed: TypeError: fetch failed"}.
+    // Verbatim shape from the worker: 502 {"error":"fetch failed: TypeError: fetch failed"}.
     const port = await listen((_req, res) => {
       res.writeHead(502, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "fetch 403" }));

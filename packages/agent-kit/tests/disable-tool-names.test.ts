@@ -8,16 +8,16 @@
  * keep `bash`, `write_file` and `web_fetch` out of a production agent's hands, silent inertness
  * was the worst available failure mode.
  *
- * UPDATE, eve 0.60.1 (W2-s8b). The claim is now TRUE: a disableTool() sentinel whose name
+ * UPDATE, eve 0.60.1. The claim is now TRUE: a disableTool() sentinel whose name
  * matches no framework-default candidate now fails `eve build` itself
  * (`compiler/source-graph.js`: `Source "..." disables a slot with no lower-precedence source.`
- * — the exact CI blocker W2-s8 retired the glob.ts/grep.ts sentinels for, once those two left
- * eve's default tool set at 0.39.0 and had nothing left to shadow). This test is not made
+ * — the reason the glob.ts/grep.ts sentinels were retired once those two left eve's default
+ * tool set at 0.39.0 and had nothing left to shadow). This test is not made
  * redundant by that: it is the fast, no-build confirmation of the same fact, catching a typo or
  * a dropped default in a plain `pnpm test` run long before anyone pays for `eve build`.
  *
  * This test IS the enforcement, in the same spirit as the compose drift guard and the chief of staff's
- * schema drift alarm against the travel agent: it walks every eve service's `agent/tools/`, finds the
+ * schema drift alarm: it walks every eve service's `agent/tools/`, finds the
  * `disableTool()` files, and asserts each filename corresponds to a real framework-DEFAULT tool
  * in the INSTALLED eve — resolved through the service's own dependency graph, so an eve upgrade
  * that renames or removes a builtin turns this red instead of turning a disable inert.

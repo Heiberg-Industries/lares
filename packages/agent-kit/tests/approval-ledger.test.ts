@@ -20,7 +20,7 @@ let db: Pool;
 beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   db = new Pool({ connectionString: container.getConnectionUri() });
-  // CI FLAKE FIXED (WAVE-3-NOTES): a Pool with no 'error' listener turns a stopped container's
+  // A Pool with no 'error' listener turns a stopped container's
   // idle-client error into an uncaught exception that fails the run. Register both, the way
   // services/box/tests/helpers/three-spellings.ts's startThreeSpellingsDb does.
   db.on("error", () => undefined);
@@ -93,7 +93,7 @@ describe("the approval ledger", () => {
   });
 });
 
-describe("used_at / use_count (W7A-s5b) — counted, never enforced", () => {
+describe("used_at / use_count — counted, never enforced", () => {
   it("a fresh ask has never been used", async () => {
     await recordAsk(db, ask);
     const row = await askForCall(db, "call-1");

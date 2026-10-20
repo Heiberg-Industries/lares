@@ -1,20 +1,18 @@
-// W5C-s9 — the last slice of the vault rename: delete the three retired names from
-// `KNOWN_CAPABILITIES` and prove, by grep, that nothing in the tree still spells one of them as
-// a capability. `brain`, `atlas` and `memory` already left the array at W5C-s5/s6
-// (WAVE-3-NOTES's 5C point 13); what is left here is this file itself, the golden list in
+// The vault rename: the three retired names are not in `KNOWN_CAPABILITIES`, and this proves,
+// by grep, that nothing in the tree still spells one of them as a capability. `brain`, `atlas`
+// and `memory` already left the array; what is left here is this file itself, the golden list in
 // `manifest.test.ts`, and the removal of `grantedVaultAreas`' legacy mapping
 // (`AREA_OF_LEGACY_CAPABILITY`, manifest.ts) — the last place a `brain`/`atlas`/`memory` grant
 // still did anything.
 //
-// Adapted from the plan's own snippet (`.claude/plans/2026-09-19-prelaunch-wave-5.md`,
-// W5C-s9), corrected against the real code rather than the brief:
-//   - there is no `base` manifest fixture in this package — the fixture is built inline below,
-//     the same minimal shape `vault-areas.test.ts`'s own `declaration()` helper uses;
+// Notes on the fixtures and shapes:
+//   - there is no shared `base` manifest fixture in this package — the fixture is built inline
+//     below, the same minimal shape `vault-areas.test.ts`'s own `declaration()` helper uses;
 //   - the "not in KNOWN_CAPABILITIES" membership check lives in `assertDeclarationIntegrity`,
-//     NOT in `parseManifest` (manifest.ts:436-457; `parseManifest` only runs the zod schema) —
+//     NOT in `parseManifest` (`parseManifest` only runs the zod schema) —
 //     so the "an old grant now fails closed, loudly" case below calls
 //     `assertDeclarationIntegrity`, not `parseManifest`, or it would not throw at all;
-//   - two CAPABILITY_SHAPES the plan could not have known about are added: `explicitLevel(...,
+//   - two CAPABILITY_SHAPES cover the ratchet and the tool table: `explicitLevel(...,
 //     "brain"|"atlas"|"memory")` (the ratchet's own capability argument) and
 //     `capabilityOfTool(...).toBe("brain"|"atlas"|"memory")` (a test asserting the OLD answer).
 import { readFileSync, readdirSync } from "node:fs";
@@ -39,7 +37,7 @@ const CAPABILITY_SHAPES = [
   /\bgrantFor\([^,]+,\s*"(brain|atlas|memory)"/,
   /\bautonomyOf\([^,]+,\s*"(brain|atlas|memory)"/,
   /CAPABILITY_DOCS\["(brain|atlas|memory)"\]/,
-  // Not in the plan's snippet: the ratchet's own board-level lookup, and a test pinning the OLD
+  // Also the ratchet's own board-level lookup, and a test pinning the OLD
   // `capabilityOfTool` answer — both name one of the three just as directly as `grantFor` does.
   /explicitLevel\([^)]*"(brain|atlas|memory)"/,
   /capabilityOfTool\([^)]*\)\s*\)?\.toBe\("(brain|atlas|memory)"\)/,

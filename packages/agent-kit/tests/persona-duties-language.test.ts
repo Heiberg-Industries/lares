@@ -1,10 +1,10 @@
-// The instruction stack gains DUTIES and LANGUAGE step 2, Task 5; spec Part 3).
+// The instruction stack gains DUTIES and LANGUAGE steps.
 //
-// Spec Part 3's order, and it is load-bearing: 1 who I am · 2 where I run · 3 the role
+// The order is load-bearing: 1 who I am · 2 where I run · 3 the role
 // (engine-owned, not editable) · 4 the owner's duties · 5 the voice · 6 the language. The
 // engine's rules come BEFORE the owner's words, and the owner's words can only add.
 //
-// THE FIRST CASE IS THE GATE FOR THE WHOLE PLAN. With empty duties and no language, the stack
+// THE FIRST CASE IS THE GATE FOR THE WHOLE DESIGN. With empty duties and no language, the stack
 // must assemble to exactly the bytes each service's committed persona file already holds — that
 // is what makes "agents become definitions" a change of WHERE the persona comes from and not a
 // change of WHAT it says. If it ever goes red, the fault is a changed render or a stale
@@ -24,8 +24,8 @@ const templates = new URL("../templates", import.meta.url).pathname;
 
 /** The persona file each service commits, read through its own declaration's `persona` field
  *  rather than a literal — the same property the services' own drift tests rely on, so the
- *  Task 5 rename (agent/instructions.md -> agent/persona.md, because eve reads a root
- *  instructions.md AND agent/instructions/ TOGETHER) needs no edit here. */
+ *  rename of the persona file (eve reads a root instructions.md AND agent/instructions/
+ *  TOGETHER, so the file is not called that) needs no edit here. */
 function committedPersona(dir: string, personaPath: string): string {
   return readFileSync(`${dir}/${personaPath}`, "utf8");
 }
