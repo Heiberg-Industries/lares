@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse } from "yaml";
+import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 vi.setConfig({ testTimeout: 20_000 });
@@ -51,7 +52,7 @@ let dir: string, binDir: string, prefix: string, log: string, releaseFile: strin
 /** A stub that logs its own name and argv, and exits 0 unless `body` says otherwise. */
 function stub(name: string, body = "exit 0") {
   const p = join(binDir, name);
-  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${body}\n`);
+  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${name === "docker" ? engineDockerPrelude() : ""}${body}\n`);
   chmodSync(p, 0o755);
 }
 
@@ -67,7 +68,7 @@ function run(args: string[], input = answers, env: Record<string, string> = {}, 
       cwd,
       encoding: "utf8",
       env: {
-        PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         // HOME is this machine's real one, unlike the other installer tests, because the real
         // pnpm the stub hands render-stack to finds its own tooling under it. install.sh writes
         // nothing outside $PREFIX, so nothing of this installation can land there.

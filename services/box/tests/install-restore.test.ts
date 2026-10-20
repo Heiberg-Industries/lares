@@ -31,6 +31,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
@@ -40,7 +41,7 @@ let dir: string, binDir: string, prefix: string, log: string;
 /** A stub that logs its own name and argv, and exits 0. */
 function stub(name: string, body = "exit 0") {
   const p = join(binDir, name);
-  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${body}\n`);
+  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${name === "docker" ? engineDockerPrelude() : ""}${body}\n`);
   chmodSync(p, 0o755);
 }
 
@@ -49,7 +50,7 @@ function run(args: string[], env: Record<string, string> = {}) {
     const stdout = execFileSync("/bin/bash", [SCRIPT, ...args], {
       encoding: "utf8",
       timeout: 10_000, // a script that hangs waiting for input must fail fast, not hang the suite
-      env: { PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (e) {

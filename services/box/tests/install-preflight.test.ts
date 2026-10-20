@@ -17,6 +17,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFile
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
@@ -25,14 +26,14 @@ let dir: string, binDir: string, prefix: string, log: string;
 /** A stub that logs its own name and argv, and exits 0. */
 function stub(name: string, body = 'exit 0') {
   const p = join(binDir, name);
-  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${body}\n`);
+  writeFileSync(p, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${name === "docker" ? engineDockerPrelude() : ""}${body}\n`);
   chmodSync(p, 0o755);
 }
 function run(args: string[], env: Record<string, string> = {}) {
   try {
     const stdout = execFileSync("/bin/bash", [SCRIPT, ...args], {
       encoding: "utf8",
-      env: { PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env },
     });
     return { code: 0, stdout, stderr: "" };
   } catch (e) {
@@ -68,7 +69,7 @@ beforeEach(() => {
   binDir = join(dir, "bin"); mkdirSync(binDir);
   prefix = join(dir, "root"); mkdirSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
+  for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "ufw", "curl", "openssl"]) stub(name);
   stub("id", 'echo 0');                                   // running as root
   stub("uname", 'echo Linux');
   stub("free", 'echo "Mem: 8192 1024 7168"');
@@ -133,9 +134,49 @@ describe("the installer, before it writes anything", () => {
         try { symlinkSync(join(from, name), join(clean, name)); } catch { /* same name in both: first wins */ }
       }
     }
-    const r = run(["--yes"], { PATH: `${binDir}:${clean}` });
+    const r = run(["--yes"], { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${clean}` });
     expect(r.code).toBe(78);
     expect(r.stderr).toMatch(/docker/i);
+  });
+
+  // The box's own programs run in the engine image (engine_run), so the host needs no Node and
+  // no pnpm: a box without either passes, and the engine image is what is checked instead.
+  /** A PATH of the stubs plus links to every system tool EXCEPT those starting with `omit`. */
+  function pathWithout(...omit: string[]): string {
+    const clean = join(dir, "bin-clean");
+    mkdirSync(clean);
+    for (const from of ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"]) {
+      let names: string[] = [];
+      try { names = readdirSync(from); } catch { continue; }
+      for (const name of names) {
+        if (omit.some((o) => name.startsWith(o))) continue;
+        try { symlinkSync(join(from, name), join(clean, name)); } catch { /* same name in two places: first wins */ }
+      }
+    }
+    return `${binDir}:${clean}`;
+  }
+
+  it("needs neither node nor pnpm on the host when the engine image is there", () => {
+    const r = run(["--dry-run", "--yes"], { PATH: pathWithout("node", "pnpm", "npm", "corepack", "tsx") });
+    expect(r.code).toBe(0);
+    expect(r.stderr).not.toMatch(/node|pnpm/i);
+    expect(readFileSync(log, "utf8")).toContain(`docker image inspect ${ENGINE_IMAGE}`);
+  });
+
+  it("reports a missing engine image together with every other problem, in one pass", () => {
+    stub("docker", 'case "$*" in "image inspect"*) exit 1 ;; esac\nexit 0');
+    stub("free", 'echo "Mem: 1024 512 512"');
+    const r = run(["--dry-run", "--yes"]);
+    expect(r.code).toBe(78);
+    expect(r.stderr).toContain(`the engine image is not on this box: ${ENGINE_IMAGE}`);
+    expect(r.stderr).toMatch(/memory/i);
+    expect(readdirSync(prefix)).toEqual([]);
+  });
+
+  it("reports an unknown engine image when no digest can be found anywhere", () => {
+    const r = run(["--dry-run", "--yes"], { LARES_ENGINE_IMAGE: "" });
+    expect(r.code).toBe(78);
+    expect(r.stderr).toMatch(/engine image is not known/);
   });
 
   it("rejects an unknown flag instead of reading it as no flags", () => {

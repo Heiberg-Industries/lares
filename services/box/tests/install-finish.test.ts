@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
@@ -30,7 +31,7 @@ const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n
 function stub(name: string, body = "exit 0") {
   const path = join(binDir, name);
   const prelude = name === "pnpm" && !body.includes("render-stack") ? `${RENDER_STACK}\n` : "";
-  writeFileSync(path, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${prelude}${body}\n`);
+  writeFileSync(path, `#!/usr/bin/env bash\nprintf '%s %s\\n' "${name}" "$*" >> "$STUB_LOG"\n${name === "docker" ? engineDockerPrelude() : ""}${prelude}${body}\n`);
   chmodSync(path, 0o755);
 }
 
@@ -43,7 +44,7 @@ function runWithStdin(args: string[], input: string) {
         input,
         encoding: "utf8",
         env: {
-          PATH: `${binDir}:/usr/bin:/bin`,
+          LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`,
           STUB_LOG: log,
           LARES_PREFIX: prefix,
           HOME: dir,
