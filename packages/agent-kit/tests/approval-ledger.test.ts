@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  approvalLedger, askForCall, payloadFingerprint, recordAnswer, recordAsk,
+  answeredVia, approvalLedger, askForCall, payloadFingerprint, recordAnswer, recordAsk,
   resetApprovalLedgerWarningForTests,
 } from "../src/approval-ledger.js";
 import { readApprovalCounts } from "../src/approval-stats.js";
@@ -74,6 +74,14 @@ describe("the approval ledger", () => {
     await expect(
       db.query("UPDATE approval_asks SET outcome = 'maybe' WHERE request_id = 'req-1'"),
     ).rejects.toThrow(/approval_asks_outcome_check/);
+  });
+
+  it("answeredVia reads how a card was answered, and is null for no row or no answer", async () => {
+    expect(await answeredVia("req-1")).toBeNull();
+    await recordAsk(db, ask);
+    expect(await answeredVia("req-1")).toBeNull();
+    await recordAnswer(db, { requestId: "req-1", outcome: "cancelled", answeredVia: "revised" });
+    expect(await answeredVia("req-1")).toBe("revised");
   });
 
   it("never throws, and never costs the turn, when the table is missing", async () => {

@@ -32,7 +32,11 @@ vi.mock("@lares/agent-kit/telegram-fetch", () => ({
   },
 }));
 
+const ledger = vi.hoisted(() => ({ answeredVia: async (_id: string): Promise<string | null> => null }));
+vi.mock("@lares/agent-kit/approval-ledger", () => ({ answeredVia: (id: string) => ledger.answeredVia(id) }));
+
 import {
+  APPROVAL_REVISED_TEXT,
   APPROVAL_OUTCOME_TEXT,
   isShortenedCard,
   onApprovalSettled,
@@ -187,6 +191,34 @@ describe("3. approval.settled edits the card", () => {
     const { chat, edits } = await cardPosted();
     await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, chat);
     expect(edits[0]!.text.endsWith(`\n\n${APPROVAL_OUTCOME_TEXT.cancelled}`)).toBe(true);
+  });
+
+  it("Cancel on a card the agent revised: one extra line says so", async () => {
+    ledger.answeredVia = async () => "revised";
+    const { chat, edits } = await cardPosted();
+    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, chat);
+    expect(edits[0]!.text.endsWith(`\n\n${APPROVAL_OUTCOME_TEXT.cancelled}\n${APPROVAL_REVISED_TEXT}`)).toBe(true);
+    expect(APPROVAL_REVISED_TEXT).toBe("Revised — see the new card");
+  });
+
+  it("a cancel the owner tapped (not revised) and a failed lookup both keep today's text", async () => {
+    ledger.answeredVia = async () => "telegram";
+    let fake = await cardPosted();
+    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, fake.chat);
+    expect(fake.edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.cancelled)).toBe(true);
+    ledger.answeredVia = async () => {
+      throw new Error("db down");
+    };
+    fake = await cardPosted();
+    await onApprovalSettled({ outcome: "cancelled", requestId: REQUEST_ID }, fake.chat);
+    expect(fake.edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.cancelled)).toBe(true);
+  });
+
+  it("an approval is never reworded, whatever the ledger says", async () => {
+    ledger.answeredVia = async () => "revised";
+    const { chat, edits } = await cardPosted();
+    await onApprovalSettled({ outcome: "approved", requestId: REQUEST_ID }, chat);
+    expect(edits[0]!.text.endsWith(APPROVAL_OUTCOME_TEXT.approved)).toBe(true);
   });
 
   it("a card already decided is not edited again, and a card this chat never posted is left alone", async () => {
