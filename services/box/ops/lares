@@ -77,7 +77,7 @@ cmd_update() {
   on="${on##*/}"
 
   code=0
-  "$OPS/get-lares.sh" --release "$name" --fetch-only || code=$?
+  bash "$OPS/get-lares.sh" --release "$name" --fetch-only || code=$?
   [ "$code" -eq 0 ] || exit "$code"
   new="$ROOT/releases/$name"
 

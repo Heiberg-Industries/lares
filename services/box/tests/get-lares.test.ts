@@ -218,6 +218,13 @@ describe("lares", () => {
     expect(current()).toBe(`releases/${RC12}`);
   });
 
+  it("still updates when the unpacked get-lares.sh has no exec bit", () => {
+    chmodSync(join(root(), "releases", RC11, "services/box/ops/get-lares.sh"), 0o644);
+    const r = lares(["update", "--release", RC12]);
+    expect(r.code, r.stderr).toBe(0);
+    expect(current()).toBe(`releases/${RC12}`);
+  });
+
   it("does not switch current when update.sh fails, and does not run install.sh", () => {
     const r = lares(["update", "--release", RC12], { FAIL_UPDATE: "1" });
     expect(r.code).not.toBe(0);
