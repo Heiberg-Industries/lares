@@ -19,14 +19,28 @@
  */
 import { contractClauses, labeledContext, type Lang } from "@lares/compose-contract";
 
+export interface ReplyExample {
+  text: string;
+  toThisPerson: boolean;
+}
+
+/** Each example sits in its own tag so one email cannot run into the next. The owner's text is
+ *  owner-side, so these stay OUTSIDE the outside-text block; a stray example tag is dropped. */
+function exampleGroup(heading: string, items: readonly ReplyExample[]): string {
+  if (items.length === 0) return "";
+  const body = items.map((e) => `<example>\n${e.text.replace(/<\/?example>/gi, "").trim()}\n</example>`).join("\n");
+  return `${heading}\n${body}`;
+}
+
 export interface ReplyPromptInput {
   /** The mailbox the reply is sent from. */
   account: string;
   lang: Lang;
   /** `buildVoiceBlock(...)` output — "" when there is no card. */
   voiceBlock: string;
-  /** The owner's own sent emails from this mailbox, nearest first. */
-  examples: readonly string[];
+  /** The owner's own sent emails, best first. `toThisPerson` marks mail the owner wrote to the
+   *  very person being answered; the rest are topic-nearest mail from the same mailbox. */
+  examples: readonly ReplyExample[];
   /** Labelled context blocks (CRM record, thread so far, dossier…) — "" when none. */
   contextBlocks: string;
   /** The closing rule the caller owns (signature appended vs. first-name sign-off). */
@@ -43,10 +57,13 @@ export const REPLY_FORMAT_LINE =
 
 export function buildReplyPrompt(i: ReplyPromptInput): string {
   const who = i.ownerName?.trim() || "the owner";
-  const examples =
-    i.examples.length > 0
-      ? `Emails ${who} actually sent from this mailbox. Match their length, register and warmth — not their words:\n${i.examples.join("\n---\n")}`
-      : "";
+  const match = "Match their length, register and warmth — not their words:";
+  const examples = [
+    exampleGroup(`Emails ${who} sent to this same person. ${match}`, i.examples.filter((e) => e.toThisPerson)),
+    exampleGroup(`Other emails ${who} sent from this mailbox. ${match}`, i.examples.filter((e) => !e.toThisPerson)),
+  ]
+    .filter((g) => g !== "")
+    .join("\n\n");
   const context = i.contextBlocks.trim() !== "" ? `Context — use only what helps, never invent a fact:\n${i.contextBlocks.trim()}` : "";
   return [
     `Write ${who}'s reply to the email below, sent from ${i.account}.`,

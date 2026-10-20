@@ -25,7 +25,8 @@
 import { classifySender } from "@lares/junk";
 import { gatewayComplete } from "./llm-complete.js";
 import { detectLanguage, buildVoiceBlock, pickModel } from "./voice.js";
-import { buildReplyPrompt } from "./reply-prompt.js";
+import { buildReplyPrompt, type ReplyExample } from "./reply-prompt.js";
+import { selectExemplars } from "./voice-learn.js";
 import { replyRecipients } from "./reply-recipients.js";
 import { labeledContext } from "@lares/compose-contract";
 import { twentyLookup } from "../catalogue/twenty_lookup.js";
@@ -123,6 +124,44 @@ async function tryOrNull<T>(fn: () => Promise<T>, onFail?: (err: unknown) => voi
     onFail?.(err);
     return null;
   }
+}
+
+const EXAMPLE_MAX_CHARS = 800;
+const EXAMPLES_TOTAL = 3;
+
+/** The owner's own recent mail to ONE person: no date limit, current thread dropped, quoted tails
+ *  and forwards/one-liners/essays filtered out (`selectExemplars`), newest first, at most
+ *  `EXAMPLES_TOTAL`, each cut to ~800 characters. Throws when the search or a read fails, so the
+ *  caller can mark the block failed. */
+export async function recipientExamples(gmail: GmailClient, addr: string, currentThreadId: string): Promise<string[]> {
+  // The address comes from the incoming mail's From header: anything but one plain address
+  // could add terms or groups to the search, so it is not searched at all. And a result only
+  // counts when that address really is among its recipients.
+  const a = addr.trim().toLowerCase();
+  if (!/^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(a)) return [];
+  const ids = await gmail.search(`to:${a} from:me`, 8);
+  const msgs = (await Promise.all(ids.map((id) => gmail.read(id))))
+    .filter((m): m is MailMessage =>
+      m !== null && m.threadId !== currentThreadId && m.to.some((t) => addressOf(t) === a))
+    .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt));
+  const { kept } = selectExemplars(msgs);
+  return kept
+    .slice(0, EXAMPLES_TOTAL)
+    .map((m) => (m.bodyText.length > EXAMPLE_MAX_CHARS ? `${m.bodyText.slice(0, EXAMPLE_MAX_CHARS).trimEnd()}…` : m.bodyText));
+}
+
+/** Mail to this person first, then topic examples up to the total, skipping any that repeat. */
+export function mergeExamples(toPerson: readonly string[], topic: readonly string[]): ReplyExample[] {
+  const key = (t: string) => t.replace(/\s+/g, " ").trim().slice(0, 120).toLowerCase();
+  const seen = new Set(toPerson.map(key));
+  const out: ReplyExample[] = toPerson.slice(0, EXAMPLES_TOTAL).map((text) => ({ text, toThisPerson: true }));
+  for (const text of topic) {
+    if (out.length >= EXAMPLES_TOTAL) break;
+    if (seen.has(key(text))) continue;
+    seen.add(key(text));
+    out.push({ text, toThisPerson: false });
+  }
+  return out;
 }
 
 /** A short excerpt for the sent-history block — enough to recognize the message, not a
@@ -272,7 +311,7 @@ export async function triageOneMessage(
     failed.add(label);
     console.error(`email-triage: context "${label}" failed for ${msg.id} — ${err instanceof Error ? err.message : String(err)}`);
   };
-  const [profile, examples, sig, crm, sentHistoryMsgs, dossierText, busy] = await Promise.all([
+  const [profile, topicExamples, toPersonExamples, sig, crm, sentHistoryMsgs, dossierText, busy] = await Promise.all([
     tryOrNull(() => deps.voice.getProfile(), failing("Voice profile")),
     // NOT tryOrNull: an unreachable corpus and an empty one both yield [] here, and for six
     // weeks that silence hid a 401 on every embedding call. The draft still
@@ -283,6 +322,9 @@ export async function triageOneMessage(
       console.error(`email-triage: voice examples unavailable for ${account} — drafting from the card alone`, err);
       return [] as string[];
     }),
+    // The owner's own mail to THIS person comes first: the strongest evidence of how they write
+    // to them. One more search plus up to 8 reads, no extra model call; best-effort.
+    tryOrNull(() => recipientExamples(deps.gmail, addr, threadId), failing("Voice examples (this person)")),
     tryOrNull(() => deps.gmail.getSignature(account), failing("Signature")),
     // twentyLookup needs the bare address — `from` is the raw "Name <email>" header, and a
     // CRM email-equality match against the whole header string never matches anything,
@@ -301,6 +343,7 @@ export async function triageOneMessage(
     // is wired — never speculatively.
     proposedWindow && deps.freeBusy ? tryOrNull(() => deps.freeBusy!(proposedWindow), failing("Calendar")) : Promise.resolve(null),
   ]);
+  const examples = mergeExamples(toPersonExamples ?? [], topicExamples);
   const voiceBlock = buildVoiceBlock(profile, lang, deps.ownerName);
   const model = pickModel(profile, lang, undefined);
   const signatureHtml = sig ?? "";
@@ -349,7 +392,8 @@ export async function triageOneMessage(
     Person: status("Person", deps.dossier !== undefined, (dossierText ?? "").trim() !== ""),
     Calendar: status("Calendar", Boolean(proposedWindow && deps.freeBusy), renderBusyBlock(busy, proposedWindow, deps.calendarLabel).trim() !== ""),
     "Voice profile": status("Voice profile", true, profile !== null),
-    "Voice examples": status("Voice examples", true, examples.length > 0),
+    "Voice examples (this person)": status("Voice examples (this person)", true, (toPersonExamples?.length ?? 0) > 0),
+    "Voice examples": status("Voice examples", true, topicExamples.length > 0),
   };
   console.info(
     `email-triage: context for ${msg.id} (${addr}): ${Object.entries(context).map(([k, v]) => `${k}=${v}`).join(", ")}`,

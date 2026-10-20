@@ -79,6 +79,26 @@ describe("draftReply — think-only, voice-matched", () => {
     });
   });
 
+  it("with recentToPerson wired, mail to that person leads the examples; absent, nothing changes", async () => {
+    vi.mocked(gatewayComplete).mockResolvedValue("Subject: Re: intro\n\nBody.");
+    const recentToPerson = vi.fn(async () => ["Hei Taylor, her er mitt forrige svar til deg."]);
+    await draftReply({ voice: noVoice, recentToPerson }, thread(), reply({ from: "Taylor <taylor@example.com>" }));
+    expect(recentToPerson).toHaveBeenCalledWith("taylor@example.com");
+    const withIt = String(vi.mocked(gatewayComplete).mock.calls.at(-1)![0]);
+    expect(withIt).toContain("sent to this same person");
+    expect(withIt).toContain("Hei Taylor, her er mitt forrige svar");
+    await draftReply({ voice: noVoice }, thread(), reply());
+    expect(String(vi.mocked(gatewayComplete).mock.calls.at(-1)![0])).not.toContain("same person");
+  });
+
+  it("a failing recentToPerson never blocks the draft", async () => {
+    vi.mocked(gatewayComplete).mockResolvedValue("Subject: Re: intro\n\nBody.");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const recentToPerson = vi.fn(async () => { throw new Error("gmail down"); });
+    await expect(draftReply({ voice: noVoice, recentToPerson }, thread(), reply())).resolves.toEqual({ subject: "Re: intro", body: "Body." });
+    err.mockRestore();
+  });
+
   it("falls back to 'Re: <original subject>' when the completion is unparseable", async () => {
     vi.mocked(gatewayComplete).mockResolvedValueOnce("just some prose with no Subject: marker");
     const draft = await draftReply({ voice: noVoice }, thread(), reply({ subject: "Question about pricing" }));

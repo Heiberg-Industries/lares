@@ -140,7 +140,10 @@ export async function readPaced<T>(
 
 /** Build the distillation prompt from a balanced sample of kept emails. */
 function distillPrompt(kept: SentMessage[], mailbox: string): string {
-  const sample = kept.slice(0, 40);
+  // Replies show how the owner answers people, so they fill the sample before new threads do
+  // (stable: order within each group is kept).
+  const isReply = (m: SentMessage) => /^(re|sv):/i.test(m.subject.trim());
+  const sample = [...kept.filter(isReply), ...kept.filter((m) => !isReply(m))].slice(0, 40);
   const block = sample.map((m, i) => `--- email ${i + 1} ---\n${m.bodyText}`).join("\n\n");
   // one card per mailbox. The owner writes differently from one mailbox than from another — the card must describe THIS
   // mailbox, not "his email voice" in general.
@@ -149,8 +152,10 @@ function distillPrompt(kept: SentMessage[], mailbox: string): string {
     `specifically — their EMAIL voice for these correspondents (NOT essay/long-form voice) — into a short, ` +
     `plain-English style guide. Return ONLY JSON: {"core": "...", "notes_en": "...", "notes_no": "..."} where ` +
     `"core" = shared traits (tone, length, openings, sign-offs, what they avoid), "notes_en" = notes specific to ` +
-    `their English email, "notes_no" = notes specific to their Norwegian email. Keep each field to a few short bullet ` +
-    `lines. Describe how they actually write from this mailbox; do not invent.\n\n${block}`
+    `their English email, "notes_no" = notes specific to their Norwegian email. Write each field as short prose, ` +
+    `then 2-3 verbatim quotes from the emails below that show the trait (a real opening, a real sign-off, a ` +
+    `typical sentence), copied exactly and marked as quotes. Describe how they actually write from this ` +
+    `mailbox; do not invent.\n\n${block}`
   );
 }
 

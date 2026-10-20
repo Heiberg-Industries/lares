@@ -57,6 +57,7 @@ import { detectReply } from "../../lib/outreach-reply-detect.js";
 import {
   classifyReply, draftReply, buildSendActPrompt, buildDoNotContactActPrompt, notifyTextFor,
 } from "../../lib/outreach-reply-triage.js";
+import { recipientExamples } from "../../lib/email-triage.js";
 import { makeDbVoiceAccess } from "../../lib/voice-store.js";
 import { googleClients, type ThreadMessage } from "../../lib/google.js";
 import { emitSignal } from "../../lib/signal-emit.js";
@@ -201,7 +202,11 @@ export default defineSchedule({
                 // The outreach was sent FROM thread.account, so the reply is drafted in that
                 // mailbox's voice (sql/001_baseline.sql). Also billed, also inside the gate.
                 const voice = makeDbVoiceAccess({ db: pool, mailbox: thread.account });
-                const draft = await draftReply({ voice, ownerName: await getDisplayName(pool, configuredOwnerId()).catch(() => null) }, thread, reply);
+                const draft = await draftReply({
+                  voice,
+                  ownerName: await getDisplayName(pool, configuredOwnerId()).catch(() => null),
+                  recentToPerson: async (addr) => recipientExamples(await googleClients().gmail(thread.account), addr, thread.threadId),
+                }, thread, reply);
                 await startActSession(buildSendActPrompt(thread, reply, draft), () => notifyTextFor(classification, thread, reply));
               } else if (classification === "unsubscribe") {
                 if (thread.personId) {
