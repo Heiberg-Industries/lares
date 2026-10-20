@@ -636,7 +636,9 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason:
       "About the gate, not about a person: which card was shown for which tool call, when, and " +
       "what was answered. `payload_hash` is a hash — the words that were shown are never stored — " +
-      "and `answered_via` names the door, never the person who tapped. When the approver list " +
+      "and `answered_via` names the door (or 'revised', a card a later draft replaced), never the " +
+      "person who tapped. `session_id`/`turn_sequence` say which conversation and turn raised the " +
+      "card and `target_hash` is a hash of what it was about (box 006). When the approver list " +
       "becomes a member list this gains a `member` column of kind registry.",
   },
 
