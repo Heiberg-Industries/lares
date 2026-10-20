@@ -134,6 +134,9 @@ const EXAMPLES_TOTAL = 3;
  *  `EXAMPLES_TOTAL`, each cut to ~800 characters. Throws when the search or a read fails, so the
  *  caller can mark the block failed. */
 export async function recipientExamples(gmail: GmailClient, addr: string, currentThreadId: string): Promise<string[]> {
+  // The address comes from the incoming mail's From header: anything but one plain address
+  // (spaces, quotes, parentheses) could add terms to the search, so it is not searched at all.
+  if (!/^[^\s"()<>]+@[^\s"()<>]+$/.test(addr)) return [];
   const ids = await gmail.search(`to:${addr} from:me`, 8);
   const msgs = (await Promise.all(ids.map((id) => gmail.read(id))))
     .filter((m): m is MailMessage => m !== null && m.threadId !== currentThreadId)

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { triageOneMessage, notifyTextFor, splitDraft, hasHumanReplyAfter, type EmailTriageDeps } from "../lib/email-triage.js";
+import { triageOneMessage, notifyTextFor, splitDraft, hasHumanReplyAfter, recipientExamples, type EmailTriageDeps } from "../lib/email-triage.js";
 import type { VoiceAccess } from "../lib/voice-store.js";
 import type { GmailClient, MailMessage, ThreadMessage } from "../lib/google.js";
 import { groundingClause, noCommitmentsClause } from "@lares/compose-contract";
@@ -729,5 +729,17 @@ describe("examples to this person first", () => {
     const voice: VoiceAccess = { getProfile: async () => null, retrieve: async () => [body] };
     await triageOneMessage({ gmail, voice }, "owner@project.example", message());
     expect(examplesOf(draftPrompt())).toHaveLength(1);
+  });
+});
+
+describe("recipientExamples address guard", () => {
+  it("never searches with anything but one plain address", async () => {
+    const search = vi.fn(async () => [] as string[]);
+    const gmail = { search, read: vi.fn() } as unknown as GmailClient;
+    expect(await recipientExamples(gmail, "a@example.com OR from:boss@example.com", "t1")).toEqual([]);
+    expect(await recipientExamples(gmail, '"x"@example.com', "t1")).toEqual([]);
+    expect(search).not.toHaveBeenCalled();
+    await recipientExamples(gmail, "p@example.com", "t1");
+    expect(search).toHaveBeenCalledWith("to:p@example.com from:me", 8);
   });
 });

@@ -32,7 +32,7 @@ function addressOf(header: string): string {
   return (m?.[1] ?? header).trim().toLowerCase();
 }
 
-type ReplyLike =Pick<ThreadMessage, "from" | "subject" | "bodyText">;
+type ReplyLike = Pick<ThreadMessage, "from" | "subject" | "bodyText">;
 
 async function tryOrNull<T>(fn: () => Promise<T>): Promise<T | null> {
   try { return await fn(); } catch { return null; }
