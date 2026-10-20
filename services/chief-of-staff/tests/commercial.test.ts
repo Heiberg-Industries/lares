@@ -14,20 +14,20 @@ import { listPeopleCapped, type TwentyPerson } from "../lib/twenty-people.js";
 import { TwentyUnavailableError } from "../lib/twenty-client.js";
 import type commercialWhoToContactType from "../agent/tools/commercial_who_to_contact.js";
 
-// `gatewayModel` (lib/gateway-provider.ts) caches its providers at MODULE scope — the same
-// reason tests/gateway-provider.test.ts needs a fresh module per test. commercial_who_to_contact
+// `gatewayModel` (lib/gateway-provider.ts) caches its providers at MODULE scope — so a fresh
+// module per test is needed. commercial_who_to_contact
 // transitively imports it via lib/llm-complete.ts, so each "live wiring" test below needs its
 // own fresh import too, or a later test's GATEWAY_URL would silently keep talking to an
 // earlier test's already-closed gateway server.
 //
-// Task 3 ( Phase 1) wrapped the tool's default export in `resolveSkillTool`, whose
+// Wrapped the tool's default export in `resolveSkillTool`, whose
 // return type is `Tool | DisabledToolSentinel` — the same union `resolveExtensionTool` has
 // always returned (see agent-declaration.test.ts's own `as { approval?: unknown }` casts over
 // EXTENSION_TOOLS). Every test below calls `.execute()` directly, which the sentinel branch
 // has no such method. The chief of staff's grants make the skill resolve live (never a sentinel) today,
 // exactly as this file's live wiring tests assume.
 //
-// item 5: the cast alone used to be the whole story, and a cast is a claim about a
+// The cast alone is not the whole story, and a cast is a claim about a
 // value, not a check on one. Drop the `twenty` grant from agent.json and the tool
 // resolves to a sentinel — every test below would then fail on "tool.execute is not a function",
 // a stack trace about a missing method rather than the actual cause. `isDisabledToolSentinel` is
@@ -47,9 +47,8 @@ async function freshCommercialTool(): Promise<Exclude<typeof commercialWhoToCont
 }
 
 /**
- * Task 13, Part 1 — `commercial_who_to_contact`: a faithful, READ-ONLY, UNGATED port of
- * `services/agent-runtime/lib/commercial/{surface,junk,score,icp}.ts` +
- * `lib/adapters/hands/commercial.ts` + the `commercial` entry in `integrations/` for wiring.
+ * `commercial_who_to_contact`: a READ-ONLY, UNGATED tool over `lib/commercial/`
+ * (surface, junk, score, icp) plus the `commercial` entry in `integrations/` for wiring.
  *
  * Layers:
  *   1. `lib/commercial/surface.ts` — pure/offline (ranking, junk filtering, doNotContact,
@@ -508,8 +507,7 @@ describe("commercial_who_to_contact (live wiring)", () => {
     // `freshCommercialTool()` re-imports `lib/twenty-client.ts` through a reset module
     // registry, so the thrown error is a DIFFERENT `TwentyUnavailableError` class instance
     // than the one imported statically at this file's top — assert by name/message instead
-    // of `instanceof` (same reasoning as `tests/gateway-provider.test.ts`'s own
-    // fresh-module pattern).
+    // of `instanceof` (same reasoning as the fresh-module pattern above).
     const tool = await freshCommercialTool();
     await expect(tool.execute({}, READ_CTX)).rejects.toMatchObject({ name: "TwentyUnavailableError" });
   });

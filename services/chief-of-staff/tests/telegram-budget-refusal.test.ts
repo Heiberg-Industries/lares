@@ -1,5 +1,5 @@
 /**
- * item 2 — a capped turn says so on the chief of staff's Telegram door.
+ * A capped turn says so on the chief of staff's Telegram door.
  *
  * Sibling of `slack-budget-refusal.test.ts`, with one difference that matters: eve words its
  * default failure text differently per channel ("could not" / "Start a new message" /

@@ -8,7 +8,7 @@ import { AddressInfo } from "node:net";
 import { twentyGet, twentyPatch, twentyPost, setTwentySleep, TwentyNotFoundError, TwentyRateLimitedError, TwentyUnavailableError } from "../lib/twenty-client.js";
 
 /**
- * Task 3 — against a REAL local HTTP server (per the task brief's Step 1), not a fetch
+ * Against a REAL local HTTP server, not a fetch
  * stub: proves the actual request Twenty receives (method, path, headers, body) and the
  * actual response handling (200 → parsed body, 404 → typed NotFound, connection refused →
  * typed Unavailable) end to end.
@@ -153,7 +153,7 @@ describe("twentyPatch", () => {
   });
 });
 
-describe("request timeout ( security review)", () => {
+describe("request timeout", () => {
   it("rejects with TwentyUnavailableError within the timeout, rather than hanging forever", async () => {
     // A server that accepts the connection and then never writes a response — the shape a
     // genuinely hung Twenty takes. `TWENTY_REQUEST_TIMEOUT_MS` overrides the 15s production

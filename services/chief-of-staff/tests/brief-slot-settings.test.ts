@@ -4,7 +4,7 @@ import { makeScheduleHoursCache, SCHEDULE_HOURS_CACHE_MS } from "../lib/schedule
 import { readScheduleHours } from "@lares/agent-kit/schedule-settings";
 
 /**
- *-s2 — the in-process cache in front of the kit's `readScheduleHours`, and the case for it:
+ * the in-process cache in front of the kit's `readScheduleHours`, and the case for it:
  * these schedules poll every minute, and a settings read must never turn into a query per minute.
  *
  * `makeScheduleHoursCache` is tested as a pure factory over an injected `read`, matching
@@ -74,7 +74,7 @@ describe("makeScheduleHoursCache (pure)", () => {
  * the cache composes correctly with the REAL `readScheduleHours` from the kit, backed by a fake db
  * object rather than a mock of the reader itself. This is deliberately a SMALL, targeted check:
  * `readScheduleHours`'s own defaulting/warning contract is exhaustively covered by
- * `packages/agent-kit/tests/schedule-settings.test.ts` (-s1); this file only has to show the
+ * `packages/agent-kit/tests/schedule-settings.test.ts`; this file only has to show the
  * cache does not get in the way of it.
  */
 describe("the cache through readScheduleHours, with a fake db", () => {
@@ -118,7 +118,7 @@ describe("the cache through readScheduleHours, with a fake db", () => {
  * shape check on the file, not a behaviour one (the behaviour is covered in
  * tests/brief-owner-day-wiring.test.ts).
  */
-describe("morning-brief.ts / evening-brief.ts read the hour from the setting (-s2)", () => {
+describe("morning-brief.ts / evening-brief.ts read the hour from the setting", () => {
   const read = async (rel: string) =>
     (await import("node:fs/promises")).readFile(new URL(rel, import.meta.url), "utf8");
 

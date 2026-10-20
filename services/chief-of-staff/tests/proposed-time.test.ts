@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { detectProposedWindow } from "../lib/proposed-time.js";
 
 /**
- * Task 2 — detectProposedWindow. Fixed `now` throughout so weekday/relative-day
+ * detectProposedWindow. Fixed `now` throughout so weekday/relative-day
  * resolution is deterministic: 2026-08-24T09:00:00Z is a Monday in Oslo (confirmed via
  * Intl.DateTimeFormat before writing these expectations, not assumed).
  */
@@ -61,7 +61,7 @@ describe("detectProposedWindow", () => {
     });
   });
 
-  it("honours an explicit year over the rollover guess ( review, finding 2)", () => {
+  it("honours an explicit year over the rollover guess", () => {
     // now = 2026-08-24; a bare "3 September" would roll to 2026 (later this year), but the
     // sender stated 2028 explicitly — that signal must win, not the yearless heuristic.
     const r = detectProposedWindow("Could we do 3. september 2028?", NOW);
@@ -78,7 +78,7 @@ describe("detectProposedWindow", () => {
     expect(r?.timeMin).toBe("2028-09-02T22:00:00.000Z");
   });
 
-  it("does NOT mistake a Norwegian postal code for a year ('3. september, 1400 Ski') — falls back to the yearless rollover instead ( review, round 3)", () => {
+  it("does NOT mistake a Norwegian postal code for a year ('3. september, 1400 Ski') — falls back to the yearless rollover instead", () => {
     // "1400" here is a postal code (Ski, Norway), not a year — a bare \d{4} adjacent to the
     // date is not, on its own, evidence of a year. Falls back to the same rollover-guess
     // resolution as the plain "3. september" case (an earlier test, same NOW), not a garbage
@@ -102,7 +102,7 @@ describe("detectProposedWindow", () => {
     });
   });
 
-  it("returns null for a calendar date that doesn't exist ('31. april') rather than rolling over into May ( review, finding 1)", () => {
+  it("returns null for a calendar date that doesn't exist ('31. april') rather than rolling over into May", () => {
     expect(detectProposedWindow("Passer det 31. april?", NOW)).toBeNull();
   });
 

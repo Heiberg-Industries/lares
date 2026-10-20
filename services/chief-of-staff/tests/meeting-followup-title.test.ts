@@ -4,15 +4,15 @@ import type { FollowupDeps } from "../agent/schedules/meeting-followup.js";
 
 /**
  * The trailing-ISO-string defect a human hit in production: an approval card asked the owner to
- * authorise a meeting follow-up, and the meeting's title — the ONE line he reads to check the
- * agent matched the right meeting before it sends mail on his behalf — read
+ * authorise a meeting follow-up, and the meeting's title — the ONE line the owner reads to check the
+ * agent matched the right meeting before it sends mail on the owner's behalf — read
  * "Brightloop.example 2025-10-03T09:00:00.000+02:00". Notion's `Meeting Title` property is an array of
  * rich-text items, and an inline `@date` mention's `plain_text` is the raw ISO string; naively
  * flattening every item (what `plainText` elsewhere in this file does) produces exactly that.
  *
  * The fix (`humanTitle`/`isDateMention` in meeting-followup.ts) strips date-mention items
- * STRUCTURALLY — by the item's own `type`/`mention.type` — mirroring services/notion-sync/
- * lib/adapters/notion-client.ts's `titleWithoutDateMentions`/`isDateMention`. Unlike
+ * STRUCTURALLY — by the item's own `type`/`mention.type` — mirroring services/notion-sync/lib/adapters/notion-client.ts's
+ * `titleWithoutDateMentions`/`isDateMention`. Unlike
  * notion-sync, which keeps a raw `title` (transcript filename/H1) alongside a cleaned
  * `matchTitle` (the event matcher's key), nothing in THIS schedule matches or stores on the
  * title — `pageId` is the identity key throughout — so there is only one `title` field, and it

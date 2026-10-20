@@ -3,7 +3,7 @@ import type { Pool } from "pg";
 
 /**
  * — `liveListMeetings`'s stage-1 properties-only pre-filter used to exclude a `queued`
- * page as TERMINAL, exactly like `sent`/`skipped` ( fix round 2). That made the acceptance
+ * page as TERMINAL, exactly like `sent`/`skipped`. That made the acceptance
  * criterion this ticket ships impossible to reach live: `claimMeeting`'s hash-diff reclaim
  * (lib/meeting-followup-store.ts) can only compare against the page's CURRENT summary hash, and a
  * page excluded at stage 1 never gets its markdown read again — its hash would never be

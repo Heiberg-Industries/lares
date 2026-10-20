@@ -1,4 +1,4 @@
-// Proves 006-eve-workflow-beta32-to-beta42-upgrade.sql (W2-s8c): the step an existing
+// Proves 006-eve-workflow-beta32-to-beta42-upgrade.sql: the step an existing
 // installation runs, once, by hand, so its real workflow.workflow_events rows survive the
 // @workflow/world-postgres beta.32 → beta.42 regeneration of 001-eve-workflow.sql.
 //
@@ -80,7 +80,7 @@ async function relationExists(pool: Pool, schema: string, name: string): Promise
   return Boolean(rows[0]?.present);
 }
 
-describe("eve workflow schema upgrade: beta.32 → beta.42 (W2-s8c)", () => {
+describe("eve workflow schema upgrade: beta.32 → beta.42", () => {
   let container: StartedPostgreSqlContainer;
   let pool: Pool;
 

@@ -1,5 +1,5 @@
 /**
- * W5X-s4 — the dream FILES its confirmations instead of shouting them.
+ * The dream FILES its confirmations instead of shouting them.
  *
  * Until this slice a run's `needsConfirm` items were announced in one combined reminder and
  * could not be answered by any code path: `lib/dream/surface.ts`'s `resolve()` takes the
@@ -24,7 +24,7 @@
  *      `not-owner-origin` by the gate and never reach the queue at all.
  *
  * `memory_proposals` lives on the box's shared `lares_state` database
- * (services/box/sql/001_baseline.sql, altered by 001_baseline.sql) and is
+ * (services/box/sql/001_baseline.sql) and is
  * mirrored here rather than imported, the same convention as `tests/memory-proposals.test.ts`.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from "vitest";
@@ -55,7 +55,7 @@ import { fileConfirmations } from "../agent/schedules/dream.js";
 import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
 import type { Observation } from "../lib/dream/reflect.js";
 
-/** Mirrors services/box/sql/001_baseline.sql as 074 leaves it — see this file's header. */
+/** Mirrors services/box/sql/001_baseline.sql as the baseline leaves it — see this file's header. */
 const MEMORY_PROPOSALS_SCHEMA = `
 CREATE TABLE memory_proposals (
   id            bigserial   PRIMARY KEY,

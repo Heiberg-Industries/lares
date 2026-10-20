@@ -14,16 +14,16 @@ import {
 } from "../lib/brief-content-slack.js";
 
 /**
- * Task 3 — a Slack `ThreadSnapshot` source alongside the Gmail one in
- * ../lib/brief-content.ts. Round 2 (fix round): covers the review's six Important findings —
+ * A Slack `ThreadSnapshot` source alongside the Gmail one in
+ * ../lib/brief-content.ts. Covers
  * (1) the scan window, (2) required relevance flags, (3) DM thread-id scoping /
  * "reopen on new activity", (4) the structural no-interrupt guarantee for Slack (D4), (5)
- * ownUserId validation, (6) subtype/Slackbot filtering — on top of round 1's original contract:
+ * ownUserId validation, (6) subtype/Slackbot filtering — on top of the original contract:
  *   - an unanswered DM past OWED_AFTER_HOURS surfaces as an obligation
  *   - one the owner answered does not
- *   - an @mention he has not answered surfaces
- *   - an ordinary channel broadcast he is not addressed in does NOT surface
- *   - a thread he has participated in counts
+ *   - an @mention the owner has not answered surfaces
+ *   - an ordinary channel broadcast the owner is not addressed in does NOT surface
+ *   - a thread the owner has participated in counts
  *   - the scan bound (maxConversations) is honoured
  *
  * Fixtures use a FIXED injected clock (`NOW`) — eve injects no ambient date, and every computed
@@ -99,7 +99,7 @@ describe("scanSlackThreads — DMs", () => {
     expect(obligations[0]!.threadId).toBe(`slack:im:D1:${ts}`);
   });
 
-  // ─── Task 10 (B1): lastMessageText / counterpartySlackUserId / source in flight ────
+  // ─── lastMessageText / counterpartySlackUserId / source in flight ────
 
   it("carries the last message's text and the counterparty's Slack user id in flight", async () => {
     const ts = tsHoursAgo(50);
@@ -159,7 +159,7 @@ describe("scanSlackThreads — DMs", () => {
     expect(snap!.counterpartyAddress).toBe("slack:U_NOEMAIL");
   });
 
-  // ── Important 6, round 3 — allowlist direction: me_message stays a real message ────────────
+  // ── allowlist direction: me_message stays a real message ────────────
 
   it("a /me message from the owner still counts as his reply — me_message is a real message, not a system event", async () => {
     const deps = fakeDeps({
@@ -193,7 +193,7 @@ describe("scanSlackThreads — channels", () => {
     expect(snapshots).toHaveLength(1);
     expect(snapshots[0]).toMatchObject({ addressedToHim: true, lastSpeakerIsThem: true, theirUnansweredCount: 1 });
     // Pins the `slack:channel:…` id form — `slack:im:` (line 96) and `slack:mpim:` (below) were
-    // already pinned; this was the one namespaced form review round left unpinned by any test.
+    // already pinned; this was the one namespaced form left unpinned by any test.
     expect(snapshots[0]!.threadId).toBe(`slack:channel:C1:${root}`);
     expect(selectObligations(snapshots, NOW)).toHaveLength(1);
   });
@@ -280,7 +280,7 @@ describe("scanSlackThreads — channels", () => {
     expect(snapshots[0]!.lastMessageAt).toEqual(new Date(parseFloat(root) * 1000));
   });
 
-  // ── Important 6 — subtype/Slackbot filtering ──────────────────────────────────────────────
+  // ── subtype/Slackbot filtering ──────────────────────────────────────────────
 
   it("a channel_join system message (real userId, no isBot) is dropped, not treated as a reply", async () => {
     const root = tsHoursAgo(50);
@@ -289,7 +289,7 @@ describe("scanSlackThreads — channels", () => {
       messagesByConvo: {
         C1: [
           msg({ userId: "U_OTHER", ts: root, threadTs: root, mentionsOwner: true }),
-          // A join notice AFTER the mention, authored by the owner himself (as Slack really emits
+          // A join notice AFTER the mention, authored by the owner (as Slack really emits
           // these — the acting user), with a real userId and no isBot: without subtype-based
           // filtering this would be misread as "the owner replied", hiding a genuine obligation.
           msg({ userId: OWN, ts: tsHoursAgo(1), threadTs: root, subtype: "channel_join" }),
@@ -313,7 +313,7 @@ describe("scanSlackThreads — channels", () => {
     expect(snapshots).toEqual([]);
   });
 
-  // ── Important 6, round 3 — allowlist direction: fail CLOSED on an unrecognized subtype ──────
+  // ── allowlist direction: fail CLOSED on an unrecognized subtype ──────
 
   it("an unknown/future subtype (not on the allowlist) is dropped, failing closed", async () => {
     const root = tsHoursAgo(50);
@@ -350,7 +350,7 @@ describe("scanSlackThreads — mpim (group DM)", () => {
   });
 });
 
-// ─── Important 1 — the scan window ─────────────────────────────────────────────────────────
+// ─── the scan window ─────────────────────────────────────────────────────────
 
 describe("scanSlackThreads — scan window", () => {
   it("passes an `oldest` derived from the injected clock and windowDays to readConversation", async () => {
@@ -370,7 +370,7 @@ describe("scanSlackThreads — scan window", () => {
       messagesByConvo: { D1: [msg({ userId: "U_OTHER", ts: tsHoursAgo(50) })] },
     });
     // No windowDays passed — proves the DEFAULT is actually applied, not just that the constant
-    // equals a literal ( T3 review round 3: the old version of this test asserted
+    // equals a literal (an earlier version of this test asserted
     // `DEFAULT_SLACK_WINDOW_DAYS === 60` directly, which would still pass even if the default
     // were never wired into scanSlackThreads at all).
     await scanSlackThreads(deps, { ownUserId: OWN, now: () => NOW });
@@ -391,9 +391,9 @@ describe("scanSlackThreads — scan window", () => {
   });
 });
 
-// ─── Important 3 — DM thread-id scoping / reopen-on-new-activity ──────────────────────────
+// ─── DM thread-id scoping / reopen-on-new-activity ──────────────────────────
 
-describe("scanSlackThreads — DM thread-id scoping (Important 3)", () => {
+describe("scanSlackThreads — DM thread-id scoping", () => {
   it("a NEW message produces a DIFFERENT threadId than the previous scan — dismissal can't blind future messages", async () => {
     const firstTs = tsHoursAgo(50);
     const deps1 = fakeDeps({
@@ -415,9 +415,9 @@ describe("scanSlackThreads — DM thread-id scoping (Important 3)", () => {
   });
 });
 
-// ─── Important 4 — D4: Slack must NEVER reach the interrupt/re-ping surface ────────────────
+// ─── Slack must NEVER reach the interrupt/re-ping surface ────────────────
 
-describe("scanSlackThreads — D4 no-interrupt guarantee (Important 4)", () => {
+describe("scanSlackThreads — D4 no-interrupt guarantee", () => {
   it("a same-person double-bump in a DM is capped to theirUnansweredCount:1 — isRePing never becomes true", async () => {
     const deps = fakeDeps({
       conversations: [{ id: "D1", kind: "im", counterpartyUserId: "U_OTHER" }],
@@ -439,7 +439,7 @@ describe("scanSlackThreads — D4 no-interrupt guarantee (Important 4)", () => {
     expect(obligations).toHaveLength(1);
     // Pins the `>= 2` threshold this whole guarantee rests on — the more likely thing to drift.
     expect(obligations[0]!.isRePing).toBe(false);
-    // The guarantee the ruling actually asked for ( T3 review round 3): `isRePing` is
+    // The guarantee the ruling actually asked for: `isRePing` is
     // only equivalent to "never interrupts" because it's CURRENTLY the sole gate into
     // `interrupt` (assignSurfaces, brief-content.ts:224). Asserting on `interrupt` directly means
     // this test still catches a regression the day someone adds a second route into it (an age
@@ -471,9 +471,9 @@ describe("scanSlackThreads — D4 no-interrupt guarantee (Important 4)", () => {
   });
 });
 
-// ─── Important 5 — ownUserId validation ────────────────────────────────────────────────────
+// ─── ownUserId validation ────────────────────────────────────────────────────
 
-describe("scanSlackThreads — ownUserId validation (Important 5)", () => {
+describe("scanSlackThreads — ownUserId validation", () => {
   it("throws when ownUserId is empty — never lets every conversation read as unanswered", async () => {
     const deps = fakeDeps({
       conversations: [{ id: "D1", kind: "im", counterpartyUserId: "U_OTHER" }],
@@ -511,7 +511,7 @@ describe("scanSlackThreads — scan bound", () => {
 });
 
 /**
- * fix round 1, finding 4 — `resolveIdentity` swallows every `getUserInfo` failure by
+ * `resolveIdentity` swallows every `getUserInfo` failure by
  * design (an obligation must never be lost over an identity hiccup), and it was swallowing the
  * scan's own CANCELLATION too. That printed "getUserInfo failed … degrading to a Slack-id-only
  * identity" into exactly the log window this ticket names as its acceptance evidence, and let a
@@ -590,8 +590,7 @@ describe("isScanAborted", () => {
 
 // ─── — the cap reaches both partitions, concurrently, with backoff ─────────────────
 //
-// The defect: `listConversations` partitions DMs ahead of channels (deliberate, review round
-// 3), and the scan sliced `slice(0, maxConversations)`. On the real workspace — exactly 40
+// The defect: `listConversations` partitions DMs ahead of channels (deliberate), and the scan sliced `slice(0, maxConversations)`. On the real workspace — exactly 40
 // DMs and 44 channels at a cap of 40 — the slice was the 40 DMs, and no channel was EVER
 // scanned; not deferred, never (this file's own corrected comment admits there is no cursor).
 // The ticket's lever: partition-aware selection + bounded concurrency + rate-limit backoff.
@@ -735,7 +734,7 @@ describe("scanSlackThreads — rate-limit backoff", () => {
   });
 });
 
-// ─── scanSlackThreadsWithOwnActivity — Task 10 (B1) ──────────────────────────────────
+// ─── scanSlackThreadsWithOwnActivity ──────────────────────────────────
 //
 // `scanSlackThreads` (above) is unchanged in signature/behaviour — every prior test in this file
 // still exercises it directly. These tests cover the NEW `ownLastMessageByUser` half only.

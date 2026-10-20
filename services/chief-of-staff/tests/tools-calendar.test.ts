@@ -17,14 +17,14 @@ import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 
 /**
- * Task 7 — the six calendar tools, end to end against a REAL Postgres (oauth_tokens, matching
+ * The six calendar tools, end to end against a REAL Postgres (oauth_tokens, matching
  * tests/tools-gmail.test.ts's convention) with a STUBBED googleapis client
  * (`__setTestCalendarApiFactory`) standing in for Google itself. Proves:
  *   - create_event/update_event/delete_event refuse without a valid approver, BEFORE any DB
  *     lookup or googleapis call (same rigor as tests/tools-gmail.test.ts's write tools: zero
  *     calls on refusal, even when the stub is enrolled and live)
  *   - list_events/free_busy/list_calendars marshal the exact googleapis request shape (via
- *     wrapCalendarApi, already ported from calendar-oauth.ts) end to end through the tool +
+ *     wrapCalendarApi) end to end through the tool +
  *     adapter
  *   - create_event/update_event/delete_event thread `notify` to `sendUpdates` exactly as
  *     lib/google.ts's `sendUpdatesFor` does: true -> "all", false -> "none", omitted -> "all"
@@ -351,9 +351,9 @@ describe("calendar_delete_event", () => {
     expect(calendarDeleteEvent.inputSchema.safeParse({ eventId: "e1" }).success).toBe(true);
   });
 
-  //-s4 — `reason` is card text for the approval gate (formatted by
+  // `reason` is card text for the approval gate (formatted by
   // @lares/agent-kit/approval-summary), never a Google API field.
-  describe("reason (-s4) — card text only, never sent to Google", () => {
+  describe("reason — card text only, never sent to Google", () => {
     it("schema accepts a reason up to 240 characters and refuses a longer one", () => {
       expect(calendarDeleteEvent.inputSchema.safeParse({ eventId: "e1", reason: "x".repeat(240) }).success).toBe(true);
       expect(calendarDeleteEvent.inputSchema.safeParse({ eventId: "e1", reason: "x".repeat(241) }).success).toBe(false);

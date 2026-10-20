@@ -1,4 +1,4 @@
-// THE GATE ( step 2, Task 5, step 9).
+// THE GATE.
 //
 // This agent's instructions are now resolved at session start from its DEFINITION rather than
 // compiled from a file baked into its image. The whole plan rests on that being a change of
@@ -75,7 +75,7 @@ describe("the definition gate", () => {
   });
 });
 
-// step 2 review, finding 3. The spec's Part 3 resolves instructions, model, tools and
+// The definition resolves instructions, model, tools and
 // skills AT SESSION START, and ADR-0015 promises the owner that a definition edited on the box
 // "applies at the next conversation" with nothing rebuilt and nothing restarted. A
 // process-lifetime memo silently broke that — `resolveDefinition` re-reads the folder every call
@@ -208,18 +208,10 @@ describe("a definition edited on the box reaches the next conversation, with no 
   });
 });
 
-// step 2, Task 6 — the tool-count/tool-list assertion this task would otherwise put in
-// `tests/agent-declaration.test.ts`, alongside the sibling changes in creative's and travel's
-// copies of that file. That file does not exist yet for this service: it is the ticket's (the
-// 2026-09-16 SDD ledger's frozen list — `packages/agent-kit/src/manifest.ts`,
-// `packages/agent-kit/extension/**`, and this service's own `agent.json`, `agent/extensions/
-// agent-kit/**`, `agent/skills/**`, `lib/brief-content.ts`, `agent/schedules/morning-brief.ts`,
-// `tests/agent-declaration.test.ts` and `tests/skills.test.ts`). Landing this assertion there
-// would race the ticket's own edits to the same file; it lives here instead, in a file this task
-// already owns.
+// The tool-list assertion for this service's one new tool.
 describe("set_language ships as this service's one new tool", () => {
-  // step 2, Task 9: set_language moved from agent/tools/ into catalogue/ along with
-  // every other local tool — it is ALWAYS_PRESENT there (Ruling R2), not a disabled sentinel,
+  // set_language moved from agent/tools/ into catalogue/ along with
+  // every other local tool — it is ALWAYS_PRESENT there, not a disabled sentinel,
   // and the catalogue resolver (agent/tools/catalogue.ts) hands it over unconditionally.
   it("catalogue/set_language.ts is a real, always-present tool — not a disabled sentinel", async () => {
     const mod = (await import("../catalogue/set_language.js")) as { default: unknown };

@@ -18,7 +18,7 @@ import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 
 /**
- * Task 8 — two halves:
+ * Two halves:
  *
  *   1. "the full chain, minus vendors" — `gatherPerson` → `resolvePerson` → `renderDossier`,
  *      wired through `makePersonSources` against a stub `PersonWiring` (same style as
@@ -38,7 +38,7 @@ import { quiet } from "./helpers/quiet-pool.js";
 const READ_CTX = {} as never;
 
 // -----------------------------------------------------------------------------------------
-// Part 1 — the full chain minus vendors: stub PersonWiring, real gatherPerson/resolvePerson/
+// The full chain minus vendors: stub PersonWiring, real gatherPerson/resolvePerson/
 // renderDossier. No network/DB/filesystem I/O in this half.
 // -----------------------------------------------------------------------------------------
 
@@ -150,7 +150,7 @@ describe("the full chain (stub wiring): found / failed / not-applicable / ambigu
 });
 
 // -----------------------------------------------------------------------------------------
-// Part 2 — the real wiring: eveSagaPersonWiring() against real client test doubles, plus the
+// The real wiring: eveSagaPersonWiring() against real client test doubles, plus the
 // person_lookup TOOL end to end over the same infrastructure.
 // -----------------------------------------------------------------------------------------
 
@@ -193,7 +193,7 @@ function listenOn(handler: (req: IncomingMessage, res: ServerResponse) => void):
  *
  * The shape that filed the ticket: an intro call with someone at a company the owner already
  * self-hosts. The PERSON is genuinely unknown — that answer was right — but the dossier had no
- * way to say the COMPANY is not, so the brief told him to go read up on his own vendor.
+ * way to say the COMPANY is not, so the brief told the owner to go read up on the owner's own vendor.
  */
 describe("the organisation stage: a stranger at a company we know", () => {
   it("an UNKNOWN person at a known company still yields an Organisation section, naming the note", async () => {
@@ -214,7 +214,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 2b — the ticket's own scenario, which the first cut still missed. The
+   * The ticket's own scenario, which the first cut still missed. The
    * Brain note calls the company "Bridgeco" and never writes "atbridgeco", so the domain-derived terms
    * alone reach nothing. The CRM knows the name; it is asked first, and its answer becomes a term.
    */
@@ -235,7 +235,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 2a — a CRM person with a linked company, on a personal mailbox. Before,
+   * A CRM person with a linked company, on a personal mailbox. Before,
    * this rendered "no company on file" while the CRM had one on file, one call away.
    */
   it("a CRM person on a gmail address still gets an organisation — via their CRM record", async () => {
@@ -300,7 +300,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
   });
 
   /**
-   * review fix, Finding 2. The organisation stage used to start on EVERY non-ambiguous
+   * The organisation stage used to start on EVERY non-ambiguous
    * lookup — including the email drafter's, which renders `bounded` and therefore throws the
    * whole section away. Up to six synchronous full-note-store walks plus a Twenty call, per
    * inbound message, per tick, blocking the event loop for output nobody sees.

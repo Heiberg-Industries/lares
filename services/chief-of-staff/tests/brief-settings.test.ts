@@ -8,10 +8,10 @@ import { join } from "node:path";
 import { readBriefLanguage, isBriefLanguage, BRIEF_LANGUAGES } from "../lib/brief-settings.js";
 
 /**
- *-s1 — backs the `brief_settings` table in `sql/001_baseline.sql` against a REAL Postgres (testcontainers, the
+ * backs the `brief_settings` table in `sql/001_baseline.sql` against a REAL Postgres (testcontainers, the
  * pattern): a fake pool that never executes SQL is forbidden here.
  *
- * Owner's amendment (2026-09-18): the supported set is English plus the four Nordic languages,
+ * The supported set is English plus the four Nordic languages,
  * not just "nb"/"en", and the SQL CHECK is a two-letter FORMAT only — never an enumerated list —
  * so a language can be added later without a migration.
  */

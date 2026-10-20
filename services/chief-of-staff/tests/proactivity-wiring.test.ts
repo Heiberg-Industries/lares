@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { closePool } from "@lares/agent-kit/db";
 
 /**
- * Task 3 — the WIRING proof: every proactive send in this service goes through
+ * The WIRING proof: every proactive send in this service goes through
  * `@lares/agent-kit/proactivity`'s `gatedSend`, and a held-back initiation costs the schedule
  * its message but NOT its heartbeat.
  *
@@ -18,7 +18,7 @@ import { closePool } from "@lares/agent-kit/db";
  *       for quiet must not read as a dead schedule in `input-freshness.sh` (the ticket's ten
  *       silent days are the failure this heartbeat exists to make visible).
  *
- * One schedule per initiation class, as the plan's Task 3 requires: `evening-brief` at its slot
+ * One schedule per initiation class: `evening-brief` at its slot
  * (scheduled), `reminders` with a due row (scheduled/owner-set-time, and the one lane whose
  * "send" is a raw HTTP call rather than a session), and `reping` with a due re-ping
  * (escalation).
@@ -36,7 +36,7 @@ const gatedSendMock = vi.fn(async (_db: unknown, _req: unknown, _send: () => Pro
 const HOLD = async () => ({ verdict: "suppress", reason: "dnd" }) as never;
 const deferredSinceMock = vi.fn(async () => [] as Array<{ door: string; count: number }>);
 
-/**-s2: `wouldInitiate`'s own mocked gate — the same default hold as `gatedSendMock`, kept
+/** `wouldInitiate`'s own mocked gate — the same default hold as `gatedSendMock`, kept
  *  as a SEPARATE `vi.fn` because `wouldSend` takes no `send` callback at all: a case must be able
  *  to tell "the precheck asked" apart from "a real send was gated". */
 const wouldSendMock = vi.fn(async (_db: unknown, _req: unknown) => ({
@@ -67,7 +67,7 @@ vi.mock("@lares/agent-kit/schedule-heartbeat", () => ({
  *  contract is "never throws, falls back to home" — pinned rather than exercised. */
 vi.mock("../lib/owner-clock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/owner-clock.js")>()),
-  ownerTz: async () => "Europe/Oslo",
+  ownerTz: async () => "Europe/Berlin",
 }));
 
 const emitSignalMock = vi.fn(async () => {});
@@ -313,7 +313,7 @@ vi.mock("../lib/obligations-store.js", () => ({
 }));
 
 // (No standing-facts mock: `listActiveFacts` reads the fake pool above and finds no rows, which is
-// exactly the "he has told her nothing yet" path. Mocking the module would also have to re-export
+// exactly the "the owner has told the agent nothing yet" path. Mocking the module would also have to re-export
 // `standingFactLine`, which `lib/brief-content.ts` imports from it.)
 
 const DUE_REMINDER = async () => [
@@ -428,7 +428,7 @@ vi.mock("../lib/outreach-store.js", () => ({
 vi.mock("../lib/outreach-reply-detect.js", () => ({
   detectReply: () => ({ from: "them@example.com", to: [], sentAt: new Date("2026-06-16T08:00:00Z"), text: "not now", bodyText: "not now", subject: "Re: hello" }),
 }));
-/**-s1: both BILLED calls are `vi.fn`s (not plain stubs) so a test can assert HOW OFTEN they
+/** both BILLED calls are `vi.fn`s (not plain stubs) so a test can assert HOW OFTEN they
  *  ran — the whole point of moving them inside the gate. `notifyTextFor` and the act prompts stay
  *  real. Default classification is "negative" (the notify-only branch); a `send`-verdict test that
  *  wants the drafting branch overrides it with `mockImplementationOnce`. */
@@ -474,7 +474,7 @@ describe("a suppressed initiation costs the message, never the heartbeat", () =>
       cls: "scheduled",
       door: "telegram:123456",
       itemKey: "evening-brief/2026-06-17T20",
-      tz: "Europe/Oslo",
+      tz: "Europe/Berlin",
     });
     // (2) the message did NOT go out
     expect(send).not.toHaveBeenCalled();
@@ -643,7 +643,7 @@ describe("a `send` verdict changes nothing about what goes out", () => {
 // The `event` class, and the one suppression that means the OPPOSITE of a hold
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/** The gate answers `suppress`/`already-seen`: a `sent` row for this item key exists, so he WAS
+/** The gate answers `suppress`/`already-seen`: a `sent` row for this item key exists, so the owner WAS
  *  told and only the lane's own bookkeeping write failed last time. */
 function gateSaysAlreadySeen(): void {
   gatedSendMock.mockImplementation(async () => ({ verdict: "suppress", reason: "already-seen" }) as never);
@@ -664,13 +664,13 @@ describe("proposals-watch (event): a hold leaves the proposal tellable", () => {
       itemKey: "proposal/notion/61",
     });
     expect(sendTelegramMessage).not.toHaveBeenCalled();
-    // The whole point: a proposal he was not told about must stay tellable next tick.
+    // The whole point: a proposal the owner was not told about must stay tellable next tick.
     expect(notionMarkAnnounced).not.toHaveBeenCalled();
     expect(recordSchedulePassMock).toHaveBeenCalledWith(expect.anything(), HEARTBEAT_KEY);
   });
 
   it("suppress/already-seen → still nothing announced, but announced_at IS stamped", async () => {
-    // He was told on an earlier tick; the only thing left undone is the stamp that failed then.
+    // The owner was told on an earlier tick; the only thing left undone is the stamp that failed then.
     // Treated as a hold, `notionUnannounced` would re-serve this row every tick forever.
     gateSaysAlreadySeen();
     process.env["EVE_SCHEDULES_LIVE"] = "1";
@@ -700,7 +700,7 @@ describe("outreach-reply-watch (event): one key for both sends of one reply", ()
     });
     expect(callSlackApi).not.toHaveBeenCalled();
     expect(markReplied).not.toHaveBeenCalled();
-    //-s1: the whole point — a held/suppressed gate must not have billed either call.
+    // the whole point — a held/suppressed gate must not have billed either call.
     expect(classifyReplyMock).not.toHaveBeenCalled();
     expect(draftReplyMock).not.toHaveBeenCalled();
     expect(recordSchedulePassMock).toHaveBeenCalledWith(expect.anything(), HEARTBEAT_KEY);
@@ -716,7 +716,7 @@ describe("outreach-reply-watch (event): one key for both sends of one reply", ()
 
     expect(callSlackApi).not.toHaveBeenCalled();
     expect(markReplied).toHaveBeenCalledWith(expect.anything(), "row-1");
-    //-s1: already-seen is decided by the gate BEFORE the callback runs — classify never
+    // already-seen is decided by the gate BEFORE the callback runs — classify never
     // fires even though the outcome ends up handled.
     expect(classifyReplyMock).not.toHaveBeenCalled();
   });
@@ -743,8 +743,8 @@ describe("outreach-reply-watch (event): one key for both sends of one reply", ()
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// wouldInitiate (-s2) — the precheck twin, asked directly. No live schedule wires it in
-// yet (that is-s3's job for meeting-followup); this proves the seam on its own: it asks
+// wouldInitiate — the precheck twin, asked directly. No live schedule wires it in
+// yet (meeting-followup is the intended first user); this proves the seam on its own: it asks
 // the kit's `wouldSend`, never `gatedSend`, and never has anything to send in the first place.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
@@ -766,7 +766,7 @@ describe("wouldInitiate: asks the kit's wouldSend, never gatedSend, and never se
       cls: "event",
       door: "slack:U0ABC",
       itemKey: "meeting-followup/page-1",
-      tz: "Europe/Oslo",
+      tz: "Europe/Berlin",
     });
     expect(gatedSendMock).not.toHaveBeenCalled();
     expect(outcome).toEqual({
@@ -801,7 +801,7 @@ describe("wouldInitiate: asks the kit's wouldSend, never gatedSend, and never se
 
 describe("reminders (already-seen): the delivery stands, so the row is closed", () => {
   it("suppress/already-seen → marked delivered and the recurrence re-armed, with no second send", async () => {
-    // The at-least-once window this closes: the text reached him, then `markDelivered` failed. Left
+    // The at-least-once window this closes: the text reached the owner, then `markDelivered` failed. Left
     // "eligible", the row would re-fire every minute against a gate that suppresses it every minute.
     gateSaysAlreadySeen();
     dueReminders.mockImplementationOnce(async () => [

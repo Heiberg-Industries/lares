@@ -30,7 +30,7 @@ vi.mock("../lib/llm-complete.js", () => ({
   gatewayComplete: vi.fn(async () => "mock continuity summary"),
 }));
 
-/** Real, disposable Postgres — the house pattern (tests/db.test.ts, lesson): a fake
+/** Real, disposable Postgres — the house pattern (tests/reminders.test.ts): a fake
  *  Pool that never executes real SQL is exactly the defect class that has bitten this
  *  project before. */
 describe("telegram-rotation", () => {
@@ -349,8 +349,8 @@ describe("telegram-rotation", () => {
 
   // ── The overnight hand-over ──────────────────────────────────────────────────────────────
   //
-  // W2-s3c left the summary of a day being produced only once a turn of the NEXT day had
-  // completed, so the first message of a new day was answered by a fresh session that had not
+  // Without this job the summary of a day is produced only once a turn of the NEXT day has
+  // completed, so the first message of a new day is answered by a fresh session that has not
   // been handed anything. These cover the job that writes it the night before, and the two
   // rules that keep it from colliding with the on-completion path it falls back to.
   describe("osloDayBefore", () => {
@@ -516,7 +516,7 @@ describe("telegram-rotation", () => {
 
       const { gatewayComplete } = await import("../lib/llm-complete.js");
       expect(vi.mocked(gatewayComplete)).toHaveBeenCalledTimes(1);
-      // Waiting for the NEXT message — the day-2 behaviour W2-s3c left behind, unchanged.
+      // Waiting for the NEXT message — the day-2 behaviour, unchanged.
       await expect(consumePendingContext(pool, FIXTURE_CHAT)).resolves.toBe("mock continuity summary");
     });
 

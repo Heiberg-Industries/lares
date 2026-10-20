@@ -1,5 +1,5 @@
 /**
- * W5X-s7 — `resolve()` is deleted, and pinned deleted.
+ * `resolve()` is deleted, and pinned deleted.
  *
  * A deletion with a grep-shaped failing test; nothing to design.
  * The plan file calls this slice a deletion slice.

@@ -9,19 +9,19 @@ import { Client } from "eve/client";
 import { toolResultFrom } from "eve/tools";
 import { searchTool } from "@lares/agent-kit/note-tools";
 
-// Task 2: vault_search is now mounted from the @lares/agent-kit eve extension under
-// the mandatory `agent-kit__` prefix, not a local `agent/tools/vault_search.ts` file. Its
+// vault_search is now mounted from the @lares/agent-kit eve extension under
+// the mandatory `agent-kit__` prefix, not a local tool file. Its
 // schema is unchanged (searchTool("brain")'s execute() touches no extension config — see
 // tests/tools-readonly.test.ts's header), so reconstructing it here for `toolResultFrom`'s
 // schema validation is faithful to the real mounted tool.
 const vaultSearchTool = searchTool("brain");
 
 /**
- * Phase-1 success criterion: "agnosticism remains a direction, not a capability" until
+ * Success criterion: "agnosticism remains a direction, not a capability" until
  * a NON-Claude model drives a real agentic tool-calling loop — not just a text
  * completion — through the LiteLLM gateway. This boots the real `eve dev` server with
  * `AGENT_MODEL=mistral-small` (the standing-policy utility model — the exact
- * `model_name` from services/gateway/config.yaml:18, never hardcoded from memory),
+ * `model_name` from the gateway config, never hardcoded from memory),
  * points it at a fixture vault, sends one prompt over the real `eve/client` session
  * protocol, and asserts the transcript contains an actual `vault_search` tool call
  * plus a final answer that used its result.
@@ -42,8 +42,8 @@ const vaultSearchTool = searchTool("brain");
  * this test targets), or it 401s exactly as the old per-model scoping did. Left in place as the
  * record of what the failure looked like.
  *
- * The criterion itself is already satisfied by other means: once the deployed
- * shadow was pointed at `gpt-4o` and chained `vault_search` → `vault_read` → an answer
+ * The criterion itself is already satisfied by other means: once a deployed
+ * agent was pointed at `gpt-4o` and chained `vault_search` → `vault_read` → an answer
  * using both, confirmed in Langfuse (`chat gpt-4o`). See the scorecard, criterion 4. Keep
  * this test targeting Mistral anyway — it is the standing utility-model policy, and the day
  * the key allows it, this is the check that proves it.

@@ -1,5 +1,5 @@
 /**
- * Task 3 — the `fileNote` seam, the one place this port can break silently.
+ * The `fileNote` seam, the one place this port can break silently.
  *
  * `fileDecision` needs a `FileNoteFn`. The old implementation
  * (`services/box/lib/brain-source.ts:175-197`) does FOUR things in ONE commit: write the

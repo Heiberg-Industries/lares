@@ -8,7 +8,7 @@ import {
 } from "../lib/obligation-intent.js";
 
 /**
- * Task 10, B3 — classifyIntent: ONE bounded model read of the counterparty's last
+ * classifyIntent: ONE bounded model read of the counterparty's last
  * message, to tell "they asked me something" from "they closed the loop". Fail-open on any
  * throw or unparseable answer; zero calls when there's no text to read.
  */

@@ -1,13 +1,12 @@
-// lares-split hook 30: neutral fixture — installation-only assertions retargeted; see the lares split plan.
 /**
- * chief-of-staff's INSTRUCTION skills — the `agent/skills/*.md` files eve loads by name.
+ * chief-of-staff's INSTRUCTION skills — the `SKILL.md` files under `agent/skills/` that eve loads by name.
  *
  * These are a different layer from the `skills` array in `agent.json`, and deliberately so.
  * `agent.json` declares what the chief of staff is ALLOWED to reach (a code skill over granted capabilities,
- * enforced by `resolveSkillTool` at build time). A file here is the conversational loop she runs
- * when she reaches it — the shape of the answer, the order of the calls, the sentence she says
+ * enforced by `resolveSkillTool` at build time). A file here is the conversational loop the agent runs
+ * when the agent reaches it — the shape of the answer, the order of the calls, the sentence the agent says
  * when the feed is dark. Neither substitutes for the other: a declaration with no instruction
- * file gives her a tool and no method, and an instruction file with no declaration is prose
+ * file gives the agent a tool and no method, and an instruction file with no declaration is prose
  * about a tool that does not exist.
  *
  * Three properties are pinned here, all of which fail silently otherwise:
@@ -19,7 +18,7 @@
  *     "ground first, every time" — if the file stopped naming `agent-kit__signals_recent`, the
  *     rule would read as advice with no call attached to it, and the model would answer from
  *     memory.
- *  3. A skill is as GENERIC as the role template it travels with ( item 7). These files
+ *  3. A skill is as GENERIC as the role template it travels with. These files
  *     are the loop of a retired agent, extracted the same way a role template is, and until now
  *     nothing held them to the role's bar: `sales-outreach.md` hard-coded two mailbox addresses
  *     and named the owner five times. Owner-specific facts belong in `agent/voice.md`, the one
@@ -101,15 +100,14 @@ describe("chief-of-staff agent/skills", () => {
   }
 
   it("sales-outreach still tells the agent HOW to resolve a mailbox after the addresses moved", () => {
-    // item 7 moved `owner@owner.example` / `owner@project.example` and the owner's-vs-the second company tone
-    // note into agent/voice.md, which is assembled into instructions.md and so is in context on
+    // The mailbox addresses and the per-company tone note live in agent/voice.md, which is assembled into persona.md and so is in context on
     // every turn. The skill must still say what to do — otherwise "which mailbox" became a
     // question with no answer, which is worse than a stale hard-coded list.
     const md = bodyOf("sales-outreach");
     expect(md).toMatch(/identity_my_addresses/u);
     expect(md).toMatch(/`account`/u);
-    // The addresses themselves live in the installation's agent/voice.md (the overlay's, since
-    // the lares split — the engine ships a neutral voice with none). What the ENGINE guards is
+    // The addresses themselves live in the installation's agent/voice.md (the engine ships a
+    // neutral voice with none). What the ENGINE guards is
     // the half that makes the move real: the skill carries no mailbox address of its own.
     expect(md).not.toMatch(/[\w.+-]+@[\w-]+\.[a-z]{2,}/iu);
   });

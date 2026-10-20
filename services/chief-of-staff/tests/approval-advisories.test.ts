@@ -1,9 +1,8 @@
 /**
  * tests/approval-advisories.test.ts — the published approval-card advisories, as cases THIS
- * installation has to pass (W7A-s7).
+ * installation has to pass.
  *
- * Source: `02-openclaw.md` §6 ("The approval-card class of bug — directly relevant to Lares"),
- * a reading of another self-hosted agent project's published security advisories. Its titles
+ * Source: another self-hosted agent project's published security advisories. Their titles
  * name four failure shapes: (1) what is shown is not what runs, (2) the approval is not bound
  * to the exact payload, (3) the approver's identity is not checked, (4) an approval lives
  * longer or wider than what was reviewed.
@@ -14,8 +13,8 @@
  * answer is "this installation has not closed that shape", the case says so once, in one
  * sentence, rather than assert something true of a smaller, easier question.
  *
- * If any case here cannot be made to pass without changing production code, that is a hole
- * wave 7 has not closed — STOP and report it; this slice does not fix it.
+ * If any case here cannot be made to pass without changing production code, that is an open hole
+ * — STOP and report it; this file does not fix it.
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -94,7 +93,6 @@ describe("(1) what is shown is not what runs", () => {
   });
 
   it("a send names every recipient, never 'and 3 more' alone", () => {
-    // W7A-s1
     const out = detailsForApproval("gmail_send", {
       to: ["a@x.example", "b@x.example", "c@x.example", "d@x.example"],
       subject: "Q3",
@@ -107,7 +105,6 @@ describe("(1) what is shown is not what runs", () => {
 
 describe("(2) the approval is not bound to the exact payload", () => {
   it("'Reusable exec approvals could authorize changed arguments' — changed arguments refuse", async () => {
-    // W7A-s5
     const { ledger, settled } = ledgerWithRow();
     await expect(
       assertApprovedCall(ledger, {
@@ -135,7 +132,6 @@ describe("(2) the approval is not bound to the exact payload", () => {
 
 describe("(3) the approver's identity is not checked", () => {
   it("'QQBot native approval buttons did not enforce configured approver identity' — a tap from another id is refused", () => {
-    // W7A-s3
     const env = { TELEGRAM_PRINCIPAL_ID: "111" } as NodeJS.ProcessEnv;
     const raw = JSON.stringify({
       update_id: 1,
@@ -150,8 +146,8 @@ describe("(3) the approver's identity is not checked", () => {
   });
 
   it("'Slack plugin approvals used the exec approver gate for plugin actions' — one gate, named per tool", () => {
-    // W7A-s6's structural rule, re-asserted here directly over the real catalogue/tool files —
-    // not by trusting board-wiring.test.ts, which is a different slice's own test.
+    // The structural rule, re-asserted here directly over the real catalogue/tool files —
+    // not by trusting board-wiring.test.ts, which is a separate test.
     const dirs = [join(here, "..", "agent", "tools"), join(here, "..", "catalogue")];
     const behind: string[] = [];
     for (const dir of dirs) {
@@ -170,7 +166,6 @@ describe("(3) the approver's identity is not checked", () => {
 
 describe("(4) an approval lives longer or wider than what was reviewed", () => {
   it("'Exec approvals could outlive their reviewed working directory' — a card past the window refuses", async () => {
-    // W7A-s5
     const { ledger, settled } = ledgerWithRow({
       askedAt: new Date(NOW.getTime() - APPROVAL_TTL_MS - 1),
     });

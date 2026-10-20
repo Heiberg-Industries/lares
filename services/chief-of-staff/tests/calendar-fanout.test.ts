@@ -1,9 +1,9 @@
 /**
- * — the multi-calendar fan-out. The 2026-08-17 evening brief read `primary` on ONE
+ * The multi-calendar fan-out. An evening brief once read `primary` on ONE
  * account and said "nothing to say" while Tuesday held a three-hour meeting.
  *
  * The load-bearing case here is the LAST one: the second company's token row exists but its OAuth client is
- * not mounted on the agent box, and that must SKIP the account — not silence the brief.
+ * not mounted in the deployment, and that must SKIP the account — not silence the brief.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 
@@ -76,7 +76,7 @@ describe("selectBriefCalendars", () => {
 });
 
 describe("wrapCalendarApi.listCalendars — read-only inclusion", () => {
-  // Verified against the real account 2026-08-18: "Test Owner - Board" comes back with
+  // Verified against a real account: a board calendar comes back with
   // accessRole "reader", so the write-oriented default filter hid the owner's board meetings.
   const api = {
     calendarList: {
@@ -190,7 +190,7 @@ describe("listEventsEverywhere", () => {
     await expect(listEventsEverywhere(deps, WINDOW)).rejects.toThrow(/ECONNRESET/);
   });
 
-  it("-s1: stamps each event with the account and calendar it came from", async () => {
+  it("stamps each event with the account and calendar it came from", async () => {
     const deps: CalendarFanoutDeps = {
       accounts: async () => ["owner@owner.example", "owner@project.example"],
       clientFor: async (account) =>
@@ -210,7 +210,7 @@ describe("listEventsEverywhere", () => {
     expect(byId.get("z-1")).toMatchObject({ account: "owner@project.example", calendarId: "primary" });
   });
 
-  it("-s1: the first-seen copy's stamp wins when the same commitment is read off two calendars", async () => {
+  it("the first-seen copy's stamp wins when the same commitment is read off two calendars", async () => {
     const deps: CalendarFanoutDeps = {
       accounts: async () => ["owner@owner.example"],
       clientFor: async () =>

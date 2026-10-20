@@ -9,12 +9,12 @@ import {
 } from "../lib/dream/log-reader.js";
 import type { ConversationEntry } from "@lares/agent-kit/conversation-record";
 
-// The legacy markdown format the retired writer (`lib/conversation-log.ts`, removed W3B-s8)
+// The legacy markdown format the retired writer (`lib/conversation-log.ts`, since removed)
 // used to produce, inlined here as a plain fixture builder — nothing in production writes this
 // format any more, but the parser (`lib/dream/log-reader.ts`) still reads it for the one
 // installation-lifetime gap `readConversationEntries` fills and for the one-time importer.
-// Neutral, caller-supplied labels throughout: the parser under test knows no name of its own
-// (W3B-s7), so neither does this fixture.
+// Neutral, caller-supplied labels throughout: the parser under test knows no name of its own,
+// so neither does this fixture.
 const FIXTURE_SPEAKER = "Person";
 const FIXTURE_AGENT_LABEL = "Helper";
 
@@ -66,7 +66,7 @@ describe("writer/reader round-trip — the legacy format, parseConversationLog r
   });
 });
 
-describe("the parser names no person and no persona (W3B-s7) — it only knows what the caller tells it", () => {
+describe("the parser names no person and no persona — it only knows what the caller tells it", () => {
   const md = (speaker: string, input: string, agent: string, reply: string, extra = "") =>
     [
       "---",
@@ -145,7 +145,7 @@ describe("readConversationLogs cursor behaviour", () => {
   });
 });
 
-describe("readConversationEntries — the table, with a fallback for one installation-lifetime gap (W3B-s3)", () => {
+describe("readConversationEntries — the table, with a fallback for one installation-lifetime gap", () => {
   function mdBrain(files: Record<string, string>): LogReaderBrain {
     return {
       list: async () => Object.keys(files),
@@ -202,7 +202,7 @@ describe("readConversationEntries — the table, with a fallback for one install
     expect(readSpy).not.toHaveBeenCalled();
   });
 
-  it("markdown only: a box that has not applied migration 060 fails soft, warns once, and never throws", async () => {
+  it("markdown only: a box without the conversation_entries table fails soft, warns once, and never throws", async () => {
     const missingTable = Object.assign(new Error('relation "conversation_entries" does not exist'), { code: "42P01" });
     const reader: EntryReader = { since: async () => { throw missingTable; } };
     const { relPath, text } = renderMd({ ...entry, at: "2026-09-18T11:00:00.000Z" });
@@ -258,7 +258,7 @@ describe("readConversationEntries — the table, with a fallback for one install
     expect(got.map((e) => e.input)).toEqual(["gap entry, markdown-only", "from the table"]);
   });
 
-  // W3B-s8: the markdown WRITE stops, but an installation that has never run the one-time
+  // The markdown WRITE stops, but an installation that has never run the one-time
   // importer (`bin/import-conversation-logs.ts`) still has its whole legacy history living
   // ONLY in markdown, under a table that only started filling up recently ("a young table").
   // The gap-fill above is what carries that installation through until it runs the importer —

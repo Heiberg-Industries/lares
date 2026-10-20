@@ -61,7 +61,7 @@ const FORGET_LEDGER_SQL = `
 
 /**
  * WHO is in the turn. Both tools now require an allowlisted HUMAN on `ctx.session.auth.current`
- * (review fix, Finding 1) — the same allowlist `lib/approvals.ts` checks for a gated write — so
+ * (the same allowlist `lib/approvals.ts` checks for a gated write), so
  * every context here has to declare one, and the ones that must NOT be able to write declare
  * theirs too.
  */
@@ -101,7 +101,7 @@ const ctx = ctxFor(slackAuth(OWNER_SLACK));
 const CTX_TURN_KEY = { sessionId: "wrun_test", turnId: "turn_42" };
 
 /**
- * What eve calls when a conversation STARTS (W4B-s2 — the block is built once per session and
+ * What eve calls when a conversation STARTS (the block is built once per session and
  * then held byte-stable for it, because eve merges every dynamic instruction into one cached
  * system message). Every call here therefore uses a FRESH session id: each assertion below is
  * about what a new conversation is given, which is exactly what the resolver answers. Holding
@@ -334,21 +334,21 @@ describe("standing facts", () => {
   // ── who may write to the store ───────────────────────────────────────────────
 
   /**
-   * Review fix, Finding 1. Ungated is not unattributed. Both brief turns run as eve's app
-   * principal, carry the standing-facts block plus "apply these / call `forget` if he supersedes
-   * one", and contain NO utterance of his — so a model reading tomorrow's Travel row beside the
+   * Ungated is not unattributed. Both brief turns run as eve's app
+   * principal, carry the standing-facts block plus "apply these / call `forget` if the owner supersedes
+   * one", and contain NO utterance of the owner's — so a model reading tomorrow's Travel row beside the
    * train fact has everything it needs to write a sentence in AGENT_A's voice into a table whose
-   * whole contract is "his own words". `rejectFact` cannot catch that; only the principal can.
+   * whole contract is "the owner's own words". `rejectFact` cannot catch that; only the principal can.
    *
    * Both directions are tested: the app and a stranger are refused with nothing written, and
    * both real channels' allowlisted humans still work — a gate that refuses everyone would pass
-   * the first half of this suite and quietly cost him the feature.
+   * the first half of this suite and quietly cost the owner the feature.
    */
   describe("the principal check", () => {
     const appCtx = ctxFor(APP_AUTH);
 
     it("the app principal — a brief turn — cannot remember, and NOTHING is written", async () => {
-      // The exact failure from the review: an inference off tomorrow's calendar, phrased as his
+      // The exact failure from the review: an inference off tomorrow's calendar, phrased as the owner's
       // words. `rejectFact` passes it (standing, unhedged, no day-word), so only the gate stops it.
       const result = await remember.execute(
         { fact: "he stays at Hotel A before early flights", category: "places" },
@@ -414,7 +414,7 @@ describe("standing facts", () => {
       expect((remember as unknown as { approval?: unknown }).approval).toBeUndefined();
     });
 
-    it("forget is gated — retiring a fact is a delete, and the board always asks first ( step 1)", () => {
+    it("forget is gated — retiring a fact is a delete, and the board always asks first", () => {
       expect((forget as unknown as { approval?: unknown }).approval).toBeTypeOf("function");
       // Named by its OWN tool — board-wiring.test.ts enforces this fleet-wide; this pins it for
       // the one tool this file is specifically about.
@@ -518,7 +518,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── remember refuses to re-add a forgotten fact (W5B-s3) ─────────────────────
+  // ── remember refuses to re-add a forgotten fact ─────────────────────
 
   describe("remember refuses to re-add a forgotten fact", () => {
     it("will not silently re-add something the owner asked to forget", async () => {
@@ -581,7 +581,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── the per-session injection (per-turn until W4B-s2) ────────────────────────
+  // ── the per-session injection ────────────────────────
 
   describe("the instructions block", () => {
     it("a stored fact appears in the NEXT session's instructions", async () => {
@@ -619,10 +619,10 @@ describe("standing facts", () => {
     });
 
     it("a STALLED database costs the facts, never the turn — within the budget", async () => {
-      // Fix round 1. The failure this box actually produces is not a throw: `db` up but
+      // The failure this actually produces is not a throw: `db` up but
       // unresponsive (full disk, exhausted connections). `pool.query` then neither resolves nor
       // rejects, and eve applies no timeout of its own to a dynamic-instruction resolver — so
-      // unbounded, this is not "she forgot", it is "the owner's message got no reply".
+      // unbounded, this is not "the agent forgot", it is "the owner's message got no reply".
       const pool = getPool();
       const realQuery = pool.query.bind(pool);
       (pool as unknown as { query: () => Promise<never> }).query = () => new Promise<never>(() => {});
@@ -658,7 +658,7 @@ describe("standing facts", () => {
 
     it("a database failure costs the facts, never the turn", async () => {
       // eve takes a turn's whole instruction set down with a throwing resolver, so this is the
-      // difference between "she forgot for one turn" and "the owner's message got no reply".
+      // difference between "the agent forgot for one turn" and "the owner's message got no reply".
       await closePool();
       delete process.env["DATABASE_URL"];
       try {
@@ -669,7 +669,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── origin (W3A-s7) ──────────────────────────────────────────────────────────
+  // ── origin ──────────────────────────────────────────────────────────
 
   describe("origin on a standing fact", () => {
     it("refuses any class but owner", async () => {
@@ -691,7 +691,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── the dated-facts field set (W4A-s1) ───────────────────────────────────────
+  // ── the dated-facts field set ───────────────────────────────────────
 
   describe("the dated-facts field set", () => {
     it("carries recorded_at, source and superseded_by, and no second valid_from/valid_to pair", async () => {
@@ -755,7 +755,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── a change closes the old row and links it (W4A-s2) ────────────────────────
+  // ── a change closes the old row and links it ────────────────────────
 
   describe("supersedeFact — a change closes the old row and links it", () => {
     async function seed(fact: string) {
@@ -1118,7 +1118,7 @@ describe("standing facts", () => {
     });
   });
 
-  // ── "what have I retired?" (owner ruling) ─────────────
+  // ── "what have I retired?" ─────────────
 
   describe("listRetiredFacts", () => {
     it("lists a retired fact, newest RETIREMENT first — not newest stated", async () => {

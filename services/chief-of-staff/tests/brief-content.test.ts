@@ -24,7 +24,7 @@ import {
 } from "../lib/brief-content.js";
 
 /**
- * Task 12 — lib/brief-content.ts. Per the task brief's own Step 1, the contract as
+ * lib/brief-content.ts, the contract as
  * assertions:
  *   1. zero obligations + zero meetings → buildEveningBrief returns exactly null
  *   2. obligations present → included, and the deterministic (non-model) output never
@@ -33,9 +33,8 @@ import {
  *   4. morning with no delta → null
  *   5. re-ping respects max-3/day
  *
- * Plus the supporting pure/adapter logic ported from services/agent-runtime's
- * lib/obligations/{types,candidate,surfaces,reping-budget}.ts and
- * lib/adapters/{obligations/gmail-source,brief/night-before-calendar,brief/ingested-picks}.ts.
+ * Plus the supporting pure/adapter logic: obligation selection and surfacing, the re-ping budget,
+ * the Gmail thread scan, the night-before calendar and the ingested picks.
  *
  * — the `gatherOpenObligations` cases, the resolve → read → explain cases and the
  * `dropResolved` cases moved VERBATIM to `tests/obligation-pipeline.test.ts` with the code they
@@ -77,7 +76,7 @@ function obligation(overrides: Partial<Obligation> = {}): Obligation {
 
 const NOW = new Date("2026-08-12T20:00:00Z"); // 22:00 CEST — an evening pass moment
 
-// ─── selectObligations (ported from obligations/candidate.ts) ─────────────────────────────
+// ─── selectObligations ─────────────────────────────
 
 describe("selectObligations", () => {
   it("drops a dismissed thread — never resurfaces", () => {
@@ -127,7 +126,7 @@ describe("selectObligations", () => {
     expect(out.map((o) => o.threadId)).toEqual(["older", "younger"]);
   });
 
-  // ─── Task 10 (B1): the new snapshot fields pass through untouched ──────────────────
+  // ─── The new snapshot fields pass through untouched ──────────────────
 
   it("passes lastMessageText, counterpartyEmails, counterpartySlackUserId and source through unchanged", () => {
     const out = selectObligations(
@@ -151,7 +150,7 @@ describe("selectObligations", () => {
   });
 });
 
-// ─── assignSurfaces (ported from obligations/surfaces.ts) ──────────────────────────────────
+// ─── assignSurfaces ──────────────────────────────────
 
 describe("assignSurfaces", () => {
   it("puts an obligation owed to a tomorrow's-meeting participant in nightBefore, not brief", () => {
@@ -225,7 +224,7 @@ describe("nightBeforeCoveredDay", () => {
 // against a real Postgres in `packages/agent-kit/tests/proactivity.test.ts`, and asserted absent
 // from this module by `tests/proactivity-wiring.test.ts`.
 
-// ─── scanThreads (ported from adapters/obligations/gmail-source.ts) ────────────────────────
+// ─── scanThreads ────────────────────────
 
 function threadMessage(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -295,7 +294,7 @@ describe("scanThreads", () => {
     expect(snapshots[0]!.isAutomated).toBe(true);
   });
 
-  // ─── Task 10 (B1): lastMessageText / counterpartyEmails / source in flight ─────────
+  // ─── lastMessageText / counterpartyEmails / source in flight ─────────
 
   it("sets lastMessageText from the last message's bodyText and counterpartyEmails from its sender", async () => {
     const deps: GmailSourceDeps = {
@@ -343,9 +342,9 @@ describe("listTomorrowMeetings", () => {
     expect(out).toEqual([{ title: "Pilot kickoff", startsAt: new Date("2026-08-13T09:00:00Z"), participants: ["per@partner.example"], kind: "remote-call", endsAt: new Date("2026-08-13T10:00:00Z") }]);
   });
 
-  // ──: the 2026-08-17 silence. Every case below would have rendered "(none)". ──
+  // ── The silence case. Every case below would have rendered "(none)". ──
 
-  it("THE the sync meeting CASE: a located, multi-hour block with NO attendees counts", async () => {
+  it("THE MULTI-HOUR CASE: a located, multi-hour block with NO attendees counts", async () => {
     const deps: CalendarSourceDeps = {
       listEvents: async () => [calendarEvent({
         summary: "Weekly Sync",
@@ -362,7 +361,7 @@ describe("listTomorrowMeetings", () => {
       participants: [],
       location: "Example Folio AS Example Street 3, 0181 Oslo, Norway",
       kind: "in-person",
-      // Fix round 1 — the end is carried now, so an overlap is read rather than guessed.
+      // The end is carried now, so an overlap is read rather than guessed.
       endsAt: new Date("2026-08-13T13:50:00Z"),
     }]);
   });
@@ -455,7 +454,7 @@ describe("listTomorrowMeetings", () => {
   });
 });
 
-// ─── readIngestedPicks (ported from adapters/brief/ingested-picks.ts) ──────────────────────
+// ─── readIngestedPicks ──────────────────────
 
 function fakeReader(files: Record<string, string>): PicksReader {
   return {
@@ -593,8 +592,8 @@ describe("buildMorningBrief", () => {
     expect(content!.picks).toHaveLength(1);
   });
 
-  // ── 2026-08-18: "the morning brief should let me know what's on my plate, probably in a
-  //    prio list. Delta is of course important if/when it happens." ──
+  // ── The morning brief shows what is on the owner's plate, in priority order; the delta
+  //    matters too, when it happens. ──
 
   it("today's meetings appear even when nothing changed overnight — the plate, not just the delta", () => {
     const content = buildMorningBrief({
@@ -632,7 +631,7 @@ describe("buildMorningBrief", () => {
 
 // ─── a quiet day stays silent ──────────────────────────────────────────────────────────────
 //
-// There is no trip source any more (the travel role left the engine), so a day with no meetings,
+// There is no trip source any more (no trip source exists), so a day with no meetings,
 // obligations or picks is silent: nothing else earns the brief.
 
 describe("buildMorningBrief — a day with nothing on it", () => {
@@ -644,7 +643,7 @@ describe("buildMorningBrief — a day with nothing on it", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 4 — the `## Frister` block.
+// The `## Frister` block.
 //
 // Exact strings, asserted, for the same reason `conflictsBlock` has its own cases: this block
 // is rendered INTO the prompt as context rather than spoken by the model, so its wording is a
@@ -711,7 +710,7 @@ describe("deadlinesBlock", () => {
     expect(block).not.toContain("AS) — [id");
   });
 
-  // ── vendor / amount / currency (-s3) ─────────────────────────────────────────────────
+  // ── vendor / amount / currency ─────────────────────────────────────────────────
   //
   // Pure data, no translated words — asserted here rather than duplicated per language. The
   // pin above (and tests/brief-language.test.ts's byte-identical nb/en assertions) already prove
@@ -810,7 +809,7 @@ describe("deadlinesBlock", () => {
     expect(deadlinesBlock([], [candidateLine()], "nb")).toContain("## Frister");
   });
 
-  // ── The cap (review fix,) ─────────────────────────────────────────────────────────
+  // ── The cap ─────────────────────────────────────────────────────────
   //
   // A statutory mint is a whole year in one approval — twelve rows for one Norwegian AS — so the
   // morning two entities' 30-day marks coincide, the block was a wall. Eight lines, most urgent
@@ -894,9 +893,9 @@ describe("buildMorningBrief — deadlines break the silence, candidates do not",
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-//-s4 — commitment and travel-context clock times follow the owner's clock, not a
+// commitment and travel-context clock times follow the owner's clock, not a
 // hardcoded Oslo one. `tz` is required on `commitmentLine`/`travelContextLine`, so every case
-// below states it explicitly; `travelContextBlock` defaults to `DEFAULT_HOME_TZ` (Europe/Oslo)
+// below states it explicitly; `travelContextBlock` defaults to the home zone (`homeTzFromEnv`, OWNER_HOME_TZ=Europe/Oslo in vitest.config)
 // when omitted, which is what keeps its own existing callers unchanged.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
@@ -910,7 +909,7 @@ function nbMeeting(overrides: Partial<NightBeforeMeeting> = {}): NightBeforeMeet
   };
 }
 
-describe("commitmentLine follows the tz it is given (-s4)", () => {
+describe("commitmentLine follows the tz it is given", () => {
   it("Europe/Oslo (today's default) is unchanged — CEST in August is +2h", () => {
     expect(commitmentLine(nbMeeting(), "Europe/Oslo")).toContain("16:00");
   });
@@ -922,7 +921,7 @@ describe("commitmentLine follows the tz it is given (-s4)", () => {
   });
 });
 
-describe("travelContextLine follows the tz it is given (-s4)", () => {
+describe("travelContextLine follows the tz it is given", () => {
   const stay = nbMeeting({ title: "Hotel", kind: "lodging" });
 
   it("Europe/Oslo (today's default) is unchanged", () => {
@@ -934,7 +933,7 @@ describe("travelContextLine follows the tz it is given (-s4)", () => {
   });
 });
 
-describe("travelContextBlock threads tz to every calendar row (-s4)", () => {
+describe("travelContextBlock threads tz to every calendar row", () => {
   const stay = nbMeeting({ title: "Hotel", kind: "lodging" });
 
   it("defaults to Europe/Oslo (DEFAULT_HOME_TZ) when tz is omitted — unchanged", () => {

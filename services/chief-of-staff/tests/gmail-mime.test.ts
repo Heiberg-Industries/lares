@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import { buildMimeEnvelope, parseAddressHeader } from "../lib/google.js";
 
-// 2026-09-08: reply drafts go to everyone on the original, so the envelope must carry Cc and the
+// Reply drafts go to everyone on the original, so the envelope must carry Cc and the
 // parser must read it. `parseAddressHeader` is the one place a header becomes a list.
 describe("buildMimeEnvelope — Cc", () => {
   const base = { from: "owner@owner.example", to: ["a@x.no", "Mats <m@example.com>"], subject: "Re: x", bodyText: "Hei" };
@@ -21,14 +21,14 @@ describe("buildMimeEnvelope — Cc", () => {
   });
 });
 
-// Fix-round-2 review, item 2a (Critical, controller ruling): encodeSubject's ASCII_ONLY check
+// encodeSubject's ASCII_ONLY check
 // passes CR/LF through unchanged (both are within \x00-\x7F), so a caller-supplied subject
 // like "Hi\r\nBcc: stranger@evil.example" would write a second, unapproved header straight
-// into the raw message — reaching a recipient no approval ever considered, once Task 5 wires
-// board-approval to gmail_send. buildMimeEnvelope must refuse to build ANY message whose
+// into the raw message — reaching a recipient no approval ever considered, once board-approval
+// is wired to gmail_send. buildMimeEnvelope must refuse to build ANY message whose
 // header-bound fields (from, to entries, cc entries, subject, messageId, inReplyTo,
 // references, boundarySeed) carry a raw CR or LF, before writing a single header.
-describe("buildMimeEnvelope — refuses header injection (fix round 2, item 2a)", () => {
+describe("buildMimeEnvelope — refuses header injection", () => {
   const base = { from: "owner@example.com", to: ["a@example.com"], subject: "Re: x", bodyText: "Hi" };
 
   it("throws when subject carries a CR/LF header-injection attempt", () => {

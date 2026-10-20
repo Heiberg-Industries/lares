@@ -12,9 +12,6 @@
  *   ssh <user>@<server-address> 'docker exec -e NOTION_LIVE_PAGE=<page id shared with the integration> \
  *     -w /app/services/chief-of-staff <chief-of-staff-container> node node_modules/.cache/probe/np.mjs'
  *
- * First run 2026-09-14 ( round 5): a shared meeting page read (title 39 chars, markdown
- * 12,126 chars) and a missing id was refused with NotionPageUnavailableError.
- *
  * Both directions: a page shared with the integration MUST read (title + non-empty markdown), and
  * a page id that doesn't exist MUST fail with NotionPageUnavailableError — never a generic error
  * that reads as "the reader is down". It prints statuses and lengths only, never page content.

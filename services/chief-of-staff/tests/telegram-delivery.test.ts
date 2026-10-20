@@ -76,7 +76,7 @@ describe("onMessageCompleted — delivery first, rotation second", () => {
 
 // ──: the reply goes out as Telegram HTML ─────────────────────────────────────────
 //
-// The chief of staff's replies rendered literal `**bold**` for the same reason the travel agent's did: eve posts text
+// The chief of staff's replies rendered literal `**bold**` for a reason that applies to any eve agent: eve posts text
 // with no parse_mode. Conversion happens on the way out, and — the part that bites — the
 // chunking is ours, because eve's own splitter passes the body's extra fields to the first
 // chunk only, so every later chunk would lose parse_mode and arrive as visible tag soup.

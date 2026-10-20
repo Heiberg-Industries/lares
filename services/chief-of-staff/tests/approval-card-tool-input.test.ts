@@ -68,7 +68,7 @@ describe("the eve patch — the raw Tool input block on Slack approval cards", (
     expect(JSON.stringify(container)).toContain("target");
   });
 
-  it("stays, collapsed, when no summariser is registered at all — travel-agent never registers one", () => {
+  it("stays, collapsed, when no summariser is registered at all", () => {
     const [request] = extractToolApprovalInputRequests({ content: content("gmail_send", { body: "hei" }) });
     expect(request.prompt).toBe("Approve tool call: gmail_send");
 
@@ -77,8 +77,8 @@ describe("the eve patch — the raw Tool input block on Slack approval cards", (
   });
 });
 
-// 2026-09-07: the sync meeting follow-up card named the meeting and two recipients and not one word
-// of the email. had removed the raw block, which for a mail send was the only place the
+// A meeting follow-up card once named the meeting and two recipients and not one word
+// of the email: the raw block had been removed, and for a mail send that was the only place the
 // subject and body ever appeared. A mail card now carries the draft as a section directly under
 // the approve/cancel card — the seventh hunk of patches/eve.patch consults
 // `globalThis.__eveApprovalDetails`, published beside the title hook. A covered tool with no
@@ -169,11 +169,11 @@ describe("the eve patch — a mail card shows the draft under the card", () => {
   });
 });
 
-//-s4 — the delete-event card names the reason a stale booking is being removed. It is
+// the delete-event card names the reason a stale booking is being removed. It is
 // carried entirely in the TITLE (summarizeApproval), so it reaches Slack and Telegram through
 // the exact same pipeline every other dedicated-formatter title already does — no new details
 // hook, no change to the ticket's "card alone" shape for a tool with nothing more to show.
-describe("the eve patch — the delete-event card shows the reason, on Slack and Telegram alike (-s4)", () => {
+describe("the eve patch — the delete-event card shows the reason, on Slack and Telegram alike", () => {
   afterEach(() => {
     delete globalThis.__eveApprovalSummary;
     delete globalThis.__eveApprovalCovers;
@@ -240,7 +240,7 @@ describe("the eve patch — Telegram approval cards show the same details", () =
   });
 
   it("fits Telegram's 4,000-character text limit and marks truncation clearly", () => {
-    // W7A-s1: `mailDetails` now ends its own text with a sentence ("— shortened — N characters
+    // `mailDetails` now ends its own text with a sentence ("— shortened — N characters
     // are not shown."), not a bare ellipsis. eve's patched `laresApprovalText`
     // (patches/eve.patch, telegram-hitl hunk) only appends ITS "…(truncated)" marker when the
     // details text it was handed ends in "…"/"..." — that was a hook for our OLD bare-ellipsis
@@ -254,7 +254,7 @@ describe("the eve patch — Telegram approval cards show the same details", () =
 
 // S1: an outside tool's title shortens values and drops arguments, and the request was built
 // by a model for a server nobody reviewed. The full input must stay on the card, on Slack and Telegram.
-describe("the eve patch — an outside tool keeps its full input on the card ( S1)", () => {
+describe("the eve patch — an outside tool keeps its full input on the card", () => {
   afterEach(() => {
     delete globalThis.__eveApprovalSummary;
     delete globalThis.__eveApprovalCovers;

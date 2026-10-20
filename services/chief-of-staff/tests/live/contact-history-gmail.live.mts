@@ -1,11 +1,10 @@
 /**
  * tests/live/contact-history-gmail.live.mts — the LIVE sweep for the Gmail-search assumptions
  * behind `lib/contact-history.ts`'s mail leg (`contactedByMail`), which decides whether a
- * recipient counts as "known" for the step 1 first-contact-history check.
+ * recipient counts as "known" for the first-contact-history check.
  *
- * Rewritten for fix round 1 (task-3b-fix1-findings.md, C2/D-B/I6) — the mail leg now means
- * "the OWNER wrote to them" (D-B), never the reverse, and it now VERIFIES the candidate
- * messages' own headers rather than trusting Gmail's search tokenisation (C2). `contactedByMail`
+ * The mail leg means "the OWNER wrote to them", never the reverse, and it VERIFIES the
+ * candidate messages' own headers rather than trusting Gmail's search tokenisation. `contactedByMail`
  * runs:
  *
  *     in:sent (to:<addr> OR cc:<addr> OR bcc:<addr>)
@@ -15,7 +14,7 @@
  *
  *   MUST match — an address the owner SENT to, in To; one only ever Cc'd; one only ever Bcc'd.
  *   MUST NOT match — an address that only ever wrote TO the owner (inbound only — this is
- *     exactly the D-B case: inbound mail must never count); an address that appears only in a
+ *     inbound mail must never count); an address that appears only in a
  *     DRAFT, never an actually-sent message; a near-miss address (same local part at a
  *     different domain, or the known address with one local-part character removed — proving
  *     the header-verification step, not just the search, is doing real work); and a random
@@ -59,7 +58,7 @@ function blocked(label: string): void {
 }
 
 /** VERBATIM copy of lib/contact-history.ts's contactedByMail query + loop shape (imports the
- *  real `addressOf` above rather than keeping its own copy — fix-round-2 review, item 1: a
+ *  real `addressOf` above rather than keeping its own copy: a
  *  second, diverging copy of that exact function is how its bug reached this probe in the
  *  first place). Returns whether a SENT message's own To/Cc/Bcc headers contain `email`
  *  exactly — not just whether the search matched something. */

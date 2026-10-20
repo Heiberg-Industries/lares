@@ -29,7 +29,7 @@
  *     tsx telegram-approval-card.live.mts
  *
  * It WRITES TWO MESSAGES: a test card in the first allowed approver's private chat, which it then
- * edits, and the long card of step 4. The first card's buttons carry callback data no handler
+ * edits, and a second, long card. The first card's buttons carry callback data no handler
  * claims, so a tap only answers "Unsupported action."; the long card's Cancel is registered only in
  * this script's throwaway state, so a tap on it resolves to nothing. It approves, cancels and runs
  * nothing, and it prints no token.

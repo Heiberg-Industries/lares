@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { Pool } from "pg";
 
 /**
- * Finding 5 (Important) — the summary-mismatch signal has no dedupe. `liveListMeetings` runs
+ * The summary-mismatch signal has no dedupe. `liveListMeetings` runs
  * every 5 minutes; without a dedupe, one persistently-broken page (Summary property filled,
  * but no `<summary>` block ever extractable) would emit that signal roughly 288 times a day,
  * forever — an agent in this fleet was already paused for exactly that kind of spam.
@@ -29,8 +29,7 @@ const NOW = new Date("2026-08-20T10:00:00.000Z");
 
 // A page whose `Summary` PROPERTY is filled (so it passes the cheap pre-filter and gets a
 // markdown read) but whose page body never contains the `<meeting-notes><summary>` block the
-// composer actually reads — the property-filled/block-empty contradiction ( fix
-// round 2) this test's page is built to trigger on every single tick.
+// composer actually reads — the property-filled/block-empty contradiction this test's page is built to trigger on every single tick.
 const BROKEN_PAGE = {
   id: "page-mismatch-1",
   created_time: "2026-08-20T09:00:00.000Z",
@@ -70,7 +69,7 @@ function fakeNotionFetch() {
 // which is exactly the scenario the dedupe has to hold up against.
 const fakePool = { query: async () => ({ rows: [] }) } as unknown as Pool;
 
-describe("liveListMeetings — summary-mismatch signal dedupe (finding 5)", () => {
+describe("liveListMeetings — summary-mismatch signal dedupe", () => {
   beforeEach(() => {
     process.env["NOTION_TOKEN"] = "test-token";
     delete process.env["EGRESS_PROXY_URL"];

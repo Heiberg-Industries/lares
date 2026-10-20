@@ -247,7 +247,7 @@ describe("emitSignal", () => {
     }
   });
 
-  it("degrades to a log line and does not reject when SIGNAL_SPINE_TOKEN_FILE points at a missing file (fix round 1)", async () => {
+  it("degrades to a log line and does not reject when SIGNAL_SPINE_TOKEN_FILE points at a missing file", async () => {
     // The never-throws contract is emitSignal's, not spineToken()'s — ~15 schedule call sites
     // await emitSignal from inside a bare `catch`, so a rejection here would be an unhandled
     // rejection on top of the failure being reported.
@@ -273,7 +273,7 @@ describe("emitSignal", () => {
     }
   });
 
-  it("degrades to a log line and does not reject when SIGNAL_SPINE_TOKEN_FILE is blank — never falls back to the plain env var (fix round 1)", async () => {
+  it("degrades to a log line and does not reject when SIGNAL_SPINE_TOKEN_FILE is blank — never falls back to the plain env var", async () => {
     const dir = mkdtempSync(join(tmpdir(), "chief-of-staff-signal-token-blank-"));
     const tokenPath = join(dir, "token");
     writeFileSync(tokenPath, "   \n");

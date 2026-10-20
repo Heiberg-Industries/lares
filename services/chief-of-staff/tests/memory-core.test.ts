@@ -1,5 +1,5 @@
 /**
- * tests/memory-core.test.ts — the per-session memory core (W4B-s2).
+ * tests/memory-core.test.ts — the per-session memory core.
  *
  * Three properties are under test, and they are the whole point of the slice:
  *
@@ -15,7 +15,7 @@
  * `tests/origin-taint-hook.test.ts` drives `makeOriginTaint()`. The store itself is covered
  * against a real Postgres in `tests/standing-facts.test.ts`.
  *
- * MOCKING RULE (WAVE-3 note, "Added after W3A-s5/s6"): every `vi.doMock` here is paired with a
+ * MOCKING RULE: every `vi.doMock` here is paired with a
  * dynamic `await import(...)` AFTER `vi.resetModules()`. A static top-level import of the
  * resolver would bind to a different module instance and the mock would never be seen.
  */
@@ -225,7 +225,7 @@ describe("the resolver", () => {
     vi.restoreAllMocks();
   });
 
-  // ── W5I-s5b: the owner-key/register check is fired here, but never waited on ──────────────
+  // ── The owner-key/register check is fired here, but never waited on ──────────────
   it("kicks off the owner-key/register check once per process, without ever awaiting it", async () => {
     let checkCalls = 0;
     vi.doMock("../lib/identity-client.js", async (orig) => ({
@@ -271,7 +271,7 @@ describe("the resolver", () => {
     expect(out.markdown).toContain("one");
   });
 
-  it("subscribes to session.started and turn.started (W4B-s3 adds the second)", async () => {
+  it("subscribes to session.started and turn.started", async () => {
     const mod = await loadResolver();
     expect(Object.keys(mod.events).sort()).toEqual(["session.started", "turn.started"]);
   });
@@ -295,7 +295,7 @@ describe("the resolver", () => {
   it("renders the identical bytes for a second turn with the table CHANGED in between", async () => {
     // The cache-stability claim, stated as the thing that would break it: the block a session
     // was built with does not follow the table. (What DOES honour a mid-session change is the
-    // turn-scoped addendum — W4B-s3, not this slice.)
+    // turn-scoped addendum, not the session block.)
     let answer: StandingFact[] = [fact(1, "one")];
     vi.doMock("../lib/standing-facts.js", async (orig) => ({
       ...(await orig<typeof import("../lib/standing-facts.js")>()),
@@ -331,7 +331,7 @@ describe("the resolver", () => {
   });
 
   it("does not remember a session it failed to build a block for — a later one picks it up", async () => {
-    // What W4B-s3 will diff against must never be a block the model was not shown.
+    // What a later turn diffs against must never be a block the model was not shown.
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     let fail = true;
     vi.doMock("../lib/standing-facts.js", async (orig) => ({
@@ -419,9 +419,9 @@ describe("the resolver's turn-scoped half", () => {
   });
 });
 
-// ── W5A-s2: the session block writes down what it showed ──────────────────────
+// ── The session block writes down what it showed ──────────────────────
 //
-// `memory_use` (073) says a fact has ever been used; `memory_reads` (075) says which SESSION's
+// `memory_use` says a fact has ever been used; `memory_reads` says which SESSION's
 // block used it, so `recordRead` is what makes the answer to "which memories did this answer
 // use" possible at all. Only the recorder's OWN behaviour is under test here — `recordRead`
 // itself (never throws, no-ops on empty refs, warns once) is `tests/memory-reads.test.ts`'s job.

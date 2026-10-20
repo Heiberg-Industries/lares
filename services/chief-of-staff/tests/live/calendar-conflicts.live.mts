@@ -5,11 +5,11 @@
  *   1. `status` — `confirmed` | `tentative` | `cancelled` (a cancelled row is not a commitment)
  *   2. `transparency` — `transparent` means free; ABSENT means busy (the API's default)
  *   3. the owner's own `responseStatus` — read off the `attendees[]` entry Google marks
- *      `self: true`; absent whenever there is no attendee list at all (his own blocks, and
- *      copied invitations that arrive bare —), which the radar reads as "his own event"
+ *      `self: true`; absent whenever there is no attendee list at all (the owner's own blocks, and
+ *      copied invitations that arrive bare —), which the radar reads as "the owner's own event"
  *   4. `iCalUID` — the same commitment copied onto a second calendar keeps it, so the radar
  *      de-duplicates on it before it looks for clashes (plus `start.timeZone`, which the
- *      timezone-trap class needs to compare against where he is that day)
+ *      timezone-trap class needs to compare against where the owner is that day)
  *
  * Per the root CLAUDE.md's Third-party APIs rule: "a fixture is what we believe an API does;
  * only a live call is what it does." `tests/calendar-conflicts.test.ts` is built on SHAPED
@@ -17,7 +17,7 @@
  * response) — this file is what actually asks Google how often each field is present, and
  * with which values, across the next fourteen days of every enrolled account. It answers the
  * two assumptions the review named as unverified: how often `self: true` is present on
- * his events, and whether the bookings Gmail files onto the calendar carry
+ * the owner's events, and whether the bookings Gmail files onto the calendar carry
  * `transparency: "transparent"` (the radar treats a transparent row as free — a booking that
  * arrives transparent would be INVISIBLE to the overlapping-stay class).
  *

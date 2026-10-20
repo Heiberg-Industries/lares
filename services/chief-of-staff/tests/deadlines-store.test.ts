@@ -24,7 +24,7 @@ import {
 } from "../lib/deadlines-store.js";
 
 /**
- * Task 2 — the deadlines/candidates/settings tables (sql/001_baseline.sql) and the two stores that
+ * The deadlines/candidates/settings tables (sql/001_baseline.sql) and the two stores that
  * read/write them, against a REAL Postgres (testcontainers, the pattern): a fake pool
  * that never executes SQL is forbidden here.
  *
@@ -191,12 +191,12 @@ describe("deadlines-store", () => {
 
   it("dueWithinDays excludes a row 40 days out and includes an overdue one", async () => {
     const pool = getPool();
-    const now = new Date("2026-09-08T10:00:00Z"); // owner day 2026-09-08 in Europe/Oslo
+    const now = new Date("2026-09-08T10:00:00Z"); // owner day 2026-09-08 in Europe/Berlin
     const overdue = await createDeadline(pool, mkDeadline({ dueDate: "2026-08-20" }));
     const soon = await createDeadline(pool, mkDeadline({ dueDate: "2026-09-20" })); // 12 days out
     const far = await createDeadline(pool, mkDeadline({ dueDate: "2026-10-18" })); // 40 days out
 
-    const ids = (await listDeadlines(pool, configuredOwnerId(), { dueWithinDays: 30, now, tz: "Europe/Oslo" })).map(
+    const ids = (await listDeadlines(pool, configuredOwnerId(), { dueWithinDays: 30, now, tz: "Europe/Berlin" })).map(
       (r) => r.id,
     );
     expect(ids).toContain(overdue.id);

@@ -15,21 +15,21 @@ import {
 } from "../lib/proposals-store.js";
 
 /**
- * W4C-s4 — the memory proposal store, against a REAL Postgres (testcontainer, pattern).
+ * The memory proposal store, against a REAL Postgres (testcontainer, pattern).
  * `memory_proposals` already exists on the box's shared `lares_state` database
- * (services/box/sql/001_baseline.sql, altered by services/box/sql/001_baseline.sql),
+ * (services/box/sql/001_baseline.sql),
  * replicated here for the disposable test instance, matching the mirror-not-import convention
  * `tests/proposals.test.ts` and `tests/reminders.test.ts` already use for a box-owned table.
  *
- * This slice wires nothing yet: nothing here inserts a proposal from a real dream run, and
+ * Nothing here inserts a proposal from a real dream run, and
  * nothing applies one. It only proves the queue itself — insert, list, the guarded resolve,
  * the per-row dedupe, the text/action CHECK, the consequence sentences, and the announce
  * ledger.
  *
- * W5X-s1 (sql/001_baseline.sql) added the `add` action: `ref`/`kind` columns, the origin/text/action CHECKs
- * widened conditionally (supersede/retire keep their exact 072 guarantees), and the single open
+ * The `add` action (services/box/sql/001_baseline.sql) has `ref`/`kind` columns, the origin/text/action CHECKs
+ * widened conditionally (supersede/retire keep their exact guarantees), and the single open
  * index split into one for supersede/retire and one for add (deduped on `ref`, not
- * `existing_id`). The mirror below is the POST-074 shape.
+ * `existing_id`). The mirror below is the baseline shape.
  */
 const MEMORY_PROPOSALS_SCHEMA = `
 CREATE TABLE memory_proposals (

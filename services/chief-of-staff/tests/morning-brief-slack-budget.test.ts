@@ -137,7 +137,7 @@ describe("scanSlackWithBudget — the scan is bounded AND cancelled", () => {
   });
 
   /**
-   * FIX ROUND 1, finding 1 — an earlier version of this test PRESET
+   * An earlier version of this test PRESET
    * `status.conversationsScanned = 40` and then asserted the log said 40, which proved only that
    * a number can be interpolated into a string. The count is now driven all the way through the
    * production path: three conversations offered, three `readConversation` calls made, three
@@ -257,7 +257,7 @@ describe("the morning brief names a dropped Slack source", () => {
     expect(content).not.toBeNull();
     const prompt = buildMorningPrompt(content!);
     expect(prompt).toContain(SLACK_DROPPED_SOURCE_LINE);
-    // FIX ROUND 1, finding 3 — and the list above it must NOT claim a bare "(none)". "none" is a
+    // And the list above it must NOT claim a bare "(none)". "none" is a
     // factual claim (ContextBlock's own docblock, @lares/compose-contract) and a source that
     // never answered has not earned it: "none" is true of Gmail and unknown of Slack.
     expect(prompt).toMatch(/## Owed a reply \(new or changed since last night's evening pass\)\n[^\n]+\n\(none from Gmail\)/);

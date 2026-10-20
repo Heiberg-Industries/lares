@@ -1,8 +1,8 @@
 /**
- * Task 1 — the seven pure digest modules, copied verbatim from the old runtime.
+ * The seven pure digest modules.
  *
  * These are copies, so the job of this suite is NOT to re-specify behaviour: it is to prove the
- * copy is intact and that the two things the schedule depends on — the Oslo slot arithmetic and
+ * copy is intact and that the two things the schedule depends on — the owner-clock slot arithmetic and
  * the note shape that lands in the vault — survived the move. A failure here means the copy is
  * wrong, never that the fixtures need adjusting.
  */
@@ -27,40 +27,39 @@ const decision = (over: Partial<DigestDecision> = {}): DigestDecision => ({
 
 describe("digest slots — 09:00 and 17:00 on the owner's clock", () => {
   // August is CEST (UTC+2). These fixtures are correct; if they fail, the copy is wrong.
-  // — the timezone is now an ARGUMENT (the owner clock, resolved per tick). Passing
-  // Europe/Oslo reproduces exactly what these asserted before.
-  const OSLO = "Europe/Oslo";
-  //-s3 — `hours` is required now (no more `= [9, 17]` default inside dueScheduledSlot):
+  // The timezone is an ARGUMENT (the owner clock, resolved per tick).
+  const BERLIN = "Europe/Berlin";
+  // `hours` is required now (no more `= [9, 17]` default inside dueScheduledSlot):
   // the digest's hours are a setting, and these fixtures pass the engine default explicitly,
   // exactly reproducing what the removed default used to supply.
   const DEFAULT_HOURS = [9, 17];
 
-  it("matches the 09:00 Oslo minute", () => {
-    expect(dueScheduledSlot(new Date("2026-08-21T07:00:00Z"), OSLO, DEFAULT_HOURS)).toBe("2026-08-21T9");
+  it("matches the 09:00 Berlin minute", () => {
+    expect(dueScheduledSlot(new Date("2026-08-21T07:00:00Z"), BERLIN, DEFAULT_HOURS)).toBe("2026-08-21T9");
   });
 
-  it("matches the 17:00 Oslo minute", () => {
-    expect(dueScheduledSlot(new Date("2026-08-21T15:00:00Z"), OSLO, DEFAULT_HOURS)).toBe("2026-08-21T17");
+  it("matches the 17:00 Berlin minute", () => {
+    expect(dueScheduledSlot(new Date("2026-08-21T15:00:00Z"), BERLIN, DEFAULT_HOURS)).toBe("2026-08-21T17");
   });
 
   it("is exact-minute — one minute either side is null", () => {
-    expect(dueScheduledSlot(new Date("2026-08-21T06:59:00Z"), OSLO, DEFAULT_HOURS)).toBeNull();
-    expect(dueScheduledSlot(new Date("2026-08-21T07:01:00Z"), OSLO, DEFAULT_HOURS)).toBeNull();
+    expect(dueScheduledSlot(new Date("2026-08-21T06:59:00Z"), BERLIN, DEFAULT_HOURS)).toBeNull();
+    expect(dueScheduledSlot(new Date("2026-08-21T07:01:00Z"), BERLIN, DEFAULT_HOURS)).toBeNull();
   });
 
   it("is null at the right minute of a non-slot hour", () => {
-    expect(dueScheduledSlot(new Date("2026-08-21T08:00:00Z"), OSLO, DEFAULT_HOURS)).toBeNull();
+    expect(dueScheduledSlot(new Date("2026-08-21T08:00:00Z"), BERLIN, DEFAULT_HOURS)).toBeNull();
   });
 
-  it("follows the OWNER's clock — 09:00 in Tokyo is not 09:00 in Oslo", () => {
-    // 2026-08-21T00:00:00Z is 09:00 in Tokyo (UTC+9) and 02:00 in Oslo.
+  it("follows the OWNER's clock — 09:00 in Tokyo is not 09:00 in Berlin", () => {
+    // 2026-08-21T00:00:00Z is 09:00 in Tokyo (UTC+9) and 02:00 in Berlin.
     expect(dueScheduledSlot(new Date("2026-08-21T00:00:00Z"), "Asia/Tokyo", DEFAULT_HOURS)).toBe("2026-08-21T9");
-    expect(dueScheduledSlot(new Date("2026-08-21T00:00:00Z"), OSLO, DEFAULT_HOURS)).toBeNull();
+    expect(dueScheduledSlot(new Date("2026-08-21T00:00:00Z"), BERLIN, DEFAULT_HOURS)).toBeNull();
   });
 
   it("honours a configured hour list — not only the engine default", () => {
-    expect(dueScheduledSlot(new Date("2026-08-21T07:00:00Z"), OSLO, [7])).toBeNull();
-    expect(dueScheduledSlot(new Date("2026-08-21T05:00:00Z"), OSLO, [7])).toBe("2026-08-21T7");
+    expect(dueScheduledSlot(new Date("2026-08-21T07:00:00Z"), BERLIN, [7])).toBeNull();
+    expect(dueScheduledSlot(new Date("2026-08-21T05:00:00Z"), BERLIN, [7])).toBe("2026-08-21T7");
   });
 
   it("osloParts renders the Oslo wall clock, not UTC", () => {

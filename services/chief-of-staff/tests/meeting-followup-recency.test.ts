@@ -68,7 +68,7 @@ describe("withinFollowupAge (FOLLOWUP_MAX_AGE_DAYS) — pure recency gate", () =
 });
 
 describe("withinFollowupAge (FOLLOWUP_MAX_FUTURE_SLACK_MINUTES) — the other end of the bound", () => {
-  // Post-fix review (Important): the original version only checked "not too old" — the
+  // the original version only checked "not too old" — the
   // identical fail-open shape the incident is about, just facing the other way. A future or
   // fat-fingered `Date` (year 3025, a typo'd year) would otherwise be permanently eligible and
   // composed every tick forever, since it never ages INTO the window from the future side.
@@ -200,7 +200,7 @@ describe("liveListMeetings — FOLLOWUP_MAX_AGE_DAYS applied before MARKDOWN_REA
 
 // ─── makeFollowupTick defends itself — never trusts an injected listMeetings ───────────────────
 
-// Post-fix review (Important): the age gate must not live ONLY in `liveListMeetings`. Any
+// the age gate must not live ONLY in `liveListMeetings`. Any
 // injected `listMeetings` — a test double, a future second call site — must not be able to
 // reopen that incident by skipping `liveListMeetings`'s own recency check. This
 // double never claims/composes/sends anything unless the engine's own gate lets a row through.

@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, basename } from "node:path";
 
 /**
- * — the three places a heartbeat key lives must agree, or the monitor reads a healthy
+ * The three places a heartbeat key lives must agree, or the monitor reads a healthy
  * schedule as dead (the ticket's own warning in digest-store.ts: "the two must agree"). This file
  * pins (1) each schedule's exported HEARTBEAT_KEY to its filename, (2) the tick stamp to the
  * slot-based schedules, (3) at least one pass stamp per schedule, and (4) the migration seed
@@ -23,15 +23,14 @@ export const SLOT_SCHEDULES = [
 ];
 
 /**
- * WHICH SWITCH A SCHEDULE READS decides whether the freshness alarm may watch it, and the rule is
+ * WHICH SWITCH A SCHEDULE READS decides what silence in the agent definition means, and the rule is
  * MECHANICAL — read off the gate line, never off a list of names kept here:
  *
  *   `if (!scheduleEnabled(loaded.definition, …)) return;`           silence means ON  -> "default-on"
  *   `if (!scheduleExplicitlyEnabled(loaded.definition, …)) return;` silence means OFF -> "opt-in"
  *
  * An opt-in schedule returns at a closed gate before it stamps anything, and its gate is closed
- * on every installation that has not asked for it, so a freshness check for one would be red for
- * ever, by default.
+ * on every installation that has not asked for it, so it writes no heartbeat rows by default.
  */
 export function scheduleSwitch(src: string): "default-on" | "opt-in" | "none" | "both" {
   const defaultOn = /if \(!scheduleEnabled\(loaded\.definition, "[^"]+"\)\) return;/.test(src);
@@ -75,9 +74,9 @@ describe("schedule heartbeat keys are pinned to the schedule files", () => {
         // The stamp follows the gate check within a few lines — a tick stamped after the slot
         // check would only fire once a day and defeat the 2 h loop threshold.
         //
-        // step 2: a schedule's OWN box-switch line (`scheduleGate`/`digestGate`/
-        // `dreamGate`, unchanged) may now be preceded by the definition read (`scheduleEnabled`)
-        // — or, for the fourteen plain schedules, replaced by it outright, since
+        // A schedule's OWN environment-switch line (`scheduleGate`/`digestGate`/
+        // `dreamGate`) may be preceded by the definition read (`scheduleEnabled`)
+        // — or, for the plain schedules, replaced by it outright, since
         // `scheduleEnabled` already ANDs in `EVE_SCHEDULES_LIVE`. Either way the FIRST gate line
         // found is what "must precede the tick within 160 chars" is checked against.
         //

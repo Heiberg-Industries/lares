@@ -1,5 +1,5 @@
 /**
- * lib/conflict-resolution.ts —-s3, the bounded mailbox search per clash. Every Gmail
+ * lib/conflict-resolution.ts — the bounded mailbox search per clash. Every Gmail
  * client here is a fake (`fakeDeps`); nothing in this file makes a network call.
  *
  * FOUR-WAY ACCEPTANCE (safety rule from the coordinator): a resolution is attached only when

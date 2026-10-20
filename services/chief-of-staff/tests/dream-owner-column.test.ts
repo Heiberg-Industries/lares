@@ -1,5 +1,5 @@
 /**
- * services/chief-of-staff/tests/dream-owner-column.test.ts — W5I-s6 (box 084, ruling D5).
+ * services/chief-of-staff/tests/dream-owner-column.test.ts.
  *
  * Proves three things about the dream tables' new `owner` column:
  *   1. a NEW row written through the store always carries the owner the caller supplied —
@@ -7,7 +7,7 @@
  *      (a read-only caller) throws a loud error rather than writing a silently NULL owner;
  *   2. `ensureDreamTables`'s ALTER never invents an owner for a row that predates the column —
  *      the same rule this service already follows for `origin` (see `tests/dream-store.test.ts`);
- *   3. `labelExistingDreamRows` — the D5 rule as a reusable, idempotent runtime function — labels
+ *   3. `labelExistingDreamRows` — the one-member rule as a reusable, idempotent runtime function — labels
  *      pre-existing NULL rows as the installation's one member, and ONLY when there is exactly
  *      one: with no member, or a second one, it leaves every row NULL and says why, and a second
  *      run never relabels a row the first run already decided about.
@@ -32,7 +32,7 @@ import type { Observation } from "../lib/dream/reflect.js";
 const FIXTURE_OWNER = "fixture-owner";
 const FIXTURE_SECOND = "fixture-second";
 
-describe("the dream tables' owner column (box 084, ruling D5)", () => {
+describe("the dream tables' owner column", () => {
   let container: StartedPostgreSqlContainer;
   let pool: Pool;
 
@@ -119,7 +119,7 @@ describe("the dream tables' owner column (box 084, ruling D5)", () => {
     expect(rows[0].owner).toBeNull();
   });
 
-  // ── 3. Ruling D5: label the old rows when, and only when, there is exactly one member ─────
+  // ── 3. Label the old rows when, and only when, there is exactly one member ─────
 
   it("labels the existing rows as the single member's, when the register holds exactly one", async () => {
     await pool.query("INSERT INTO users (id, display_name) VALUES ($1, 'Fixture Owner')", [FIXTURE_OWNER]);

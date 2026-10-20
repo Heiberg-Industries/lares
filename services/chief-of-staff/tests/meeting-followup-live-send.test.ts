@@ -8,9 +8,9 @@ import { followupApproval, type FollowupApprovalDeps } from "../catalogue/meetin
 import { fingerprintRecipients } from "../lib/meeting-followup-store.js";
 
 /**
- * Regression coverage for the finding-1 regression: `makeLiveSend`'s pre-check
- * (`computeAutonomousPreCheck`) became load-bearing once finding 1 wired the schedule's
- * read-back/error branch to it, but it was never taught finding 4's group-alias rule — so an
+ * Regression coverage for `makeLiveSend`'s pre-check
+ * (`computeAutonomousPreCheck`): it is load-bearing because the schedule's
+ * read-back/error branch depends on it, and it must know the group-alias rule — otherwise an
  * opted-in series containing `post@` disagreed with `followupApproval`'s policy, took the
  * "autonomous" path, hit the read-back branch, recorded a false 'error', and could duplicate
  * a send if the owner approved more than one of the resulting duplicate cards.
@@ -115,13 +115,13 @@ describe("pre-check / policy agreement (regression guard)", () => {
 });
 
 /**
- *-s3 — the precheck asked BEFORE `compose`, so a held-back page never bills a compose call
+ * the precheck asked BEFORE `compose`, so a held-back page never bills a compose call
  * at all. `makeLivePrecheckWith` is `makeLiveSend`'s own sibling: parameterised over injected deps
  * the same way `computeAutonomousPreCheck` is, so this can drive it directly and prove it (a)
  * shares `meetingFollowupItemKey` with the real send-turn gate rather than restating it, and (b)
  * releases the claim on a hold the same way `makeLiveSend`'s own held branch does.
  */
-describe("makeLivePrecheckWith (-s3)", () => {
+describe("makeLivePrecheckWith", () => {
   function precheckDeps(over: Partial<FollowupPrecheckDeps> = {}): {
     impl: FollowupPrecheckDeps; releasedPageIds: string[]; askedInit: Array<{ cls: string; door: string; itemKey: string }>;
   } {
@@ -166,7 +166,7 @@ describe("makeLivePrecheckWith (-s3)", () => {
   });
 
   it("an already-seen outcome is ALSO handled:true — falls through to one more compose, never a release", async () => {
-    // Same `handled` flag the real gate's already-seen suppression sets (fix round 1, CRITICAL) —
+    // Same `handled` flag the real gate's already-seen suppression sets:
     // the precheck cannot and must not tell "send" and "already-seen" apart, since both mean
     // "do not hold this back".
     const releaseClaim = vi.fn(async () => {});

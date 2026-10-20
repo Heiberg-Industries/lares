@@ -16,17 +16,17 @@ import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 
 /**
- * Task 6 — the Google OAuth stack. Per the task brief:
+ * The Google OAuth stack:
  *   - an unenrolled principal → GoogleUnenrolledError, proven against a REAL Postgres
- *     (testcontainers, matching tests/db.test.ts's-driven convention — a fake Pool
+ *     (testcontainers, matching tests/reminders.test.ts's convention — a fake Pool
  *     that never executes SQL is exactly the defect class this house avoids)
  *   - wrapGmailApi marshals the googleapis params (userId/q/maxResults/format/raw/…) exactly,
  *     proven against a stub `google.gmail()`-shaped object — no network, no DB
  *
  * Step D: the `decryptSecret` and `readTokenEncKey` suites that used to open this file
  * moved to `packages/agent-kit/tests/google-auth.test.ts` along with the functions themselves
- * — they were duplicated verbatim in travel-agent's suite too, and are now covered once. What
- * stays here is what stays AGENT_A'S: the two-org registry, the mailbox-selection policy (the
+ * — they are covered once there. What
+ * stays here is what is specific to this service: the two-org registry, the mailbox-selection policy (the
  * `GMAIL_PRIMARY_EMAIL` pin and the most-recently-updated fallback behind it), and the
  * capability adapter.
  */
@@ -44,7 +44,7 @@ function encryptForTest(plaintext: string, keyHex: string): string {
 }
 
 // -----------------------------------------------------------------------------------------
-// wrapGmailApi — marshals googleapis params exactly as the old adapter did. Stub api only;
+// wrapGmailApi — marshals googleapis params exactly. Stub api only;
 // no network, no DB.
 // -----------------------------------------------------------------------------------------
 
@@ -263,7 +263,7 @@ describe("googleClients", () => {
   });
 
   it("GMAIL_PRIMARY_EMAIL pins the default mailbox over the updated_at lottery; explicit account still wins", async () => {
-    // 2026-08-16: with two enrolled mailboxes, "most recently updated" is not a reliable
+    // With two enrolled mailboxes, "most recently updated" is not a reliable
     // default — the env pin is the fix, and stays the fix now that BOTH orgs are configured
     // (an explicit account argument overriding the pin must reach the RIGHT org, not just
     // avoid throwing).

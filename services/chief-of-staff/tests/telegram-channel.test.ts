@@ -154,8 +154,7 @@ describe("chief-of-staff Telegram channel", () => {
 
     it("rejects a group-chat message even from the allowed principal", async () => {
       // Identity alone would pass here — it's still the owner's user id. The chat-type check
-      // is what has to reject it: this shadow bot is private-chat-only, matching the old
-      // door's scope, so a group message must never dispatch regardless of who sent it.
+      // is what has to reject it: this door is private-chat-only, so a group message must never dispatch regardless of who sent it.
       const { isAllowedTelegramMessage } = await freshModule();
       expect(
         isAllowedTelegramMessage(

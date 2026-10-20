@@ -1,11 +1,9 @@
 /**
  * Articles child 1b: when the digest files a saved link as an article, the clipping ledger keeps
- * where it went. Against a REAL Postgres (testcontainers), with `box/sql` 079, 091 and 092
- * applied verbatim from disk.
+ * where it went. Against a REAL Postgres (testcontainers), with the box baseline schema
+ * (services/box/sql/001_baseline.sql) applied verbatim from disk.
  *
- * 093 (the heartbeat row for the request drain) is not applied: it only seeds a row in a table
- * (`heartbeat`, sql/001_baseline.sql) that no clipping test creates, and it touches nothing this function reads.
- * No migration is part of this change; the ledger's `inbox_path` column is reused after filing.
+ * No migration is involved; the ledger's `inbox_path` column is reused after filing.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
@@ -162,7 +160,7 @@ describe("makeLedgerOnFiled: best effort, never fails the filing", () => {
     expect(logs.join("\n")).toContain("db down");
   });
 
-  it("treats a box without the clipping tables (migration 091 not applied) as nothing to record, quietly", async () => {
+  it("treats a box without the clipping tables (clipping migration not applied) as nothing to record, quietly", async () => {
     const missing = { query: () => Promise.reject(Object.assign(new Error('relation "clipping_items" does not exist'), { code: "42P01" })) };
     const logs: string[] = [];
 

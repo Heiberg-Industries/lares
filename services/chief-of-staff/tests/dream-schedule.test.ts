@@ -36,11 +36,11 @@ describe("dreamGate — fails closed", () => {
 });
 
 /**
- *-s4 — PIN, asserted against the source: `dreamHour`/`DREAM_HOUR` are gone (the hour is a
+ * PIN, asserted against the source: `dreamHour`/`DREAM_HOUR` are gone (the hour is a
  * setting now, `packages/agent-kit/src/schedule-settings.ts`'s `dream` key, default 3), and the
  * live tick asks `scheduleHours` before computing the slot.
  */
-describe("dream.ts reads its hour from the setting (-s4)", () => {
+describe("dream.ts reads its hour from the setting", () => {
   it("carries no dreamHour/DREAM_HOUR, and asks scheduleHours before osloSlot", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/dream.ts", import.meta.url),
@@ -54,31 +54,30 @@ describe("dream.ts reads its hour from the setting (-s4)", () => {
 });
 
 describe("osloSlot — exact-minute gate on the owner's wall clock", () => {
-  // — the timezone is now an ARGUMENT (the owner clock, resolved per tick). Passing
-  // Europe/Oslo reproduces exactly what these asserted before.
-  const OSLO = "Europe/Oslo";
+  // The timezone is an ARGUMENT (the owner clock, resolved per tick).
+  const BERLIN = "Europe/Berlin";
 
-  it("matches 03:00 Oslo (01:00 UTC in August)", () => {
-    expect(osloSlot(new Date("2026-08-19T01:00:00Z"), OSLO, 3)).toBe("2026-08-19T3");
+  it("matches 03:00 Berlin (01:00 UTC in August)", () => {
+    expect(osloSlot(new Date("2026-08-19T01:00:00Z"), BERLIN, 3)).toBe("2026-08-19T3");
   });
 
   it("null one minute either side", () => {
-    expect(osloSlot(new Date("2026-08-19T00:59:00Z"), OSLO, 3)).toBeNull();
-    expect(osloSlot(new Date("2026-08-19T01:01:00Z"), OSLO, 3)).toBeNull();
+    expect(osloSlot(new Date("2026-08-19T00:59:00Z"), BERLIN, 3)).toBeNull();
+    expect(osloSlot(new Date("2026-08-19T01:01:00Z"), BERLIN, 3)).toBeNull();
   });
 
   it("null at the right minute of the wrong hour", () => {
-    expect(osloSlot(new Date("2026-08-19T02:00:00Z"), OSLO, 3)).toBeNull();
+    expect(osloSlot(new Date("2026-08-19T02:00:00Z"), BERLIN, 3)).toBeNull();
   });
 
-  it("follows the OWNER's clock, not Oslo's — the same instant is 03:00 in a different zone", () => {
-    // 2026-08-19T18:00:00Z is 03:00 the next morning in Tokyo (UTC+9) and 20:00 in Oslo.
+  it("follows the OWNER's clock, not Berlin's — the same instant is 03:00 in a different zone", () => {
+    // 2026-08-19T18:00:00Z is 03:00 the next morning in Tokyo (UTC+9) and 20:00 in Berlin.
     expect(osloSlot(new Date("2026-08-19T18:00:00Z"), "Asia/Tokyo", 3)).toBe("2026-08-20T3");
-    expect(osloSlot(new Date("2026-08-19T18:00:00Z"), OSLO, 3)).toBeNull();
+    expect(osloSlot(new Date("2026-08-19T18:00:00Z"), BERLIN, 3)).toBeNull();
   });
 });
 
-describe("makeDreamBrain — read must NOT re-walk the vault per call ( finding 3)", () => {
+describe("makeDreamBrain — read must NOT re-walk the vault per call", () => {
   let dir: string;
 
   afterEach(() => {
@@ -155,7 +154,7 @@ function fixtureObservation(i: number): Observation {
   };
 }
 
-describe("selectForConfirmation — caps a run's needsConfirm list to one notice's worth (W4C-s2b)", () => {
+describe("selectForConfirmation — caps a run's needsConfirm list to one notice's worth", () => {
   it("0 items", () => {
     expect(selectForConfirmation([])).toEqual({ shown: [], heldBack: 0 });
   });
@@ -187,7 +186,7 @@ describe("selectForConfirmation — caps a run's needsConfirm list to one notice
 });
 
 /**
- * W5X-s4 — `sendConfirmationNotice` and its tests are GONE from this file. A run's
+ * `sendConfirmationNotice` and its tests are GONE from this file. A run's
  * `needsConfirm` items are no longer announced by this schedule at all: each becomes a
  * `memory_proposals` row (`fileConfirmations`), and `tests/dream-confirmation-notice.test.ts`
  * owns that behaviour, including the proof that nothing here sends anything.

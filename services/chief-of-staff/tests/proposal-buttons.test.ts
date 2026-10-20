@@ -53,8 +53,8 @@ function memoryRow(overrides: Partial<MemoryProposalRow> = {}): MemoryProposalRo
   };
 }
 
-// Captured from buildMemoryAnnouncement's supersede branch before W5X-s5 taught it a third
-// (`add`) shape — this test pins that the refactor left it byte-for-byte unchanged.
+// Captured from buildMemoryAnnouncement's supersede branch before it learned a third
+// (`add`) shape — this test pins that the `add` shape left it byte-for-byte unchanged.
 const SUPERSEDE_TEXT_BEFORE = [
   "Memory change #3 — tone.",
   "",
@@ -90,7 +90,7 @@ function fakeDeps(opts: { resolveThrows?: boolean } = {}) {
 }
 
 describe("callback data round-trip", () => {
-  it("emits and parses the old runtime's exact convention", () => {
+  it("emits and parses the established button convention", () => {
     expect(proposalCallbackData("np", "approve", 61)).toBe("np:a:61");
     expect(proposalCallbackData("ap", "reject", 7)).toBe("ap:r:7");
     expect(parseProposalCallback("np:a:61")).toEqual({ lane: "np", action: "approve", id: 61 });

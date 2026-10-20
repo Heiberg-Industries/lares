@@ -1,5 +1,5 @@
 /**
- * batch 6 — Google Docs/Sheets/Slides/Drive links through the Drive API.
+ * Google Docs/Sheets/Slides/Drive links through the Drive API.
  * The Drive client is a stand-in shaped like googleapis' `drive.files` (shaped, not recorded);
  * the real response shapes are checked by tests/live/google-doc.live.mts.
  */

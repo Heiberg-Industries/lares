@@ -6,7 +6,7 @@
  * TWO drafts through the live `writer` purpose and writes both to one markdown file for the owner
  * to judge:
  *
- *   A — the pre-2026-09-08 prompt, copied verbatim below as `legacyPrompt()` so A stays A (including
+ *   A — the earlier prompt, copied verbatim below as `legacyPrompt()` so A stays A (including
  *       the old no-promises clause, `LEGACY_NO_COMMITMENTS`), with the shared `default` voice card.
  *   B — `buildReplyPrompt` (lib/reply-prompt.ts) with the MAILBOX's own card (sql/001_baseline.sql) and the
  *       mailbox's own examples.
@@ -18,7 +18,7 @@
  *
  * NOT part of `pnpm test` — it needs the box's Gmail OAuth session, the gateway key and the
  * database, so it runs INSIDE the chief-of-staff container. Two container facts shape the recipe
- * (measured 2026-09-08): the rootfs is read-only, so `docker cp` INTO it is refused and the script
+ * (measured): the rootfs is read-only, so `docker cp` INTO it is refused and the script
  * cannot be dropped next to the source tree; and `/tmp` is a tmpfs, which `docker cp` OUT cannot
  * see either. So: transpile the entry on the Mac, feed it over stdin with the source tree as the
  * working directory (bare imports resolve up to /app/node_modules; the tsx loader handles the
@@ -60,7 +60,7 @@ const LEGACY_NO_COMMITMENTS =
   "say plainly that the action is his to take; do not write a promise on his behalf that he then " +
   "has to go and keep by hand.";
 
-/** The prompt every draft used before 2026-09-08 (lib/email-triage.ts, verbatim). */
+/** The earlier prompt every draft used (lib/email-triage.ts, verbatim). */
 function legacyPrompt(i: {
   account: string; lang: "en" | "no"; voiceBlock: string; examples: string[];
   from: string; subject: string; body: string;

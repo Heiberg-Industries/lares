@@ -29,11 +29,10 @@ import {
 } from "../lib/obligations-store.js";
 
 /**
- * Task 12 — lib/obligations-store.ts, the Postgres adapter ported from
- * services/agent-runtime/lib/adapters/obligations/store.ts's makeObligationStore. Table and
+ * lib/obligations-store.ts, the Postgres adapter behind makeObligationStore. Table and
  * column names must match services/box/sql/001_baseline.sql exactly — proven here
  * against a REAL, disposable Postgres (testcontainers, the house pattern this repo's
- * own tests/db.test.ts / tests/reminders.test.ts already established), never a fake Pool.
+ * own tests/reminders.test.ts already established), never a fake Pool.
  */
 // The institutional sender domains are installation data (INSTITUTIONAL_SENDER_DOMAINS); these
 // made-up ones are set for every test in this file.
@@ -101,12 +100,12 @@ describe("lib/obligations-store.ts", () => {
       last_speaker_is_them: true,
       their_unanswered_count: 1,
     });
-    // The migration's own banner (sql/001_baseline.sql:3-10): pointers only.
+    // The migration's own banner (services/box/sql/001_baseline.sql): pointers only.
     expect(rows[0]).not.toHaveProperty("subject");
     expect(rows[0]).not.toHaveProperty("body");
   });
 
-  // ─── Task 10 (B1): the in-flight message text never reaches the store ──────────────
+  // ─── The in-flight message text never reaches the store ──────────────
 
   it("upsertSeen never persists lastMessageText — no column holds it, and the row carries no trace of it", async () => {
     const pool = getPool();
@@ -128,8 +127,8 @@ describe("lib/obligations-store.ts", () => {
     expect(cols).toEqual([]);
   });
 
-  // ───: `source` written verbatim from Obligation.source ( Task 10 B1 added the
-  // field; the store no longer derives it from the thread id's `slack:` prefix) ───────────────
+  // ─── `source` written verbatim from Obligation.source (the store no longer derives it
+  // from the thread id's `slack:` prefix) ───────────────
 
   it("upsertSeen stamps source='gmail' for a gmail Obligation", async () => {
     const pool = getPool();
@@ -224,7 +223,7 @@ describe("lib/obligations-store.ts", () => {
     expect(forAnotherDay.has("t-covered")).toBe(false);
   });
 
-  // ─── Task 10 (B4): resolution + intent as pointers (box sql 030) ───────────────────
+  // ─── Resolution + intent as pointers ───────────────────
 
   it("upsertSeen writes source from the Obligation, not derived from the thread id", async () => {
     const pool = getPool();
@@ -326,7 +325,7 @@ describe("lib/obligations-store.ts", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 4, Workstream B — institutional due-notice mail is a DEADLINE, never an owed
+// Institutional due-notice mail is a DEADLINE, never an owed
 // reply.
 //
 // The misfiling this band exists for, verbatim from the ticket: a Billing VAT reminder rode the
@@ -374,8 +373,8 @@ async function scanOne(msg: ThreadMessage): Promise<ThreadSnapshot> {
   return snapshots[0]!;
 }
 
-describe("isInstitutionalDueNotice ( Workstream B)", () => {
-  it("Workstream B: a Billing VAT reminder is a deadline candidate, never an owed reply", async () => {
+describe("isInstitutionalDueNotice", () => {
+  it("a Billing VAT reminder is a deadline candidate, never an owed reply", async () => {
     const msg = mail({
       from: "Billing <post@billing.example>",
       subject: "MVA-melding for 3. termin forfaller 31.08",

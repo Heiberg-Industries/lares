@@ -1,6 +1,6 @@
 /**
  * The nightly prune — ADR-0020 rule 3, against a REAL disposable Postgres running the REAL
- * migration files (060 + 061), because this is the one job in the fleet that DELETES an owner's
+ * baseline schema, because this is the one job in the fleet that DELETES an owner's
  * conversation history. A fake Pool that never executes SQL would prove nothing about the one
  * statement that matters.
  *
@@ -8,7 +8,7 @@
  * failure if it is wrong:
  *   - the window: entries past it go, entries inside it stay, and the run says which cutoff it used;
  *   - "keep forever" (a stored NULL) deletes NOTHING, and issues no DELETE at all;
- *   - a setting that cannot be READ (a database outage, or migration 061 not applied on this
+ *   - a setting that cannot be READ (a database outage, or the settings migration not applied on this
  *     installation) deletes NOTHING and says so — the prune fails CLOSED, towards keeping data;
  *   - a clock that is obviously wrong (before 2026) deletes nothing, because a cutoff is computed
  *     from the clock and a wrong clock is a wrong cutoff;
@@ -111,8 +111,8 @@ describe("the nightly prune", () => {
     expect(r.reason).toMatch(/could not read the retention setting/i);
   });
 
-  it("refuses when migration 061 was never applied on this installation", async () => {
-    // The shape a box that applied 060 but not 061 produces. Same branch as the outage above;
+  it("refuses when the settings migration was never applied on this installation", async () => {
+    // The shape a box with the conversation table but not the settings table produces. Same branch as the outage above;
     // pinned separately because it is the likelier of the two and the one an operator must be
     // able to recognise from the log line alone.
     const r = await pruneForOwner(

@@ -1,7 +1,7 @@
 // Every gated tool asks the permissions board, by its own name; every always-ask tool this service
 // ships carries the check. A bare `approval: always()` would ignore the board forever.
 //
-// W7A-s2 widened the ban past this service's own two directories: the kit's note-write factories
+// The ban reaches past this service's own two directories: the kit's note-write factories
 // carried exactly that bare `always()`, and nothing here could see it.
 import { readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { mustAlwaysAsk, TOOL_CATEGORIES } from "@lares/agent-kit/always-ask";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-// BOTH directories, since step 2 (ADR-0015 rule 3, Task 9): The chief of staff's real tools live in the
+// BOTH directories (ADR-0015 rule 3): the chief of staff's real tools live in the
 // `catalogue/` pool now, and what is left under agent/tools/ is the eight `disableTool()`
 // sentinels, the one skill-gated tool (commercial_who_to_contact) and the one resolver. Reading
 // only agent/tools/ would have left every moved tool unchecked and every assertion below
@@ -30,10 +30,10 @@ for (const dir of DIRS) {
 const files = [...paths.keys()].sort();
 const src = (f: string) => readFileSync(paths.get(f)!, "utf8");
 // meeting_followup_send keeps its own series-level check — board-controlled contact.
-// meeting_followup_auto is NOT here: it always asks (it changes the chief of staff's own autonomy — owner decision,
-// final review O1), so the check below holds it to carrying approvalFor like any always-ask tool.
+// meeting_followup_auto is NOT here: it always asks (it changes the chief of staff's own autonomy),
+// so the check below holds it to carrying approvalFor like any always-ask tool.
 //
-// W7D-s3: `read_url` joins it. Its policy is not the board's at all — it is the in-turn taint
+// `read_url` joins it. Its policy is not the board's at all — it is the in-turn taint
 // (`asksAfterUntrustedText`), which asks only after the turn has already read somebody else's
 // words. There is no capability dial that could express "ask only then", so this one is decided
 // per call from the turn's own history rather than from a row.
@@ -64,7 +64,7 @@ describe("board wiring", () => {
     }
   });
   it("and the kit's own factories no longer hard-code always() either", () => {
-    // W7A-s2: the scan above reads only THIS service's two directories, so for years the one
+    // The scan above reads only THIS service's two directories, so for years the one
     // `approval: always()` that mattered most — the three note writes' — sat outside it, in
     // `packages/agent-kit/extension/lib/note-write-tools.ts`, unseen by the ban. The factory is
     // read here by path so deleting the injection point, or re-hard-coding the gate, fails.
@@ -77,7 +77,7 @@ describe("board wiring", () => {
     expect(src("meeting_followup_auto.ts")).toContain('approvalFor("meeting_followup_auto")');
   });
 
-  // W7A-s6 — the approver re-check is not the whole story any more: every tool that calls
+  // The approver re-check is not the whole story any more: every tool that calls
   // `assertApprover` also has to check WHICH card it answered, or a stale/changed call would
   // slip through on an approver check alone.
   it("every tool that re-checks the approver also checks the card it answered", () => {
@@ -87,7 +87,7 @@ describe("board wiring", () => {
     expect(behind).toEqual([]);
   });
 
-  // W7D-s3 — the one tool whose gate is the TURN, not the board.
+  // The one tool whose gate is the TURN, not the board.
   //
   // Two things are pinned because both fail silently and in the fail-OPEN direction. A policy
   // that stopped being a FUNCTION would be called as one by `agent/tools/catalogue.ts`'s durable
@@ -103,7 +103,7 @@ describe("board wiring", () => {
 
   // It is not on the board, so it carries neither `approvalFor` nor a bare `always()`: an
   // `approvalFor("read_url")` here would make an ordinary, untainted "read this link" ask on
-  // every call (owner decision D1 says it must not).
+  // every call (it must not).
   it("read_url is not on the board and does not ask on an ordinary turn", () => {
     expect(src("read_url.ts")).not.toContain("approvalFor(");
   });
@@ -117,10 +117,10 @@ describe("board wiring", () => {
   });
 });
 
-// W7D-s3 — the OTHER half of the gate, at execute time.
+// The OTHER half of the gate, at execute time.
 //
 // The policy decides whether a card is raised; `assertApproval` decides whether the call that
-// comes back off one is the call the card showed (W7A-s6). For `read_url` those two are not the
+// comes back off one is the call the card showed. For `read_url` those two are not the
 // same population: most of its calls never park at all. Both paths are driven here against the
 // real tool, because both fail silently — an unconditional check would refuse ordinary reads in
 // a session nobody tapped anything in, and a missing one would let a changed or stale approved

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * fix round 1 (controller ruling) — `learnAllMailboxes` is not a pure factory over
+ * `learnAllMailboxes` is not a pure factory over
  * injected deps like the other schedules' `makeXTick`, so its dependencies (Postgres,
  * `listEnrolledMailboxes`, `runVoiceLearn`) are stubbed the same way
  * `tests/meeting-followup-auto.test.ts` stubs `@lares/agent-kit/db`: hoisted `vi.mock`s, so the
@@ -47,7 +47,7 @@ beforeEach(() => {
   runVoiceLearnMock = vi.fn(async () => ({ kept: 1, dropped: 0 }));
 });
 
-describe("learnAllMailboxes ( fix round 1)", () => {
+describe("learnAllMailboxes", () => {
   it("resolves true when zero mailboxes are enrolled — a quiet pass is a completed pass", async () => {
     listEnrolledMailboxesMock = vi.fn(async () => []);
     await expect(learnAllMailboxes()).resolves.toBe(true);
@@ -127,11 +127,11 @@ describe("per-mailbox proposals and status", () => {
 });
 
 /**
- *-s4 — PIN, asserted against the source: `LEARN_HOUR` is gone (the hour is a setting now,
+ * PIN, asserted against the source: `LEARN_HOUR` is gone (the hour is a setting now,
  * `packages/agent-kit/src/schedule-settings.ts`'s `voice-learn` key, default 4), and the live
  * tick asks `scheduleHours` before computing the slot.
  */
-describe("voice-learn.ts reads its hour from the setting (-s4)", () => {
+describe("voice-learn.ts reads its hour from the setting", () => {
   it("carries no LEARN_HOUR, and asks scheduleHours before slotIn", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/voice-learn.ts", import.meta.url),

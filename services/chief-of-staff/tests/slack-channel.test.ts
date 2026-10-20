@@ -40,7 +40,7 @@ describe("chief-of-staff Slack channel", () => {
 
   describe("credentials are read at request time, never at import", () => {
     it("imports and constructs the channel with no secret files present at all", async () => {
-      // The trap that broke the Task 6 image build, in its third incarnation: `eve build`
+      // The trap that breaks an image build: `eve build`
       // EVALUATES this module to compile the agent, and neither the build nor CI has any
       // secret. A credential read at module scope fails the image build outright.
       process.env["SLACK_BOT_TOKEN_FILE"] = join(dir, "nope-token");

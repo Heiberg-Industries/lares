@@ -65,7 +65,7 @@ describe("createSlackSourceDeps — listConversations", () => {
     ]);
   });
 
-  it(" review round 3, CRITICAL: partitions DMs/group-DMs AHEAD of channels even when Slack returns channels first, across pagination — a downstream slice() must never lose every DM to channels that happened to sort earlier", async () => {
+  it("partitions DMs/group-DMs AHEAD of channels even when Slack returns channels first, across pagination — a downstream slice() must never lose every DM to channels that happened to sort earlier", async () => {
     // Mirrors a busy workspace shape (35 public + 6 private + 38 im — see
     // morning-brief.ts's SLACK_MAX_CONVERSATIONS comment): channels dominate the raw count,
     // so an UN-partitioned list handed to a small `maxConversations` slice would exclude every
@@ -157,7 +157,7 @@ describe("createSlackSourceDeps — readConversation (channel)", () => {
     });
     const deps = createSlackSourceDeps({ token: TOKEN, ownUserId: OWN, fetchImpl });
     const msgs = await deps.readConversation("C1", undefined, 50);
-    // Task 10 (B1): `text` now rides along IN FLIGHT (never persisted — see
+    // `text` now rides along IN FLIGHT (never persisted — see
     // brief-content-slack.ts's SlackThreadMessage doc comment).
     expect(msgs).toEqual([
       { ts: "100.0001", userId: "U_OTHER", isBot: false, subtype: undefined, threadTs: "100.0001", mentionsOwner: true, text: `hey <@${OWN}> got a sec?` },
@@ -257,7 +257,7 @@ describe("createSlackSourceDeps — readConversation (im/mpim)", () => {
   });
 });
 
-describe("createSlackSourceDeps — Slackbot mapping (Important 5)", () => {
+describe("createSlackSourceDeps — Slackbot mapping", () => {
   it("maps USLACKBOT's own messages to isBot:true even with no bot_id", async () => {
     const { fetchImpl } = stubFetch({
       "conversations.history": () => ({
@@ -293,7 +293,7 @@ describe("createSlackSourceDeps — getUserInfo", () => {
     expect(await deps.getUserInfo("U_GONE")).toBeNull();
   });
 
-  it("rethrows a real failure instead of returning null (Critical 2, chief-of-staff twin)", async () => {
+  it("rethrows a real failure instead of returning null (chief-of-staff twin)", async () => {
     const { fetchImpl } = stubFetch({ "users.info": () => ({ body: { ok: false, error: "missing_scope" } }) });
     const deps = createSlackSourceDeps({ token: TOKEN, ownUserId: OWN, fetchImpl });
     const err = await deps.getUserInfo("U_ANYONE").catch((e) => e);

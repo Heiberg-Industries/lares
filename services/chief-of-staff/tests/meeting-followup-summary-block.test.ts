@@ -2,11 +2,11 @@ import { describe, it, expect } from "vitest";
 import { extractSummaryBlock } from "../agent/schedules/meeting-followup.js";
 
 // The `<summary>` extractor decides what text reaches a customer's inbox — it must never
-// leak the `<transcript>` block (or, per fix round 2, an unrelated `<details><summary>`
+// leak the `<transcript>` block (or an unrelated `<details><summary>`
 // disclosure elsewhere on the page), and it must degrade to "" (never throw, never guess)
 // when the page has no summary block at all. These cases had no unit coverage of their own
-// before this file (Task 8 fix round 1), and the extractor is now anchored inside
-// `<meeting-notes>` rather than matching a bare `<summary>` anywhere on the page (fix round 2).
+// before this file, and the extractor is now anchored inside
+// `<meeting-notes>` rather than matching a bare `<summary>` anywhere on the page.
 describe("extractSummaryBlock", () => {
   it("extracts a normal <summary>…</summary> block", () => {
     const markdown = [
@@ -60,7 +60,7 @@ describe("extractSummaryBlock", () => {
   it("ignores an unrelated <details><summary> disclosure earlier on the page", () => {
     // Ordinary markdown/HTML disclosure markup, not the meeting-notes feature's own tag —
     // a bare, unanchored /<summary>…<\/summary>/ would have matched this FIRST and composed
-    // the decoy label into the email instead of the real recap (fix round 2, Important).
+    // the decoy label into the email instead of the real recap.
     const markdown = [
       "<details>",
       "<summary>Click to expand raw notes</summary>",

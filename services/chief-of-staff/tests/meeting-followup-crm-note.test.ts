@@ -198,7 +198,7 @@ describe("meeting_followup_send — CRM touchpoint note", () => {
     }
   });
 
-  it("a recipient not in Twenty gets NO note — logged, not created unlinked (security review fix)", async () => {
+  it("a recipient not in Twenty gets NO note — logged, not created unlinked", async () => {
     // Only the first recipient resolves; the second is a stranger to the CRM.
     await listen({ resolvable: [RECIPIENTS[0]!] });
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});

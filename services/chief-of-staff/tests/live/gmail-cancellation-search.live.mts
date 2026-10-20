@@ -1,6 +1,6 @@
 /**
  * tests/live/gmail-cancellation-search.live.mts — the LIVE sweep for the Gmail-search
- * assumptions `lib/conflict-resolution.ts`'s `buildCancellationQuery` bets on (-s3):
+ * assumptions `lib/conflict-resolution.ts`'s `buildCancellationQuery` bets on:
  *
  *   1. a QUOTED phrase (`"<vendor>"`) matches that phrase, not its words separately;
  *   2. `OR` inside parentheses works as a disjunction over the cancellation words;

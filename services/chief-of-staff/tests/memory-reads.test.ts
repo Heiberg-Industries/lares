@@ -1,5 +1,5 @@
 /**
- * W5A-s1 (ADR-0017 rule 6) — which remembered things one answer actually opened. Against a REAL
+ * (ADR-0017 rule 6) — which remembered things one answer actually opened. Against a REAL
  * disposable Postgres running the REAL migration file, the house pattern
  * (`tests/memory-use.test.ts`, `tests/dream-store.test.ts`).
  */

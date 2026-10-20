@@ -1,5 +1,5 @@
 /**
- * W4B-s5 — the agent's own notes store, and the tool that writes it. Against a REAL disposable
+ * The agent's own notes store, and the tool that writes it. Against a REAL disposable
  * Postgres running the REAL migration file, the house pattern (`tests/standing-facts.test.ts`).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
@@ -127,7 +127,7 @@ describe("agent notes are add-only and stamped", () => {
 // that is easy to get wrong — a note stamped `third_party` or `synced` must never be placed in
 // the system prompt, however it is worded, because it was written on a turn that had already
 // read someone else's words. This is the render-time gate that keeps that true.
-describe("buildFactsCorrection surfaces notes safely (W4B-s5)", () => {
+describe("buildFactsCorrection surfaces notes safely", () => {
   const noteAt = (origin: AgentNote["origin"]): AgentNote => ({
     id: 1,
     owner: "fixture-owner",

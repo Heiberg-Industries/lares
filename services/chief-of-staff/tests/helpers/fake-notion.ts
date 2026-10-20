@@ -124,7 +124,7 @@ export function fakeNotion() {
         object: "list", type: "page_or_data_source", page_or_data_source: {},
         results: slice.map((p) => ({ object: "page", ...p })),
         has_more: more, next_cursor: more ? String(start + size) : null,
-        // The live API at 2026-03-11 returned NO request_status (observed by the probe). The
+        // The live API returned NO request_status (observed by the probe). The
         // "incomplete" shape below is believed from the docs, not observed live.
         ...(world.incompleteQuery ? { request_status: { type: "incomplete" } } : {}),
       });

@@ -18,7 +18,7 @@ import { buildEveningPrompt } from "../agent/schedules/evening-brief.js";
  *
  * A morning brief once wrote "trains Oslo→Example Town run roughly hourly, about
  * 1h40" about a 17:00 in Example Town. Every word of that was a guess: it is unverifiable, and it
- * cannot answer the only question he actually had, which is WHICH departure gets him there.
+ * cannot answer the only question the owner actually had, which is WHICH departure gets the owner there.
  * Tasks 1–3 gave the chief of staff `agent-kit__transit_plan` (Entur — real departures, real platforms,
  * real-time delay, and arrive-by). This is the half that lets a brief reach for it.
  *
@@ -127,8 +127,8 @@ describe("the arrive-by the clause hands over", () => {
       .toContain("arriveBy 2026-01-14T16:00:00+01:00");
   });
 
-  //-s4 — the same instants, read through a different owner clock. `tz` rides in as the
-  // 5th argument, after the (omitted) itinerary, and DEFAULT_HOME_TZ (Europe/Oslo) is what the
+  // the same instants, read through a different owner clock. `tz` rides in as the
+  // 5th argument, after the (omitted) itinerary, and the home zone (OWNER_HOME_TZ=Europe/Oslo in vitest.config) is what the
   // two cases above exercise implicitly by never passing one.
   it("America/New_York, summer (EDT) — the offset is -04:00", () => {
     expect(transitClause([at("2026-08-25T14:00:00Z")], [], "today", "America/New_York").join("\n"))
@@ -183,7 +183,7 @@ describe(" — the brief may state a real departure", () => {
   it("a CALENDAR lodging row is never the journey's origin — a booking is not evidence he is in that bed", async () => {
     // The word CALENDAR is the whole point after the ticket's follow-up review: this ban was
     // written when a calendar row was the only kind of lodging row there was. An ITINERARY
-    // lodging row — one the travel agent resolved — IS an origin, and is named by `transitClause` when it
+    // lodging row — one from a resolved itinerary — IS an origin, and is named by `transitClause` when it
     // exists. See `brief-transit-origin.test.ts` for the two sentences side by side.
     const prompt = sentences(await morningPromptFor([HOTEL, INTRO_CALL, TOWN_B_SESSION]));
     expect(prompt).toContain("never pass a calendar lodging row as the journey's origin");
@@ -194,7 +194,7 @@ describe(" — the brief may state a real departure", () => {
     expect(prompt).not.toContain("agent-kit__transit_plan");
     expect(prompt).not.toContain("Getting there");
     // …but the prohibition still rides, because "the tool was not offered" was never the same
-    // thing as "the model may estimate" (review finding 1).
+    // thing as "the model may estimate".
     expect(sentences(prompt)).toContain('"trains run roughly hourly" or "about 1h40"');
   });
 
@@ -234,16 +234,16 @@ describe(" — the brief may state a real departure", () => {
       participants: [], kind: "transport", location: "Oslo OSL",
     };
     expect(transitClause([commitment], [], "today").join("\n")).not.toContain("lodging row");
-    // Review finding 5: `travel` also carries flights and out-of-office markers, so gating on
+    // `travel` also carries flights and out-of-office markers, so gating on
     // "any travel context" warned about a hotel that is not on the day at all.
     expect(transitClause([commitment], [flight], "today").join("\n")).not.toContain("lodging row");
   });
 });
 
-// ── review round 1 ──────────────────────────────────────────────────────────────────────────
+// ── hybrid and all-day shapes ──────────────────────────────────────────────────────────────────────────
 
-describe(" review round 1", () => {
-  /** The finding-1 shape: out of town, in person, and NOT a candidate — an all-day row has no
+describe("hybrid and all-day shapes", () => {
+  /** The out-of-town shape: in person, and NOT a candidate — an all-day row has no
    *  instant to arrive by, so no lookup can be instructed for it. The venue reaches the model
    *  regardless, which is the whole problem. */
   const ALL_DAY_OUT_OF_TOWN: CalendarEvent = {

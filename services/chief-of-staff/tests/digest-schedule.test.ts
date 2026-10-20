@@ -1,5 +1,5 @@
 /**
- * Task 6 — the schedule's two decisions that are not the runner's: whether it may run
+ * The schedule's two decisions that are not the runner's: whether it may run
  * at all, and where the result goes.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -66,13 +66,13 @@ describe("chooseTarget — a scheduled pass DMs the owner; an on-demand pass rep
 });
 
 /**
- *-s3 — PIN, asserted against the source: the digest's slots come from the setting
+ * PIN, asserted against the source: the digest's slots come from the setting
  * (`scheduleHours("digest")`), read before `dueScheduledSlot` is ever called, and no hardcoded
  * `[9, 17]` default rides along inside this file (the removed default belonged to
  * `lib/digest/schedule.ts`'s `dueScheduledSlot`, whose own tests in digest-modules.test.ts cover
  * that it now REQUIRES an hours array).
  */
-describe("digest.ts reads its slots from the setting (-s3)", () => {
+describe("digest.ts reads its slots from the setting", () => {
   it("calls scheduleHours before dueScheduledSlot, and passes no literal [9, 17]", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/digest.ts", import.meta.url),

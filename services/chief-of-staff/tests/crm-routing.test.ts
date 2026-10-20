@@ -32,11 +32,8 @@ afterEach(() => {
 });
 
 /**
- * Task 13, Part 2 — the `crm-routing` schedule: a faithful port of
- * `services/agent-runtime/lib/adapters/route/{engine,classify,store}.ts` +
- * `bin/chief of staff.ts`'s `routeTick` (~lines 1205-1280), delivering via eve's native Slack approval
- * card (the gated `twenty_create_opportunity`/`twenty_set_stage` tools) instead of the old
- * `proposeOutbound` mechanism.
+ * The `crm-routing` schedule, delivering via eve's native Slack approval
+ * card (the gated `twenty_create_opportunity`/`twenty_set_stage` tools).
  *
  * Layers, per the brief's Step 1:
  *   1. `lib/route-store.ts` against a REAL Postgres (testcontainer, pattern).
@@ -421,17 +418,17 @@ describe("makeRouteEngine — scan", () => {
 
 // ─── 4. agent/schedules/crm-routing.ts ──────────────────────────────────────────────────────
 
-// — every tick now takes the OWNER's timezone as its third argument (resolved per tick by
-// the schedule). Europe/Oslo reproduces exactly what every case in this file asserted before.
-const OSLO = "Europe/Oslo";
+// Every tick takes the OWNER's timezone as its third argument (resolved per tick by
+// the schedule).
+const BERLIN = "Europe/Berlin";
 
 /**
- *-s3 — PIN, asserted against the source: `parseRouteHours`/`DEFAULT_ROUTE_HOURS` are gone
+ * PIN, asserted against the source: `parseRouteHours`/`DEFAULT_ROUTE_HOURS` are gone
  * (the hour list is a setting now, `packages/agent-kit/src/schedule-settings.ts`'s `crm-routing`
  * key), and the live tick asks `scheduleHours` before ever computing the slot. `dueRouteSlot`
  * itself is unchanged — it still takes a plain `number[]`, whatever supplies it.
  */
-describe("crm-routing.ts reads its hours from the setting (-s3)", () => {
+describe("crm-routing.ts reads its hours from the setting", () => {
   it("carries no ROUTE_HOURS parsing, and asks scheduleHours before dueRouteSlot", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/crm-routing.ts", import.meta.url),
@@ -446,13 +443,12 @@ describe("crm-routing.ts reads its hours from the setting (-s3)", () => {
 });
 
 describe("dueRouteSlot", () => {
-  it("matches only at :00 on one of the given hours, Oslo time", () => {
-    // 2026-06-20T07:00:00Z = 09:00 Oslo (CEST, UTC+2)
-    // — the timezone is now an ARGUMENT (the owner clock, resolved per tick). Passing
-    // Europe/Oslo reproduces exactly what this asserted before.
-    expect(dueRouteSlot(new Date("2026-06-20T07:00:00Z"), "Europe/Oslo", [9, 13, 17])).toBe("2026-06-20T9");
-    expect(dueRouteSlot(new Date("2026-06-20T07:01:00Z"), "Europe/Oslo", [9, 13, 17])).toBeNull();
-    expect(dueRouteSlot(new Date("2026-06-20T08:00:00Z"), "Europe/Oslo", [9, 13, 17])).toBeNull();
+  it("matches only at :00 on one of the given hours, Berlin time", () => {
+    // 2026-06-20T07:00:00Z = 09:00 Berlin (CEST, UTC+2)
+    // The timezone is an ARGUMENT (the owner clock, resolved per tick).
+    expect(dueRouteSlot(new Date("2026-06-20T07:00:00Z"), "Europe/Berlin", [9, 13, 17])).toBe("2026-06-20T9");
+    expect(dueRouteSlot(new Date("2026-06-20T07:01:00Z"), "Europe/Berlin", [9, 13, 17])).toBeNull();
+    expect(dueRouteSlot(new Date("2026-06-20T08:00:00Z"), "Europe/Berlin", [9, 13, 17])).toBeNull();
   });
 });
 
@@ -549,12 +545,12 @@ describe("makeCrmRoutingTick", () => {
   }
 
   const HOURS = [9, 13, 17];
-  const AT_SLOT = new Date("2026-06-20T07:00:00Z"); // 09:00 Oslo
-  const NOT_SLOT = new Date("2026-06-20T07:05:00Z"); // 09:05 Oslo
+  const AT_SLOT = new Date("2026-06-20T07:00:00Z"); // 09:00 Berlin
+  const NOT_SLOT = new Date("2026-06-20T07:05:00Z"); // 09:05 Berlin
 
   it("does nothing when not in a slot minute, and resolves false — no pass happened this call", async () => {
     const { deps, sent, recorded } = harness([proposal()]);
-    await expect(makeCrmRoutingTick(deps).tick(NOT_SLOT, HOURS, OSLO)).resolves.toBe(false);
+    await expect(makeCrmRoutingTick(deps).tick(NOT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
     expect(sent).toHaveLength(0);
     expect(recorded).toHaveLength(0);
   });
@@ -562,27 +558,27 @@ describe("makeCrmRoutingTick", () => {
   it("fires once per slot-hour — a second tick at the same slot is a no-op and resolves false", async () => {
     const { deps, sent } = harness([proposal()]);
     const state = freshState();
-    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(true);
+    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
     // Simulate the schedule firing again a minute later at the SAME hour (still minute 0 of
     // no other hour) — same slot key, must not re-fire.
-    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(false);
+    await expect(makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
     expect(sent).toHaveLength(1);
   });
 
   it("fires again at the NEXT slot hour", async () => {
     const { deps, sent } = harness([proposal()]);
     const state = freshState();
-    await makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, OSLO);
+    await makeCrmRoutingTick(deps, state).tick(AT_SLOT, HOURS, BERLIN);
     expect(sent).toHaveLength(1);
-    const nextSlot = new Date("2026-06-20T11:00:00Z"); // 13:00 Oslo
-    await expect(makeCrmRoutingTick(deps, state).tick(nextSlot, HOURS, OSLO)).resolves.toBe(true);
+    const nextSlot = new Date("2026-06-20T11:00:00Z"); // 13:00 Berlin
+    await expect(makeCrmRoutingTick(deps, state).tick(nextSlot, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(2);
   });
 
   it("records a proposal only AFTER a successful send", async () => {
     const { deps, sent, recorded } = harness([proposal()]);
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(true);
+    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(1);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({ personId: "person-1", brand: "ALPHA", proposedStage: "MEETING", signalRef: "msg:m1" });
@@ -603,7 +599,7 @@ describe("makeCrmRoutingTick", () => {
         },
       },
     };
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(true); // one item's send failure still completes the pass
+    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true); // one item's send failure still completes the pass
     expect(sent).toHaveLength(1); // only the second proposal's send succeeded
     expect(recorded).toHaveLength(1);
     expect(recorded[0]!.personId).toBe("p-ok");
@@ -611,12 +607,12 @@ describe("makeCrmRoutingTick", () => {
 
   it("skips a proposal whose mode is not 'confirm', and still resolves true (a completed pass with nothing to deliver)", async () => {
     const { deps, sent, recorded } = harness([proposal({ mode: "auto" as never })]);
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(true);
+    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(true);
     expect(sent).toHaveLength(0);
     expect(recorded).toHaveLength(0);
   });
 
-  // fix round 1 (controller ruling) — a tick whose OUTER catch swallowed the whole
+  // A tick whose OUTER catch swallowed the whole
   // pass (here, engine.scan() itself throwing) is a FAILED pass: tick() must not throw, but
   // must resolve false so the caller does not stamp the heartbeat.
   it("a scan() failure does not throw out of tick(), and resolves false", async () => {
@@ -625,7 +621,7 @@ describe("makeCrmRoutingTick", () => {
       store: { recordProposal: async () => ({ id: "x" }) },
       door: { send: async () => {} },
     };
-    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, OSLO)).resolves.toBe(false);
+    await expect(makeCrmRoutingTick(deps).tick(AT_SLOT, HOURS, BERLIN)).resolves.toBe(false);
   });
 });
 
@@ -710,11 +706,11 @@ describe("CRM rate limit", () => {
     };
     const state = freshState();
     const tick = makeCrmRoutingTick(deps, state);
-    const AT = new Date("2026-06-20T07:00:00Z"); // 09:00 Oslo
+    const AT = new Date("2026-06-20T07:00:00Z"); // 09:00 Berlin
     const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
-      await expect(tick.tick(AT, [9, 13, 17], "Europe/Oslo")).resolves.toBe(true);
+      await expect(tick.tick(AT, [9, 13, 17], "Europe/Berlin")).resolves.toBe(true);
       expect(recorded).toEqual(["p-1"]);
       expect(state.deferred).not.toBeNull();
       expect(errSpy).not.toHaveBeenCalled();
@@ -722,11 +718,11 @@ describe("CRM rate limit", () => {
 
       // Too early to resume: nothing happens.
       const soon = new Date(AT.getTime() + 60_000);
-      await expect(tick.tick(soon, [9, 13, 17], "Europe/Oslo")).resolves.toBe(false);
+      await expect(tick.tick(soon, [9, 13, 17], "Europe/Berlin")).resolves.toBe(false);
 
       failing.id = null;
       const later = new Date(AT.getTime() + RATE_LIMIT_RETRY_MS + 1_000);
-      await expect(tick.tick(later, [9, 13, 17], "Europe/Oslo")).resolves.toBe(true);
+      await expect(tick.tick(later, [9, 13, 17], "Europe/Berlin")).resolves.toBe(true);
       expect(recorded).toEqual(["p-1", "p-2", "p-3"]);
       expect(state.deferred).toBeNull();
     } finally {
@@ -767,7 +763,7 @@ describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
 
     const sent: string[] = [];
     const tick = makeCrmRoutingTick({ engine, store, door: { send: async (p) => { sent.push(p); } } });
-    await tick.tick(new Date("2026-06-20T07:00:00Z"), [9], OSLO); // 09:00 Oslo
+    await tick.tick(new Date("2026-06-20T07:00:00Z"), [9], BERLIN); // 09:00 Berlin
 
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("lead@example.com");

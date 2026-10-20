@@ -4,8 +4,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  * final review — `remind_set`'s confirmation speaks the OWNER's clock.
  *
  * The turn's own clock block already does (`agent/instructions/clock.ts` passes `ownerTz()`), so a
- * `dueAtLocal` hard-coded to Europe/Oslo meant the chief of staff told him "Tuesday 21:00 (Europe/Oslo)" about a
- * reminder his own phone would ring at 15:00 in another time zone — the same instant on two clocks inside one
+ * `dueAtLocal` hard-coded to Europe/Berlin meant the chief of staff told the owner "Tuesday 21:00 (Europe/Berlin)" about a
+ * reminder the owner's own phone would ring at 15:00 in another time zone — the same instant on two clocks inside one
  * exchange, which is the class this whole clock exists to close.
  *
  * The RECURRENCE deliberately stays on the home clock: `lib/recurrence.ts` computes every later
@@ -42,7 +42,7 @@ afterEach(() => {
   delete process.env["SLACK_ALLOWED_USER_IDS"];
 });
 
-/** 2026-09-01 08:00 UTC = 10:00 Oslo = 04:00 New York. */
+/** 2026-09-01 08:00 UTC = 10:00 Berlin = 04:00 New York. */
 const DUE = "2026-09-01T08:00:00Z";
 
 describe("remind_set: dueAtLocal is on the owner's clock", () => {
@@ -61,14 +61,14 @@ describe("remind_set: dueAtLocal is on the owner's clock", () => {
   });
 
   it("falls back to the home clock when the owner clock resolves to it", async () => {
-    ownerTz.mockResolvedValueOnce("Europe/Oslo");
+    ownerTz.mockResolvedValueOnce("Europe/Berlin");
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
     const { default: remindSet } = await import("../catalogue/remind_set.js");
 
     const result = await remindSet.execute({ message: "Ring leverandøren", dueAt: DUE, door: "slack" }, ctx(slackAuth));
 
-    expect(result.dueAtLocal).toBe("Tuesday 2026-09-01 10:00 (Europe/Oslo)");
+    expect(result.dueAtLocal).toBe("Tuesday 2026-09-01 10:00 (Europe/Berlin)");
     vi.useRealTimers();
   });
 

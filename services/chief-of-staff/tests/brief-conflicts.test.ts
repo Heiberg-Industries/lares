@@ -66,7 +66,7 @@ describe("conflictsBlock", () => {
   });
 
   it("renders NOTHING when there is nothing to report — by exception, never a negative", () => {
-    // The same contract the obligations half has carried since the wave-1 plan: silence is the
+    // The same contract the obligations half has always carried: silence is the
     // answer, and "no conflicts today" is a sentence this brief must never write.
     expect(conflictsBlock([])).toBe("");
     expect(conflictsBlock([])).not.toMatch(/no conflict|nothing clash|ingen/i);
@@ -74,7 +74,7 @@ describe("conflictsBlock", () => {
 
   it("says plainly that nothing here has been resolved or acted on", () => {
     // Detection ships without resolution on purpose. A block that read as "I checked" would be
-    // claiming a reading she has not done.
+    // claiming a reading the agent has not done.
     const block = conflictsBlock([conflict()]);
     expect(block).toContain("nothing here has been resolved");
     expect(block).toContain("acted on");
@@ -113,7 +113,7 @@ describe("conflictsClause", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-//-s6 — the morning brief carries the evidence.
+// the morning brief carries the evidence.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /** A strong resolution row, the shape `lib/conflict-resolution.ts` attaches. */
@@ -128,7 +128,7 @@ function strongResolution(overrides: Partial<NonNullable<ResolvedConflict["resol
   };
 }
 
-describe("-s6 pin — with no resolution, rendering is byte-identical to today, in every language", () => {
+describe("pin — with no resolution, rendering is byte-identical to today, in every language", () => {
   it("conflictsBlock ignores lang when nothing carries evidence — nb and en match today's exact wording", () => {
     const today = conflictsBlock([conflict()]);
     expect(conflictsBlock([conflict()], "en")).toBe(today);
@@ -156,7 +156,7 @@ describe("-s6 pin — with no resolution, rendering is byte-identical to today, 
   });
 });
 
-describe("-s6 — a strong resolution adds the evidence line and the third-party notice", () => {
+describe("a strong resolution adds the evidence line and the third-party notice", () => {
   it("conflictLine appends the evidence sentence, prefixed by the language's own fixed word", () => {
     const c: ResolvedConflict = { ...conflict(), resolution: strongResolution() };
     expect(conflictLine(c, "en")).toBe(`- double-booked — ${c.explanation} Evidence: ${c.resolution!.sentence}`);
@@ -264,7 +264,7 @@ describe("buildMorningBrief and conflicts", () => {
 
   it("does NOT make a brief happen on its own — a clash lives on a commitment", () => {
     // There is no such thing as a clash with no meetings, so a conflict can never be the only
-    // reason to interrupt him. Asserted so nobody later adds a case that cannot arise.
+    // reason to interrupt the owner. Asserted so nobody later adds a case that cannot arise.
     expect(buildMorningBrief({ ...base, meetings: [], conflicts: [conflict()] })).toBeNull();
   });
 });

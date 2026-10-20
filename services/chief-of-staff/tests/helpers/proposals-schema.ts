@@ -1,6 +1,6 @@
 /**
- * The Notion + Atlas proposal tables, mirroring `services/box/sql/015-019` — moved here
- * ( Task 4) out of `tests/proposals.test.ts`, which held this block inline, so the
+ * The Notion + Atlas proposal tables, mirroring `services/box/sql/001_baseline.sql` — moved here
+ * out of `tests/proposals.test.ts`, which held this block inline, so the
  * mirror exists exactly once. `tests/proposals.test.ts` and
  * `tests/schedule-heartbeat-wiring.test.ts` both apply it against their own disposable
  * testcontainer Postgres.

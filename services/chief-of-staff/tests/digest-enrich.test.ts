@@ -1,6 +1,5 @@
 /**
- * Task 2 — enrichment, and the seam where the old runtime's second readability client
- * was replaced by the chief of staff's own.
+ * Enrichment, and the seam where the readability client is injected.
  *
  * The two properties under test are the ones a port loses silently: the 300-character floor
  * (without it, short pages start enriching) and never-throw (without it, one unreachable URL

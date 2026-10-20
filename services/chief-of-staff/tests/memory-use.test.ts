@@ -1,5 +1,5 @@
 /**
- * W4C-s11 (docs/decisions/0018-learning-and-dreaming.md rule 8) — the usage clock retirement
+ * (docs/decisions/0018-learning-and-dreaming.md rule 8) — the usage clock retirement
  * will eventually read. Against a REAL disposable Postgres running the REAL migration file, the
  * house pattern (`tests/agent-notes.test.ts`, `tests/dream-store.test.ts`).
  *
@@ -66,7 +66,7 @@ describe("the usage clock", () => {
     await getPool().query("ALTER TABLE memory_use_hidden RENAME TO memory_use");
   });
 
-  it("nothing reads it yet — retirement is a later wave, and this slice does not start it", async () => {
+  it("nothing reads it yet — retirement does not exist yet", async () => {
     const mod = await import("../lib/dream/store.js");
     expect(Object.keys(mod).filter((k) => /stale|archive|retire/i.test(k))).toEqual([]);
   });

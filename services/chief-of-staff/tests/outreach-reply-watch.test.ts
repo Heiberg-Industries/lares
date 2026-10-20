@@ -135,7 +135,7 @@ describe("makeOutreachReplyWatchTick", () => {
     expect(calls).toBe(1);
   });
 
-  it("a tick-level failure (awaitingThreads throws) does not throw out of tick(), and resolves false — fix round 1: the caller must not stamp the heartbeat", async () => {
+  it("a tick-level failure (awaitingThreads throws) does not throw out of tick(), and resolves false so the caller does not stamp the heartbeat", async () => {
     const deps: OutreachReplyWatchDeps = {
       awaitingThreads: async () => { throw new Error("Postgres is down"); },
       readThread: async () => [],

@@ -4,16 +4,12 @@ import { SEARCH_WINDOW_DAYS } from "../lib/person/types.js";
 import type { PersonWiring } from "../lib/person-sources.js";
 
 /**
- * Task 8 — the ADAPTER LOGIC inside `makePersonSources` (crm/mail/meetings/transcripts/
+ * The ADAPTER LOGIC inside `makePersonSources` (crm/mail/meetings/transcripts/
  * company), exercised against a stub `PersonWiring` — no real Twenty/Gmail/Calendar/
- * vault involved. This is a near-verbatim port of
- * `services/agent-runtime/tests/person-sources.test.ts`: the fan-out logic itself was ported
- * unchanged (see lib/person-sources.ts's header), so its own test's cases transfer directly.
+ * vault involved. See lib/person-sources.ts's header for the fan-out logic.
  *
- * One family of cases does NOT transfer: the old adapter's `twentyLookup` returned a
- * `warnings: string[]` field, because the old-runtime Twenty client swallowed a degraded
- * sub-query into that field rather than throwing. chief-of-staff's `twentyGet` (lib/twenty-client.ts)
- * never does that — it throws `TwentyUnavailableError` directly — so `TwentyLookupResult` here
+ * `twentyGet` (lib/twenty-client.ts) never swallows a degraded sub-query into a `warnings` field —
+ * it throws `TwentyUnavailableError` directly — so `TwentyLookupResult` here
  * has no `warnings` field, and the "degraded lookup vs clean empty" distinction is now expressed
  * as "the stub throws" vs "the stub returns {people:[],companies:[]} cleanly".
  *
@@ -21,7 +17,7 @@ import type { PersonWiring } from "../lib/person-sources.js";
  * the chief of staff's real clients (identity-client, twenty tools, google.ts, notes-store) with the right shapes, plus one end-to-end `person_lookup` tool test.
  */
 
-// A TwentyPersonLite (agent/tools/twenty_lookup.ts) always carries a non-null `name` in
+// A TwentyPersonLite (catalogue/twenty_lookup.ts) always carries a non-null `name` in
 // practice (chief-of-staff's `mapPerson` synthesises one) — this fixture matches that.
 const wiring: PersonWiring = {
   myAddresses: async () => ["owner@owner.example", "owner@project.example"],
@@ -224,11 +220,10 @@ describe("makePersonSources", () => {
   });
 
   // ---------------------------------------------------------------------------------------
-  // Fix round 2 (reviewer finding on Task 8): a multi-address `emails` merge query must
+  // A multi-address `emails` merge query must
   // tolerate ONE term's lookup throwing as long as another term still finds a real candidate
-  // — the old adapter's fix round 1 hardened exactly this "partial read that found
-  // someone despite one degraded sub-query is still a find" behaviour, and a plain
-  // `Promise.all` would lose it.
+  // — a "partial read that found someone despite one degraded sub-query is still a find",
+  // and a plain `Promise.all` would lose it.
   // ---------------------------------------------------------------------------------------
 
   it("crm: a plural `emails` query still succeeds when the FIRST address's Twenty lookup throws but the SECOND finds a real candidate", async () => {
@@ -362,7 +357,7 @@ describe("makePersonSources.organisation", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 2b. The CRM is asked FIRST, and its name becomes a search term — because
+   * The CRM is asked FIRST, and its name becomes a search term — because
    * for a CRM-sourced person the name is the only word the notes actually use. Asked afterwards,
    * `dana@atbridgeco.example` searched only for "atbridgeco.example" and "atbridgeco", and every Brain note that
    * calls the company "Bridgeco" was missed. The ticket's own scenario.
@@ -382,7 +377,7 @@ describe("makePersonSources.organisation", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 2a. Twenty's person record carries only a companyId, so for a CRM person
+   * Twenty's person record carries only a companyId, so for a CRM person
    * on a personal mailbox the name is one call away and was never fetched — the stage reported "no
    * company on file" about someone whose company the CRM holds.
    */
@@ -416,7 +411,7 @@ describe("makePersonSources.organisation", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 1 — a cap needs a known ordering. The test below this one uses
+   * A cap needs a known ordering. The test below this one uses
    * interchangeable `notes/nN.md` paths and cannot bite on ordering; this one can.
    */
   it("ranks before it caps, so the canonical note survives even when it walks LAST", async () => {

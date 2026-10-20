@@ -1,7 +1,7 @@
 /**
  * tests/live/google.live.mts — the LIVE sweep for the two Google-behaviour assumptions behind
  * `lib/obligation-resolution.ts`'s `resolveElsewhere`, as `lib/obligation-lookups.ts`'s header
- * names them ( Task 10, B6a):
+ * names them:
  *
  *   1. Gmail's `after:` operator is DATE-granular, in the account's own timezone — so a query
  *      built from a date can return messages from BEFORE the moment that date represents (same
@@ -23,7 +23,7 @@
  * decrypted with a key only the container holds). Run it there, by hand, whenever
  * `makeGmailSentAfter` or `makeCalendarEndedWith` changes what they assume about either API.
  *
- * MEASURED ON THE BOX (2026-09-02), both traps below cost a first attempt each:
+ * MEASURED ON A DEPLOYED INSTALLATION, both traps below cost a first attempt each:
  *   - `docker cp` into this container fails outright — "container rootfs is marked
  *     read-only" — even for a destination under a tmpfs mount (`node_modules/.cache`). A
  *     `docker exec -i … sh -c "cat > <path>"` fed the file over stdin writes to the SAME
@@ -47,9 +47,9 @@
  * `node_modules` rather than a bare `tsx` invocation that cannot see the workspace link.
  *
  * The env grep above lists every `process.env[...]` read reachable from this file, measured
- * 2026-09-02 by walking `lib/google.ts` + `@lares/agent-kit/google-auth` + `@lares/agent-kit/db`:
+ * by walking `lib/google.ts` + `@lares/agent-kit/google-auth` + `@lares/agent-kit/db`:
  * `DATABASE_URL` (the identity-registry read), `TOKEN_ENC_KEY_FILE`, `GOOGLE_PRINCIPAL_ID`,
- * `GOOGLE_CLIENT_ID_<ORG>_FILE`/`GOOGLE_CLIENT_SECRET_<ORG>_FILE` (one pair per enrolled org — on the box measured 2026-09-02, both orgs' client id/secret
+ * `GOOGLE_CLIENT_ID_<ORG>_FILE`/`GOOGLE_CLIENT_SECRET_<ORG>_FILE` (one pair per enrolled org — on a deployed installation both orgs' client id/secret
  * files are mounted at their DEFAULT `/run/secrets/google-client-*` paths, so neither env var
  * actually appears in the process environment; `readSecretFile`'s default-path fallback covers
  * it), `GOOGLE_REDIRECT_URI`, `GMAIL_PRIMARY_EMAIL`, `CALENDAR_PRIMARY_EMAIL`,
@@ -60,7 +60,7 @@
  * `addressOf` and the `after:` date format are reimplemented below (three lines each) rather
  * than imported from `lib/obligation-lookups.ts` / `lib/brief-content.ts`'s exported copy —
  * deliberately: this sweep needs to run against WHATEVER chief-of-staff image happens to be
- * deployed, including before Phase B ( Task 10) ships, so it must not depend on files
+ * deployed, including before a new release ships, so it must not depend on files
  * that only exist once that deploy has landed. Same "three-line helper, not worth a shared
  * import" convention already used by `lib/email-triage.ts` and `lib/outreach-reply-detect.ts`.
  *
@@ -104,7 +104,7 @@ function blocked(label: string): void {
 /**
  * Sweep 1 — Gmail `after:` granularity, both directions.
  *
- * MEASURED WRINKLE, first run (2026-09-02): `searchThreadIds` matches on THREADS, and
+ * MEASURED WRINKLE, first run: `searchThreadIds` matches on THREADS, and
  * `readThread` returns a thread's ENTIRE history (`lib/google.ts`'s own doc-comment on
  * `readThread` — "both directions... his own SENT messages never carry the INBOX label").
  * A raw "earliest 'mine' message across every returned thread" is therefore NOT a measurement

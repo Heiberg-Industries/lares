@@ -69,7 +69,7 @@ describe("meeting-followup-store", () => {
     expect(await lastRecipientsFingerprint(db, "")).toBeNull();
   });
 
-  it("never lets recordOutcome downgrade a row already recorded as sent ( fix round 3)", async () => {
+  it("never lets recordOutcome downgrade a row already recorded as sent", async () => {
     // The exact bug: an auto-approved send's execute() calls recordSent INSIDE the same turn
     // the schedule's to(...).send() is awaiting, so by the time that call resolves the row is
     // already 'sent'. The schedule then unconditionally called recordOutcome(pageId, "queued")
@@ -93,7 +93,7 @@ describe("meeting-followup-store", () => {
     expect(await lastRecipientsFingerprint(db, "series-3")).toBe(fingerprintBefore);
   });
 
-  it("creates the row on a page with NO prior claim (finding 2) — the conversational send path", async () => {
+  it("creates the row on a page with NO prior claim — the conversational send path", async () => {
     // meeting_followup_send is reachable conversationally, not only from the schedule: ask
     // The chief of staff directly to send a follow-up and it runs with a notionPageId that has NO claim
     // row (only the schedule's claimMeeting ever INSERTs one). A bare UPDATE would touch zero
@@ -110,7 +110,7 @@ describe("meeting-followup-store", () => {
       .toBe(fingerprintRecipients(["a@x.co", "b@y.co"]));
   });
 
-  // ─── fix round 1: a HOLD is not an attempt ───────────────────────────────────────
+  // ─── A HOLD is not an attempt ───────────────────────────────────────
 
   it("releaseClaim leaves the row claimable with its attempt budget unspent — three holds in a row", async () => {
     // The bug this closes: a follow-up composed at 21:30 under the DEFAULT quiet hours
@@ -247,9 +247,9 @@ describe("meeting-followup-store", () => {
     });
   });
 
-  // ─── review fix round 1: a legacy NULL/'' hash is "unknown", never "changed" ──────────
+  // ─── A legacy NULL/'' hash is "unknown", never "changed" ──────────
 
-  describe("the legacy NULL/'' summary_hash deploy hazard ( review fix round 1)", () => {
+  describe("the legacy NULL/'' summary_hash deploy hazard", () => {
     /** Simulates a row that pre-dates 048 (or any row inserted by something other than
      *  `claimMeeting`) — `summary_hash` genuinely NULL, never touched by this migration's own
      *  code. Direct INSERT, not `claimMeeting`, is the only way to produce this shape in a test:
@@ -345,7 +345,7 @@ describe("meeting-followup-store", () => {
     });
   });
 
-  describe("seriesKeyFor ( — meeting_followup_redraft's approval gate)", () => {
+  describe("seriesKeyFor — meeting_followup_redraft's approval gate", () => {
     it("returns the recorded series key for a claimed page", async () => {
       await claimMeeting(db, "page-series-lookup", "hash-1");
       await recordOutcome(db, "page-series-lookup", "queued");
@@ -359,7 +359,7 @@ describe("meeting-followup-store", () => {
   });
 });
 
-describe("makeFollowupTick against the real store ( fix round 3)", () => {
+describe("makeFollowupTick against the real store", () => {
   let container: StartedPostgreSqlContainer;
   let db: Pool;
 
@@ -379,7 +379,7 @@ describe("makeFollowupTick against the real store ( fix round 3)", () => {
   });
 
   it("an auto-approved send leaves the row 'sent' — the schedule's own recordOutcome never downgrades it", async () => {
-    // This is the schedule-level proof of the fix round 3 guard: `send` here simulates
+    // This is the schedule-level proof of the store-level guard: `send` here simulates
     // exactly what meeting_followup_send's execute() does for an autonomous (no-card)
     // approval — it calls the REAL recordSent, inside the same call the schedule is
     // awaiting, before the schedule's own recordOutcome("queued") ever runs. Without the
@@ -419,7 +419,7 @@ describe("makeFollowupTick against the real store ( fix round 3)", () => {
     expect(rows[0]?.outcome).toBe("sent");
   });
 
-  // fix round 1 — the tick half of "a hold is not an attempt". The store half (that
+  // The tick half of "a hold is not an attempt". The store half (that
   // `releaseClaim` hands the attempt back) is proven above; this proves the tick records NOTHING on a
   // hold, so the row stays exactly the non-terminal 'error' the claim seeded and a later tick picks
   // it up. The live wiring is what calls `releaseClaim`, right where the hold is detected

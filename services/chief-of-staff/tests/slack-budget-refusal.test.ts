@@ -1,5 +1,5 @@
 /**
- * item 2 — a capped turn says so on the chief of staff's Slack door.
+ * A capped turn says so on the chief of staff's Slack door.
  *
  * Two things are pinned here, and the second is the one that historically breaks: supplying
  * `events["turn.failed"]` REPLACES eve's default handler, so an ORDINARY failure must still
