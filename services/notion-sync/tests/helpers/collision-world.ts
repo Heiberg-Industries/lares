@@ -1,5 +1,5 @@
 // The in-memory stand-in for `adapters/vault-files.ts`'s `listCollisionCandidates`,
-// shared by every `ApplySyncDeps` harness (T6 review round 4).
+// shared by every `ApplySyncDeps` harness.
 //
 // One model, not six: the previous round gave each harness its own inline version,
 // and the moment the engine's wiring sentinel grew a second probe all six had to

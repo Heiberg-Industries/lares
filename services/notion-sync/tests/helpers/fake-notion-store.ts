@@ -3,19 +3,19 @@
 //
 // Deliberately a second fake beside `fake-notion.ts`, not a widening of it, because
 // the two answer opposite questions. That one replays a SCRIPTED sequence of query
-// snapshots, which is what the §18.5 ordering assertions need (the second snapshot
+// snapshots, which is what the reconcile ordering assertions need (the second snapshot
 // models the last_edited_time bump the stamping causes). A steady-state test needs
 // the reverse: no script at all, and every read answered by what the previous tick
 // wrote. Widening the scripted fake to also be a store would have given every
 // existing test a second, silent behaviour.
 //
-// What it models, and why each detail is load-bearing for T7:
+// What it models, and why each detail is load-bearing for the reconcile tests:
 //
 //   - **Write shape ≠ read shape.** Notion takes `{title:[{type:"text",text:{content}}]}`
 //     and gives back `{title:[{plain_text}]}`; it takes `{relation:[{id}]}` and gives
 //     back `{relation:[{id}], has_more}`. A projection that writes one shape and reads
-//     another is the exact "correct for one tick, broken on the next" defect this
-//     phase keeps producing, so the fake performs the same translation Notion does
+//     another is the exact "correct for one tick, broken on the next" defect, so the
+//     fake performs the same translation Notion does
 //     rather than echoing the request body back.
 //   - **PATCH merges properties**, it does not replace the page.
 //   - **POST /v1/pages mints an id** the next query returns.

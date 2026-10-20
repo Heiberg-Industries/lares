@@ -1,4 +1,4 @@
-// The execution half of the 👍 loop (Phase 3 plan T5, spec §18.4): proposals a
+// The execution half of the 👍 loop: proposals a
 // human has decided on, carried out. runPullSync produces proposals and never
 // touches the vault; this engine is the ONLY code in the service that writes a
 // vault file — and it does so through an injected dep, so the pure engine stays
@@ -10,7 +10,7 @@
 //     as a property and is deliberately NOT round-tripped back: an edit to the
 //     Frontmatter property in Notion is ignored and overwritten by the next push.
 //   - rejected → ONE OF THREE things, decided by what the proposal is about, not by
-//     the button (Phase 4). For a mirror or two-way row the Notion page is reverted
+//     the button. For a mirror or two-way row the Notion page is reverted
 //     from the vault, exactly like a mirror row's revert, and the rejection is only
 //     closed once that write has happened — see store.ts setProposalState for why
 //     resolved_at carries that meaning. For a NOTION-OWNED row nothing is written on
@@ -25,13 +25,13 @@
 // vault file still renders to the hash it was proposed against. Anything else is
 // stale, and a stale proposal is superseded and frozen — never written.
 //
-// Phase 4 (T3b) adds a THIRD shape to the same engine: a proposal of kind 'create',
-// for a vault file that does not exist yet (a Meetings transcript, T4; a Notion-born
-// page, T6). It is a branch inside this loop rather than a second pass or a second
+// A THIRD shape runs through the same engine: a proposal of kind 'create',
+// for a vault file that does not exist yet (a Meetings transcript; a Notion-born
+// page). It is a branch inside this loop rather than a second pass or a second
 // approval surface, because the constraint is absolute — one queue, one 👍, one
-// execution path (spec §18.4/§20). Every rail above inverts or falls away for it and
+// execution path. Every rail above inverts or falls away for it and
 // is replaced by its own, and those replacements are the security boundary of the
-// whole phase: see the create branch below.
+// create path: see the create branch below.
 import { assertPushSafe } from "./translate.js";
 import { sha256 } from "./wiki-sync.js";
 import {
@@ -75,9 +75,9 @@ export interface ApplySyncDeps {
    * (store.ts getLinkedRows) — NOT the desk-only `getDeskRows` this used to be.
    *
    * The question this engine asks is "what is the state row for the vault file this
-   * decision is about?", and from Phase 4 on a transcript's answer is its MEETINGS
+   * decision is about?", and for a transcript the answer is its MEETINGS
    * row: `notion_page_id` is globally UNIQUE, so a transcript cannot have a second
-   * row of its own, and its Meetings row is where `vault_path` belongs (T4). With a
+   * row of its own, and its Meetings row is where `vault_path` belongs. With a
    * docs-only read every transcript proposal resolved to "row missing" and was
    * skipped, on every tick, forever.
    *
@@ -89,7 +89,7 @@ export interface ApplySyncDeps {
   getLinkedRows: () => Promise<Map<string, LinkedRow>>;
   renderDoc: (vaultPath: string) => Promise<RenderedDoc>;
   readVaultFile: (vaultPath: string) => Promise<string>;
-  /** Verbatim bytes, under the note lock, committed to the vault's git (T7 wiring). */
+  /** Verbatim bytes, under the note lock, committed to the vault's git. */
   writeVaultFile: (vaultPath: string, content: string) => Promise<void>;
   /**
    * Does a vault file exist at this path RIGHT NOW? Asked immediately before a
@@ -108,13 +108,13 @@ export interface ApplySyncDeps {
   /**
    * Every existing vault path that could be the SAME FILE as a create's target on a
    * case-/normalisation-insensitive filesystem (adapters/vault-files.ts
-   * `listCollisionCandidates`) — guard 3b's input (T6 review rounds 2–3).
+   * `listCollisionCandidates`) — guard 3b's input.
    *
    * It exists because `vaultFileExists` is an `lstat`, and an `lstat` answers for the
-   * filesystem it is running on. The box is case-SENSITIVE and the machine the vault
+   * filesystem it is running on. The server is case-SENSITIVE and the machine the vault
    * is read on is not, so `Notater.md` and `notater.md` are two files here and one
    * there — the guard says "nothing at that path", `O_EXCL` succeeds, and the commit
-   * the box pushes shadows a hand-written note the moment it is pulled. `O_EXCL`
+   * the server pushes shadows a hand-written note the moment it is pulled. `O_EXCL`
    * cannot close this: the two names really are two inodes on ext4. The comparison
    * has to be made in the engine, in the form both filesystems agree about
    * (`collisionKey`, vault-target.ts).
@@ -122,7 +122,8 @@ export interface ApplySyncDeps {
    * Vault-relative PATHS, not basenames, and the ancestry is resolved
    * case-insensitively before listing — see the adapter. Both properties matter: with
    * basenames, or with a literally-spelled parent, this engine would be asking a
-   * NARROWER question than the propose side, and round 2 shipped exactly that gap.
+   * NARROWER question than the propose side, which is exactly the gap an earlier
+   * version shipped.
    *
    * REQUIRED, like `inCreateScope` and for the identical reason: an optional member
    * defaulting to "nothing collides" would be a hole nobody sees. And required is only
@@ -169,7 +170,7 @@ export interface ApplySyncDeps {
   notify: (message: string) => Promise<void>;
   /**
    * Was this vault path forgotten (a `note`-kind `forget_ledger` row, ADR-0017 rule
-   * 7: "a Notion pull or a Brain restore cannot silently resurrect a retired fact")?
+   * 7: "a Notion pull or a vault restore cannot silently resurrect a retired fact")?
    * Answers the date it was forgotten, or `null` when it was not — never the
    * forgotten words, which the ledger does not hold (it is hash-only).
    *
@@ -209,7 +210,7 @@ export interface ApplySyncResult {
   frozen: number;
   /**
    * Decisions this engine deliberately did not carry out — the row is frozen,
-   * erroring or missing, so a human owns it (I2: the same gate for an approval
+   * erroring or missing, so a human owns it (the same gate for an approval
    * and for a rejection). They stay queued and land once the row is synced again.
    */
   skipped: number;
@@ -234,9 +235,9 @@ function errorMessage(err: unknown): string {
  * "the vault authored this and Notion is its projection", which is backwards for a
  * file Notion authored and the vault has only just received. Promotion to `two_way`
  * stays where it has always been — the explicit `enable-two-way` behind the fidelity
- * gate (§4.5/§18.3), never a side effect of a write.
+ * gate, never a side effect of a write.
  *
- * That value now MEANS something on every pass (fix round 1): pull proposes rather
+ * That value now MEANS something on every pass: pull proposes rather
  * than reverting, a trashed page retires the file rather than being recreated from
  * it, push writes nothing at all, and the page is stamped 📥 Notion source and left
  * unlocked. See direction.ts — until that landed, this constant behaved exactly like
@@ -288,13 +289,13 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
   }
 
   // One read for both loops. Taken up front rather than lazily because BOTH
-  // decisions are now gated on the row's state (I2) — see the gate below.
+  // decisions are now gated on the row's state — see the gate below.
   const rows = approved.length + rejected.length === 0
     ? new Map<string, LinkedRow>()
     : await deps.getLinkedRows();
 
   /**
-   * Defence in depth against a mis-wired scope predicate (fix round 2).
+   * Defence in depth against a mis-wired scope predicate.
    *
    * `inCreateScope` being REQUIRED is a type-level guarantee, and a type-level
    * guarantee cannot catch a call site that passes something wrong-but-present —
@@ -326,17 +327,17 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
 
   /**
    * The same defence, for the same reason, on the OTHER guard whose value can be
-   * wrong-but-present (T6 review round 3).
+   * wrong-but-present.
    *
    * `listCollisionCandidates` was made REQUIRED on the argument that this is "like
    * `inCreateScope`, for the identical reason" — and then only the type-level half was
    * taken. The type-level half is exactly the half that cannot catch a mis-wire:
    * changing the composition root to `async () => []` compiled, ran, and left the
    * entire package green while guard 3b was silently off at the only call site that
-   * runs on the box.
+   * runs on the server.
    *
    * **TWO probes whose correct answers CONTRADICT each other**, and that shape is the
-   * whole point (review round 4). The first version asked one question whose only
+   * whole point. The first version asked one question whose only
    * failing answer was emptiness — so `async () => []` failed it and
    * `async () => [".git"]`, an equally plausible stub, sailed through with guard 3b
    * completely off. `inCreateScope`'s sentinel works because it is a semantic
@@ -404,7 +405,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
    *
    * The ping is the whole point of the refusal: a create that vanishes silently is
    * indistinguishable from a sync that quietly stopped working, and the owner tapped
-   * Approve — he is owed the answer.
+   * Approve — the owner is owed the answer.
    */
   async function refuseCreate(proposal: ProposalRow, reason: string): Promise<void> {
     superseded += 1;
@@ -471,7 +472,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
    * writing underneath that decision would overwrite the very content they are
    * looking at.
    *
-   * For a MEETINGS row (Phase 4 — a transcript's state row IS its Meetings row)
+   * For a MEETINGS row (a transcript's state row IS its Meetings row)
    * `state` is a DIFFERENT pass's verdict about a DIFFERENT question. The attendee
    * pass writes 'unmatched' when it cannot find a calendar event for the meeting (6
    * of the 50 live rows) and 'retrying'/'error' when a Notion `Attendees` write
@@ -493,7 +494,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
    * The approved-create path. Every rail the update path relies on is meaningless
    * here — there is no file to render, no base hash to re-check, no frontmatter block
    * to lift from disk — so this branch carries its own, and they are the security
-   * boundary of the whole phase.
+   * boundary of the create path.
    *
    * THE TIMING IS THE POINT. A proposal sits in the queue between being proposed and
    * being approved; the owner may take minutes or days. Everything below re-checks the
@@ -613,7 +614,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // `personal/x.md` passes every rule above and is still a folder no pass was
     // configured to sync; creating a tracked document there would leave a file
     // outside the desk scope that pull nonetheless keeps in step with Notion
-    // forever. The folder half of a create's path is Notion content (T6 reads it
+    // forever. The folder half of a create's path is Notion content (the Notion-born pass reads it
     // from a `Folder` property), so it is exactly as untrusted as the filename.
     assertScopePredicateIsReal();
     if (!opts.inCreateScope(vaultPath)) {
@@ -648,24 +649,23 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
       return;
     }
 
-    // GUARD 3b — NEVER OVERWRITE, the half the kernel cannot answer (T6 review round
-    // 2). Guard 3 above and the adapter's `O_EXCL` both ask the FILESYSTEM, and the
+    // GUARD 3b — NEVER OVERWRITE, the half the kernel cannot answer. Guard 3 above and the adapter's `O_EXCL` both ask the FILESYSTEM, and the
     // filesystem underneath this process is not the one the owner reads the vault on:
-    // ext4 here, APFS there. `Notater.md` and `notater.md` are two inodes on the box
-    // and one path on his Mac, so both of those guards can be satisfied and the file
+    // ext4 here, APFS there. `Notater.md` and `notater.md` are two inodes on the server
+    // and one path on the owner's Mac, so both of those guards can be satisfied and the file
     // still lands shadowing a hand-written note the moment the commit is pulled.
     //
     // Asked HERE and not only at propose time, and that is the whole reason this
     // guard was added rather than left as a propose-side courtesy: a proposal sits in
     // the queue while a human decides, and this branch's entire premise is that the
-    // world is re-checked as it is NOW. The window is not theoretical either — he has
-    // just read a DM naming this exact path, which is precisely the moment he might go
+    // world is re-checked as it is NOW. The window is not theoretical either — the owner has
+    // just read a DM naming this exact path, which is precisely the moment they might go
     // and write a note about it.
     //
     // ONE PREDICATE, shared verbatim with the propose side: `findCollidingPath` over
-    // WHOLE PATHS (vault-target.ts). Round 2 shared only the key and built two
-    // different comparisons on it — whole-path there, basename-in-the-literal-parent
-    // here — and the two disagreed exactly where a variant sits in an ancestor
+    // WHOLE PATHS (vault-target.ts). The earlier mistake was sharing only the key and
+    // building two different comparisons on it — whole-path there, basename-in-the-literal-parent
+    // here — so the two disagreed exactly where a variant sits in an ancestor
     // DIRECTORY: the literal `readdir` ENOENT'd, returned nothing, and the create
     // landed. `listCollisionCandidates` resolves the ancestry case-insensitively so
     // the engine is handed the paths that could really collide, and the question it
@@ -676,7 +676,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
       candidates = await deps.listCollisionCandidates(vaultPath);
     } catch (err) {
       // …AND A PING, for the same reason the create-write failure a few lines below
-      // carries one (review round 4). `fail` is `console.error` + `recordDocError`,
+      // carries one. `fail` is `console.error` + `recordDocError`,
       // and `recordDocError` is an UPDATE keyed on vault_path — a create has no row,
       // so it matches nothing. Left at `fail` alone this is the dead end that comment
       // already names: one log line an hour, forever, seen by nobody. The reachable
@@ -838,7 +838,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
       continue;
     }
 
-    // The freeze invariant, applied uniformly (I2, final review): a frozen (or
+    // The freeze invariant, applied uniformly: a frozen (or
     // erroring, or orphaned) row is not this engine's to write, whichever way the
     // human decided. It used to hold for rejections only, so an approved proposal
     // still wrote the vault file of a frozen row — breaking the one promise the
@@ -850,7 +850,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // exactly like the rejected loop below, and for the same reason: this
     // condition repeats on EVERY tick until the human resolves the row, and the
     // one thing allowed to nag them about a standing freeze is the pull pass's
-    // stale-freeze ping, which is rate-limited by design (spec §6).
+    // stale-freeze ping, which is rate-limited by design.
     if (row === undefined || !engineMayWrite(row)) {
       skipped += 1;
       console.warn(
@@ -868,7 +868,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
       continue;
     }
 
-    // The §18.4 re-check, and the whole reason apply is a separate pass from the
+    // The stale-check, and the whole reason apply is a separate pass from the
     // human's click: between proposing and approving, the vault may have moved.
     // Writing then would silently destroy the newer vault edit, so the proposal
     // dies here and the row freezes for a human `resolve` instead.
@@ -876,12 +876,12 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
       superseded += 1;
       // The freeze is a claim about a DOCS row, and only a docs row can carry it:
       // `freezeDoc`, `getFrozenDocs` and `notion-sync resolve` are all
-      // `target='docs'`, so on a MEETINGS row (a transcript, T4) the call updated
+      // `target='docs'`, so on a MEETINGS row (a transcript) the call updated
       // nothing and the ping told the owner to run a command that answers "no doc row
-      // for <path>" — the same class of defect as the consequence strings this phase
-      // has already fixed twice, one layer deeper. And `--keep md` on a transcript
-      // would be the md→Notion write §17.2 forbids outright, so pointing him at it
-      // was worse than useless.
+      // for <path>" — the same class of defect as the consequence strings fixed
+      // before, one layer deeper. And `--keep md` on a transcript
+      // would be the md→Notion write that transcripts forbid outright (they are one-way),
+      // so pointing the owner at it was worse than useless.
       //
       // What is TRUE for both: the approval is dead, nothing was written on either
       // side, and the vault keeps the newer text. What differs is who heals it. A
@@ -903,7 +903,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
             `resolve with: notion-sync resolve ${vaultPath} --keep md|notion`,
           );
         } else {
-          // NOT "or move the file" (review round 2): the state row still points at
+          // NOT "or move the file": the state row still points at
           // this path, so a moved file makes every later tick fail to read it and
           // report an error instead — the transcript is retired, not recovered. The
           // one thing that works is putting the vault copy back byte for byte, and
@@ -976,7 +976,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // saw a vault render that no longer matched the store and froze the document
     // with "changed in both Notion and the vault". Only Notion had changed; the
     // vault changed because this engine wrote it, on the owner's own 👍. The freeze
-    // then pointed him at `resolve --keep md`, which pushes the vault back over
+    // then pointed the owner at `resolve --keep md`, which pushes the vault back over
     // Notion — the exact write this direction exists to forbid. A freeze after
     // every single approval, i.e. the steady state of every transcript.
     //
@@ -1001,7 +1001,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // A rejected CREATE is executed by doing nothing, and then closing.
     //
     // Rejecting an update owes the world a write — the Notion page is reverted from
-    // the vault (§18.4). Rejecting a create owes nothing: the file was never made, so
+    // the vault. Rejecting a create owes nothing: the file was never made, so
     // there is no vault content to revert a page from, and the Notion page the
     // proposal came from is the human's own and is left exactly as it is. "No" here
     // means "do not bring this into the vault", not "undo it in Notion".
@@ -1014,8 +1014,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // AND THE DECISION HAS TO BE REMEMBERED. Closing the proposal drains the queue;
     // it records nothing about what was decided, so the proposer — which knows only
     // "Notion holds content this row has not accounted for" — proposes the identical
-    // file on the very next tick, and the next, hourly, forever. T3b flagged this as
-    // the one thing it could not settle from where it stood.
+    // file on the very next tick, and the next, hourly, forever.
     //
     // THE POLICY, stated once here because both create proposers must share it:
     //
@@ -1032,15 +1031,15 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // path-bearing row to key on. **THE CONTRACT THAT FOLLOWS FOR A CREATE PROPOSER:
     // it must ensure a state row exists for its Notion page BEFORE proposing.**
     //
-    // That is ENFORCED, not merely stated (review round 1): `recordNotionAccounted`
+    // That is ENFORCED, not merely stated: `recordNotionAccounted`
     // THROWS when it matches no row, and it shares this branch's one tryRecord with
     // the close — so a proposal raised without a row leaves the rejection unexecuted
     // and retried, with the proposer still silent because the row is still in
     // `getRejectedUnexecuted`. It used to be a plain UPDATE, where a page with no row
     // was a silent no-op: the decline "succeeded", the proposal closed, and the owner
-    // was asked about the same file on the next tick, and the next. T4 satisfies the
-    // precondition with `ensureMeetingRow` and refuses to propose if it fails; T6
-    // owes the same for a Notion-born page.
+    // was asked about the same file on the next tick, and the next. The transcript pass satisfies the
+    // precondition with `ensureMeetingRow` and refuses to propose if it fails; the
+    // Notion-born pass owes the same for a Notion-born page.
     if (proposal.kind === "create") {
       declined += 1;
       console.log(`notion-sync: declined create for ${vaultPath} — nothing written, nothing reverted`);
@@ -1076,7 +1075,7 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     }
 
     // A rejected update on a NOTION-OWNED row: also executed by doing nothing to
-    // Notion. THE DECISION, stated once and implemented here (Phase 4 fix round 2).
+    // Notion. THE DECISION, stated once and implemented here.
     //
     // For a mirror or two-way row, "reject" means the vault wins and the page is
     // overwritten from it. For a Notion-owned row that reading is backwards: the
@@ -1084,9 +1083,9 @@ export async function runApplySync(opts: ApplySyncOptions, deps: ApplySyncDeps):
     // be the projection overwriting its own source — precisely the write direction.ts
     // says no pass may make. So here "reject" means the narrower, honest thing: **do
     // not bring this into the vault.** The vault keeps what it has, and the owner's
-    // Notion page is left exactly as he wrote it.
+    // Notion page is left exactly as the owner wrote it.
     //
-    // Reachable only BECAUSE of this phase: before notion_to_md started proposing,
+    // Reachable only because notion_to_md rows propose edits: otherwise
     // such a row never produced a proposal to reject.
     //
     // The watermark still moves. That is what closes the loop: `notion_hash` means

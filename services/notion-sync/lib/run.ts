@@ -69,7 +69,7 @@ export interface AttendeeSyncResult {
   /**
    * Did this tick look like SYSTEMIC starvation — every one of the last few notes
    * failing, rather than one ad-hoc note with no invite? Reported as well
-   * as notified, so a `--once` run on the box shows it without a spine configured.
+   * as notified, so a `--once` run on the server shows it without a spine configured.
    */
   starved: boolean;
   summary: string;
@@ -150,7 +150,7 @@ export async function runAttendeeSync(
 
   if (!opts.dryRun) {
     // Per-document, not per-run: a failure on one row must not discard the rows
-    // already applied, and the next run resumes from what is left (spec §2).
+    // already applied, and the next run resumes from what is left.
     for (const update of plan.updates) {
       try {
         await deps.updateMeetingMatch(update.pageId, matchValue(update));
@@ -181,7 +181,7 @@ export async function runAttendeeSync(
     filled = plan.updates.length;
   }
 
-  // The pattern, not the row (, decision 3). Computed from the plan that was
+  // The pattern, not the row. Computed from the plan that was
   // just carried out, so what a human is told matches what actually happened this
   // tick — and computed even in dry-run, so a rehearsal still REPORTS the condition
   // it declines to broadcast.

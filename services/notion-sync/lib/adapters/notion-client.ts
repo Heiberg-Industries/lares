@@ -1,10 +1,10 @@
 // The ONLY file that knows Notion's HTTP shape. Lives under adapters/ so the
-// vendor-neutrality test exempts it (spec §11).
+// vendor-neutrality test exempts it.
 //
 // Markdown Content API shapes (getPageMarkdown / patchPageMarkdown / createDocPage)
 // verified against developers.notion.com on 2026-08-04 — reference pages
-// retrieve-page-markdown, update-page-markdown, post-page — matching the live probe
-// recorded in the Phase 2 plan. Do not adjust them from memory.
+// retrieve-page-markdown, update-page-markdown, post-page — matching the live probe.
+// Do not adjust them from memory.
 
 export interface NotionMeetingRow {
   pageId: string;
@@ -48,14 +48,14 @@ export interface NotionMeetingRow {
   dateHasTime: boolean;
   attendees: string;
   /**
-   * The `Series` rich_text — the calendar recurring-event id this meeting belongs to
-   *. "" when the row predates the property, or when the meeting is a one-off.
+   * The `Series` rich_text — the calendar recurring-event id this meeting belongs to.
+   * "" when the row predates the property, or when the meeting is a one-off.
    * Both read as "not part of a series", which is the safe answer: never grants
    * autonomy to a row that cannot name its series.
    */
   series: string;
   /**
-   * The `People` RELATION as Notion currently holds it (Phase 4, T7) — the page
+   * The `People` RELATION as Notion currently holds it — the page
    * ids of the People rows this meeting is linked to. Empty when the property
    * does not exist on the database yet, which is what makes the People pass safe
    * to ship before the property is added: it READS as "no links", and only a
@@ -69,12 +69,12 @@ export interface NotionMeetingRow {
    * pass refuses to touch such a row rather than guessing at the rest.
    */
   peopleTruncated: boolean;
-  /** `People Unmatched` rich_text — the flag half of blank-and-flag (T7). */
+  /** `People Unmatched` rich_text — the flag half of blank-and-flag. */
   peopleUnmatched: string;
 }
 
 /**
- * One row of the People database as the projection reads it (Phase 4, T7).
+ * One row of the People database as the projection reads it.
  *
  * `Email` and `Source ID` are BOTH read because they are two independent
  * identities for the same row, and the pass needs both: `Source ID` is the
@@ -101,7 +101,7 @@ export interface NotionPersonRow {
  *
  * FOUR properties and no more, deliberately. Every one of them is a value the
  * source system holds verbatim, so nothing about a person can originate here —
- * which is the whole point of a projection (spec §8.3). Company, LinkedIn and
+ * which is the whole point of a projection. Company, LinkedIn and
  * relationship strength were all available and all left out: they would each need
  * either a second API call or a judgement, and every extra projected field is one
  * more thing that can drift away from the system that actually owns it.
@@ -122,7 +122,7 @@ export interface NotionDocRow {
   /** The join key back to the vault — empty when the row was created by hand. */
   vaultPath: string;
   /**
-   * The three properties a Notion-BORN page is placed by (Phase 4, T6): its `Name`
+   * The three properties a Notion-BORN page is placed by: its `Name`
    * becomes the file's title and slug, and `Project`/`Folder` decide the folder.
    *
    * Read on every Docs query rather than by a second reader, because the pass that
@@ -147,12 +147,12 @@ export interface DocPageProps {
   project: string;
   folder: string;
   vaultPath: string;
-  /** Raw YAML frontmatter, preserved verbatim (spec §4.1). */
+  /** Raw YAML frontmatter, preserved verbatim. */
   frontmatter: string;
   archived: boolean;
   /**
    * Mirror-stamp marker (e.g. "mirror") — a `select` property, added to the
-   * Docs DB schema by hand at deploy (plan-context §5, not by this service).
+   * Docs DB schema by hand at deploy (not by this service).
    * Optional: only mirror rows carry it, and `docProperties` only emits it
    * when set, same partial contract as every other field here.
    */
@@ -417,7 +417,7 @@ interface PageMarkdownResponse {
 }
 
 /**
- * request()'s one thrown shape (fix round 1, Minor 1) — every field a caller
+ * request()'s one thrown shape — every field a caller
  * might need to classify a failure STRUCTURALLY rather than by regexing the
  * rendered message text (the bug this replaces: `/failed: 404\b/` against
  * `this.message`, which matched only by coincidence and could not
@@ -459,7 +459,7 @@ function parseErrorBody(bodyText: string): { code?: string; message?: string } |
 /**
  * Notion's own wording for "you tried to trash a page that is already
  * trashed," at API version 2026-03-11 — verified LIVE 2026-08-05 against the
- * real Docs data source, not assumed (fix round 1, Critical finding; see
+ * real Docs data source, not assumed (see
  * trashPage's doc comment for the full probe). Tight on purpose: a
  * `validation_error` fires for many unrelated bad-request shapes — including
  * a genuinely malformed `Archived` PROPERTY value on this very database,
@@ -560,7 +560,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
 
   /**
    * Creates a People row — properties only, no body. The People database is a
-   * projection of records that live somewhere else (spec §8.3), so a page body
+   * projection of records that live somewhere else, so a page body
    * would be content this service invented, which is precisely what a projection
    * must never hold. `data_source_id` parent for the same reason createDocPage
    * uses it: it is the id `queryPeople` already reads from.
@@ -589,7 +589,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
   }
 
   /**
-   * Writes the two Meetings properties the People pass owns (Phase 4, T7): the
+   * Writes the two Meetings properties the People pass owns: the
    * `People` relation and the `People Unmatched` flag beside it.
    *
    * ONE PATCH carrying BOTH, never two, because they are two halves of a single
@@ -611,9 +611,8 @@ export function makeNotionClient(opts: NotionClientOptions) {
 
   /**
    * Writes what the attendee pass concluded about one meeting row: the `Attendees`
-   * string, and — only when `startsAt` is given — the `Date` it was matched on
-   *, and — only when `seriesKey` is given — the `Series` id it belongs to
-   *.
+   * string, and — only when `startsAt` is given — the `Date` it was matched on,
+   * and — only when `seriesKey` is given — the `Series` id it belongs to.
    *
    * ONE PATCH carrying all three, never split, for the same reason `updateMeetingPeople`
    * sends its pair together: they are facets of one statement, "this note is that
@@ -674,7 +673,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
   /**
    * Reads a page as Notion-flavored markdown. This is the read half of
    * hash-after-write, the sole defence against the sync conflicting with
-   * itself (spec §3) — so a response we cannot hash truthfully must throw,
+   * itself — so a response we cannot hash truthfully must throw,
    * never degrade: a truncated body (Notion truncates past ~20k blocks;
    * no wiki page is within two orders of magnitude of that) or a missing
    * `markdown` field would otherwise store the hash of half a page.
@@ -697,7 +696,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
    * `allow_deleting_content` stays false: child pages/databases nested under a
    * mirror row by a human are then protected — Notion fails the write instead
    * of deleting them, and the failure surfaces through the per-doc error path.
-   * That is the never-delete posture (spec §7) enforced server-side.
+   * That is the never-delete posture enforced server-side.
    */
   async function patchPageMarkdown(pageId: string, markdown: string): Promise<void> {
     await request("PATCH", `/v1/pages/${pageId}/markdown`, {
@@ -740,8 +739,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
   /**
    * Mirror-stamp metadata: `icon` and `is_locked` are top-level PATCH /v1/pages/:id
    * fields, siblings of `properties` rather than entries inside it (unlike Sync,
-   * which is a real database property) — spec plan-context §"Mirror stamping",
-   * design decision 6.
+   * which is a real database property).
    *
    * Verified against developers.notion.com/reference/patch-page (fetched
    * 2026-08-04, both the rendered page and its underlying OpenAPI schema, for
@@ -750,13 +748,13 @@ export function makeNotionClient(opts: NotionClientOptions) {
    *     (`emojiPageIconRequest`) is `{ type: "emoji", emoji: <character> }`.
    *     Passing `null` clears the icon.
    *   - `is_locked`: a bare boolean. The docs' own words on API interaction —
-   *     load-bearing for T7's live probe — are: "Use the `is_locked` boolean
+   *     load-bearing for the live probe — are: "Use the `is_locked` boolean
    *     parameter to lock or unlock the page from being further edited in the
    *     Notion app UI. Note that this setting doesn't affect the ability to
    *     update the page using the API." So a locked mirror row is NOT expected
    *     to reject this service's own writes (only the Notion app UI is fenced);
-   *     the plan's unlock→patch→relock contingency should not be needed, but
-   *     T7 confirms live against the scratch DB before this is relied on.
+   *     an unlock→patch→relock sequence should not be needed, but
+   *     confirm live against a scratch DB before this is relied on.
    *
    * Throws instead of sending a no-op PATCH when neither field is provided —
    * that shape only arises from a caller bug.
@@ -777,15 +775,15 @@ export function makeNotionClient(opts: NotionClientOptions) {
   }
 
   /**
-   * Moves a page to Notion's trash — Phase 4 T3's "archive" (plan decision:
-   * `in_trash`, never the database's own `Archived` checkbox PROPERTY, which is a
+   * Moves a page to Notion's trash — the "archive" action (`in_trash`, never
+   * the database's own `Archived` checkbox PROPERTY, which is a
    * DocPageProps field this function does not touch). `in_trash` is a top-level
    * PATCH /v1/pages/:id field, a sibling of `properties` exactly like `icon` and
    * `is_locked` in updatePageMeta — not a database property, so docProperties()
-   * plays no part here. Body shape is the T3 brief's exact spec, not re-derived
+   * plays no part here. Body shape comes from the API reference, not re-derived
    * from memory (see this file's header note).
    *
-   * Trash beats the checkbox for T3's purpose: a ticked Archived leaves the row
+   * Trash beats the checkbox for this purpose: a ticked Archived leaves the row
    * live and returned by every future queryDocs, permanently in reach of the
    * adoption path. Trash removes it from the database outright, while staying
    * recoverable from Notion's own UI for 30 days.
@@ -793,8 +791,7 @@ export function makeNotionClient(opts: NotionClientOptions) {
    * `alreadyDone: true` covers BOTH shapes this PATCH uses to say "there was
    * nothing left to trash" — live-probed 2026-08-05 against the real Docs data
    * source at the pinned version, corrected here after the probe caught the
-   * ORIGINAL version of this function assuming the second one wrongly (fix
-   * round 1, Critical finding — do not re-introduce without re-probing):
+   * ORIGINAL version of this function assuming the second one wrongly (do not re-introduce without re-probing):
    *
    *   1. Genuinely gone — purged from trash, or a stale/wrong id — 404s with
    *      `code: "object_not_found"`.

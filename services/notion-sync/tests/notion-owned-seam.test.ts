@@ -89,7 +89,7 @@ function makeWorld(direction: string) {
 
   const shared = {
     getDeskRows: async () => new Map(rows),
-    // Widened in Phase 4 to carry BOTH targets. Every row in this world is a desk
+    // Widened to carry BOTH targets. Every row in this world is a desk
     // document, so the map is the same one with its target stated.
     getLinkedRows: async () =>
       new Map([...rows].map(([path, row]) => [path, { ...row, target: "docs" as const }])),
@@ -146,7 +146,7 @@ function makeWorld(direction: string) {
       const row = rows.get(vaultPath);
       if (row !== undefined) rows.set(vaultPath, { ...row, notionHash, notionLastEdited });
     },
-    // Phase 4: the create branch and the Notion-owned hash refresh both go through
+    // The create branch and the Notion-owned hash refresh both go through
     // the PAGE-keyed upsert now. No row in this world is keyed any other way, so
     // this is the path-keyed body with the same effect.
     linkPageToVaultFile: async (doc: {
@@ -245,7 +245,7 @@ describe("a Notion-owned document, approved, across three ticks", () => {
     // alone because an approved proposal already covers exactly this content.
     await w.tick();
     // The disk block, plus the one key apply adds: the body below came from Notion,
-    // so the file says so (W4D-s2). The stamped bytes are what the hash-after-write
+    // so the file says so. The stamped bytes are what the hash-after-write
     // reading is taken over too — otherwise tick 3 below would find a mismatch.
     expect(w.vault.get(PATH)).toBe(`---\nlares_origin: synced\ntitle: Standup\n---\n\n${NOTION_EDIT}\n`);
     expect(w.proposals[0].state).toBe("applied");
@@ -269,8 +269,8 @@ describe("a Notion-owned document, approved, across three ticks", () => {
     expect(w.rows.get(PATH)?.state).toBe("synced");
     expect(w.proposals).toHaveLength(1);
 
-    // No freeze ping, and no "resolve with:" instruction pointing him at the one
-    // command that would write his Notion page back from the vault.
+    // No freeze ping, and no "resolve with:" instruction pointing the owner at the one
+    // command that would write the Notion page back from the vault.
     expect(w.notifications.filter((n) => /frozen|resolve with/i.test(n))).toEqual([]);
   });
 
@@ -310,7 +310,7 @@ describe("a Notion-owned document, rejected", () => {
     expect(w.notion.get(PAGE)?.markdown).toBe(NOTION_EDIT);
     expect(w.proposals[0].resolvedAt).not.toBeNull();
 
-    // TICK 3 — and he is not asked about the same edit again. Without recording
+    // TICK 3 — and the owner is not asked about the same edit again. Without recording
     // that this content was seen and declined, pull would re-propose it forever.
     await w.tick();
     expect(w.proposals).toHaveLength(1);

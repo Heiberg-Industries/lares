@@ -1,5 +1,5 @@
-// The ONE definition of "config has carved this path out of the desk scope"
-// (Phase 4, `deskDirs[].exclude`). A pure function of config, imported by every
+// The ONE definition of "config has carved this path out of the desk scope".
+// A pure function of config, imported by every
 // boundary that decides what a desk pass may see: the push pass's file discovery
 // (adapters/vault-files.ts), its row-side scope (wiki-sync.ts), the pull pass's
 // row loop (pull-sync.ts), and the two operator commands that write Notion for a
@@ -55,11 +55,11 @@ export function makeDeskExclusion(desks: DesksConfig | undefined): (vaultPath: s
 }
 
 /**
- * May this service CREATE a vault file here? (Phase 4, T3b fix round 1.)
+ * May this service CREATE a vault file here?
  *
  * `refuseVaultTarget` rules on the SHAPE of a path — no escapes, no dot-dirs, no
  * machine-owned areas, markdown only. It says nothing about WHERE, and a shape-only
- * guard leaves a real hole: T6 derives the folder from a Notion `Folder` property,
+ * guard leaves a real hole: the Notion-born pass derives the folder from a Notion `Folder` property,
  * which is untrusted content. Set it to `personal` and an approved create writes
  * `personal/x.md` and inserts a docs row — a tracked document in a folder no pass
  * was ever configured to sync. The push sweep is prefix-scoped so it never sees it,
@@ -69,12 +69,12 @@ export function makeDeskExclusion(desks: DesksConfig | undefined): (vaultPath: s
  * Two things are in scope, and the second is not an afterthought:
  *
  *  - **Inside a configured `deskDirs[].dir`, and not carved out of it.** The
- *    ordinary case (T6): a desk folder is exactly the set of places the desk passes
+ *    ordinary case: a desk folder is exactly the set of places the desk passes
  *    manage, and `exclude` is exactly what config has taken back out.
- *  - **…unless the carve-out IS the transcripts folder** (`transcripts.dir`, T1).
- *    T4's transcripts live at `<project>/<transcripts.dir>/…`, and that sub-path is
+ *  - **…unless the carve-out IS the transcripts folder** (`transcripts.dir`).
+ *    Transcripts live at `<project>/<transcripts.dir>/…`, and that sub-path is
  *    excluded from the DESK passes precisely so the transcript pass can own it
- *    one-way (decision 5 — it is why T2 and T3 exist at all). Applying the
+ *    one-way (it is why `archive-excluded` exists at all). Applying the
  *    exclusion here without this exception would refuse every transcript this
  *    mechanism was built to create. An `exclude` entry means "the desk passes do
  *    not sync this", not "nothing may ever live here".

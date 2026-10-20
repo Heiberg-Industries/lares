@@ -64,7 +64,7 @@ export function sliceWindow(
  * Fetches one mailbox's events across the whole window in <=SLICE_DAYS slices.
  * CalendarApiClient exposes no pageToken, so a slice that still comes back at
  * MAX_RESULTS cannot be trusted as complete — that is a truncated read, not a busy
- * calendar, and we must not silently proceed on a partial set (spec: per-document
+ * calendar, and we must not silently proceed on a partial set (per-document
  * correctness depends on seeing every real candidate event).
  */
 export async function fetchMailboxEvents(

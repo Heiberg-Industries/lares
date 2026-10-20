@@ -251,7 +251,7 @@ describe("planAttendees", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-//. Two new facts reach the matcher on every row: WHERE its start time came
+// Two new facts reach the matcher on every row: WHERE its start time came
 // from, and whether the `Date` property was already authoritative. The first
 // governs how far the matcher will look and whether the title gate is optional;
 // the second is the write-back's whole permission.
@@ -405,7 +405,7 @@ describe("planAttendees — the series key", () => {
   });
 
   it("omits seriesKey entirely for a one-off meeting", () => {
-    // Absence is the signal Phase 2 reads as "never auto-approvable". An empty string
+    // Absence is the signal the approval path reads as "never auto-approvable". An empty string
     // would be a series id that matches nothing, which is a different and worse claim.
     const plan = planAttendees([row()], [event()], OPTS);
     expect("seriesKey" in plan.updates[0]).toBe(false);

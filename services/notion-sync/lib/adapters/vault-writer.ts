@@ -1,15 +1,14 @@
-// The vault write boundary — the ONLY place this service mutates the Brain, and
+// The vault write boundary — the ONLY place this service mutates the vault, and
 // the reason runApplySync/runPullSync can stay pure engines. Under adapters/ for
 // the same reason notion-client.ts is: it holds the vendor-ish knowledge (git, the
 // fleet's note lock) the engines must not.
 //
 // Modeled on agent-box's `commitNote` (brain-source.ts) rather than reusing it,
-// deliberately (Phase 3 plan decision 3): commitNote SERIALISES frontmatter from a
+// deliberately: commitNote SERIALISES frontmatter from a
 // Record and hardcodes a `note(agent):` message. Write-back has to be byte-verbatim
 // — the frontmatter block is carried over from the file on disk untouched, and a
 // re-serialisation would rewrite quoting, key order and comments on every apply.
-// What IS reused, exactly: `withNoteLock` (the lock the fleet's own writers take,
-// spec §5 as amended) and the add/commit/push-tolerating-failure sequence.
+// What IS reused, exactly: `withNoteLock` (the lock the fleet's own writers take) and the add/commit/push-tolerating-failure sequence.
 import { mkdirSync, writeFileSync, existsSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve, dirname, sep } from "node:path";
@@ -17,11 +16,11 @@ import { withNoteLock } from "@lares/agent-box";
 import { refuseVaultTarget } from "../vault-target.js";
 
 export interface VaultWriterOptions {
-  /** Absolute path of the vault clone (config `vaultPath`, `/srv/brain` on the box). */
+  /** Absolute path of the vault clone (config `vaultPath`, `/srv/vault` on the server). */
   vaultPath: string;
 }
 
-/** Where an archived file goes (spec §7: retire, never delete). */
+/** Where an archived file goes (retire, never delete). */
 const ARCHIVE_DIR = "_archive";
 
 export function makeVaultWriter(opts: VaultWriterOptions) {
@@ -37,11 +36,11 @@ export function makeVaultWriter(opts: VaultWriterOptions) {
   }
 
   /**
-   * The guard `assertSafe` cannot give (T3b), and the absolute path to create at.
+   * The guard `assertSafe` cannot give, and the absolute path to create at.
    *
    * `resolve()` is pure string arithmetic: it collapses `..` and rejects absolute
    * paths, but it never touches the disk, so a SYMLINKED DIRECTORY inside the vault
-   * pointing anywhere at all passes it unchanged. `/srv/brain/escape → /etc` makes
+   * pointing anywhere at all passes it unchanged. `/srv/vault/escape → /etc` makes
    * `escape/cron.md` a path that reads as vault-relative and writes to /etc.
    *
    * Closing that needs real inodes: walk up to the deepest ancestor of the target
@@ -59,7 +58,7 @@ export function makeVaultWriter(opts: VaultWriterOptions) {
    *
    * The vault root is realpath'd FIRST and the target built from that, rather than
    * compared against a merely-resolved root: the mount itself is commonly reached
-   * through a link (macOS `/var` → `/private/var`, any symlinked `/srv/brain`), and
+   * through a link (macOS `/var` → `/private/var`, any symlinked `/srv/vault`), and
    * comparing a real path against a resolved one would refuse every write on those
    * hosts.
    *
@@ -146,7 +145,7 @@ export function makeVaultWriter(opts: VaultWriterOptions) {
   }
 
   /**
-   * Writes a file that does not exist yet, and REFUSES if it does (T3b).
+   * Writes a file that does not exist yet, and REFUSES if it does.
    *
    * Separate from writeVaultFile rather than a flag on it, because the difference is
    * the whole point: writeVaultFile overwrites by design (that is what applying an

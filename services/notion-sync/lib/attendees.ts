@@ -1,4 +1,4 @@
-// Pure: no I/O, no vendor imports. The whole "never guess" rule lives here (spec §8).
+// Pure: no I/O, no vendor imports. The whole "never guess" rule lives here.
 
 export interface CalAttendee {
   email: string;
@@ -125,7 +125,7 @@ export const DEFAULT_CREATED_TOLERANCE_MINUTES = 90;
 
 /**
  * How many consecutive recent meeting notes must fail to match before this is a
- * systemic failure rather than an unusual week (, decision 3).
+ * systemic failure rather than an unusual week.
  *
  * TWO is a normal Friday: an ad-hoc recording with no invite is legitimate, and two
  * of them back to back is not rare. THREE is not — 44 of the 54 rows in the live
@@ -318,7 +318,7 @@ export function planAttendees(
       plan.unmatched.push({ pageId: row.pageId, reason: "no-attendees" });
       continue;
     }
-    // The date write-back (, decision 1). Two conditions, both necessary:
+    // The date write-back. Two conditions, both necessary:
     //   - the row's `Date` holds no time yet. A datetime someone typed is a
     //     statement, and this pass corrects nobody — same provenance rule as
     //     Attendees, one property over.

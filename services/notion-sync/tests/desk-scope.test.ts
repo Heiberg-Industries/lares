@@ -1,4 +1,4 @@
-// The exclusion itself (Phase 4, `deskDirs[].exclude`): the predicate every
+// The exclusion itself: the predicate every
 // scope boundary shares, and the push side end to end — a real vault tree, the
 // real adapter, the real engine — because that side is HOW the transcripts became
 // Docs pages in the first place. The pull side's proof lives with the pull engine
@@ -23,7 +23,7 @@ const DESKS: DesksConfig = {
   mirrorFilePrefixes: [],
 };
 
-// Where a CREATE may land (Phase 4, T3b fix round 1). Shape is not scope: T6 reads
+// Where a CREATE may land. Shape is not scope: the Notion-born pass reads
 // the folder half of a create's path from a Notion `Folder` property, so without
 // this a well-formed `personal/x.md` would be created and tracked in a folder no
 // pass was ever configured to sync.
@@ -50,8 +50,8 @@ describe("makeCreateScope", () => {
     expect(inScope("desk-a/transcripts/2026-08-01-foo.md")).toBe(false);
   });
 
-  // THE exception, and it is not an afterthought: T4's transcripts live at exactly
-  // the sub-path T2 carved out of the DESK passes, so that the transcript pass can
+  // THE exception, and it is not an afterthought: transcripts live at exactly
+  // the sub-path the carve-out takes out of the DESK passes, so that the transcript pass can
   // own it one-way. Applying the exclusion here without this would refuse every
   // transcript this whole mechanism was built to create.
   it("accepts the transcripts folder once the transcripts pass IS configured", () => {
@@ -139,7 +139,7 @@ describe("makeDeskExclusion", () => {
   });
 
   it("reads the exclusion straight off a parsed config file", () => {
-    // The whole chain in one assertion: raw config → parser (T1) → predicate.
+    // The whole chain in one assertion: raw config → parser → predicate.
     const cfg = parseNotionSyncConfig({
       notionVersion: "2026-03-11",
       meetingsDataSourceId: "00000000-0000-4000-8000-000000000001",
@@ -183,7 +183,7 @@ describe("withoutExcluded", () => {
 // ── The push side, end to end ────────────────────────────────────────────────
 
 /**
- * How the 32 transcripts became Docs rows in Phase 3: the desk push runs the wiki
+ * How transcripts could become Docs rows: the desk push runs the wiki
  * engine once per desk folder, and the adapter's walk recurses the WHOLE subtree —
  * so `transcripts/…md` arrived in the listing and got a page like any other note.
  * This drives the real adapter and the real engine over a real vault tree, because
@@ -246,7 +246,7 @@ describe("the desk push with an exclusion (real vault, real adapter, real engine
   });
 
   it("creates the transcript's page when nothing is excluded — the control", async () => {
-    // Exactly the Phase 3 behaviour that produced the 32 rows. Without this the
+    // Exactly the behaviour that produced the stray rows. Without this the
     // test above would also pass for a vault the walk simply could not read.
     const vault = makeVaultFiles({ vaultPath: root, wikiDir: "desk-a" });
     const d = makeDeps();

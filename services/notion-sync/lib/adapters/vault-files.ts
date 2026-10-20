@@ -7,13 +7,13 @@ import { isUnderDir } from "../desk-scope.js";
 import { collisionKey } from "../vault-target.js";
 
 export interface VaultFilesOptions {
-  /** Absolute path of the vault mount (config `vaultPath`, `/srv/brain` on the box). */
+  /** Absolute path of the vault mount (config `vaultPath`, `/srv/vault` on the server). */
   vaultPath: string;
   /** Vault-relative wiki directory (config `wikiDir`). */
   wikiDir: string;
   /**
    * Sub-paths of `wikiDir`, DIR-RELATIVE, that this listing must not descend into
-   * — a desk entry's `exclude` list, straight from config (Phase 4). Absent ⇒
+   * — a desk entry's `exclude` list, straight from config. Absent ⇒
    * nothing is pruned, which is the wiki mirror pass's case and the behaviour of
    * every caller before this option existed.
    *
@@ -39,7 +39,7 @@ export interface VaultFilesOptions {
  *   link cannot smuggle files from outside the vault into the pass.
  * - A missing wiki directory THROWS (ENOENT) instead of returning an empty
  *   listing: on a cold store the engine's empty-listing guard has no rows to
- *   defend, and a missing `/srv/brain` mount would otherwise be a silent no-op
+ *   defend, and a missing vault mount would otherwise be a silent no-op
  *   every tick forever.
  * - `exclude` entries are skipped, by path segment (see VaultFilesOptions).
  */
@@ -77,15 +77,15 @@ export function makeVaultFiles(opts: VaultFilesOptions) {
 
 export interface VaultWalkOptions {
   /** Absolute path of the vault mount (config `vaultPath`, or the fidelity CLI's
-   *  `--vault` override for an off-box run against a bare vault checkout). */
+   *  `--vault` override for an off-server run against a bare vault checkout). */
   vaultPath: string;
 }
 
 /**
  * Mirrors agent-box's `lib/brain-source.ts` walkMd exclusion-dir SHAPE (skip by
- * directory name, not a blanket dotfile skip), widened by two Phase 3 additions
- * (fidelity gate, spec §18.3): `.claude` (this repo's own kit, never vault
- * content) and `_archive` (spec §7 — archived files are retired, not eligible for
+ * directory name, not a blanket dotfile skip), widened by two additions
+ * for the fidelity gate: `.claude` (this repo's own kit, never vault
+ * content) and `_archive` (archived files are retired, not eligible for
  * the gate). Deliberately NOT `makeVaultFiles`'s own "skip every dotfile"
  * behaviour: that adapter is scoped to one wikiDir and can afford to be blunt;
  * this one walks the whole vault root and only excludes what it's told to.
@@ -96,7 +96,7 @@ const FIDELITY_EXCLUDED_DIRS = new Set([
 
 /**
  * How many case-variant spellings of ONE ancestor directory `listCollisionCandidates`
- * will follow before refusing. Normally 1; a case-sensitive box can legitimately hold
+ * will follow before refusing. Normally 1; a case-sensitive filesystem can legitimately hold
  * two or three. Dozens means something is wrong that a human has to look at, and
  * refusing is safer than truncating a guard's input.
  */
@@ -104,9 +104,9 @@ const MAX_COLLIDING_DIRS = 64;
 
 /**
  * Lists and reads every markdown file under the WHOLE vault root — the fidelity
- * gate's file universe, recounted at every run (spec §18.3: never cached). Unlike
+ * gate's file universe, recounted at every run (never cached). Unlike
  * `makeVaultFiles`, not scoped to a single wikiDir: the gate has to see desk
- * folders too, once they exist (T7), without this adapter changing.
+ * folders too, once they exist, without this adapter changing.
  */
 export function makeVaultWalk(opts: VaultWalkOptions) {
   const root = opts.vaultPath;
@@ -132,7 +132,7 @@ export function makeVaultWalk(opts: VaultWalkOptions) {
 
   /**
    * Is there anything at this path right now? The apply engine's never-overwrite
-   * guard (T3b), asked immediately before a create.
+   * guard, asked immediately before a create.
    *
    * `lstat`, not `stat`: a DANGLING symlink is something, and the create's O_EXCL
    * write will refuse it — so this must say "yes" too, or the engine would report a
@@ -155,15 +155,15 @@ export function makeVaultWalk(opts: VaultWalkOptions) {
 
   /**
    * Every existing vault path that COULD be the same file as `relPath` on a
-   * case-/normalisation-insensitive filesystem — the input to apply's guard 3b
-   * (T6 review rounds 2–3). The comparison itself is not made here: the engine makes
+   * case-/normalisation-insensitive filesystem — the input to apply's guard 3b.
+   * The comparison itself is not made here: the engine makes
    * it, with `findCollidingPath`, the same function the propose side uses.
    *
-   * **The ancestry is resolved, not spelled literally, and that is the whole fix of
-   * round 3.** Round 2 did `readdir(dirname(join(root, relPath)))` — the LITERAL
+   * **The ancestry is resolved, not spelled literally, and that is the whole point.**
+   * The earlier approach was `readdir(dirname(join(root, relPath)))` — the LITERAL
    * parent — so for a target `acme/prosjekt/notat.md` against an existing
    * `acme/Prosjekt/Notat.md` the readdir ENOENT'd on `acme/prosjekt`, returned
-   * nothing, and the create landed: two directories and two files on the box, one of
+   * nothing, and the create landed: two directories and two files on the server, one of
    * each on the Mac, the hand-written note shadowed on the next pull. A `Folder`
    * naming a directory that does not exist yet is the ORDINARY way to file a new
    * page, so this was not an exotic path.

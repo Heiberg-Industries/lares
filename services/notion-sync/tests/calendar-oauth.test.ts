@@ -3,9 +3,9 @@ import { encryptSecret } from "@lares/agent-box";
 import { wrapCalendarApi, makeCalendarResolver } from "../lib/adapters/calendar-oauth.js";
 
 /**
- * — the attendee resolver, rehomed from services/agent-runtime/lib/adapters/
- * calendar-oauth.ts (its read half). The cases are the runtime's own (tests/calendar-oauth.test.ts
- * there) plus the two fields notion-sync depends on: attendees and recurringEventId.
+ * The attendee resolver (lib/adapters/calendar-oauth.ts, its read half): the
+ * decrypt-and-list cases plus the two fields notion-sync depends on: attendees
+ * and recurringEventId.
  */
 const KEY = "0".repeat(64);
 

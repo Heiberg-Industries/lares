@@ -75,7 +75,7 @@ function makeWorld() {
 
   const shared = {
     getDeskRows: async () => new Map(rows),
-    // Widened in Phase 4 to carry BOTH targets. Every row in this world is a desk
+    // Widened to carry BOTH targets. Every row in this world is a desk
     // document, so the map is the same one with its target stated.
     getLinkedRows: async () =>
       new Map([...rows].map(([path, row]) => [path, { ...row, target: "docs" as const }])),
@@ -127,7 +127,7 @@ function makeWorld() {
       const row = rows.get(vaultPath);
       if (row !== undefined) rows.set(vaultPath, { ...row, notionHash, notionLastEdited });
     },
-    // Phase 4: the create branch and the Notion-owned hash refresh both go through
+    // The create branch and the Notion-owned hash refresh both go through
     // the PAGE-keyed upsert now. No row in this world is keyed any other way, so
     // this is the path-keyed body with the same effect.
     linkPageToVaultFile: async (doc: {

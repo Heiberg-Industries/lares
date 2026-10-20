@@ -1,12 +1,12 @@
-// The multi-tick test. This phase's signature defect is a change that is correct
-// for ONE tick and broken on the next — four times now, every one invisible in the
+// The multi-tick test. The characteristic defect here is a change that is correct
+// for ONE tick and broken on the next — invisible in the
 // diff and caught only by running several ticks in sequence. So this file never
 // asserts a single call: it runs the People pass four or more times against a
 // STATEFUL fake Notion (tests/helpers/fake-notion-store.ts) that answers each read
 // with what the previous tick wrote, and asserts the pass goes quiet and stays
 // quiet.
 //
-// FOUR ticks rather than three, for the reason T4's seam test gives: a two-tick
+// FOUR ticks rather than three, for the reason the transcript seam test gives: a two-tick
 // oscillation passes three.
 //
 // It drives the REAL adapter — `makeNotionClient`, so `personProperties`,
@@ -38,7 +38,7 @@ function person(over: Partial<SourcePerson> = {}): SourcePerson {
 function world(source: SourcePerson[]) {
   const store = makeNotionStore();
   const pings: string[] = [];
-  /** Source records whose create should fail this tick — see the F7(iv) test. */
+  /** Source records whose create should fail this tick — see the failed-create test. */
   const failCreates = new Set<string>();
   const notion = makeNotionClient({
     token: "t", version: "2026-03-11", fetchImpl: store.impl as unknown as typeof fetch,
@@ -166,7 +166,7 @@ describe("the People pass over four ticks", () => {
     const res = await w.tick();
     // The row's `Email` is its KEY and is never overwritten, so there is nothing to
     // update — and the OLD address keeps resolving, which is what pins the old
-    // meeting to the person who was actually in the room (round 1, Important 2).
+    // meeting to the person who was actually in the room.
     expect(res).toMatchObject({ created: 0, updated: 0, unresolved: 0 });
     expect(w.peopleRows()).toEqual([
       { id: "notion-page-1", email: "alex@partner.example", sourceId: "crm-1", name: "Alex Partner" },
@@ -189,7 +189,7 @@ describe("the People pass over four ticks", () => {
   });
 
   it("REFUSES an address reassigned to a different human, every tick, and links nobody new", async () => {
-    // The defect round 1 found: Alice attended as post@acme.example; Twenty later hands
+    // The defect: Alice attended as post@acme.example; Twenty later hands
     // that address to Bob. Additive links made the wrong attachment permanent.
     const alice = person({ sourceId: "crm-alice", name: "Alice", email: "post@acme.example" });
     const w = world([alice]);
@@ -224,8 +224,8 @@ describe("the People pass over four ticks", () => {
     });
   });
 
-  it("P3: an address reassigned while its owner is STILL in the source attaches nobody new", async () => {
-    // The reviewer's exact sequence, and the one a mutable `Email` key gets wrong:
+  it("an address reassigned while its owner is STILL in the source attaches nobody new", async () => {
+    // The exact sequence, and the one a mutable `Email` key gets wrong:
     // Alice stays in Twenty with a NEW address, and Bob is handed her old one. With
     // the key following the source, Alice's row stops holding post@acme.example, Bob's
     // create succeeds on the next tick, and Bob is linked to Alice's meeting.
@@ -265,7 +265,7 @@ describe("the People pass over four ticks", () => {
 
   it("never writes a relation Notion could not return whole — and never wedges the row", async () => {
     // 26 verified attendees. Writing them would produce a row this same loop
-    // refuses on every later tick, and reports as a success (round 1, Important 1).
+    // refuses on every later tick, and reports as a success.
     const many = Array.from({ length: 26 }, (_, i) =>
       person({ sourceId: `crm-${String(i).padStart(2, "0")}`, name: `P${i}`, email: `p${i}@x.io` }));
     const w = world(many);
@@ -484,7 +484,7 @@ describe("the People pass over four ticks", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F6 (round 2): the RUNTIME binding, not just the stored key. Three sequences
+// The RUNTIME binding, not just the stored key. Three sequences
 // nothing ran before — each is quiet for two ticks and wrong on the third.
 // ---------------------------------------------------------------------------
 describe("an address moved between people who BOTH already have rows", () => {
@@ -585,7 +585,7 @@ describe("an address moved between people who BOTH already have rows", () => {
   });
 });
 
-describe("round 2 — the reports that have to leave the container", () => {
+describe("the reports that have to leave the container", () => {
   it("pings the spine when a settled meeting gains a link, naming the meeting and the address", async () => {
     const w = world([person()]);
     w.seedMeeting("m1", {
@@ -670,11 +670,11 @@ describe("round 2 — the reports that have to leave the container", () => {
 });
 
 // ---------------------------------------------------------------------------
-// F7 / round 4: an address one record holds as an ALIAS and another as its
-// PRIMARY. Round 3 refused the create and left the address with the alias holder,
-// so the meeting read `People=[alias holder]` with an EMPTY flag — §8's exact
-// failure. Round 4's third level of the claim order settles it on the data
-// instead of on Twenty's record ids:
+// An address one record holds as an ALIAS and another as its
+// PRIMARY. Refusing only the create would leave the address with the alias holder,
+// so the meeting would read `People=[alias holder]` with an EMPTY flag — the exact
+// failure the blank-and-flag contract forbids. A third level of the claim order
+// settles it on the data instead of on the CRM's record ids:
 //
 //     stored row key  >  source primary  >  source alias
 // ---------------------------------------------------------------------------
@@ -736,7 +736,7 @@ describe("an address one record holds as an alias and another as its primary", (
     });
   }
 
-  it("F6 REGRESSION: a primary still cannot take an address a stored row KEY holds", async () => {
+  it("REGRESSION: a primary still cannot take an address a stored row KEY holds", async () => {
     // The inverse of the round-4 rule, and the thing it must never become. Bob's
     // row is keyed on post@acme.example; Alice's record is later handed it as her
     // PRIMARY. Level 1 outranks level 2, so nothing moves.
@@ -802,7 +802,7 @@ describe("an address one record holds as an alias and another as its primary", (
 
     const first = await w.tick();
     expect(first.errored).toBe(1);
-    // Blank and flagged — never the alias holder. §8's rule under a failed write.
+    // Blank and flagged — never the alias holder. The blank-and-flag rule under a failed write.
     expect(w.meetingProps(SHARED_MEETING).People).toEqual({ relation: [], has_more: false });
     expect(w.meetingProps(SHARED_MEETING)["People Unmatched"]).toEqual({
       rich_text: [{ plain_text: "post@acme.example" }],
@@ -825,7 +825,7 @@ describe("an address one record holds as an alias and another as its primary", (
   });
 });
 
-describe("F8 — dry-run is silent", () => {
+describe("dry-run is silent", () => {
   it("sends no ping at all, however many dry ticks are run", async () => {
     const w = world([person()]);
     w.seedMeeting("m1", {
@@ -860,10 +860,10 @@ describe("F8 — dry-run is silent", () => {
 
 describe("an adopted hand-made row's address", () => {
   it("is defended against a later ALIAS claim, and the owner is named", async () => {
-    // Round 3 used this to pin the `held === pageId` arm. Round 4's claim order
-    // now answers the same question from `primaryOf`, so the arm no longer
-    // discriminates (mutation-verified: removing it fails nothing). The BEHAVIOUR
-    // is still worth pinning, and that is what this asserts.
+    // This used to pin the `held === pageId` arm. The claim order now answers the
+    // same question from `primaryOf`, so the arm no longer discriminates
+    // (mutation-verified: removing it fails nothing). The BEHAVIOUR is still worth
+    // pinning, and that is what this asserts.
     const w = world([]);
     w.seedPerson("hand-1", { name: "Vera", email: "vera@x.io" });
     w.seedMeeting("m1", { attendees: `Vera <vera@x.io>, B <${SELF}>`, people: ["hand-1"] });

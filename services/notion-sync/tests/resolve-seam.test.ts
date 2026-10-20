@@ -3,7 +3,7 @@
 // and then through a WHOLE tick in the order the daemon runs it (pull → apply →
 // push wiki → push desks).
 //
-// This is the seam no per-pass test could see (final review, C1). Each engine
+// This is the seam no per-pass test could see. Each engine
 // was individually right about a frozen row, and the loop still could not
 // converge: pull runs FIRST and re-detected the same two-sided conflict that
 // froze the row, push skips frozen rows so it never healed anything, and apply
@@ -37,7 +37,7 @@ const DESK = "desks/example-service";
 const PATH = `${DESK}/note.md`;
 const FRONTMATTER = "---\ntitle: Note\n---\n";
 /** The same block after an approved pull has written it: the file's own keys, verbatim,
- *  plus the one key the write's provenance decides (W4D-s2 — the body under it came
+ *  plus the one key the write's provenance decides (the body under it came
  *  from Notion, so the file says so). */
 const STAMPED_FRONTMATTER = "---\nlares_origin: synced\ntitle: Note\n---\n";
 /** The vault's side of the conflict: edited after the last successful sync. */
@@ -66,7 +66,7 @@ beforeAll(async () => {
 
   // A real clone with a real remote: apply writes the vault through
   // makeVaultWriter, which takes the fleet's note lock and commits + pushes.
-  // Faking that away would skip the half of the loop that touches the Brain.
+  // Faking that away would skip the half of the loop that touches the vault.
   root = await mkdtemp(join(tmpdir(), "notion-sync-resolve-seam-"));
   const bare = join(root, "brain.git");
   vaultPath = join(root, "brain");
@@ -222,7 +222,7 @@ describe("resolve --keep notion, then approve, then a whole tick", () => {
     const t1 = await tick();
     // pull finds the page holding exactly the hash `resolve` stamped on the row,
     // so it takes the `unchanged` branch: proposeDesk is never entered, nothing
-    // is re-frozen, and apply is free to land the approval. Before C1 the row
+    // is re-frozen, and apply is free to land the approval. Before the fix the row
     // re-froze here and apply refused to write a frozen row — the approved
     // proposal could never land, on any tick.
     expect(t1.pull?.frozen).toBe(0);
@@ -259,7 +259,7 @@ describe("resolve --keep notion, then approve, then a whole tick", () => {
 });
 
 describe("a PENDING proposal never lets the same tick's push overwrite it", () => {
-  // The narrowing of C1(a) (re-review): deferring the conflict check for an
+  // The narrowing: deferring the conflict check for an
   // APPROVED proposal is safe because apply consumes it earlier in the same tick.
   // Deferring it for a PENDING one is not: nothing consumes it, so the row stays
   // 'synced' with a stale md_hash and the push at the end of the SAME tick
@@ -368,7 +368,7 @@ describe("resolve --keep notion, when a tick lands before the human approves", (
 });
 
 describe("a vault edit inside the resolve→approve window", () => {
-  // The last hole (final review, round 3). `resolve --keep notion` stamps the
+  // `resolve --keep notion` stamps the
   // row's hashes so the wait is quiet — which also means pull's `unchanged`
   // branch has nothing to freeze. If the human then edits the VAULT file while
   // their own proposal waits, the desk push is the only pass left looking at the
@@ -399,7 +399,7 @@ describe("a vault edit inside the resolve→approve window", () => {
     expect((await getOpenProposals(db))[0].state).toBe("pending");
 
     // Approving it now is a STALE approve: the vault moved after the proposal was
-    // based on it, so apply refuses to write, supersedes and freezes (§18.4).
+    // based on it, so apply refuses to write, supersedes and freezes.
     await approveProposal(PATH);
     const deciding = await tick();
     expect(deciding.apply?.applied).toBe(0);

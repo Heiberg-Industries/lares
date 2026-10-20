@@ -1,14 +1,14 @@
-// T3 (Phase 4): retiring the Docs rows that config's `deskDirs[].exclude`
-// has carved out of the desk scope (desk-scope.ts). T2 stopped the sync engine
+// Retiring the Docs rows that config's `deskDirs[].exclude`
+// has carved out of the desk scope (desk-scope.ts). The carve-out stops the sync engine
 // from CREATING or ITERATING these paths; this is the one-shot pass that removes
-// the rows that already existed BEFORE that carve-out shipped — the 32
-// meeting-transcript pages Phase 3 wrongly swept into the Docs database.
+// the rows that already existed BEFORE the carve-out was configured — for example
+// meeting-transcript pages an earlier sweep put into the Docs database.
 //
 // Vendor-neutral and pure in exactly the sense apply-sync.ts/pull-sync.ts are:
 // every side effect arrives as an injected dep, every row is contained, dry-run
 // makes zero writes. Deliberately has NO filesystem dependency at all — no
 // readVaultFile, no writeVaultFile, no archiveVaultFile in ArchiveExcludedDeps —
-// because the vault files are the real artifact (T3 brief) and the owner, not this
+// because the vault files are the real artifact and the owner, not this
 // command, decides later whether to adopt them. That is a property of the TYPE,
 // not just today's implementation: a future call site literally cannot hand this
 // engine a way to touch the vault.
@@ -25,7 +25,7 @@ export interface ArchiveExcludedOptions {
    * scope this pass would, on the very next line, trash a real desk page instead
    * of merely missing an exclusion — the one mistake this command exists to make
    * impossible by construction. A second, cheap backstop against the same
-   * mistake lives in the function body below (fix round 1, Important 1) — this
+   * mistake lives in the function body below — this
    * type-level one cannot catch a call site that wires a WRONG-but-present
    * predicate, e.g. `() => true`, which still compiles.
    */
@@ -40,15 +40,15 @@ export interface ArchiveExcludedDeps {
    * true` covers both a page that is genuinely gone AND one an earlier call
    * already trashed — see notion-client.ts's trashPage for the live-verified
    * detail — either way this pass treats it as success-already-done, never a
-   * failure (T3 brief: idempotent re-runs must not trip over their own past
+   * failure (idempotent re-runs must not trip over their own past
    * work).
    */
   trashPage: (pageId: string) => Promise<{ alreadyDone: boolean }>;
-  /** Flags the STATE ROW orphaned (store.ts) — never deletes it (T3 brief decision 3). */
+  /** Flags the STATE ROW orphaned (store.ts) — never deletes it. */
   markDocOrphaned: (vaultPath: string, reason: string) => Promise<void>;
 }
 
-/** One row this pass named, with enough to act on it later — "with its page id" (T3 brief). */
+/** One row this pass named, with enough to act on it later — "with its page id". */
 export interface ArchiveExcludedRow {
   vaultPath: string;
   pageId: string;
@@ -61,12 +61,12 @@ export interface ArchiveExcludedIssue extends ArchiveExcludedRow {
 export interface ArchiveExcludedResult {
   /** Whether this run was a dry-run — carried on the result so a caller's own
    *  report can pick the right tense (`trashed` vs `would trash`) without
-   *  re-deriving it or parsing `summary` (fix round 1, Important 2: a caller
+   *  re-deriving it or parsing `summary` (a caller
    *  that forgot this distinction could produce a report byte-identical to a
    *  successful live run). */
   dryRun: boolean;
   /**
-   * Trashed this run — or, in dry-run, WOULD be (the full plan, T3 brief). Dry-run
+   * Trashed this run — or, in dry-run, WOULD be (the full plan). Dry-run
    * makes no trashPage call at all, so it cannot distinguish "fresh trash" from
    * "already done" without making the exact write it must not make; both land
    * in this one bucket in a preview, same as `enabled` in runEnableTwoWay covers
@@ -81,7 +81,7 @@ export interface ArchiveExcludedResult {
    * trashPage). Only ever populated live; dry-run cannot produce this bucket.
    */
   alreadyDone: ArchiveExcludedRow[];
-  /** In scope but not attempted — wrong state (T3 brief: "not silently included"). */
+  /** In scope but not attempted — wrong state ("not silently included"). */
   skipped: ArchiveExcludedIssue[];
   /** The trash call itself failed. The row's state is UNTOUCHED — still 'synced' — so a re-run retries it. */
   failed: ArchiveExcludedIssue[];
@@ -98,19 +98,19 @@ function errorText(err: unknown): string {
 }
 
 /**
- * `notion-sync archive-excluded` (T3): the retiring half of Phase 4 decision 5.
- * T2 carved every `transcripts` sub-path out of the desk scope so the sync
- * engine can no longer create or iterate them; this command removes the 32 Docs
+ * `notion-sync archive-excluded`: the retiring half of the transcripts carve-out.
+ * The carve-out takes every `transcripts` sub-path out of the desk scope so the sync
+ * engine can no longer create or iterate them; this command removes the Docs
  * rows (and their Notion pages) that predate that carve-out.
  *
  * "Archive" means moving the Notion PAGE to trash (`in_trash: true`), never
- * ticking the database's own `Archived` checkbox property — a plan decision
- * (T3 brief), not this engine's to re-litigate: a ticked checkbox leaves the row
+ * ticking the database's own `Archived` checkbox property — a deliberate
+ * choice, not this engine's to re-litigate: a ticked checkbox leaves the row
  * live and returned by every future `queryDocs`, forever in reach of the
  * adoption path. Trash removes it from the database outright while staying
  * recoverable from Notion's own UI for 30 days — reversible AND correct.
  *
- * Selects rows by the SAME exclusion predicate T2 built (`isExcluded`, always
+ * Selects rows by the SAME exclusion predicate the carve-out uses (`isExcluded`, always
  * `makeDeskExclusion(cfg.desks)`), never a hardcoded path literal — see
  * ArchiveExcludedOptions.isExcluded. That makes this command mean "retire
  * whatever the CURRENT config says is out of desk scope", which stays correct
@@ -119,11 +119,10 @@ function errorText(err: unknown): string {
  * `isExcluded` selects every single row the store holds, this throws instead
  * of running — no real config excludes everything (a wiki mirror row alone,
  * carrying no desk dir at all, guarantees `isExcluded` must answer false for
- * SOMETHING), so 100% selected is never legitimate (fix round 1, Important 1;
- * a mutation test — `isExcluded: () => true` — survived the whole suite
- * before this guard existed).
+ * SOMETHING), so 100% selected is never legitimate (a mutation test —
+ * `isExcluded: () => true` — survives the whole suite without this guard).
  *
- * Per-row order is load-bearing (T3 brief): trash the Notion page FIRST, mark
+ * Per-row order is load-bearing: trash the Notion page FIRST, mark
  * the state row orphaned SECOND.
  *   - A failed trash leaves the row exactly as it was — 'synced' — so a re-run
  *     retries it from scratch; markDocOrphaned is never called for that row.
@@ -132,10 +131,9 @@ function errorText(err: unknown): string {
  *     notion-client.ts) is success-already-done, not a failure: it proceeds to
  *     the orphan step exactly like a fresh trash would. This is what makes
  *     re-running this command always safe: whatever state a row was left in,
- *     the next run's trashPage call classifies correctly (fix round 1 — the
- *     ORIGINAL version of this comment claimed a repeat trash always 200s,
- *     which is false; see notion-client.ts's trashPage for the live probe that
- *     caught it) and execution reaches markDocOrphaned again either way.
+ *     the next run's trashPage call classifies correctly (a repeat trash does not
+ *     always 200; see notion-client.ts's trashPage for the live probe) and
+ *     execution reaches markDocOrphaned again either way.
  *   - A failure IN the orphan step itself, after a successful (or
  *     already-done) trash, does NOT strand the row: it is still 'synced' (this
  *     function never wrote it), so it is not skipped on a re-run either — see
@@ -160,10 +158,10 @@ export async function runArchiveExcluded(
     .filter(([vaultPath]) => opts.isExcluded(vaultPath))
     .sort(([a], [b]) => (a < b ? -1 : 1));
 
-  // Defence in depth (fix round 1, Important 1): a mis-wired but
+  // Defence in depth: a mis-wired but
   // type-correct `isExcluded` — `() => true`, or any predicate that happens
   // to match every row the store currently holds — would otherwise trash the
-  // wiki mirror and every desk row alongside the real 32. No config for this
+  // wiki mirror and every desk row alongside the real ones. No config for this
   // service has ever excluded 100% of its own rows (the wiki mirror carries
   // no desk dir at all, so a correct predicate always leaves it, and
   // everything else not positively named by an `exclude` entry, unmatched).
@@ -185,8 +183,7 @@ export async function runArchiveExcluded(
   const orphanFailed: ArchiveExcludedIssue[] = [];
 
   for (const [vaultPath, row] of rows) {
-    // Rows not in 'synced' are skipped and reported, not silently included (T3
-    // brief) — this is also what makes a SECOND run of this command a no-op: the
+    // Rows not in 'synced' are skipped and reported, not silently included — this is also what makes a SECOND run of this command a no-op: the
     // first run's markDocOrphaned left the row 'unmatched', so it lands here
     // instead of being re-trashed.
     if (row.state !== "synced") {
@@ -194,7 +191,7 @@ export async function runArchiveExcluded(
       continue;
     }
 
-    // …and NOTION-OWNED rows are skipped too (Phase 4 fix round 2). Reached only for
+    // …and NOTION-OWNED rows are skipped too. Reached only for
     // a 'synced' row, because the state check above returns first — the ordering is
     // immaterial to what happens (both skip) but not to the reason reported, and the
     // reason is what an operator reads.
@@ -206,7 +203,7 @@ export async function runArchiveExcluded(
     // is the copy, and trashing the page throws away the original.
     //
     // Newly reachable, and by design: `makeCreateScope` deliberately allows creates
-    // into the `transcripts` carve-out (that is where T4's transcripts live), and
+    // into the `transcripts` carve-out (that is where transcripts live), and
     // `upsertDocSynced` inserts them with `target='docs'`. So a created transcript
     // row is BOTH excluded and Notion-owned, and would have landed squarely in this
     // loop's sights on the next `archive-excluded` run.
@@ -244,10 +241,9 @@ export async function runArchiveExcluded(
       // 'synced': this function never writes it on this path), so it is NOT
       // skipped on a re-run either — re-running this command retries this
       // exact row, trashPage now (correctly) reports it alreadyDone, and this
-      // pass proceeds straight to retrying the orphan write. (Fix round 1,
-      // Important 3: the ORIGINAL version of this message told the operator to
-      // "fix the database by hand", which was wrong and directed them to a
-      // riskier manual edit instead of the safe, already-available fix —
+      // pass proceeds straight to retrying the orphan write. (The message
+      // must not tell the operator to "fix the database by hand": that directs them
+      // to a riskier manual edit instead of the safe, already-available fix —
       // re-run the command.) Reported and logged loudly anyway, despite being
       // self-healing: a repeat failure on the SAME row across multiple runs
       // means something is actually wrong (a stuck lock, a permissions
@@ -267,7 +263,7 @@ export async function runArchiveExcluded(
     else trashed.push({ vaultPath, pageId: row.pageId });
   }
 
-  // A leading tag, not a trailing suffix (fix round 1, Important 2): a
+  // A leading tag, not a trailing suffix: a
   // dry-run report is otherwise byte-identical to a successful live run
   // except for a ten-character suffix an operator scanning output can miss —
   // and the runbook's own expected string for a REAL run ("N trashed, ...")

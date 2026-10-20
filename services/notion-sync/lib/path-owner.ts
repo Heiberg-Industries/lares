@@ -1,4 +1,4 @@
-// Who owns a vault path — for the forgotten-file guard alone (W5I-s9).
+// Who owns a vault path — for the forgotten-file guard alone.
 //
 // THE BUG THIS REPLACES: `resolveInstallationOwner` (formerly here in cli.ts) asked
 // "how many rows does `users` hold?" ONCE PER TICK, and answered `null` — guard off,
@@ -7,8 +7,8 @@
 //
 // WHAT THE VAULT ACTUALLY LOOKS LIKE TODAY, checked rather than assumed: ADR-0017
 // rule 1 plans `private/<member>/` and `shared/`, explicitly "one folder per member
-// **once a second member exists**" — that layout is wave-5 track 5C's work and does
-// NOT exist yet. Today a note's person marker is its FRONTMATTER: `scope:` (`private`
+// **once a second member exists**" — that layout is not built yet and does
+// NOT exist. Today a note's person marker is its FRONTMATTER: `scope:` (`private`
 // | `org` | `participants`) and `owner:`, the same two keys
 // `packages/agent-kit/src/notes-store.ts`'s `noteScope` reads. notion-sync cannot
 // import `@lares/agent-kit` (it ships in the sync-jobs image, which has no kit, and
@@ -30,10 +30,10 @@
 //
 // A SHARED PATH IS CHECKED BEFORE RULE 3, not folded into it: `shared/`, `atlas/` and
 // an explicit `scope: org` mark a path as belonging to nobody in particular, even on a
-// single-member installation. Without this, a single-member box would attribute every
+// single-member installation. Without this, a single-member installation would attribute every
 // shared/org note to its sole member — and the moment a second member's own edit
 // touches that same shared note, the guard would read it as "the sole member's own
-// file", which is exactly the kind of misattribution this slice exists to prevent.
+// file", which is exactly the kind of misattribution this module exists to prevent.
 //
 // FAILS OPEN, ALWAYS. `{ owner: null }` means the guard does not fire and the sync
 // proceeds — a sync that stops because ownership is unclear would be a worse product
@@ -107,7 +107,7 @@ export async function ownerOfPath(db: Queryable, vaultPath: string, frontmatter:
     }
 
     // Rule 2 — a leading `private/<member>/` segment naming a `users.id` directly
-    // (ADR-0017 rule 1, arrives with wave-5 track 5C; matches nothing before then).
+    // (ADR-0017 rule 1; matches nothing until that layout exists).
     const segments = vaultPath.split("/");
     if (segments[0] === "private" && segments.length > 1) {
       const { rows } = await db.query<{ id: string }>("SELECT id FROM users WHERE id = $1", [segments[1]]);

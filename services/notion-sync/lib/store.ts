@@ -45,7 +45,7 @@ export async function recordMeetingUnmatched(
 
 /**
  * Records a failed write. State only flips to 'error' on the third consecutive
- * failure (spec §2) so one flaky API call does not surface as an incident.
+ * failure so one flaky API call does not surface as an incident.
  *
  * A first-ever failure inserts 'retrying', not 'synced': the page has never been
  * written successfully, so claiming it is synced until the third strike is a lie
@@ -81,21 +81,21 @@ export interface DocSyncedInput {
   vaultPath: string;
   pageId: string;
   /**
-   * Change-detection hash of the RENDERED outputs we pushed (plan decision 1):
+   * Change-detection hash of the RENDERED outputs we pushed:
    * markdown plus the prop-bearing title and frontmatter — see wikiRenderHash
    * for why the body alone would silently drop prop-only edits forever.
    */
   mdHash: string;
-  /** sha256 of what Notion gave back — the hash-after-write defence (spec §3). */
+  /** sha256 of what Notion gave back — the hash-after-write defence. */
   notionHash: string;
   notionLastEdited: string | null;
   /**
-   * Direction to seed on a NEWLY adopted row, default 'md_to_notion' (Phase 3 plan
-   * decision 4: every file starts Mirror until an explicit `enable-two-way` flips
-   * it). Ignored on conflict — an existing row's direction is changed only by
-   * setDocDirection, never silently reset by a routine push write. Existing
+   * Direction to seed on a NEWLY adopted row, default 'md_to_notion' (every file
+   * starts Mirror until an explicit `enable-two-way` flips it). Ignored on conflict —
+   * an existing row's direction is changed only by setDocDirection, never silently
+   * reset by a routine push write. Existing
    * callers (wiki-sync.ts via cli.ts) omit this and get the same behaviour as
-   * before Phase 3.
+   * before this option existed.
    */
   direction?: string;
 }
@@ -104,10 +104,10 @@ export interface DocSyncedInput {
  * The PUSH pass's view of local state, keyed the way that pass thinks: by
  * vault_path, and scoped to the documents it owns (`target='docs'`).
  *
- * ⚠️ THE TARGET FILTER IS NOT A PARTITION OF THE PATH SPACE. It was, until Phase 4:
+ * ⚠️ THE TARGET FILTER IS NOT A PARTITION OF THE PATH SPACE. It was, until transcripts arrived:
  * meeting rows carried a NULL vault_path, so "docs rows" and "rows with a path"
  * were the same set and this filter kept the two passes disjoint by construction.
- * A transcript's state row is a MEETINGS row WITH a vault_path (T4), so a path this
+ * A transcript's state row is a MEETINGS row WITH a vault_path, so a path this
  * reader cannot see may still be owned — and a caller that reads "no row for this
  * path" as "this path is free to claim" is wrong in the one direction that
  * destroys something. That is exactly the hole the push pass fell into: it adopted
@@ -146,7 +146,7 @@ export interface DeskRow {
   notionHash: string | null;
   /**
    * ISO 8601 UTC text, cast in SQL rather than left as the driver's parsed Date
-   * (contrast getLastRunAt): the pull pass (T5) compares this directly against
+   * (contrast getLastRunAt): the pull pass compares this directly against
    * Notion's own `lastEditedTime` strings from queryDocs — both ISO 8601, both
    * UTC — on `>=` (plan-context: minute-granular, never a `>`). A raw Date object
    * here would silently break that string comparison in production.
@@ -158,7 +158,7 @@ export interface DeskRow {
 
 /**
  * The desk (two-way) passes' view of local state — same 'docs' rows getDocRows
- * reads, but widened with the columns only Phase 3 needs (notion_hash,
+ * reads, but widened with the columns only the desk passes need (notion_hash,
  * notion_last_edited, direction). A second reader over the same rows rather than
  * widening DocRow/getDocRows itself: the push engine's adoption/pin logic wants
  * nothing more than {pageId, mdHash, state}, and giving it columns it never uses
@@ -200,13 +200,13 @@ export type DocTarget = "docs" | "meetings";
 
 /**
  * A row that HAS a vault file, whatever database it came from — the apply pass's
- * view (Phase 4, T4).
+ * view.
  *
  * `getDeskRows` answers "which desk documents does this deployment sync", so it is
  * rightly `target='docs'`. runApplySync asks a different question: "what is the
- * state row for the vault file this decision is about?" — and from Phase 4 on, the
- * answer for a transcript is its MEETINGS row, because a transcript's state row IS
- * the Meetings row it came from (T4 decision 1; `notion_page_id` is globally UNIQUE,
+ * state row for the vault file this decision is about?" — and for a transcript the
+ * answer is its MEETINGS row, because a transcript's state row IS
+ * the Meetings row it came from (`notion_page_id` is globally UNIQUE,
  * so a second row for the same page is not an option). With a docs-only lookup the
  * apply pass would report "row missing" for every transcript proposal, forever.
  *
@@ -236,8 +236,8 @@ export interface LinkedFileInput extends DocSyncedInput {
  *
  * Deliberately a SECOND reader rather than a widening of getDeskRows: the desk
  * passes (push, pull, archive-excluded, enable-two-way) must keep seeing docs rows
- * only — that scoping is what keeps a transcript structurally invisible to them
- * (spec §17.2, one-way permanently). One question, one reader; two different
+ * only — that scoping is what keeps a transcript structurally invisible to them.
+ * One question, one reader; two different
  * questions, two readers.
  */
 export async function getLinkedRows(db: Queryable): Promise<Map<string, LinkedRow>> {
@@ -277,7 +277,7 @@ export async function getLinkedRows(db: Queryable): Promise<Map<string, LinkedRo
 /** A Meetings state row as the transcript pass reads it — keyed by PAGE, not path. */
 export interface MeetingStateRow {
   pageId: string;
-  /** NULL until the transcript's vault file has been created (T4 decision 1). */
+  /** NULL until the transcript's vault file has been created. */
   vaultPath: string | null;
   /**
    * sha256 of the BODY the apply pass last WROTE into this file (`vaultBodyHash`).
@@ -304,7 +304,7 @@ export interface MeetingStateRow {
 }
 
 /**
- * The transcript pass's view of local state (Phase 4, T4): the Meetings rows, keyed
+ * The transcript pass's view of local state: the Meetings rows, keyed
  * the way that pass thinks — by `notion_page_id`, because a Meetings page is the
  * document and its vault path is a consequence, not its identity.
  *
@@ -339,7 +339,7 @@ export async function getMeetingRows(db: Queryable): Promise<Map<string, Meeting
 }
 
 /**
- * A state row as a CREATE PROPOSER reads it (Phase 4, T6): keyed by page, and
+ * A state row as a CREATE PROPOSER reads it: keyed by page, and
  * carrying only what a proposer can act on.
  *
  * Keyed by `notion_page_id` because a create proposer's document has no path yet —
@@ -388,13 +388,13 @@ export async function getPageRows(db: Queryable): Promise<Map<string, PageStateR
 
 /**
  * Makes sure a Notion-born DOCS page has a state row, without asserting anything
- * about it (Phase 4, T6) — the twin of `ensureMeetingRow` below, and it exists for
+ * about it — the twin of `ensureMeetingRow` below, and it exists for
  * the identical reason: **a decision needs somewhere to be recorded.**
  *
  * `recordNotionAccounted` is what remembers a 👎 on a create, it is keyed by page,
  * and it THROWS when it matches no row. A page a human made in Notion has no state
  * row at all until this runs, so without it every rejected create would come back
- * on the next tick, hourly, forever. T6 calls it immediately before its first
+ * on the next tick, hourly, forever. The Notion-born pass calls it immediately before its first
  * create proposal and refuses to propose if it fails.
  *
  * `direction` is `notion_to_md`, matching what the apply pass writes for a created
@@ -418,21 +418,21 @@ export async function ensureDocsRow(db: Queryable, pageId: string): Promise<void
 }
 
 /**
- * Makes sure a Meetings page HAS a state row, without asserting anything about it
- * (Phase 4, T4). Called immediately before a transcript's first create proposal.
+ * Makes sure a Meetings page HAS a state row, without asserting anything about it.
+ * Called immediately before a transcript's first create proposal.
  *
  * It exists because a decision needs somewhere to be recorded. The attendee pass
  * only writes a row for a meeting it FILLED or FLAGGED, so a meeting whose
  * `Attendees` was already set has no row at all — and without one there is nowhere
  * to record that the owner declined a transcript, so the next tick would propose it
- * again, and the next, forever. **This is the contract T6 inherits: a create
+ * again, and the next, forever. **This is the contract the Notion-born pass inherits: a create
  * proposer must ensure a state row exists for its Notion page before it proposes.**
  *
  * ON CONFLICT DO NOTHING, and no `state` in the INSERT: on a meetings row `state`
  * belongs to the attendee pass, so this takes the column default for a brand-new
  * row and never overwrites an existing verdict. `direction` is 'notion_to_md'
  * because that is what a Meetings row has always been (MEETING_DEFAULTS) and what
- * spec §17.2 makes permanent. No watermark either: a row with a NULL
+ * transcripts make permanent. No watermark either: a row with a NULL
  * `notion_last_edited` is one the transcript pass reads unconditionally, which is
  * the honest state for a page nothing has accounted for yet.
  */
@@ -446,12 +446,12 @@ export async function ensureMeetingRow(db: Queryable, pageId: string): Promise<v
 }
 
 /**
- * Records the Notion content a row has ACCOUNTED FOR, keyed by PAGE (Phase 4, T4).
+ * Records the Notion content a row has ACCOUNTED FOR, keyed by PAGE.
  *
  * Two callers, one meaning. The transcript pass uses it when a page's content still
  * hashes to what the row already holds — the "Notion re-saved but nothing changed"
  * path, where only the watermark needs to move. runApplySync uses it when the owner
- * DECLINES a create: nothing is written on either side, but the content he looked at
+ * DECLINES a create: nothing is written on either side, but the content the owner looked at
  * and said no to is now accounted for, and without recording that the next tick
  * proposes the identical file again — hourly, forever.
  *
@@ -462,11 +462,11 @@ export async function ensureMeetingRow(db: Queryable, pageId: string): Promise<v
  * Touches ONLY `notion_hash` — not the watermark, not state, not md_hash, not the
  * error count. `notion_last_edited` on a Meetings row is the ATTENDEE pass's stamp
  * for the ATTENDEE pass's question, and the transcript pass deliberately keeps its
- * hands off it: the content hash is the whole change test (spec §3), so there is
+ * hands off it: the content hash is the whole change test, so there is
  * nothing here a timestamp would add except a second writer of a column that
  * already has a meaning.
  *
- * A page with no row THROWS (review round 1). It used to be a silent no-op on the
+ * A page with no row THROWS. It used to be a silent no-op on the
  * reasoning that inventing a row here would mean guessing a `target` for a page this
  * code knows nothing about — which is still true, and is still why it does not
  * insert one. But silence is the wrong half of that argument: the caller that
@@ -474,7 +474,7 @@ export async function ensureMeetingRow(db: Queryable, pageId: string): Promise<v
  * and an UPDATE matching zero rows let it "succeed", close the proposal, and hand
  * The owner the identical transcript again on the next tick. The proposer's contract
  * ("ensure a state row exists for your page BEFORE proposing") is now ENFORCED here
- * rather than documented — which is what makes it a contract T6 inherits instead of
+ * rather than documented — which is what makes it a contract the Notion-born pass inherits instead of
  * a rule it can quietly not follow.
  *
  * Loud is safe here: the apply pass runs this inside the same tryRecord as the close,
@@ -504,18 +504,18 @@ export async function recordNotionAccounted(
 
 /**
  * Binds a vault file to the Notion page it came from — the bookkeeping half of an
- * approved CREATE, and the hash refresh after a Notion-owned vault write (Phase 4).
+ * approved CREATE, and the hash refresh after a Notion-owned vault write.
  *
  * Keyed on `notion_page_id`, NOT on vault_path, and that is the whole point. A
  * create's identity is the PAGE: the path is what it is asking to bring into
  * existence. Two shapes reach it, and the conflict target is what makes both
  * correct with one statement:
  *
- *  - **A Notion-born page with no state row** (T6). Nothing conflicts, so this
+ *  - **A Notion-born page with no state row**. Nothing conflicts, so this
  *    INSERTs a fresh `docs` row — byte-identical to what upsertDocSynced did for a
  *    create before this function existed, because the create branch's own guards
  *    already prove no row exists for either the path or the page.
- *  - **A transcript** (T4). The Meetings row for that page ALREADY EXISTS, with a
+ *  - **A transcript**. The Meetings row for that page ALREADY EXISTS, with a
  *    NULL vault_path. An upsert keyed on vault_path would have tried to INSERT and
  *    violated `notion_page_id UNIQUE`, leaving a file on disk that no row points at
  *    — the split-brain the create branch's guards exist to prevent. Keyed on the
@@ -562,13 +562,13 @@ export async function linkPageToVaultFile(db: Queryable, doc: LinkedFileInput): 
 }
 
 /**
- * Commits a successful create/patch, per document (spec §2). Conflict target is
+ * Commits a successful create/patch, per document. Conflict target is
  * vault_path — the doc pass's identity — and notion_page_id follows EXCLUDED so
  * a row adopted or re-created under a different page keeps pointing at the page
  * Notion actually holds; a stale page id would send every later patch to a page
  * the engine no longer owns. Like recordMeetingSynced, success clears any
  * orphaned/error bookkeeping: the honest state of a row we just wrote is synced —
- * UNLESS the row is frozen (Phase 3, spec §6): a conflict freeze must survive
+ * UNLESS the row is frozen: a conflict freeze must survive
  * until an explicit `notion-sync resolve`, even though the write that lands right
  * after a freeze (a push that started before the freeze landed) still deserves a
  * fresh md_hash/notion_hash so the console reflects current content on both
@@ -585,8 +585,8 @@ export async function linkPageToVaultFile(db: Queryable, doc: LinkedFileInput): 
  * hash-after-write, the watermark then advances) — the designed price of letting
  * the content hash arbitrate rather than the clock.
  *
- * ⚠️ THE `DO UPDATE ... WHERE target = 'docs'` IS A SECURITY BOUNDARY, not tidiness
- * (Phase 4, review round 1 Critical). This statement's conflict target is
+ * ⚠️ THE `DO UPDATE ... WHERE target = 'docs'` IS A SECURITY BOUNDARY, not tidiness.
+ * This statement's conflict target is
  * `vault_path`, which is UNIQUE across the WHOLE table — so without that predicate
  * a docs-pass write lands on whatever row holds the path, whatever database it came
  * from. A transcript's state row is a MEETINGS row with a vault_path, and the desk
@@ -645,7 +645,7 @@ export async function upsertDocSynced(db: Queryable, doc: DocSyncedInput): Promi
  *
  * Deliberately an UPDATE, not an upsert: notion_page_id is NOT NULL UNIQUE, so a
  * file that errors BEFORE its page is created has nothing valid to insert. The
- * decided resolution (Phase 2 plan, T3) is that pre-create errors are not
+ * decided resolution is that pre-create errors are not
  * persisted at all — they count into the run summary, and the file naturally
  * retries next tick because a missing row means "create". A file that keeps
  * failing therefore surfaces every tick in the summary/journal rather than as a
@@ -672,7 +672,7 @@ export async function recordDocError(
 }
 
 /**
- * Freeze-and-flag for a vanished vault file (spec §7): the Notion row gets
+ * Freeze-and-flag for a vanished vault file: the Notion row gets
  * Archived=true elsewhere; here the state row is flagged 'unmatched' with the
  * reason, never deleted. frozen_at keeps its first value across repeat flags so
  * it records when the file first went missing, mirroring recordMeetingUnmatched.
@@ -694,7 +694,7 @@ export async function markDocOrphaned(
 }
 
 /**
- * The two-way switch (Phase 3 plan decision 4): direction changes ONLY here,
+ * The two-way switch: direction changes ONLY here,
  * through the explicit `enable-two-way` command (or a future demotion command) —
  * never as a side effect of a routine push or pull write, which is why
  * upsertDocSynced deliberately leaves direction out of its UPDATE branch.
@@ -713,12 +713,12 @@ export async function setDocDirection(
 }
 
 /**
- * Freeze-and-flag for a two-way conflict (spec §6): both sides changed since the
+ * Freeze-and-flag for a two-way conflict: both sides changed since the
  * last successful sync, so nothing is written to either side and the row is
  * flagged for a human `notion-sync resolve`. frozen_at keeps its first value
  * across repeat freezes (mirrors markDocOrphaned/recordMeetingUnmatched) so it
  * records when the conflict was first detected, not when it was last re-noticed —
- * the stale-freeze re-ping (7 days, §6) needs that original timestamp.
+ * the stale-freeze re-ping (7 days) needs that original timestamp.
  */
 export async function freezeDoc(
   db: Queryable,
@@ -738,7 +738,7 @@ export async function freezeDoc(
 
 /**
  * Reverses freezeDoc once a human has resolved the conflict (`notion-sync resolve
- * <path> --keep md|notion`, spec §6). The row returns to 'synced' — the same
+ * <path> --keep md|notion`). The row returns to 'synced' — the same
  * ordinary state a fresh sync leaves behind — so the next push/pull tick treats
  * it as any other row rather than as a still-frozen one. The caller is
  * responsible for actually writing the chosen side before calling this; unfreeze
@@ -757,22 +757,21 @@ export async function unfreezeDoc(db: Queryable, vaultPath: string): Promise<voi
 }
 
 /**
- * The pull pass's "nothing changed, but Notion re-saved" path (T5): the GET
+ * The pull pass's "nothing changed, but Notion re-saved" path: the GET
  * /markdown hash already matches stored notion_hash, so there is no content to
  * react to — only the watermark needs to move so the next tick's `lastEditedTime
  * >= notion_last_edited` pre-filter does not re-fetch the same page forever.
  * Touches nothing else: not state, not md_hash, not error_count.
  *
- * Also the tool the apply pass uses to record a REJECTED Notion-owned edit (Phase
- * 4): nothing is written to either side, and only the watermark moves, so pull
+ * Also the tool the apply pass uses to record a REJECTED Notion-owned edit: nothing is written to either side, and only the watermark moves, so pull
  * stops re-proposing content a human already declined.
  *
  * NOT scoped to `target = 'docs'`, unlike its neighbours here, and the difference
  * is load-bearing rather than an oversight. `vault_path` is UNIQUE across the WHOLE
  * table, so the target predicate could never change WHICH row this matched — it
  * could only make the statement match NOTHING when the row happens to be a meetings
- * row. Before Phase 4 no meetings row had a vault_path, so the two forms were
- * indistinguishable; from T4 on, a transcript's state row IS its Meetings row, and
+ * row. Before transcripts, no meetings row had a vault_path, so the two forms were
+ * indistinguishable; now a transcript's state row IS its Meetings row, and
  * the docs-scoped form would silently update zero rows on the reject path — which
  * means the declined edit is re-proposed on the very next tick, and every tick after
  * that. The other UPDATEs here keep their target predicate because they say
@@ -819,7 +818,7 @@ export async function getLastRunAt(db: Queryable): Promise<Date | null> {
 }
 
 /**
- * The proposal queue moved to @lares/agent-box (spec §20.1) so that the console's
+ * The proposal queue moved to @lares/agent-box so that the console's
  * Approve/Reject card and the chief of staff's `notion` hand resolve proposals through ONE
  * implementation rather than two agreeing copies — agent-box is the package both
  * callers already depend on, and it already owns this table's schema (sql/001_baseline.sql).
@@ -831,8 +830,8 @@ export {
   insertProposal, getOpenProposals, setProposalState, getRejectedUnexecuted,
   markProposalReverted, resolveProposal,
   getUnannouncedProposals, markProposalAnnounced, getStaleProposals,
-  // The ONE place a decision becomes a sentence (fix round 3/4) — re-exported so the
-  // CLI states consequences in the same words as the chief of staff, her hand and the console,
+  // The ONE place a decision becomes a sentence — re-exported so the
+  // CLI states consequences in the same words as the chief of staff and the console,
   // rather than becoming a seventh author of them.
   rejectOutcome, rejectConsequence, approveConsequence,
 } from "@lares/agent-box/lib/notion-proposals.js";
@@ -849,11 +848,10 @@ export interface FrozenDocRow {
 }
 
 /**
- * Every frozen doc row, for the stale-freeze re-ping (spec §6: a row frozen more
+ * Every frozen doc row, for the stale-freeze re-ping (a row frozen more
  * than 7 days gets pinged again, so a conflict cannot rot silently). Left as the
  * driver's `Date` — unlike getDeskRows's notion_last_edited there is no external
- * ISO string to compare against, only the engine's own clock (see the T3 report's
- * interface-shape note). Rows with a NULL frozen_at cannot be aged and are
+ * ISO string to compare against, only the engine's own clock. Rows with a NULL frozen_at cannot be aged and are
  * excluded rather than treated as infinitely old.
  */
 export async function getFrozenDocs(db: Queryable): Promise<FrozenDocRow[]> {
@@ -882,7 +880,7 @@ export interface FidelityInput {
 }
 
 /**
- * Records a fidelity-gate check batch (spec §4.5/§18.3: the precondition for
+ * Records a fidelity-gate check batch (the precondition for
  * `enable-two-way`). "Replace" means by vault_path, one row per file — an
  * ON CONFLICT upsert in a single multi-row INSERT, not a table-wide wipe: this
  * function has no transaction to wrap a DELETE+INSERT in (Queryable is a bare

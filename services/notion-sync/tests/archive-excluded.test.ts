@@ -15,10 +15,10 @@ const SYNCED = (pageId: string): DeskRow => ({
   state: "synced", direction: "md_to_notion",
 });
 
-// Mirrors the T3 brief's verified ground truth: `exclude: ["transcripts"]` under
+// Mirrors the verified ground truth: `exclude: ["transcripts"]` under
 // a couple of desk dirs, one with a nested match two deep and one whose vault
-// paths carry spaces, "&", an em dash and non-ASCII — the exact shapes the brief
-// warns are real on the box. `example-service` has NO exclude at all, so its rows must
+// paths carry spaces, "&", an em dash and non-ASCII — the exact shapes that are real
+// on a real vault. `example-service` has NO exclude at all, so its rows must
 // never be in scope regardless of what they're named.
 const DESKS: DesksConfig = {
   deskDirs: [
@@ -62,14 +62,14 @@ function makeDeps(cfg: {
   return { impl, trashCalls, orphanCalls, callOrder };
 }
 
-describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config carved out of desk scope", () => {
+describe("runArchiveExcluded — retiring the Docs rows config carved out of desk scope", () => {
   it("dry-run: zero trash calls, zero store writes, reports every in-scope row — nested and unicode paths included", async () => {
     const rows: Array<[string, DeskRow]> = [
       ["acme/transcripts/2026-08-01-call.md", SYNCED("p1")],
-      // Nested two deep — T2's exclusion is anchored at the desk root and covers
+      // Nested two deep — the exclusion is anchored at the desk root and covers
       // the whole subtree; this pins that the archive command agrees with it.
       ["acme/transcripts/analysis/analysis.md", SYNCED("p2")],
-      // Spaces, "&", an em dash, non-ASCII — the brief's own warning about tidy slugs.
+      // Spaces, "&", an em dash, non-ASCII — shapes a tidy slug would hide.
       ["Example Company/transcripts/2026-08-02 — Ola & Åshild.md", SYNCED("p3")],
       // NOT excluded — same desk dir, a different sub-path. Must never appear
       // anywhere in the result: this is what the negative test below pins hard.
@@ -86,13 +86,13 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
       "acme/transcripts/2026-08-01-call.md",
       "acme/transcripts/analysis/analysis.md",
     ]);
-    // "with its page id" (T3 brief) — the plan must carry enough to act on later.
+    // "with its page id" — the plan must carry enough to act on later.
     expect(result.trashed.find((r) => r.vaultPath === "acme/transcripts/analysis/analysis.md")?.pageId)
       .toBe("p2");
     expect(result.alreadyDone).toEqual([]);
     expect(result.failed).toEqual([]);
     expect(result.orphanFailed).toEqual([]);
-    // Fix round 1, Important 2: unmistakable preview wording — a leading
+    // Unmistakable preview wording — a leading
     // DRY-RUN tag, and "would be trashed" rather than past-tense "trashed" —
     // so this string can never be confused with a real run's summary.
     expect(result.summary).toMatch(/^DRY-RUN \(nothing written\): /);
@@ -118,14 +118,14 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
     expect(result.dryRun).toBe(false);
     expect(result.trashed.map((r) => r.vaultPath).sort())
       .toEqual(["acme/transcripts/a.md", "acme/transcripts/b.md"]);
-    // Per-row order is load-bearing (T3 brief): trash the page FIRST, orphan the
+    // Per-row order is load-bearing: trash the page FIRST, orphan the
     // row SECOND — never interleaved across rows in a way that would let an
     // orphan land ahead of ITS OWN trash.
     expect(d.callOrder).toEqual([
       "trash:p1", "orphan:acme/transcripts/a.md",
       "trash:p2", "orphan:acme/transcripts/b.md",
     ]);
-    // A live summary must never read like a preview (Important 2's converse).
+    // A live summary must never read like a preview.
     expect(result.summary).not.toContain("DRY-RUN");
     expect(result.summary).toContain("2 trashed");
   });
@@ -154,10 +154,10 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
     expect(everyReportedPath).not.toContain("example-service/anything.md");
   });
 
-  it("refuses to run when isExcluded matches EVERY row — defence in depth against a mis-wired predicate (fix round 1)", async () => {
-    // The mutation the reviewer's testing surfaced: `isExcluded: () => true`
+  it("refuses to run when isExcluded matches EVERY row — defence in depth against a mis-wired predicate", async () => {
+    // The mutation `isExcluded: () => true`
     // compiles, wires cleanly, and would otherwise trash the wiki mirror and
-    // every desk row alongside the real 32. No real config excludes 100% of
+    // every desk row alongside the real ones. No real config excludes 100% of
     // the store, so this is refused outright rather than executed.
     const rows: Array<[string, DeskRow]> = [
       ["acme/transcripts/a.md", SYNCED("p1")],
@@ -171,20 +171,20 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
     expect(d.orphanCalls).toEqual([]);
   });
 
-  // THE destructive one (fix round 3). This command retires the Notion pages of rows
+  // THE destructive one. This command retires the Notion pages of rows
   // config has carved out of the desk scope — sound when the vault authored the page,
   // and the exact opposite when NOTION did: the page IS the document and trashing it
   // throws away the original, not a projection.
   //
   // Reachable by construction, not by accident: makeCreateScope deliberately allows
-  // creates into the `transcripts` carve-out (that is where T4's transcripts live) and
+  // creates into the `transcripts` carve-out (that is where transcripts live) and
   // upsertDocSynced inserts them as target='docs' with direction 'notion_to_md'. So a
   // created transcript row is BOTH excluded and Notion-owned, and lands squarely in
   // this loop's sights on the next run.
   it("NEVER trashes a Notion-owned page, even when config has excluded it", async () => {
     const notionOwned = (pageId: string): DeskRow => ({ ...SYNCED(pageId), direction: "notion_to_md" });
     const rows: Array<[string, DeskRow]> = [
-      // A transcript created by T3b's create path: excluded AND Notion-owned.
+      // A transcript created by the apply engine's create path: excluded AND Notion-owned.
       ["acme/transcripts/2026-08-05-standup.md", notionOwned("p-transcript")],
       // An ordinary excluded mirror row — the real target of this command.
       ["acme/transcripts/old-mirror.md", SYNCED("p-mirror")],
@@ -275,7 +275,7 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
     // Covers BOTH real shapes trashPage's alreadyDone can mean (genuinely gone,
     // 404; or already trashed by an earlier call, 400) — this engine treats
     // them identically, which is the whole point of the adapter-level
-    // classification (see notion-client.ts's trashPage, fix round 1).
+    // classification (see notion-client.ts's trashPage).
     const rows: Array<[string, DeskRow]> = [
       ["acme/transcripts/gone.md", SYNCED("p-gone")],
       ["acme/note.md", SYNCED("p-control")], // not excluded — a real row set always has one
@@ -311,7 +311,7 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
       expect(result.trashed.map((r) => r.vaultPath)).toEqual(["acme/transcripts/b.md"]);
       const logged = spy.mock.calls.flat().map(String).join("\n");
       expect(logged).toContain("could not be marked orphaned");
-      // Fix round 1, Important 3: the message must point at the safe, correct
+      // The message must point at the safe, correct
       // fix (re-run) and must NOT tell the operator to hand-edit the database
       // — the row is still 'synced', so a re-run genuinely retries it.
       expect(logged).toContain("re-running this command retries it");
@@ -360,7 +360,7 @@ describe("runArchiveExcluded — T3 (Phase 4): retiring the Docs rows config car
     // tests/neutrality.test.ts already uses for its own "this file must never
     // reference X" invariants.
     //
-    // Scope note (fix round 1, Minor 2): this checks lib/archive-excluded.ts
+    // Scope note: this checks lib/archive-excluded.ts
     // ONLY. `syncArchiveExcludedOnce` (lib/cli.ts) is a different file that DOES
     // import writeFileSync and the vault writer — for OTHER commands' sake —
     // so scanning cli.ts this way would be meaningless. The wrapper's own lack

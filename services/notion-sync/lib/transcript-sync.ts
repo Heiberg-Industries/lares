@@ -1,7 +1,7 @@
-// T4 (Phase 4): the transcript pull — the meeting note the owner actually
-// reads in Notion, checked todos and all, becoming the vault copy his agents can
-// search. One-way Notion→vault, permanently (spec §17.2), and 👍-gated like every
-// other Notion→vault write (§18.4/§20): this engine proposes, it never writes.
+// The transcript pull — the meeting note the owner actually
+// reads in Notion, checked todos and all, becoming the vault copy the owner's agents can
+// search. One-way Notion→vault, permanently, and 👍-gated like every
+// other Notion→vault write: this engine proposes, it never writes.
 //
 // Vendor-neutral and pure in exactly the sense pull-sync.ts and archive-excluded.ts
 // are: every side effect arrives as an injected dep, every meeting is contained,
@@ -17,9 +17,9 @@
 //      constraint, and the file it just wrote is then an orphan the push pass adopts
 //      into a SECOND Notion page. `vault_path` on that Meetings row is exactly what
 //      the schema reserved for this ("NULL until a vault file is linked", sql/001_baseline.sql),
-//      and it is what plan decision 1 means by "stored on the state row".
+//      and it is what "stored on the state row" means.
 //
-//   2. **The path is fixed at first sync and never moves** (decision 1). Once
+//   2. **The path is fixed at first sync and never moves**. Once
 //      `vault_path` is set it is authoritative forever: a later rename in Notion
 //      changes the TITLE INSIDE the document and never the path. Deriving the path
 //      afresh every tick would fork a retitled meeting into a second file and orphan
@@ -96,7 +96,7 @@ export interface TranscriptSyncOptions {
    * misconfigurations reach here, and the second is destructive:
    *
    *  - the mapped `vaultFolder` is not a configured desk dir at all. `makeCreateScope`
-   *    would then refuse the create at apply time (T3b), so every proposal this pass
+   *    would then refuse the create at apply time, so every proposal this pass
    *    made would be superseded after the owner had already tapped Approve. Refusing
    *    here turns that into one reported line per meeting instead.
    *  - the mapped folder IS a desk dir but does NOT exclude `transcripts.dir`. Then
@@ -106,7 +106,7 @@ export interface TranscriptSyncOptions {
    *    is UNIQUE across targets) REPOINTING the Meetings row at that new page. The
    *    transcript's own source would be lost from the row that tracks it.
    *
-   * So this is not belt-and-braces over T2's config carve-out — it is the check that
+   * So this is not belt-and-braces over the config carve-out — it is the check that
    * makes the carve-out's ABSENCE loud instead of destructive. Built from the same
    * `makeDeskExclusion` every other boundary uses, never a second notion of scope.
    */
@@ -131,7 +131,7 @@ export interface TranscriptSyncDeps {
    * Rejected proposals whose decline the apply pass has not executed yet. Needed
    * for the same reason pull needs it: a rejection is invisible in
    * `getOpenProposals`, and apply runs LATER in this same tick, so without this the
-   * pass would hand a human the transcript he just rejected straight back.
+   * pass would hand a human the transcript they just rejected straight back.
    */
   getRejectedUnexecuted: () => Promise<ProposalRow[]>;
   getPageMarkdown: (pageId: string) => Promise<string>;
@@ -155,12 +155,12 @@ export interface TranscriptSyncDeps {
    * row already tracks. A proposer that asks a NARROWER question than the guard it
    * feeds can raise a proposal that can never land: proposed, approved, refused,
    * and proposed again on the very next tick, forever, with one Telegram button
-   * message per round. T6 already wrote that down for the other create proposer
-   * (notion-born-sync.ts, review round 1, Important B); this is the same defect.
+   * message per round. The other create proposer (notion-born-sync.ts) already guards against
+   * this; it is the same defect.
    *
    * `getMeetingRows` cannot answer it — it is `WHERE target='meetings'`, so a DOCS
    * row sitting on the derived path is invisible to it. That row is not exotic:
-   * Phase 3's sweep left 32 of them on `<project>/transcripts/` paths, T3 orphans
+   * An earlier sweep can leave such rows on `<project>/transcripts/` paths, `archive-excluded` orphans
    * the row and keeps it, and the file under it disappears the moment the owner acts
    * on this pass's own "adoption is a decision for a human" skip.
    */
@@ -199,7 +199,7 @@ export interface TranscriptSyncResult {
   awaitingDecline: number;
   errored: number;
   /**
-   * Proposals carrying a Notion-signed media URL that will expire (spec §4.4). A
+   * Proposals carrying a Notion-signed media URL that will expire. A
    * one-way import creates the file anyway — the alternative is no meeting note at
    * all — but the file is FLAGGED rather than quietly shipped with a link that dies
    * within the hour.
@@ -233,7 +233,7 @@ const MAX_SLUG_BYTES = MAX_SEGMENT_BYTES - 20;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
- * Notion-signed media URLs, which expire in roughly an hour (spec §4.4). A local
+ * Notion-signed media URLs, which expire in roughly an hour. A local
  * copy of the pattern translate-pull.ts carries, deliberately not shared: that one
  * is a `g` regex whose `lastIndex` is reset by its own caller, and reaching across
  * for it would couple two rails that mean different things — there, a match REFUSES
@@ -361,7 +361,7 @@ export interface TranscriptFileInput {
  * leading quote, any of which turns a bare scalar into either a different value or
  * a parse error in every tool that reads the vault's frontmatter.
  *
- * Exported for T6 (Phase 4), which composes frontmatter from Notion properties that
+ * Exported for the Notion-born pass, which composes frontmatter from Notion properties that
  * are just as free-form. Both create proposers write frontmatter into files a human
  * and every vault tool then read, and two quoting rules that agree today are two
  * that can disagree tomorrow.
@@ -372,7 +372,7 @@ export function yamlScalar(value: string): string {
 
 /**
  * The WHOLE file a create proposal carries — frontmatter included, because there is
- * no file on disk to lift a frontmatter block from (T3b) — and with NO trailing
+ * no file on disk to lift a frontmatter block from — and with NO trailing
  * newline, because the apply engine adds exactly one.
  *
  * The frontmatter deliberately carries no `title`. The title is the one field a
@@ -481,7 +481,7 @@ export async function runTranscriptSync(
 
   /**
    * Projects whose transcripts land nowhere, for meetings OLDER than
-   * `UNMAPPED_PAGE_WARNING_DAYS` (, decision 3; restored, scoped
+   * `UNMAPPED_PAGE_WARNING_DAYS` (restored as a scoped
    * follow-up). A recent unmapped meeting gets its own named ping, below, because
    * that is one the owner can still open and fix this fortnight. A meeting this old is
    * backlog — naming each one individually would just be dozens of threads for
@@ -495,7 +495,7 @@ export async function runTranscriptSync(
     const state = rows.get(row.pageId);
 
     // ── Where does it go? ────────────────────────────────────────────────────
-    // A stored vault_path is AUTHORITATIVE and is not re-derived (decision 1).
+    // A stored vault_path is AUTHORITATIVE and is not re-derived (see the header).
     // Everything below the `else` is first-sync-only, which is what makes a
     // retitle change the document's heading and never its filename.
     let vaultPath: string;
@@ -508,11 +508,11 @@ export async function runTranscriptSync(
           ? "the meeting has no Project, so no vault folder can be chosen for it"
           : `the Project "${row.project}" is not in transcripts.projects — add the mapping, or leave it out on purpose`);
         if (isRecentMeeting(row.startsAt, now)) {
-          // One signal per PAGE, not per tick (decision 3;), but only
+          // One signal per PAGE, not per tick, but only
           // for a meeting still within UNMAPPED_PAGE_WARNING_DAYS — see that constant
           // for why the backlog does not also get a thread each. Naming the Project
-          // only told the owner that a whole category was broken and left him to guess
-          // which meeting to fix; naming the TITLE tells him exactly which Meetings
+          // only told the owner that a whole category was broken and left the owner to guess
+          // which meeting to fix; naming the TITLE tells the owner exactly which Meetings
           // row to open. The message is built ONLY from this row's own fields, so it
           // is byte-identical every tick this row stays unmapped — the spine dedupes
           // on that text (signal-notify.ts: "a repeat threads under the first Slack
@@ -559,7 +559,7 @@ export async function runTranscriptSync(
     }
 
     // …and the SCOPE rule the shape rules cannot answer, asked for EVERY row rather
-    // than only for a freshly derived one (review round 1). A transcript that synced
+    // than only for a freshly derived one. A transcript that synced
     // fine last week is exactly the case that matters: the carve-out is a line in a
     // config file, and an operator can remove it from under a document that already
     // has its `vault_path`. Checking only on first sync left this branch guarding
@@ -597,15 +597,15 @@ export async function runTranscriptSync(
     // true on every subsequent tick by construction. The desk pull carries the same
     // `>=` and re-reads every synced row every tick for exactly this reason.
     //
-    // So the content hash is the whole change test, which is what spec §3 says it
+    // So the content hash is the whole change test, which is what it
     // must be. The cost is one `GET /markdown` per mapped meeting per tick — and
     // every skip below happens BEFORE the read, so the rows that will never sync
     // (unmapped Project, no Date, path already occupied) cost nothing at all.
 
     // Nothing has been brought into the vault yet AND something is already sitting
-    // at the path this meeting would claim. That is the 32 hand-made transcripts
-    // this vault already holds, and adopting one on a derived-path match is exactly
-    // what decision 2 forbids ("REPORTED, never auto-adopted"): the file may be
+    // at the path this meeting would claim. That is a hand-made transcript
+    // the vault may already hold, and adopting one on a derived-path match is exactly
+    // what the header's item 2 forbids ("REPORTED, never auto-adopted"): the file may be
     // hand-curated, and Notion's version would silently replace it. Asked BEFORE the
     // read so a folder full of them costs no API calls at all.
     if (state?.vaultPath == null && await deps.vaultFileExists(vaultPath)) {
@@ -620,8 +620,8 @@ export async function runTranscriptSync(
     // again on the very next tick — forever, one Telegram button message per round.
     //
     // AFTER the disk check on purpose. When both are true the file is the thing
-    // The owner can see, and "a vault file already exists at that path" is the sentence
-    // that tells him what to do about it; this one is for the case only the database
+    // the owner can see, and "a vault file already exists at that path" is the sentence
+    // that tells the owner what to do about it; this one is for the case only the database
     // knows about, which is where a reader would otherwise have nothing to go on.
     //
     // No page comparison: reaching here means this meeting's own row carries no
@@ -678,7 +678,7 @@ export async function runTranscriptSync(
 
     // A human already said no to exactly this content and the apply pass has not
     // recorded the decline yet — it runs later in this same tick. Re-proposing here
-    // would hand him back the transcript he just rejected. Nothing at all happens
+    // would hand the owner back the transcript they just rejected. Nothing at all happens
     // for this row: no proposal, no watermark move, so the state stays honest until
     // the decline lands.
     if ((rejectedByPage.get(row.pageId) ?? []).some((p) => p.notionHash === notionHash)) {
@@ -686,7 +686,7 @@ export async function runTranscriptSync(
       continue;
     }
 
-    // Never stack (§18.4): an open proposal already carrying exactly this content
+    // Never stack: an open proposal already carrying exactly this content
     // IS this content's proposal. Left as it stands — no supersede, no duplicate, no
     // watermark move — which is what makes the pass tick-stable rather than a
     // re-propose loop.
@@ -721,7 +721,7 @@ export async function runTranscriptSync(
 
     if (isCreate) {
       // The proposal owns every byte, frontmatter included, and carries no trailing
-      // newline (T3b's contract — the engine adds exactly one).
+      // newline (the apply engine's contract — it adds exactly one).
       proposedBody = transcriptFile({
         title: row.title,
         markdown,
@@ -751,7 +751,7 @@ export async function runTranscriptSync(
         continue;
       }
 
-      // Freeze-and-flag rather than merge (§6), in this pass's own terms: has a
+      // Freeze-and-flag rather than merge, in this pass's own terms: has a
       // human edited the vault copy since this service last wrote it?
       //
       // Compared against `md_hash`, which for a meetings row is the sha256 of the
@@ -768,7 +768,7 @@ export async function runTranscriptSync(
       //     REJECTED update deliberately advances it to the content that was
       //     DECLINED — that is what stops pull re-asking — while the file on disk
       //     still holds the previous version. So after one 👎, every later Notion
-      //     edit was misdiagnosed as a hand edit (review round 2).
+      //     edit was misdiagnosed as a hand edit.
       //
       // `md_hash` is the only one that answers the question actually being asked. It
       // needs no re-render, so it can never be empty, and it moves only when the file
@@ -790,7 +790,7 @@ export async function runTranscriptSync(
       // a ticket is opened and has never had anything to do with what Slack shows.
       if (state?.mdHash != null && state.mdHash !== "" && vaultBodyHash(source) !== state.mdHash) {
         skip(row, "the vault copy has been edited by hand — Notion's newer version is not being proposed", vaultPath);
-        // NOT "or move the file" (review round 2): the state row still points at
+        // NOT "or move the file": the state row still points at
         // this path, so a moved file makes every later tick fail to read it and
         // report an error instead — that retires the transcript rather than
         // recovering it. A byte-exact restore is the only thing that works, and the
@@ -839,8 +839,8 @@ export async function runTranscriptSync(
     }
 
     if (opts.dryRun) {
-      // Claimed in the dry-run branch too (review round 1): the runbook sends an
-      // operator here precisely because it prints every skip with its reason, and
+      // Claimed in the dry-run branch too: an
+      // operator comes here precisely because it prints every skip with its reason, and
       // the in-tick claim is the ONLY way the "two meetings slug to the same
       // filename" skip can be discovered. Without it a preview reported 2 proposed /
       // 0 skipped for a tick that would really do 1 and 1.
@@ -865,7 +865,7 @@ export async function runTranscriptSync(
     // has no row at all, and a rejected create would have nowhere to be remembered
     // and would be proposed again on the next tick, and the next.
     //
-    // NOT contained by tryRecord (review round 1): a contained failure here would
+    // NOT contained by tryRecord: a contained failure here would
     // let the proposal be raised anyway, against a page with no row — and
     // `recordNotionAccounted` was an UPDATE, so the decline would match zero rows,
     // "succeed", close the proposal, and re-ask on the next tick. The whole contract
@@ -898,15 +898,15 @@ export async function runTranscriptSync(
         diffPreview: diffPreview(before, proposedBody),
         kind: isCreate ? "create" : "update",
       });
-      // Claimed only once the proposal REALLY exists (review round 2). Set any
+      // Claimed only once the proposal REALLY exists. Set any
       // earlier — before the dry-run return, or before the ensure below it — and a
       // second meeting slugging to the same path is told "another meeting already
       // has an open proposal for that exact path" when none was raised.
       claimedBy.set(vaultPath, row.pageId);
     });
 
-    // NO PING (spec §20.4): the chief of staff polls the proposals table and opens the DM
-    // with the buttons. Pinging here as well would tell him the same thing twice on
+    // NO PING: the chief of staff polls the proposals table and opens the DM
+    // with the buttons. Pinging here as well would tell the owner the same thing twice on
     // two surfaces, and a proposal nobody answers is already covered better, by the
     // stale-proposal escalation the pull pass runs.
     console.log(
@@ -915,7 +915,7 @@ export async function runTranscriptSync(
     );
   }
 
-  // One ping per tick, after the loop (, decision 3; restored, scoped to the
+  // One ping per tick, after the loop (restored, scoped to the
   // backlog follow-up). Everything gathered here is OLDER than
   // UNMAPPED_PAGE_WARNING_DAYS — a recent unmapped meeting already got its own named
   // ping, above. The fact worth telling a human about a fortnight-old-or-older gap is

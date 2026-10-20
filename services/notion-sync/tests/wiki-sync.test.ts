@@ -55,7 +55,7 @@ function makeDeps(cfg: {
       propUpdates.push({ pageId, props });
     },
     // Deliberately NOT what was pushed: proves notionHash hashes the read-back,
-    // never the outbound body (spec §3 — Notion normalises what it stores).
+    // never the outbound body (Notion normalises what it stores).
     getPageMarkdown: async (pageId) => {
       calls.push(`read:${pageId}`);
       return `notion:${pageId}`;
@@ -485,7 +485,7 @@ describe("runWikiSync — core flow", () => {
       const res = await runWikiSync(OPTS, d.impl);
 
       expect(d.errors[0]).toMatchObject({ vaultPath: "wiki/broken.md" });
-      // A listed-but-unreadable file is ambiguous (spec §7) — it must not archive.
+      // A listed-but-unreadable file is ambiguous — it must not archive.
       expect(d.orphaned).toEqual([]);
       expect(d.created).toHaveLength(1);
       expect(res).toMatchObject({ created: 1, errored: 1, archived: 0 });
@@ -558,7 +558,7 @@ describe("runWikiSync — wikilink resolution and convergence", () => {
     expect(d2.patchedPages[0].markdown).toContain('<mention-page url="');
     expect(d2.patchedPages[0].markdown).toContain(">Bee</mention-page>");
 
-    // Pass 3: steady state — the standing idempotence regression (spec §9).
+    // Pass 3: steady state — the standing idempotence regression.
     const d3 = makeDeps({ files, sources, rows: rowsAfter([...d1.upserts.slice(1), ...d2.upserts]) });
     const r3 = await runWikiSync(OPTS, d3.impl);
     expect(d3.calls).toEqual([]);
@@ -566,7 +566,7 @@ describe("runWikiSync — wikilink resolution and convergence", () => {
   });
 });
 
-describe("runWikiSync — frozen rows are written to on neither side (Phase 3, spec §6)", () => {
+describe("runWikiSync — frozen rows are written to on neither side", () => {
   it("skips a frozen row wholesale: no patch, no props, no error — it is a human's to resolve", async () => {
     // The row's stored hash deliberately does NOT match the file: this is the
     // shape a conflict freeze has by definition (pull-sync.ts proposeDesk), and
@@ -601,8 +601,8 @@ describe("runWikiSync — frozen rows are written to on neither side (Phase 3, s
   });
 });
 
-describe("runWikiSync — skipVaultPaths: push never races an open decision (spec §18.4)", () => {
-  // The generalisation of the frozen skip (final review, round 3). A vault edit
+describe("runWikiSync — skipVaultPaths: push never races an open decision", () => {
+  // The generalisation of the frozen skip. A vault edit
   // made while a proposal waits would otherwise be pushed straight over the exact
   // Notion content that proposal references — this engine is proposal-blind, and
   // pull cannot catch it because `resolve` leaves the row's hashes true.
@@ -654,7 +654,7 @@ describe("runWikiSync — skipVaultPaths: push never races an open decision (spe
   });
 });
 
-describe("runWikiSync — readOnlyVaultPaths: Notion owns the document (Phase 4)", () => {
+describe("runWikiSync — readOnlyVaultPaths: Notion owns the document", () => {
   // The load-bearing half of `notion_to_md` on the push side. This engine is
   // direction-blind — it re-patches anything whose render no longer matches the
   // stored hash — so without the hold-back a local edit to a Notion-authored file
@@ -680,7 +680,7 @@ describe("runWikiSync — readOnlyVaultPaths: Notion owns the document (Phase 4)
     expect(res.summary).toContain("1 notion-owned");
   });
 
-  // THE ADOPTION half (review round 1). The hold-back was only ever tested for a
+  // THE ADOPTION half. The hold-back was only ever tested for a
   // path that HAS a row; the destructive case is the opposite one — a file this
   // engine can see no row for, which it therefore adopts by creating a page. A
   // transcript is exactly that shape: its state row is `target='meetings'`, which
@@ -701,7 +701,7 @@ describe("runWikiSync — readOnlyVaultPaths: Notion owns the document (Phase 4)
     expect(d.upserts).toEqual([]);      // and no row was written for it
   });
 
-  // The SOURCE-side lint, wired (review round 1). Rendered for push, a transcript's
+  // The SOURCE-side lint, wired. Rendered for push, a transcript's
   // block escapes to an inert `\<transcript>` and passes assertPushSafe — so the only
   // check that can answer "may this FILE be pushed at all" reads the raw bytes. This
   // is the last rail: the hold-back above and config's carve-out both stop the file
@@ -756,7 +756,7 @@ describe("runWikiSync — readOnlyVaultPaths: Notion owns the document (Phase 4)
   });
 });
 
-describe("runWikiSync — the Sync stamp (Phase 3, spec §18.1)", () => {
+describe("runWikiSync — the Sync stamp", () => {
   const syncProp = (vaultPath: string): string =>
     vaultPath === "wiki/alpha.md" ? "✍️ Desk" : "🔒 Mirror";
 
@@ -780,7 +780,7 @@ describe("runWikiSync — the Sync stamp (Phase 3, spec §18.1)", () => {
       .toEqual([["p1", "✍️ Desk"], ["p2", "🔒 Mirror"]]);
   });
 
-  it("omits the property entirely when no stamp function is injected (Phase 2 behaviour)", async () => {
+  it("omits the property entirely when no stamp function is injected", async () => {
     const d = makeDeps({ files: ["alpha.md"], sources: { "alpha.md": ALPHA_SRC } });
     await runWikiSync(OPTS, d.impl);
     expect(d.created[0].props.sync).toBeUndefined();
@@ -885,7 +885,7 @@ describe("runWikiSync — archiving and guards", () => {
     expect(res).toMatchObject({ scanned: 0, created: 0, archived: 0 });
   });
 
-  // Phase 3 runs this engine once per desk folder over ONE shared docs table
+  // The desk push runs this engine once per desk folder over ONE shared docs table
   // (cli.ts syncDeskPushOnce), so both recovery guards have to reason about the
   // dir they were given, never about the table as a whole.
   it("adopts for a cold dir even when ANOTHER dir already has rows — no duplicate pages", async () => {
@@ -929,7 +929,7 @@ describe("runWikiSync — archiving and guards", () => {
   });
 });
 
-describe("runWikiSync — isExcluded: rows this dir no longer owns (Phase 4)", () => {
+describe("runWikiSync — isExcluded: rows this dir no longer owns", () => {
   const EXCLUDED = "wiki/transcripts/2026-08-01-foo.md";
   const isExcluded = makeDeskExclusion({
     deskDirs: [{ dir: "wiki", project: "Portfolio", exclude: ["transcripts"] }],

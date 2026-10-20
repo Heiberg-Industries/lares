@@ -1,8 +1,8 @@
-// Vendor-neutral orchestration of the wiki one-way md→Notion pass (Phase 2 plan,
-// T4): every side effect arrives as an injected dep, mirroring run.ts. The pass is
+// Vendor-neutral orchestration of the wiki one-way md→Notion pass: every side
+// effect arrives as an injected dep, mirroring run.ts. The pass is
 // idempotent-by-construction — change detection is sha256 of the RENDERED outputs
-// (plan decision 1; body plus the prop-bearing fields, see wikiRenderHash), the
-// resolver is a pure function of the store snapshot (plan decision 2), so the
+// (body plus the prop-bearing fields, see wikiRenderHash), the
+// resolver is a pure function of the store snapshot, so the
 // first live pass IS the backfill and steady state is a no-op.
 import { createHash } from "node:crypto";
 import {
@@ -25,7 +25,7 @@ export interface WikiDocProps {
   frontmatter: string;
   archived: boolean;
   /**
-   * The desk/mirror stamp (Phase 3, spec §18.1) — the `Sync` select property,
+   * The desk/mirror stamp — the `Sync` select property,
    * added to the Docs DB by hand at deploy. Optional and opaque here: the engine
    * never decides its value, it only carries whatever `opts.syncProp` returns for
    * the row, so no direction vocabulary leaks into this pure pass.
@@ -69,12 +69,12 @@ export interface WikiSyncOptions {
    */
   limit?: number;
   /**
-   * The `Sync` stamp for a given vault path (Phase 3, spec §18.1), sent on every
+   * The `Sync` stamp for a given vault path, sent on every
    * create and re-asserted on every property refresh so a patched row can never
    * lose it. Injected because the value is a function of the row's CURRENT
    * direction, and direction is store state this pass deliberately does not read
    * (it takes {pageId, mdHash, state} and nothing more — see store.ts getDocRows).
-   * Absent ⇒ the property is omitted entirely, which is Phase 2's behaviour and
+   * Absent ⇒ the property is omitted entirely, which is the original wiki-pass behaviour and
    * leaves whatever Notion already holds untouched (a partial PATCH never clears
    * an unsent property).
    */
@@ -85,7 +85,7 @@ export interface WikiSyncOptions {
    * open proposals once per pass and hands them in; absent ⇒ nothing is held back,
    * which is the wiki mirror's case (a mirror row never carries a proposal).
    *
-   * The generalisation of the frozen skip above it (final review, round 3): this
+   * The generalisation of the frozen skip above it: this
    * engine is direction-blind and proposal-blind — it re-patches anything whose
    * render no longer matches the stored hash — so a vault edit made while a
    * proposal waits would push the vault's newer text over the exact Notion
@@ -96,7 +96,7 @@ export interface WikiSyncOptions {
    */
   skipVaultPaths?: ReadonlySet<string>;
   /**
-   * Vault paths NOTION owns — rows whose direction is `notion_to_md` (Phase 4).
+   * Vault paths NOTION owns — rows whose direction is `notion_to_md`.
    * This pass must not write Notion for any of them, ever: not a patch, not a
    * create, not the Archived=true sweep at the end. The vault file is a projection
    * of the Notion page, so pushing it back is the projection overwriting its own
@@ -120,8 +120,8 @@ export interface WikiSyncOptions {
    */
   readOnlyVaultPaths?: ReadonlySet<string>;
   /**
-   * Vault paths inside this dir that config has carved OUT of it (Phase 4,
-   * `deskDirs[].exclude` — pass `makeDeskExclusion(cfg.desks)`). Absent ⇒ nothing
+   * Vault paths inside this dir that config has carved OUT of it
+   * (`deskDirs[].exclude` — pass `makeDeskExclusion(cfg.desks)`). Absent ⇒ nothing
    * is carved out, which is the wiki mirror's case and every caller's behaviour
    * before this option existed.
    *
@@ -147,7 +147,7 @@ export interface WikiSyncResult {
   archived: number;
   errored: number;
   /**
-   * Rows this pass declined to touch because they are frozen (spec §6). Counted
+   * Rows this pass declined to touch because they are frozen. Counted
    * separately from `skipped`, which means "already in step" — a frozen row is
    * the opposite: known to be out of step, and deliberately left that way until a
    * human runs `notion-sync resolve`.
@@ -221,7 +221,7 @@ async function tryRecord(what: string, vaultPath: string, fn: () => Promise<void
 }
 
 /**
- * Reconciliation guard (plan T4, spec §12 spirit): a store with ZERO doc rows in
+ * Reconciliation guard: a store with ZERO doc rows in
  * front of a populated Docs database is a recovery scenario, not a cold start —
  * creating would duplicate every page. Remote rows are adopted into the in-memory
  * map by Vault Path with an empty hash (the post-create pin's sentinel — never
@@ -283,15 +283,15 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
   const rows = await deps.getDocRows();
   const isExcluded = opts.isExcluded ?? (() => false);
 
-  // Both recovery guards below ask about THIS dir, not the whole table. Since
-  // Phase 3 the same engine runs once per desk folder over one shared `docs` table
+  // Both recovery guards below ask about THIS dir, not the whole table. The same
+  // engine runs once per desk folder over one shared `docs` table
   // (cli.ts syncDeskPushOnce), and counting every row would break both of them:
   // one populated folder would mask another folder's cold start — adoption
   // skipped, every existing page duplicated, the exact outcome adoption exists to
   // prevent — and one folder's rows would turn another folder's legitimately
   // empty listing into a hard failure.
   //
-  // "This dir" means the dir MINUS whatever config carved out of it (Phase 4):
+  // "This dir" means the dir MINUS whatever config carved out of it:
   // the listing these two guards are weighed against no longer contains excluded
   // files, so counting their rows would compare two different scopes.
   const rowsInDir = [...rows.keys()]
@@ -300,7 +300,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
   const adopted = rowsInDir === 0 ? await adoptRemoteRows(opts.wikiDir, rows, deps, isExcluded) : [];
 
   // An empty listing while rows exist (locally or just adopted) is never a
-  // legitimate "vault emptied" state — it is what a missing /srv/brain mount or a
+  // legitimate "vault emptied" state — it is what a missing vault mount or a
   // wikiDir typo produces. Fail loudly instead of archiving every page; the same
   // posture as run.ts's empty-calendar guard.
   if (listed.length === 0 && rowsInDir + adopted.length > 0) {
@@ -342,7 +342,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
   // Read everything up front: the resolver needs every target's title before the
   // first file renders. A failed read is contained per doc in the main loop — and
   // deliberately keeps the file out of the archive step, because a failed read and
-  // a deletion look identical (spec §7) and only one of them may flag anything.
+  // a deletion look identical and only one of them may flag anything.
   const sources = new Map<string, string>();
   const readErrors = new Map<string, string>();
   for (const relPath of files) {
@@ -368,19 +368,19 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
   // The resolver is a SNAPSHOT of the store as of this tick's start — pages created
   // later in this same run stay unresolved until the next tick. That keeps every
   // render a pure function of (vault content, store snapshot), which the
-  // hash-of-render convergence argument depends on (plan decision 2): pass 1
+  // hash-of-render convergence argument depends on: pass 1
   // escapes, pass 2 linkifies exactly the files whose render changed, pass 3 no-ops.
   const resolve = buildResolver(opts.wikiDir, rows, titles);
 
   // Per-document, not per-run: a failure on one file must not discard the files
-  // already applied, and the next tick resumes from what is left (spec §2). The
+  // already applied, and the next tick resumes from what is left. The
   // client's own throttle is the rate limiter; the loop stays sequential.
   for (const relPath of files) {
     const vaultPath = `${opts.wikiDir}/${relPath}`;
     const row = rows.get(vaultPath);
 
-    // A frozen row is written to on NEITHER side until a human resolves it (spec
-    // §6). Checked before everything else, including the read-failure path, for
+    // A frozen row is written to on NEITHER side until a human resolves it.
+    // Checked before everything else, including the read-failure path, for
     // two reasons: the revival logic below re-pushes any non-'synced' row
     // WHOLESALE (see the state check further down), which here would overwrite
     // the very Notion content the human is being asked to judge; and
@@ -392,7 +392,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
     }
 
     // The same rule, one step earlier in the story: a row whose Notion content a
-    // human is still judging gets no write either (spec §18.4). Checked here, in
+    // human is still judging gets no write either. Checked here, in
     // the same place and for the same reason as the freeze — before the read, the
     // render and any Notion call — because the write this prevents is precisely
     // the wholesale patch below, and it would land on the content the open
@@ -405,7 +405,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
       continue;
     }
 
-    // …and the permanent version of the same rule (Phase 4): NOTION owns this
+    // …and the permanent version of the same rule: NOTION owns this
     // document, so the vault file is its projection and pushing it back is the
     // projection overwriting its own source. Checked in the same place and for the
     // same reason as the two skips above — before the read, the render and any
@@ -440,9 +440,9 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
     let rendered: RenderedWikiPage;
     let mdHash: string;
     try {
-      // The SOURCE-side lint, before anything is rendered (Phase 4): a file carrying
+      // The SOURCE-side lint, before anything is rendered: a file carrying
       // a live <transcript> block is a meeting transcript, and transcripts are
-      // one-way Notion→vault permanently (§17.2). Escaping does not make it
+      // one-way Notion→vault permanently. Escaping does not make it
       // pushable, so unlike the two tags below this one has to be asked of the raw
       // bytes — after `renderWikiPage` the block is an inert `\<transcript>` and
       // indistinguishable from prose. Ordinarily nothing gets this far (the push is
@@ -450,7 +450,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
       // carves the folder out of the listing); this is what holds when neither did.
       assertPushSafeSource(source);
       rendered = renderWikiPage(source, { path: relPath, resolve });
-      // The spec §4.3 lint, on EVERY outbound body. A vault file carrying a live
+      // The push lint, on EVERY outbound body. A vault file carrying a live
       // <page/<database (e.g. inside a code fence) lands here every tick and, with
       // a row, walks the 3-strike path to 'error' — permanently, by design.
       assertPushSafe(rendered.markdown);
@@ -464,7 +464,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
           bookkeepingFailed += 1;
         }
       }
-      // No row (pre-create failure): summary-only, per the T3 decision — a missing
+      // No row (pre-create failure): summary-only — a missing
       // row means "create", so the file naturally retries next tick.
       continue;
     }
@@ -480,7 +480,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
     }
 
     // Fidelity notes (H5/H6 collapse, unknown callouts, code-span joins) surface
-    // only when the doc is actually (re)written — warning 457 times per tick about
+    // only when the doc is actually (re)written — warning hundreds of times per tick about
     // files that skip would bury the log.
     for (const warning of rendered.warnings) {
       console.warn(`notion-sync: ${vaultPath}: ${warning}`);
@@ -537,8 +537,8 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
       patched += 1;
     }
 
-    // Hash-after-write — the sole defence against the sync conflicting with itself
-    // (spec §3): re-read what Notion actually stored and hash THAT, never the body
+    // Hash-after-write — the sole defence against the sync conflicting with itself:
+    // re-read what Notion actually stored and hash THAT, never the body
     // we pushed. The ordering write → read-back → upsert is load-bearing.
     let notionMarkdown: string;
     try {
@@ -573,7 +573,7 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
     }
 
     // notion_last_edited stays null: this one-way pass never reads it back, and
-    // Phase 3's conflict detection will populate it from its own queries. Writing
+    // The desk pull's conflict detection populates it from its own queries. Writing
     // a value we did not observe would be a guess dressed as a watermark.
     const recorded = await tryRecord("synced", vaultPath, () => deps.upsertDocSynced({
       vaultPath, pageId, mdHash, notionHash: sha256(notionMarkdown), notionLastEdited: null,
@@ -589,16 +589,16 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
     }
   }
 
-  // Freeze-and-flag for vanished files (spec §7): Archived=true on the Notion row,
+  // Freeze-and-flag for vanished files: Archived=true on the Notion row,
   // 'unmatched' on the state row, nothing deleted anywhere — and only once, so an
   // already-flagged row stays quiet. Scoped to wikiDir: other passes' docs rows
-  // share target='docs' from Phase 3 on and are never this pass's to archive.
+  // share target='docs' and are never this pass's to archive.
   if (opts.limit === undefined) {
     const listedPaths = new Set(files.map((relPath) => `${opts.wikiDir}/${relPath}`));
     for (const [vaultPath, row] of rows) {
       if (!vaultPath.startsWith(`${opts.wikiDir}/`)) continue;
       // A carved-out path is absent from `listedPaths` BY CONFIG, not because the
-      // file went away (Phase 4) — the vault file is right there. Archiving it
+      // file went away — the vault file is right there. Archiving it
       // would write "file missing from vault" about a file that exists and retire
       // a page on a premise that is simply untrue. Whatever should happen to the
       // rows an exclusion leaves behind is a deliberate, one-off decision, never a
@@ -688,14 +688,14 @@ export async function runWikiSync(opts: WikiSyncOptions, deps: WikiSyncDeps): Pr
  *      Obsidian's shortest-path convention; an ambiguous stem stays an escaped
  *      literal rather than guessing.
  * A "#heading" suffix is dropped for matching; targets outside wikiDir (raw/,
- * project folders) fall through to null and render as escaped literals (§4.1).
+ * project folders) fall through to null and render as escaped literals.
  *
- * Exported (Phase 3, T7) rather than kept private: the pull/apply/resolve paths
+ * Exported rather than kept private: the pull/apply/resolve paths
  * render the SAME vault file to compare hashes against what this pass pushed, so
  * they must build the resolver from this exact function. A second implementation
  * that resolved one link differently would make every wikilinked desk file read
  * as "changed in both sides" forever — the resolver is an input to the render,
- * and the render IS the hash (plan decision 1). `rows` is narrowed to the one
+ * and the render IS the hash. `rows` is narrowed to the one
  * field used, so the desk passes can pass their wider row type unchanged.
  */
 export function buildResolver(

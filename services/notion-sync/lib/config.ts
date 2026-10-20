@@ -8,7 +8,7 @@ const DEFAULT_WINDOW_DAYS = 400;
 const DEFAULT_WIKI_DIR = "wiki";
 const DEFAULT_TRANSCRIPTS_DIR = "transcripts";
 
-/** The Markdown Content endpoints do not exist before this version (spec §2). */
+/** The Markdown Content endpoints do not exist before this version. */
 export const MIN_NOTION_VERSION = "2026-03-11";
 
 function requireString(obj: Record<string, unknown>, key: string, where: string): string {
@@ -40,7 +40,7 @@ function requireSelfEmails(root: Record<string, unknown>): string[] {
 
 /**
  * Parses a `{notionProject, vaultFolder}[]` mapping — the shape the top-level
- * `projects` list and `transcripts.projects` (Phase 4) share, because both
+ * `projects` list and `transcripts.projects` share, because both
  * answer the same question ("which vault folder does this Notion Project
  * select value belong to?") for two different passes reading two different
  * databases. One parser, so a malformed entry reads the same wherever the
@@ -72,9 +72,9 @@ function parseProjectMappings(raw: unknown, where: string): ProjectMapping[] {
 }
 
 /**
- * Assembles the optional wiki-pass group (Phase 2). `docsDataSourceId` is the
+ * Assembles the optional wiki-pass group. `docsDataSourceId` is the
  * presence flag: absent, the wiki pass is not configured and skips cleanly, so
- * every Phase 1 config file stays valid unchanged. A wiki key WITHOUT the data
+ * every config file without a wiki group stays valid unchanged. A wiki key WITHOUT the data
  * source id is rejected rather than ignored — a typo'd `docsDataSourceId` would
  * otherwise turn "configured" into "silently skips every tick forever", the
  * worst failure mode a config can have.
@@ -122,7 +122,7 @@ function parseWikiConfig(root: Record<string, unknown>): WikiConfig | undefined 
  * is built from.
  *
  * The whitespace check is separate, and loud, because it is the ONE malformation
- * an operator cannot see (Phase 4 review): `"transcripts "` is a non-empty string
+ * an operator cannot see: `"transcripts "` is a non-empty string
  * with no slash edges and no `..`, so every other guard here passes it — and the
  * value it then produces (`acme/transcripts `) matches no file and no row, which
  * turns a `deskDirs[].exclude` entry into a silent no-op. For that field a silent
@@ -157,7 +157,7 @@ function dirsOverlap(a: string, b: string): boolean {
 }
 
 /**
- * `deskDirs[i].exclude` (Phase 4): dir-relative bare sub-paths carved out of
+ * `deskDirs[i].exclude`: dir-relative bare sub-paths carved out of
  * one desk's scope. For `{dir: "acme", exclude: ["transcripts"]}` this takes
  * the vault path `acme/transcripts/**` out of the desk pass entirely, so the
  * transcript pull engine can own that folder instead of two passes pushing
@@ -197,13 +197,12 @@ function parseExcludeDirs(raw: unknown, deskIndex: number): string[] {
 }
 
 /**
- * Assembles the optional desk-folder group (Phase 3). `deskDirs` is the presence
+ * Assembles the optional desk-folder group. `deskDirs` is the presence
  * flag — the same shape as parseWikiConfig's `docsDataSourceId`, and for the same
  * reason: a typo'd key must fail loudly rather than turn "configured" into
  * "silently skips every tick forever".
  *
- * Desk rows live in the SAME Notion Docs database as the wiki mirror (spec
- * §18.1), so `docsDataSourceId` — i.e. a parsed `wiki` group — is a hard
+ * Desk rows live in the SAME Notion Docs database as the wiki mirror, so `docsDataSourceId` — i.e. a parsed `wiki` group — is a hard
  * precondition rather than an independent switch. Dirs may not overlap the wiki
  * dir or each other: a file reachable from two dirs would be pushed twice, under
  * two `vault_path` identities, and so as two Notion pages.
@@ -294,7 +293,7 @@ function parseDesksConfig(root: Record<string, unknown>, wiki: WikiConfig | unde
 }
 
 /**
- * Assembles the optional transcript-pull group (Phase 4). Unlike wiki/desks,
+ * Assembles the optional transcript-pull group. Unlike wiki/desks,
  * the `transcripts` object itself is the presence flag: every field it needs
  * lives nested inside it, so there is no flat sibling key a typo could leave
  * dangling outside the section. Absent ⇒ the transcript pass does not run,
@@ -319,7 +318,7 @@ function parseTranscriptsConfig(root: Record<string, unknown>): TranscriptsConfi
 }
 
 /**
- * Assembles the optional People-projection group (Phase 4, spec §8.3). The
+ * Assembles the optional People-projection group. The
  * `people` object is the presence flag — absent, the People pass does not
  * run and the vault gains no fourth contact store by omission. Once present,
  * `dataSourceId` is required rather than defaulted or inferred — the same

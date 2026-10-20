@@ -202,7 +202,7 @@ describe("runPullSync — pre-filters", () => {
     expect(result.skipped).toBe(1);
   });
 
-  it("skips a row whose state is not 'synced' — push heals it first (§18.4)", async () => {
+  it("skips a row whose state is not 'synced' — push heals it first", async () => {
     const d = makeDeps({
       rows: [
         ["wiki/e.md", makeRow({ pageId: "pe", state: "error" })],
@@ -221,7 +221,7 @@ describe("runPullSync — pre-filters", () => {
     expect(result.skipped).toBe(3);
   });
 
-  // F1 (T7 review): every page created after go-live has a real notion_hash and a
+  // Every page created after go-live has a real notion_hash and a
   // NULL watermark, because the push pass never reads a timestamp back. Skipping
   // that shape would leave every newly added file outside auto-revert and
   // proposals forever — silently, counted as `skipped`.
@@ -257,7 +257,7 @@ describe("runPullSync — pre-filters", () => {
     expect(result.skipped).toBe(1);
   });
 
-  it("readAllRows (reconcile, §18.5) reads BOTH pre-filtered shapes — unbaselined and not-touched-since", async () => {
+  it("readAllRows (reconcile) reads BOTH pre-filtered shapes — unbaselined and not-touched-since", async () => {
     const d = makeDeps({
       rows: [
         ["wiki/unbaselined.md", makeRow({ pageId: "p1", notionLastEdited: null })],
@@ -360,7 +360,7 @@ describe("runPullSync — mirror rows", () => {
 
     expect(d.patched).toEqual([{ pageId: "p1", markdown: ALPHA_MD }]);
     expect(d.propUpdates).toEqual([{ pageId: "p1", props: ALPHA_RENDERED.props }]);
-    // write → read-back → upsert, in that order (spec §3).
+    // write → read-back → upsert, in that order.
     expect(d.calls).toEqual([
       "queryDocs", "read:p1", "patch:p1", "props:p1", "read:p1", `upsert:${ALPHA_PATH}`, "notify",
     ]);
@@ -440,9 +440,9 @@ describe("runPullSync — desk rows", () => {
     const d = makeDeps(deskScenario());
     const result = await runPullSync(OPTS, d.impl);
 
-    // The stored diff_preview (T6 review, F2) is the SAME text that travels
+    // The stored diff_preview is the SAME text that travels
     // with the ping below — one computation, not two that could disagree.
-    // No phantom trailing "- " (M4): the vault file's own closing newline is a
+    // No phantom trailing "- ": the vault file's own closing newline is a
     // terminator, not a removed blank line.
     const expectedPreview = "- original body\n+ edited in Notion";
     expect(d.inserted).toEqual([{
@@ -456,16 +456,16 @@ describe("runPullSync — desk rows", () => {
     expect(d.patched).toEqual([]);          // pull never writes Notion for a desk row
     expect(d.watermarks).toEqual([]);       // the watermark stays put until the proposal lands
     expect(result.proposed).toBe(1);
-    // NO PING (spec §20.4): proposing is a DECISION request, and decisions now
+    // NO PING: proposing is a DECISION request, and decisions now
     // go to the chief of staff's DM, not #lares-alerts. The diff preview is persisted on the row (see
-    // diffPreview above) — that is what her DM and the console card both render. Telling
-    // him on two surfaces at once is what makes an alert channel unreadable.
+    // diffPreview above) — that is what the DM and the console card both render. Telling
+    // the owner on two surfaces at once is what makes an alert channel unreadable.
     expect(d.notified).toEqual([]);
   });
 
   // A pulled body always comes back in the canonical block shape, so diffing it
   // against the vault file AS WRITTEN reports every re-spaced line as a change:
-  // on a real vault file that turned a one-line edit into a 1549-line preview,
+  // on a real vault file that turned a one-line edit into a thousand-line preview,
   // which no human can approve. Both sides of the preview therefore go through
   // the same push→pull canonicalisation, leaving only the human's own edit.
   it("previews only the Notion edit, not the block re-spacing, for a non-canonical vault file", async () => {
@@ -538,7 +538,7 @@ describe("runPullSync — desk rows", () => {
     expect(movedResult.proposed).toBe(1);
   });
 
-  // C1 (final review): the state `resolve --keep notion` leaves behind is a row
+  // The state `resolve --keep notion` leaves behind is a row
   // whose vault render does NOT match the stored md_hash (that mismatch is what
   // froze it) plus an open proposal carrying exactly the Notion content that was
   // forced. With the conflict check first, the very next pull tick re-froze the
@@ -573,7 +573,7 @@ describe("runPullSync — desk rows", () => {
     expect(d.notified).toEqual([]);
   });
 
-  // The narrowing (C1 re-review): only an APPROVED proposal earns the early
+  // The narrowing: only an APPROVED proposal earns the early
   // exit. Apply consumes an approved one earlier in the same tick; nothing
   // consumes a pending one, so leaving the row 'synced' with a stale md_hash
   // would hand the same tick's push a licence to overwrite the very Notion edit
@@ -765,7 +765,7 @@ describe("runPullSync — page absent from the Docs query", () => {
   });
 });
 
-// ── Phase 4: notion_to_md — Notion owns the document, the vault projects it ───
+// ── notion_to_md — Notion owns the document, the vault projects it ────────────
 //
 // The direction the schema always allowed and nothing implemented. Every branch
 // point tested `=== "two_way"` and treated the else as "mirror", so a Notion-owned
@@ -807,7 +807,7 @@ describe("runPullSync — notion_to_md rows (Notion is the source)", () => {
 
   it("freezes rather than merging when the vault file ALSO moved — the house rule", async () => {
     // Notion owns the document, but a local edit is still someone's work and this
-    // engine has no business choosing a winner (spec §6).
+    // engine has no business choosing a winner.
     const d = makeDeps(sourceScenario({
       rows: [[DESK_PATH, makeRow({
         pageId: "d1", direction: "notion_to_md", mdHash: "hash-from-before-the-vault-was-edited",
@@ -864,17 +864,17 @@ describe("runPullSync — notion_to_md rows (Notion is the source)", () => {
   });
 });
 
-// ── Phase 4: paths config carved out of the desk scope ───────────────────────
+// ── Paths config carved out of the desk scope ────────────────────────────────
 
 /**
- * THE test decision 5 exists for. All 32 transcripts Phase 3 swept into
+ * THE test the carve-out exists for. Transcripts an earlier sweep put into
  * Docs are MIRROR rows (direction 'md_to_notion', state 'synced'), and
  * handleMissingPage recreates a mirror row's page FROM THE VAULT. So if the
  * exclusion were not honoured on this side, archiving those pages would
- * resurrect all 32 on the very next tick — which is why the exclusion ships and
- * deploys BEFORE the archival, and why this test is the phase's load-bearing one.
+ * resurrect them all on the very next tick — which is why the exclusion ships and
+ * deploys BEFORE the archival, and why this test is load-bearing.
  */
-describe("runPullSync — vault paths carved out of the desk scope (Phase 4, decision 5)", () => {
+describe("runPullSync — vault paths carved out of the desk scope", () => {
   const DESKS: DesksConfig = {
     // One dir with a carve-out and one without, so the same `transcripts/` sub-path
     // proves it is the CONFIG that excludes a path, not the folder name.
@@ -1011,7 +1011,7 @@ describe("runPullSync — stale-freeze re-ping", () => {
   });
 });
 
-// ── Stale proposals (spec §20.4) ─────────────────────────────────────────────
+// ── Stale proposals ─────────────────────────────────────────────
 // This is what REPLACED the retired per-proposal ping. The rule the tests pin:
 // the spine hears about a proposal only when the conversational surface has
 // already asked and got no answer — never as routine traffic.
@@ -1027,7 +1027,7 @@ describe("runPullSync — stale-proposal escalation", () => {
     };
   }
 
-  it("escalates a proposal Quinn announced but nobody decided, naming every surface he can use", async () => {
+  it("escalates a proposal the chief of staff announced but nobody decided, naming every surface the owner can use", async () => {
     const d = makeDeps({ staleProposals: [staleProposal()] });
     const result = await runPullSync(OPTS, d.impl);
 
@@ -1035,7 +1035,7 @@ describe("runPullSync — stale-proposal escalation", () => {
     expect(d.notified).toHaveLength(1);
     expect(d.notified[0]).toContain("still awaiting your decision: example-project/brand/brand-personality.md");
     // Naming all three matters: the likeliest reason it went unanswered is that the chief of staff's
-    // DM never landed, so the message must not point only at her.
+    // DM never landed, so the message must not point only at it.
     expect(d.notified[0]).toContain("console");
     expect(d.notified[0]).toContain("notion-sync approve|reject");
     // The console's Waiting page lists it from the database even when the agent is down.
@@ -1056,8 +1056,8 @@ describe("runPullSync — stale-proposal escalation", () => {
   });
 
   it("survives an unmigrated database instead of aborting the whole tick", async () => {
-    // announced_at does not exist until 017 is applied BY HAND on the box, so this WILL be
-    // the live state for a window after the image ships. Throwing here would kill the tick
+    // announced_at is missing on a database whose schema lags the image, so this can be
+    // the live state for a window after an upgrade. Throwing here would kill the tick
     // after all its real work, losing the pull summary and painting every cycle red.
     const d = makeDeps({});
     d.impl.getStaleProposals = async () => { throw new Error('column "announced_at" does not exist'); };
@@ -1174,7 +1174,7 @@ describe("runPullSync — containment and dry-run", () => {
 
 // ── The preview itself ───────────────────────────────────────────────────────
 
-describe("diffPreview — a trailing newline is a terminator, not a line (M4)", () => {
+describe("diffPreview — a trailing newline is a terminator, not a line", () => {
   it("does not invent an empty removal line for a file's trailing newline", () => {
     // The "before" side is a vault body read off disk, so it ends in the file's
     // own newline; the "after" side is Notion's markdown, which does not. Split

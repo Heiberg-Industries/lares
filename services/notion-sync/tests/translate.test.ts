@@ -38,7 +38,7 @@ describe("frontmatter", () => {
   });
 });
 
-describe("title extraction (plan decision 4)", () => {
+describe("title extraction", () => {
   it("prefers the frontmatter title, stripping surrounding quotes", () => {
     expect(render('---\ntitle: "Quoted Title"\n---\n# H1 Title\n').title).toBe("Quoted Title");
     expect(render("---\ntitle: 'Single'\n---\nx").title).toBe("Single");
@@ -67,7 +67,7 @@ describe("folderHint", () => {
   });
 });
 
-describe("callouts (spec §4.1 map)", () => {
+describe("callouts", () => {
   it("renders a multi-line summary callout with <br>-joined body", () => {
     const out = render("> [!summary]\n> Line one\n> Line two");
     expect(out.markdown).toBe('<callout icon="💡" color="blue">\n\tLine one<br>Line two\n</callout>');
@@ -132,7 +132,7 @@ describe("quotes", () => {
   });
 });
 
-describe("wikilinks (spec §4.1)", () => {
+describe("wikilinks", () => {
   const resolve = mapResolver({
     known: { url: "https://www.notion.so/1234", title: "Known Page" },
   });
@@ -204,7 +204,7 @@ describe("inline code", () => {
   });
 });
 
-describe("escaping and assertPushSafe (spec §4.3 — the two tags we must never emit)", () => {
+describe("escaping and assertPushSafe (the two tags we must never emit)", () => {
   it("escapes a literal <page> tag in body text into an inert literal, not silently stripped", () => {
     const out = render('Before <page url="https://x">Evil</page> after');
     expect(out.markdown).toBe('Before \\<page url="https://x">Evil\\</page> after');
@@ -269,14 +269,14 @@ describe("escaping and assertPushSafe (spec §4.3 — the two tags we must never
   it("a <page> tag inside a code fence passes through verbatim and FAILS the push lint", () => {
     // Code-block content is literal in Notion-flavored markdown, so it cannot be
     // escaped without corrupting it. The lint cannot prove Notion will parse the
-    // fence the way we do, so this fails loudly (spec §4.3: fail the write rather
+    // fence the way we do, so this fails loudly (fail the write rather
     // than send) instead of being waved through on a fence heuristic.
     const out = render('```\n<page url="https://x">\n```');
     expect(out.markdown).toBe('```\n<page url="https://x">\n```');
     expect(() => assertPushSafe(out.markdown)).toThrow(/line 2/);
   });
 
-  // Phase 4 (T4). Transcripts are one-way Notion→vault PERMANENTLY (spec §17.2):
+  // Transcripts are one-way Notion→vault PERMANENTLY:
   // Notion's own docs say the <transcript> tag "cannot be edited by AI" and that
   // writing it "will result in an error". Three separate rails keep a transcript
   // body away from a push — the state row is `target='meetings'` so the desk passes
@@ -284,7 +284,7 @@ describe("escaping and assertPushSafe (spec §4.3 — the two tags we must never
   // walker never lists the file — and THIS one, which is the only rail that is a
   // property of the CONTENT rather than of the configuration. Without it, the
   // one-way rule holds only for as long as nobody wires a new caller.
-  it("assertPushSafe refuses a transcript body — the one-way rule enforced by code (§17.2)", () => {
+  it("assertPushSafe refuses a transcript body — the one-way rule enforced by code", () => {
     const transcript = [
       "# Weekly sync",
       "",
@@ -311,7 +311,7 @@ describe("escaping and assertPushSafe (spec §4.3 — the two tags we must never
     expect(() => assertPushSafe(out.markdown)).not.toThrow();
   });
 
-  // The honest statement of what each rail catches (review round 1). Rendered for
+  // The honest statement of what each rail catches. Rendered for
   // push, a transcript's block is escaped and sails through assertPushSafe — so the
   // rail that actually answers "may this FILE be pushed at all" has to read the raw
   // source, before anything is rendered.
@@ -326,7 +326,7 @@ describe("escaping and assertPushSafe (spec §4.3 — the two tags we must never
   });
 
   it("assertPushSafeSource refuses ONLY the transcript rule — <page>/<database> in prose still push", () => {
-    // §4.3 is about EMISSION, and escaping genuinely neutralises those two. Checking
+    // The lint is about EMISSION, and escaping genuinely neutralises those two. Checking
     // the source for them would break every note that mentions one in prose.
     expect(() => assertPushSafeSource('a note about <page url="https://x">')).not.toThrow();
     expect(() => assertPushSafeSource('<database url="https://x">')).not.toThrow();

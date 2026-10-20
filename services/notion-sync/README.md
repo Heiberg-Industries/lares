@@ -23,10 +23,10 @@ this package is usable by any installation. Copy
 |---|---|
 | `notionVersion` | Pinned Notion API version. Must be `2026-03-11` or later (compared as an ISO date) — earlier versions lack the Markdown Content endpoints. |
 | `meetingsDataSourceId` | Data source (collection) id of the Meetings database. |
-| `vaultPath` | Vault root, e.g. `/srv/vault`. Validated at load time; not read by the Phase 1 attendee job — reserved for the vault-translation phases. |
+| `vaultPath` | Vault root, e.g. `/srv/vault`. Validated at load time; not read by the attendee job — used by the vault-translation passes. |
 | `selfEmail` | The owner's own address, or a **list** of them. Sorted last in the generated attendee string. A principal with enrolled mailboxes in more than one org owns more than one address; the job additionally unions this with every mailbox the calendar resolver actually resolves, so this key only has to name aliases the resolver cannot see. |
 | `calendarWindowDays` | How many days back from now to search for a matching calendar event (the search window always also extends one day forward, to catch same-day meetings). Optional — defaults to `400`. Must be a positive, finite number. |
-| `projects[]` | `{ notionProject, vaultFolder }` pairs — the Notion `Project` select value mapped to a vault folder. Must be non-empty with unique `notionProject` values. Validated today but not read by the Phase 1 attendee job — reserved for later phases. |
+| `projects[]` | `{ notionProject, vaultFolder }` pairs — the Notion `Project` select value mapped to a vault folder. Must be non-empty with unique `notionProject` values. Validated today but not read by the attendee job — used by the later passes. |
 | `deskDirs[]` | `{ dir, project, exclude? }` — the human-editable folders, each pushed by the same engine as the wiki with its own Notion `Project`. Presence of this key is what turns the desk passes on; `docsDataSourceId` is required alongside it (desk rows live in the same Docs database). Dirs are bare vault-relative paths and may not overlap `wikiDir` or each other. `exclude[]` names sub-folders (relative to `dir`) that this dir's passes must leave alone — the carve-out that hands `<dir>/transcripts/` to the transcript pass. |
 | `twoWayDirs[]` | The pilot dial: which desk dirs `notion-sync enable-two-way` will accept. Every entry must be one of `deskDirs`' dirs. Listing a dir here changes nothing on its own — direction is per row, and only the command flips it, only after both fidelity legs pass. Optional, defaults to `[]`. |
 | `mirrorFilePrefixes[]` | Vault-path prefixes that stay one-way md→Notion whatever folder they live in — machine-generated files inside an otherwise human-edited desk folder. `enable-two-way` refuses them. Optional, defaults to `[]`. |
@@ -46,7 +46,7 @@ parser is how a whole service stops starting over one line:
 
 ## Environment
 
-Every secret below is read through the box convention: `<NAME>_FILE` (a path, typically
+Every secret below is read through the secrets-file convention: `<NAME>_FILE` (a path, typically
 `/run/secrets/<name>`) wins if set, otherwise `<NAME>` as a plain env var.
 
 | Variable | Purpose |
@@ -57,9 +57,9 @@ Every secret below is read through the box convention: `<NAME>_FILE` (a path, ty
 | `TOKEN_ENC_KEY` / `TOKEN_ENC_KEY_FILE` | Required, 64 hex characters (32-byte AES key). Must equal the key the calendar OAuth tokens were encrypted with. This one key decrypts *every* stored OAuth token, so prefer the `_FILE` form and a mounted secret over a plaintext env var. |
 | `GOOGLE_CLIENT_ID_<ORG>` / `GOOGLE_CLIENT_SECRET_<ORG>` (one pair per org, each with an optional `_FILE` variant) | Per-org Google OAuth client credentials. Any org with a pair set is recognised. At least one complete pair must be set for the job to start — but that check alone is not enough: set one pair **per org the principal has an enrolled mailbox in**. An org with an enrolled mailbox but no configured pair is not a startup error; it's silently skipped per-mailbox (a `console.warn`, not a thrown error) inside the calendar resolver, so that org's real meetings surface as ordinary `no-candidate` unmatched rows — indistinguishable from a genuine no-invite meeting. |
 | `GOOGLE_REDIRECT_URI` | Optional. Only used by the initial OAuth consent flow, which this service never runs — it only refreshes tokens that were already enrolled elsewhere. Safe to leave unset. |
-| `SIGNAL_SPINE_URL` / `SIGNAL_SPINE_TOKEN` (with the usual `_FILE` variant for the token) | Where the human pings go — a mirror edit reverted, a conflict frozen, an error, and the stale-proposal escalation. **Proposals themselves no longer ping here**: a proposal awaiting approval is a DECISION, and decisions go to the chief of staff's DM, where the owner answers and 👍s her card. Both optional: unset, every ping is a `console.log` line instead, so the service can be deployed before the pair is wired without a single behaviour change. |
+| `SIGNAL_SPINE_URL` / `SIGNAL_SPINE_TOKEN` (with the usual `_FILE` variant for the token) | Where the human pings go — a mirror edit reverted, a conflict frozen, an error, and the stale-proposal escalation. **Proposals themselves no longer ping here**: a proposal awaiting approval is a DECISION, and decisions go to the chief of staff's DM, where the owner answers and 👍s its card. Both optional: unset, every ping is a `console.log` line instead, so the service can be deployed before the pair is wired without a single behaviour change. |
 | `TWENTY_BASE_URL` | Base URL of the Twenty CRM instance the People projection reads, e.g. `https://crm.example.com`. **Required once `people` is configured**, and it has no default: a wrong-by-default host would read someone else's CRM. |
-| `TWENTY_KEY` / `TWENTY_KEY_FILE` | Twenty API key, read-only in practice — the adapter has no write method. Required once `people` is configured. On the box point `TWENTY_KEY_FILE` at the existing `/run/secrets/twenty-key`. |
+| `TWENTY_KEY` / `TWENTY_KEY_FILE` | Twenty API key, read-only in practice — the adapter has no write method. Required once `people` is configured. Point `TWENTY_KEY_FILE` at the mounted secret, e.g. `/run/secrets/twenty-key`. |
 | `PGHOST` / `PGPORT` / `PGDATABASE` / `PGUSER` | State database connection. All optional, defaulting to `db` / `5432` / `lares_state` / `lares`. |
 | `PGPASSWORD` | State database password. The connection helper reads `/run/secrets/db_password` first and falls back to this env var. |
 
@@ -79,10 +79,8 @@ fail at the commit rather than silently writing an uncommitted file.
 
 ## Run
 
-**`pnpm typecheck` is a gate again.** It sat red on `main` from 2026-09-01 to 2026-09-05
-— six errors, all in `tests/attendees.test.ts` and `tests/run.test.ts`, `lib/` clean throughout —
-which meant a real type error in `lib/` would have hidden behind the pre-existing red, and the
-image workflows run no tests to catch it. It exits 0 now; keep it that way.
+**`pnpm typecheck` is a gate.** It must exit 0: a red typecheck can hide a real type error in
+`lib/`, and the image workflows run no tests to catch it.
 
 Locally, through the Lares CLI:
 
@@ -104,10 +102,10 @@ pnpm lares notion-sync people --dry-run                  # who the meetings name
 ```
 
 And the operator commands — the one-shot rollouts, the frozen-row decision, and approving or
-rejecting a pending proposal. **These are dead as written above**: the `lares` CLI that used to
-run them is gone (deleted in the 2026-09 repo split), and the box has no lares checkout at all —
+rejecting a pending proposal. **These are dead as written above**: the standalone `lares` CLI no
+longer runs them, and the server has no source checkout at all —
 so every one of them is a flag on the daemon binary instead, run through `docker compose exec`
-(; see the runbook for the full one-shot rule):
+(see the runbook for the full one-shot rule):
 
 ```bash
 docker compose exec -T notion-sync node node_modules/tsx/dist/cli.mjs services/notion-sync/bin/notion-sync.ts --reconcile --dry-run
@@ -128,12 +126,12 @@ state database.
 
 ## Deployment
 
-On the agent box this runs as a container off the `lares-sync-jobs` scheduled-jobs image
-(— shared only with its sibling atlas-sync, never with the chief of staff)
+This runs as a container off the `lares-sync-jobs` scheduled-jobs image
+(shared only with its sibling atlas-sync, never with the chief of staff)
 (`command: tsx services/notion-sync/bin/notion-sync.ts`) — non-root, read-only rootfs,
 `cap_drop: [ALL]`, internal network, secrets mounted as Docker secrets. It schedules itself
 with an in-process hourly ticker rather than a systemd timer, matching every other periodic
-job on that box. Nothing is built or checked out on the box.
+job on that server. Nothing is built or checked out on the server.
 
 ```bash
 tsx services/notion-sync/bin/notion-sync.ts --once --dry-run   # one tick, writes nothing
@@ -161,8 +159,8 @@ tsx services/notion-sync/bin/notion-sync.ts --reject <path>
 Three different dry-run postures, each deliberate:
 
 - **Default LIVE, `--dry-run` rehearses** — `--fidelity-record`, `--reconcile`,
-  `--enable-two-way`, and the three single-pass flags. The pass flags exist because the Phase 4
-  deploy previews one pass at a time and `--once --dry-run` would rehearse all of them.
+  `--enable-two-way`, and the three single-pass flags. The pass flags exist because a rollout
+  previews one pass at a time and `--once --dry-run` would rehearse all of them.
 - **Default DRY-RUN, `--no-dry-run` writes** — `--archive-excluded` alone, because it trashes
   real Notion pages. It refuses `--no-dry-run` alongside `--dry-run`/`NOTION_SYNC_DRY_RUN=1`
   rather than picking a silent winner.
@@ -172,7 +170,7 @@ Three different dry-run postures, each deliberate:
   anywhere, ever — it does not even open a database connection).
 
 Run them against a quiesced daemon — `exec` is a second process and the daemon's
-don't-re-enter guard is process-local. The runbook's §"Go live" spells the rule out.
+don't-re-enter guard is process-local. The runbook's go-live section spells the rule out.
 
 ## Behaviour worth knowing
 
@@ -289,11 +287,10 @@ Notion databases and projects are synced is set in config, not here.
 | `People Unmatched` | Text | Written: attendee addresses the People pass could not match |
 | `Status` | Status | Written: set to `Summarized` once a summary exists |
 
-## The People database contract (Phase 4)
+## The People database contract
 
 The People pass projects the people your Meetings rows name into a Notion **People**
-database and relates each meeting to them. **It is a projection, never a source of truth**
-(spec §8.3): every field comes verbatim from Twenty — — nothing about a person originates
+database and relates each meeting to them. **It is a projection, never a source of truth**: every field comes verbatim from Twenty — nothing about a person originates
 here, and the pass never writes back to the source. The adapter it reads through
 (`lib/adapters/twenty-people.ts`) exposes one function, `listPeople`, and no write method at
 all, so that is a property of the code's shape rather than a rule to remember.

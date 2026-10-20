@@ -1,4 +1,4 @@
-// T7 (Phase 4): the People projection, and the Meetings→People relation.
+// The People projection, and the Meetings→People relation.
 //
 // Vendor-neutral and pure in exactly the sense run.ts, transcript-sync.ts and
 // notion-born-sync.ts are: every side effect arrives as an injected dep, every
@@ -6,9 +6,9 @@
 // and dry-run produces the full plan with zero writes.
 //
 // FOUR things this engine must not get wrong. Each is a decision, and each is the
-// decision that keeps this from becoming the thing spec §8.3 exists to prevent —
+// decision that keeps this from becoming the thing a projection exists to prevent —
 // a THIRD contact store, drifting quietly away from the two the owner already has
-// (Twenty CRM, the Brain vault).
+// (the CRM and the vault).
 //
 //   1. **Nothing about a person originates here.** Every projected field is a
 //      value the source system holds verbatim: the name it spells, the address it
@@ -16,7 +16,7 @@
 //      no enrichment and no company lookup. Deciding a person is a commercial
 //      contact happens in Twenty, and this pass has no opinion about it.
 //
-//   2. **Unmatched means blank-and-flagged, never inferred** (spec §8). An
+//   2. **Unmatched means blank-and-flagged, never inferred**. An
 //      attendee this pass cannot resolve to a source person contributes NO link
 //      and is named in the `People Unmatched` flag beside the relation. No
 //      placeholder person is created to satisfy a relation, and nothing is ever
@@ -110,10 +110,10 @@ export interface PeopleSyncOptions {
   /**
    * The owner's own address(es) — `NotionSyncConfig.selfEmails`. Excluded from the
    * attendee set entirely, because "who was this meeting with" never means the
-   * person whose calendar it is: the owner is on every meeting, he is deliberately
-   * not a CRM record (`selfContactId` is excluded from network's Twenty matcher),
-   * and leaving him in would flag 100% of meetings unresolved and make the flag
-   * worthless. `formatAttendees` already treats him specially for the same reason.
+   * person whose calendar it is: the owner is on every meeting, and is deliberately
+   * not a CRM record, so leaving them in would flag 100% of meetings unresolved
+   * and make the flag worthless. `formatAttendees` already treats the owner
+   * specially for the same reason.
    */
   selfEmails: readonly string[];
 }
@@ -204,7 +204,7 @@ export interface PeopleSyncResult {
   unchanged: number;
   /**
    * Source people with no People row and no meeting naming them. The bulk of a
-   * real CRM lands here every tick, which is the point — see decision 3.
+   * real CRM lands here every tick, which is the point — see item 3 in the header.
    */
   notNeeded: number;
   /**
@@ -215,13 +215,13 @@ export interface PeopleSyncResult {
    * to decide about them.
    */
   noEmail: number;
-  /** People rows the source does not recognise. Left untouched — decision 4. */
+  /** People rows the source does not recognise. Left untouched — see item 4 in the header. */
   unsourced: number;
   /** One email held by more than one People row. Reported; the lowest page id is used. */
   duplicates: Array<{ email: string; pageIds: string[] }>;
   /**
    * One address claimed by more than one source record — primary or alias, one
-   * rule for both (round 2, F6). The binding is never taken from the row that
+   * rule for both. The binding is never taken from the row that
    * already holds it; the losing claim is reported instead.
    */
   contestedAddresses: ContestedAddress[];
@@ -268,7 +268,7 @@ export interface ParsedAttendees {
    * `Attendees` is hand-editable and the attendee pass never rewrites a non-empty
    * one, so a bare name is a real attendee this pass cannot resolve. It goes into
    * the flag with everything else it could not resolve, because falling out of
-   * BOTH halves of blank-and-flag is the one outcome §8 has no room for.
+   * BOTH halves of blank-and-flag is the one outcome the contract has no room for.
    */
   unaddressed: string[];
 }
@@ -280,16 +280,16 @@ export interface ParsedAttendees {
  * function exists to enforce. The attendee pass writes `Name <email>, …` from the
  * calendar invite, so the address inside the angle brackets is a VERIFIED identity
  * that came from Google. The display name beside it is not an identity at all — two
- * people share a name, and a name plus a company domain is exactly the guess spec §8
- * forbids. An entry with no brackets therefore yields no address; it is REPORTED as
+ * people share a name, and a name plus a company domain is exactly the guess the
+ * blank-and-flag contract forbids. An entry with no brackets therefore yields no address; it is REPORTED as
  * unresolved, never matched on its name.
  */
 export function parseAttendees(attendees: string): ParsedAttendees {
   const emails = new Set<string>();
   const unaddressed = new Set<string>();
 
-  // ADDRESSES FIRST, commas second — and that order is the whole of round 2's
-  // minor fix. Splitting on `,` up front looked equivalent and was not: a display
+  // ADDRESSES FIRST, commas second — and that order is the whole of the
+  // fix. Splitting on `,` up front looked equivalent and was not: a display
   // name may CONTAIN a comma, and `formatAttendees` (lib/attendees.ts) emits
   // Google's raw displayName, so a directory-style "Nordmann, Per
   // <per@…>" split into a phantom entry "Nordmann" that was then flagged
@@ -338,8 +338,8 @@ export function formatUnmatched(emails: readonly string[]): string {
  * How many relation targets Notion inlines in a page object. Beyond this it
  * returns the first 25 and sets `has_more`.
  *
- * Load-bearing on BOTH sides, and the write side is what review round 1 found
- * missing: the read-side refusal alone let the pass write a 26-link relation that
+ * Load-bearing on BOTH sides, and the write side is the half that is easy to
+ * miss: the read-side refusal alone let the pass write a 26-link relation that
  * it then refused to touch on every later tick — a row driven into its own
  * permanently-refused state, reported as a success. See the three refusals in the
  * relation loop.
@@ -350,14 +350,14 @@ export const RELATION_INLINE_CAP = 25;
  * The relation this pass will assert: everything Notion already holds, PLUS every
  * link it verified this tick. Sorted, so the value written is deterministic.
  *
- * **Additive, never subtractive, and that is decision 4 applied to the relation.**
+ * **Additive, never subtractive, and that is item 4 of the header applied to the relation.**
  * The obvious alternative — make the relation exactly the derived set — deletes a
  * link the moment the derivation stops reproducing it, and the derivation stops
  * for reasons that have nothing to do with the meeting. That is verified history
  * destroyed by a routine hourly job, which is exactly what the never-delete
- * posture (spec §7) exists to prevent.
+ * posture exists to prevent.
  *
- * TWO costs, both real, and the second was mis-stated in round 1's docs:
+ * TWO costs, both real, and the second is easy to mis-state:
  *
  *  - A link stays after the attendee is removed from `Attendees` by hand. The
  *    attendee pass never rewrites a non-empty `Attendees`, so this only arises
@@ -386,8 +386,7 @@ function sameLinks(a: readonly string[], b: readonly string[]): boolean {
  * is a lie about what happened and because the smaller the patch, the smaller the
  * blast radius when one property's type is wrong on the database.
  *
- * **`Email` is written ONCE and then never overwritten** (review round 1,
- * Important 2). It is the row's KEY — the durable binding between an address and
+ * **`Email` is written ONCE and then never overwritten.** It is the row's KEY — the durable binding between an address and
  * a person — and a key that moves when the CRM moves is what let an address
  * reassigned to a different human attach the wrong person to a historical meeting:
  *
@@ -442,7 +441,7 @@ function normalisePerson(person: SourcePerson): SourcePerson {
  * did not happen. Without it the preview would report every to-be-created person
  * as an UNRESOLVED attendee — the opposite of what the live run does — and the
  * pre-flight would be describing a run nobody is going to make (the same defect
- * T4's review round 1 found in the transcript preview).
+ * the transcript preview had).
  */
 const PLANNED = (sourceId: string): string => `planned:${sourceId}`;
 
@@ -473,7 +472,7 @@ export async function runPeopleSync(
   };
 
   // Every address any meeting needs a person for. This is the selection rule
-  // (decision 3) and nothing else: a source person is projected because a meeting
+  // (item 3 in the header) and nothing else: a source person is projected because a meeting
   // names them, never because they exist.
   const wanted = new Set<string>();
   for (const row of meetings) for (const email of attendeesOf(row).emails) wanted.add(email);
@@ -571,7 +570,7 @@ export async function runPeopleSync(
   /**
    * Every People row some source person matched — whether it was then written,
    * refused, or found already claimed. `unsourced` is computed from THIS and not
-   * from `claimed` (review round 1, Minor 7): a row the pass recognised and then
+   * from `claimed`: a row the pass recognised and then
    * refused is contested, not orphaned, and reporting it as "the source no longer
    * holds this person" would be wrong exactly when something already needs a human.
    */
@@ -592,7 +591,7 @@ export async function runPeopleSync(
         continue;
       }
       // A CREATE KEYS A ROW ON AN ADDRESS, so it needs the same rule
-      // `bindAddresses` applies (round 3, F7). Round 2 guarded the bind and left
+      // `bindAddresses` applies. Guarding only the bind would leave
       // this one consulting a map seeded from ROWS, which is exactly the index
       // that cannot see the case that matters: an address bound this tick by
       // somebody else's ALIAS is held by no row at all, so the create went ahead,
@@ -664,7 +663,7 @@ export async function runPeopleSync(
     // RECOGNISED, so it is never also reported as one the source has forgotten.
     recognised.add(row.pageId);
     if (row.sourceId !== "" && row.sourceId !== person.sourceId) {
-      // The reassignment refusal (round 1, Important 2). Because `Email` is
+      // The reassignment refusal. Because `Email` is
       // write-once, a row keeps the address it was projected under — so when the
       // source hands that address to a DIFFERENT record, this fires immediately,
       // permanently, and with both ids in the message, instead of the new record
@@ -720,7 +719,7 @@ export async function runPeopleSync(
   }
 
   // A People row nobody in the source answers for. Counted, never touched — the
-  // never-delete posture (spec §7, decision 4) with nothing else attached to it.
+  // never-delete posture with nothing else attached to it.
   const unsourced = peopleRows.filter((row) => !recognised.has(row.pageId)).length;
 
   // ---------------------------------------------------------------------------
@@ -760,7 +759,7 @@ export async function runPeopleSync(
       continue;
     }
 
-    // THREE refusals, and the last two are what round 1 found missing. Notion
+    // THREE refusals, and the last two are the easy ones to miss. Notion
     // inlines at most RELATION_INLINE_CAP relation targets, so both sides of this
     // property have to respect the same number — the read side alone let the pass
     // write a 26-link relation it then refused to touch on every later tick, and
@@ -868,10 +867,9 @@ export async function runPeopleSync(
  * **and never at somebody else's** — reporting each address it had to refuse.
  *
  * ONE RULE FOR EVERY ADDRESS, primary and alias alike: an address binds to this
- * page only if it is unbound, or already points here. That symmetry is round 2's
- * fix (F6), and its absence was the sixth defect of this phase's signature class.
- * Round 1 pinned the STORED key (`Email` is write-once) but left this RUNTIME
- * binding following the CRM, because the primary was set unconditionally while
+ * page only if it is unbound, or already points here. That symmetry is what stops an address
+ * being stolen from another page. Pinning only the STORED key (`Email` is write-once)
+ * would leave this RUNTIME binding following the CRM, because the primary was set unconditionally while
  * only the aliases were guarded. The hole that left:
  *
  *   The `row.sourceId !== person.sourceId` refusal in the projection loop can only
@@ -894,7 +892,7 @@ export async function runPeopleSync(
  *
  * ---
  *
- * THREE LEVELS OF CLAIM, added in round 4 and ruled on by the review:
+ * THREE LEVELS OF CLAIM:
  *
  *     stored row key  >  source primary  >  source alias
  *
@@ -905,14 +903,14 @@ export async function runPeopleSync(
  *
  * This is not a bind-order race and it grants a primary nothing — it only REMOVES
  * a binding opportunity from the weakest claim. That distinction is what makes it
- * safe: F6 was caused by an UNGUARDED WRITE (a primary set unconditionally, taking
+ * safe: the steal defect was caused by an UNGUARDED WRITE (a primary set unconditionally, taking
  * another row's key), and a tightening cannot revive it. **The inverse — letting a
- * primary take an address held only as an alias BINDING — is F6, and is exactly
+ * primary take an address held only as an alias BINDING — is that defect, and is exactly
  * what this must not do.** The primary keeps its `linkFor` guard.
  *
  * Without the third level, the losing claim was decided by which Twenty record id
  * sorted first: identical data, opposite answer, and a one-tick blip in the source
- * read flipping it permanently. Worse, the outcome violated spec §8 squarely — a
+ * read flipping it permanently. Worse, the outcome violated the blank-and-flag contract squarely — a
  * meeting read `People=[the alias holder]` with an EMPTY flag: not blank, not
  * flagged, and wrong about who was in the room.
  *
@@ -943,11 +941,10 @@ function bindAddresses(
     // Already ours: this address ALREADY points at this page, so re-affirming it
     // changes no binding — it only records who is being credited for it.
     //
-    // WHAT THIS ARM'S POSITION DOES AND DOES NOT DO (corrected in the final fix
-    // wave; the earlier note overstated it). It is NOT what keeps F6's STEAL
+    // WHAT THIS ARM'S POSITION DOES AND DOES NOT DO. It is NOT what keeps a STEAL
     // refused — that is `linkFor`'s row-key seed before the loop, plus the alias
-    // arm below; a reviewer mutated this ordering and STEAL, SWAP and the F6
-    // regression all still passed, and no test pins the order. What it IS
+    // arm below; mutating this ordering leaves the STEAL, SWAP and regression
+    // tests passing, and no test pins the order. What it IS
     // load-bearing for is REPORT FIDELITY: without it, a record whose own stored
     // row key is also another record's primary would `report(...)` itself as
     // contesting its own address, every tick, forever
@@ -959,7 +956,7 @@ function bindAddresses(
     if (index > 0) {
       // An ALIAS, and the address is somebody else's IDENTITY. Refused whether or
       // not it is bound yet: binding it here is what let a row later be minted on
-      // it by its real owner and the binding then move (F7), and what made a
+      // it by its real owner and the binding then move, and what made a
       // meeting show the alias holder instead of the person whose address it is.
       const owner = primaryOf.get(email);
       if (owner !== undefined && owner !== person.sourceId) {
@@ -980,14 +977,13 @@ function bindAddresses(
 
 /**
  * Best-effort: a ping that fails is logged, never thrown. Same posture as every
- * other notify call in this service (spec §18.6).
+ * other notify call in this service.
  *
  * **Silent in dry-run** — the contract every pass here shares (transcript-sync.ts,
- * apply-sync.ts: "a rehearsal has no business messaging a human"). Round 2 shipped
- * this without the guard, so `notion-sync people --dry-run` — the exact pre-flight
- * the runbook tells the operator to run — pinged the spine, and said "gained a
- * People link" about a link nothing gained. A daemon left on NOTION_SYNC_DRY_RUN=1
- * would have done it hourly.
+ * apply-sync.ts: "a rehearsal has no business messaging a human"). Without the guard,
+ * `notion-sync people --dry-run` — the exact pre-flight the runbook tells the
+ * operator to run — would ping the spine and say "gained a People link" about a link
+ * nothing gained. A daemon left on NOTION_SYNC_DRY_RUN=1 would do it hourly.
  */
 async function ping(opts: PeopleSyncOptions, deps: PeopleSyncDeps, text: string): Promise<void> {
   if (opts.dryRun) return;

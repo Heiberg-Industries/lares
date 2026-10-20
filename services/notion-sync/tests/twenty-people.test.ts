@@ -106,8 +106,8 @@ describe("makeTwentyPeopleSource", () => {
     }).listPeople()).rejects.toThrow(/failed: 401 nope/);
   });
 
-  // The structural half of "the projection never writes back to the source"
-  // (spec §8.3). A rule stated in a comment can be forgotten by the next caller;
+  // The structural half of "the projection never writes back to the source".
+  // A rule stated in a comment can be forgotten by the next caller;
   // a factory with no write method cannot be misused by one.
   it("exposes NO way to write to the source", () => {
     const source = makeTwentyPeopleSource({ baseUrl: BASE, apiKey: "k" });

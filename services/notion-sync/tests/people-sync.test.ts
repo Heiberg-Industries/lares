@@ -88,7 +88,7 @@ describe("attendeeEmails", () => {
     expect(attendeeEmails("A <alex@partner.example>, B <alex@partner.example>")).toEqual(["alex@partner.example"]);
   });
 
-  // Round 2: addresses are tokenised BEFORE commas, because a display name may
+  // Addresses are tokenised BEFORE commas, because a display name may
   // contain one — `formatAttendees` emits Google's raw displayName, and
   // "Partner, Alex" is an ordinary Norwegian directory-style name.
   it("does not split a display name that contains a comma into a phantom entry", () => {
@@ -308,7 +308,7 @@ describe("runPeopleSync — the relation", () => {
 
     // No link and no person invented — but the entries do not vanish either: a
     // hand-typed name is a real attendee this pass cannot resolve, and falling out
-    // of BOTH halves of blank-and-flag is the one outcome §8 has no room for.
+    // of BOTH halves of blank-and-flag is the one outcome the contract has no room for.
     expect(w.created).toEqual([]);
     expect(w.relations).toEqual([
       { pageId: "meet-1", people: [], unmatched: "Abel Example, Alex Partner" },
@@ -500,7 +500,7 @@ describe("runPeopleSync — two source records, one address", () => {
   });
 });
 
-describe("runPeopleSync — round 1 fixes", () => {
+describe("runPeopleSync — alias and reassignment guards", () => {
   it("REPORTS an alias two source records both claim, instead of settling it silently", async () => {
     const w = world(
       [

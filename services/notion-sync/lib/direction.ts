@@ -7,8 +7,8 @@
 // byte-for-byte like `md_to_notion`: a Notion edit reverted from the vault with no
 // 👍, a trashed page recreated from the vault, a "🔒 Mirror" stamp and a page lock
 // on a document Notion authored. The column said one thing and the code did
-// another, on the exact direction Phase 4 needs (T4's transcripts are one-way
-// Notion→vault permanently, spec §17.2; T6's Notion-born pages are Notion-primary).
+// another, on the exact direction that matters (transcripts are one-way
+// Notion→vault permanently; Notion-born pages are Notion-primary).
 //
 // Two predicates rather than three constants used inline, so a new branch point has
 // to answer the OWNERSHIP question rather than re-derive it from a string compare:
@@ -26,9 +26,9 @@ import type { DeskRow, LinkedRow } from "./store.js";
 
 /** The vault is the source of truth; Notion is a projection of it (the default). */
 export const MD_TO_NOTION = "md_to_notion";
-/** Both sides may write; disagreements go to a human (spec §6/§18.4). */
+/** Both sides may write; disagreements go to a human. */
 export const TWO_WAY = "two_way";
-/** Notion is the source of truth; the vault is a projection of it (Phase 4). */
+/** Notion is the source of truth; the vault is a projection of it. */
 export const NOTION_TO_MD = "notion_to_md";
 
 /**
@@ -65,7 +65,7 @@ export function notionOwnedPaths(rows: Map<string, DeskRow>): Set<string> {
 
 /**
  * Every vault path the PUSH passes must not write, computed from the ACROSS-TARGETS
- * snapshot (`getLinkedRows`) rather than the desk-only one (Phase 4, review round 1).
+ * snapshot (`getLinkedRows`) rather than the desk-only one.
  *
  * Two facts, one consequence, which is why they share a set:
  *

@@ -1,10 +1,10 @@
 // The ONLY file in this service that knows Twenty's HTTP shape. Lives under
-// adapters/ so the vendor-neutrality test exempts it (spec §11), exactly like
+// adapters/ so the vendor-neutrality test exempts it, exactly like
 // notion-client.ts does for Notion.
 //
 // **It can only read.** The factory returns a single function, `listPeople`, and
 // there is deliberately no create, no update and no delete anywhere in this file.
-// "The People projection never writes back to the source" (spec §8.3) is therefore
+// "The People projection never writes back to the source" is therefore
 // a property of the code's SHAPE rather than a rule the engine has to remember —
 // there is no method here that a future caller could reach for.
 //
