@@ -135,11 +135,14 @@ const EXAMPLES_TOTAL = 3;
  *  caller can mark the block failed. */
 export async function recipientExamples(gmail: GmailClient, addr: string, currentThreadId: string): Promise<string[]> {
   // The address comes from the incoming mail's From header: anything but one plain address
-  // (spaces, quotes, parentheses) could add terms to the search, so it is not searched at all.
-  if (!/^[^\s"()<>]+@[^\s"()<>]+$/.test(addr)) return [];
-  const ids = await gmail.search(`to:${addr} from:me`, 8);
+  // could add terms or groups to the search, so it is not searched at all. And a result only
+  // counts when that address really is among its recipients.
+  const a = addr.trim().toLowerCase();
+  if (!/^[a-z0-9._%+'-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(a)) return [];
+  const ids = await gmail.search(`to:${a} from:me`, 8);
   const msgs = (await Promise.all(ids.map((id) => gmail.read(id))))
-    .filter((m): m is MailMessage => m !== null && m.threadId !== currentThreadId)
+    .filter((m): m is MailMessage =>
+      m !== null && m.threadId !== currentThreadId && m.to.some((t) => addressOf(t) === a))
     .sort((a, b) => Date.parse(b.sentAt) - Date.parse(a.sentAt));
   const { kept } = selectExemplars(msgs);
   return kept

@@ -738,8 +738,23 @@ describe("recipientExamples address guard", () => {
     const gmail = { search, read: vi.fn() } as unknown as GmailClient;
     expect(await recipientExamples(gmail, "a@example.com OR from:boss@example.com", "t1")).toEqual([]);
     expect(await recipientExamples(gmail, '"x"@example.com', "t1")).toEqual([]);
+    expect(await recipientExamples(gmail, "{a@example.com,b@example.com}", "t1")).toEqual([]);
     expect(search).not.toHaveBeenCalled();
     await recipientExamples(gmail, "p@example.com", "t1");
     expect(search).toHaveBeenCalledWith("to:p@example.com from:me", 8);
+  });
+});
+
+describe("recipientExamples recipients check", () => {
+  it("drops a search result that was not actually sent to the person", async () => {
+    const body = "Thanks for the notes yesterday, I will send the revised plan by the end of the week.";
+    const mk = (id: string, to: string[]): MailMessage =>
+      ({ id, threadId: `t-${id}`, from: "owner@project.example", to, subject: "Re: plan", bodyText: body, sentAt: "2026-10-01T10:00:00Z" }) as MailMessage;
+    const msgs: Record<string, MailMessage> = {
+      a: mk("a", ["P <P@example.com>"]),
+      b: mk("b", ["someone-else@example.com"]),
+    };
+    const gmail = { search: vi.fn(async () => ["a", "b"]), read: vi.fn(async (id: string) => msgs[id]) } as unknown as GmailClient;
+    expect(await recipientExamples(gmail, "p@example.com", "t1")).toHaveLength(1);
   });
 });
