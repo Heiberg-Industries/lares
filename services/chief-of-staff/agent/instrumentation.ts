@@ -1,5 +1,5 @@
 /**
- * Telemetry (Task 11) — eve's OpenTelemetry export, pointed at Langfuse.
+ * Telemetry — eve's OpenTelemetry export, pointed at Langfuse.
  *
  * eve auto-discovers this file and runs `setup` at server startup, before any agent code.
  * Its mere presence enables authored telemetry and REPLACES eve's local on-disk traces, so
@@ -66,8 +66,7 @@ export default defineInstrumentation({
     // definition was already resolved at module level, so nothing here can throw synchronously out
     // of this unguarded `setup`, and the `.catch` keeps a failed registration from becoming an
     // unhandled rejection that Node 24 turns into process exit. Registration failing is a console
-    // line, never a dead agent; only having no definition at all stops it, at module level above
-    //.
+    // line, never a dead agent; only having no definition at all stops it, at module level above.
     if (boot) {
       void Promise.resolve(boot)
         .then(({ loaded }) =>
@@ -84,8 +83,8 @@ export default defineInstrumentation({
     if (!isLangfuseConfigured()) {
       // Deliberately a warning and not a throw: telemetry must never be load-bearing, and
       // an agent that will not boot because its tracing backend is unreachable is worse
-      // than one running untraced. But it must be VISIBLE — a silently untraced shadow
-      // would be scored on evidence that was never collected.
+      // than one running untraced. But it must be VISIBLE — a silently untraced agent
+      // would be judged on evidence that was never collected.
       console.warn(
         "[instrumentation] Langfuse key file unreadable — running WITHOUT trace export. " +
           "eve's local on-disk traces are also disabled whenever this file exists.",
@@ -104,10 +103,10 @@ export default defineInstrumentation({
     console.log(`[instrumentation] exporting traces to ${url} as "${agentName}"`);
   },
 
-  // Full prompts and completions ride to Langfuse. That is the point — the scorecard
-  // compares ANSWERS, and a trace without them cannot settle "is she as good as the old
-  // Chief of staff". Everything she reads is the owner's own (Brain, Atlas) and Langfuse is the EU
-  // region; revisit both if the shadow is ever pointed at someone else's data.
+  // Full prompts and completions ride to Langfuse. That is the point — evaluation
+  // compares ANSWERS, and a trace without them cannot settle "is the agent answering well".
+  // Everything it reads is the owner's own material and Langfuse is the EU
+  // region; revisit both if this agent is ever pointed at someone else's data.
   //
   // eve 0.60.1 still honours these two keys on `defineInstrumentation`'s own config — the
   // 0.60.0 removal (`assertNoRemovedContentOptions`, dist/src/tracing/otel-declaration.js)
@@ -134,7 +133,7 @@ export default defineInstrumentation({
   //
   // This says plainly that on this installation every audience's content is exported,
   // because the destination is the owner's own EU Langfuse instance and everything the
-  // agent reads is the owner's own material. Revisit this if the shadow is ever pointed at
+  // agent reads is the owner's own material. Revisit this if the agent is ever pointed at
   // someone else's data.
   //
   // Must be deterministic: eve documents that it may be invoked more than once per session.

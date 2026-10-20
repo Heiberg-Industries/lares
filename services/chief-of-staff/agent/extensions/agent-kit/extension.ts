@@ -1,12 +1,11 @@
-// Mounts @lares/agent-kit's eve extension, now a DIRECTORY mount rather than the
-// flat `agent-kit.ts` file it was, because gives each of the extension's ten
+// Mounts @lares/agent-kit's eve extension as a DIRECTORY mount (not a flat
+// `agent-kit.ts` file), because that gives each of the extension's ten
 // contributions an override file beside this one (tools/*.ts) that resolves it against
 // `agent.json`. The mount directory name is load-bearing: every tool this extension
-// contributes gets the mandatory `agent-kit__` prefix from it — see
-// the rename table in the agent-kit extraction plan.
-// The brief's draft import path was "@lares/agent-kit/extension" — the actual
-// `eve extension build` output (verified: packages/agent-kit/dist/index.d.ts) puts the
-// mount factory on the package's bare specifier instead, matching eve's own documented
+// contributes gets the mandatory `agent-kit__` prefix from it.
+// The mount factory is NOT at "@lares/agent-kit/extension": the actual
+// `eve extension build` output (verified: packages/agent-kit/dist/index.d.ts) puts it
+// on the package's bare specifier instead, matching eve's own documented
 // convention (`import crm from "@acme/crm"`, node_modules/eve/docs/extensions.md).
 import agentKit from "@lares/agent-kit";
 import { assertDeclarationIntegrity, grantedVaultAreas, isGranted } from "@lares/agent-kit/manifest";
@@ -50,7 +49,7 @@ export default agentKit({
         fetch,
       }
     : undefined,
-  // Task 2: `isAllowedPrincipal` is the ONLY thing that crosses into the extension —
+  // `isAllowedPrincipal` is the ONLY thing that crosses into the extension —
   // it's a closure over chief-of-staff's own `lib/principals.ts` (which reads
   // SLACK_ALLOWED_USER_IDS/TELEGRAM_PRINCIPAL_ID from process.env), handed to the extension
   // as a plain function value. `packages/agent-kit` never imports `lib/principals.ts` or

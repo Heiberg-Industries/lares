@@ -1,8 +1,8 @@
 /**
  * The owner clock's Slack-profile signal, refreshed every 30 minutes.
  *
- * The clock has three sources — the travel agent's trip window, this signal, then the configured home
- * (`@lares/agent-kit/owner-clock`). Trips cover the travel somebody filed; this covers the travel
+ * The clock has three sources — a declared trip window (from the optional trips file), this signal,
+ * then the configured home (`@lares/agent-kit/owner-clock`). Trips cover the travel somebody filed; this covers the travel
  * nobody filed, because Slack updates a user's timezone from the device itself. That is the whole
  * reason it is a source: it needs no human to remember anything.
  *
@@ -18,7 +18,7 @@
  * 30 minutes, not a minute: a timezone changes a handful of times a year, and each tick is an
  * outbound API call. The resolver's own 5-minute cache (`lib/owner-clock.ts`) sits in front of the
  * read side, so the end-to-end lag on a zone change is up to ~35 minutes — a slot schedule fires on
- * the previous clock at most once, which is the trade 's spec accepts explicitly.
+ * the previous clock at most once, which is an explicitly accepted trade.
  */
 import { defineSchedule } from "eve/schedules";
 
@@ -104,7 +104,7 @@ export default defineSchedule({
     if (!scheduleEnabled(loaded.definition, "owner-clock")) return;
 
     // Owner's own Slack user id: the first allowed principal, the same one the brief's Slack scan
-    // treats as "him" (`lib/principals.ts`). Unconfigured means this signal can never exist, which
+    // treats as "the owner" (`lib/principals.ts`). Unconfigured means this signal can never exist, which
     // is a deployment fault worth surfacing as a stale heartbeat — the same choice
     // `proposals-watch.ts` makes for a missing TELEGRAM_PRINCIPAL_ID.
     const userId = allowedSlackUserIds()[0];

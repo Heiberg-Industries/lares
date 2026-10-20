@@ -1,33 +1,30 @@
 /**
- * CRM routing — Oslo 09/13/17 by default; a per-installation setting since -s3
- * (`packages/agent-kit/src/schedule-settings.ts`'s `crm-routing` key — no more env var). Scans
+ * CRM routing — 09/13/17 on the owner's clock by default; a per-installation setting
+ * (`packages/agent-kit/src/schedule-settings.ts`'s `crm-routing` key). Scans
  * Twenty for contacts with new
  * meetings/emails since the last scan, classifies which brand pipeline + stage they belong
  * in, and — per newly-proposed signal — sends a Slack session-start prompt instructing the
  * resumed session to call the already-gated `twenty_create_opportunity`/`twenty_set_stage`
- * tool (Task 5). Those tools are `approval: always`, so calling one immediately renders
- * Owner's 👍/👎 approval card — **the same surface as today's cards**, replacing the old
- * runtime's `proposeOutbound` mechanism entirely (this schedule never calls a write tool
- * itself; it only asks the resumed session to).
+ * tool. Those tools are `approval: always`, so calling one immediately renders
+ * the owner's 👍/👎 approval card — **the same surface as every other approval card** (this
+ * schedule never calls a write tool itself; it only asks the resumed session to).
  *
- * Ported from `services/agent-runtime/bin/chief-of-staff.ts`'s `routeTick` (~lines 1205-1280), which
- * wires together `lib/adapters/route/engine.ts` (→ `lib/route-engine.ts`),
- * `.../classify.ts` (→ `lib/route-classify.ts`), and `.../store.ts` (→ `lib/route-store.ts`).
+ * Built on `lib/route-engine.ts`, `lib/route-classify.ts` and `lib/route-store.ts`.
  *
- * TIMEZONE / SLOT MATCHING: same "poll every minute, gate on Europe/Oslo wall-clock time"
+ * TIMEZONE / SLOT MATCHING: same "poll every minute, gate on the owner's wall-clock time"
  * shape `evening-brief.ts`/`morning-brief.ts`/`weekly-summary.ts` use, generalised to a LIST
  * of hours (09, 13, 17) rather than one — this is a fixed multi-slot cron like the briefs,
  * not a plain interval like `reping.ts`.
  *
  * DELIVERY ORDER — send BEFORE record, deliberately: `route_proposals` has no separate
- * "announced" ledger the way Notion/Atlas proposals do (Task 11) — a row's mere existence IS
+ * "announced" ledger the way Notion/Atlas proposals do — a row's mere existence IS
  * the permanent dedup key (`alreadyProposed`). Recording before a send that then fails would
  * silently and PERMANENTLY drop that proposal (every future scan would see it as
  * already-proposed and never re-surface it) — worse than the risk it would guard against.
- * Recording only after a confirmed send matches Task 11's own rule ("a THROWN send never
- * stamps"), and each proposal gets its own try/catch so one failure never blocks the rest of
- * the batch (an improvement on the old `bin/chief-of-staff.ts` tick, whose single try/catch around the
- * whole loop meant one bad send aborted every remaining proposal in that tick too).
+ * Recording only after a confirmed send matches the proposals watch's own rule ("a THROWN send
+ * never stamps"), and each proposal gets its own try/catch so one failure never blocks the rest
+ * of the batch (a single try/catch around the whole loop would let one bad send abort every
+ * remaining proposal in that tick).
  *
  * The engine's own cursor advance happens INSIDE `scan`, unconditionally, before this
  * schedule ever sees a proposal — so a signal that fails to send is not retried on the next
@@ -68,7 +65,7 @@ let warnedNoPrincipal = false;
  * this delegates to so every slot in the fleet comes off one formatter.
  *
  * — `tz` is the OWNER's timezone, resolved per tick (`ownerTz`). At home it is
- * `Europe/Oslo` and the route hours are the ones they have always been; `hours` keeps its position.
+ * the installation's home zone and the route hours are the ones configured; `hours` keeps its position.
  */
 export function dueRouteSlot(now: Date, tz: string, hours: number[]): string | null {
   for (const hour of hours) {
@@ -191,7 +188,7 @@ export interface CrmRoutingTick {
    *
    *  Resolves `true` for a completed scan pass (delivered proposals or none) and `false` when
    *  this call did no pass at all — not in slot, already fired this slot, a previous scan still
-   *  running, or the outer catch swallowed a thrown failure. fix round 1: only `true`
+   *  running, or the outer catch swallowed a thrown failure: only `true`
    *  may stamp the schedule's heartbeat. */
   tick(now: Date, hours: number[], tz: string): Promise<boolean>;
 }
@@ -252,9 +249,9 @@ export function makeCrmRoutingTick(
             continue;
           }
           // A genuine HOLD: NOT recorded, deliberately — the same posture as a failed send one line
-          // up, so nothing is marked as told-about that he was not told. ALREADY SEEN falls through
-          // to `recordProposal` instead (fix round 1): a `sent` row for this signal proves the
-          // proposal reached his DM, and the row below is the record of that, not a second telling.
+          // up, so nothing is marked as told-about that the owner was not told. ALREADY SEEN falls through
+          // to `recordProposal` instead: a `sent` row for this signal proves the
+          // proposal reached the owner's DM, and the row below is the record of that, not a second telling.
           if (!initiation.handled) continue;
 
           try {
@@ -268,7 +265,7 @@ export function makeCrmRoutingTick(
             });
             delivered += 1;
           } catch (err) {
-            // Sent but not recorded: he hears about this one twice at worst (a future scan
+            // Sent but not recorded: the owner hears about this one twice at worst (a future scan
             // may re-propose the same signal). Better a repeat than a silently unrecorded row.
             console.error(
               `crm-routing: could not record proposal for ${p.personHandle} AFTER a successful send`,
@@ -313,9 +310,9 @@ export default defineSchedule({
     const now = new Date();
     // The owner clock first, because the slot cannot be computed without it. It is NOT a round trip
     // per tick: `ownerTz` serves a 5-minute cache and falls back to the home zone rather than
-    // throwing (lib/owner-clock.ts), so the pre-check below is as cheap as it was before .
+    // throwing (lib/owner-clock.ts), so the pre-check below is as cheap as a plain read.
     const tz = await ownerTz();
-    // -s3 — the hour list is a setting now, cached in-process for a few minutes
+    // The hour list is a setting, cached in-process for a few minutes
     // (lib/schedule-hours.ts) so this per-minute pre-check does not query Postgres either.
     const hours = await scheduleHours("crm-routing");
     // Pre-check before touching the identity registry/Twenty/Slack at all — avoids that work on the
@@ -339,9 +336,8 @@ export default defineSchedule({
         tablesEnsured = true;
       }
 
-      // Self-handles (the owner's own email addresses) so the engine never treats his own
-      // sent mail/organised meetings as a contact signal — same purpose as the old runtime's
-      // EMAIL_ALLOWED_SENDERS, sourced from the identity registry instead of a second env var
+      // Self-handles (the owner's own email addresses) so the engine never treats the owner's own
+      // sent mail/organised meetings as a contact signal — sourced from the identity registry
       // (matching evening-brief.ts's own `myAddresses`).
       const selfHandles = await listAliases(pool, configuredOwnerId(), "email");
       // The org's own domains (sql/001_baseline.sql orgs.domains): colleagues and the org's own product

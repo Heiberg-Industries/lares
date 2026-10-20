@@ -1,11 +1,7 @@
 // Surface the top CRM contacts to reach out to, ranked by ICP fit and relationship warmth.
-// Read-only, UNGATED — matches the old hand exactly (`writes: []`).
+// Read-only, UNGATED (`writes: []`).
 //
-// Ported from `services/agent-runtime/lib/adapters/hands/commercial.ts` (the thin hand) +
-// the `commercial` entry in `integrations/` (the wiring this file replaces, since chief-of-staff
-// has no integration-registry layer).
-//
-// This is THE gated surface `listPeople` is meant to be reached through (Task 5's deliberate
+// This is THE gated surface `listPeople` is meant to be reached through (the deliberate
 // exclusion of `listPeople` as a standalone tool — "the full-contact-dump guard"): the model
 // never sees the raw Twenty dump, only `surfaceCommercial`'s scored, filtered, top-8-per-brand
 // output.
@@ -66,8 +62,7 @@ function liveDeps(): SurfaceDeps {
     think: (prompt) =>
       gatewayComplete(prompt, { model: process.env["COMMERCIAL_MODEL"], purpose: "brain", maxOutputTokens: 256 }),
     getCompanyForPerson,
-    // opportunitiesForPerson intentionally left unwired — matching the old registry's own
-    // production wiring, which never set it either (SurfaceDeps treats it as a fully
+    // opportunitiesForPerson intentionally left unwired (SurfaceDeps treats it as a fully
     // optional pipeline-annotation extra).
     brands: configuredBrands(),
     now: () => new Date(),

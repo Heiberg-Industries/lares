@@ -1,21 +1,21 @@
 /**
- * The evening prep pass — 20:00 Oslo. Tomorrow's external meetings, plus whatever is owed to
+ * The evening prep pass — 20:00 on the owner's clock. Tomorrow's external meetings, plus whatever is owed to
  * the people in them, while there is still an evening in which to act on it.
  *
- * DELIBERATE CONTRACT (the Wave-1 plan's ONE feature exception — see `lib/brief-content.ts`'s
+ * DELIBERATE CONTRACT (the ONE feature exception — see `lib/brief-content.ts`'s
  * header): if `buildEveningBrief` returns `null`, NOTHING is sent — not an empty message, not
  * "nothing to prepare for tonight". Silence is the correct, expected output on most evenings.
  *
  * TIMEZONE: Vercel evaluates `cron` in UTC, and an offset moves with the season — a fixed cron
  * string cannot itself track that. This fires every minute and only actually runs the pass when
- * the OWNER's wall clock reads 20:00 (`ownerTz` → `slotIn`, replacing this file's own
- * copy of `osloSlotNow`). On an Oslo day the resolver returns `Europe/Oslo` and the slot is the
- * one it has always been — the change shows only on a day the owner is somewhere else, which is
- * exactly the day a 20:00-Oslo prep pass fired at the wrong end of his evening.
+ * the OWNER's wall clock reads 20:00 (`ownerTz` → `slotIn`). On a day the owner is at home the
+ * resolver returns the home zone and the slot is the configured one — the clock only moves on a
+ * day the owner is somewhere else, which is exactly the day a home-clock prep pass would fire at
+ * the wrong end of the owner's evening.
  *
  * PROACTIVITY: the send passes `@lares/agent-kit`'s gate as a `scheduled` initiation
  * keyed on the slot. A suppression (quiet hours, DND) logs one line and STILL stamps the pass —
- * a brief he asked not to receive is not a dead schedule.
+ * a brief the owner asked not to receive is not a dead schedule.
  *
  * `lastSlot`/`running` are module-scope, matching `proposals-watch.ts`'s `liveState` —
  * persisting across cron fires within the same warm process, single-fire-per-owner-day.
@@ -23,11 +23,11 @@
  * ONE CLOCK FOR THE WHOLE PASS. The `tz` that decides the slot also decides which day is
  * "tomorrow" (the meetings, the itinerary) and the day the delivery stamp names — ADR 0014 rule
  * 11: date and time always come off the same clock. Before, the slot followed the owner and the
- * day stayed at home, so 20:00 in New York (past midnight at home) prepared him for the day AFTER
+ * day stayed at home, so 20:00 in New York (past midnight at home) prepared the owner for the day AFTER
  * tomorrow. What a clock that MOVES mid-day does, stated once because it is a choice:
  *   - never two: the slot key is `<owner date>T20`, and the ledger's already-seen rule holds it
- *     for good, so a date he meets twice (a jump west) gets one pass, not two;
- *   - sometimes none: a jump east past his 20:00 leaves that date without a pass, and it is not
+ *     for good, so a date the owner meets twice (a jump west) gets one pass, not two;
+ *   - sometimes none: a jump east past the owner's 20:00 leaves that date without a pass, and it is not
  *     caught up — the choice ADR 0014 rule 4 already makes for a slot lost to quiet hours (a late
  *     prep pass is worse than none). A skipped evening is this pass's existing fail-safe: nothing
  *     is stamped, so the next morning brief reports what it would have covered.
@@ -96,18 +96,17 @@ import { agentName } from "../../lib/agent-name.js";
 let warnedNoPrincipal = false;
 
 /**
- * Task 10 (B5) — 20_000 → 35_000, the old 20s plus `RESOLUTION_PASS_TIMEOUT_MS` (15s)
+ * 20_000 → 35_000, the base 20s plus `RESOLUTION_PASS_TIMEOUT_MS` (15s)
  * and nothing else, matching the arithmetic morning-brief.ts spells out at its own copy of this
  * constant. `gatherOpenObligations` now runs a cross-channel resolution check and a bounded
  * model read INSIDE this same budget; adding the stage's own budget on top is what keeps the
  * two additive rather than letting the new stage eat the Gmail scan's headroom.
  *
- * The same constant still bounds this pass's calendar read, which gained nothing from Task 10 —
+ * The same constant still bounds this pass's calendar read, which gained nothing from the cross-channel check —
  * it is simply the one budget this schedule has, and being 15s more generous to a read that
  * takes ~1s costs nothing but a slightly longer worst-case silence.
  *
- * AND IT IS SPENT TWICE PER TICK, exactly as in morning-brief.ts (whose own note the branch
- * review corrected for getting this wrong): `run` awaits tomorrow's calendar under this budget,
+ * AND IT IS SPENT TWICE PER TICK, exactly as in morning-brief.ts: `run` awaits tomorrow's calendar under this budget,
  * then — only after that resolves — the obligations gather under it again. Worst case moves from
  * 20 + 20 + 1.5 ≈ 41.5s to 35 + 35 + 1.5 ≈ 71.5s of a 60s tick, so this pass can now overrun the
  * minute where before it could not. Safe for the same STRUCTURAL reason: `running` makes the next
@@ -116,15 +115,15 @@ let warnedNoPrincipal = false;
  */
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 35_000;
 
-/** `facts` defaults to `[]` — . See buildMorningPrompt's own note for why standing
+/** `facts` defaults to `[]`. See buildMorningPrompt's own note for why standing
  *  facts ride as a parameter rather than as a `BriefContent` field. */
 export function buildEveningPrompt(
   content: BriefContent,
   facts: readonly StandingFact[] = [],
-  // Task 10 (B5) — see `buildMorningPrompt`'s own note; the two briefs render this
+  // See `buildMorningPrompt`'s own note; the two briefs render this
   // identically so a gap disclosed at 08:00 reads the same way at 20:00.
   unreadableSources: readonly string[] = [],
-  // -s4 — rendering options; this brief only ever reads `render.tz` (it renders no
+  // Rendering options; this brief only ever reads `render.tz` (it renders no
   // deadlines, so `lang` is unused here), same shape as `buildMorningPrompt`'s own `render`.
   // Omitting it defaults `tz` to the home zone (OWNER_HOME_TZ, UTC if unset).
   render: BriefRender = {},
@@ -142,7 +141,7 @@ export function buildEveningPrompt(
   const meetingLines = labeledContext([{
     label: "Tomorrow's calendar",
     note: "meetings, and the blocks he set aside",
-    // -s4 GOTCHA — see morning-brief.ts's own note: `.map(commitmentLine)` would pass the
+    // GOTCHA — see morning-brief.ts's own note: `.map(commitmentLine)` would pass the
     // array index as `tz`, so this is wrapped in an arrow instead.
     content: commitments.map((m) => commitmentLine(m, tz)).join("\n"),
     emptyText: "(none)",
@@ -161,7 +160,7 @@ export function buildEveningPrompt(
         .map((o: Obligation) =>
           `- ${o.counterpartyName} <${o.counterpartyAddress}> — waiting ${o.ageHours}h` +
           `${o.isRePing ? ", they've written again since" : ""} — re: ${o.subject || "(no subject)"}` +
-          // Task 10 (B5) — the same clause the morning brief renders, from the same
+          // The same clause the morning brief renders, from the same
           // field, so the two briefs can never explain the same obligation differently.
           ` — why: ${o.reason ?? "on the radar"}`,
         )
@@ -170,7 +169,7 @@ export function buildEveningPrompt(
     thirdParty: true,
   }]);
 
-  // Task 10 (B5) — a cross-channel lookup that could not be read, as a labeled block.
+  // A cross-channel lookup that could not be read, as a labeled block.
   // Mirrors `buildMorningPrompt`'s "Sources behind that list": the whole point is that a
   // shorter list must never be mistaken for a complete one.
   const obligationsSection = unreadableSources.length > 0
@@ -193,7 +192,7 @@ export function buildEveningPrompt(
     ...(travelSection ? [travelSection, ""] : []),
     obligationsSection,
     "",
-    // — what he has told her. Empty drops out entirely (`labeledContext`).
+    // — what the owner has told the agent. Empty drops out entirely (`labeledContext`).
     ...(factsSection ? [factsSection, ""] : []),
     "For EACH participant listed above, call person_lookup now (pass their email) and read what",
     "comes back. Do not write about anyone you have not looked up, and do not fill a gap from",
@@ -217,19 +216,19 @@ export function buildEveningPrompt(
     // WHEN a real departure may be looked up. It matters more here: 20:00 is when there is still
     // an evening in which to act on "the 14:05 is the one".
     //
-    // "tomorrow" is not decoration (review finding 2). This pass composes tonight about the day
-    // after, so the journey's starting point is where he will be TOMORROW — and on the nights
-    // this feature earns its keep (away, or travelling overnight) that is not where he is now.
-    // The helper's `today` wording would send him to a station in the wrong city.
+    // "tomorrow" is not decoration. This pass composes tonight about the day
+    // after, so the journey's starting point is where the owner will be TOMORROW — and on the nights
+    // this feature earns its keep (away, or travelling overnight) that is not where the owner is now.
+    // The helper's `today` wording would point at a station in the wrong city.
     ...transitClause(commitments, travel, "tomorrow", tz, render.transit ?? true),
-    // — the same one sentence the morning brief carries, from the same helper, so the
-    // two briefs can never disagree about what his standing facts are FOR.
+    // The same one sentence the morning brief carries, from the same helper, so the
+    // two briefs can never disagree about what the owner's standing facts are FOR.
     ...standingFactsClause(facts),
     "TONE: Write to inform, not to prove checking happened. Never state that nothing is",
     "outstanding. Under 200 words. Plain prose.",
     "",
-    // review fix — the same named prohibition the morning brief carries, for the same
-    // reason: this turn is the app's, nothing in it is something he said, and both tools refuse
+    // The same named prohibition the morning brief carries, for the same
+    // reason: this turn is the app's, nothing in it is something the owner said, and both tools refuse
     // it anyway. Told AND blocked.
     "This is a PREPARATION message: REPORT ONLY. Take no action and propose nothing this turn —",
     "no emails, no drafts, no calendar changes, no reminders, no notes, no 👍 confirmation cards.",
@@ -253,7 +252,7 @@ export default defineSchedule({
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
     const tz = await ownerTz();
-    // -s2 — see morning-brief.ts's own note: the hour is a setting now, cached in-process
+    // See morning-brief.ts's own note: the hour is a setting now, cached in-process
     // for a few minutes (lib/schedule-hours.ts).
     const [hour] = await scheduleHours("evening-brief");
     const slot = slotIn(now, tz, hour);
@@ -265,7 +264,7 @@ export default defineSchedule({
     try {
       const pool = getPool();
 
-      // -s2 — see morning-brief.ts's own note on `alreadySentToday`: the hour can change
+      // See morning-brief.ts's own note on `alreadySentToday`: the hour can change
       // mid-day, and the ledger's dedupe is keyed on the slot (hour included), so this guard
       // holds "at most one per owner-day" a second way, checked before any of the gathering
       // below.
@@ -303,7 +302,7 @@ export default defineSchedule({
       try {
         meetings = await withTimeout(
           (async () => {
-            // every calendar of every wired account, not `primary` of one — his
+            // every calendar of every wired account, not `primary` of one — the owner's
             // meetings live on shared and second-account calendars too.
             const listEvents = (o: { timeMin: string; timeMax: string; max: number }) =>
               listEventsEverywhere(
@@ -325,7 +324,7 @@ export default defineSchedule({
         meetings = [];
       }
 
-      // Task 10 (B5) — see morning-brief.ts's own note: filled by the pass when a
+      // See morning-brief.ts's own note: filled by the pass when a
       // cross-channel lookup could not be read, and rendered as a "Sources behind that list"
       // note so a shorter list is never mistaken for a complete one.
       let unreadableSources: string[] = [];
@@ -348,9 +347,9 @@ export default defineSchedule({
                 gmail: { searchThreadIds: gmail.searchThreadIds, readThread: gmail.readThread },
                 dismissed: () => dismissedThreads(pool),
                 upsertSeen: (o, seenAt) => upsertSeen(pool, o, seenAt, configuredOwnerId()),
-                // ─── Task 10 (B5) ────────────────────────────────────────────────────
+                // ─── Cross-channel resolution ─────────────────────────────────────────
                 // The same stage the morning pass runs, minus the Slack leg — this schedule
-                // scans no Slack conversations (D4), so it has no own-activity map to consult
+                // scans no Slack conversations (Slack obligations are morning-brief-only), so it has no own-activity map to consult
                 // and answers "no evidence" rather than pretending to have looked. That is the
                 // fail-open direction: an unconsulted source can only ever KEEP an obligation.
                 resolved: () => resolvedThreads(pool),
@@ -375,11 +374,11 @@ export default defineSchedule({
                   return read;
                 },
                 onUnreadable: (sources) => { unreadableSources = sources; },
-                // D4: no `slack` here, DELIBERATELY — this pass pushes to Telegram via
-                // `nightBefore` below, and Slack obligations are morning-brief-only (the owner's
-                // ruling; proactive delivery stays paused fleet-wide). `GatherObligationsDeps.slack`
+                // No `slack` here, DELIBERATELY — this pass pushes to Telegram via
+                // `nightBefore` below, and Slack obligations are morning-brief-only (an
+                // owner rule). `GatherObligationsDeps.slack`
                 // is optional exactly so this omission compiles and behaves identically to
-                // pre-. See morning-brief.ts's own call site for the one place it IS wired.
+                // before the Slack leg existed. See morning-brief.ts's own call site for the one place it IS wired.
               },
               now,
             );
@@ -407,8 +406,8 @@ export default defineSchedule({
       }
 
       // — best-effort, and the `.catch` is the whole point: the standing facts are
-      // context, not content. A Postgres hiccup here must cost her the facts, never the brief.
-      // BOUNDED (fix round 1), because `.catch` only fires on a rejection: an unresponsive `db`
+      // context, not content. A Postgres hiccup here must cost the agent the facts, never the brief.
+      // BOUNDED, because `.catch` only fires on a rejection: an unresponsive `db`
       // container makes `pool.query` hang forever, and this brief's whole tick would hang with
       // it. `withTimeout` is what turns that stall into the rejection this catch handles.
       const facts = await withTimeout(
@@ -447,7 +446,7 @@ export default defineSchedule({
 
       // Stamp ONLY after the send has actually gone out — see buildEveningBrief's own
       // doc-comment. Marking on an unconfirmed send would suppress tomorrow's copy of a
-      // message he never received.
+      // message the owner never received.
       // — the owner's tomorrow, the day the meetings above were listed for; the morning
       // pass reads it back as ITS today on the same clock (`dateIn(now, tz)`).
       const day = nightBeforeCoveredDay(now, tz);

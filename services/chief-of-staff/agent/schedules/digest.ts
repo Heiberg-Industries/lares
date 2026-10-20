@@ -1,7 +1,6 @@
 /**
- * The digest — 09:00 and 17:00 Europe/Oslo, plus an on-demand drain of `digest_requests`.
+ * The digest — 09:00 and 17:00 on the owner's clock, plus an on-demand drain of `digest_requests`.
  *
- * Replaces the old runtime's standalone digest CONTAINER (`services/agent-runtime/bin/digest.ts`).
  * One pass: pull new Karakeep saves and Notion saved links into `_inbox`, list `_inbox`, classify each item through the
  * gateway, file the confident ones (write + retire the source in ONE commit), record a skip and
  * ask about the rest, then post ONE Slack summary with any error detail as a thread reply.
@@ -14,10 +13,10 @@
  *
  * TIMEZONE: the house "poll every minute, gate on the wall clock" shape — a fixed cron string
  * cannot track a seasonal offset. `dueScheduledSlot` requires `minute === 0`, so a container down
- * across the whole slot minute misses that slot; that is pre-existing house behaviour (stability
- * finding S3b), ported rather than quietly changed. made the clock the OWNER's
- * (`ownerTz`, cached per tick): at home it answers `Europe/Oslo` and 09:00/17:00 are the slots
- * they have always been.
+ * across the whole slot minute misses that slot; that is pre-existing house behaviour,
+ * not quietly changed. The clock is the OWNER's
+ * (`ownerTz`, cached per tick): at home it answers the configured home zone and 09:00/17:00 are
+ * the slots as configured.
  *
  * PROACTIVITY: the SCHEDULED pass's Slack summary passes `@lares/agent-kit`'s gate as a
  * `scheduled` initiation keyed on the slot. An ON-DEMAND pass (`digest_run`) does NOT — it is a
@@ -26,12 +25,11 @@
  * Only the message is withheld, and the morning brief's held-back line names it.
  *
  * THREE GATES, all fail-closed: this definition's own `schedules.digest.on` (read fresh at
- * every tick via `scheduleEnabled`, — silence means on, same as every other
+ * every tick via `scheduleEnabled`; silence means on, same as every other
  * schedule), the service-wide `EVE_SCHEDULES_LIVE` (ANDed into `scheduleEnabled` itself), and
- * this port's own `EVE_DIGEST_LIVE`. The last exists because `claimDigestRequests` is a
- * DELETE … RETURNING — while the old container still runs, two consumers would race for
- * on-demand rows and double-post scheduled passes. The cutover flips this gate and stops that
- * container in ONE change.
+ * this schedule's own `EVE_DIGEST_LIVE`. The last exists because `claimDigestRequests` is a
+ * DELETE … RETURNING — while any other consumer of the same queue is running, two consumers would
+ * race for on-demand rows and double-post scheduled passes.
  *
  * SLACK DELIVERY is a RAW `callSlackApi` postMessage — no session, no model turn — matching
  * `email-triage.ts` and `reminders.ts`, which use the same primitive for the same reason: the
@@ -156,8 +154,7 @@ async function postToSlack(channel: string, text: string, threadTs?: string): Pr
 /**
  * Karakeep → `_inbox`, best-effort. Runs FIRST so the same pass enriches and files what it pulls.
  *
- * Writes RAW and uncommitted (`writeRawNote`), exactly as the old service did via `writeRaw` —
- * a commit per imported bookmark would be noise, and the digest's own filing step commits the
+ * Writes RAW and uncommitted (`writeRawNote`), — a commit per imported bookmark would be noise, and the digest's own filing step commits the
  * note properly a moment later anyway. Unconfigured (no URL or key) is a silent no-op, by design.
  */
 async function karakeepPass(log: (m: string) => void): Promise<void> {
@@ -167,7 +164,7 @@ async function karakeepPass(log: (m: string) => void): Promise<void> {
     token = readFileSync(
       process.env["KARAKEEP_API_KEY_FILE"] ?? "/run/secrets/karakeep-api-key", "utf8",
     ).trim();
-  } catch { /* unconfigured — skip, as the old service did */ }
+  } catch { /* unconfigured — skip */ }
   if (!base || !token) return;
 
   const db = getPool();
@@ -296,7 +293,7 @@ export async function runDigestPass(
           target,
         });
         // The spine adapter deliberately never throws. A false result means it was unconfigured,
-        // unreachable or rejected the payload, so the old direct Slack delivery remains the
+        // unreachable or rejected the payload, so the direct Slack delivery remains the
         // lossless fallback (and supplies a ts for an error-detail thread reply).
         return accepted ? undefined : postToSlack(target, view.text);
       };
@@ -375,7 +372,7 @@ export default defineSchedule({
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
     const tz = await ownerTz();
-    // -s3 — the slots are a setting now, cached in-process for a few minutes
+    // The slots are a setting, cached in-process for a few minutes
     // (lib/schedule-hours.ts) so this per-minute tick does not query Postgres for an answer
     // that changes only a handful of times a year.
     const hours = await scheduleHours("digest");

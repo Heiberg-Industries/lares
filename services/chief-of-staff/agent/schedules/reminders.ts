@@ -1,8 +1,7 @@
 /**
  * Reminder delivery — the eve schedule.
  *
- * Ported from `services/agent-runtime/lib/adapters/reminders/loop.ts`'s `makeReminderLoop`:
- * fetch due reminders, deliver each to its pinned door (re-routing through `fallbackDoor` when
+ * Fetch due reminders, deliver each to its pinned door (re-routing through `fallbackDoor` when
  * the pinned door isn't registered or its send throws), re-arm any recurrence BEFORE marking
  * delivered (at-least-once — a crash between send and markDelivered may re-deliver, but a
  * recurrence is never silently lost), and let one delivery failure skip that row rather than
@@ -13,7 +12,7 @@
  * whole point of a reminder. A held-back reminder stays `pending` (never re-armed, never marked
  * delivered), so it is reconsidered every tick and arrives when the gate reopens. The cost of that
  * shape, stated plainly: a long DND spell writes one suppressed ledger row per tick per reminder.
- * The alternative — dropping it — is the failure mode this whole ticket exists to avoid.
+ * The alternative — dropping it — is the failure mode this design exists to avoid.
  *
  * DESIGN NOTE — verbatim delivery, not an agent turn:
  *
@@ -21,9 +20,9 @@
  * RESUMES AN AGENT SESSION with `text` as the prompt (`node_modules/eve/docs/channels/
  * overview.mdx`: "`send(address, input)` to start or resume a session"; `schedules.mdx`'s own
  * example passes an instruction — "Check for new critical alerts..." — not literal content).
- * That is architecturally different from the OLD system's loop, which posts a reminder's exact
- * text with no LLM involved at all. Global Constraints require a faithful port: what reaches
- * Owner must be the reminder's own wording, not a model's paraphrase of it.
+ * That is architecturally different from this loop, which posts a reminder's exact
+ * text with no LLM involved at all. What reaches
+ * the owner must be the reminder's own wording, not a model's paraphrase of it.
  *
  * The plan anticipated this tension and deferred it to execution time, pointing at the
  * bundled docs for "any more direct raw send primitive that bypasses the agent turn entirely".
@@ -71,7 +70,7 @@ import { connectedDoors } from "../../lib/delivery.js";
 import { agentName } from "../../lib/agent-name.js";
 import { putInbox, recordFallback } from "../../lib/web-inbox.js";
 
-// ─── Public types (mirrors services/agent-runtime/lib/adapters/reminders/loop.ts) ─────────
+// ─── Public types ──────────────────────────────────────────────────────────────────────
 
 /** Door interface: each door can send a message to a threadRef. */
 export interface ReminderDoor {
@@ -110,7 +109,7 @@ export interface ReminderTickDeps {
   resolveTarget?: (door: string) => string | undefined;
   /**
    * — the proactivity gate each delivery passes: `scheduled` class with
-   * `ownerSetTime: true`, because the owner chose this minute himself. That exempts a reminder from
+   * `ownerSetTime: true`, because the owner chose this minute personally. That exempts a reminder from
    * quiet hours (a 06:30 alarm is not an interruption) and from the attention ceilings, leaving DND
    * and already-seen — the two that mean "not now" whoever asked.
    *
@@ -211,7 +210,7 @@ export function makeReminderTick(deps: ReminderTickDeps): ReminderTick {
       return;
     }
     // `handled` and not `sent` means ALREADY SEEN — a `sent` row for `reminder/<id>` exists, so the
-    // text DID reach him; the only reason this row is due again is that `markDelivered` below failed
+    // text DID reach the owner; the only reason this row is due again is that `markDelivered` below failed
     // after that send (the at-least-once window the next comment describes). Falling through is what
     // closes it: the re-arm and the mark are exactly what should have happened then, and both are
     // idempotent-by-key. Treating it as a hold instead would leave the row pending FOREVER, re-firing

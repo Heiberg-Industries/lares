@@ -1,26 +1,25 @@
 /**
  * The re-ping nudge — the ONE unprompted message in this feature that is not on a
- * fixed clock slot, because it fires on a FACT: someone messaged again on top of a message he
- * never answered (`assignSurfaces`'s `interrupt` bucket — see `lib/brief-content.ts`'s own
+ * fixed clock slot, because it fires on a FACT: someone messaged again on top of a message the
+ * owner never answered (`assignSurfaces`'s `interrupt` bucket — see `lib/brief-content.ts`'s own
  * header on why only a re-ping may buy an interrupt). No model decides this.
  *
- * Ported from `services/agent-runtime/bin/chief-of-staff.ts`'s re-ping tick (~lines 1282-1398) and deduped in
+ * Deduped in
  * the database (`lib/obligations-store.ts`'s `announcedRePings`, read fresh every tick, never
  * cached) — the failure this feature must not reproduce is an earlier alerting agent's: messages arriving often enough
- * that he stops reading them.
+ * that the owner stops reading them.
  *
- * THE CAP IS NO LONGER THIS FILE'S. It used to keep its own in-memory count of the Oslo
+ * THE CAP IS NO LONGER THIS FILE'S. It used to keep its own in-memory count of the owner's
  * day (`OBLIGATION_REPING_MAX_PER_DAY`, default 3) and slice the batch to fit. That count died with
  * every container restart, applied to this lane alone, and was invisible to anything else that
- * might also be ringing his phone. The identical ceiling now lives in `@lares/agent-kit`'s
+ * might also be ringing the owner's phone. The identical ceiling now lives in `@lares/agent-kit`'s
  * proactivity gate — 3 escalations per owner-day per door, in the `initiations` ledger, shared by
  * every lane and visible on the console — so each thread is sent as its OWN `escalation` initiation
  * and the fourth of a day is deferred by the engine rather than sliced off here. The OFF switch
  * below is untouched by that change.
  *
- * `OBLIGATION_REPING_ENABLED` is read here but is NOT set anywhere in this repo — per the
- * task brief, it lives only in the box's compose override/.env, wired up in Task 15 (a
- * live-deploy task, not this one). Unset or anything other than the literal string "1" means
+ * `OBLIGATION_REPING_ENABLED` is read here but is NOT set anywhere in this repo — it lives
+ * only in the installation's own environment settings. Unset or anything other than the literal string "1" means
  * OFF, the same fail-closed pattern as `scheduleGate`.
  */
 import { defineSchedule } from "eve/schedules";
@@ -117,9 +116,9 @@ export default defineSchedule({
                 gmail: { searchThreadIds: gmail.searchThreadIds, readThread: gmail.readThread },
                 dismissed: () => dismissedThreads(pool),
                 upsertSeen: (o, seenAt) => upsertSeen(pool, o, seenAt, configuredOwnerId()),
-                // D4: no `slack` here, DELIBERATELY — this schedule sends a Telegram
+                // No `slack` here, DELIBERATELY — this schedule sends a Telegram
                 // push straight from `assignSurfaces(...).interrupt` (below), the exact proactive
-                // surface D4 forbids Slack from ever reaching. `brief-content-slack.ts`'s emitted
+                // surface Slack obligations must never reach. `brief-content-slack.ts`'s emitted
                 // `theirUnansweredCount` cap already makes `isRePing` mathematically false for any
                 // Slack-sourced Obligation, so wiring `slack` in here would be structurally inert
                 // even if done — but leaving it out entirely is what makes the omission obvious to
@@ -143,21 +142,21 @@ export default defineSchedule({
       });
       if (!announced) return;
 
-      // Task 10 (B5) — a thread he has already handled on ANOTHER channel must never buy
+      // A thread the owner has already handled on ANOTHER channel must never buy
       // an interrupt. `resolvedThreads` is read fresh (like `announcedRePings` above, and for
       // the same reason), and `dropResolved` applies the one rule the briefs apply: a recorded
       // resolution only counts while it is NEWER than their last message — they may have
-      // written again since he answered, and that is a new obligation, not a resolved one.
+      // written again since the owner answered, and that is a new obligation, not a resolved one.
       //
       // Read failure is FAIL-OPEN, unlike `announcedRePings` above: a lost dedupe record risks
-      // re-announcing something he was already told, while a lost resolution record risks one
+      // re-announcing something the owner was already told, while a lost resolution record risks one
       // nudge about something already handled. Both are annoyances; only the second keeps a
       // genuine dropped ball visible, and this lane exists for dropped balls.
       //
       // This is also the ONE cross-channel step this schedule takes. No `resolve`, no `intent`
       // is wired into its gather above: `interrupt` is a mechanical fact (they wrote again on
       // top of their own unanswered message), and nothing a model says may add to it — nor
-      // subtract, at 48 ticks a day, from the one surface allowed to reach through to him.
+      // subtract, at 48 ticks a day, from the one surface allowed to reach through to the owner.
       const resolvedElsewhere = await resolvedThreads(pool).catch((e) => {
         console.error("reping: could not read recorded resolutions — every re-ping stays eligible this tick", e);
         return new Map<string, Date>();
@@ -184,12 +183,12 @@ export default defineSchedule({
           );
         } catch (err) {
           // Leaving the thread unmarked is the whole point — the next tick retries. A thrown send
-          // means nothing reached him, and the gate wrote no `sent` row either.
+          // means nothing reached the owner, and the gate wrote no `sent` row either.
           console.error(`reping: send FAILED for thread ${o.threadId} — retrying next tick`, err);
           continue;
         }
         // The door's daily escalation ceiling is spent: every later thread in this batch would get
-        // the same answer, so stop asking (fix round 1, minor). One deferral row per item is the
+        // the same answer, so stop asking. One deferral row per item is the
         // audit trail; three more identical decisions are not.
         if (initiation.reason === "door-ceiling") {
           console.log(
@@ -201,7 +200,7 @@ export default defineSchedule({
         // Held back (quiet hours, DND, the owner-wide ceiling). Unmarked, so it stays eligible; a
         // deferral is reused rather than re-decided on every tick. ALREADY SEEN falls through to the
         // mark instead: a `sent` row for `reping/<threadId>#<count>` proves this exact bump reached
-        // him, so `markRePingAnnounced` is finishing the write that failed, not nudging twice.
+        // the owner, so `markRePingAnnounced` is finishing the write that failed, not nudging twice.
         if (!initiation.handled) continue;
 
         nudged += 1;

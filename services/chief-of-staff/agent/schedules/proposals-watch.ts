@@ -1,12 +1,11 @@
 /**
  * Notion + Atlas proposal announcements — the eve schedule.
  *
- * Ported from `services/agent-runtime/bin/chief-of-staff.ts`'s `proposalsTick`/`atlasProposalsTick`
- * (~lines 906-1123): poll each store for proposals nobody has been told about
+ * Poll each store for proposals nobody has been told about
  * (`announced_at IS NULL`), tell the owner in ONE turn per lane covering everything new (not
  * one message per proposal), then stamp `announced_at` only after the message actually went
  * out. Two independent lanes, not merged — different tables, different cadences, different
- * failure blast radius (the old system's own reasoning, preserved here): a failure
+ * failure blast radius: a failure
  * announcing or stamping Notion proposals must never block the Atlas lane, or vice versa.
  *
  * DESIGN NOTE — a real agent turn, unlike `reminders.ts`:
@@ -16,19 +15,16 @@
  * involved. This schedule is the opposite case: the whole point of announcing a proposal is
  * for the agent to look at what's open and be ready to ACT on it — specifically, to call the
  * gated `notion_resolve_proposal`/`atlas_resolve_proposal` tool once the owner responds, which
- * is what renders eve's inline-keyboard approval card (the eve-native replacement for the
- * old system's Telegram `np:a:`/`np:r:`/`ap:a:`/`ap:r:` buttons — see those tools' own
+ * is what renders eve's inline-keyboard approval card (see those tools' own
  * headers). That requires an actual resumed agent session, so this uses eve's documented
  * handler-form pattern verbatim (`node_modules/eve/docs/schedules.mdx`'s own example):
  * `to(telegram, { chatId }).send(prompt, { auth: appAuth })`.
  *
- * One consequence of using the documented session-send API instead of the old system's
- * `runScheduledTurn`: that old call returned the turn's reply text, so the old ticks could
- * treat a non-empty reply as proof the owner was actually told (`bin/chief-of-staff.ts`'s own comment:
- * "A NON-EMPTY reply is the only proof he was actually told"). `to(...).send` resolves to
+ * One consequence of using the documented session-send API: a reply text would be proof the
+ * owner was actually told, but `to(...).send` resolves to
  * an eve `Session`, not reply text — the framework does not expose that proof through this
  * API. This tick uses the next-best signal it has: `door.send` resolving without throwing.
- * That is weaker than the old check (a session that starts but never sends a visible message
+ * That is weaker than proof of a reply (a session that starts but never sends a visible message
  * would still count as "delivered" here) but is the strongest signal the documented surface
  * gives, and it preserves the property that actually matters for the defect class this
  * schedule exists to avoid: a THROWN send never stamps `announced_at`, so a proposal whose
@@ -78,7 +74,7 @@ export interface ProposalsWatchStore {
   notionMarkAnnounced(id: number): Promise<void>;
   atlasUnannounced(): Promise<AtlasUnannouncedRow[]>;
   atlasMarkAnnounced(id: number): Promise<void>;
-  /** The memory lane (W4C-s5): a change to something the owner told the agent, waiting on
+  /** The memory lane: a change to something the owner told the agent, waiting on
    *  their decision. Same contract as the two above; what differs is the announcement, which
    *  carries no buttons — see `lib/proposal-buttons.ts`'s `buildMemoryAnnouncement`. */
   memoryUnannounced(): Promise<MemoryProposalRow[]>;
@@ -124,7 +120,7 @@ export function freshState(): ProposalsWatchState {
 
 export interface ProposalsWatchTick {
   /** Resolves `true` only when EVERY lane completes its pass; `false` if any lane's outer catch
-   *  swallowed a failure or was still running from a previous call. fix round 1. */
+   *  swallowed a failure or was still running from a previous call. */
   tick(): Promise<boolean>;
 }
 
@@ -203,7 +199,7 @@ export function makeProposalsWatchTick(
   /** Resolves `true` for a completed lane pass (nothing pending, or the batch was walked —
    *  per-proposal send/stamp failures are caught individually and still count as completed) and
    *  `false` when the OUTER catch swallowed the whole lane or a previous run of this lane is
-   *  still in flight. fix round 1. */
+   *  still in flight. */
   async function notionLane(): Promise<boolean> {
     if (state.notionRunning) return false; // previous turn still running
     state.notionRunning = true;
@@ -229,11 +225,11 @@ export function makeProposalsWatchTick(
           );
           continue;
         }
-        // A genuine HOLD: `announced_at` stays NULL, exactly as for a failed send — a proposal he
+        // A genuine HOLD: `announced_at` stays NULL, exactly as for a failed send — a proposal the owner
         // was not told about must stay tellable.
         //
-        // ALREADY SEEN falls through to the stamp instead (fix round 1, CRITICAL): a `sent` row for
-        // `proposal/notion/<id>` proves the card with its Approve/Reject buttons reached his chat,
+        // ALREADY SEEN falls through to the stamp instead: a `sent` row for
+        // `proposal/notion/<id>` proves the card with its Approve/Reject buttons reached the owner's chat,
         // so the only thing left undone is the `announced_at` write that failed last time. Held
         // "eligible", this proposal would be re-picked by `notionUnannounced` on every tick and
         // suppressed on every tick — the hourly nag this system has already been bitten by
@@ -245,7 +241,7 @@ export function makeProposalsWatchTick(
           });
         }
         await store.notionMarkAnnounced(p.id).catch((err) => {
-          // Stamping failed AFTER he was told: he hears about this one twice. That is the
+          // Stamping failed AFTER the owner was told: the owner hears about this one twice. That is the
           // right way round — better a repeat than a proposal that rots unseen.
           console.error(`proposals-watch: could not stamp announced_at for notion proposal ${p.id}`, err);
         });
@@ -306,7 +302,7 @@ export function makeProposalsWatchTick(
     }
   }
 
-  /** Same contract as the two lanes above, for memory changes waiting on the owner (W4C-s5).
+  /** Same contract as the two lanes above, for memory changes waiting on the owner.
    *  It ANNOUNCES ONLY. Unlike Notion and Atlas, the announcement carries no Approve/Reject
    *  buttons: applying a memory change re-reads the standing row inside the transaction that
    *  writes it and refuses if that row has moved since, which a one-tap callback has nowhere to
@@ -379,7 +375,7 @@ export function makeProposalsWatchTick(
       // each lane's own try/catch is what stops one lane's failure from touching the other's
       // announcement or stamp.
       //
-      // fix round 1 (controller ruling): the combined pass is complete only when BOTH
+      // The combined pass is complete only when BOTH
       // lanes complete — a lane's own outer-catch failure (or overlap guard) must not be
       // masked by the other lane's success, or the heartbeat would read a half-failed tick as
       // healthy. Both awaits already run sequentially (see the comment above), so the boolean

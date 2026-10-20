@@ -1,16 +1,15 @@
 import {slackDoorVerifier,interceptSlackClaim} from '@lares/agent-kit/door-channels';
 import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authority';
 /**
- * The shadow Slack door.
+ * The Slack door.
  *
- * Inbound reaches this channel the long way round, per ADR-0011: Slack POSTs to
- * `https://slack.example.com/eve/v1/slack`, a path-scoped nginx relay on the ops server
- * forwards that one path over the tailnet, and `tailscale serve` on the agent server hands it to
- * this container. The relay verifies nothing — Slack's signature is checked here, where
- * the signing secret lives.
+ * Inbound: Slack POSTs events to eve's default Slack path (`/eve/v1/slack`). Any relay or
+ * reverse proxy in front of the agent only forwards that request and verifies nothing; Slack's
+ * signature is checked here, where the signing secret lives (read from a file on each request,
+ * never at module load).
  *
- * Outbound goes the other long way round: `lib/slack-dispatcher.ts` routes `*.slack.com`
- * through the squid proxy, because the box's seal drops anything else.
+ * Outbound: `@lares/agent-kit/slack-dispatcher` routes Slack's domains through the egress
+ * proxy, because the service container's network allows nothing else out.
  */
 import { readFileSync } from "node:fs";
 import {
@@ -96,8 +95,8 @@ async function replyBeforeClaimApplied(channelId: string, text: string): Promise
  * outside the workspace. So this is an explicit allowlist and it fails closed: an unset or
  * blank `SLACK_ALLOWED_USER_IDS` admits nobody.
  *
- * The shadow phase deliberately stops here rather than reading the identity registry. The
- * canonical-principal resolution (`U-EXAMPLE-ID` → `the owner`) is Stage E work, and it carries
+ * This deliberately stops here rather than reading the identity registry. Canonical-principal
+ * resolution (`U-EXAMPLE-ID` → the owner) is separate work, and it carries
  * a trap worth restating: principal ids are also channel addresses — canonicalise the
  * *person*, never rewrite channel addresses.
  *
@@ -112,21 +111,21 @@ export function isAllowedSlackUser(message: SlackMessage): boolean {
 }
 
 /**
- * — what the chief of staff says when her gateway key hits its cap.
+ * What the agent says when its gateway key hits its cap.
  *
  * `owner-agent` carries a $15/day `max_budget`.
  * When it bites, LiteLLM refuses the model call with HTTP 400 and `error.type:
  * "budget_exceeded"`; eve classifies that as a terminal failure and, before this, the door
- * posted its generic "I hit an error while handling your request" — a capped the chief of staff read as a
- * broken the chief of staff.
+ * posted its generic "I hit an error while handling your request" — a capped agent read as a
+ * broken agent.
  *
  * English, not Norwegian: every deterministic operational string this agent already emits is
  * English (`agent/channels/telegram.ts`'s "Unsupported action.", `lib/proposal-buttons.ts`'s
- * "✅ Approve" / "Notion proposal #…"). the travel agent's equivalent is Norwegian because *his* fixed
- * strings are. The rule is the door's existing tone, not a fleet-wide language.
+ * "✅ Approve" / "Notion proposal #…"). Another agent's equivalent may be in a different language
+ * because its fixed strings are. The rule is the door's existing tone, not a fleet-wide language.
  *
  * The sentence is fixed and says only what is true: nothing ran. No retry — an uncapped retry
- * around a paid call is a past incident, and a budget refusal is the last place to
+ * around a paid call is a known cost trap, and a budget refusal is the last place to
  * add one.
  */
 const BUDGET_EXCEEDED_TEXT =
@@ -170,8 +169,8 @@ export async function onSessionFailed(data: FailureEventData, channel: FailureTh
 
 /**
  * Admits an allowed human's message. eve drops Slack audio and video clips before the
- * turn, so a clip-only message reached the chief of staff as "an empty message". The note tells her what arrived,
- * so she can say it plainly.
+ * turn, so a clip-only message reached the chief of staff as "an empty message". The note tells the agent what arrived,
+ * so the agent can say it plainly.
  */
 export function admitSlackMessage(
   ctx: Parameters<typeof defaultSlackAuth>[1],

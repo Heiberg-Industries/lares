@@ -3,17 +3,17 @@
  * Meetings database, compose one recap-plus-action-items email per newly-summarised meeting,
  * and send it through the gated `meeting_followup_send` tool.
  *
- * THE TRIGGER NEEDS NO PROPERTY-DIFFING (design spec, "The trigger needs no property-diffing"):
+ * THE TRIGGER NEEDS NO PROPERTY-DIFFING:
  * fire when the structured summary block is non-empty AND `Attendees` is non-empty AND no
  * send-log row exists for the page yet. That is edge-free — it survives a missed tick, a
  * restart, a backfill, and a meeting summarised while this service was down — because
- * `meeting_followup_sent` (Task 5) already IS the trigger's memory; nothing here has to
- * remember what a row looked like last tick. Do NOT gate on Notion's `Status` property — all
- * 54 live rows read "Recorded", including every row with a complete summary (spec correction
- * 6); a `Status` gate would fire zero times, forever, silently.
+ * `meeting_followup_sent` already IS the trigger's memory; nothing here has to
+ * remember what a row looked like last tick. Do NOT gate on Notion's `Status` property — in
+ * practice every row reads "Recorded", including every row with a complete summary;
+ * a `Status` gate would fire zero times, forever, silently.
  *
- * COST SAFETY (the Aug 14/15 lesson, the August 2026 spend-leak write-up):
- * TWO SEPARATE ceilings, deliberately (fix round 3, Important — they bound different
+ * COST SAFETY (a past spend leak is why):
+ * TWO SEPARATE ceilings, deliberately (they bound different
  * costs and conflating them starves the queue):
  *
  *  - `FOLLOWUP_CEILING_PER_TICK` (5) bounds how many meetings one tick will act on — and,
@@ -21,15 +21,15 @@
  *    plus the model turn that invokes the gated `meeting_followup_send` tool
  *    (`to(...).send(...)` below). eve's HITL model requires an actual model turn to call a
  *    gated tool, so that second call is structural, not an oversight — collapsing the two is a
- *    recorded follow-up, not this round. Checked BEFORE `claim` in the engine, matching
+ *    possible future change. Checked BEFORE `claim` in the engine, matching
  *    `email-triage.ts`'s own reasoning: a tick that has already spent its budget must not
  *    claim (and thereby spend an attempt on) rows it isn't going to process — leaving them
  *    unclaimed means the next tick's re-scan picks them up fresh instead of burning through
  *    `MAX_ATTEMPTS` on a starvation loop.
  *
- *    -s3: BOTH of those billed calls used to run before anything asked whether the owner
+ *    BOTH of those billed calls would otherwise run before anything asked whether the owner
  *    could even be told about the result — a meeting summarised at 21:30 under the default
- *    quiet hours was composed and carded again on EVERY 5-minute tick until 07:00 (`releaseClaim`
+ *    quiet hours would be composed and carded again on EVERY 5-minute tick until 07:00 (`releaseClaim`
  *    deliberately leaves a held row claimable on the very next tick, not after `RETRY_ELIGIBLE_AFTER`
  *    — see its own docblock), two billed calls each time. `FollowupDeps.precheck` (optional;
  *    `makeLivePrecheck` below) now asks the SAME question `wouldSend`/`wouldInitiate` answer for
@@ -42,9 +42,8 @@
  *    attempt number has to be part of that key at all.
  *  - `MARKDOWN_READ_CEILING` (15) bounds how many Notion PAGE READS `liveListMeetings` will
  *    make in one tick — a cheaper, non-billed cost, but still real load against Notion's
- *    ~3 req/s limit. It must be a SEPARATE, larger number than the compose ceiling: fix round
- *    2 originally applied one ceiling of 5 before readiness was even known, and fix round 3
- *    caught the resulting bug — a handful of rows whose `Summary` property is filled but whose
+ *    ~3 req/s limit. It must be a SEPARATE, larger number than the compose ceiling: applying
+ *    one ceiling of 5 before readiness is even known has a bug — a handful of rows whose `Summary` property is filled but whose
  *    `<summary>` block can never be extracted (the contradiction logged below) would occupy
  *    every one of those 5 slots, every tick, forever, and every genuinely-ready meeting behind
  *    them in the queue would never even get its markdown read, let alone composed. Reading
@@ -70,25 +69,24 @@
  * `crm-routing.ts`/`morning-brief.ts` already do; without it the gate breaks silently the first
  * time this fires.
  *
- * The "what I did" Slack line is a RAW `callSlackApi` postMessage (copying
- * `email-triage.ts:281-286`, not a session/model turn) and fires ONLY for a send that went out
+ * The "what I did" Slack line is a RAW `callSlackApi` postMessage (the same
+ * primitive `email-triage.ts` uses, not a session/model turn) and fires ONLY for a send that went out
  * with no card — an autonomous send never otherwise tells the owner anything happened.
  *
- * PROACTIVITY: TWO gate calls now share ONE key per attempt,
- * `meeting-followup/<pageId>#<attempt>` (— see below for why the bare page id is no
- * longer enough) — `meetingFollowupItemKey(pageId, attempt)`, never restated:
+ * PROACTIVITY: TWO gate calls share ONE key per attempt,
+ * `meeting-followup/<pageId>#<attempt>` (see below for why the bare page id is not
+ * enough) — `meetingFollowupItemKey(pageId, attempt)`, never restated:
  *
  *   1. The PRECHECK (`FollowupDeps.precheck`, `makeLivePrecheck` below), asked right after
- *      `claim`/the recipients check and BEFORE `compose` — the kit's `wouldSend` (via the chief of staff's
+ *      `claim`/the recipients check and BEFORE `compose` — the kit's `wouldSend` (via
  *      `wouldInitiate`), which records a hold exactly like the real gate but never a `sent` row.
  *      A `held` answer means the tick has spent NOTHING billed: no compose, no send-turn. The
  *      claim is released by the precheck itself, `held` is counted, and no outcome is recorded.
- *   2. The real gate, still inside `makeLiveSend`, asked around the send-turn — unchanged by
- *      this ticket. A held-back turn here HAS already paid for a compose call (the precheck said
+ *   2. The real gate, still inside `makeLiveSend`, asked around the send-turn. A held-back turn here HAS already paid for a compose call (the precheck said
  *      "send" a moment earlier, or no precheck was configured); the row stays non-terminal and
  *      its claim is RELEASED (`releaseClaim`) — a hold is not an attempt, because nothing was
  *      sent; counting it as one dropped a 21:30 follow-up before 22:30 under the default quiet
- *      hours (fix round 1).
+ *      hours.
  *
  * Both calls ask about the SAME row when the precheck says "send": the precheck's own read
  * writes nothing for a `send` verdict (`wouldSend`'s contract), so the real gate moments later
@@ -97,10 +95,10 @@
  * (The "what I did" line is NOT separately gated — it is the receipt for a send the owner already
  * authorised, in the same lane, moments earlier.)
  *
- * WHY `#<attempt>`: a bare `meeting-followup/<pageId>` key made
+ * WHY `#<attempt>`: a bare `meeting-followup/<pageId>` key makes
  * a genuine RE-DRAFT indistinguishable from the ORIGINAL send-turn to the proactivity gate's own
- * memory. The the meeting incident: a denied card's send-turn had already run once (posted at
- * 09:00:27, ledger row `status = 'sent'` — meaning the INITIATION was sent, not the mail), so once
+ * memory. Picture a denied card whose send-turn had already run once (ledger row
+ * `status = 'sent'` — meaning the INITIATION was sent, not the mail): once
  * the page was corrected and the row reclaimed, the gate's already-seen check suppressed the
  * second send-turn outright — "already-seen is terminal by design" (ADR-0014) — and the schedule's
  * own bookkeeping then wrote the store row back to `queued`, `queued`ing a turn that never actually
@@ -117,8 +115,8 @@
  * code that IS running at the moment a decline is known is the resumed MODEL turn eve hands the
  * rejection back to — so `buildSendTurnPrompt` below tells the model, in the same turn it is asked
  * to call `meeting_followup_send`, to call the ungated `meeting_followup_record_denial`
- * (catalogue/) with the same `notionPageId` if that call comes back declined. The alternative this
- * ticket also considered — the schedule polling eve's own approval state for a verdict — has
+ * (catalogue/) with the same `notionPageId` if that call comes back declined. The alternative —
+ * the schedule polling eve's own approval state for a verdict — has
  * nothing to poll: `meeting_followup_send`'s `followupApproval` (catalogue/meeting_followup_send.ts)
  * is a bespoke ratchet-backed policy, not the newer board's `approval_events` audit table
  * (packages/agent-kit/src/board-approval.ts), so no row anywhere records a human's tap. Once a page
@@ -129,12 +127,12 @@
  * `services/notion-sync`, which is a separate service with its own Dockerfile/package.json and
  * its own full-featured Notion HTTP client (`services/notion-sync/lib/adapters/notion-client.ts`).
  * Reaching that client from chief-of-staff would need a workspace dependency + Dockerfile edit that
- * rebuilds a service this feature has nothing to do with — the exact class of cost the  * plan already paid once for the ratchet (`packages/agent-kit/src/ratchet.ts`'s own header) and
- * decided was not worth it for ~20 lines of accessor. The properties/data-source id/markdown
+ * rebuilds a service this feature has nothing to do with — the same class of cost as for the
+ * ratchet (`packages/agent-kit/src/ratchet.ts`'s own header), not worth it for ~20 lines of accessor. The properties/data-source id/markdown
  * endpoint this schedule reads are a small, DOCUMENTED subset of notion-sync's own client,
  * mirrored below rather than imported. THE NOTION API IS THE SOURCE OF TRUTH; only this reader
  * is duplicated. This is new production surface for chief-of-staff (a Notion API token it did not
- * need before) that Task 9's "ship gated OFF" deploy step is the intended checkpoint for.
+ * need before), so it ships gated OFF and the switch-on is the intended checkpoint.
  */
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -197,15 +195,14 @@ export const FOLLOWUP_CEILING_PER_TICK = 5;
 export const MARKDOWN_READ_CEILING = 15;
 
 /**
- * THE INCIDENT THIS BOUNDS (live, an hour after deploy): the trigger is "Summary
+ * THE FAILURE THIS BOUNDS: the trigger is "Summary
  * non-empty AND Attendees non-empty AND no send-log row for the page" — edge-free by design
  * (see the module header, "THE TRIGGER NEEDS NO PROPERTY-DIFFING"), but that also makes it
  * true of EVERY meeting the database has ever held on the very first tick after deploy. With
- * no recency bound, `liveListMeetings` worked backwards through 2025 oldest-first and would
- * have composed and carded roughly 49 meetings — up to a year old — within the hour: five
- * billed model calls and five approval cards landed before it was caught and contained BY
- * HAND, inserting `skipped` rows for every pre-existing meeting on the one live database. That
- * containment is a data guard, not a fix — a restored backup, a fresh database, or a newly-
+ * no recency bound, `liveListMeetings` would work backwards through history oldest-first and
+ * compose and card dozens of meetings — up to a year old — within the hour: billed model calls
+ * and approval cards for meetings nobody wants a follow-up on. Marking old meetings `skipped` by
+ * hand is a data guard, not a fix — a restored backup, a fresh database, or a newly-
  * shared Notion page reproduces the exact same failure. This constant is the CODE fix for
  * that failure mode — but it is a bound, not a solution: on a restored backup or a fresh
  * database, every meeting from the last two days is STILL eligible on the first tick, up to
@@ -223,8 +220,8 @@ export const MARKDOWN_READ_CEILING = 15;
 export const FOLLOWUP_MAX_AGE_DAYS = 2;
 
 /**
- * The OTHER end of the same bound (Important, post-fix review): `withinFollowupAge` originally
- * checked only "not too old", which is the identical fail-OPEN shape the incident above is
+ * The OTHER end of the same bound: `withinFollowupAge` must not check
+ * only "not too old", which is the identical fail-OPEN shape the failure above is
  * about, just facing the other direction — a meeting with a future or fat-fingered `Date`
  * (year 3025, a typo'd year) would have been permanently eligible and composed every tick
  * forever, since it never ages INTO the window from the future side. A small forward slack is
@@ -241,7 +238,7 @@ export const FOLLOWUP_MAX_FUTURE_SLACK_MINUTES = 30;
  * page's creation time, never `processed_at`) falls within `FOLLOWUP_MAX_AGE_DAYS` in the past
  * AND within `FOLLOWUP_MAX_FUTURE_SLACK_MINUTES` in the future of `now`. A row with a missing
  * or unparseable `startsAt` is EXCLUDED, never included — failing OPEN on an unusable start
- * time is exactly the shape of the incident documented on `FOLLOWUP_MAX_AGE_DAYS` above, so
+ * time is exactly the shape of the failure documented on `FOLLOWUP_MAX_AGE_DAYS` above, so
  * this narrows to `startsAt: string` on the way out: every survivor is proven to carry a real,
  * usable start time.
  *
@@ -249,7 +246,7 @@ export const FOLLOWUP_MAX_FUTURE_SLACK_MINUTES = 30;
  * (before claiming/composing) — never re-implemented at either call site. `makeFollowupTick`'s
  * own header already says it must not silently trust `listMeetings`'s cap; an age check that
  * existed in only one of the two call sites is the exact "one place checked, and the
- * requirement was wrong there" shape that caused the original incident.
+ * requirement was wrong there" shape that caused the original failure.
  */
 export function withinFollowupAge<T extends { startsAt: string | undefined }>(
   rows: readonly T[],
@@ -306,7 +303,7 @@ export interface FollowupDeps {
    *  changed since the last attempt" apart from "the owner corrected the page" for a `denied`/
    *  `queued` row. See `lib/meeting-followup-store.ts`'s `claimMeeting` for the reclaim rule. */
   claim(pageId: string, summaryHash: string): Promise<ClaimResult>;
-  /** -s3 — optional. Asked AFTER the recipients check and BEFORE `compose`, with the SAME
+  /** Optional. Asked AFTER the recipients check and BEFORE `compose`, with the SAME
    *  `attempt` this claim just returned: "would the proactivity gate let a send-turn for THIS
    *  exact attempt through right now?" (`makeLivePrecheck` below, over the kit's `wouldSend` via
    *  `wouldInitiate`). `{ held: true }` means the tick must not compose at all — the precheck's
@@ -334,7 +331,7 @@ export interface FollowupDeps {
    *  of `FollowupSendPayload` on purpose: that type mirrors the tool's own input schema exactly
    *  (its own doc comment says so), and the tool has no use for it. */
   send(payload: FollowupSendPayload, attempt: number): Promise<{ autonomous: boolean; held?: boolean } | void>;
-  /** Reads the send-log row's outcome back (finding 1) — called ONLY when `send`'s
+  /** Reads the send-log row's outcome back — called ONLY when `send`'s
    *  pre-check said `autonomous: true`, because that pre-check is informational (see
    *  `makeLiveSend`'s own comment): `send` resolving proves the model's turn ended, not
    *  that mail left, since eve hands a thrown tool error back to the MODEL rather than
@@ -346,13 +343,12 @@ export interface FollowupDeps {
   /** An autonomous send's pre-check said no card would render, but the row never reached
    *  "sent" once the turn resolved — the tool's `execute` failed (Gmail 5xx, an expired
    *  token, a blocked egress call) and eve handed that error back to the model rather than
-   *  rejecting this schedule's own promise (finding 1). Fires on EVERY such failure, not only
+   *  rejecting this schedule's own promise. Fires on EVERY such failure, not only
    *  the final attempt — see `reportDropped` below for that separate, final-attempt signal. */
   reportAutonomousSendFailed(pageId: string, title: string, outcome: string | null): Promise<void>;
   /** The final allowed attempt (see `MAX_ATTEMPTS`, meeting-followup-store.ts) for this row
    *  also failed — report it loudly instead of letting the standing `'error'` outcome be the
-   *  only trace (finding 3, following `email-triage.ts`'s own `reportDropped` precedent —
-   *  see its handling around lines 137, 158, 288). Without this, a meeting that fails three
+   *  only trace (following `email-triage.ts`'s own `reportDropped` precedent). Without this, a meeting that fails three
    *  times is abandoned silently, stays `error` forever, and is re-read from Notion every
    *  tick with no way to progress. */
   reportDropped(pageId: string, title: string, err: unknown): Promise<void>;
@@ -369,7 +365,7 @@ export interface FollowupTickResult {
   queued: number;
   skipped: number;
   errored: number;
-  /** + -s3 — the proactivity gate held this row back, at EITHER of the two points
+  /** The proactivity gate held this row back, at EITHER of the two points
    *  it is now asked: the precheck BEFORE `compose` (the common case — nothing was billed at
    *  all), or the send-turn's own gate inside `makeLiveSend` AFTER `compose` (the precheck said
    *  "send" a moment earlier, or none was configured, and only the send-turn was held). NOT an
@@ -381,8 +377,8 @@ export interface FollowupTickResult {
   /** Rows `withinFollowupAge` excluded THIS tick (too old, or too far in the future — see
    *  `FOLLOWUP_MAX_AGE_DAYS`/`FOLLOWUP_MAX_FUTURE_SLACK_MINUTES`), counted separately from
    *  `skipped` (which means "claimed, then recorded skipped" — an age exclusion is never
-   *  claimed at all). Post-fix review (Minor, but deliberately not deferred): the entire
-   *  incident this bound exists for was a schedule doing the wrong thing QUIETLY —
+   *  claimed at all). The entire
+   *  failure this bound exists for was a schedule doing the wrong thing QUIETLY —
    *  `scanned=N, composed=0` with no reason given is exactly that shape again. A row dropped
    *  for age must be counted AND logged, never merely absent. */
   agedOut: number;
@@ -393,8 +389,8 @@ const isReady = (row: MeetingRow): boolean =>
   row.summaryBlock.trim() !== "" && row.attendees.trim() !== "";
 
 // Recipients: everyone verified, minus the owner's own addresses. Optional and
-// declined attendees are KEPT in v1 (spec Q4) — responseStatus does not survive the
-// calendar adapter for rows written before Phase 1, and the invite list is what we have.
+// declined attendees are KEPT — responseStatus does not survive the
+// calendar adapter for rows written before it was tracked, and the invite list is what we have.
 const recipientsFor = (row: MeetingRow, selfEmails: readonly string[]): string[] => {
   const mine = new Set(selfEmails.map((e) => e.toLowerCase()));
   return parseAttendees(row.attendees)
@@ -422,7 +418,7 @@ export interface FollowupTick {
  * a future rule: `makeFollowupTick`'s whole reason to re-derive readiness/ordering/ceiling
  * defensively (rather than trust `listMeetings`'s cap) is that any injected `listMeetings` —
  * a test double, a future second call site — must not be able to reintroduce that
- * incident by skipping `liveListMeetings`'s own age gate.
+ * failure by skipping `liveListMeetings`'s own age gate.
  */
 export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
   return {
@@ -441,7 +437,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
       const recent = withinFollowupAge(rows, now);
       result.agedOut = rows.length - recent.length;
       if (result.agedOut > 0) {
-        // Named and counted, not merely absent (post-fix review, Minor-but-not-deferred): the
+        // Named and counted, not merely absent: the
         // whole point of this bound is that a schedule silently doing the wrong thing is the
         // failure mode, so an operator staring at scanned=N/composed=0 must see a reason.
         console.warn(
@@ -475,7 +471,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
         if (!claimResult.claimed) continue; // already handled, or retries exhausted
 
         if (claimResult.reclaimedAfterChange) {
-          // one line (spec's own requirement): this row already had a card — the tick
+          // One line: this row already had a card — the tick
           // log must say WHY a second one is being composed (the live summary changed since the
           // last attempt), so it reads as the intended re-draft rather than a duplicate-send bug.
           console.log(
@@ -506,10 +502,10 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
           continue;
         }
 
-        // -s3 — ask BEFORE paying for `compose`, not merely before the send-turn: the
+        // Ask BEFORE paying for `compose`, not merely before the send-turn: the
         // whole point is that a row held all night costs nothing more than this one cheap gate
         // read. Optional, so a caller with no precheck configured falls straight through to
-        // `compose` exactly as before this ticket.
+        // `compose` unconditionally.
         if (deps.precheck) {
           let pre: { held: boolean };
           try {
@@ -569,7 +565,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
             forceApproval: row.isStandingSeries === false,
           }, claimResult.attempt);
           if (sendResult && (sendResult as { held?: boolean }).held) {
-            // fix round 1 — held back by the gate, which has already logged why. NO outcome
+            // Held back by the gate, which has already logged why. NO outcome
             // is recorded and NO attempt is consumed: `makeLiveSend` released the claim
             // (`releaseClaim`, lib/meeting-followup-store.ts), so the row is back exactly as
             // `claimMeeting` found it and a later tick picks it up with its full budget. Counting a
@@ -585,14 +581,14 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
           const preCheckAutonomous = !!(sendResult && (sendResult as { autonomous?: boolean }).autonomous);
 
           if (preCheckAutonomous) {
-            // finding 1 (CRITICAL): the pre-check above is INFORMATIONAL only (see
+            // The pre-check above is INFORMATIONAL only (see
             // `makeLiveSend`'s own comment) — `send` resolving proves the model's TURN
             // ended, never that mail left, because eve hands a thrown tool error (Gmail 5xx,
             // an expired token, a blocked egress call) back to the MODEL rather than
             // rejecting this promise. READ THE ROW BACK: only `outcome === "sent"` proves
             // `meeting_followup_send`'s own `execute` genuinely ran `gmail.send` and
             // recorded it. Trusting the pre-check alone here is exactly the "logged success
-            // while doing nothing" failure this ticket exists to end, sitting on the
+            // while doing nothing" failure, sitting on the
             // autonomy path — a failed autonomous send was being reported as sent, with
             // `queued` written as a TERMINAL outcome (never retried), `errored` never
             // incremented, no signal, and a false "Sent the meeting follow-up" line to the owner.
@@ -655,7 +651,7 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
           // send itself threw — the turn never dispatched at all (e.g. a Slack error
           // opening it), a different failure mode from the tool's own execute failing
           // (handled above). recordOutcome error, count it, and continue to the next row.
-          // On the final allowed attempt (finding 3), report it loudly via reportDropped
+          // On the final allowed attempt, report it loudly via reportDropped
           // rather than leaving the standing 'error' outcome as the only trace — a meeting
           // that silently exhausts MAX_ATTEMPTS is otherwise abandoned forever with no signal.
           console.error(`meeting-followup: send failed for ${row.pageId}`, err);
@@ -683,8 +679,8 @@ export function makeFollowupTick(deps: FollowupDeps): FollowupTick {
 // ─── Live wiring — Notion (twin; see module header) ────────────────────────────────────────
 
 const NOTION_API = "https://api.notion.com";
-// Verified against developers.notion.com 2026-08-04 (same date notion-sync's own client
-// pinned it) — do not adjust from memory.
+// Verified against developers.notion.com (the same version notion-sync's own client
+// pins) — do not adjust from memory.
 const NOTION_VERSION = "2026-03-11";
 // The Meetings data source id comes from the NOTION_MEETINGS_DATA_SOURCE_ID setting and has no
 // default: it identifies one installation's database. Read at call time, never at module scope,
@@ -791,7 +787,7 @@ function isDateMention(item: Record<string, unknown>): boolean {
  * A date mention's `plain_text` is the raw ISO string, so naively flattening every item (what
  * `plainText` above does) produces "Brightloop.example 2025-10-03T09:00:00.000+02:00" — a trailing raw
  * timestamp on the ONE line a human reads on the approval card to check the agent matched the
- * right meeting before sending mail on his behalf. Stripped STRUCTURALLY, same as
+ * right meeting before sending mail on the owner's behalf. Stripped STRUCTURALLY, same as
  * notion-sync's `titleWithoutDateMentions`: a NON-date mention (a person or page) is kept,
  * because it is part of the meeting's actual name, not date noise.
  *
@@ -825,8 +821,8 @@ function humanTitle(value: unknown): string {
 const MEETING_NOTES = /<meeting-notes\b[^>]*>([\s\S]*?)<\/meeting-notes>/i;
 const SUMMARY_TAG = /<summary\b[^>]*>([\s\S]*?)<\/summary>/i;
 
-/** The `<summary>` markdown block inside the page's own `<meeting-notes>` wrapper (spec
- *  correction 3) — the structured recap material, never the dense `Summary` PROPERTY and
+/** The `<summary>` markdown block inside the page's own `<meeting-notes>` wrapper
+ *  — the structured recap material, never the dense `Summary` PROPERTY and
  *  never the `<transcript>` block (which `getPageMarkdown` omits by default — keep it that
  *  way; see the design note). Absent or unparseable markdown yields "", which correctly
  *  fails `isReady` rather than composing from nothing — but see `liveListMeetings` below for
@@ -858,7 +854,7 @@ interface MeetingCandidate {
   attendees: string;
   actionItems: string;
   /** Whether the `Summary` PROPERTY (not the markdown block) is non-empty — the cheap,
-   *  properties-only pre-filter the design spec asks for ("no page reads, no billed calls"
+   *  properties-only pre-filter ("no page reads, no billed calls"
    *  for the common case of a not-yet-summarised meeting). */
   summaryPropertyFilled: boolean;
 }
@@ -902,14 +898,14 @@ async function getPageMarkdown(pageId: string): Promise<string> {
   return typeof res.markdown === "string" ? res.markdown : "";
 }
 
-/** finding 5: per-process dedupe for the summary-mismatch signal — see `liveListMeetings`'s
+/** Per-process dedupe for the summary-mismatch signal — see `liveListMeetings`'s
  *  own comment at the point it's read. Module-scope, not persisted: a redeploy/restart clears
  *  it and re-reports once, which is the intended behaviour, not a gap. */
 const signaledMismatchPages = new Set<string>();
 
 /**
- * Live `listMeetings`. FIVE stages (fix round 3: TWO separate ceilings, plus the
- * FOLLOWUP_MAX_AGE_DAYS recency bound added after that incident — see the module
+ * Live `listMeetings`. FIVE stages (TWO separate ceilings, plus the
+ * FOLLOWUP_MAX_AGE_DAYS recency bound — see the module
  * header's "COST SAFETY" section for why one shared ceiling, applied before readiness was
  * known, could starve the queue forever, and `FOLLOWUP_MAX_AGE_DAYS`'s own comment for why a
  * ceiling alone was not enough to stop a backlog reaching into last year):
@@ -920,12 +916,12 @@ const signaledMismatchPages = new Set<string>();
  *     the send log is deliberately NOT excluded here — `claimMeeting`'s own attempts/backoff and
  * hash-diff logic, not this function, decides whether it may actually be reclaimed.
  *
- *     CHANGED WHICH OUTCOMES COUNT AS TERMINAL: `queued` USED TO be treated the same as
- *     `sent`/`skipped` (fix round 2's own reasoning — "a declined or expired card is not
- *     retried") — but that reasoning predates `denied` existing at all, and once a card CAN be
+ *     WHICH OUTCOMES COUNT AS TERMINAL: `queued` is NOT treated the same as
+ *     `sent`/`skipped` ("a declined or expired card is not
+ *     retried" would be the argument for it) — because once a card CAN be
  *     recorded `denied`, the schedule needs to keep reading a still-`queued` page's live markdown
  *     too: `claimMeeting`'s hash-diff reclaim (lib/meeting-followup-store.ts) can only compare
- *     against a CURRENT hash, and the acceptance criterion this ticket ships is explicitly "a
+ *     against a CURRENT hash, and the rule is explicitly "a
  *     `denied` OR `queued` row … is re-claimed" once the page changes. The cost: a still-pending
  *     or declined page is now read from Notion every tick, indefinitely, until it is `sent`,
  *     `skipped`, or exhausts `MAX_ATTEMPTS` — bounded the same way an `error` row already was,
@@ -947,7 +943,7 @@ const signaledMismatchPages = new Set<string>();
  *     returns regardless (defensively — it must not silently trust this function's cap), so
  *     this is a genuine cost cut on the Notion-read side, not a correctness dependency.
  *
- * Exported for `tests/meeting-followup-live-list.test.ts` (finding 5's dedupe test) — every
+ * Exported for `tests/meeting-followup-live-list.test.ts` (the dedupe test) — every
  * other test drives the engine through the injected `FollowupDeps.listMeetings` instead.
  *
  * `now` defaults to the live clock; the parameter exists so `FOLLOWUP_MAX_AGE_DAYS` (the
@@ -985,20 +981,20 @@ export async function liveListMeetings(pool: Pool, now: Date = new Date()): Prom
     }
 
     // The `Summary` PROPERTY said this page was ready, but the markdown extractor found no
-    // `<summary>` block — a contradiction, not a normal "not ready yet" (fix round 2,
-    // Important). Silence here means the row is re-scanned every five minutes forever: never
+    // `<summary>` block — a contradiction, not a normal "not ready yet".
+    // Silence here means the row is re-scanned every five minutes forever: never
     // claimed (isReady fails on the empty block), never errored, never counted — the exact
     // "verify the input, not just the log" failure this codebase has been burned by before.
-    // It is EXCLUDED below (never pushed to `ready`) — the whole point of fix round 3 is that
-    // a row like this must not occupy one of the 5 compose slots either.
+    // It is EXCLUDED below (never pushed to `ready`) — a row like this must not occupy one of the
+    // 5 compose slots either.
     if (summaryBlock === "") {
       console.error(
         `meeting-followup: page ${c.pageId} has a filled Summary property but no <summary> ` +
         "block was found in its markdown — the page will silently never trigger until this is fixed",
       );
-      // finding 5: dedupe per page for the process lifetime. `liveListMeetings` runs every
+      // Dedupe per page for the process lifetime. `liveListMeetings` runs every
       // 5 minutes, so without this a single persistently-broken page would signal roughly
-      // 288 times a day, forever — an agent in this fleet was already paused for exactly
+      // 288 times a day, forever — an agent has been paused for exactly
       // that kind of spam. A restart clears `signaledMismatchPages` and re-reports once,
       // which — combined with the signal spine's own 24-hour fingerprint collapse
       // (lib/signal-emit.ts) — means a persistently-broken page produces roughly ONE alert
@@ -1059,8 +1055,8 @@ export function appendAgentSignoff(
 /** `fromMailbox` scopes both the voice corpus (owner@owner.example and owner@project.example write to
  *  different people — voice-store.ts's own header) and the language of the ONE email sent.
  *
- *  LANGUAGE, corrected by spec Q1's original ruling — detect over the meeting-note
- *  text itself — shipped a Norwegian follow-up to an English-speaking counterpart, because
+ *  LANGUAGE: detecting over the meeting-note
+ *  text itself shipped a follow-up in the wrong language to a counterpart, because
  *  Notion had translated the transcript. Real prior correspondence (the owner's own mail to these
  *  recipients, via `priorCorrespondenceText`) now outranks the note; the note remains the
  *  fallback when no correspondence exists, so a first-ever counterpart behaves as before. */
@@ -1073,7 +1069,7 @@ function makeLiveCompose(pool: Pool, fromMailbox: string): FollowupDeps["compose
     const { loaded: agentLoaded } = await thisAgent(undefined);
     const agentName = agentLoaded.definition.display ?? agentLoaded.definition.name;
     // A one-off meeting (no series) with externals shares only the action items that
-    // involve them; the member's own items stay his. Recurring series keep the full list — it is
+    // involve them; the member's own items stay theirs. Recurring series keep the full list — it is
     // the team's shared record. Names come from the registry and the Attendees line, never literals.
     let actionItems = parseActionItems(row.actionItems);
     if (row.isStandingSeries === false || row.series === "") {
@@ -1213,7 +1209,7 @@ export function meetingFollowupItemKey(pageId: string, attempt: number): string 
 }
 
 /**
- * -s3 — the precheck's own logic, parameterised over injected deps the same way
+ * The precheck's own logic, parameterised over injected deps the same way
  * `computeAutonomousPreCheck` is: `makeLivePrecheck` below wires it to the real
  * `wouldInitiate`/`releaseClaim`, and `tests/meeting-followup-live-send.test.ts` drives it with
  * fixed deps to prove it releases the claim on a hold and shares `meetingFollowupItemKey` with
@@ -1244,7 +1240,7 @@ export function makeLivePrecheckWith(
     // exactly right for BOTH: a `send` verdict here costs the ledger nothing (`wouldSend` writes
     // no row for it), so the real gate moments later makes the actual decision; an already-seen
     // verdict means the send-turn already ran, so one more compose plus the real gate's own
-    // already-seen branch is what reaches today's terminal bookkeeping (spec's own choice, not
+    // already-seen branch is what reaches today's terminal bookkeeping (a deliberate choice, not
     // an oversight — see the module header's PROACTIVITY paragraph).
     if (outcome.handled) return { held: false };
 
@@ -1315,7 +1311,7 @@ function makeLiveSend(
         webBody: followupInboxBody(payload), webContext: prompt,
       }),
     );
-    // `handled`, not `sent` (fix round 1, CRITICAL): an ALREADY-SEEN suppression means the send-turn
+    // `handled`, not `sent`: an ALREADY-SEEN suppression means the send-turn
     // for this page already ran, so the tick must do its normal post-send bookkeeping (read the
     // outcome back, record `queued`) rather than treat the page as untouched.
     if (initiation.handled) return { autonomous };
