@@ -59,7 +59,7 @@ function routePassword(): string {
 
 /**
  * The header the console's chat proxy sets to name the signed-in member it is acting for
- * (`MEMBER_HEADER` in `services/console/lib/chat-proxy.ts`, W8B-s5). The console STRIPS whatever
+ * (`MEMBER_HEADER` in `services/console/lib/chat-proxy.ts`). The console STRIPS whatever
  * the browser sent under this name — its forwarded-header list is deny-by-default — and sets its
  * own from the session cookie it has just verified.
  *
@@ -67,7 +67,7 @@ function routePassword(): string {
  * is worth writing out rather than leaving to be inferred: this agent believes the header because
  * the request already proved it knows the agent's own route password, so **anyone holding that
  * password can claim to be any member**. Today that is the console container and the keeper, both
- * on the owner's own server (owner decision B3, and the same sentence is in
+ * on the owner's own server (the same sentence is in
  * `docs/decisions/0022-the-tested-install-path.md`). The claim is still only a claim:
  * `lib/principals.ts` checks the named member against this agent's own allow-list before it may
  * approve anything, and an unset list admits nobody.

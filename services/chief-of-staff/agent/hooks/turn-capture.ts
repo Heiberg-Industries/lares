@@ -1,8 +1,7 @@
 /**
- * — write every completed door turn back into the Brain as a conversation log.
+ * Write every completed door turn back into the Brain as a conversation log.
  *
- * Chief of staff's old container held this wiring; when it was retired capture stopped with
- * it, and the dream cycle (whose ONLY input is these files) has reflected on nothing every night
+ * Without this capture the dream cycle (whose ONLY input is these files) has reflected on nothing every night
  * since. `lib/turn-capture.ts` does the writing; this file is the seam that decides WHAT a turn
  * was and WHO spoke.
  *
@@ -46,7 +45,7 @@
  * here reads the environment at import time. The vault root is resolved lazily inside
  * `captureTurn`, per call.
  *
- * ADR-0020 ADDENDUM (W3B-s2, docs/decisions/0020-conversations.md). `flush` now hands
+ * ADR-0020 ADDENDUM (docs/decisions/0020-conversations.md). `flush` now hands
  * `deps.capture` a `sessionId`, a `turnId` and an `origin` (`lib/turn-capture.ts`'s
  * `originForTurn`) on every entry — the conversation record this hook's output primarily feeds
  * from here on. None of the buffering or attribution reasoning above changes; only what a
@@ -66,8 +65,8 @@ import { captureTurn, originForTurn, type TurnLogEntry } from "../../lib/turn-ca
  * The `"channel:<name>"` spelling exists too, but it is the INSTRUMENTATION projection, stored
  * under a different context key that hooks never receive. An earlier revision of this file
  * matched only the prefixed form, so `doorOf` returned undefined for every real turn and nothing
- * was ever captured — silently, with no error and no warning. That is the exact failure mode this
- * ticket exists to end, so both spellings are accepted and the decision is made by the
+ * was ever captured — silently, with no error and no warning. That is the exact failure mode to
+ * avoid, so both spellings are accepted and the decision is made by the
  * known-door set below rather than by the prefix.
  */
 const CHANNEL_PREFIX = "channel:";
@@ -109,7 +108,7 @@ const MAX_EXCHANGE_AGE_MS = 24 * 60 * 60 * 1000;
  * Chief of staff's Slack door delivers the model a structured wrapper, and the raw event text is the whole
  * thing — `<slack_message>` with `sender_id`, `channel_id`, `thread_ts`, `team_id` and the human's
  * sentence buried in a `<content>` block. Logging that verbatim (observed live) puts
- * markup and channel identifiers into the Brain, and leaves Part B's reflector chewing on XML.
+ * markup and channel identifiers into the Brain, and leaves the dream cycle's reflector chewing on XML.
  * The pre-outage corpus has the clean sentence and no envelope anywhere in it.
  *
  * Deliberately door-agnostic — it keys off the envelope's shape, not `door === "slack"`, because
@@ -134,8 +133,8 @@ export function spokenText(raw: string): string {
  * The scheduled lane that started this turn, or `undefined` when a human spoke.
  *
  * THIS IS THE MOST IMPORTANT FUNCTION IN THE FILE. These logs live inside the vault the chief of staff's
- * brain-search walks: a machine nudge rendered as "**the owner:**" lets a later turn quote him
- * saying something he never said.
+ * brain-search walks: a machine nudge rendered as "**the owner:**" lets a later turn quote the owner
+ * saying something never said.
  *
  * A schedule starts its turn with eve's one shared framework constant
  * (`dist/src/channel/schedule-auth.js`):
@@ -252,7 +251,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * (`dist/src/public/channels/telegram/api.js`) collapses to the same token an inbound message
    * from the owner resolves to. So the morning brief runs INSIDE the owner's live session.
    *
-   * One slot therefore holds his exchanges and every scheduled push to that address, one at a
+   * One slot therefore holds the owner's exchanges and every scheduled push to that address, one at a
    * time. What separates them is not the key but the seeding turn id — see `onMessageReceived`.
    */
   function keyOf(ctx: HookContext): string | undefined {
@@ -269,10 +268,10 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    *   - an input-less exchange is NEVER written, whatever else it accumulated. The same corpus
    *     contains ZERO files with a `**the chief of staff:**` reply above an empty `**the owner:**` line.
    *
-   * In practice this drops the HITL button tap: he taps, the chief of staff acts and confirms, and no words
+   * In practice this drops the HITL button tap: the owner taps, the chief of staff acts and confirms, and no words
    * were ever typed. So we deliberately lose the chief of staff's confirmation message after an approved
-   * proposal — which is exactly what the old runtime did, and this is a faithful port. If Part B's
-   * dream cycle later wants those confirmations, that is a separate decision with its own ticket,
+   * proposal — which is deliberate. If the
+   * dream cycle later wants those confirmations, that is a separate decision,
    * not something to reintroduce quietly here.
    *
    * The skip is logged (taps are rare, so it will not be noisy) because it is the only way we
@@ -281,7 +280,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * `atMs` is explicit because `conversation-log.ts` derives BOTH the date directory and the
    * filename from it, and the dream cycle reads by date. A finished exchange is stamped now; an
    * UNFINISHED one is stamped `startedAt`, which may be many hours earlier — stamping those at
-   * flush time filed them under the wrong day and Part B would never have seen them.
+   * flush time filed them under the wrong day and the dream cycle would never have seen them.
    *
    * `unfinished` names why an exchange is being written without a terminal reply; passing it also
    * produces the distinct log line, so an unfinished write is never mistaken for a normal one.
@@ -295,11 +294,11 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
       console.warn(`turn-capture-hook: writing UNFINISHED exchange for session ${key} — ${unfinished}`);
     }
     await deps.capture({
-      // MUST be well-formed ISO or Part B's cursor never sees the entry.
+      // MUST be well-formed ISO or the dream cycle's cursor never sees the entry.
       at: new Date(atMs).toISOString(),
       door: x.door,
-      // The person who spoke, canonicalised. 159 of the 160 logs the old runtime wrote carry
-      // `principal: the owner`, and its own type says `principal: string; // who sent it
+      // The person who spoke, canonicalised: logs carry
+      // `principal: the owner`, and the field's type is `principal: string; // who sent it
       // (e.g. 'the owner')`. The "never canonicalise a channel address" trap is about addresses
       // stored AS addresses (delivery targets, allowlist entries, threadRefs) — not about
       // naming who spoke. The conversation record's `person_key` is this same value
@@ -321,7 +320,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
   /**
    * Hygiene — but hygiene that WRITES. An exchange left unfinished past the window (typically one
    * that ended on a gated proposal nobody answered) is written out as it stands rather than
-   * dropped, which is how the old runtime's reply-less files came to exist. Only an empty shell
+   * dropped, which is how reply-less log files come to exist. Only an empty shell
    * is discarded. Logged distinctly so an unfinished write is never mistaken for a normal one.
    */
   async function evictStale(): Promise<void> {

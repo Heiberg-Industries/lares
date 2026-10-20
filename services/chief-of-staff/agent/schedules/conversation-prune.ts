@@ -12,7 +12,7 @@
  * says nothing about it, and would therefore START it. So this one asks
  * `scheduleExplicitlyEnabled`: the box gate open AND `on: true` written out in the definition.
  * ADR-0020's twelve months is the DEFAULT WINDOW, not a default to start deleting. Turning it on
- * is one definition edit, and it belongs with the console control (wave 5A).
+ * is one definition edit, and it belongs with the console control.
  *
  * IT MAKES NO MODEL CALL AND SENDS THE OWNER NOTHING. A deletion is not news to be delivered; it
  * is bookkeeping that must be auditable. What it leaves behind is one log line per run naming the
@@ -48,7 +48,7 @@
  * THE HOUR IS A CONSTANT HERE, not a `schedule_settings` key. Every key in
  * `SCHEDULE_HOUR_DEFAULTS` is mirrored by the console and offered on the "when the agents speak"
  * page; a destructive job that ships off has no business on that page, and adding the key would
- * drift the console's mirror in a wave that touches no console file. No env knob either.
+ * drift the console's mirror in a change that touches no console file. No env knob either.
  */
 import { defineSchedule } from "eve/schedules";
 

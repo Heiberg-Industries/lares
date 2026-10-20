@@ -2,8 +2,8 @@
  * The deadline ladder — the ONE schedule in this feature that speaks unprompted.
  *
  * A deadline is a dated obligation to an institution: a filing, a payment, a meeting a statute
- * requires. The brief names it on its mention days (`mentionsToday`, Task 4); this lane is what
- * happens when the date is upon him anyway. Three rungs, and then it stops:
+ * requires. The brief names it on its mention days (`mentionsToday`); this lane is what
+ * happens when the date is upon the owner anyway. Three rungs, and then it stops:
  *
  *   rung 1 — 15:00 the day before: "this is tomorrow".
  *   rung 2 — 09:00 on the day, statutory only: a self-imposed date does not earn a second ring.
@@ -23,14 +23,14 @@
  *     suppressing it (`proactivity.ts`'s `dnd-final-stop`): the one message that must never be lost
  *     is the one that says the system has stopped chasing. A silent stop is at the scale of
  *     a single item.
- *   - **Bookkeeping branches on `handled`, never on `sent`** — `alreadySeen` means he WAS told and
+ *   - **Bookkeeping branches on `handled`, never on `sent`** — `alreadySeen` means the owner WAS told and
  *     only `advanceRung` failed last time, so the rung moves without a second message.
  *
  * THE SWITCH IS FAIL-CLOSED, and that is the opposite posture from the gate on purpose. The gate
  * fails OPEN (a dead ledger still delivers) because a missed suppression is an annoyance while a
  * silent stop is a defect. `deadline_settings.ladder_enabled` is a FEATURE switch — the same shape
  * as `OBLIGATION_REPING_ENABLED` — and a switch that could not be read is not a licence to start
- * ringing a phone. It ships OFF; the console (Task 8) is what turns it on.
+ * ringing a phone. It ships OFF; the console is what turns it on.
  *
  * The pass is stamped either way. A ladder that is quiet because the OWNER asked for quiet must not
  * read as a dead schedule in `input-freshness.sh`.
@@ -62,14 +62,14 @@ let warnedNoPrincipal = false;
 // ─── The rung's wording ──────────────────────────────────────────────────────────────────────
 
 /**
- * — the line that reaches him, in `lang` (`readBriefLanguage`'s own contract: falls back
+ * — the line that reaches the owner, in `lang` (`readBriefLanguage`'s own contract: falls back
  * to `"en"`, never throws). One line per rung, and the whole message — the model's only job is
  * to relay it (see `deadlinePrompt`). The wording itself lives in `lib/brief-strings.ts`'s
  * `deadlineLadder`, the same table the brief's own fixed strings live in; `lang` is
  * REQUIRED, not defaulted, so a caller can never forget to say which language it wants.
  *
  * `daysToDue` IS read, on the rung-3 stop: a row that was never raised at all has no count to
- * report, so the stop says how late the deadline is instead (review fix, below).
+ * report, so the stop says how late the deadline is instead (see below).
  */
 export function rungText(d: DeadlineRow, step: LadderStep, daysToDue: number, lang: BriefLanguage): string {
   const strings = BRIEF_STRINGS[lang].deadlineLadder;
@@ -78,10 +78,10 @@ export function rungText(d: DeadlineRow, step: LadderStep, daysToDue: number, la
   if (step.rung === 1) return strings.dueTomorrow(d.title, d.entity, consequence);
   if (step.rung === 2) return strings.dueToday(d.title, d.entity, consequence);
 
-  // THE STOP AT RUNG 0 (review fix, ). `ladderStep` never catches a rung up, so a deadline
+  // THE STOP AT RUNG 0. `ladderStep` never catches a rung up, so a deadline
   // that passed while the ladder was OFF arrives here having been raised ZERO times — and the
   // count line would then read "… 1 time(s)", which is both a lie and (in nb) ungrammatical. The
-  // honest thing to say is that the date went by without him hearing from her at all.
+  // honest thing to say is that the date went by without the owner hearing from the agent at all.
   if (d.rung === 0) {
     const late = Math.max(-daysToDue, 0);
     return strings.stopNeverRaised(d.title, d.entity, late);
@@ -89,7 +89,7 @@ export function rungText(d: DeadlineRow, step: LadderStep, daysToDue: number, la
 
   // The count is the rungs actually RAISED — the ones already sent plus this stop, which is itself
   // a raise: a row that slept through rung 2 has been raised twice, and claiming three would be a
-  // lie he can check. The singular branch of each language's wording is unreachable today (the
+  // lie the owner can check. The singular branch of each language's wording is unreachable today (the
   // `d.rung === 0` branch above always takes the "never raised" wording instead), kept anyway for
   // honesty rather than assuming `times` can never be 1.
   const times = d.rung + 1;
@@ -100,7 +100,7 @@ export function rungText(d: DeadlineRow, step: LadderStep, daysToDue: number, la
  * The prompt the scheduled turn carries. The rung is the MESSAGE, not a brief for one — so unlike
  * `reping`'s prompt (facts, from which the model writes two lines), this one asks for a relay.
  * The turn shape is still `to(...).send(...)`, the door this service already uses for every push,
- * so the message lands in the same session he replies into ("done"/"dismiss", in whatever
+ * so the message lands in the same session the owner replies into ("done"/"dismiss", in whatever
  * language `line` itself is already written in — this instruction does not name one, ).
  */
 export function deadlinePrompt(line: string): string {
@@ -139,7 +139,7 @@ export interface DeadlineLadderDeps {
 }
 
 export interface DeadlineLadderResult {
-  /** Rungs that reached him (or were already his — `alreadySeen`) and moved the row. */
+  /** Rungs that reached the owner (or were already the owner's — `alreadySeen`) and moved the row. */
   stepped: number;
   /** Rungs the gate held back. The rows keep their rung and are reconsidered next tick. */
   held: number;
@@ -196,7 +196,7 @@ export function makeDeadlineLadderTick(deps: DeadlineLadderDeps): DeadlineLadder
             () => send(rungText(row, step, daysToDue(row.dueDate, now, tz), lang)),
           );
         } catch (err) {
-          // Nothing reached him and the gate wrote no `sent` row, so the rung stays owed. One
+          // Nothing reached the owner and the gate wrote no `sent` row, so the rung stays owed. One
           // broken send must not cost the rest of the batch its message.
           console.error(`deadlines: send FAILED for ${row.id} (rung ${step.rung}) — retrying next tick`, err);
           continue;
@@ -223,7 +223,7 @@ export function makeDeadlineLadderTick(deps: DeadlineLadderDeps): DeadlineLadder
 
         stepped += 1;
         // `handled` covers `alreadySeen`: a `sent` row for this exact rung proves the message
-        // reached him, so this is the write that failed last tick, not a second ring.
+        // reached the owner, so this is the write that failed last tick, not a second ring.
         await store
           .advanceRung(row.id, step.rung, now)
           .catch((e) => console.error(`deadlines: failed to advance ${row.id} to rung ${step.rung} (may ring again next tick)`, e));

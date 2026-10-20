@@ -1,6 +1,5 @@
 /**
- * agent/instructions/standing-facts.ts — what the owner has told the agent, once per session
- *.
+ * agent/instructions/standing-facts.ts — what the owner has told the agent, once per session.
  *
  * A sibling of `clock.ts`: eve reads `agent/instructions.md` (the static root file) AND this
  * directory together — root content first, then directory entries alphabetically
@@ -15,7 +14,7 @@
  * `context/dynamic-instruction-lifecycle.js`, `context/keys.d.ts`). A block whose bytes move
  * therefore re-bills the whole system prompt — persona, tool descriptions and memory together —
  * on every message. `aa-definition.ts` already resolves the persona on `session.started` for
- * exactly this reason, and its header names the incident that made it a rule rather than a
+ * exactly this reason, and its header names the reason it is a rule rather than a
  * tuning choice. This is the second instance of that pattern, not a new mechanism.
  *
  * eve stores a `session.started` resolver's output under `SessionDynamicInstructionsKey`,
@@ -27,7 +26,7 @@
  * stopped being applied on the very NEXT turn, because the block was rebuilt every turn. It no
  * longer is: the block a session starts with is the block it keeps. Two things stand in for that
  * now — the tool result of `remember` / `forget` stays in the conversation history for the rest
- * of the session, so the model has been told in the exchange itself; and (W4B-s3) a SECOND,
+ * of the session, so the model has been told in the exchange itself; and a SECOND,
  * turn-scoped subscription on this same resolver, below, lists only what changed since the block
  * was built. It is empty — and therefore absent, byte for byte — on an ordinary turn, which is
  * what keeps the session's block worth having: eve deletes an empty resolver's slot outright
@@ -42,7 +41,7 @@
  * conversation without its memory, which is exactly where it was before — and the
  * failure is logged once, by `guarded`.
  *
- * A STALL IS A FAILURE TOO (fix round 1). `catch` covers a rejection; it does not cover a query
+ * A STALL IS A FAILURE TOO. `catch` covers a rejection; it does not cover a query
  * that never settles, which is what an unresponsive `db` container produces — and eve applies no
  * timeout of its own to a dynamic-instruction resolver. Unbounded, that is not "no memory this
  * conversation", it is "the owner's message got no reply". The read is bounded INSIDE the
@@ -108,7 +107,7 @@ function evictStale(now: number): void {
 }
 
 /**
- * W5I-s5b: has this process already kicked off the owner-key/register agreement check? This
+ * Has this process already kicked off the owner-key/register agreement check? This
  * resolver's `session.started` handler is the chosen hook — it is the first place in this
  * service that reliably gets a pool early (it already does the identical fire-and-forget
  * pattern for `recordUse`/`recordRead` below), and it runs on every door, including the
@@ -124,7 +123,7 @@ let ownerKeyCheckStarted = false;
  */
 const provider: MemoryCoreProvider = {
   async forSession(sessionId: string): Promise<string> {
-    // W5I-s5b, fire-and-forget, never awaited: `checkOwnerKeyAgreement` never throws by its own
+    // Fire-and-forget, never awaited: `checkOwnerKeyAgreement` never throws by its own
     // contract, and the `.catch` here is belt and braces against that guarantee ever regressing
     // — same posture as `recordUse`/`recordRead` below. A slow or hanging register must not cost
     // this (or any) turn, which is exactly why this is not inside `withTimeout` below: nothing
@@ -139,8 +138,7 @@ const provider: MemoryCoreProvider = {
 
     const facts = await withTimeout(
       // CANONICAL_USER_ID, not a resolved principal — every call site here does the same
-      // (Task 3 of the multi-user substrate plan; live principal→user resolution is Phase 3's
-      // reader-path work, not this one). Brief turns run as the app principal, so a half-wired
+      // (live principal→user resolution is future reader-path work, not done here). Brief turns run as the app principal, so a half-wired
       // resolution here would silently return no facts on the 08:00/20:00 briefs.
       listActiveFacts(getPool(), configuredOwnerId()),
       STANDING_FACTS_TIMEOUT_MS,
@@ -160,7 +158,7 @@ const provider: MemoryCoreProvider = {
       at: now,
     });
 
-    // W4C-s11: record which ids the session block actually included — starts the usage clock
+    // Record which ids the session block actually included — starts the usage clock
     // ADR-0018 rule 8's retirement will read. Mirrors `buildFactsCore`'s own filter/cut exactly
     // (owner-origin only, first `included` of them) rather than restating it. Fire-and-forget,
     // AFTER the instructions are already computed above, so a slow or failing write can never
@@ -172,7 +170,7 @@ const provider: MemoryCoreProvider = {
       .map((f) => String(f.id));
     void recordUse(getPool(), { kind: "standing_fact", refs: includedIds, owner: configuredOwnerId() }).catch(() => {});
 
-    // W5A-s2: which of THIS session's shown facts answered which turn — `turnId: ""` because the
+    // Which of THIS session's shown facts answered which turn — `turnId: ""` because the
     // session block is shown on every turn of the session, not one. Same `includedIds` as
     // `recordUse` above: whichever ids the budget let into the block is the only honest answer to
     // "what did this session's block show", so it is computed once and read by both calls rather
@@ -196,7 +194,7 @@ const memoryCore = guarded(provider, {
 });
 
 /**
- * The turn-scoped half (W4B-s3): re-reads the store and reports only what changed since the
+ * The turn-scoped half: re-reads the store and reports only what changed since the
  * session's block was built, or "" when nothing did.
  *
  * NO ENTRY ⇒ "", WITHOUT TOUCHING THE DATABASE. A turn whose session this process never built a
@@ -215,7 +213,7 @@ const memoryCore = guarded(provider, {
  * never a throw, and is logged once — not once per turn, because `guarded` only fires on the
  * calls that actually reach it (an unknown session never does).
  *
- * NOTES JOIN THIS BLOCK TOO (W4B-s5). `notesForSession` reads this session's OWN `agent_notes`
+ * NOTES JOIN THIS BLOCK TOO. `notesForSession` reads this session's OWN `agent_notes`
  * rows; `buildFactsCorrection` renders only the ones safe to reflect back (see its own header) —
  * a note stamped `third_party`/`synced` is kept in the table exactly as written, but never placed
  * in this block. The notes read is caught HERE, separately from the facts read above, and
@@ -224,9 +222,9 @@ const memoryCore = guarded(provider, {
  * block exists for just because the notes table is missing.
  */
 /** Mirrors `SAFE_TO_SURFACE_NOTE_ORIGINS` in `lib/standing-facts.ts` exactly — that constant is
- *  private to its module, and this file's slice does not touch that one, so the same three
- *  origins are named again here rather than widening that module's exports for one caller. Keep
- *  the two lists identical: this is what decides which note ids W5A-s2 may claim were shown. */
+ *  private to its module, and widening that module's exports for one caller is not worth it, so the same three
+ *  origins are named again here. Keep
+ *  the two lists identical: this is what decides which note ids may be claimed as shown. */
 const SAFE_NOTE_ORIGINS_FOR_READS: ReadonlySet<AgentNote["origin"]> = new Set(["owner", "agent", "system"]);
 
 const correctionProvider: MemoryCoreProvider = {
@@ -248,7 +246,7 @@ const correctionProvider: MemoryCoreProvider = {
 
     const markdown = buildFactsCorrection(entry.facts, currentFacts, notes);
 
-    // W5A-s2: only the notes actually SHOWN — `buildFactsCorrection` itself drops a
+    // Only the notes actually SHOWN — `buildFactsCorrection` itself drops a
     // third_party/synced note before rendering (see that function's header), and a record that
     // claimed an unshown note as read would be exactly the fabrication `recordRead`'s own
     // contract forbids. Fire-and-forget, after `markdown` is already computed, so a slow or
@@ -284,7 +282,7 @@ export default defineDynamic({
     },
     // Turn-scoped, so it lands AFTER the session-scoped entry in eve's merged system message
     // (`buildDynamicInstructionMessages` concatenates session-scoped entries first, then
-    // turn-scoped — see the wave-4 plan's "Is 4B buildable on eve 0.32?"). An empty result here
+    // turn-scoped). An empty result here
     // is not a placeholder: eve drops it entirely, so an ordinary turn adds zero bytes.
     "turn.started": async (_event: unknown, ctx?: ResolveCtx) => {
       const markdown = await memoryCorrection.forSession(ctx?.session?.id ?? "no-session");

@@ -1,23 +1,20 @@
 /**
  * The nightly dream cycle — 03:00 on the owner's clock by default, a per-installation setting
- * since -s4 (`packages/agent-kit/src/schedule-settings.ts`'s `dream` key, no more env var);
- * `Europe/Oslo` at home, so unchanged on a normal night — put every slot on `ownerTz`.
+ * (`packages/agent-kit/src/schedule-settings.ts`'s `dream` key); every slot is on `ownerTz`.
  *
- * Replaces the old runtime's `chief-of-staff-dream` CONTAINER
- * (`services/agent-runtime/bin/chief-of-staff-dream.ts`). One pass: resolve the cursor from the latest
+ * One pass: resolve the cursor from the latest
  * `_meta/dream/<date>.md`, read conversation logs newer than it, reflect, GDPR-scrub, promote,
  * write a dated note, and file anything needing confirmation as a memory proposal.
  *
- * PREREQUISITE, and the reason this port is not a lift-and-shift: the cycle's input used to be
- * `_meta/conversations/**\/*.md` alone, and chief-of-staff did not write those until . Between
- * 2026-08-13 and landing, every nightly pass reflected on an empty window and reported
- * `promoted=0 superseded=0 held=0 needsConfirm=0`. Since W3B-s3 the cycle reads
+ * PREREQUISITE: the cycle's input used to be `_meta/conversations/**\/*.md` alone, and when
+ * those were not written every nightly pass reflected on an empty window and reported
+ * `promoted=0 superseded=0 held=0 needsConfirm=0`. The cycle now reads
  * `conversation_entries` (ADR-0020's table) first, falling back to markdown only for the one
- * installation-lifetime gap the table cannot itself answer for (`lib/dream/log-reader.ts`'s
+ * gap in history the table cannot itself answer for (`lib/dream/log-reader.ts`'s
  * `readConversationEntries`). If this schedule reports zeros while conversations exist — in
  * either the table or the markdown log — that is a REAL finding, not the old normal.
  *
- * THIS SCHEDULE SENDS THE OWNER NOTHING (W5X-s4). It used to enqueue one reminder row per run
+ * THIS SCHEDULE SENDS THE OWNER NOTHING. It used to enqueue one reminder row per run
  * listing the observations it wanted confirmed — a message nothing could answer, because a
  * confirmation had no durable row and no id. Each one is now a `memory_proposals` row with
  * action `add`, and `agent/schedules/proposals-watch.ts` is the single lane that announces it,
@@ -29,9 +26,9 @@
  * (fail closed), and the owner simply hears nothing — which is silence, not a wrong answer, so
  * `makeProposeAdd` warns once per process and names the file.
  *
- * TIMEZONE: "poll every minute, gate on the Oslo wall clock", same as the briefs. The gate is
- * exact-minute, so a container down across 03:00 misses that night silently — the pre-existing
- * house behaviour (stability finding S3b), ported rather than changed.
+ * TIMEZONE: "poll every minute, gate on the owner's wall clock", same as the briefs. The gate is
+ * exact-minute, so a container down across 03:00 misses that night silently — the long-standing
+ * house behaviour.
  */
 import { readFileSync } from "node:fs";
 
@@ -74,13 +71,13 @@ export function dreamGate(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
- * — takes the timezone rather than assuming Oslo, like every other slot in this service.
- * The NAME is kept (the plan's Task 3 names it) even though it is no longer Oslo-specific; read it
+ * Takes the timezone rather than assuming one, like every other slot in this service.
+ * The NAME is kept even though the helper is no longer tied to one zone; read it
  * as "the slot helper this schedule has always used". `slotIn`/`slotKey` is the shared
  * implementation it delegates to, so all eight slots come off one formatter.
  *
  * The cycle writes a dated note and touches nothing the owner sees, so moving it onto the owner clock
- * is consistency, not behaviour: at home the resolver answers `Europe/Oslo` and 03:00 is 03:00.
+ * is consistency, not behaviour: at home the resolver answers the home zone and 03:00 is 03:00.
  */
 export function osloSlot(now: Date, tz: string, hour: number): string | null {
   return slotIn(now, tz, hour);
@@ -106,8 +103,8 @@ export function makeDreamBrain(root: string) {
 }
 
 /**
- * W5X-s4 — what this schedule does with the run's `needsConfirm` items, replacing W4C-s2b's
- * `sendConfirmationNotice`. It FILES each one and SENDS NOTHING.
+ * What this schedule does with the run's `needsConfirm` items (there is no confirmation notice
+ * any more). It FILES each one and SENDS NOTHING.
  *
  * WHY THE SEND IS GONE. The old notice was one combined message listing up to
  * `DREAM_CONFIRM_MAX_PER_RUN` observations — and nothing could answer it: `surface.ts`'s
@@ -158,7 +155,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
   await ensureDreamTables(db);
 
   const root = storeRoot("brain");
-  // Explicit, not guessed inside the store: box 084 / ruling D5. `ownerId` is the fail-soft
+  // Explicit, not guessed inside the store. `ownerId` is the fail-soft
   // owner key (env override, else this installation's one literal fallback) — acceptable for a
   // single-member installation's own writes; a multi-user caller only has to change this line.
   const store = makeDreamStore(db, ownerId());
@@ -168,12 +165,12 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
   const brain = makeDreamBrain(root);
 
   // The label a legacy markdown file's reply line carries, for the reader's markdown gap-fill
-  // (W3B-s7) — resolved the same way every other "who am I" read in this service is, never a
+  // Resolved the same way every other "who am I" read in this service is, never a
   // literal name here.
   const { loaded } = await thisAgent(undefined);
   const agentLabel = loaded.definition.display ?? loaded.definition.name;
 
-  // W4C-s8 — the actual cost of the run's one reflection call, from the provider's own usage
+  // The actual cost of the run's one reflection call, from the provider's own usage
   // report. Stays undefined (never guessed as zero) when the provider reports none.
   let reflectionCostUsd: number | undefined;
 
@@ -195,7 +192,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
       },
       agentLabel,
     }),
-    // The do-not-learn list (ADR-0018 rule 5, W4C-s3): the kit's shared gate records every
+    // The do-not-learn list (ADR-0018 rule 5): the kit's shared gate records every
     // observation before deciding, so a do-not-learn rejection is reported, never silently
     // dropped — see the comment beside `isDoNotLearn`'s call site in `lib/dream/reflect.ts`.
     promoter: makePromoter({ store, doNotLearn: (o) => isDoNotLearn(o.text, o.subject) }),
@@ -211,7 +208,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
   const { notePath, result, allRejectedStreak } = await cycle.runOnce();
 
   // Each inference the owner has to answer becomes a row they CAN answer; the proposals watch
-  // is what tells them, within the minute. This schedule sends nothing about them (W5X-s4).
+  // is what tells them, within the minute. This schedule sends nothing about them.
   const { filed, heldBack: needsConfirmHeldBack } = await fileConfirmations(result.needsConfirm, {
     propose: makeProposeAdd(db),
     max: DREAM_CONFIRM_MAX_PER_RUN,
@@ -250,7 +247,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
     }
   }
 
-  // W4C-s8 — never a guess: "not reported" when the provider gave no usage back, exactly what
+  // Never a guess: "not reported" when the provider gave no usage back, exactly what
   // `actualStepCost` returns undefined for.
   const reflectionCostText =
     reflectionCostUsd === undefined ? "not reported" : `$${reflectionCostUsd.toFixed(4)}`;
@@ -283,7 +280,7 @@ export default defineSchedule({
     const forced = process.env["DREAM_RUN_NOW"] === "1" && lastSlot !== "forced";
 
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
-    // -s4 — the hour is a setting now, cached in-process for a few minutes too
+    // The hour is a setting now, cached in-process for a few minutes too
     // (lib/schedule-hours.ts).
     const [hour] = await scheduleHours("dream");
     const slot = osloSlot(new Date(), await ownerTz(), hour);
@@ -296,7 +293,7 @@ export default defineSchedule({
       await runDreamCycle();
       await recordSchedulePass(getPool(), HEARTBEAT_KEY);
     } catch (e) {
-      // W4C-s8 — an unpriced model or a step over the spend cap is a refusal to run, not a
+      // An unpriced model or a step over the spend cap is a refusal to run, not a
       // crash: the cursor was never advanced (the throw happens before the note is committed,
       // `lib/dream/cycle.ts`'s `runOnce`), so tomorrow's run retries the same window rather
       // than losing it.

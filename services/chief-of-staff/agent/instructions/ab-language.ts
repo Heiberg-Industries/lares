@@ -1,4 +1,4 @@
-// The language switch, every turn (agent-definitions spec, Part 3). `ab-` because eve reads this
+// The language switch, every turn (see ADR-0015). `ab-` because eve reads this
 // directory's entries in filename order (node_modules/eve/docs/instructions.mdx) and this must
 // land after the persona (aa-definition.ts) and before the clock — the same ordering rule
 // instructions.md and clock.ts already follow.

@@ -4,7 +4,7 @@
 //
 // Fenced behind a path allowlist first, then removed outright
 // once the authored hands landed: the fence made them safe, the hands made
-// them unnecessary, and a tool that cannot work is worse than no tool — she reaches for it,
+// them unnecessary, and a tool that cannot work is worse than no tool — the agent reaches for it,
 // gets an environment error, and has to recover mid-answer.
 //
 // eve resolves this by FILENAME — and, corrected by eve does NOT validate the name

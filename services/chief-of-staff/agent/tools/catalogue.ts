@@ -2,7 +2,7 @@
 //
 // `session.started`, never `turn.started`: the tool list is part of what the prompt cache keys
 // on, and changing it mid-session re-bills the whole conversation. A grant change therefore
-// reaches the agent at its NEXT conversation — which the builder says out loud (spec Part 3).
+// reaches the agent at its NEXT conversation — which the builder says out loud (ADR-0015).
 //
 // EVERY CALLBACK BELOW CARRIES A DURABLE DESCRIPTOR, AND THAT IS NOT OPTIONAL (eve 0.59.0+).
 // eve refuses a dynamic tool whose `execute`, approval policy or live (zod) `inputSchema` it
@@ -15,15 +15,15 @@
 // dynamic-tool-transform.js` requires `arguments[0].type === "ObjectExpression"`), and the
 // literal below is cast `as never` for the typing reason the `CatalogueToolValue` docblock gives;
 // it also never sees a callback reached through a conditional spread, which is how an approval
-// gets here. So each phase is stamped BY HAND, with the same closure the old inline code relied
+// gets here. So each phase is stamped BY HAND, with the closure the inline form would have relied
 // on: `{ name }`, one plain string, re-reading the module-level CATALOGUE when it runs.
 // See node_modules/eve/docs/guides/dynamic-capabilities.md, "Create dynamic tools in a package".
 //
 // THE APPROVAL IS COPIED ACROSS, AND THAT LINE IS LOAD-BEARING — here more than anywhere else in
 // the fleet so far. `agent-kit__vault_write`, `agent-kit__vault_file` and `agent-kit__vault_drop`
-// each carry `approval: always` (a vault write or delete) — Task 1 measured that a
+// each carry `approval: always` (a vault write or delete) — it was measured that a
 // resolver-emitted tool REPLACES an authored/mounted tool of the same name completely —
-// description, executor AND approval (the eve 0.32 dynamic-seams research, Q1) —
+// description, executor AND approval (measured on eve 0.32) —
 // so omitting this line would ship those three gated writes with no card. The other sixty-four
 // entries in `../../catalogue/index.ts` carry no approval today, so for them this line copies
 // nothing; it stays unconditional because the day another gated tool joins this catalogue is the

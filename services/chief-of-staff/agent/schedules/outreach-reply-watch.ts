@@ -1,8 +1,7 @@
 /**
  * Outreach reply watch — polls threads `agent/tools/outreach_track.ts` is tracking
  * for a reply. A thread untouched for MAX_AWAIT_DAYS stops being tracked — bounded, so this
- * table cannot grow unbounded the way the Aug 14/15 incident's retry loop did
- * (the August 2026 spend-leak write-up).
+ * table cannot grow unbounded the way a past runaway retry loop did.
  *
  * SECURITY: reply handling is now THINK-ONLY, then a fixed-prompt act session — see
  * lib/outreach-reply-triage.ts's module header. It used to paste the reply body straight into
@@ -29,7 +28,7 @@
  * held-back initiation leaves the thread UNMARKED (no `markReplied`), so the next poll reconsiders
  * it once the gate reopens rather than losing the reply.
  *
- * -s1: the BILLED work — `classifyReply` and, for a positive or meeting-request reply,
+ * The BILLED work — `classifyReply` and, for a positive or meeting-request reply,
  * `draftReply` — now runs INSIDE the gate's send callback, not before it. Before this fix, both
  * calls ran ahead of the gate, so a reply arriving during quiet hours (or DND, or an owner-day
  * ceiling) was reclassified and redrafted on every 15-minute poll all night for nothing: the gate
@@ -90,7 +89,7 @@ export function freshState(): OutreachReplyWatchState { return { running: false 
 /** `tick` resolves `true` for a completed pass — including zero awaiting threads, or a
  *  per-thread failure caught inside the loop — and `false` when the OUTER catch swallowed the
  *  whole pass (e.g. `deps.awaitingThreads` itself throwing) or a previous tick is still
- *  running. 's fix round 1: ONLY a `true` result may stamp the schedule's heartbeat. */
+ *  running. ONLY a `true` result may stamp the schedule's heartbeat. */
 export interface OutreachReplyWatchTick {
   tick(now: Date): Promise<boolean>;
 }
@@ -186,7 +185,7 @@ export default defineSchedule({
         },
         beginTriage: (thread) => beginTriage(pool, thread.id),
         async onReply(thread, reply) {
-          // / -s1 — ONE initiation for this reply, and the gate is asked FIRST: the
+          // ONE initiation for this reply, and the gate is asked FIRST: the
           // callback below is everything that bills or sends, so a held or suppressed verdict never
           // runs `classifyReply` or `draftReply` at all, not just never sends their result. Every
           // branch inside sends exactly one message, so all of them share the SAME key: a second
@@ -230,11 +229,11 @@ export default defineSchedule({
           // never got to run. `beginTriage`'s checkpoint expires on its own retry window, which is
           // what makes that re-detection possible rather than a permanent "triage in flight".
           //
-          // ALREADY SEEN is the opposite instruction (fix round 1, CRITICAL) and falls through to
-          // `markReplied`: a `sent` row for `outreach/<threadId>` proves he was already told about
+          // ALREADY SEEN is the opposite instruction and falls through to
+          // `markReplied`: a `sent` row for `outreach/<threadId>` proves the owner was already told about
           // this reply, so the thread is finished whatever happened to the write that failed last
           // time. Left "eligible", it would be re-classified — a BILLED `classifyReply` plus a
-          // billed `draftReply` — on every poll, forever, for a reply he has already seen.
+          // billed `draftReply` — on every poll, forever, for a reply the owner has already seen.
           if (!initiation.handled) return;
 
           await markReplied(pool, thread.id);

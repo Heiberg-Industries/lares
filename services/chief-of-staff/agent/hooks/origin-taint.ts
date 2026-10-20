@@ -14,7 +14,7 @@
  * forgetting it. What a hook does NOT see is a tool's ARGUMENTS: `action.result` carries
  * `{ result, sequence, stepIndex, status, turnId }` and the result carries only
  * `{ callId, isError?, kind, output, toolName }`. `calendar_list_events` needed its arguments to
- * decide (was a specific calendar named?), so W3A-s5 made that call at the tool's own call site
+ * decide (was a specific calendar named?), so that call is made at the tool's own call site
  * (`catalogue/calendar_list_events.ts`) and this hook no longer taints it at all — a blanket
  * `third_party` here would have been wrong for the common case (a bare listing of the owner's
  * own primary calendar). The three tools still named below never needed that: `gmail_read` and
@@ -42,8 +42,8 @@
  * `node_modules/eve/dist/src/public/definitions/hook.d.ts:16`, its payload is at
  * `node_modules/eve/dist/src/protocol/message.d.ts:197-207`, the tool-result shape at
  * `node_modules/eve/dist/src/runtime/actions/types.d.ts:103-113`, and every turn-boundary event
- * carries a required `data.turnId` (`message.d.ts:128-134, 394-400, 404-413, 420-426`). Wave 2's
- * eve bump must re-read all of those before trusting this file.
+ * carries a required `data.turnId` (`message.d.ts:128-134, 394-400, 404-413, 420-426`). Any
+ * eve version bump must re-read all of those before trusting this file.
  */
 import { defineHook, type HookContext, type HookEvent } from "eve/hooks";
 
@@ -62,8 +62,7 @@ import { emitSignal } from "../../lib/signal-emit.js";
 /**
  * Every tool whose result brings back words the owner did not write, and the class it taints at.
  *
- * NAMES ONLY, no classification logic — see the header. `calendar_list_events` is NOT here as of
- * W3A-s5: it taints itself, precisely, at its own call site, because only the call site has the
+ * NAMES ONLY, no classification logic — see the header. `calendar_list_events` is NOT here: it taints itself, precisely, at its own call site, because only the call site has the
  * arguments a correct answer needs.
  */
 export const TAINTING_TOOLS: ReadonlyMap<string, Taint> = new Map<string, Taint>([

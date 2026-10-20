@@ -1,13 +1,12 @@
 /**
- * Email triage — the eve schedule (Option A: native Gmail polling, replacing BOTH
- * the old runtime's email-watcher container and chief-of-staff-workflow's triage consumer).
+ * Email triage — the eve schedule (native Gmail polling).
  *
  * Every enrolled mailbox (both owner@owner.example and owner@project.example — `listEnrolledMailboxes`,
  * no hard-coded account), a short rolling window (`in:inbox -from:me newer_than:2d`), each
  * candidate message claimed via `email-triage-store.ts`'s exactly-once table, then
  * `lib/email-triage.ts`'s triageOneMessage does the actual classify/draft.
  *
- * COST-SAFETY (the Aug 14/15 lesson, the August 2026 spend-leak write-up):
+ * COST-SAFETY (a past spend leak is why):
  * `TRIAGE_CEILING_PER_TICK` bounds how many billed triage calls one tick can make — without
  * it, a first-tick or post-outage backfill (many candidates surfacing at once from the 2-day
  * scan window) would fire one billed call per candidate with no limit. `claimMessage` seeds
@@ -21,9 +20,8 @@
  * `-from:me` scan window can't tell the difference between "never answered" and "already
  * answered by a human," only `readThread` + `hasHumanReplyAfter` can.
  *
- * Slack notification is a RAW postMessage (`callSlackApi`, no session/model turn) — matches
- * the old runtime's verbatim delivery exactly, same primitive `reminders.ts` already
- * documents and uses for the identical reason.
+ * Slack notification is a RAW postMessage (`callSlackApi`, no session/model turn) — the same
+ * primitive `reminders.ts` already documents and uses for the identical reason.
  *
  * PROACTIVITY: that notification is an `event` initiation through
  * `@lares/agent-kit`'s gate, keyed `email-triage/<mailbox>/<messageId>`. Only the PING is gated —
@@ -98,7 +96,7 @@ export function renderDossierForDraft(d: PersonDossier): string | null {
  * `renderDossierForDraft` drops the ORGANISATION section from every draft, so gathering it was
  * pure cost. Up to six synchronous full-note-store walks plus a Twenty call, per inbound message,
  * per tick, for text that was discarded immediately. Skipping it here and dropping the section
- * there must stay a matched pair — if a later ticket gives the drafter organisation context, this
+ * there must stay a matched pair — if the drafter is later given organisation context, this
  * option comes off at the same time.
  */
 export function draftDossierLookup(sources: PersonSources): (email: string) => Promise<string | null> {
@@ -135,8 +133,8 @@ export interface EmailTriageDeps {
    *
    * A held-back ping does NOT hold back the draft: `triage` has already run and the draft is
    * sitting in Gmail, and the outcome row records that truthfully. v1 keeps no "notified" column —
-   * the ping is simply skipped, and the morning brief's held-back line is what tells him something
-   * was withheld (the plan's Task 3 ruling). So a suppressed ping means: the work happened, the
+   * the ping is simply skipped, and the morning brief's held-back line is what tells the owner something
+   * was withheld. So a suppressed ping means: the work happened, the
    * interruption did not.
    */
   gate?: DoorInitiate;
@@ -152,8 +150,7 @@ export function freshState(): EmailTriageState { return { running: false }; }
 /** `tick` resolves `true` for a completed pass — including zero mailboxes, zero candidates,
  *  or a per-item failure caught inside the loop (one bad message must not cost the whole tick
  *  its heartbeat) — and `false` when the OUTER catch swallowed the whole pass (e.g.
- *  `deps.mailboxes` itself throwing) or a previous tick is still running. 's fix round
- *  1: ONLY a `true` result may stamp the schedule's heartbeat — ticking through a total outage
+ *  `deps.mailboxes` itself throwing) or a previous tick is still running. ONLY a `true` result may stamp the schedule's heartbeat — ticking through a total outage
  *  must not read as a healthy pass. */
 export interface EmailTriageTick { tick(): Promise<boolean> }
 
@@ -261,7 +258,7 @@ export default defineSchedule({
       const principal = process.env["GOOGLE_PRINCIPAL_ID"];
       const query = `in:inbox -from:me newer_than:${SCAN_WINDOW_DAYS}d`;
 
-      // review, Important finding 2: `calendarClient` below resolves NO explicit
+      // `calendarClient` below resolves NO explicit
       // account, so it always lands on `CALENDAR_PRIMARY_EMAIL` (env-pinned to
       // owner@owner.example, `services/box/compose.yaml`) — ONE calendar of the TWO
       // Google accounts enrolled — and always queries the literal calendarId "primary"
@@ -270,7 +267,7 @@ export default defineSchedule({
       // claim it actually is rather than a universal one.
       const calendarLabel = `${process.env["CALENDAR_PRIMARY_EMAIL"] ?? "the primary Google account"}'s primary calendar`;
 
-      // efficiency finding: resolving a Gmail client re-decrypts the refresh token
+      // Resolving a Gmail client re-decrypts the refresh token
       // from the DB every call — this used to happen fresh for search/read/triage
       // independently (up to 3x per message, plus once per mailbox per tick). One resolution
       // per mailbox per tick, reused by every dep below.
@@ -293,7 +290,7 @@ export default defineSchedule({
         return calendarClientPromise;
       }
 
-      // Task 4: the dossier for the message's counterpart, scoped to the mailbox the
+      // The dossier for the message's counterpart, scoped to the mailbox the
       // message ARRIVED on. `eveSagaPersonWiring`'s own mailSearch/mailRead resolve
       // `googleClients.gmail` with NO account — the env-pinned primary mailbox — which
       // would read the WRONG inbox for a message on the other enrolled mailbox (a false "you
@@ -328,7 +325,7 @@ export default defineSchedule({
           // draft lands in. Grounding a project.example reply in owner.example examples would be a
           // different voice (sql/001_baseline.sql).
           const voice = makeDbVoiceAccess({ db: pool, mailbox });
-          // The member's own addresses, so a reply-to-everyone never includes him: the identity
+          // The member's own addresses, so a reply-to-everyone never includes them: the identity
           // registry's email aliases plus the arriving mailbox (per install, never a literal).
           const selfEmails = [...(await listAliases(pool, configuredOwnerId(), "email")), mailbox];
           return triageOneMessage(

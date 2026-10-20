@@ -3,8 +3,8 @@
  *
  * WHY THIS EXISTS. eve 0.32.0 routes any reply to a bot message as an INPUT RESPONSE and then
  * drops it when no freeform prompt is pending, so replying to the chief of staff in Telegram produces a turn
- * that makes no model call, sends nothing, and logs no error. Found and fixed on travel
- * first; her door is the same `telegramChannel` on the same eve version. See
+ * that makes no model call, sends nothing, and logs no error. Every agent's Telegram door is the
+ * same `telegramChannel` on the same eve version. See
  * `lib/telegram-reply-fix.ts` for the upstream lines and the tripwire.
  *
  * WHAT IT DELIBERATELY DOES NOT DO. It does not verify, dispatch, authenticate, or interpret.
@@ -14,7 +14,7 @@
  *
  * THE ONE THING IT LOOKS AT. eve hands `attachSession` to ROUTE handlers and to nothing else,
  * and retiring a session by its exact id is the only way left to give this chat one
- * conversation per Oslo calendar day (the channel's old rename is additive now — see
+ * conversation per calendar day in the home time zone (the channel's old rename is additive now — see
  * `lib/telegram-rotation.ts`). So on the way in this door reads one row keyed by the update's
  * chat id and, on the first update of a new day, resets the session recorded as having served
  * the previous one. It still decides nothing about the update itself: a chat with nothing
@@ -28,7 +28,7 @@
  * FAIL-OPEN, ALWAYS — WITH ONE NAMED EXCEPTION. This agent going deaf is worse than any single
  * update being mishandled: an unparseable body is forwarded exactly as it arrived. The one thing
  * that may be stopped here is an approval-card tap from somebody who is not an allowed approver
- * (`lib/telegram-tap-gate.ts`, W7A-s3): the framework discards the tapper's identity, so this is
+ * (`lib/telegram-tap-gate.ts`): the framework discards the tapper's identity, so this is
  * the last place it can be read at all, and a tap executes a real action. A message is never
  * refused by that gate, whoever sent it — the inbound allowlist in the channel is what decides
  * whether a message starts a turn, and it still decides it alone.

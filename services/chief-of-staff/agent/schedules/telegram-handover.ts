@@ -1,7 +1,7 @@
 /**
  * The nightly Telegram hand-over — midnight on the owner's clock, for the day that just ended.
  *
- * WHAT IT FIXES. The rotation gives this door one conversation per Oslo calendar day. Since the
+ * WHAT IT FIXES. The rotation gives this door one conversation per calendar day in the home time zone. Since the
  * day's session is retired at the front door on the first message of the next day (eve's session
  * rename became additive, so nothing else can retire it — `lib/telegram-rotation.ts`), the
  * summary of the day being closed used to be produced only when that first turn COMPLETED: the
@@ -74,7 +74,7 @@ export default defineSchedule({
     running = true;
     lastSlot = slot;
     try {
-      // The day that just ended, read on the same Oslo boundary the rotation rotates on — never
+      // The day that just ended, read on the same home-zone day boundary the rotation rotates on — never
       // "yesterday" as the container's UTC clock would compute it.
       await runDayHandover(getPool(), osloDayBefore(osloDay()));
       // A night with nothing to hand over IS a completed pass: the job ran and found the chats

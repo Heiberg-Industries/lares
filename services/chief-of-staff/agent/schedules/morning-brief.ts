@@ -1,12 +1,11 @@
 /**
- * The morning brief — 08:00 Oslo. What's on his plate today, as a prioritised list: TODAY's
+ * The morning brief — 08:00 on the owner's clock. What's on the owner's plate today, as a prioritised list: TODAY's
  * commitments, the obligations that are new or changed since last night's pass, and notes that
  * entered the Brain recently.
  *
- * CONTRACT CHANGE (the morning brief must say what is on his plate, in a priority
- * list, with changes called out). It was
- * STRICTLY a delta and therefore said nothing about his day at all — it could report one owed
- * reply while his calendar held a full day of appointments. The
+ * CONTRACT: the morning brief must say what is on the owner's plate, in a priority
+ * list, with changes called out. A pure delta would say nothing about the day itself — it could
+ * report one owed reply while the calendar held a full day of appointments. The
  * obligations half is still a delta; the calendar half deliberately is not, because at 08:00
  * the day's fixed points are the frame everything else hangs on and the evening pass is 12
  * hours stale.
@@ -15,17 +14,18 @@
  * `null`, NOTHING is sent. Silence is still correct on a morning with no meetings, no delta
  * and no new reading.
  *
- * The dedupe key is `night_before_delivered_day` for TODAY's date on the owner's clock ( * — it was the home clock's) (`lib/obligations-store.ts`'s `nightBeforeDelivered`) — the mark last night's 20:00 pass
+ * The dedupe key is `night_before_delivered_day` for TODAY's date on the owner's clock (`lib/obligations-store.ts`'s `nightBeforeDelivered`) — the mark last night's 20:00 pass
  * wrote for "tomorrow" as of ITS clock, which is "today" as of this one. Anything not stamped
  * is new or changed since then and belongs in the delta.
  *
  * TIMEZONE: same "poll every minute, gate on the wall clock" shape as `evening-brief.ts` — see
- * that file's header for why a fixed cron string cannot itself track a seasonal offset.  * moved the clock in question from Europe/Oslo to the OWNER's (`ownerTz` → `slotIn`), which
- * changes nothing on an Oslo day and moves the 08:00 with him on any other.
+ * that file's header for why a fixed cron string cannot itself track a seasonal offset. The clock is the
+ * OWNER's (`ownerTz` → `slotIn`), which equals the home zone at home and moves the 08:00 with the
+ * owner on any other day.
  *
  * PROACTIVITY: the send passes `@lares/agent-kit`'s gate as a `scheduled` initiation
  * keyed on the slot, and the brief gains ONE line — `heldBackLine` — naming what that gate kept
- * from him since yesterday's brief. That line is the exchange the ticket makes: the gate may stay
+ * from the owner since yesterday's brief. That line is the trade: the gate may stay
  * quiet, but it never gets to be silent about having been quiet.
  */
 import { defineSchedule } from "eve/schedules";
@@ -119,17 +119,16 @@ import { agentName } from "../../lib/agent-name.js";
 let warnedNoPrincipal = false;
 
 /**
- * review round 3 — raised from 20_000 to 28_000. `gatherOpenObligations` awaits Gmail
+ * Raised from 20_000 to 28_000. `gatherOpenObligations` awaits Gmail
  * FIRST, then (only after Gmail resolves) calls `deps.slack` — so on this schedule the two
  * sources are effectively SERIAL inside one shared race, not concurrent: total time can
  * approach Gmail's own duration PLUS up to the full `SLACK_SCAN_TIMEOUT_MS` sub-timeout below.
- * At the old 20s budget, a Gmail scan finishing at 13s — comfortably safe before this ticket —
+ * At the old 20s budget, a Gmail scan finishing at 13s — comfortably safe before the Slack leg —
  * would now blank the brief once Slack's sub-budget is added on top. 28s makes Slack's
  * sub-budget genuinely additive rather than stolen from Gmail.
  *
- * WHAT ONE TICK ACTUALLY COSTS (review fix — the arithmetic here used to say the calendar read
- * had "20s of its own budget", which it never did: `run` wraps that read in THIS same
- * `OBLIGATION_TIMEOUT_MS`). THIS CONSTANT IS SPENT TWICE PER TICK, and that is the fact every
+ * WHAT ONE TICK ACTUALLY COSTS (the calendar read has no budget of its own: `run` wraps that read
+ * in THIS same `OBLIGATION_TIMEOUT_MS`). THIS CONSTANT IS SPENT TWICE PER TICK, and that is the fact every
  * revision of it has to be multiplied by: `run` awaits today's calendar under it, then — only
  * after that resolves — the obligations gather under it again. The four sequential awaits, worst
  * case: today's calendar `OBLIGATION_TIMEOUT_MS` + the obligations gather `OBLIGATION_TIMEOUT_MS`
@@ -150,7 +149,7 @@ let warnedNoPrincipal = false;
  * obligations past the 60s tick the paragraph above relies on, to buy headroom over a number
  * that is already an order of magnitude clear.
  *
- * Task 10 (B5) — 28_000 → 43_000, which is the old 28s PLUS `RESOLUTION_PASS_TIMEOUT_MS`
+ * 28_000 → 43_000, which is the base 28s PLUS `RESOLUTION_PASS_TIMEOUT_MS`
  * (15s) and nothing else. `gatherOpenObligations` gained a stage that runs INSIDE this same
  * budget: after the Gmail and Slack scans, each surviving candidate gets a cross-channel
  * resolution check (four metadata lookups, bounded per-source at 5s, four candidates in flight)
@@ -171,7 +170,7 @@ let warnedNoPrincipal = false;
 const OBLIGATION_TIMEOUT_MS = Number(process.env["OBLIGATION_TIMEOUT_MS"]) || 43_000;
 
 /**
- * review round 2, CRITICAL: the Slack scan's OWN budget, well under
+ * The Slack scan's OWN budget, well under
  * `OBLIGATION_TIMEOUT_MS` (the shared gather budget both Gmail and Slack sit inside). Without
  * this, a merely SLOW Slack scan — not a fast failure — rides the shared 20s timeout to its
  * failure mode: `gatherOpenObligations`'s best-effort catch only helps when `deps.slack`
@@ -216,16 +215,15 @@ const SLACK_SCAN_TIMEOUT_MS = Number(process.env["SLACK_SCAN_TIMEOUT_MS"]) || 20
  * threaded parent it meets, all serial through the squid proxy
  * (brief-content-slack.ts:214-224 says as much about itself: "a busy, heavily-threaded
  * workspace can turn one morning-brief tick into hundreds of real Slack requests"). DMs are
- * what the obligation radar actually cares about and there are 38 of them enrolled as of this
- * writing — 40 leaves headroom without inviting a channel-heavy scan to blow
+ * what the obligation radar actually cares about and 40 leaves headroom without inviting a channel-heavy scan to blow
  * `SLACK_SCAN_TIMEOUT_MS`. Revisit upward once a few real mornings have been observed.
  *
- * MEASURED on the box — the workspace is now 84 conversations: exactly 40
+ * MEASURED on one installation — a workspace of 84 conversations: exactly 40
  * `im` and 44 `channel`. Since `createSlackSourceDeps.listConversations` partitions DMs ahead
  * of channels, this cap currently consumes the DM half EXACTLY and reaches zero channels: every
  * channel thread set out to cover is unread, and the 41st DM the owner opens starts
- * pushing DMs off the end too. Left at 40 deliberately — is a budget fix and its ticket
- * forbids widening scope — but this is a coverage question someone has to rule on, not a
+ * pushing DMs off the end too. Left at 40 deliberately — a budget fix is not the place
+ * to widen scope — but this is a coverage question someone has to rule on, not a
  * headroom margin. It is not free to widen: 40 conversations already cost ~8.5s of round-trips
  * (see `SLACK_SCAN_TIMEOUT_MS`), and channels cost MORE per conversation than DMs because the
  * reader also walks `conversations.replies` on every thread parent it meets.
@@ -251,13 +249,13 @@ export interface SlackScanStatus {
    *  duration log, not the `SLACK_MAX_CONVERSATIONS` cap. */
   conversationsScanned: number;
   /**
-   * Task 10 (B5) — Slack user id → the latest message HE sent that person, harvested by
+   * Slack user id → the latest message the OWNER sent that person, harvested by
    * the same scan that produced the snapshots (`scanSlackThreadsWithOwnActivity`). This is the
    * Slack leg of the cross-channel resolution check, and it rides here for exactly the reason
    * the docblock above gives: the scan sits behind `gatherOpenObligations`'s one-way
    * best-effort catch, so a return value cannot climb back out — a handed-in object can.
    *
-   * Empty on a failed or unscanned pass, which is the safe reading: no evidence he answered on
+   * Empty on a failed or unscanned pass, which is the safe reading: no evidence the owner answered on
    * Slack, so nothing is resolved away by a scan that did not happen.
    */
   ownLastMessageByUser: Map<string, Date>;
@@ -271,7 +269,7 @@ export function newSlackScanStatus(): SlackScanStatus {
  * The sentence the brief carries when Slack could not be read.
  *
  * A constant, not inline prose, because it is the thing the regression test pins: the failure
- * this ticket exists for was a brief that looked perfectly normal while covering one source
+ * this guards against is a brief that looked perfectly normal while covering one source
  * instead of two, and "looked normal" is not something a test can assert the absence of unless
  * the disclosure has a name.
  */
@@ -279,9 +277,9 @@ export const SLACK_DROPPED_SOURCE_LINE =
   "Slack obligations could not be read this morning — Gmail only.";
 
 /**
- * — the Slack half of `GatherObligationsDeps`. Morning brief ONLY (D4 of the Slack-reads design): this function exists
+ * The Slack half of `GatherObligationsDeps`. Morning brief ONLY: this function exists
  * here, in this schedule, and nowhere else — `evening-brief.ts` and `reping.ts` never build
- * one, which is what makes D4 structural rather than a rule someone has to remember (pinned by
+ * one, which is what makes that rule structural rather than a rule someone has to remember (pinned by
  * a static check in tests/schedule-slack-d4.test.ts).
  *
  * `ownUserId` (the owner's Slack user id) comes from the identity registry — the SAME
@@ -290,11 +288,11 @@ export const SLACK_DROPPED_SOURCE_LINE =
  * Deliberately not a new env var: an id already on file, read the same way every other
  * channel-native id in this file is, beats a second, driftable place to configure it.
  *
- * REQUIRES EXACTLY ONE Slack alias (review round 2, Minor 3): `slackAliases[0]` on a registry
+ * REQUIRES EXACTLY ONE Slack alias: `slackAliases[0]` on a registry
  * carrying two would silently pick whichever is oldest, with nothing cross-checking it against
  * the workspace the enrolled token actually authenticates for. A mismatched id would not
  * throw anywhere downstream — `scanSlackThreads` would classify the owner's own messages as the
- * COUNTERPARTY's and manufacture obligations out of his own DMs, which is worse than any error
+ * COUNTERPARTY's and manufacture obligations out of the owner's own DMs, which is worse than any error
  * message. Zero or two-or-more both throw here, by name, rather than guessing.
  *
  * Every failure mode here (alias count wrong, no token enrolled, a Slack API error, a scan that
@@ -303,7 +301,7 @@ export const SLACK_DROPPED_SOURCE_LINE =
  *
  * — that best-effort catch is exactly why this function now records its own failure in
  * `status` on the way out. `gatherOpenObligations` swallows the throw by design (a Slack outage
- * must never cost him his Gmail obligations), which means the throw alone reaches nobody: the
+ * must never cost the owner their Gmail obligations), which means the throw alone reaches nobody: the
  * brief that morning was delivered, looked entirely normal, and quietly covered one source
  * instead of two. `status.failed` is the only channel by which the fact survives the catch and
  * reaches the prose. The try/catch is around EVERYTHING, not just the scan: an alias-count
@@ -404,8 +402,8 @@ export async function scanSlackWithBudget(
   const controller = new AbortController();
   const startedAt = Date.now();
   try {
-    // Task 10 (B5) — `scanSlackThreadsWithOwnActivity`, not `scanSlackThreads`: the same
-    // walk over the same conversations also yields "the last time he wrote to this person",
+    // `scanSlackThreadsWithOwnActivity`, not `scanSlackThreads`: the same
+    // walk over the same conversations also yields "the last time the owner wrote to this person",
     // which is the Slack leg of the cross-channel resolution check. Free here (the messages are
     // already in hand) and unobtainable anywhere else without a second scan.
     const { snapshots, ownLastMessageByUser } = await withTimeout(
@@ -416,13 +414,13 @@ export async function scanSlackWithBudget(
       "morning-brief: slack scan",
     );
     status.ownLastMessageByUser = ownLastMessageByUser;
-    // review round 3 — the success path was otherwise unobservable: a real zero
+    // The success path would otherwise be unobservable: a real zero
     // (nothing owed on Slack) and a silently-degraded zero (wrong scope, empty conversation
     // list, a `maxConversations` cut that excluded every DM) would look identical in the logs.
-    // This fleet has paid for exactly that gap before (chief-of-staff-dream logged success while
-    // reflecting on nothing for six days). adds the duration and the real conversation
+    // A past dream-cycle run logged success while
+    // reflecting on nothing for six days. This logs the duration and the real conversation
     // count, so the next person to touch the budget can read the number instead of estimating
-    // it — the omission that cost this ticket.
+    // it.
     console.log(
       `morning-brief: slack scan — ${Date.now() - startedAt}ms, ` +
       `${status.conversationsScanned} conversation(s) scanned (cap ${SLACK_MAX_CONVERSATIONS}), ` +
@@ -431,7 +429,7 @@ export async function scanSlackWithBudget(
     return snapshots;
   } catch (err) {
     status.failed = true;
-    // Cancels whatever the scan still had in flight. A NAMED reason (fix round 1) rather than a
+    // Cancels whatever the scan still had in flight. A NAMED reason rather than a
     // bare `abort`: the reason is what every cancelled Slack call rejects with, and
     // `resolveIdentity` has to be able to tell that apart from a real `getUserInfo` failure —
     // otherwise cancellation prints as "degrading to a Slack-id-only identity". The original
@@ -453,7 +451,7 @@ export async function scanSlackWithBudget(
 }
 
 /**
- * `facts` defaults to `[]` — . An optional trailing parameter rather than a new
+ * `facts` defaults to `[]`. An optional trailing parameter rather than a new
  * `BriefContent` field on purpose: `BriefContent` is what `buildMorningBrief` DERIVES from the
  * day's calendar and mail (and whose emptiness decides whether a brief is sent at all), while
  * standing facts are ambient context that neither derives from the day nor should ever make a
@@ -462,20 +460,20 @@ export async function scanSlackWithBudget(
 export function buildMorningPrompt(
   content: BriefContent,
   facts: readonly StandingFact[] = [],
-  // Task 10 (B5) — the cross-channel resolution sources that could not be read on this
+  // The cross-channel resolution sources that could not be read on this
   // pass (`gatherOpenObligations`'s `onUnreadable`). Trailing and optional for the same reason
   // as the one above: omitting it renders exactly the brief rendered.
   unreadableSources: readonly string[] = [],
-  // — `heldBackLine`'s one sentence about what the proactivity gate kept from him since
+  // — `heldBackLine`'s one sentence about what the proactivity gate kept from the owner since
   // yesterday's brief, or null on a day it kept nothing (which is every day under the default
   // settings). Trailing and optional for the same reason as the three above: omitting it renders
   // exactly the brief rendered.
   heldBack: string | null = null,
-  // -s2/s4 — rendering options: the brief's language and, as of s4, its clock. Trailing
+  // Rendering options: the brief's language and its clock. Trailing
   // and optional for the same reason as the four above: omitting `render` entirely defaults
-  // `lang` to `"en"` and `tz` to the home zone (OWNER_HOME_TZ, UTC if unset), which changes only the six
-  // Norwegian structural strings and the clock-reading calls this ticket moved out of hardcoded
-  // Norwegian/Oslo; every other line of this prompt is unchanged.
+  // `lang` to `"en"` and `tz` to the home zone (OWNER_HOME_TZ, UTC if unset); `lang` changes only
+  // the six structural strings and the clock-reading calls; every other line of this prompt is
+  // unchanged.
   render: BriefRender = {},
 ): string {
   const lang = render.lang ?? "en";
@@ -489,7 +487,7 @@ export function buildMorningPrompt(
   const meetingLines = labeledContext([{
     label: "Today's calendar",
     note: "meetings, and the blocks he set aside",
-    // -s4 GOTCHA — `commitments.map(commitmentLine)` would pass the array INDEX as
+    // GOTCHA — `commitments.map(commitmentLine)` would pass the array INDEX as
     // `commitmentLine`'s second argument (`tz`) now that it takes one; wrapped in an arrow so
     // every row gets the real `tz` instead of a number.
     content: commitments.map((m) => commitmentLine(m, tz)).join("\n"),
@@ -506,10 +504,10 @@ export function buildMorningPrompt(
   // A source that could not be read (typically Google on a fresh installation), named
   // right under the calendar it is about. "" when every source was read.
   const unavailableSection = unavailableSourcesBlock(content.unavailable);
-  // — "" on a morning with nothing due and nothing to offer, which drops the block
+  // "" on a morning with nothing due and nothing to offer, which drops the block
   // entirely. Rendered under the calendar and travel and ABOVE the owed-a-reply heading, because
-  // a statutory due date is a fixed point of his day and not a person waiting on him — the same
-  // distinction Workstream B enforces on the other side of the pipeline.
+  // a statutory due date is a fixed point of the owner's day and not a person waiting on the owner — the same
+  // distinction enforced on the other side of the pipeline.
   const deadlinesSection = deadlinesBlock(content.deadlines ?? [], content.deadlineCandidates ?? [], lang);
 
   // The counterparty's name and the mail's subject are outside text: flagged block, as above.
@@ -520,14 +518,14 @@ export function buildMorningPrompt(
         .map((o: Obligation) =>
           `- ${o.counterpartyName} <${o.counterpartyAddress}> — waiting ${o.ageHours}h` +
           `${o.isRePing ? ", they've written again since" : ""} — re: ${o.subject || "(no subject)"}` +
-          // Task 10 (B5) — WHY this line is here, from the pipeline that put it here.
+          // WHY this line is here, from the pipeline that put it here.
           // `?? "on the radar"` rather than an omitted clause: a line whose reason is missing is
-          // still a line he has to judge, and "on the radar" is the honest floor — it claims the
-          // fact (it is owed) without claiming the reading (that it still needs him).
+          // still a line the owner has to judge, and "on the radar" is the honest floor — it claims the
+          // fact (it is owed) without claiming the reading (that it still needs the owner).
           ` — why: ${o.reason ?? "on the radar"}`,
         )
         .join("\n"),
-    // fix round 1 — an EMPTY obligations list means two different things, and a bare
+    // An EMPTY obligations list means two different things, and a bare
     // "(none)" only honestly renders one of them. `ContextBlock`'s own docblock
     // (@lares/compose-contract) draws the line: "none" is a factual claim, and a read that threw
     // has not earned it. With Slack unread, "none" is true of Gmail and unknown of Slack, so the
@@ -536,7 +534,7 @@ export function buildMorningPrompt(
     thirdParty: true,
   }]);
 
-  // — the dropped source, rendered as a LABELED BLOCK rather than loose prose.
+  // The dropped source, rendered as a LABELED BLOCK rather than loose prose.
   // `@lares/compose-contract` already owns this distinction: `absentBlockClause` spells out
   // that an empty block is a fact obtained ("nothing to report") while a missing one is no
   // information at all, and `labeledContext` is the renderer that keeps the two apart. The
@@ -545,9 +543,9 @@ export function buildMorningPrompt(
   // Nothing is added to the contract itself — the invariant clauses stay byte-stable; this is
   // the brief's own block, using the contract's own mechanism.
   //
-  // Task 10 (B5) — the SAME block now carries a second kind of gap: a cross-channel
+  // The SAME block now carries a second kind of gap: a cross-channel
   // resolution lookup that could not be read. One heading, two possible lines, because they are
-  // one fact from his side ("something behind this list did not answer") and two headings would
+  // one fact from the owner's side ("something behind this list did not answer") and two headings would
   // read as two unrelated problems.
   const sourceGaps = [
     ...(content.slackUnavailable ? [SLACK_DROPPED_SOURCE_LINE] : []),
@@ -587,14 +585,14 @@ export function buildMorningPrompt(
     obligationsSection,
     "",
     // — what the gate held back since yesterday's brief. Right here, under the
-    // obligations, because that is what it is about: things that tried to reach him and did not.
+    // obligations, because that is what it is about: things that tried to reach the owner and did not.
     // Absent on any day nothing was held, so a normal day's prompt is byte-identical.
     ...(heldBack ? [heldBack, ""] : []),
     ...(signalsSection ? [signalsSection, ""] : []),
     pickLines,
     "",
-    // — what he has told her, as a labeled block. Empty drops out entirely
-    // (`labeledContext`), so a the chief of staff with no memory yet reads exactly as she did before.
+    // — what the owner has told the agent, as a labeled block. Empty drops out entirely
+    // (`labeledContext`), so an agent with no memory yet reads exactly as before.
     ...(factsSection ? [factsSection, ""] : []),
     "For anyone in the obligations list you have not already looked up recently, call",
     "person_lookup (pass their email) before writing about them. An entry with no participants",
@@ -619,31 +617,31 @@ export function buildMorningPrompt(
     // `eventKindClauses` for why each exists; both are lessons from a real morning.
     ...eventKindClauses(commitments, travel),
     // — ONE sentence, and only on a day the radar found something. The block above
-    // states the clash; this says she must PASS IT ON and stop there. Detection ships without
-    // resolution on purpose, so the clause's second half is the whole guard rail: she does not
-    // get to decide which of two hotels stands, and she certainly does not get to cancel one.
+    // states the clash; this says the agent must PASS IT ON and stop there. Detection ships without
+    // resolution on purpose, so the clause's second half is the whole guard rail: the agent does not
+    // get to decide which of two hotels stands, and the agent certainly does not get to cancel one.
     ...conflictsClause(content.conflicts ?? []),
     ...signalsClause(content.signals ?? []),
     // — ONE sentence, and only on a morning the block is actually there. The block above
-    // states the frister; this stops her folding them into the owed-a-reply list, which is the
+    // states the frister; this stops the agent folding them into the owed-a-reply list, which is the
     // one way the block can make the brief worse than it was without it.
     ...deadlinesClause(content.deadlines ?? [], content.deadlineCandidates ?? [], lang),
     // — ALWAYS emitted, every day, candidates or none. Only the LOOKUP INSTRUCTION is
-    // gated on the day holding somewhere he has to get to (`transitCandidates`); the anti-estimate
+    // gated on the day holding somewhere the owner has to get to (`transitCandidates`); the anti-estimate
     // ban inside `transitClause` is unconditional, and deleting this call on a quiet day would
     // delete the ban with it — the exact regression seen before. A READ, so the REPORT-ONLY block
     // below does not forbid it; named explicitly all the same, for the reason that block's own
-    // note gives — a tool she MAY use in a brief is named, not left to inference.
+    // note gives — a tool the agent MAY use in a brief is named, not left to inference.
     ...transitClause(commitments, travel, "today", tz, render.transit ?? true),
-    // — ONE sentence, and only when he has actually told her something. The block
+    // — ONE sentence, and only when the owner has actually told the agent something. The block
     // above is the facts; this is the instruction to act on them without being reminded,
     // which is the whole point of storing them.
     ...standingFactsClause(facts),
     // — ONE sentence, and only when a source actually dropped: the block above states
-    // the fact, this tells her she must pass it on. Without it she reasonably summarises the
+    // the fact, this tells the agent it must pass it on. Without it the agent reasonably summarises the
     // obligations and leaves the meta-note out, which is precisely the silent Gmail-only brief
-    // this ticket was filed about.
-    // Task 10 (B5) — the same sentence now covers an unreadable cross-channel lookup
+    // this guards against.
+    // The same sentence now covers an unreadable cross-channel lookup
     // too, gated on the same `sourceGaps` the block above renders. Gating the note and the
     // instruction on one value is what stops them drifting apart.
     ...(sourceGaps.length > 0
@@ -656,14 +654,14 @@ export function buildMorningPrompt(
     "TONE: Write to inform, not to prove checking happened. Never state that nothing is",
     "outstanding. Under 200 words. Plain prose — a short list is prose enough; no tables.",
     "",
-    // review fix — `remember` and `forget` are named, not just implied by "no notes".
-    // Both tools refuse this turn outright (it is the app's, not his), but a prohibition the
+    // `remember` and `forget` are named, not just implied by "no notes".
+    // Both tools refuse this turn outright (it is the app's, not the owner's), but a prohibition the
     // model can read is worth more than a refusal it has to discover: nothing in a brief is
-    // something he said, so there is never anything here to remember or to retire.
+    // something the owner said, so there is never anything here to remember or to retire.
     //
-    // review fix — `deadline_add` joins them, and for a sharper reason: the Frister block
+    // `deadline_add` joins them, and for a sharper reason: the Frister block
     // ABOVE prints `legg til (deadline_add fromThreadId …)` on every candidate line, so this very
-    // prompt hands the model the exact call to make. Those are choices for HIM, not instructions
+    // prompt hands the model the exact call to make. Those are choices for the OWNER, not instructions
     // to the brief; the tool refuses this turn too, and now says so here as well.
     "REPORT ONLY this turn: no emails, no drafts, no calendar changes, no reminders, no notes,",
     "no 👍 confirmation cards. Do not call `remember`, `forget` or `deadline_add` — he has said",
@@ -699,7 +697,7 @@ export function briefCandidateLines(candidates: readonly CandidateRow[]): Candid
  * THIS IS THE ONE PLACE THIS FILE DEPARTS FROM ADR 0014's `handled` RULE, and the departure is
  * the whole point of the function existing rather than an inline `if`. `handled` (`sent ||
  * alreadySeen`) is right for bookkeeping about an ITEM THE LEDGER KNOWS: the ledger's `sent` row
- * IS the proof he was told, so a lane re-detecting that item must finish its marks or loop
+ * IS the proof the owner was told, so a lane re-detecting that item must finish its marks or loop
  * forever. That rule stays for every other write here.
  *
  * A surfaced candidate is not that. The ledger's item key is the SLOT (`morning-brief/<slot>`),
@@ -711,7 +709,7 @@ export function briefCandidateLines(candidates: readonly CandidateRow[]): Candid
  *
  * On `sent` only, the two failure directions are: the sending tick's stamp write fails, and the
  * same candidates re-surface tomorrow (visible, harmless, self-correcting); or a later tick in
- * the slot renders an unreceived prompt and stamps nothing (no loss at all). Neither can lose him
+ * the slot renders an unreceived prompt and stamps nothing (no loss at all). Neither can lose the owner
  * an offer.
  */
 export function candidatesToStamp(
@@ -735,9 +733,9 @@ export default defineSchedule({
     await recordScheduleTick(getPool(), HEARTBEAT_KEY);
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
-    // On an Oslo day this is `Europe/Oslo` and the slot is the one it has always been.
+    // At home this is the home zone and the slot is the configured one.
     const tz = await ownerTz();
-    // -s2 — the hour is a setting now (packages/agent-kit/src/schedule-settings.ts),
+    // The hour is a setting (packages/agent-kit/src/schedule-settings.ts),
     // cached in-process for a few minutes (lib/schedule-hours.ts) so this per-minute tick does
     // not query Postgres for an answer that changes only a handful of times a year.
     const [hour] = await scheduleHours("morning-brief");
@@ -751,7 +749,7 @@ export default defineSchedule({
       const pool = getPool();
       const ownerToday = dateIn(now, tz);
 
-      // -s2 — the hour can change MID-DAY now, and the ledger's dedupe is keyed on the
+      // The hour can change MID-DAY now, and the ledger's dedupe is keyed on the
       // SLOT (`morning-brief/<owner date>T<hour>`), not the day: a hour moved after today's
       // brief already sent would give the new hour's tick a BRAND NEW key nobody has seen, and
       // the gate would happily send a second brief. This guard holds "at most one per owner-day"
@@ -812,13 +810,13 @@ export default defineSchedule({
       }
       const meetings: NightBeforeMeeting[] = today.meetings;
 
-      // -s6 — check today's overlapping-stay clashes against mail, best-effort. Bounded
+      // Check today's overlapping-stay clashes against mail, best-effort. Bounded
       // by `lib/conflict-resolution.ts`'s own caps: at most MAX_CLASHES_PER_PASS (3) clashes
       // searched, CLASH_TIMEOUT_MS (10s) each, so at most ~30s added to this tick in the worst
       // case — real, but a fixed ceiling, never an open-ended wait. `resolveConflicts` already
       // documents itself as never throwing (a per-clash failure costs that clash its plain flag
       // only, with one console.warn); the `.catch` here is belt-and-braces on top of that
-      // promise, not a load-bearing guard — either way, a search that cannot finish costs him
+      // promise, not a load-bearing guard — either way, a search that cannot finish costs the owner
       // the evidence for one morning, never the brief itself.
       const resolvedConflicts = await resolveConflicts(today.conflicts, {
         gmailFor: (account) => googleClients().gmail(account),
@@ -834,7 +832,7 @@ export default defineSchedule({
       // best-effort catch; the only way "a whole source dropped out" survives that catch and
       // reaches the prose below.
       const slackScan = newSlackScanStatus();
-      // Task 10 (B5) — filled once, by the pass, when a cross-channel lookup could not be
+      // Filled once, by the pass, when a cross-channel lookup could not be
       // read. It reaches the prompt below so a silent lookup failure never looks like a clean
       // list; the same reasoning as 's `slackScan.failed`, one layer in.
       let unreadableSources: string[] = [];
@@ -843,8 +841,8 @@ export default defineSchedule({
         obligations = await withTimeout(
           (async () => {
             const gmail = await googleClients().gmail();
-            // Task 10 (B5) — built ONCE per tick, then reused for every candidate: the
-            // Gmail leg memoises his address list, and both are shared verbatim with the
+            // Built ONCE per tick, then reused for every candidate: the
+            // Gmail leg memoises the owner's address list, and both are shared verbatim with the
             // evening pass (lib/obligation-lookups.ts) so the two briefs cannot drift.
             const gmailSentAfter = makeGmailSentAfter(gmail, myAddresses);
             const calendarEndedWith = makeCalendarEndedWith({
@@ -857,7 +855,7 @@ export default defineSchedule({
                 gmail: { searchThreadIds: gmail.searchThreadIds, readThread: gmail.readThread },
                 dismissed: () => dismissedThreads(pool),
                 upsertSeen: (o, seenAt) => upsertSeen(pool, o, seenAt, configuredOwnerId()),
-                // ─── Task 10 (B5): resolve elsewhere, read the last message, say why ──
+                // ─── Resolve elsewhere, read the last message, say why ──
                 // Every one of these is optional in `GatherObligationsDeps`, and every failure
                 // path inside the stage keeps the obligation. Nothing wired here can make the
                 // radar quieter than it would have been without it.
@@ -895,16 +893,16 @@ export default defineSchedule({
                   return read;
                 },
                 onUnreadable: (sources) => { unreadableSources = sources; },
-                // Workstream B — the due notices the scan flagged, recorded before
-                // selection drops them. `ownerId` (review fix): this is the same key the deadline
+                // The due notices the scan flagged, recorded before
+                // selection drops them. `ownerId`: this is the same key the deadline
                 // reads below use, and the two must never come apart — a candidate written under
                 // one key and read under the other is a sighting nobody is ever offered.
                 // (`upsertSeen` above belongs to the OBLIGATIONS store, which has its own key;
                 // this line is not it.) The store's own `ON CONFLICT DO NOTHING` makes a
                 // re-sighting a no-op, so this runs on every tick without ever re-offering a mail
-                // he already answered.
+                // the owner already answered.
                 recordCandidate: (c) => upsertCandidate(pool, { ...c, owner: ownerId() }),
-                // D4: Slack obligations reach the morning brief ONLY — this is the
+                // Slack obligations reach the morning brief ONLY — this is the
                 // one and only call site across the three obligation schedules that supplies
                 // `slack`. gatherOpenObligations treats a Slack failure as best-effort (caught,
                 // logged, Gmail-only continues), so this can never take out the brief — and
@@ -948,7 +946,7 @@ export default defineSchedule({
       // was filed for. 5s is its own, and generous for two indexed reads against the
       // local Postgres.
       //
-      // AND IT CAN NEVER COST HIM THE BRIEF. Deadlines are CONTEXT: a brief that goes out
+      // AND IT CAN NEVER COST THE OWNER THE BRIEF. Deadlines are CONTEXT: a brief that goes out
       // without them is a worse brief, a brief that does not go out is a missing morning. So the
       // `.catch` logs and yields empty lists, which renders exactly the pre-prompt.
       const { deadlines, deadlineCandidates } = await withTimeout(
@@ -994,7 +992,7 @@ export default defineSchedule({
       });
 
       // — the persisted spine is read directly (plain sealed egress, no Telegram proxy).
-      // This is best-effort context: a spine outage is logged and must not cost him the rest of
+      // This is best-effort context: a spine outage is logged and must not cost the owner the rest of
       // the brief. Only errors and warnings belong in this exception block; info events do not.
       const signalClient = makeSignalsClient(() => ({
         tokenFile: process.env["SIGNAL_READ_TOKEN_FILE"] ?? "/run/secrets/signal-read-token",
@@ -1033,9 +1031,9 @@ export default defineSchedule({
         return;
       }
 
-      // — best-effort, and the `.catch` is the whole point: the standing facts are
-      // context, not content. A Postgres hiccup here must cost her the facts, never the brief.
-      // BOUNDED (fix round 1), because `.catch` only fires on a rejection: an unresponsive `db`
+      // Best-effort, and the `.catch` is the whole point: the standing facts are
+      // context, not content. A Postgres hiccup here must cost the agent the facts, never the brief.
+      // BOUNDED, because `.catch` only fires on a rejection: an unresponsive `db`
       // container makes `pool.query` hang forever, and this brief's whole tick would hang with
       // it. `withTimeout` is what turns that stall into the rejection this catch handles.
       const facts = await withTimeout(
@@ -1049,10 +1047,10 @@ export default defineSchedule({
         return [];
       });
 
-      // -s2 — read once per pass and handed to both `heldBackLine` and `buildMorningPrompt`
+      // Read once per pass and handed to both `heldBackLine` and `buildMorningPrompt`
       // below, so the one line about held-back messages and the rest of the prompt never disagree
       // on language within the same brief. Never throws (see `readBriefLanguage`'s own contract),
-      // so a settings-table outage costs him nothing beyond an English brief.
+      // so a settings-table outage costs the owner nothing beyond an English brief.
       const lang = await readBriefLanguage(pool, ownerId());
 
       // — what the gate held back since the PREVIOUS morning slot: one owner-day back

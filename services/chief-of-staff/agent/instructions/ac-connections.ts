@@ -6,8 +6,8 @@
  * the whole system prompt (see `standing-facts.ts`'s header for the cache reasoning). A
  * connection made mid-conversation is picked up by the next conversation.
  *
- * Never throws: a failed read yields an empty block, and the persona is then all she has, which
- * is where she was before this existed.
+ * Never throws: a failed read yields an empty block, and the persona is then all the agent has, which
+ * is where the agent was before this existed.
  */
 import { defineDynamic, defineInstructions } from "eve/instructions";
 

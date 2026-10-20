@@ -1,29 +1,23 @@
 /**
- * The weekly learning summary — Sunday at an hour that is a per-installation setting since
- * -s3 (default 9; `packages/agent-kit/src/schedule-settings.ts`'s `weekly-summary` key,
- * no more env var), on the OWNER's clock (the installation's home zone unless the owner is away, so nothing moves on a normal
- * week — ). Ported from
- * `services/agent-runtime/bin/chief-of-staff.ts`'s weekly-summary tick (~lines 1153-1192) and
- * `services/agent-runtime/lib/adapters/dream/weekly-input.ts`'s `buildWeeklySummaryInput`.
+ * The weekly learning summary — Sunday at an hour that is a per-installation setting
+ * (default 9; `packages/agent-kit/src/schedule-settings.ts`'s `weekly-summary` key),
+ * on the OWNER's clock (the installation's home zone unless the owner is away, so nothing moves on a normal
+ * week).
  *
- * `chief-of-staff-dream` is a SIBLING CONTAINER that keeps running through and after this wave's cutover,
- * unaffected by it — its own nightly reflect→promote cycle writes into `dream_preferences` in
- * the SAME shared `lares_state` Postgres this service already connects to via `getPool`
- * (`services/box/compose.yaml:263-265`'s own comment confirms this wiring was always the
- * plan). This schedule only READS that table (`lib/dream-store.ts`'s `activePreferences`) —
- * never writes it, never migrates it.
+ * The nightly dream cycle (`dream.ts`) writes into `dream_preferences` in
+ * the same Postgres this service connects to via `getPool`. This schedule only READS that table
+ * (`lib/dream-store.ts`'s `activePreferences`) — never writes it, never migrates it.
  *
  * GATE: `activePreferences` empty → skip entirely, log why — nothing has been learned yet, so
- * there is nothing to summarize; the old lane's own "Nothing new learned yet" line was noise it
- * existed specifically to remove. Non-empty → build the prompt and send, using this wave's
- * established session-starting pattern (`to(telegram, { chatId }).send(prompt, { auth: { ...appAuth,
- * attributes: { lane: "weekly-summary" } } })`, same as `evening-brief.ts`/`morning-brief.ts`) —
- * NOT the old `runScheduledTurn`/threadRef mechanism. The `lane` attribute is what tells the
- * conversation-log hook this turn was machine-started, so it is never attributed to the owner
- *.
+ * there is nothing to summarize, and a "Nothing new learned yet" message would be noise.
+ * Non-empty → build the prompt and send, using the session-starting pattern every schedule uses
+ * (`to(telegram, { chatId }).send(prompt, { auth: { ...appAuth,
+ * attributes: { lane: "weekly-summary" } } })`, same as `evening-brief.ts`/`morning-brief.ts`).
+ * The `lane` attribute is what tells the
+ * conversation-log hook this turn was machine-started, so it is never attributed to the owner.
  *
  * No stamping or state tracking: `to.send` doesn't expose reply text — the same API
- * limitation Task 11's `proposals-watch.ts` already accepted (see that file's own header) — and
+ * limitation `proposals-watch.ts` already accepted (see that file's own header) — and
  * there is nothing here to dedupe against. The gate is entirely `activePreferences.length ===
  * 0`; a send that throws is simply retried next Sunday, same as any other week with nothing new.
  *
@@ -64,8 +58,7 @@ function isSunday(now: Date, tz: string): boolean {
 // ─── Prompt ─────────────────────────────────────────────────────────────────────────────────
 
 /**
- * The weekly-summary turn's prompt text — ported from `weekly-input.ts`'s
- * `buildWeeklySummaryInput`: a "report, don't act" instruction, the active preferences listed,
+ * The weekly-summary turn's prompt text: a "report, don't act" instruction, the active preferences listed,
  * and a request for a warm, under-150-word summary. Pure — given the active preferences
  * (already gathered by the caller), decide what belongs in the prompt. Never called with an
  * empty `prefs` — `makeWeeklySummaryTick` gates on that before reaching here.
@@ -87,9 +80,9 @@ export function buildWeeklySummaryPrompt(prefs: Pick<PreferenceRow, "text">[], l
     // owner's brief-language setting, the one the briefs around it are written in.
     `Write the summary in ${BRIEF_LANGUAGE_NAMES[lang]} — the language the owner reads their briefs in.`,
     "",
-    // review fix — the same named prohibition both briefs carry. This turn is the app's
+    // The same named prohibition both briefs carry. This turn is the app's
     // too, and the prompt above is a list of learned PREFERENCES, which is exactly the material
-    // a model might otherwise decide to promote into standing facts in his voice.
+    // a model might otherwise decide to promote into standing facts in the owner's voice.
     "This is a REPORT, not an action: take no action and propose nothing this turn — no emails,",
     "no drafts, no calendar changes, no reminders, no notes, no 👍 confirmation cards. Do not",
     "call `remember` or `forget` — he has said nothing on this turn, and a standing fact is only",
@@ -111,7 +104,7 @@ export interface WeeklySummaryDoor {
   /**
    * `true` once eve has accepted and dispatched the send; throws if it did not go out.
    *
-   * fix round 1 — `false` means the proactivity gate held it back (quiet hours, DND). The
+   * `false` means the proactivity gate held it back (quiet hours, DND). The
    * pass is still COMPLETE either way (the schedule ran and did what the settings asked), but the
    * tick must not log "delivered" about a message nobody received, which is the whole failure class
    * this service keeps auditing itself for.
@@ -187,7 +180,7 @@ export default defineSchedule({
     const now = new Date();
     // The owner clock, resolved once per tick and cached for five minutes (lib/owner-clock.ts).
     const tz = await ownerTz();
-    // -s3 — the hour is a setting now, cached in-process for a few minutes
+    // The hour is a setting, cached in-process for a few minutes
     // (lib/schedule-hours.ts) so this per-minute tick does not query Postgres.
     const [hour] = await scheduleHours("weekly-summary");
     const slot = slotIn(now, tz, hour);
@@ -200,7 +193,7 @@ export default defineSchedule({
     try {
       const pool = getPool();
 
-      // -s4 — the same belt the two briefs wear (`lib/initiation.ts`'s `alreadySentToday`):
+      // The same belt the two briefs wear (`lib/initiation.ts`'s `alreadySentToday`):
       // the hour can change MID-DAY now, and the ledger's dedupe is keyed on the SLOT
       // (`weekly-summary/<owner date>T<hour>`), not the day — a hour moved after this week's
       // summary already sent would give the new hour's tick a BRAND NEW key nobody has seen, and

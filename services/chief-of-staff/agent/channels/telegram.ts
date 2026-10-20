@@ -3,21 +3,13 @@ import {assertDoorAuthority,managedIdentity} from '@lares/agent-kit/door-authori
 /**
  * The Telegram door.
  *
- * Inbound reaches this channel the long way round, per ADR-0011: Telegram POSTs to
- * `https://telegram.example.com/eve/v1/telegram`, a path-scoped nginx relay on the ops server
- * forwards that one path over the tailnet, and `tailscale serve` on the agent server hands it to
- * this container. The relay verifies nothing — eve checks
- * `X-Telegram-Bot-Api-Secret-Token` here, where the secret lives.
+ * Inbound: Telegram POSTs updates to eve's default Telegram path (`/eve/v1/telegram`). Any relay
+ * or reverse proxy in front of the agent only forwards that request and verifies nothing; eve
+ * checks `X-Telegram-Bot-Api-Secret-Token` here, where the secret lives.
  *
- * Outbound goes the other long way round: `lib/telegram-fetch.ts` routes Bot API calls
- * through the squid proxy via eve's per-call `api.fetch` seam, because the box's seal
- * drops anything else.
- *
- * This is the shadow/code-only slice of Task 14, pulled forward because Task 10
- * (reminders) imports this module. The remaining Task 14 steps — DNS, the relay's second
- * server block, the shadow BotFather bot, box secrets, the Kuma monitor, and any live
- * message/HITL test — are NOT done here. See task-14-code-report.md for the full list of
- * what is deferred and why.
+ * Outbound: `@lares/agent-kit/telegram-fetch` routes Bot API calls through the egress proxy via
+ * eve's per-call `api.fetch` seam, because the service container's network allows nothing else
+ * out.
  */
 import { readFileSync } from "node:fs";
 import {
@@ -78,9 +70,8 @@ const DEFAULT_BOT_TOKEN_FILE = "/run/secrets/eve-telegram-bot-token";
 const DEFAULT_WEBHOOK_SECRET_TOKEN_FILE = "/run/secrets/eve-telegram-webhook-secret";
 
 /**
- * No real bot exists yet — Task 14's remaining BotFather step (Step 6 of the full brief)
- * creates the shadow `@lares_example_bot` and sets this for real via the box's compose
- * env. Until then this placeholder only affects group `@mention` detection, which this
+ * The real bot username comes from `TELEGRAM_BOT_USERNAME`. When it is unset this placeholder
+ * only affects group `@mention` detection, which this
  * door does not use anyway (see `onMessage` below — the inbound gate does its own dispatch
  * decision and never reaches eve's default group-mention logic).
  */
@@ -154,9 +145,8 @@ async function replyBeforeClaimApplied(chatId: string | number, text: string): P
  * Bots (including the bot's own echoes) are rejected outright, matching
  * `agent/channels/slack.ts`'s `isAllowedSlackUser`.
  *
- * Also rejects anything that isn't a private 1:1 chat. The old door
- * (`services/agent-runtime/lib/adapters/door-telegram.ts`) had no group code path at all;
- * this matches that scope explicitly rather than by omission. Without this check, identity
+ * Also rejects anything that isn't a private 1:1 chat. This door has no group code path;
+ * this states that scope explicitly rather than by omission. Without this check, identity
  * alone would admit every message the allowed principal sends in ANY chat the bot is a
  * member of — including a group — which is MORE permissive than even eve's own default
  * group-dispatch logic (which additionally requires an @mention/command/reply-to-bot).
@@ -219,21 +209,18 @@ export default withOwnerTapAuth(telegramChannel({
     botToken: TelegramBotToken;
     webhookSecretToken: TelegramWebhookSecretToken;
   },
-  // Voice/audio parity verdict (recorded earlier — don't re-derive):
-  // the old door declines gracefully rather than reading audio. Audio stays out of
+  // Voice/audio: the door declines gracefully rather than reading audio. Audio stays out of
   // allowedMediaTypes for the same reason. What eve's channel does with a disallowed-type
   // inbound message (silent drop vs a visible reply) is NOT verified here — no live bot to
-  // test against. Flagged in task-14-code-report.md as deferred to Task 14's live-testing
-  // phase; do not assume parity until it is checked there.
+  // test against. Do not assume parity until it is checked against a live bot.
   uploadPolicy: TELEGRAM_UPLOAD_POLICY,
   // Routes Bot API calls through the squid proxy via eve's documented per-call seam —
   // never the global dispatcher (that stays Slack's, in lib/slack-dispatcher.ts).
   api: { fetch: telegramFetch },
   // Fully overrides eve's default dispatch (`defaultOnMessage`), which is not exported
   // for reuse. This is deliberately simpler than the default's group-mention/command
-  // logic: the old Telegram door (`services/agent-runtime/lib/adapters/door-telegram.ts`)
-  // was single-principal, private-chat-only with no group support, and this shadow bot
-  // has the same scope. The one piece of default behaviour worth keeping is dropping
+  // logic: the Telegram door is
+  // single-principal and private-chat-only with no group support. The one piece of default behaviour worth keeping is dropping
   // content-free updates (e.g. service messages), so that check is kept explicit here.
   onMessage: async (ctx, message) => {
     if (await interceptTelegramClaim(message, undefined, process.env, (text) => replyBeforeClaimApplied(message.chat.id, text))) return null;
@@ -320,7 +307,7 @@ export default withOwnerTapAuth(telegramChannel({
   },
   events: {
     // session rotation: logs the terminal reply, writes down which durable session
-    // answered, and — once the Oslo calendar day has rolled over since this chat's live
+    // answered, and — once the calendar day (in the home time zone) has rolled over since this chat's live
     // session was anchored — leaves a carry-forward summary waiting for the next message.
     // The retirement of the previous day's session itself happens at the webhook front door
     // (`telegram-webhook.ts`), the only place eve hands out `attachSession`; see
@@ -543,10 +530,10 @@ export async function onApprovalSettled(
 }
 
 /**
- * — what the chief of staff says on Telegram when her gateway key hits its cap.
+ * What the agent says on Telegram when its gateway key hits its cap.
  *
  * Same condition, same sentence and the same reasoning as `agent/channels/slack.ts` (read its
- * docblock, including why the sentence is English while the travel agent's is Norwegian). Only the
+ * docblock, including why the sentence is English by default). Only the
  * dialect differs: eve words its own default failure text slightly differently per channel —
  * Telegram writes the error id plain, Slack italicises it in backticks — and the non-budget
  * path has to reproduce THIS channel's version.
