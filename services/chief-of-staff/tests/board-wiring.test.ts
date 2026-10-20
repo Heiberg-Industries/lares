@@ -97,7 +97,7 @@ describe("board wiring", () => {
   it("read_url asks after untrusted text, through a policy that is a function", () => {
     const text = src("read_url.ts");
     expect(text).toContain("asksAfterUntrustedText");
-    expect(text).toMatch(/approval:\s*asksAfterUntrustedText\(\)/);
+    expect(text).toMatch(/approval:\s*asksAfterUntrustedTextUnlessNextPage\(\)/);
     expect(/approval:\s*\{/.test(text)).toBe(false);
   });
 

@@ -44,7 +44,7 @@
  */
 import type { ApprovalStatus } from "eve/tools/approval";
 
-import { currentTaint, turnKeyFrom } from "./origin-taint.js";
+import { currentTaint, turnKeyFrom, urlReadThisTurn } from "./origin-taint.js";
 
 /**
  * Why a link can suddenly ask, in one sentence a human reads.
@@ -70,5 +70,29 @@ export function asksAfterUntrustedText(): (ctx?: unknown) => Promise<ApprovalSta
     const key = turnKeyFrom(ctx);
     if (!key) return "user-approval";
     return currentTaint(key) === undefined ? "not-applicable" : "user-approval";
+  };
+}
+
+/**
+ * `asksAfterUntrustedText`, except that the next page of a link this turn already read does not
+ * ask again. Reading page one taints the turn, so without this every further page of the same
+ * link would show the owner a card for the address he has already seen and approved.
+ *
+ * The exemption is exactly: `offset` above zero, the same address as a read that SUCCEEDED earlier
+ * in this same turn. A first read, an offset-0 re-read, a different address, another turn, or a
+ * context with no turn key all go through the ordinary policy.
+ */
+export function asksAfterUntrustedTextUnlessNextPage(): (ctx?: unknown) => Promise<ApprovalStatus> {
+  const ordinary = asksAfterUntrustedText();
+  return async (ctx?: unknown): Promise<ApprovalStatus> => {
+    const key = turnKeyFrom(ctx);
+    const input = (ctx as { toolInput?: unknown } | null | undefined)?.toolInput;
+    if (key && typeof input === "object" && input !== null) {
+      const { url, offset } = input as { url?: unknown; offset?: unknown };
+      if (typeof url === "string" && typeof offset === "number" && offset > 0 && urlReadThisTurn(key, url)) {
+        return "not-applicable";
+      }
+    }
+    return ordinary(ctx);
   };
 }

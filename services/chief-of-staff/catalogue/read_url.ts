@@ -41,8 +41,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { pageReadUrlResult, readUrl, readUrlModelOutput } from "@lares/agent-kit/readability-client";
-import { taintTurn, turnKeyFrom } from "@lares/agent-kit/origin-taint";
-import { asksAfterUntrustedText, TAINTED_FETCH_REASON } from "@lares/agent-kit/tainted-approval";
+import { noteUrlRead, taintTurn, turnKeyFrom } from "@lares/agent-kit/origin-taint";
+import { asksAfterUntrustedTextUnlessNextPage, TAINTED_FETCH_REASON } from "@lares/agent-kit/tainted-approval";
 import { approvalLedger, callIdFrom } from "@lares/agent-kit/approval-ledger";
 import { assertApproval } from "../lib/approvals.js";
 import { DEFAULT_READ_LIMIT } from "@lares/agent-kit/bounded-text";
@@ -104,20 +104,20 @@ export default defineTool({
     if (notionPageIdFromUrl(url)) {
       const result = await readNotionPage(url);
       const k = turnKeyFrom(ctx);
-      if (k) taintTurn(k, "synced");
+      if (k) { taintTurn(k, "synced"); noteUrlRead(k, url); }
       return pageReadUrlResult(result, input.offset);
     }
     if (googleDocFromUrl(url)) {
       const result = await readGoogleDoc(url, { apis: () => driveApisFor() });
       const k = turnKeyFrom(ctx);
-      if (k) taintTurn(k, "third_party");
+      if (k) { taintTurn(k, "third_party"); noteUrlRead(k, url); }
       return pageReadUrlResult(result, input.offset);
     }
     const result = await readUrl(url);
     const k = turnKeyFrom(ctx);
-    if (k) taintTurn(k, "third_party");
+    if (k) { taintTurn(k, "third_party"); noteUrlRead(k, url); }
     return pageReadUrlResult(result, input.offset);
   },
-  approval: asksAfterUntrustedText(),
+  approval: asksAfterUntrustedTextUnlessNextPage(),
   toModelOutput: readUrlModelOutput,
 });
