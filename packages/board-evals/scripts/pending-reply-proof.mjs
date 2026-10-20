@@ -2,11 +2,14 @@
  * pending-reply-proof.mjs — what does eve 0.60.1 do when a person types while an approval card is
  * still waiting?
  *
- * Four questions, each answered by watching a real run, none by reading a doc:
+ * Five questions, each answered by watching a real run, none by reading a doc:
  *   (a) a plain text reply during a pending card: does it run a turn, and what does the model see?
  *   (b) typed "approve" / "1" / "Approve" on the HTTP route (the route web chat uses): does it approve?
  *   (c) can our own code cancel a pending request with an `inputResponses` cancel, so the tool never runs?
  *   (d) a second card for the same tool while the first waits: does approving the first still run it?
+ *   (e) with the REAL approval-record and approval-supersede hooks loaded: a revised proposal in a
+ *       later turn raises a new card; is the older card cancelled by our hook (sent while that turn is
+ *       still running), never executed, recorded cancelled/revised, with the new card live?
  *
  * REAL: an eve 0.60.1 process (`eve build` + `eve start`), a disposable Postgres, eve's own session
  * routes. SCRIPTED: the model (the package's `mockModel`, patched in a disposable copy). No
@@ -69,7 +72,22 @@ if (msg.startsWith("pr:send ")) {
 }
 `;
 
-function fitOut(root) {
+// The two real hooks, registered as the roles register them. The one difference: the cancel is
+// aimed at this run's loopback port (a role's eve listens on 3000 in its container).
+const hookSrc = (port) => ({
+  record: `import { defineHook } from "eve/hooks";
+import { makeApprovalRecord } from "@lares/agent-kit/approval-record-hook";
+const live = makeApprovalRecord();
+export default defineHook({ events: { "input.requested": live["input.requested"] as any, "input.resolved": live["input.resolved"] as any } });
+`,
+  supersede: `import { defineHook } from "eve/hooks";
+import { makeApprovalSupersede, cancelApprovalRequest } from "@lares/agent-kit/approval-supersede-hook";
+const live = makeApprovalSupersede({ cancel: (s, r) => cancelApprovalRequest(s, r, { baseUrl: "http://127.0.0.1:${port}" }) });
+export default defineHook({ events: { "input.requested": live["input.requested"] as any } });
+`,
+});
+
+function fitOut(root, port) {
   const file = join(root, 'agent/agent.ts');
   let text = readFileSync(file, 'utf8');
   const anchor = 'const tool = msg.startsWith("write")';
@@ -88,12 +106,17 @@ function fitOut(root) {
   }
   mkdirSync(join(root, 'agent/tools'), { recursive: true });
   writeFileSync(join(root, 'agent/tools/pr_send.ts'), GATED_TOOL_SRC);
+  mkdirSync(join(root, 'agent/hooks'), { recursive: true });
+  const hooks = hookSrc(port);
+  writeFileSync(join(root, 'agent/hooks/approval-record.ts'), hooks.record);
+  writeFileSync(join(root, 'agent/hooks/approval-supersede.ts'), hooks.supersede);
 }
 
 async function seed(uri) {
   const pool = new Pool({ connectionString: uri });
   try {
     await pool.query(readFileSync(resolve(source, '../../services/box/sql/001_baseline.sql'), 'utf8'));
+    await pool.query(readFileSync(resolve(source, '../../services/box/sql/006_approval_session.sql'), 'utf8'));
     await pool.query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending)
       VALUES ('${AGENT}','10.0.0.7','synthetic-unused','owned','${INCARNATION}','${INCARNATION}','ready',false)`);
   } finally { await pool.end(); }
@@ -171,12 +194,12 @@ try {
   const { root: cwd, env, eve } = app;
   env.EVE_ROUTE_PASSWORD_FILE = join(cwd, 'route-password');
   writeFileSync(env.EVE_ROUTE_PASSWORD_FILE, 'disposable-fixture-only\n');
-  fitOut(cwd);
-  await run(eve, ['build'], { cwd, env });
   port = await new Promise((done) => {
     const probe = createNetServer();
     probe.listen(0, '127.0.0.1', () => { const { port: p } = probe.address(); probe.close(() => done(p)); });
   });
+  fitOut(cwd, port);
+  await run(eve, ['build'], { cwd, env });
   door = spawn(eve, ['start', '--host', '127.0.0.1', '--port', String(port)], { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let doorLog = '';
   door.stdout.on('data', (b) => { doorLog += b; }); door.stderr.on('data', (b) => { doorLog += b; });
@@ -262,6 +285,36 @@ try {
     }
     evidence.d = { sessionId: s.sessionId, secondStatus: second.status, typesAfterSecond: types(after.events), cardsSeenAfterSecond: cards, firstApproveStatus: firstApprove.status, typesAfterFirstApprove: types(afterFirst.events), executedAfterFirstApprove: ranFirst, secondResult };
     say('d', `second POST ${second.status}; cards after it: ${cards.length} (${cards.map((c) => c.requestId).join(', ')}); first approve ${firstApprove.status} -> executed ${JSON.stringify(ranFirst)}; second-card cancel: ${JSON.stringify(secondResult)}; session ${s.sessionId}`);
+  }
+
+  // (e) a revised proposal in a later turn, with the real hooks loaded
+  {
+    // The mock model reuses the same call id in every session, and the ledger keeps one row per call id
+    // (a real model never repeats one), so start this scenario from an empty ledger.
+    { const wipe = new Pool({ connectionString: uriFor('pendingreply') }); await wipe.query('TRUNCATE approval_asks'); await wipe.end(); }
+    const s = await park('pr:send E1');
+    const sentBefore = sent().length;
+    const revise = await post(s.sessionId, { message: 'pr:send E2' });
+    const after = await follow(s.sessionId, s.parked.next);
+    const newCard = cardsIn(after.events).find((c) => c.requestId !== s.card.requestId) ?? null;
+    // The cancel was sent while the revising turn was running; give eve a moment, then read on.
+    await new Promise((r) => setTimeout(r, 2500));
+    const settle = await follow(s.sessionId, after.next, 6000);
+    const resolved = [...after.events, ...settle.events].filter((e) => e.type === 'input.resolved' || e.type === 'approval.settled');
+    const ledgerDb = new Pool({ connectionString: uriFor('pendingreply') });
+    const ledger = (await ledgerDb.query("SELECT request_id, tool, session_id, turn_sequence, outcome, answered_via FROM approval_asks WHERE session_id = $1 ORDER BY asked_at", [s.sessionId])).rows;
+    await ledgerDb.end();
+    const ranBeforeApprove = sent().slice(sentBefore);
+    let approveNew = null;
+    if (newCard) {
+      const r = await post(s.sessionId, { inputResponses: [{ requestId: newCard.requestId, optionId: 'approve' }] });
+      const f = await follow(s.sessionId, settle.next, 15000);
+      approveNew = { status: r.status, types: types(f.events), executed: sent().slice(sentBefore) };
+    }
+    const lateOld = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
+    await new Promise((r) => setTimeout(r, 1500));
+    evidence.e = { sessionId: s.sessionId, oldRequestId: s.card.requestId, newRequestId: newCard?.requestId ?? null, reviseStatus: revise.status, typesAfterRevise: types(after.events), typesAfterWait: types(settle.events), resolvedEvents: resolved, ledger, executedBeforeApprovingNew: ranBeforeApprove, approveNew, lateApproveOldStatus: lateOld.status, executedInTotal: sent().slice(sentBefore) };
+    say('e', `revise POST ${revise.status}; new card ${newCard?.requestId ?? 'NONE'}; resolutions seen: ${JSON.stringify(resolved.map((e) => [e.type, e.data?.resolutions ?? e.data]))}; ledger ${JSON.stringify(ledger)}; executed before approving the new card: ${JSON.stringify(ranBeforeApprove)}; approve new: ${JSON.stringify(approveNew)}; late approve of old ${lateOld.status}; executed in total ${JSON.stringify(sent().slice(sentBefore))}; session ${s.sessionId}`);
   }
 
   evidence.elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
