@@ -64,8 +64,21 @@ without removing anything. Only once you have read that list and are satisfied s
 you run it for real.
 
 ```
-pnpm -C services/box run erase-person -- <person> --vault <path to a vault>
+docker run --rm --network host --user 0:0 --read-only --tmpfs /tmp \
+  --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp \
+  -v /etc/lares/secrets:/etc/lares/secrets:ro \
+  -e DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
+  -v <path to a vault>:<path to a vault> \
+  -w /app/services/box --entrypoint /app/services/box/node_modules/.bin/tsx \
+  "$(cat /opt/lares/current/services/box/engine-image)" \
+  /app/services/box/bin/erase-person.ts <person> --vault <path to a vault>
 ```
+
+This runs the erase program in a short-lived container of the engine image, the same way the
+installer runs its own programs; the server needs no Node.js or pnpm. The long lines are one
+command. In the rest of this page, "the erase command" means this command. The container can
+only see the database password and the vault folders you give it with `-v` (one `-v` line, and one
+`--vault`, per vault).
 
 Give `--vault` once for every vault this person might have notes in. If you leave it
 out, the notes are not looked at at all, and the report says so.
@@ -74,11 +87,8 @@ This is the dry run — nothing is deleted or changed. Read the report it prints
 lists, table by table and file by file, everything that would be removed, and it lists
 anything it cannot reach (the three things above, plus anything unusual it found).
 
-When you are ready to actually erase, add `--apply`:
-
-```
-pnpm -C services/box run erase-person -- <person> --vault <path to a vault> --apply
-```
+When you are ready to actually erase, run the same command again with `--apply` added at the
+very end, after the last `--vault`.
 
 A real run first checks that the database part can go through, and only then touches
 any file. The removal is saved in the vault as one local change that names nobody. It is

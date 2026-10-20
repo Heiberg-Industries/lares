@@ -4,8 +4,9 @@ This guide is written for a coding agent (Claude Code, Codex or similar) that a 
 to "install Lares on this server". The agent runs on the person's own computer and reaches the
 server over SSH as root. The person answers questions and pastes values; the agent does the rest.
 
-It does not replace [install.md](install.md). That guide and the installer
-`services/box/ops/install.sh` are the source of truth. This one tells the agent how to drive them,
+It does not replace [install.md](install.md). That guide and the downloaded script `get-lares.sh`
+(which runs the installer) are the source of truth. This way of installing works for rc.12 and
+later only. This one tells the agent how to drive them,
 what to ask, how to handle secrets, and where to stop. Where the two disagree, install.md and the
 installer's own messages win; tell the person about the difference.
 
@@ -18,8 +19,9 @@ window open; you will use it to type secrets the agent should never see.
 Read these first. They hold for the whole install.
 
 - **Never build on the server.** No `docker build`, no image assembly, no `eve build`. Images come
-  from CI and are pulled by digest from the release file. `pnpm install --frozen-lockfile` in the
-  checkout is the one allowed install step.
+  from CI and are pulled by digest from the release file. Nothing is installed on the server
+  either: no Node.js, no pnpm, no clone of the repository. The only things you download are the
+  one script `get-lares.sh` and, through it, the release's images.
 - **Never edit engine code to make an install pass.** If the installer refuses and the reason is
   not something on the server you can fix, stop, show the person the message, and suggest they
   report it (install.md, "Getting help").
@@ -47,37 +49,34 @@ ssh root@<server> 'id -u && lsb_release -ds && uname -m'
 Expect `0`, Ubuntu 24.04 and `x86_64`. If you are not root (the installer exits 77), ask the person
 for root access; do not work around it.
 
-Install the tools the installer needs, if they are missing (install.md section 1):
+Install the tools the installer needs, if they are missing (install.md section 1). Only Docker
+with Compose v2, `curl` and `python3` are needed:
 
 ```bash
 apt-get update
-apt-get install -y docker.io docker-compose-v2 curl git
-curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
-apt-get install -y nodejs
-npm install -g pnpm@9.15.0
+apt-get install -y docker.io docker-compose-v2 curl python3
 ```
 
-Ubuntu's own `nodejs` package is too old; use the NodeSource one above. Check with
-`node --version` (v24) and `pnpm --version` (9.15.0).
-
-Get the code and its locked dependencies:
+Then fetch the one script, and decide which release to install (step 5 says how to choose). Read
+the script's header before you run it; it says exactly what it does and which two hosts it reaches
+(`raw.githubusercontent.com` and `ghcr.io`):
 
 ```bash
-git clone https://github.com/Heiberg-Industries/lares.git /root/lares
-cd /root/lares && pnpm install --frozen-lockfile
+curl -fsSLO https://raw.githubusercontent.com/Heiberg-Industries/lares/main/services/box/ops/get-lares.sh
 ```
 
-Then run the installer's own check. It changes nothing, asks nothing, and prints every problem it
+Then run its check with that release's full name (the example name only shows the shape; step 5
+says which to use). It changes nothing on the server, asks nothing, and prints every problem it
 finds in one pass, each with a fix:
 
 ```bash
-cd /root/lares && ./services/box/ops/install.sh --dry-run
+bash get-lares.sh --release <release-name> --dry-run
 ```
 
 This is the single check. It covers memory (6 GiB), disk (20 GiB free), Docker and Compose v2,
-Node 24, pnpm 9.15.0, the checkout's dependencies and ports 80 and 443. Fix what it prints and run
-it again until it reports no problems. If memory or disk is too small, tell the person; that needs
-a bigger server, not a workaround.
+ports 80 and 443 and the release's engine image. Fix what it prints and run it again until it
+reports no problems. If memory or disk is too small, tell the person; that needs a bigger server,
+not a workaround.
 
 The dry run does not check the domain. That comes after the person names it (step 2).
 
@@ -175,22 +174,26 @@ the file with the ID line first, so there is only one secret line).
 
 ## 5. Run the installer
 
-Use the newest release file in `releases/`:
+Choose the release. A release is named by its full file name without `.json`, for example
+`2026-10-19-rc.11` (the shape: date, then `rc.` and a number). Use the newest one that is rc.12
+or later. List the folder from your own machine, not the server:
 
 ```bash
-cd /root/lares && ls releases/*.json | sort -V | tail -n 1
+gh api repos/Heiberg-Industries/lares/contents/releases --jq '.[].name' | sort -V | tail -n 3
 ```
 
-Read its notes in `docs/releases/` (the file whose name matches the release, for example
+(or open <https://github.com/Heiberg-Industries/lares/tree/main/releases> in a browser). Drop the
+`.json` ending. A short name such as `rc.12` or `latest` is refused.
+
+Read that release's notes in `docs/releases/` on GitHub (the file whose name matches, for example
 `rc.N-notes.md`) and tell the person anything they say must be done by hand.
 
 Run the installer unattended. `--yes` is required when it is driven over SSH without a terminal:
 it answers the "start fresh or check a backup" question with "start fresh". Without it the
-installer exits 64.
+installer exits 64. Every option `get-lares.sh` does not use itself goes on to the installer.
 
 ```bash
-cd /root/lares && ./services/box/ops/install.sh --yes \
-  --release "$(ls releases/*.json | sort -V | tail -n 1)" \
+bash get-lares.sh --release <release-name> --yes \
   --domain example.com --email you@example.com --name "Your Name" \
   --model-key-file /root/lares-model-key
 ```
@@ -205,7 +208,7 @@ What the exit code means, and what to do:
 | --- | --- | --- |
 | 0 | Finished | Go to step 6. |
 | 64 | Bad arguments, or an answer it could not use | Read the message. Usually a typo in a flag, a missing `--yes`, or a model key file that is not one clean line (have the person run the step 4 command again). |
-| 75 | A service did not become ready in time | Usually slow image pulls or a slow first start. Run the same command again. If it repeats, read `docker compose -f /opt/lares/compose.yaml logs --tail 200` and tell the person what it says. |
+| 75 | A download, the image pull or a service did not work in time | Usually the internet connection, slow image pulls or a slow first start. Run the same command again. If it repeats, read `docker compose -f /opt/lares/compose.yaml logs --tail 200` and tell the person what it says. |
 | 77 | Not root | Reconnect as root. |
 | 78 | A check failed; the reason is printed | Do what the message says, then run the same command again. Common causes: the domain does not point at this server yet; the model key was refused (wrong key, or no API credit); the Google client file is missing or its ID is malformed. |
 
@@ -242,8 +245,7 @@ Optionally run the read-only health check, which says in plain sentences what is
 anything:
 
 ```bash
-cd /root/lares && PGHOST=127.0.0.1 DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
-  pnpm -C services/box doctor
+lares doctor
 ```
 
 Then ask the person to open `https://example.com/` in their browser, press **Continue with
@@ -259,7 +261,7 @@ Stop here. These are the person's to do, in the console and with their own keys:
   [Using the console](how-to/using-the-console.md) is a tour of the pages.
 - **Backups.** The install does not switch them on. Tell the person, plainly, not to rely on the
   installation for anything they need to keep until backups are on. They run
-  `./services/box/ops/install.sh --backups` (install.md section 9). It needs an age key pair made on
+  `lares backups` (install.md section 9). It needs an age key pair made on
   their own machine and a backup location that is not this server. You can help them through it,
   but the private age key never goes to the server or into the chat.
 - **Doors and integrations** (Slack, Telegram, e-mail), after the first agent runs (install.md
