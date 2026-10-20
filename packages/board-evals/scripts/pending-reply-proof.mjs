@@ -4,7 +4,7 @@
  *
  * Five questions, each answered by watching a real run, none by reading a doc:
  *   (a) a plain text reply during a pending card: does it run a turn, and what does the model see?
- *   (b) typed "approve" / "1" / "Approve" on the HTTP route (the route web chat uses): does it approve?
+ *   (b) typed "approve" / "1" / "Approve" on the HTTP route (the route web chat uses): must NOT approve (asserted)
  *   (c) can our own code cancel a pending request with an `inputResponses` cancel, so the tool never runs?
  *   (d) a second card for the same tool while the first waits: does approving the first still run it?
  *   (e) with the REAL approval-record and approval-supersede hooks loaded: a revised proposal in a
@@ -239,7 +239,7 @@ try {
     say('a', `reply POST ${reply.status}; stream after reply: ${JSON.stringify(types(after.events))}; model calls for the reply: ${newCalls.length}; executions caused by the reply: ${executedByReply}; original card then approved ${approve.status} -> log ${JSON.stringify(sent())}; session ${s.sessionId}`);
   }
 
-  // (b) typed answers
+  // (b) typed answers must NOT answer a tool-approval card (patched eve: resolveTextToResponse skips them)
   evidence.b = {};
   for (const typed of ['approve', '1', 'Approve']) {
     const s = await park(`pr:send typed-${typed}`);
@@ -247,9 +247,18 @@ try {
     const sentBefore = sent().length;
     const reply = await post(s.sessionId, { message: typed });
     const after = await follow(s.sessionId, s.parked.next);
-    const ran = sent().slice(sentBefore);
-    evidence.b[typed] = { sessionId: s.sessionId, options: s.card.options, replyStatus: reply.status, types: types(after.events), modelCalls: modelCalls().length - callsBefore, executed: ran };
-    say(`b "${typed}"`, `POST ${reply.status}; stream ${JSON.stringify(types(after.events))}; model calls: ${modelCalls().length - callsBefore}; tool log ${JSON.stringify(ran)}; session ${s.sessionId}`);
+    const ranByText = sent().slice(sentBefore);
+    const newCalls = modelCalls().slice(callsBefore);
+    // the card is still live: a button/console answer (inputResponses) approves it, exactly once
+    const approve = await post(s.sessionId, { inputResponses: [{ requestId: s.card.requestId, optionId: 'approve' }] });
+    const later = await follow(s.sessionId, after.next);
+    const ranTotal = sent().slice(sentBefore);
+    evidence.b[typed] = { sessionId: s.sessionId, options: s.card.options, replyStatus: reply.status, types: types(after.events), modelCalls: newCalls.length, modelSawText: newCalls.some((c) => c.lastUserMessage === typed), executedByText: ranByText, approveStatus: approve.status, laterTypes: types(later.events), executedTotal: ranTotal };
+    say(`b "${typed}"`, `POST ${reply.status}; stream ${JSON.stringify(types(after.events))}; model calls: ${newCalls.length}; tool log after text ${JSON.stringify(ranByText)}; button approve ${approve.status} -> total ${JSON.stringify(ranTotal)}; session ${s.sessionId}`);
+    assert.equal(ranByText.length, 0, `typed "${typed}" ran the tool`);
+    assert.ok(types(after.events).includes('message.received'), `typed "${typed}" was consumed instead of arriving as a message: ${JSON.stringify(types(after.events))}`);
+    assert.ok(newCalls.some((c) => c.lastUserMessage === typed), `the model never saw typed "${typed}"`);
+    assert.deepEqual(ranTotal, [`sent:typed-${typed}`], `button approve after typed "${typed}" should run the tool exactly once`);
   }
 
   // (c) our own cancel through inputResponses
@@ -320,7 +329,7 @@ try {
   evidence.elapsedSeconds = Math.round((Date.now() - startedAt) / 1000);
   evidence.fullToolLog = readLines(env.BOARD_LOG);
   if (process.env.PENDING_REPLY_PROOF_OUT) writeFileSync(process.env.PENDING_REPLY_PROOF_OUT, JSON.stringify(evidence, null, 2));
-  console.log(`\nPENDING REPLY PROOF: DONE (${evidence.elapsedSeconds}s). Observations only; nothing here passes or fails.`);
+  console.log(`\nPENDING REPLY PROOF: DONE (${evidence.elapsedSeconds}s). Scenario (b) is asserted (typed text never approves); the others are observations.`);
 } finally {
   try {
     if (door?.pid) { try { process.kill(-door.pid, 'SIGKILL'); } catch { try { door.kill('SIGKILL'); } catch {} } }

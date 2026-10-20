@@ -153,3 +153,30 @@ Typed approval is real on this route (b); a door-level guard would be needed to 
 - Two full runs gave the same shapes for every case; every session id above is from the last run.
 - Reproduce, with the raw evidence written to a file:
   `PENDING_REPLY_PROOF_OUT=/tmp/pending-reply.json pnpm -C packages/board-evals run proof:pending-reply`.
+
+## Update 2026-10-20: typed text no longer answers an approval card
+
+Owner decision: only a button tap or the console's Approve (an `inputResponses` entry with an
+`optionId`) approves a tool-approval card. Typing "approve", "1" or "Approve" must not.
+
+The change is one hunk in `patches/eve.patch`: `resolveTextToResponse` (`dist/src/channel/resolve-text.js`,
+the only place eve matches text against an option id, label or index; both harness callers and the
+client helper go through it) now returns nothing for a request of kind `tool-approval`. Other kinds
+(free-text questions, session limits) keep eve's matching unchanged. A rejected match leaves the text
+as an ordinary follow-up message.
+
+Scenario (b) of `pnpm -C packages/board-evals run proof:pending-reply` now asserts this. Observed on
+the patched build (three typed variants, each on its own parked card):
+
+- stream after the typed text: `turn.started, message.received, step.started, message.appended,
+  message.completed, step.completed, turn.completed, session.waiting`. Before the patch it began with
+  `input.resolved` and carried an `action.result`, and had no `message.received`.
+- the model received the typed text as the user message (one model call each);
+- tool log after the typed text: empty;
+- a following `inputResponses` approve on the same card: 202, and the tool ran exactly once
+  (`sent:typed-approve`, `sent:typed-1`, `sent:typed-Approve`).
+
+Scenarios (a), (c) and (d) are unchanged. This covers every door, because the matching happens inside
+eve, ahead of Slack, Telegram and web chat alike. Slack and Telegram button taps arrive as
+`inputResponses`, so they are unaffected; that part is not exercised here (no Slack or Telegram in the
+fixture).
