@@ -1,5 +1,5 @@
 // Never overridden and never emitted by the catalogue. Its presence in the model's tool set as
-// `probe__probe_live_tool` is the control for Q3: it proves the mount is live and that `probe__`
+// `probe__probe_live_tool` is the control for the prefixed-key probe: it proves the mount is live and that `probe__`
 // really is this extension's reserved prefix, so a catalogue key under the same prefix is a genuine
 // collision test rather than a name nobody owns.
 import { defineTool } from "eve/tools";

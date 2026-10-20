@@ -17,7 +17,7 @@
  *       npx tsx packages/agent-kit/tests/live/gateway-lane-openai-compatible.live.mts
  *
  * This file does not guess or hard-code a model — the owner supplies a real, non-Anthropic
- * alias from his own gateway when he runs it by hand.
+ * alias from their own gateway when run by hand.
  *
  * WHY THIS FILE EXISTS. Per AGENTS.md's fixture rule ("a fixture is what we believe an
  * API does; only a live call is what it does"), `tests/gateway-provider.test.ts` only asserts on

@@ -1,8 +1,8 @@
 /**
  * web-chat-proof.mjs — does the console's chat proxy really carry a turn?
  *
- * W8B-s2 wrote `services/console/lib/chat-proxy.ts` against unit tests and against a reading of
- * eve 0.60.1's compiled client. W8B-s3 wired `useEveAgent` to it. Nobody had seen either carry a
+ * `services/console/lib/chat-proxy.ts` was written against unit tests and against a reading of
+ * eve 0.60.1's compiled client, and `useEveAgent` is wired to it. Nobody had seen either carry a
  * real turn. This script does not copy one line of that proxy: it IMPORTS `forwardChat` itself —
  * Node 24 strips the types off a `.ts` module on import, so `../../../services/console/lib/chat-proxy.ts`
  * is a plain import here with no build step and no second implementation to drift.
@@ -30,7 +30,7 @@
  *   5 no buffering         the first stream line lands long before the turn ends (timestamps)
  *   6 the refusals         no console session / unknown agent / a path off the allow-list, each
  *                          404-or-401 with ZERO upstream requests
- *   7 the wire shape of an approval, recorded verbatim for W8B-s5
+ *   7 the wire shape of an approval, recorded verbatim for the approval proof
  *
  * Run: `pnpm -C packages/board-evals run proof:web-chat` (Docker running). One eve process at a
  * time; the container, the process group and every temporary directory are disposed in `finally`.
@@ -63,7 +63,7 @@ const TERMINAL = new Set(['session.completed', 'session.failed', 'session.waitin
 
 // ─── the disposable fixture's own door, instrumentation and tools ──────────────────────────────
 
-/** A mirror of every role's `agent/channels/eve.ts` (W8B-s1): the same two-step policy, the same
+/** A mirror of every role's `agent/channels/eve.ts`: the same two-step policy, the same
  *  realm, and the password read from a FILE on the first request — never at import, because
  *  `eve build` has no secrets. Written into the COPY only; the source tree keeps no door. */
 const CHANNEL_SRC = `

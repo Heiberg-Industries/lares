@@ -145,8 +145,7 @@ export default defineHook({ events: { "input.requested": onInputRequested } });
 `;
 
 /** One probe tool per shape: `always()` so it parks on a card every time, and an `execute` that
- *  takes the RAW first argument (no destructuring — the same thing W7A-s6 had to change in 14
- *  chief-of-staff tools) and records the EXECUTE side. */
+ *  takes the RAW first argument (no destructuring — the shape the chief-of-staff gated tools use) and records the EXECUTE side. */
 const toolSource = (c) => `
 import { appendFileSync } from "node:fs";
 import { defineTool } from "eve/tools";

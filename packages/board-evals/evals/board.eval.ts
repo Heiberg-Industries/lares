@@ -47,7 +47,7 @@ export default defineEval({
     await session.respondAll("approve");
     check(log().includes("write gated"), "gated: expected the write after approval");
     // One card is one piece of evidence: eve consults the policy again on resume, with the SAME callId,
-    // and the evidence keeps one row per callId (final review F6).
+    // and the evidence keeps one row per callId.
     const asked = lines(EVENTS).filter((e) => e.decision === "asked");
     check(asked.length === 1, `gated: expected one 'asked' for one card, got ${asked.length}`);
     check(typeof asked[0]?.callId === "string" && asked[0].callId !== "", "gated: expected eve's callId on the evidence");

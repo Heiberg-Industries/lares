@@ -1,4 +1,4 @@
-// The smallest possible eve extension, and the ONLY reason it exists: Q3 needs a real mounted
+// The smallest possible eve extension, and the ONLY reason it exists: the prefixed-key probe needs a real mounted
 // extension namespace so the agent's own dynamic catalogue can try to emit a tool under that
 // namespace's reserved `probe__` prefix.
 //

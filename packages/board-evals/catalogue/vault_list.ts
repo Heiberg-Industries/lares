@@ -2,7 +2,7 @@
 // own input schema, its own board approval and its own executor — none of them known to the
 // resolver that hands it over.
 //
-// It exists for `evals/replay.eval.ts`, which asks the one question Task 1's fixture could not:
+// It exists for `evals/replay.eval.ts`, which asks the one question the seam fixtures could not:
 // does a tool that reaches the model ONLY through a `session.started` resolver still behave like an
 // authored tool across an approval pause? eve stores a session-scoped dynamic tool as durable
 // metadata and reconstructs both its executor and its approval from registered step functions
@@ -14,9 +14,9 @@
 // Named `vault_list`, a documented vault/shared tool (`VAULT_SHARED_TOOLS`,
 // `packages/agent-kit/src/persona/capability-docs.ts`), so `capabilityOfTool` maps it to `vault`
 // and `areaOfTool` to `shared` — the board's own `(agent, "vault", "shared")` row decides, exactly
-// as it does for the authored `agent/tools/vault_write.ts`. It was `atlas_list` until W5C-s9:
-// `capabilityOfTool("atlas_list")` went undefined the moment `atlas` left `KNOWN_CAPABILITIES`
-// (W5C-s5/s6), and `boardApproval` had been failing this fixture closed, unnoticed, ever since —
+// as it does for the authored `agent/tools/vault_write.ts`. It used to be `atlas_list`:
+// `capabilityOfTool("atlas_list")` goes undefined now that `atlas` is not in `KNOWN_CAPABILITIES`,
+// and `boardApproval` would fail this fixture closed unnoticed —
 // reusing an already-documented tool name is what makes it resolve again, the same way this
 // package's `vault_write` pool entry already reuses the authored tool's own name (see
 // `catalogue/index.ts`'s header).

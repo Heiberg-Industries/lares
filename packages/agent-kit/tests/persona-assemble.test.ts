@@ -31,10 +31,10 @@ describe("renderEnvironment", () => {
   });
 });
 
-// whole-branch review, Critical #1. `renderEnvironment` names tools only through the
+// `renderEnvironment` names tools only through the
 // capability docs, and a skill has no doc — so the skills block used to end at "composes
 // twenty:read, read_url:read." and never name `commercial_who_to_contact`. The chief of staff's instructions.md
-// therefore said "**My only capabilities are the tools below.**" over 57 of her 58 compiled
+// therefore said "**My only capabilities are the tools below.**" over 57 of its 58 compiled
 // tools, the 58th being a skill tool the model was never told it had. Both branches are pinned
 // here so neither can rot.
 describe("renderEnvironment — a skill names its own tools", () => {
@@ -241,8 +241,8 @@ describe("renderEnvironment — exclusion branches", () => {
 describe("renderEnvironment — rules keyed to the tools they concern", () => {
   // The defect: `atlas`'s doc described a re-derived-proposal flow in its SUMMARY, and carried
   // the matching "list proposals fresh" rule, for every agent granting the capability. The creative agent
-  // ships neither `atlas_proposals` nor `atlas_resolve_proposal`, so her generated section told
-  // her — under "**My only capabilities are the tools below**" — to use a flow she has no tools
+  // ships neither `atlas_proposals` nor `atlas_resolve_proposal`, so its generated section told
+  // it — under "**My only capabilities are the tools below**" — to use a flow it has no tools
   // for. `deployedTools` had already fixed the tool NAMES beside it; the prose was still the
   // fleet-wide union.
   const sharedAreaOnly = parseManifest({

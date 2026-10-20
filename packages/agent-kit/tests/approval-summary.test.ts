@@ -497,7 +497,7 @@ describe("detailsForApproval — the draft itself, rendered under a mail card", 
 // ── the link card ────────────────────────────────────────────────────────────────────
 //
 // `read_url` asks whenever the turn has already read somebody else's words, and the ONE thing
-// that card has to do is let the owner see the address he is about to have fetched. Every case
+// that card has to do is let the owner see the address that is about to be fetched. Every case
 // below is an address that reads as one thing and resolves as another; each is a published
 // phishing shape, not a hypothetical. The rule the cases share: the card never shortens the
 // address, never shows only the host, and never renders a character the owner cannot see.

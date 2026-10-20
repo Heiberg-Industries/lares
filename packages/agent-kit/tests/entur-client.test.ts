@@ -1,5 +1,5 @@
 // Unit coverage for ../src/entur-client.ts. Fixtures below are trimmed copies of REAL responses
-// captured live against api.entur.io on 2026-08-25 while building this file (Oslo S →
+// captured live against api.entur.io (Oslo S →
 // NSR:StopPlace:59872, Example City stasjon → NSR:StopPlace:58876, RX11 14:05 platform 3 → 15:19;
 // the address fixture is an invented "Parkgaten 7, Example City" geocoder-shaped hit with no venue layer). No
 // live network runs in this suite — `fetch` is a hand-rolled fake keyed by URL, injected exactly
@@ -98,8 +98,7 @@ function feature(
   };
 }
 
-// ── the Norway-bias fixtures (measured live 2026-08-25 from inside example-host,
-//     through the box's squid proxy) ─────────────────────────────────────────────────────────
+// ── the Norway-bias fixtures (measured live) ────────────────────────────────────────────────
 //
 // Entur's geocoder is Norway-biased and does NOT answer "no match" for a foreign place. It
 // answers with a fuzzy NORWEGIAN one, carrying `country_a: "NOR"`. Measured, verbatim:
@@ -113,8 +112,8 @@ function feature(
 //
 // The behaviour is INCONSISTENT — sometimes correctly foreign, sometimes correctly empty,
 // sometimes a Norwegian street that has nothing to do with the question. Only the last shape is
-// dangerous: `country_a: "NOR"` is exactly what the travel service's routing keys off, so a Paris
-// journey was being planned by Entur instead of Google.
+// dangerous: `country_a: "NOR"` is exactly what a country-keyed router acts on, so a Paris
+// journey would be planned by Entur instead of Google.
 
 /** The bug, verbatim. Only `id`, `layer`, `name` and `country_a` were captured live; the
  *  geometry and locality below are filler, consistent with the municipality code the id carries
@@ -246,7 +245,7 @@ const GRAPHQL_ERROR_BODY = {
   ],
 };
 
-// ── the second live sweep (2026-08-25, wider): what a name-relation rule gets WRONG ──────────
+// ── a second, wider live sweep: what a name-relation rule gets WRONG ──────────
 //
 // The first cut of this guard compared only the returned feature and allowed a shared four-letter
 // prefix. A live sweep over ~150 real queries found two defects no fixture had, and both sets
@@ -481,16 +480,16 @@ describe("resolvePlace", () => {
 // confidence nor a match_type (both null, checked live). The only signal left is that the name
 // it came back with bears no relation to what was asked. A resolution that fails that test is
 // NOT a resolution: it takes the same `EnturPlaceNotFoundError` path a zero-feature response
-// already takes, so every existing caller's not-found handling applies unchanged — the travel service
-// falls through to Google, agent-kit__transit_plan returns `notFound`.
+// already takes, so every existing caller's not-found handling applies unchanged — a caller with a
+// Google fallback falls through to it, agent-kit__transit_plan returns `notFound`.
 
 describe("resolvePlace — a Norway-biased guess is not a resolved place", () => {
   it("rejects the Norwegian street Entur fuzzy-matches to a Paris query, as NOT FOUND", async () => {
     const { fetch } = fakeFetch({ geocoder: { status: 200, body: PARIS_FUZZY_GEOCODE } });
     const { resolvePlace } = makeEntur({ fetch });
 
-    // Before this guard: `{ name: "Olav Duuns gate", countryA: "NOR" }` — which the travel service read
-    // as "this journey is Norwegian" and handed to Entur's planner instead of Google.
+    // Before this guard: `{ name: "Olav Duuns gate", countryA: "NOR" }` — which a router would read
+    // as "this journey is Norwegian" and hand to Entur's planner instead of Google.
     await expect(resolvePlace("Gare du Nord, Paris")).rejects.toThrow(EnturPlaceNotFoundError);
   });
 
@@ -622,7 +621,7 @@ describe("resolvePlace — comprehension is judged across the result SET", () =>
   });
 
   it("corroborates across a municipality BOUNDARY, because distance is the real test", async () => {
-    // Deliberately changed in round 3, and this pins the change. An earlier rule required the
+    // A deliberate rule change, pinned here. An earlier rule required the
     // corroborator to carry the same `locality` STRING, which rejected "Longyearbyen" outright
     // (its stop has no locality at all) and is unreliable anyway — live, the real Longyearbyen
     // results are labelled "Karlsøy", 800 km away. Here the hotel sits 4 km from the airport and
@@ -642,12 +641,12 @@ describe("resolvePlace — comprehension is judged across the result SET", () =>
   });
 });
 
-// ── round 3: what a live sweep of 150+ real queries found ───────────────────────────
+// ── what a live sweep of 150+ real queries found ───────────────────────────
 //
 // Every fixture below is SHAPED FROM a live response, not a verbatim copy of one: feature lists
 // are truncated to what the case exercises, coordinates are rounded, and some ids are stand-ins.
 // The names, the localities, the id SCHEMES and the countries are real, because those are what
-// the guard reads. Saying "verbatim" when it is not is the same defect this round found in the
+// the guard reads. Saying "verbatim" when it is not would repeat a defect found in the
 // GOTEBORG fixture's comment, so it is not said. Three of these are leaks the guard's own earlier
 // rules CREATED, which is why they are pinned here rather than described in a comment.
 
@@ -655,7 +654,7 @@ const collection = (...features: unknown[]) => ({ type: "FeatureCollection", fea
 
 describe("resolvePlace — a place-type word is not evidence", () => {
   it("does not turn 'Central Station Amsterdam' into Oslo S", async () => {
-    // THE LEAK THE CORROBORATION CLAUSE CREATED, and the reason the travel agent was rolled back mid-trip:
+    // THE LEAK THE CORROBORATION CLAUSE CREATED, and a leak that surfaced in live use:
     // the returned venue is Oslo S, which shares nothing with the query, and Oslo also holds
     // "Comfort Hotel Xpress Central Station" — close enough to corroborate, carrying `central`
     // and `station`. Both words describe what a place IS. Only `amsterdam` says which, and
@@ -876,13 +875,13 @@ describe("resolvePlace — points of interest", () => {
   });
 });
 
-// ── round 4: the last two leak classes ─────────────────────────────────────────────
+// ── the last two leak classes ─────────────────────────────────────────────
 
 describe("resolvePlace — a question that names no place", () => {
   it("does not let a neighbour carry 'Central Station' into Oslo S", async () => {
-    // The round-2 Critical with the city word removed, and the reason it matters: asked "how long
-    // from the hotel to Central Station?" in a foreign city, both endpoints came back NOR and the travel agent
-    // planned Bergen → Oslo. Every word here describes a KIND of place, so the answer has to be
+    // An earlier leak with the city word removed, and the reason it matters: asked "how long
+    // from the hotel to Central Station?" in a foreign city, both endpoints came back NOR and a
+    // Norwegian journey (Bergen → Oslo) was planned. Every word here describes a KIND of place, so the answer has to be
     // one of those words itself — a hotel of that name a street away is not evidence.
     const { fetch } = fakeFetch({
       geocoder: {
@@ -1162,10 +1161,10 @@ describe("plan", () => {
   });
 });
 
-// ── the per-request time bound review, finding 1) ───────────────────────────────────
+// ── the per-request time bound ───────────────────────────────────
 //
-// THE FAILURE THIS SECTION EXISTS FOR: every caller reaches Entur through the sealed box's squid
-// container via undici's `ProxyAgent`, whose headers timeout is MINUTES long. A hop that accepts
+// THE FAILURE THIS SECTION EXISTS FOR: every caller reaches Entur through an egress proxy
+// via undici's `ProxyAgent`, whose headers timeout is MINUTES long. A hop that accepts
 // the connection and then never answers would hang a live Telegram or Slack turn for ~5 minutes
 // before anything surfaced — and since this is the ONLY path a Norwegian journey has.
 // Bounding it costs nothing: an aborted fetch throws, and that throw is already wrapped into
@@ -1210,9 +1209,8 @@ describe("entur-client — the per-request time bound", () => {
   });
 
   it("honours a CALLER's budget too, so a multi-request caller can bound the whole pair", async () => {
-    // the travel service's `transit_directions` geocodes two endpoints under ONE deadline; this is the
-    // seam that lets its budget actually cancel the request in flight rather than merely stop
-    // waiting for it.
+    // A caller that geocodes two endpoints under ONE deadline needs this seam, so its budget
+    // actually cancels the request in flight rather than merely stopping waiting for it.
     const budget = new AbortController();
     const { resolvePlace } = makeEntur({ fetch: hangingFetch, timeoutMs: 60_000 });
     const pending = resolvePlace("Oslo S", { signal: budget.signal });

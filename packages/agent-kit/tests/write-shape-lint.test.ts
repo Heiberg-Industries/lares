@@ -472,7 +472,7 @@ describe("the depth rule", () => {
     // "resolves a prefixed tool from the SERVICE'S OWN CATALOGUE…" case just below this one
     // covers (using the chief of staff's tree). Creative is the one service that does not
     // answer any agent-kit-prefixed tool itself — its `catalogue/` holds only its own authored tools
-    // (atlas_*, set_language, studio_ideate; no `agent-kit__*` entries at all) — so her
+    // (atlas_*, set_language, studio_ideate; no `agent-kit__*` entries at all) — so its
     // `agent/extensions/agent-kit/tools/transit_plan.ts` mount is still a genuinely LIVE,
     // unmoved re-export (`resolveExtensionTool(manifest, "transit", transit_plan)`, not a
     // `disableTool()` sentinel — the depth rule's static read does not care that the creative agent's own

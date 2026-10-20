@@ -6,7 +6,7 @@ From the repository root, after the workspace dependencies are installed and Doc
 pnpm -C packages/board-evals run eval
 ```
 
-This is the single required command for spec Part 8. It runs installed, patched eve 0.32.0 with `mockModel`, no model credentials, gateway calls, provider setup, or production changes. Docker supplies a disposable `postgres:16-alpine` database; it does not build an image. Every process runs from a newly created temporary fixture and owns its workflow history. Existing repository `.eve`, `.output`, and workflow state are neither read nor deleted. Runs are serialized (`--max-concurrency 1`). Allow roughly two minutes for fresh builds and restart processes.
+This is the single required command. It runs installed, patched eve 0.32.0 with `mockModel`, no model credentials, gateway calls, provider setup, or production changes. Docker supplies a disposable `postgres:16-alpine` database; it does not build an image. Every process runs from a newly created temporary fixture and owns its workflow history. Existing repository `.eve`, `.output`, and workflow state are neither read nor deleted. Runs are serialized (`--max-concurrency 1`). Allow roughly two minutes for fresh builds and restart processes.
 
 | Required behavior | Committed proof |
 | --- | --- |
@@ -19,7 +19,7 @@ This is the single required command for spec Part 8. It runs installed, patched 
 | Invalid definition fails closed | `definition.eval.ts`: malformed JSON and invalid model alias preserve real last-valid duties/tool grants and DB invalid status; without cache, zero model invocations; repair between failure and fallback stays refused, a new valid conversation recovers |
 | Schedule next tick | `schedules.eval.ts`: actual eve dispatch runs the authored handler and current shared definition/schedule gate on each on/off/on tick; separate run with `EVE_SCHEDULES_LIVE=0` executes zero ticks |
 
-`doors.eval.ts` is additional Task17 evidence: an actual compiled Telegram adapter with a disabled definition and no token permits a mock turn without credential resolution or outbound attempts. There are eight required **behaviors**, not eight eval files. The driver checks every expected result id and `verdict: passed`, so skipped or missing evals fail. Only then does it print:
+`doors.eval.ts` is additional evidence: an actual compiled Telegram adapter with a disabled definition and no token permits a mock turn without credential resolution or outbound attempts. There are eight required **behaviors**, not eight eval files. The driver checks every expected result id and `verdict: passed`, so skipped or missing evals fail. Only then does it print:
 
 ```text
 EIGHT BEHAVIORS PASS: 8/8 required + disabled-door supplemental proof; mock models only.
@@ -49,4 +49,4 @@ Each one boots a real eve 0.60.1 runtime against a disposable Postgres with a sc
 | A tainted turn raises a card and an untainted one does not, under the real turn ids | `node scripts/tainted-approval-proof.mjs` | `proofs/tainted-approval-2026-09-20.md` |
 | The console's chat proxy really carries a turn: the agent's own Basic-gated door, the real `forwardChat`, eve's own browser `Client`, a reconnecting stream, and the wire shape of an approval | `pnpm -C packages/board-evals run proof:web-chat` | `proofs/web-chat-2026-09-20.md` |
 
-Historical `seams.eval.ts` and `replay.eval.ts` remain separately available for earlier dynamic-seam research. They are not the required suite: seams’ Q5 deliberately attempts gateway model-ID routing, and its file-driven `SEAM_GRANTS` is not definition authorization evidence. Do not run that historical probe as part of the mock-only proof. `scripts/doors-probe.mjs` remains a standalone isolated supplemental probe.
+Historical `seams.eval.ts` and `replay.eval.ts` remain separately available for earlier dynamic-seam research. They are not the required suite: seams’ model-routing probe deliberately attempts gateway model-ID routing, and its file-driven `SEAM_GRANTS` is not definition authorization evidence. Do not run that historical probe as part of the mock-only proof. `scripts/doors-probe.mjs` remains a standalone isolated supplemental probe.

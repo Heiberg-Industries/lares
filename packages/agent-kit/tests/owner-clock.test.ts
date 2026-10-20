@@ -72,7 +72,7 @@ describe("slotKey — the fleet's slot shape, on the owner's clock", () => {
     expect(slotKey(new Date("2026-09-08T07:00:00Z"), OSLO, 8)).toBeNull();
   });
 
-  it("moves with the owner: the same 08:00 slot fires six hours later when he is in New York", () => {
+  it("moves with the owner: the same 08:00 slot fires six hours later when the owner is in New York", () => {
     expect(slotKey(new Date("2026-09-08T06:00:00Z"), NY, 8)).toBeNull();
     expect(slotKey(new Date("2026-09-08T12:00:00Z"), NY, 8)).toBe("2026-09-08T8");
   });

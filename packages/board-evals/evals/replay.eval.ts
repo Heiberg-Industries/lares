@@ -1,6 +1,6 @@
-// THE REPLAY PROOF for step 2, Task 7 (ADR-0015 rule 4).
+// THE REPLAY PROOF (ADR-0015 rule 4).
 //
-// Q1 established that a `session.started` resolver's map becomes the model's tool set. It did not
+// The seam probes established that a `session.started` resolver's map becomes the model's tool set. It did not
 // establish that a tool reaching the model ONLY that way still behaves like an authored tool once
 // real work is involved — and eve's own `DynamicToolEntry` docstring says approval is "only honored
 // for step-scoped dynamic tools", which, if true, would ship every gated write in the fleet with no

@@ -29,18 +29,18 @@ the finding, never a chore to be re-baselined away.
   the two chief-of-staff text files were updated to the newly assembled `persona.md` (the same
   text, minus the removed capability bullet and two wording mentions). Not re-captured with
   `snapshot:capture`, so the counts below are the pre-removal ones (78 tools, now 75).
-- **Edited by hand for the markets removal** (rc.6 scrub): the chief of staff's skill list in
+- **Edited by hand for the markets removal**: the chief of staff's skill list in
   `system-prompt-chief-of-staff.txt` lost the `market-edge` skill, and the `sales-outreach` skill
   description lost its retired-agent clause. The neutral default never granted the markets tool, so
   the tools files did not change.
-- **Edited by hand for the travel role's removal** (rc.6 scrub): the travel snapshot files were
+- **Edited by hand for the travel role's removal**: the travel snapshot files were
   deleted, and the chief of staff lost the `travel` capability and its two tools (`travel_read`,
   `travel_current`). Its tools file lost those two lines, the system prompt lost the capability
   bullet and its two rule lines, and the instructions file is the newly assembled `persona.md`.
   One sentence of the calendar capability's conflict-pass rule changed with it (it no longer names a
   filed itinerary), in both chief-of-staff text files. Not re-captured with `snapshot:capture` (75
   tools before this edit, now 73).
-- **Edited by hand for the waiting-card guidance** (rc.12): both roles' `role.md` gained one
+- **Edited by hand for the waiting-card guidance**: both roles' `role.md` gained one
   paragraph (a change asked on a waiting card means redraft, the old card is withdrawn
   automatically; typed "approve" approves nothing). The instructions files are the newly assembled
   `persona.md`; the same paragraph was inserted into both system-prompt files. Not re-captured
@@ -127,7 +127,7 @@ explicitly and write down what you did. Do not let a smarter script hide it.
 ## `system-prompt-<role>.txt` is EXPECTED to differ after the bump
 
 This file is not a "must stay identical" gate and must never be treated as one. Much of it is
-eve's own wording, and a release is entitled to change it. **W2-s11's job is to explain every
+eve's own wording, and a release is entitled to change it. **The reviewer's job is to explain every
 differing line, not to demand zero.** A line that differs because eve reworded its own preamble is
 a finding to write down and move past; a line that differs because our persona stopped being
 merged in, because a block lost its place in the order, or because a permission or safety sentence

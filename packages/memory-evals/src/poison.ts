@@ -7,7 +7,7 @@
 //
 // No model is involved because none needs to be: a case supplies the OBSERVATIONS a reflector
 // would plausibly have produced from a poisoned inbox — already stamped with the origin the
-// conversation record would have given them (ADR-0018 rule 4; W4C-s1's `originForObservation`) —
+// conversation record would have given them (ADR-0018 rule 4; `originForObservation`) —
 // and this harness runs them straight through the real gate. That is the property under test:
 // the gate itself, not the LLM step that would ordinarily feed it.
 

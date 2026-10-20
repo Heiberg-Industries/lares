@@ -1,4 +1,4 @@
-// Task 6's own proof, not Q4's generic seam fixture (seam_language.ts/seam_lang.ts above): this is
+// A proof of the real language switch, not the generic seam fixture (seam_language.ts/seam_lang.ts above): this is
 // the REAL `@lares/agent-kit/language` module wired through eve's real tool + turn.started seam,
 // under production's own tool name, so a later eve regressing the seam breaks THIS file, not a
 // stand-in for it. See agent/instructions/language_switch.ts for the reading half.

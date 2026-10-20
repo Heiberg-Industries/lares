@@ -74,7 +74,7 @@ for role in "${ROLES[@]}"; do
       if grep -qF -- "$line" "$ALLOWLIST"; then
         echo "    already explained (see $ALLOWLIST): $line"
       else
-        echo "    UNEXPLAINED — write this up before the wave proceeds: $line"
+        echo "    UNEXPLAINED — write this up before the bump proceeds: $line"
       fi
     done <"$WORK/$role.system-prompt.diff"
   fi

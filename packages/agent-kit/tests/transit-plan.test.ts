@@ -1,4 +1,4 @@
-// Unit coverage for ../extension/tools/transit_plan.ts — the kit's ELEVENTH contributed tool.
+// Unit coverage for ../extension/tools/transit_plan.ts — a tool the kit contributes.
 //
 // `../src/entur-client.ts`'s own HTTP behaviour is covered by tests/entur-client.test.ts; this
 // file covers only what the TOOL adds on top of it, which is exactly the part that can go wrong
@@ -13,8 +13,8 @@
 //   3. `departAfter` and `arriveBy` are mutually exclusive, refused before any network call.
 //   4. An outage propagates as `EnturUnavailableError`; a geocoder miss is a distinct, explicit
 //      `notFound` result. "Unavailable" must never be reported as "none".
-//   5. The DEFAULT export routes through the squid proxy, not Node's built-in `fetch` — the
-//      single most likely way this ships broken (both agents are network-sealed; Node's fetch
+//   5. The DEFAULT export routes through the egress proxy, not Node's built-in `fetch` — the
+//      single most likely way this ships broken (agents are network-sealed; Node's fetch
 //      ignores proxy env vars, see ../src/telegram-fetch.ts's header).
 import { describe, it, expect, vi } from "vitest";
 
@@ -194,7 +194,7 @@ describe("transit_plan", () => {
   });
 
   it("tells the model it may not invent a line, a time, a platform or a duration", () => {
-    // Mirrors the travel service's transit_directions.ts boundary sentence. The description is the only
+    // The description is the only
     // place that boundary is stated to the model, so it is asserted rather than trusted.
     const description = (transitPlan as { description?: string }).description ?? "";
     expect(description).toMatch(/never invent/iu);
@@ -202,14 +202,14 @@ describe("transit_plan", () => {
   });
 
   it("divides the labour by CAPABILITY, never by a tool name, and never sends a Norwegian journey elsewhere", () => {
-    // THE REGRESSION THIS PINS review). The description used to read: "Norway only;
+    // THE REGRESSION THIS PINS. The description used to read: "Norway only;
     // for journeys outside Norway use transit_directions (Google), which is also the simpler
     // choice for a plain point-to-point question." Two defects, both invisible to every other
     // test in the repo:
     //   1. it steered "when is the next train from Oslo S to Example City?" — a plain point-to-point
-    // question INSIDE Norway, the exact case exists to fix — onto Google;
-    //   2. it named a tool. THIS FILE IS BYTE-IDENTICAL ACROSS THREE AGENTS and the chief-of-staff service has no
-    //      `transit_directions` at all, so for her it pointed at a tool she cannot call.
+    // question INSIDE Norway, the exact case this tool exists for — onto Google;
+    //   2. it named a tool. The same tool is mounted for several agents and not all of them have
+    //      `transit_directions`, so for those it pointed at a tool they cannot call.
     // Reintroducing either half left all four suites green, which is why it is asserted here.
     const description = (transitPlan as { description?: string }).description ?? "";
 
@@ -221,7 +221,7 @@ describe("transit_plan", () => {
 });
 
 describe("transit_plan's default wiring", () => {
-  it("routes through the squid proxy, not Node's built-in fetch", async () => {
+  it("routes through the egress proxy, not Node's built-in fetch", async () => {
     // THE failure this test exists for: a plain `fetch` compiles, passes every test above (they
     // inject a fake client), and then fails on the box as "unreachable", because both agents are
     // network-sealed and Node's built-in fetch ignores proxy env vars.
@@ -268,9 +268,9 @@ describe("transit_plan's default wiring", () => {
 // Every test above injects a fake `EnturClient`, so none of them can see what the geocoder
 // actually answers. Entur's geocoder is Norway-biased: asked for "Gare du Nord, Paris" it does
 // not answer "no match" — it answers the Norwegian street "Olav Duuns gate" with
-// `country_a: "NOR"` (measured live 2026-08-25, from inside example-host). The chief of staff has
-// no Google fallback, so for her the whole question is whether this tool says `notFound` — the
-// outcome her brief's silence rule already covers — instead of planning a nonsense Norwegian
+// `country_a: "NOR"` (measured live). An agent with
+// no Google fallback depends entirely on this tool saying `notFound` — the
+// outcome the persona's silence rule already covers — instead of planning a nonsense Norwegian
 // journey and presenting it as the answer to a Paris question.
 describe("transit_plan over the REAL kit client", () => {
   it("answers a Paris question with notFound, not a nonsense Norwegian itinerary", async () => {
@@ -313,16 +313,17 @@ describe("transit_plan over the REAL kit client", () => {
   });
 });
 
-// ── outside Entur's coverage follow-up) ─────────────────────────────────────────────
+// ── outside Entur's coverage ─────────────────────────────────────────────
 //
 // Entur's stop register really does hold foreign stations, with real `NSR:` ids — measured live
-// 2026-08-25: "Göteborg C" → NSR:StopPlace:374 [SWE], "Stockholm Central" → NSR:StopPlace:58635
+// Measured live: "Göteborg C" → NSR:StopPlace:374 [SWE], "Stockholm Central" → NSR:StopPlace:58635
 // [SWE], "København H" → NSR:StopPlace:63172 [DNK]. Those ids resolve, and they plan: the journey
 // planner answers `tripPatterns: []` at HTTP 200, which this tool's contract calls "a real
 // answer, nothing runs". A model reads that as "there are no trains to Stockholm".
 //
-// the travel service has keyed on the resolved country since; this tool did not, and the chief of staff has no
-// Google fallback to catch it. That asymmetry is what these tests close.
+// A routing layer that keys on the resolved country catches this; an agent with no Google
+// fallback has nothing to catch it, so this tool keys on the country itself. These tests close
+// that gap.
 
 const STOCKHOLM: ResolvedPlace = {
   id: "NSR:StopPlace:58635",
@@ -362,12 +363,10 @@ describe("transit_plan — an endpoint outside Norway", () => {
 
   it("treats a missing country as OUTSIDE coverage", async () => {
     // This test used to assert the opposite ("absence of a country is not evidence of one").
-    // found this tool and the travel service's transit_directions reading `null` in OPPOSITE
-    // directions while describing themselves as identical inside Norway, and ruled ONE reading
-    // for both: unknown is foreign. The safe direction — refusing a mislabelled Norwegian
+    // Two readers of `null` once disagreed while describing themselves as identical inside
+    // Norway, so ONE reading is now used everywhere: unknown is foreign. The safe direction — refusing a mislabelled Norwegian
     // journey costs an honest "cannot answer"; planning a foreign one invents an empty
-    // timetable the model reads as "there are no trains". The sibling test lives in
-    // the travel service tests/transit-routing.test.ts over the same fixture shape.
+    // timetable the model reads as "there are no trains".
     const unlabelled: ResolvedPlace = { ...BJORNVIK, countryA: null };
     const entur = fakeEntur({ "Oslo S": OSLO_S, Bjørnvik: unlabelled });
 
@@ -386,11 +385,11 @@ describe("transit_plan — an endpoint outside Norway", () => {
   });
 });
 
-// ── the diagnostic round 4) ─────────────────────────────────────────────────────────
+// ── the diagnostic ─────────────────────────────────────────────────────────
 //
-// The Norway-bias guard has now misfired three times, and until this round nothing it discarded
+// The Norway-bias guard has misfired before, and nothing it discarded
 // was observable in production: `EnturPlaceNotFoundError.rejected` existed and no code path read
-// it. "the chief of staff said notFound" looked identical whether the place does not exist, Entur was down, or
+// it. "the agent said notFound" looked identical whether the place does not exist, Entur was down, or
 // the guard threw away the right answer. Carrying the candidate out to the model puts it in the
 // turn's trace, which is where the next misfire has to be findable from.
 describe("transit_plan — notFound names the discarded candidate", () => {
@@ -437,11 +436,10 @@ describe("transit_plan — ONE deadline over all three requests", () => {
   }
 
   it("hands the SAME signal to both lookups and the plan", async () => {
-    // REVIEW MINOR 5 — three requests, each with its own 8 s bound inside the client, is 24 s
-    // worst case inside a live turn. `services/travel/agent/tools/transit_directions.ts`
-    // already carried one shared deadline across its pair of lookups; this is the same shape,
-    // widened to the planner. That the signal is the SAME object across all three is the whole
-    // assertion: three separate signals would be three separate budgets again.
+    // Three requests, each with its own 8 s bound inside the client, is 24 s worst case
+    // inside a live turn, so one shared deadline covers both lookups and the plan. That the
+    // signal is the SAME object across all three is the whole assertion: three separate
+    // signals would be three separate budgets again.
     const entur = signalRecordingEntur();
     await toolFor(entur).execute({ from: "Oslo S", to: "Bjørnvik" }, CTX);
 

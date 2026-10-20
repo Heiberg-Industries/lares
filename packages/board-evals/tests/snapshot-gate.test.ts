@@ -8,7 +8,7 @@
 // This file asserts only the properties that make the files USABLE as a before/after comparison:
 // that they exist, that they are not empty, and that the tool list is sorted and duplicate-free so
 // a later `diff` is readable. The comparison itself — before the eve bump against after — is a
-// later slice's job and needs no code here: it is `git diff` on these files.
+// a reviewer's job and needs no code here: it is `git diff` on these files.
 //
 // A snapshot test that silently records nothing passes forever afterwards and proves nothing, so
 // the emptiness checks below are the load-bearing ones, and the capture script refuses to write an
@@ -39,8 +39,8 @@ export interface RoleSnapshot {
 /**
  * Reads one role's committed pair back.
  *
- * `eveVersion` is read LIVE from `services/<role>/package.json`, which is what the interface this
- * slice publishes says it is — so after an eve bump it reports the NEW version while the two text
+ * `eveVersion` is read LIVE from `services/<role>/package.json`, which is what the interface
+ * says it is — so after an eve bump it reports the NEW version while the two text
  * files still hold the old capture. That is deliberate and is how a reader tells a stale snapshot
  * from a fresh one; the version the files were actually captured on is written down in
  * `../snapshots/README.md`.
@@ -108,7 +108,7 @@ describe("ADR-0015 rule 11: the runtime-resolved instructions and tool list are 
 // only be answered by a real `eve invoke` against a disposable Postgres — `scripts/capture-
 // snapshot.sh` does that; `pnpm -C packages/board-evals run snapshot:compare` runs it into a throw-
 // away directory and diffs it against these committed files. `scripts/model-visible-tools-probe.sh`
-// is NOT used for this (W2-s1's finding): it is a verifier that confirms a guessed list of names is
+// is NOT used for this: it is a verifier that confirms a guessed list of names is
 // present, never an enumerator, and it prints no list a test could compare against.
 //
 // What CAN be checked here, fast and without Docker: that the instructions half of the pair is

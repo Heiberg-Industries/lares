@@ -13,8 +13,8 @@
  * if the policy's key differs from the writers' keys, `currentTaint` answers `undefined`, the
  * policy returns `"not-applicable"`, no card is ever raised, and the tool behaves exactly as it
  * did before the control existed. Nothing logs, nothing throws, every unit test still passes —
- * they all build their own contexts by hand. (The same class of mistake that WAVE-3-NOTES point 18
- * found in `callIdFrom`, which read `ctx.toolCallId` where eve passes `ctx.callId`.)
+ * they all build their own contexts by hand. (The same class of mistake as `callIdFrom`, which
+ * once read `ctx.toolCallId` where eve passes `ctx.callId`.)
  *
  * WHAT THIS RUNS. A real eve 0.60.1 runtime, a real Postgres, a scripted model, no credential —
  * the technique of `approval-binding-proof.mjs`: a disposable copy of this package, probe tools and
@@ -39,8 +39,7 @@
  * ran the approval policy in a different process or worker from the hook and the tool, the lookup
  * would miss for that reason alone — so the pid is part of the evidence, not an aside.
  *
- * NOT IN SCOPE. `read_url`'s own `assertApproval` re-check (proven by `approval-binding-proof.mjs`
- * and box 086) and the Notion/Google branches. This proof is about one question: does the policy
+ * NOT IN SCOPE. `read_url`'s own `assertApproval` re-check (proven by `approval-binding-proof.mjs`) and the Notion/Google branches. This proof is about one question: does the policy
  * find the taint.
  *
  * Run: `node packages/board-evals/scripts/tainted-approval-proof.mjs` (Docker running). One eve

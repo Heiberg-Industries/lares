@@ -1,7 +1,7 @@
 /**
  * web-chat-approval-proof.mjs — is an approval answered in web chat really answered by a PERSON?
  *
- * W8B-s5 created a new class of approver. The wave-7 lesson is why this file exists: three
+ * Web chat created a new class of approver. This file exists because three
  * controls in a row were wrong or dead in ways only a real run showed — `callIdFrom` read a field
  * eve does not set, so the payload check never ran at all. Every claim below therefore depends on
  * what the FRAMEWORK actually puts in `ctx.session.auth`, and none of it is asserted against a
@@ -95,9 +95,9 @@ export default defineTool({
   approval: always(),
   execute: async (input: unknown, ctx: { session?: { auth?: unknown } }) => {
     appendFileSync(process.env.BOARD_EVENTS!, JSON.stringify({ at: "execute", auth: ctx?.session?.auth ?? null }) + "\\n");
-    // The REAL check, in the REAL order a gated catalogue tool uses it (W7A-s6's assertApproval
-    // calls assertApprover first, then the ledger; the ledger half is unchanged by this slice and
-    // proved by approval-binding-proof.mjs).
+    // The REAL check, in the REAL order a gated catalogue tool uses it (assertApproval
+    // calls assertApprover first, then the ledger; the ledger half is proved by
+    // approval-binding-proof.mjs).
     try {
       assertApprover(approverFrom(ctx?.session?.auth));
     } catch (error) {
