@@ -227,6 +227,24 @@ export async function askForCall(db: Queryable, callId: string): Promise<AskRow 
   }
 }
 
+/**
+ * How a card was answered (`approval_asks.answered_via`), by request id: `null` when the card has
+ * no row, is not answered yet, or the database cannot be read. Doors use it to word a settled card
+ * (a cancel that is really a revision). BEST-EFFORT: never throws.
+ */
+export async function answeredVia(requestId: string): Promise<string | null> {
+  try {
+    const { rows } = await getPool().query<{ answered_via: string | null }>(
+      "SELECT answered_via FROM approval_asks WHERE request_id = $1",
+      [requestId],
+    );
+    return rows[0]?.answered_via ?? null;
+  } catch (err) {
+    warnAboutApprovalAsks(err);
+    return null;
+  }
+}
+
 /* ------------------------------------------------------------------------------------------- *
  * W7A-s5 — the card is still fresh, and it showed these arguments.
  * ------------------------------------------------------------------------------------------- */

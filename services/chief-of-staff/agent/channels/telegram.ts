@@ -41,6 +41,7 @@ import { telegramFetch } from "@lares/agent-kit/telegram-fetch";
 import { TELEGRAM_INNER_ROUTE } from "@lares/agent-kit/telegram-routes";
 import { mdToTelegramHtml, splitTelegramHtml } from "@lares/agent-kit/telegram-markdown";
 import { getPool } from "@lares/agent-kit/db";
+import { answeredVia } from "@lares/agent-kit/approval-ledger";
 import { OFFICE_MEDIA_TYPES } from "@lares/agent-kit/attachment-hydration";
 import { telegramUnreadableNote } from "@lares/agent-kit/unreadable-content";
 import {
@@ -490,6 +491,18 @@ export async function onInputRequested(
 /** What a decided card says under its text. */
 export const APPROVAL_OUTCOME_TEXT = { approved: "✅ Approved", cancelled: "✖ Cancelled" } as const;
 
+/** Added under "Cancelled" when the card was withdrawn because the agent proposed a revised one. */
+export const APPROVAL_REVISED_TEXT = "Revised — see the new card";
+
+/** Best-effort: a failed lookup answers false, so the card keeps today's text. */
+async function wasRevised(requestId: string): Promise<boolean> {
+  try {
+    return (await answeredVia(requestId)) === "revised";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * `approval.settled` — eve has accepted the owner's Approve or Cancel. The card keeps its text,
  * gains the outcome on a line of its own, and loses its buttons (an empty keyboard), so it cannot
@@ -511,10 +524,12 @@ export async function onApprovalSettled(
     delete remaining[data.requestId];
     channel.state.approvalCards = remaining;
 
+    // The ledger row is settled `revised` BEFORE eve cancels the request, so this sees it.
+    const revised = data.outcome === "cancelled" && (await wasRevised(data.requestId));
     const result = await channel.telegram.editMessageText({
       messageId: card.messageId,
       replyMarkup: { inline_keyboard: [] },
-      text: `${card.text}\n\n${APPROVAL_OUTCOME_TEXT[data.outcome]}`,
+      text: `${card.text}\n\n${APPROVAL_OUTCOME_TEXT[data.outcome]}${revised ? `\n${APPROVAL_REVISED_TEXT}` : ""}`,
     });
     if (!result.ok) {
       const description = (result.body as { description?: unknown } | undefined)?.description;
