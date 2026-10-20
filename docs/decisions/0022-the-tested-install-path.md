@@ -189,6 +189,28 @@ The README must therefore say: this is a **tested path**, not supported software
 community Slack channel with an agent answering questions, and the owner will occasionally
 answer personally; expected volumes are low; Mac is best-effort, not tested.
 
+### Amendment, 2026-10-20: the tested path is Docker only, in image mode
+
+From rc.12 the tested path is a fresh **Ubuntu 24.04 server with Docker (Compose v2), `curl` and
+`python3`, and nothing else**, installed in **image mode**: the owner downloads one script,
+`services/box/ops/get-lares.sh`, from the main branch and runs it with a release name. The script
+pulls the release's engine image by digest, unpacks the installer and its sibling scripts from it,
+and hands over to `install.sh`; a `lares` command (`update`, `rollback`, `restore`, `doctor`,
+`backups`) is then installed for looking after the server. The server never clones the repository,
+never runs `pnpm install`, never has Node.js and never builds an image. Updates and rollbacks are
+tested for rc.12 and later only; a server installed earlier switches over once, as the rc.12 notes
+describe. A rollback goes back one level.
+
+What this changes in the decision above: "one command, a fresh Ubuntu server" now means this
+path, and the checkout-based install is no longer the tested path. What does not change: the
+wording rule (say "tested path", never "supported"), web chat as the first door, restore on the
+first screen, and no promised support.
+
+macOS stays **best-effort**. One known difference: the installer's helper containers use
+`--network host`, which on Docker Desktop connects to the Docker virtual machine's network, not
+the Mac's, so the helpers may not reach the database published on the Mac's loopback address. Nobody
+has tried it; treat a Mac as a place to experiment, not a server.
+
 ## Consequences
 
 **Positive:**

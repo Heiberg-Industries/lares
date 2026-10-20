@@ -194,6 +194,15 @@ console.log("\n=== Verdict ===");
 report(first.write > 0 || first.read > 0, "call 1 touched the cache (a write, or a read left over from a run in the last five minutes)");
 report(second.read > 0, "call 2 (identical) was served from the cache through the gateway");
 report(third.read > 0, "call 3 (new tail) still read the stable prefix — the breakpoint sits at the boundary");
+// eve builds each step's usage from the AI SDK's portable `inputTokenDetails.cacheReadTokens`. If
+// that is absent, the console's cache hit rate stays empty even when the provider's own counts
+// above look fine.
+for (const [label, m] of [["call 1", first], ["call 2", second], ["call 3", third]] as const) {
+  report(
+    m.portableRead !== undefined,
+    `${label}: the response usage carries inputTokenDetails.cacheReadTokens (the field eve's step usage is built from; absent means the hit rate cannot be measured)`,
+  );
+}
 
 if (failed) {
   console.log(
