@@ -40,6 +40,11 @@ the finding, never a chore to be re-baselined away.
   One sentence of the calendar capability's conflict-pass rule changed with it (it no longer names a
   filed itinerary), in both chief-of-staff text files. Not re-captured with `snapshot:capture` (75
   tools before this edit, now 73).
+- **Edited by hand for the waiting-card guidance** (rc.12): both roles' `role.md` gained one
+  paragraph (a change asked on a waiting card means redraft, the old card is withdrawn
+  automatically; typed "approve" approves nothing). The instructions files are the newly assembled
+  `persona.md`; the same paragraph was inserted into both system-prompt files. Not re-captured
+  with `snapshot:capture` (it could not invoke eve in the build environment); tool counts unchanged.
 - Counts at capture:
 
   | role | tools | instructions | system prompt |
