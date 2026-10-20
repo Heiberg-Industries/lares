@@ -110,6 +110,7 @@
     "./release-stale-workflow-locks": "./src/release-stale-workflow-locks.ts",
     "./repairs": "./src/repairs.ts",
     "./approval-ledger": "./src/approval-ledger.ts",
+    "./model-usage": "./src/model-usage.ts",
     "./approval-stats": "./src/approval-stats.ts",
     "./untrusted-text": "./src/untrusted-text.ts",
     "./bounded-text": "./src/bounded-text.ts"
