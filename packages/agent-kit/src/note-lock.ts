@@ -9,8 +9,7 @@ import { join } from "node:path";
  * a single process via an in-memory promise chain, AND across processes via an
  * exclusive lockfile under `<vaultRoot>/.locks/`.
  *
- * Ported unmodified from `services/box/lib/note-lock.ts` (Task 9) — every
- * git-writing operation in `lib/vault-git.ts` depends on it.
+ * Every git-writing operation in `vault-git.ts` depends on it.
  */
 const chains = new Map<string, Promise<unknown>>();
 

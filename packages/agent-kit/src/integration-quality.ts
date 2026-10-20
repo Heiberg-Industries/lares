@@ -1,14 +1,14 @@
-// The entry tier, written down once (ADR-0019 decision 7, the engine/overlay
-// inventory design's adapter ladder). A manifest's `quality` field (integration-manifest.ts)
+// The entry tier, written down once (ADR-0019 decision 7, the adapter ladder). A manifest's
+// `quality` field (integration-manifest.ts)
 // points at one of these files. The manifest can carry a tier CLAIM one day; this file is the
 // EVIDENCE for that claim, rule by rule — keeping them apart is what makes "a claimed tier not
-// backed by its rules fails the build" mean anything (checked by a later slice's `checkQuality`,
-// not by the parser below).
+// backed by its rules fails the build" mean anything (checked by `checkQuality` below,
+// not by the parser).
 //
-// Owner ruling C1 (2026-09-19, wave 6 plan §6C): the three integrations ship at a new lowest
-// tier, `none`, rather than each claiming `bronze` before every bronze rule is actually `done`.
+// The first integrations ship at a lowest tier, `none`, rather than each claiming `bronze` before
+// every bronze rule is actually `done`.
 // `none` costs nothing to satisfy — it is simply "no tier claimed yet" — and it keeps a
-// `quality.yaml` honest while wave 6B closes out the remaining bronze `todo`s.
+// `quality.yaml` honest while the remaining bronze `todo`s are closed out.
 //
 // Format (deliberately NOT full YAML — see the module's test file for why no parser dependency
 // was added): a top-level `tier: <value>` line, then a `rules:` line, then one indented
@@ -18,8 +18,8 @@
 //
 // The checker below (`checkQuality`) is the enforcement half: a manifest's `quality.yaml` is
 // never trusted at face value. A claimed tier that the file's own rules do not back — a bronze
-// claim with a bronze rule still `todo`, a `tier: gold` claim (wave 6 defines no gold rules —
-// owner decision C2) — is a finding, named down to the first unmet rule. The debt list
+// claim with a bronze rule still `todo`, a `tier: gold` claim (no gold rules are defined yet)
+// — is a finding, named down to the first unmet rule. The debt list
 // (`INTEGRATIONS_WITHOUT_SCALE`) is the same ratchet as `KNOWN_UNDECLARED_SECRETS` and
 // `KNOWN_MISSING_PROBES`: it may only shrink, and an entry that grows a quality file of its own
 // must be removed from the list in the same change, never left to rot.
@@ -50,9 +50,9 @@ export const SILVER_RULES = [
   "probe-rerun", // the live probe was re-run for this release and the date recorded
 ] as const;
 
-/** `none` is the fourth, lowest value (owner decision C1): claiming nothing yet is honest when
- *  bronze rules remain `todo`. `gold` carries no rules of its own in wave 6 (owner decision C2) —
- *  a later slice's checker refuses a `gold` claim outright, on purpose. */
+/** `none` is the fourth, lowest value: claiming nothing yet is honest when
+ *  bronze rules remain `todo`. `gold` carries no rules of its own —
+ *  the checker refuses a `gold` claim outright, on purpose. */
 export const TIERS = ["none", "bronze", "silver", "gold"] as const;
 export type Tier = (typeof TIERS)[number];
 
@@ -158,10 +158,10 @@ export function parseQualityFile(text: string, id: string): QualityFile {
 /** Capabilities that predate the entry tier and, unlike notion/slack/google, have no
  *  `integrations/<id>/integration.json` of their own to carry a `quality.yaml` — every
  *  `kind: "adapter"` entry in `persona/capability-docs.ts`'s `CAPABILITY_DOCS` that no manifest's
- *  `capability` list names (checked by hand against `CAPABILITY_DOCS` on 2026-09-19; `calendar`
+ *  `capability` list names (`calendar`
  *  and `gmail` are covered by the `google` manifest, `notion` by its own).
  *
- *  Home Assistant's lesson (report 07 §2.2), and the same shape as `KNOWN_UNDECLARED_SECRETS` /
+ *  Home Assistant's quality-scale lesson, and the same shape as `KNOWN_UNDECLARED_SECRETS` /
  *  `KNOWN_MISSING_PROBES`: this list may only SHRINK. An entry that gains a manifest and a
  *  quality file must be removed from the list in the SAME change — `checkQuality` fails the
  *  build otherwise. Committed as a literal array, never computed from `CAPABILITY_DOCS` at run
@@ -188,7 +188,7 @@ function qualityFilePath(dir: string, quality: string): string {
  * Every way a claimed tier can be unbacked, in one list — empty means the ladder holds for every
  * integration on disk. A `quality.yaml` is never trusted at face value: this reports a missing
  * file, an unparseable one (the parser's own message, which names the bad line or rule), a
- * `tier: gold` claim (wave 6 defines no gold rules yet — owner decision C2), a rule the claimed
+ * `tier: gold` claim (no gold rules are defined yet), a rule the claimed
  * tier requires that is not `done` or `exempt`, and a debt-list entry that has grown a quality
  * file of its own without being removed from `INTEGRATIONS_WITHOUT_SCALE`.
  */

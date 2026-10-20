@@ -1,6 +1,6 @@
-// The tool catalogue (ADR-0015 rule 3/4; agent-definitions spec, Part 3).
+// The tool catalogue (ADR-0015 rules 3 and 4).
 //
-// Until step 2 a role service's tools were files under agent/tools/, always present, and
+// A role service's tools used to be files under agent/tools/, always present, and
 // what an agent held was decided by which files its image shipped. Now the files are a POOL and
 // the definition picks from it at session start: an ungranted tool never reaches the model.
 //
@@ -10,20 +10,20 @@
 // closure variables when a step replays after a crash or an approval pause, and it does NOT
 // detect `execute: someFunction` (eve docs, guides/dynamic-capabilities.md).
 //
-// A CATALOGUE ENTRY CARRIES ITS OWN APPROVAL, and the resolver copies it across. Task 1 measured
-// this (the eve 0.32 dynamic-seams research, Q1c): a resolver-emitted tool
+// A CATALOGUE ENTRY CARRIES ITS OWN APPROVAL, and the resolver copies it across. Measured against
+// eve 0.32: a resolver-emitted tool
 // REPLACES an authored `agent/tools/<name>.ts` completely — description, executor and approval.
 // In the fixture the catalogue's `atlas_write` answered immediately because the override had
 // dropped the authored file's `boardApproval(...)`. Drop the approval here and a gated write
 // ships ungated.
 //
 // The checks that ran at build time still run, here, per session:
-//   - the scope matrix answers first (lib/capabilities.ts:32): ungranted or `none` -> not present;
-//   - `never` is a hard deny over the grant, reads included (decide.ts:31);
+//   - the scope matrix answers first: ungranted or `none` -> not present;
+//   - `never` is a hard deny over the grant, reads included;
 //   - a WRITE-CLASS tool under a grant that does not reach the write class is not present;
 //   - assertClassMatchesScope: a tool carrying an approval under a plain `write` grant THROWS.
 // "Write-class" means "carries an approval" for every tool but the ones whose entry sets
-// `asksWithoutWriting` — see that field. W7D-s3 added the first: a READ that asks first.
+// `asksWithoutWriting` — see that field. The first such entry is `read_url`: a READ that asks first.
 import { areaOfTool } from "./always-ask.js";
 import {
   assertClassMatchesScope,
@@ -46,7 +46,7 @@ export interface CatalogueEntry {
   /** Which capability's grant decides whether this tool is handed over. */
   capability: string;
   /** For a `vault` entry only: the area of the Vault this tool touches, and therefore the area
-   *  the declaration must grant before the tool is handed over (W5C-s5/s6).
+   *  the declaration must grant before the tool is handed over.
    *
    *  The ENGINE's own table (`areaOfTool`) wins wherever it knows the tool, so a catalogue
    *  cannot relabel a documented tool into an area its agent happens to hold. This field exists
@@ -62,7 +62,7 @@ export interface CatalogueEntry {
    *  that eve's extension merge cannot see (the eve 0.32 dynamic-seams research). */
   skill?: string;
   /**
-   * This tool's approval gate does NOT make it a write (W7D-s3).
+   * This tool's approval gate does NOT make it a write.
    *
    * Everywhere else in this file, "carries an approval" is read as "is a write-class action",
    * because until now it always was: every gated tool in the fleet sends mail, moves a calendar,
@@ -93,7 +93,7 @@ export type Catalogue = Record<string, CatalogueEntry>;
 /** Tools no definition can remove. `set_language` is not a capability and has no grant: an owner
  *  must always be able to say "answer me in English", whatever their agent is set up to speak.
  *
- *  Ruling R2: an always-present tool still needs a `capability` field to sit in a catalogue, so it
+ *  An always-present tool still needs a `capability` field to sit in a catalogue, so it
  *  carries the pseudo-capability `ALWAYS_PRESENT_CAPABILITY`. Nothing ever grants it and nothing
  *  ever looks it up — the loop below short-circuits these names before any grant lookup — but it
  *  keeps `CatalogueEntry` honest and it is what each service's catalogue-index test exempts. */
@@ -156,7 +156,7 @@ export function grantedToolNames(
     // one tool at a time against one capability's grant, so a gated tool under a `read` grant had
     // nowhere to go but a throw. A catalogue sees the whole pool, and the honest answer is
     // narrower rather than fatal: a capability is a DOMAIN spanning both action classes
-    // (`lib/capabilities.ts:33-34`), so `atlas` at `read` hands over the three Atlas reads and
+    // spanning both action classes, so `atlas` at `read` hands over the three Atlas reads and
     // simply does not reach `atlas_write`. Dropping is fail-CLOSED — the tool is gone, not
     // ungated — which is why it needs no throw.
     // `asksWithoutWriting` (see the field's own docblock) takes the tool out of BOTH lines: a

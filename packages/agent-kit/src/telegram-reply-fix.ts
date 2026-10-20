@@ -33,10 +33,10 @@
  * ## What it looked like from the outside
  *
  * In a group chat, an agent introduced itself (message 11). The owner replied to that
- * message and got nothing. `wrun_01M085KEFFDNYHVZAWX9KR09WH` is that turn:
- * 150 ms, no model call, and its decoded input carries `inputResponses: [{ requestId:
+ * message and got nothing. That turn took
+ * 150 ms, made no model call, and its decoded input carried `inputResponses: [{ requestId:
  * "telegram_reply:11", … }]` against an empty `pendingFreeformReplies`. Replying is the
- * natural way to talk to a bot in a busy family group, so from the group's side the travel agent had
+ * natural way to talk to a bot in a busy group chat, so from the group's side the agent had
  * simply gone deaf. Same eve version, same channel, same swallow on every other agent using
  * this fix.
  *
@@ -54,14 +54,11 @@
  * ## TRIPWIRE — read before adding a freeform eve prompt to an agent using this fix
  *
  * This is safe only for an agent that issues **zero** eve freeform input requests
- * (`force_reply` prompts) — true today for both:
- * - The chief of staff: her HITL is tool APPROVAL (`approval: always()`), and eve renders an approval with
- *   options as inline buttons — the `telegram_callback:` lane, not `force_reply`
- *   (`renderTelegramInputRequest` only falls back to `force_reply` when an input request has no
- *   options at all).
- * - The travel agent: no `requireAuth`/`input()` anywhere in `agent/` (grep-confirmed), and his veto and
- *   group-link buttons are inline callbacks handled by our own `onCallbackQuery`, never eve's
- *   HITL lane.
+ * (`force_reply` prompts) — true today for the chief of staff: its human-in-the-loop step is tool
+ * APPROVAL (`approval: always()`), and eve renders an approval with
+ * options as inline buttons — the `telegram_callback:` lane, not `force_reply`
+ * (`renderTelegramInputRequest` only falls back to `force_reply` when an input request has no
+ * options at all). It also has no `requireAuth`/`input()` anywhere in `agent/`.
  *
  * The day something here asks a freeform question, the answer would arrive as a normal message
  * instead of resolving the prompt — so make the rewrite conditional then, or drop it if eve has

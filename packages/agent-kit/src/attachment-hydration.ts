@@ -5,7 +5,7 @@
  * model-viewable images ≤ 3 MB and PDFs ≤ 20 MB (`harness/attachment-staging.js`,
  * `shouldInlineSandboxRefAsBytes`). Everything else became one line — `Attached file
  * /workspace/attachments/<hash>/notes.txt (text/plain)` — naming a path no agent can open, because
- * every file tool is disabled fleet-wide. Measured 2026-09-14: The chief of staff answered a .txt, a .md, a
+ * every file tool is disabled fleet-wide. Measured against eve 0.32: the chief of staff answered a .txt, a .md, a
  * .docx and an .xlsx with "I only got a path". And a HEIC photo was inlined as `image/heic`, which the
  * Anthropic API refuses, ending the whole session.
  *

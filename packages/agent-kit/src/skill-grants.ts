@@ -13,12 +13,12 @@ export type KnownSkill = (typeof KNOWN_SKILLS)[number];
 const KNOWN_SKILL_SET: ReadonlySet<string> = new Set<string>(KNOWN_SKILLS);
 
 export const KNOWN_CAPABILITIES = [
-  // NOT an old-runtime hand — new for Task 12. Governs changing a capability's or a
+  // Governs changing a capability's or a
   // meeting series' autonomy level (meeting_followup_auto). Alphabetized into this block on
   // position, not on origin.
   "autonomy",
   "calendar",
-  // NOT an old-runtime hand — new for. The owner's deadlines to institutions — tax and
+  // The owner's deadlines to institutions — tax and
   // filing terms, annual accounts, renewals — distinct from `obligation` (a person waiting) and
   // `remind` (a time the owner chose). Alphabetized into this block on position, not on origin,
   // exactly as `autonomy` is.
@@ -28,38 +28,38 @@ export const KNOWN_CAPABILITIES = [
   "identity",
   "notion",
   "obligation",
-  // New for. Governs the outside (MCP) tool servers an agent's definition lists under
+  // Governs the outside (MCP) tool servers an agent's definition lists under
   // `outsideTools`. No tools of its own and no static hosts: each server's host comes from the
   // definition.
   "outside",
   "person",
   "read_url",
   "remind",
-  // NOT an old-runtime hand — new for. Read-only access to the persisted operational
+  // Read-only access to the persisted operational
   // signal spine. The endpoint already exists; this capability governs which agents may see it.
   "signals",
   "studio",
-  // NOT an old-runtime hand — new for. Governs `agent-kit__transit_plan`: real
+  // Governs `agent-kit__transit_plan`: real
   // Norwegian public-transport journeys from Entur (train, bus, tram, metro, ferry), a pure
-  // read of a free, unbilled public API. Granted at `read` by BOTH the chief-of-staff service and the travel service —
-  // like `calendar` above, it is a fleet capability rather than one agent's domain, and for the
-  // same reason it is NOT repeated in the travel agent's block below. the creative service grants it silently
-  // nowhere, which is what keeps her copy of the override file a disable sentinel.
+  // read of a free, unbilled public API. Granted at `read` by the chief-of-staff service —
+  // like `calendar` above, it is a fleet capability rather than one agent's domain. The
+  // creative service grants it nowhere, which is what keeps its copy of the override file a
+  // disable sentinel.
   // Alphabetized into this block on position, not on origin, exactly as `autonomy` and `facts`
   // above are.
   "transit",
   "twenty",
-  // The chief of staff tools the old declaration missed (Ruling 3)
+  // Capabilities for chief of staff tools that would otherwise have no capability at all
   "echo",
   "outreach",
   "voice",
   // ADR-0017 (the Vault, one name). `vault` REPLACES `brain`, `atlas` and `memory`, which left
-  // this array in W5C-s5/s6 along with the three capability docs they had. One capability over
+  // this array along with the three capability docs they had. One capability over
   // three stores, narrowed a second time by the `areas` a grant names — which is why the three
   // names could go rather than be aliased: an area says what a capability name used to say, and
-  // says it in a place a grant can be narrowed on.'s ruling that `facts` and `memory`
-  // must not be two names for one concept is the same ruling, one level down: `facts` is now an
-  // AREA, and the only one, of the standing facts these tools write.)
+  // says it in a place a grant can be narrowed on. `facts` and `memory`
+  // must not be two names for one concept: `facts` is now an
+  // AREA, and the only one, of the standing facts these tools write.
   //
   // An `agent.json` still carrying one of the three is not aliased and not tolerated: the
   // membership check in `assertDeclarationIntegrity` rejects it, the definition fails closed,

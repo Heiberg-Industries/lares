@@ -1,16 +1,16 @@
 /**
  * The chief of staff's clock.
  *
- * She did not have one. eve injects no date into the prompt (verified against 0.32.0's dist),
- * `defineAgent` declares none, and `agent/instructions.md` is static markdown captured at
- * build time. So every absolute date she produced was a guess from training priors.
+ * It did not have one. eve injects no date into the prompt (verified against 0.32.0's dist),
+ * `defineAgent` declares none, and the persona is static markdown captured at
+ * build time. So every absolute date the agent produced was a guess from training priors.
  *
- * That is not a theoretical exposure — it has now cost two reminders:
+ * That is not a theoretical exposure — it has cost reminders:
  *
- *   - 2026-08-16: "in 3 minutes" arrived dated JUNE 2025 (right wall-clock time, hallucinated
+ *   - "in 3 minutes" arrived dated JUNE 2025 (right wall-clock time, hallucinated
  *     date) and fired instantly. Caught, because a past `dueAt` is obviously wrong;
- *     `agent/tools/remind_set.ts` grew a guard whose error message carries the current time.
- *   - 2026-08-17: a relative "tomorrow", said on the 17th, was stored as the **20th**. NOT caught — the
+ *     `catalogue/remind_set.ts` grew a guard whose error message carries the current time.
+ *   - A relative "tomorrow", said on the 17th, was stored as the **20th**. NOT caught — the
  *     guard is one-sided, and a wrong guess landing in the future looks exactly like a
  *     correct one. The chief of staff then confirmed "tomorrow at 07:00", echoing the request rather than
  *     the stored value, so the disagreement was invisible from the outside.
@@ -22,13 +22,13 @@
  * different hat. Kept as a pure function of `now` so the crossings that actually break date
  * arithmetic — midnight, and CET/CEST — are unit-testable rather than hoped for.
  *
- * the zone is now a PARAMETER, defaulting to the installation's home zone. The chief of staff's resolver passes the owner
- * clock (`services/chief-of-staff/lib/owner-clock.ts`'s `ownerTz()`), so on a trip abroad the date and
- * time she states are the ones on the owner's own phone — the same clock her slot schedules and the
+ * The zone is a PARAMETER, defaulting to the installation's home zone. The chief of staff's resolver passes the owner
+ * clock (`owner-clock.ts`'s `ownerTz()`), so on a trip abroad the date and
+ * time the agent states are the ones on the owner's own phone — the same clock its slot schedules and the
  * proactivity gate's quiet hours read. Giving the model ONE date and the fleet ANOTHER is how a
- * "tonight" stops meaning anything, and it is the class/128/204 already paid for.
+ * "tonight" stops meaning anything.
  *
- * ## What this block costs the prompt cache — measured, not assumed (2026-09-18)
+ * ## What this block costs the prompt cache — read from source, not assumed
  *
  * In plain language: every turn carries several blocks of instructions to the model — the
  * persona, the tool descriptions, the standing facts, and this clock. Before any of it reaches
@@ -79,12 +79,11 @@
  * once with the resolver passing `precision: "minute"`, once with `"hour"` — and compare the
  * second call's `cache_read_input_tokens` (or the gateway's equivalent field) each time: at
  * `"minute"` it should read close to 0 cached tokens on the second call; at `"hour"` it should
- * read close to the full system prompt's token count as cached. This is the offline half of wave
- * 0's probe 0.5 ("tokens re-billed per turn"); the live half is's, run by the controller
- * after this wave.
+ * read close to the full system prompt's token count as cached. This is the offline half of the
+ * "tokens re-billed per turn" probe; the live half is a hand-run measurement.
  *
- * The choice of precision is Owner decision B2 (wave 4 plan, track 4B): the safe default while the
- * owner is unreachable is `"minute"`, unchanged — nothing in this file switches it.
+ * The choice of precision is the owner's: the safe default is `"minute"`, unchanged — nothing in
+ * this file switches it.
  */
 import { clockParts, homeTzFromEnv } from "./owner-clock.js";
 
@@ -105,7 +104,7 @@ import { clockParts, homeTzFromEnv } from "./owner-clock.js";
  */
 export type ClockPrecision = "minute" | "hour" | "day";
 
-/** Today's behaviour, unchanged. Coarsening it is an owner decision (wave 4, B2) — nothing in
+/** Today's behaviour, unchanged. Coarsening it is an owner decision — nothing in
  *  this file changes the default. */
 export const DEFAULT_CLOCK_PRECISION: ClockPrecision = "minute";
 
@@ -165,17 +164,17 @@ export function buildClockMarkdown(
  * One stored instant, rendered as an absolute date on a NAMED clock — the string a confirmation
  * should repeat back.
  *
- * This exists because of the second half of the 2026-08-17 failure. `remind_set` returned
+ * This exists because of the second half of the "tomorrow" failure above. `remind_set` returned
  * only `dueAt` as a UTC ISO string; the chief of staff then told the owner "tomorrow at 07:00", paraphrasing
- * his own request rather than reading back what was stored. Both halves of the exchange
+ * the owner's own request rather than reading back what was stored. Both halves of the exchange
  * agreed, and the database held a different day. A wrong date is survivable — it is caught
  * the moment it is said out loud. A wrong date confirmed in the user's own words is not.
  *
- * final review: the zone is a PARAMETER. `buildClockMarkdown` above already speaks the
- * OWNER's clock (the chief of staff passes `ownerTz()`), so a hard-coded Oslo here meant the turn told him it was
- * Tuesday 15:00 in New York and the confirmation card under it said Tuesday 21:00 Europe/Oslo — the
- * same instant, described on two clocks, in one exchange. That is the/128/204 class exactly:
- * a "tonight" that stops meaning anything. The tz is always NAMED in the output, because an
+ * The zone is a PARAMETER. `buildClockMarkdown` above already speaks the
+ * OWNER's clock (the chief of staff passes `ownerTz()`), so a hard-coded home zone here meant the turn told the owner it was
+ * Tuesday 15:00 in New York and the confirmation card under it said Tuesday 21:00 in the home zone — the
+ * same instant, described on two clocks, in one exchange: a "tonight" that stops meaning
+ * anything. The tz is always NAMED in the output, because an
  * unlabelled time invites a mix-up and a mislabelled one is worse.
  */
 export function formatDateTimeIn(when: Date, tz: string = homeTzFromEnv()): string {

@@ -1,6 +1,5 @@
 /**
- * Real Norwegian public-transport journeys, from Entur. The kit's ELEVENTH
- * contributed tool, and the first one the travel agent resolves LIVE rather than into a sentinel.
+ * Real Norwegian public-transport journeys, from Entur.
  *
  * The HTTP mechanics, the typed errors and the normalisation all live once in
  * `../../src/entur-client.ts`. This file adds only the three things a tool has to add: an input
@@ -22,14 +21,13 @@
  * address, most often). `PlaceInput`'s id branch takes a plain `string`, so passing a null id is
  * a compile error rather than another silent empty-200. Addresses go by coordinates.
  *
- * WHY THE PROXY FETCH. Both agents that grant `transit` (the chief-of-staff service, the travel service) are network-
- * SEALED and reach the internet only through the shared `slack-proxy` squid container, where
+ * WHY THE PROXY FETCH. An agent that grants `transit` is network-
+ * SEALED and reaches the internet only through the shared `slack-proxy` squid container, where
  * `api.entur.io` is allowed BY DOMAIN (it is fronted by a Google Cloud load balancer, so its
  * IPs rotate). Node's built-in `fetch` ignores proxy environment variables outright — a lesson
  * `../../src/telegram-fetch.ts`'s header records in full — so the routing has to be explicit at
- * the construction site. `services/travel/agent/tools/transit_directions.ts` binds its
- * Google client through the same seam. A plain `fetch` here compiles, passes the suite, and
- * then fails on the box as "unreachable".
+ * the construction site. A plain `fetch` here compiles, passes the suite, and
+ * then fails on the server as "unreachable".
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -85,11 +83,10 @@ export const defaultTransitPlanDeps: TransitPlanDeps = { entur: realEntur };
 /**
  * How long ONE call to this tool may take IN TOTAL — both geocoder lookups AND the plan.
  *
- * REVIEW MINOR 5. Each Entur request carries its own 8 s bound inside the client, and this tool
+ * Each Entur request carries its own 8 s bound inside the client, and this tool
  * makes three of them in sequence: 24 s worst case, inside a live Telegram or Slack turn, with
- * nothing anywhere saying stop. `services/travel/agent/tools/transit_directions.ts` already
- * solved exactly this for its own pair of lookups; this is the same shape, widened to cover the
- * planner too, because the planner is the third request and not a separate budget.
+ * nothing anywhere saying stop. One shared deadline covers both lookups and the planner,
+ * because the planner is the third request and not a separate budget.
  *
  * 12 s is deliberately more than one healthy round trip (~1 s for all three, measured) and much
  * less than the sum of the per-request bounds. Expiry is reported as unavailable, never as an
@@ -99,9 +96,8 @@ const JOURNEY_BUDGET_MS = 12_000;
 
 /** One deadline shared by every request in a call. It both REJECTS the wait and ABORTS the
  *  requests: the rejection is what stops the turn waiting, the abort is what stops a stalled
- *  socket lingering in a long-lived container after nobody is listening any more. Copied in
- *  shape from `transit_directions.ts`'s `pairBudget`; the reason to duplicate rather than share
- *  is that the kit's extension source may not import from a service. */
+ *  socket lingering in a long-lived container after nobody is listening any more. It lives
+ *  here because the kit's extension source may not import from a service. */
 function callBudget(ms: number) {
   const controller = new AbortController();
   let fire: (reason: Error) => void = () => {};
@@ -195,7 +191,7 @@ export function createTransitPlanTool(deps: TransitPlanDeps) {
         };
       }
       const entur = deps.entur();
-      // REVIEW MINOR 5 — ONE deadline over all three requests, not three independent 8 s bounds.
+      // ONE deadline over all three requests, not three independent 8 s bounds.
       // `done()` in the outermost `finally` so the timer never outlives the call.
       const budget = callBudget(JOURNEY_BUDGET_MS);
       try {
@@ -231,8 +227,7 @@ async function planJourney(
       // `rejected` names the candidate the Norway-bias guard threw away, when that is why
       // this was raised. It is carried out to the model — and so into the turn's trace —
       // because without it "notFound" is indistinguishable from a genuine miss, and the one
-      // thing this guard has proven is that it can misfire. See the same reasoning in
-      // the travel service's transit_directions.ts, which logs it.
+      // thing this guard has proven is that it can misfire.
       return {
         notFound: { query: err.query, ...(err.rejected !== undefined ? { rejected: err.rejected } : {}) },
       };
@@ -240,19 +235,16 @@ async function planJourney(
     throw err;
   }
 
-  // OUTSIDE ENTUR'S COVERAGE — an explicit outcome, never an empty itinerary list
-  // follow-up). Entur's stop register really does hold foreign stations, with real `NSR:`
+  // OUTSIDE ENTUR'S COVERAGE — an explicit outcome, never an empty itinerary list.
+  // Entur's stop register really does hold foreign stations, with real `NSR:`
   // ids: live, "Göteborg C" → NSR:StopPlace:374 [SWE], "Stockholm Central" →
   // NSR:StopPlace:58635 [SWE], "København H" → NSR:StopPlace:63172 [DNK]. Those ids resolve
   // and plan perfectly happily, and the planner answers `tripPatterns: []` at HTTP 200 —
   // which this tool's own contract calls "a real answer, nothing runs". A model reading that
-  // reports "there are no trains to Stockholm". the travel service has guarded the country since
-  // and this tool did not; that asymmetry is the gap being closed here.
+  // reports "there are no trains to Stockholm". So the country is checked here.
   //
-  // A null `countryA` IS treated as foreign — REVERSED by, which found this tool and
-  // the travel service's `transit_directions` reading null in OPPOSITE directions while their
-  // descriptions claimed they agree. One reading now holds in both, and unknown-is-foreign is
-  // the safe one: refusing a mislabelled Norwegian journey costs an honest "cannot answer",
+  // A null `countryA` IS treated as foreign: unknown-is-foreign is
+  // the safe reading. Refusing a mislabelled Norwegian journey costs an honest "cannot answer",
   // while planning a foreign one invents an empty timetable the model reads as "no departures".
   // Latent, not observed: 32 live geocoder queries produced no null (the sweep,
   // tests/live/entur.live.mts). Note Svalbard comes back as "SJM" and is caught by this too —

@@ -1,8 +1,7 @@
 // The four kinds a vendor request can fail in — ADR-0019 rule 2, docs/decisions/0019-integrations.md.
 //
 // This is the taxonomy, not the helper that classifies a live request into it: the shared
-// request helper (timeout, retry, backoff, single-flight refresh, pagination) is a later slice
-// and imports from here.
+// request helper (timeout, retry, backoff; `request.ts`) imports from here.
 //
 // A SEPARATE CONCERN FROM gateway-budget.ts. That module recognises the model GATEWAY's own
 // budget refusal (LiteLLM, `error.type === "budget_exceeded"`) — a control-plane concern between
@@ -12,10 +11,10 @@
 // for the cross-reference back to this file.
 //
 // kindForStatus's 403 split is a GUESS until a live probe per vendor says otherwise — the repo
-// rule in CLAUDE.md: "A fixture is what we believe an API does. Only a live call is what it
+// rule in AGENTS.md: "A fixture is what we believe an API does. Only a live call is what it
 // does." The first client that relies on the 403 split ships a committed live probe
-// (`tests/live/<api>.live.mts`) naming the vendor; this slice adds no such probe because nothing
-// here calls a live vendor yet.
+// (`tests/live/<api>.live.mts`) naming the vendor; this file has no such probe because nothing
+// here calls a live vendor.
 
 /** The vendor's plan-related words a 403 body is checked against, case-insensitively, to decide
  *  between `not_subscribed` and the `not_authorised` default. A guess, not a measured contract —

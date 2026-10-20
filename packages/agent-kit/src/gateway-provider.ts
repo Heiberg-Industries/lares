@@ -8,10 +8,9 @@ import { reshapeJsonBody, shapeAnthropicBody, stripBoundaryFromChatBody } from "
 /**
  * Every eve agent's model calls go through the LiteLLM gateway — no default provider (no
  * Vercel AI Gateway, no direct provider keys) — and always through the gateway's ROUTER route
- * (`/v1/messages`, Anthropic request format; never the retired `/anthropic/v1` pass-through,
- *, which is what resolves the fleet's purpose aliases (`lares-brain`, …). Same
- * env/secret contract for every agent: `GATEWAY_URL` + a key read from `GATEWAY_KEY_FILE`
- * (services/agent-runtime/bin/*.ts use the same contract).
+ * (`/v1/messages`, Anthropic request format; never the retired `/anthropic/v1` pass-through),
+ * which is what resolves the fleet's purpose aliases (`lares-brain`, …). Same
+ * env/secret contract for every agent: `GATEWAY_URL` + a key read from `GATEWAY_KEY_FILE`.
  *
  * The gateway key file's *default* path is parameterized per agent on purpose:
  * each agent gets its own budget-capped, model-allowlisted key, never shared with another
@@ -23,19 +22,18 @@ import { reshapeJsonBody, shapeAnthropicBody, stripBoundaryFromChatBody } from "
  * below stay a plain pass-through on purpose (see `./gateway-budget.ts`'s header for why
  * throwing here would change which failure events eve emits). Recognition and the door's
  * fixed one-sentence answer live in `./gateway-budget.ts` (`isBudgetExceeded`,
- * `GatewayBudgetExceededError`, `respondToTurnFailed`) — item 2.
+ * `GatewayBudgetExceededError`, `respondToTurnFailed`).
  */
 const DEFAULT_GATEWAY_URL = "http://lares-gateway:4000";
 
 /**
- * The header every gateway-routed call must carry: was hand-duplicated across
- * multiple callers before this). Forcing `Accept-Encoding: identity` was load-bearing on the
- * old `/anthropic` pass-through (2026-08-14/15 cost incident + reproduced from a sealed
- * container 2026-08-16): that route forwarded the upstream's COMPRESSED body while dropping
+ * The header every gateway-routed call must carry (it used to be hand-duplicated across
+ * multiple callers). Forcing `Accept-Encoding: identity` was load-bearing on the
+ * old `/anthropic` pass-through: that route forwarded the upstream's COMPRESSED body while dropping
  * the `Content-Encoding` header, so any client that advertises compression (undici's default
  * `gzip, deflate, br, zstd`) received compressed bytes labeled as plain and died on
- * "Invalid JSON" — AFTER the call was billed. moved every call off that pass-through
- * onto the router route (`/v1/messages`), where this defect does not exist — the header is
+ * "Invalid JSON" — AFTER the call was billed. Every call now goes through the router
+ * route (`/v1/messages`), where this defect does not exist — the header is
  * kept anyway (harmless there) because it documents that history. Not parameterized — it does
  * not vary per agent.
  */
@@ -46,7 +44,7 @@ export const IDENTITY_ENCODING_HEADERS = { "Accept-Encoding": "identity" } as co
  * only lane with production history — prompt caching (`cache_control`) and thinking blocks
  * are real @ai-sdk/anthropic behaviour on it. "openai-compatible" is for a non-Anthropic
  * vendor target, where LiteLLM's Anthropic-format-in / non-Anthropic-out translation is
- * comparatively unproven — see the plan's "RULED: vendor-agnostic, and the two lanes".
+ * comparatively unproven.
  * NEVER add @ai-sdk/openai / @ai-sdk/google / @ai-sdk/mistral here — those bypass the
  * gateway and talk to a vendor directly.
  */
@@ -112,8 +110,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     return resolveLane(defaultLane);
   }
 
-  // Read once per process, on the first REQUEST rather than at import — mirrors
-  // services/agent-runtime/lib/adapters/secrets.ts's readSecret, sync because gatewayModel()
+  // Read once per process, on the first REQUEST rather than at import — sync because gatewayModel()
   // itself must stay synchronous (defineAgent({ model: gatewayModel(...) }) has no await
   // point). See the module-scope-no-secret-read note on createGatewayProvider above.
   let cachedKey: string | undefined;
@@ -158,7 +155,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
 
   /** No Authorization header — @ai-sdk/anthropic injects its own via `apiKey` (see
    *  anthropicKeyHolder above). See IDENTITY_ENCODING_HEADERS for why this header is load-
-   *  bearing history; this is what killed every old-runtime model call from Aug 13 on.
+   *  bearing history; this is what once broke every model call through the old route.
    *  Also moves the system prompt's cache breakpoint to the end of the session-stable part
    *  (`./prompt-cache.ts`); a body without the boundary marker passes through untouched. */
   const identityEncodingFetch: typeof globalThis.fetch = (input, init) => {
@@ -173,7 +170,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
    *  a model; only the router route resolves those aliases. The old `/anthropic/v1`
    *  pass-through forwarded the model name to Anthropic verbatim (an alias 404'd there) and
    *  metered spend poorly. The router translates the Anthropic request shape for non-Anthropic
-   *  targets too (Mistral verified live 2026-09-04), which is the tested, production-history
+   *  targets too (verified live against Mistral), which is the tested, production-history
    *  path — see buildOpenAICompatibleModel below for the newer, less-exercised alternative.
    *  Throws if the gateway key file is missing or unreadable — never falls back silently — at
    *  the moment a request is made. Constructing a model reads nothing from disk, so the image
@@ -184,8 +181,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
       const holder = anthropicKeyHolder();
       // baseURL ends in /v1 — the SDK appends /messages — the gateway's router route, which
       // resolves purpose aliases and translates the Anthropic request shape for non-Anthropic
-      // targets too (services/agent-runtime/lib/adapters/brain-ai-sdk.ts:66-68,
-      // services/agent-runtime/bin/the chief of staff.ts:164-165, the AI SDK and LiteLLM transport research).
+      // targets too.
       anthropicProvider = createAnthropic({
         baseURL: `${gatewayUrl()}/v1`,
         get apiKey() {

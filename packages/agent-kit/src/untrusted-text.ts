@@ -1,6 +1,6 @@
-// The envelope for text the owner did not write — mail bodies today, and (wave 8) the travel
-// role's own read_url and the digest's attachment extractor. Owner decision D2
-// (the origin model, W7D-s1): mail comes back QUOTED, marked as
+// The envelope for text the owner did not write — mail bodies today, and the
+// `read_url` page reader and the digest's attachment extractor. The origin model:
+// mail comes back QUOTED, marked as
 // somebody else's words, with invisible characters and model control markers removed. Nothing
 // is shortened or left out — the owner must still be able to read their own mail through the
 // agent, character for character, beyond what this module strips.
@@ -21,7 +21,7 @@ export const UNTRUSTED_CLOSE = ">>>";
 
 /**
  * Chat-template control tokens (`<|im_start|>`, `<|end|>`, …) and invisible Unicode formatting
- * characters, matched for removal. `stripControlTokens` is the only thing D2 allows to remove
+ * characters, matched for removal. `stripControlTokens` is the only thing the origin model allows to remove
  * anything from the body:
  *   - `<\|[a-z_]+\|>` — the open family of special tokens a self-hosted model's chat template
  *     might read as a role boundary. Case-insensitive so `<|IM_START|>` is caught too.
@@ -34,7 +34,7 @@ export const UNTRUSTED_CLOSE = ">>>";
  *     without appearing themselves.
  *   - `\uFEFF` — the byte-order mark, a zero-width no-break space when it appears mid-text.
  * A visible string that merely LOOKS like a role tag or a tool-call boundary (`</tool_result>`,
- * a line reading `SYSTEM:`) is NOT a control token and is never touched here — D2 says nothing
+ * a line reading `SYSTEM:`) is NOT a control token and is never touched here — nothing
  * is shortened or left out, and the envelope's own open/close markers are what keep such text
  * inert, not deleting it.
  */
@@ -62,7 +62,7 @@ function neutraliseClose(text: string): string {
  * agent.
  *
  * `source.kind` names what this is ("email"); `source.from` names who it is from, when known;
- * `source.standing` is the sender-standing sentence (W7D-s2) — an installation that has not
+ * `source.standing` is the sender-standing sentence — an installation that has not
  * built that yet simply never passes it, and the envelope's first line reads one clause shorter.
  */
 /** A SHORT piece of somebody else's text that has to sit on ONE line — a sender's display name,

@@ -1,6 +1,6 @@
-// Each agent registers itself at start (agent-definitions spec, Part 4): name, role, grants, starting
-// autonomy, skills, doors and the tools /eve/v1/info will list. The console lists agents from here instead
-// of the retired runtime's folder. Never throws: registration must not be the reason an agent won't start.
+// Each agent registers itself at start: name, role, grants, starting
+// autonomy, skills, doors and the tools /eve/v1/info will list. The console lists agents from here.
+// Never throws: registration must not be the reason an agent won't start.
 import { readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -12,12 +12,12 @@ import { doorsOf, parseDefinition } from "./definition.js";
  *  neither disabled nor replaced by an authored one, PLUS whatever the caller's definition resolved
  *  dynamically. null when the build output is not there.
  *
- * WHY `dynamic` HAS TO BE PASSED IN. Since step 2 (ADR-0015 rule 3) a role service's real
+ * WHY `dynamic` HAS TO BE PASSED IN. Since ADR-0015 rule 3 a role service's real
  *  tools are a POOL its `agent/tools/catalogue.ts` resolver picks from at session start, so the
  *  COMPILED MANIFEST CANNOT SEE THEM: eve records the resolver (`dynamicTools: [{slug:
  *  "catalogue"}]`) and not its entries, which is the entire point of resolving them at runtime.
- *  Read without this argument, the creative agent registers three tools where she has nine, and the console
- *  tells the owner she has lost her Atlas. The engine cannot compute the list itself — the pool is
+ *  Read without this argument, the creative agent registers three tools where it has nine, and the console
+ *  tells the owner it has lost its Atlas. The engine cannot compute the list itself — the pool is
  *  a module in the service, and which of it is granted depends on the definition — so the service
  *  hands over `grantedToolNames(CATALOGUE, definition)` from its own instrumentation. */
 export async function readResolvedTools(
@@ -36,7 +36,7 @@ export async function readResolvedTools(
     const disabled = new Set(m.disabledFrameworkTools ?? []);
     const active = [...fw.getAllFrameworkToolNames()].filter((n) => !disabled.has(n) && !authored.includes(n));
     // A dynamic entry OVERRIDES an authored file of the same name rather than duplicating it
-    // (Task 1, Q1b — measured), so the union is deduplicated rather than concatenated.
+    // (measured against eve), so the union is deduplicated rather than concatenated.
     return [...new Set([...authored, ...active, ...(opts.dynamic ?? [])])].sort();
   } catch {
     return null;
@@ -51,8 +51,8 @@ export async function registerAgent(opts: {
   dynamicTools?: readonly string[];
 }): Promise<void> {
   try {
-    // step 2: a DEFINITION, not a manifest. `definitionSchema` is `manifestSchema`
-    // extended, so every check this made before still runs; what it gains is the definition-only
+    // A DEFINITION, not a manifest. `definitionSchema` is `manifestSchema`
+    // extended, so every manifest check still runs; what it gains is the definition-only
     // fields — including `doors`, which carries each door's enabled flag where `channels` was a
     // bare list of kinds.
     const m = parseDefinition(opts.manifest);

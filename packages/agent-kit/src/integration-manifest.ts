@@ -1,7 +1,7 @@
 // One manifest per integration (ADR-0019 decision 6): the single source that `connections.ts`,
 // the capability docs' vendor/region fields, the console's Connections rows and the outbound
 // proxy allow-list are all generated from. This module owns the SHAPE and a loader that refuses
-// anything it cannot trust — generation is a later slice's job.
+// anything it cannot trust. Generation lives in `integration-generate.ts`.
 //
 // Deliberately STRICT, on the same reasoning as `manifest.ts`'s `manifestSchema`: a misspelled
 // key here is silent drift in a generated file (a missing egress host, an unlisted secret) with
@@ -46,7 +46,7 @@ export const INTEGRATIONS_DIR = "integrations";
 
 /** The same suffix allowance `services/keeper/lib/egress.ts`'s `host()` makes for a vendor that
  *  fronts many API hosts behind one wildcard-shaped subdomain. COPIED, not imported:
- *  `services/keeper` depends on this package, not the other way around (W6A-s5 proves the two
+ *  `services/keeper` depends on this package, not the other way around (a test proves the two
  *  checks agree). */
 const EXISTING_SUFFIXES = new Set([".googleapis.com", ".slack.com", ".slack-files.com"]);
 
@@ -172,7 +172,7 @@ export function parseIntegrationManifest(raw: unknown): IntegrationManifest {
 
 /** Every `<dir>/*\/integration.json`, parsed and sorted by nothing in particular (callers sort
  *  as they need). Skips any folder whose name starts with `_` — a fixture the runtime never
- *  loads (W6A-s2's Microsoft Graph fixture is the first of these). Refuses a folder whose name
+ *  loads (the Microsoft Graph fixture is one of these). Refuses a folder whose name
  *  does not match the manifest's own `id`: the folder name IS the integration id, and a mismatch
  *  here is exactly the kind of drift generation is meant to make impossible. */
 export function loadIntegrationManifests(dir: string): IntegrationManifest[] {

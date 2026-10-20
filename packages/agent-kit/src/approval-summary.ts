@@ -45,16 +45,16 @@ function cardJurisdiction(named: unknown): string | null {
 
 /** A date field rendered for a human, or the raw value when it is not a date.
  *
- *  Live 2026-08-18: the reminder card read `for 2026-08-19T09:00:00+02:00`. The date was
+ *  A reminder card once read `for 2026-08-19T09:00:00+02:00`. The date was
  *  correct, but an ISO timecode on an approval card is the same illegibility this module
  *  exists to remove — and it was read as a returning date bug. The chief of staff's own confirmation
- *  directly below already said "onsdag 2026-08-19 kl 09:00 (Europe/Oslo)"; the card must not
+ *  directly below already said "Wednesday 2026-08-19 09:00 (Europe/Berlin)"; the card must not
  *  be the least readable line in the thread.
  *
  *  Converted into the OWNER's zone regardless of the offset the model supplied, because that is the
- *  clock the owner is reading — an accurate "08:00" that is really 10:00 to him is worse than useless
- * on something he is about to authorise. final review made the zone a parameter: on a
- *  trip abroad his turn's clock block names the foreign zone, and a card still saying Europe/Oslo would describe
+ *  clock the owner is reading — an accurate "08:00" that is really 10:00 to the owner is worse than useless
+ *  on something the owner is about to authorise. The zone is a parameter: on a
+ *  trip abroad the turn's clock block names the foreign zone, and a card still saying the home zone would describe
  *  the same instant on a second clock inside one exchange. Unparseable input falls through unchanged
  *  rather than rendering "Invalid Date": the model may legitimately pass something this function does
  *  not understand, and the raw value is still more informative than an error string. */
@@ -112,8 +112,8 @@ function quoted(v: unknown): string | null {
 }
 
 /**
- * the honesty marker for a reason the AGENT supplied, not the owner: "given by the
- * agent" is what tells him this is a claim to verify against the evidence, not a fact. Truncated
+ * The honesty marker for a reason the AGENT supplied, not the owner: "given by the
+ * agent" is what tells the owner this is a claim to verify against the evidence, not a fact. Truncated
  * at 160, longer than {@link MAX_FIELD} on purpose — a delete's reason is the one clause on this
  * card worth a full sentence, not a fragment.
  *
@@ -156,7 +156,7 @@ function allRecipients(v: unknown): string | null {
   return list.map(a => trunc(a)).join(", ");
 }
 
-// ─── The link card (W7D-s3) ───────────────────────────────────────────────────────────────────
+// ─── The link card ───────────────────────────────────────────────────────────────────
 //
 // `read_url` asks whenever the turn has already read somebody else's words
 // (`tainted-approval.ts`), and the entire value of that card is the address. Every helper below
@@ -277,7 +277,7 @@ const FORMATTERS: Record<string, Formatter> = {
     allRecipients(i["to"]) && `to ${allRecipients(i["to"])}`,
   ),
 
-  // Task 12 (fix round 1). The card is the deliberate-decision moment for switching
+  // The card is the deliberate-decision moment for switching
   // a series to auto-send — and unlike every other formatter in this file, `level` is not a
   // detail whose loss merely thins the card: it IS the decision. `line()` silently drops any
   // part that resolves to null, which is right everywhere else (a missing subject still
@@ -295,13 +295,13 @@ const FORMATTERS: Record<string, Formatter> = {
     return line("Set meeting follow-ups for", meetingName, "to", level);
   },
 
-  // — Brain. The path IS the blast radius for file/drop; never summarise it away.
-  // Task 2: the three vault write tools moved into the @lares/agent-kit eve
-  // extension and now run under the mandatory `agent-kit__` prefix. eve's approval card
+  // Brain. The path IS the blast radius for file/drop; never summarise it away.
+  // The three vault write tools live in the @lares/agent-kit eve
+  // extension and run under the mandatory `agent-kit__` prefix. eve's approval card
   // looks up the title by the tool's FINAL runtime name (see this module's header) — a
   // formatter keyed on the old bare name would silently fall through to `generic()` for
-  // every real Brain write from here on, which is exactly the degraded-card failure this
-  // module exists to prevent. Renamed in the SAME commit as the tool migration, never after.
+  // every real Brain write, which is exactly the degraded-card failure this
+  // module exists to prevent.
   "agent-kit__vault_write": (i) => line("Write private note", quoted(i["title"])),
   "agent-kit__vault_file": (i) => line("Move private note", str(i["path"]) && trunc(str(i["path"])!), "→", str(i["destination"]) && trunc(str(i["destination"])!)),
   "agent-kit__vault_drop": (i) => line("DELETE private note", str(i["path"]) && trunc(str(i["path"])!)),
@@ -325,7 +325,7 @@ const FORMATTERS: Record<string, Formatter> = {
     try {
       const omit = Array.isArray(i["omit"]) ? stringList(i["omit"]) : undefined;
       // The COUNT the card promises must be the count `execute()` inserts, so the card applies
-      // the same already-past skip the tool does review fix) — `includePast` rides in
+      // the same already-past skip the tool does — `includePast` rides in
       // from the model's own input, and `today` is the owner's day on the card's zone.
       const includePast = i["includePast"] === true;
       const { minted } = mintYear(jurisdiction, Number(fiscalYear), {
@@ -374,7 +374,7 @@ const FORMATTERS: Record<string, Formatter> = {
   notion_resolve_proposal: (i) => line("Notion proposal —", str(i["decision"])?.toUpperCase() ?? null, str(i["id"]) && `(${trunc(str(i["id"])!, 32)})`),
   atlas_resolve_proposal: (i) => line("Shared notes proposal —", str(i["decision"])?.toUpperCase() ?? null, str(i["id"]) && `(${trunc(str(i["id"])!, 32)})`),
 
-  // — The link a tainted turn wants to open (W7D-s3). The address is the whole decision, so it
+  // The link a tainted turn wants to open. The address is the whole decision, so it
   // is rendered WHOLE: no `trunc`, no `MAX_FIELD`, no middle ellipsis, at any length. Three
   // clauses may follow it, and each only when it adds something the address itself does not say:
   // the host that is really resolved (userinfo before the "@", or a punycode host the owner
@@ -404,7 +404,7 @@ const FORMATTERS: Record<string, Formatter> = {
 
   echo_note: (i) => line("Gate proof — echo note", quoted(i["note"])),
 
-  // the creative agent. Her two gated tools; both are LOCAL to the creative service
+  // The creative agent's two gated tools; both are LOCAL to the creative service
   // (agent/tools/*.ts), so they carry no `agent-kit__` prefix — that prefix belongs to tools
   // served BY this package's extension, which is exactly the distinction the Brain block
   // above records. This file is fleet-wide, so a formatter here for an agent's local tool is
@@ -421,9 +421,9 @@ const FORMATTERS: Record<string, Formatter> = {
   // and nothing at all about blast radius. Returning null falls through to `generic()`, which
   // at least lists whatever fields the model did supply.
   //
-  // The shared-area `vault_write` (W5C-s4; `atlas_write` before the rename) takes a TITLE, not
-  // a path fix round 1 — the path is derived, so a traversal argument is
-  // unrepresentable rather than merely refused). The card names both:
+  // The shared-area `vault_write` (`atlas_write` before the rename) takes a TITLE, not
+  // a path — the path is derived, so a traversal argument is
+  // unrepresentable rather than merely refused. The card names both:
   // the title is what the owner recognises, and the DERIVED path is still what says whether
   // an existing _inbox note is about to be replaced. `inboxNotePath` is imported rather than
   // re-implemented here — two copies of that derivation ends with a card naming one file while
@@ -550,7 +550,7 @@ export function summarizeApproval(toolName: unknown, input: unknown, tz: string 
  * thing a human reads before authorising a write. The eve patch drops the raw "Tool input"
  * block from a Slack card only when this is true; for anything else the block stays, collapsed.
  *
- * An outside tool is NEVER covered S1): its title shortens long values and drops
+ * An outside tool is NEVER covered: its title shortens long values and drops
  * arguments past the sixth, and the request was built by a model that may have read injected
  * text, for a server the owner has not reviewed. The approver must be able to read all of it.
  */
@@ -690,7 +690,7 @@ export function detailsForApproval(
   try {
     if (typeof toolName !== "string") return undefined;
     if (!Object.prototype.hasOwnProperty.call(DETAILS, toolName)) {
-      // An outside tool S1): eve's Telegram card never prints the raw input, and the title
+      // An outside tool: eve's Telegram card never prints the raw input, and the title
       // shortens it, so the whole request goes here. Slack ignores this for an uncovered tool and
       // keeps its own collapsed "Tool input" block.
       if (Object.prototype.hasOwnProperty.call(FORMATTERS, toolName) || outsideParts(toolName) === null) return undefined;
@@ -724,7 +724,7 @@ declare global {
  *  never called — other workspace members share this patch — eve keeps its original cards. */
 export interface ApprovalSummaryOptions {
   /**
-   * The OWNER's timezone at render time final review). SYNCHRONOUS, because eve's card
+   * The OWNER's timezone at render time. SYNCHRONOUS, because eve's card
    * rendering is: the patch calls `__eveApprovalSummary` inline and there is nowhere to await. An
    * agent whose clock is only resolvable asynchronously should pass a last-known-value reader —
    * `services/chief-of-staff/lib/owner-clock.ts`'s `ownerTzSync()` is that shape. Omitted, or throwing,

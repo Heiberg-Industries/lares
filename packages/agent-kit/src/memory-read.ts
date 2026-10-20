@@ -1,6 +1,6 @@
 /**
- * src/memory-read.ts — the server-side read model and export behind a future "Memory" page
- * (W4A-s4, ADR-0017 rule 6 "which memories did you use?" and rule 2's export column).
+ * src/memory-read.ts — the server-side read model and export behind the "Memory" page
+ * (ADR-0017 rule 6 "which memories did you use?" and rule 2's export column).
  *
  * READ-ONLY. Nothing here writes, retires or supersedes a row — `services/chief-of-staff/lib/
  * standing-facts.ts` (`rememberFact`, `forgetFact`, `supersedeFact`) still owns every write to
@@ -9,7 +9,7 @@
  *
  * WHY THE KIT, NOT THE ROLE SERVICE. `packages/agent-kit/src/conversation-record.ts` is the
  * precedent: a kit module that owns the READ side of a table a role service writes, because the
- * console depends on `@lares/agent-kit` (`services/console/package.json:22`) but cannot depend on
+ * console depends on `@lares/agent-kit` (`services/console/package.json`) but cannot depend on
  * `lares-chief-of-staff` — there is no path by which it could. `MemoryFact` is deliberately NOT
  * chief-of-staff's `StandingFact`: this module reads the table directly, with the rendered
  * provenance a page needs, rather than the store's own internal shape.
@@ -181,7 +181,7 @@ function csvRow(f: MemoryFact): string {
 /**
  * The whole of one owner's memory as CSV, header row first, RFC-4180 quoting. The nightly
  * one-way export ADR-0017 rule 2 asks for, as a string — this module writes no files, opens no
- * schedule and makes no network call (Owner decision A3: a function now, a schedule only if an
+ * schedule and makes no network call (a function now, a schedule only if an
  * owner asks for one).
  */
 export function memoryCsv(rows: readonly MemoryFact[]): string {
@@ -216,12 +216,12 @@ export function memoryMarkdown(rows: readonly MemoryFact[]): string {
 }
 
 /**
- * "Which memories did you use?" (W5A-s4, ADR-0017 rule 6). Reads `memory_reads`
+ * "Which memories did you use?" (ADR-0017 rule 6). Reads `memory_reads`
  * (`services/box/sql/001_baseline.sql`), written by `services/chief-of-staff/lib/
  * memory-reads.ts`'s `recordRead` — internal to that service, so the kit re-declares the same
  * four kinds here rather than importing it (the kit cannot import a role service).
  *
- * FAILS SOFT ON A BOX WHERE 075 HAS NOT BEEN APPLIED, the same posture as `recordRead` itself:
+ * FAILS SOFT ON A BOX WHERE THE TABLE DOES NOT EXIST YET, the same posture as `recordRead` itself:
  * a missing table means nothing was ever recorded, not a crash. `listMemoryUsed` and
  * `previousTurnIn` both catch `42P01` (undefined_table) and answer as if the query found
  * nothing — an empty list, or `null` — rather than throwing.

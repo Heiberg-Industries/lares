@@ -1,6 +1,6 @@
 /**
  * memory-core.ts — the seam between a role service's per-session memory block and whatever
- * builds it (ADR-0018 rule 9, wave 4 slice W4B-s2).
+ * builds it (ADR-0018 rule 9).
  *
  * WHAT A "MEMORY CORE" IS, in plain language. It is the short block of what the owner has told
  * the agent that travels with every message of one conversation. It used to be rebuilt on every
@@ -11,8 +11,8 @@
  *
  * WHY THIS INTERFACE EXISTS AT ALL, given that it is two lines. eve 0.32 has no memory slot of
  * its own, so today a role service implements this against `defineDynamic({ events: {
- * "session.started": … } })`. After the framework upgrade (ADR-0016 / the eve-upgrade spec) the
- * same provider is handed to eve instead. Keeping the shape here — with nothing eve-shaped in
+ * "session.started": … } })`. A later eve release (ADR-0016) could take the
+ * same provider instead. Keeping the shape here — with nothing eve-shaped in
  * it, and no import of eve anywhere in this file — is what makes that move a change in ONE file
  * rather than a rewrite of every role's instruction directory.
  *

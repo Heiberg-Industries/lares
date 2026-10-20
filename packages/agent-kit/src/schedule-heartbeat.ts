@@ -12,7 +12,7 @@
  * Two rows per slot-based schedule, one per polling schedule:
  *   `<agent>/<schedule>`       — stamped at every pass-complete point (the schedule did its work
  *                                or found nothing to do). Threshold = the schedule's own period
- *                                plus the ≥2× slack the box's Kuma rules require.
+ *                                plus the ≥2× slack the monitoring rules require.
  *   `<agent>/<schedule>/tick`  — stamped right after the gate on every tick of a slot-based
  *                                schedule (every completed tick stamps),
  *                                so "the process is alive but this schedule's loop died" is

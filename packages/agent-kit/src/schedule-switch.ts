@@ -1,10 +1,10 @@
-// A schedule reads the definition at its TICK (agent-definitions spec, Part 3), so a change
+// A schedule reads the definition at its TICK, so a change
 // reaches it at its next firing rather than at a restart — which is what makes "switch the
 // evening brief off" a console click instead of a deploy.
 //
 // ANDed with EVE_SCHEDULES_LIVE, which stays exactly what it was: the box-level master switch
-// that keeps a shadow agent dark. A definition must never be able to wake a schedule on a box
-// that is deliberately silent (plan D6), so the env wins in the OFF direction only.
+// that keeps a not-yet-live agent dark. A definition must never be able to wake a schedule on a box
+// that is deliberately silent, so the env wins in the OFF direction only.
 //
 // SILENCE MEANS ON. Every schedule an image ships runs today on a live box; reading an
 // un-edited definition as "all schedules off" would darken the whole fleet the moment this

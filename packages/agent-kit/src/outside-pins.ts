@@ -1,4 +1,4 @@
-// Locked tool descriptions for outside tools (ADR-0019 rule 10, B2b).
+// Locked tool descriptions for outside tools (ADR-0019 rule 10).
 //
 // An outside server writes the descriptions the model reads for its tools. eve cannot override them,
 // and the keeper cannot reach outside hosts, so the check lives in the agent: the first time an agent
@@ -145,7 +145,7 @@ export interface PinStore {
 
 const jsonOrNull = (tools: PinnedTool[] | null): string | null => (tools === null ? null : JSON.stringify(tools));
 
-/** `outside_tool_pins` (box 001, seen columns box 003). Throws on a database fault: the caller fails closed. */
+/** `outside_tool_pins` (with its `seen_*` columns). Throws on a database fault: the caller fails closed. */
 export function pgPinStore(db: Queryable): PinStore {
   return {
     async get(agent, tool) {

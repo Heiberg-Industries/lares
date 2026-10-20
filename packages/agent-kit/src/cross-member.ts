@@ -1,7 +1,7 @@
-// Tier 2 of the cross-member access model (spec Part 7): standing grants a member makes TO
+// Tier 2 of the cross-member access model: standing grants a member makes TO
 // THE ORG'S AGENTS, checked here, audited here. Tier 1 (free/busy) deliberately bypasses
 // this module — it is policy-per-source on the calendar side. Tier 3 (per-request consent
-// cards) is not built in v1, by ruling.
+// cards) is not built.
 import type { Pool } from "pg";
 
 export class CrossMemberDeniedError extends Error {

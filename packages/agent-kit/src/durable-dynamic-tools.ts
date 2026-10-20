@@ -6,7 +6,7 @@
  * remains the authority for which tools, descriptions and schemas are available.
  * Keep the installed-runtime restart probe when changing Eve or these key names.
  *
- * 2026-09-19, eve 0.60.1 (W2-s7) — WHAT EVE NOW DOES ITSELF, AND WHY THIS STAYS ANYWAY.
+ * eve 0.60.1 — WHAT EVE NOW DOES ITSELF, AND WHY THIS STAYS ANYWAY.
  *
  * eve 0.59.0 made durability a rule rather than a convention. Every dynamic tool entry must
  * carry a DURABLE DESCRIPTOR for each callback phase it uses — `execute` always, plus the
@@ -31,9 +31,9 @@
  * subagent dispatch), so these registrations are harmless, but for dynamic tools they are now
  * INERT: nothing reads them back.
  *
- * It is kept for this wave on purpose (plan Owner decision 6). It sits in the approval and
+ * It is kept on purpose. It sits in the approval and
  * tool-resolution path, and "measured inert" is a reading of the installed package, not a
- * restart proof. Delete it in its own slice once W2-s13's restart proofs have run green on
+ * restart proof. Delete it in its own change once the restart proofs have run green on
  * 0.60.1 and shown eve's own rebind carrying the same cases.
  */
 type Step = (closure: unknown, input: unknown, context?: unknown) => unknown;

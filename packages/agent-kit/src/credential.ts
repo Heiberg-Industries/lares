@@ -26,9 +26,9 @@
 // module header), so `test()` staying a GET also means the request helper's own retry-on-failure
 // behaves the way `test()` needs it to.
 //
-// NO CONCRETE CREDENTIAL TYPE IS DEFINED HERE. Google, Notion and Slack are wave 6B; defining one
-// in this slice, without a live probe against the real vendor, would be a fixture pretending to
-// be knowledge — the repo rule in CLAUDE.md. `defineCredentialType` is the identity function,
+// NO CONCRETE CREDENTIAL TYPE IS DEFINED HERE. Defining one
+// without a live probe against the real vendor would be a fixture pretending to
+// be knowledge — the repo rule in AGENTS.md. `defineCredentialType` is the identity function,
 // present only for inference, the same shape `eve/tools`'s `defineTool` already establishes in
 // this codebase — so every credential type this fleet writes reads the same way.
 

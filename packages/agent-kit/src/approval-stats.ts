@@ -1,14 +1,14 @@
 /**
- * src/approval-stats.ts — asked, approved, cancelled, never answered: the arithmetic over box
- * 086's `approval_asks` (`./approval-ledger.ts`). This is the denominator "What the code
- * contradicts" (5) says does not exist yet: `approval_events` (038) records what the POLICY
+ * src/approval-stats.ts — asked, approved, cancelled, never answered: the arithmetic over
+ * the `approval_asks` table (`./approval-ledger.ts`). This is the denominator that
+ * `approval_events` cannot give: it records what the POLICY
  * decided, never what the OWNER answered.
  *
  * TIMEOUT IS NOT A REFUSAL. `ignored`, `expired`, `invalid` and `payload-changed` — and a row with
  * no outcome at all, still parked — are all "never answered", counted separately from `cancelled`
- * and never in the approval-rate denominator (wave-7 brief).
+ * and never in the approval-rate denominator.
  *
- * READS NEVER THROW. A box that has not applied 086 answers `[]`, the same shape as a box with no
+ * READS NEVER THROW. A box that has not applied the table's migration answers `[]`, the same shape as a box with no
  * history — the console has one sentence for both ("no answers recorded yet"), not an error path.
  */
 import type { Queryable } from "@lares/vault-format/forget-ledger";
@@ -26,8 +26,8 @@ export interface ApprovalCount {
 }
 
 /** approved ÷ (approved + cancelled), or null when nobody has answered anything yet.
- *  Never-answered cards are NOT a refusal and are not in the denominator (wave 7 brief:
- *  "timeout = deny, not counted as a refusal"). */
+ *  Never-answered cards are NOT a refusal and are not in the denominator
+ *  ("timeout = deny, not counted as a refusal"). */
 export function answeredRate(c: Pick<ApprovalCount, "approved" | "cancelled">): number | null {
   const total = c.approved + c.cancelled;
   return total === 0 ? null : c.approved / total;
@@ -46,7 +46,7 @@ interface CountRow {
   last_at: Date | null;
 }
 
-/** Empty on a box without 086 — never throws. */
+/** Empty on a box without the `approval_asks` table — never throws. */
 export async function readApprovalCounts(
   db: Queryable,
   opts?: { days?: number; now?: Date },
@@ -84,7 +84,7 @@ export async function readApprovalCounts(
   }
 }
 
-/** Ten cards, thirty days, not one refusal (owner decision B4) — the whole rule this file
+/** Ten cards, thirty days, not one refusal — the whole rule this file
  *  implements for "this could act on its own". Nothing here is a lower bound on trust, only on
  *  evidence: fewer cards or a shorter history just means the owner has not been asked enough to
  *  read anything into it yet. */

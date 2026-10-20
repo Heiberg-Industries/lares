@@ -1,11 +1,9 @@
 /**
  * "when do the agents speak" as a setting, not a code constant.
  *
- * Today every owner-facing schedule reads its hour(s) from a literal or an env var, one file at a
- * time (`services/chief-of-staff/agent/schedules/*.ts`). This module is the foundation the later
- * slices..s4) point those reads at: one table, `schedule_settings` (sql/001_baseline.sql), keyed
- * `(owner, schedule)`, and one reader. Nothing reads this table yet — wiring the schedules to it is
- * later work.
+ * Every owner-facing schedule (`services/chief-of-staff/agent/schedules/*.ts`) takes its hour(s)
+ * from this setting, falling back to the engine defaults below. The setting is one table,
+ * `schedule_settings` (sql/001_baseline.sql), keyed `(owner, schedule)`, and one reader.
  *
  * `SCHEDULE_HOUR_DEFAULTS` is the single place an engine default lives, and every value here is
  * exactly what the code fires on today, so an installation with no rows in `schedule_settings`

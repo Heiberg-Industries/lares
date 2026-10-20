@@ -1,4 +1,4 @@
-// The language switch (agent-definitions spec, Part 3).
+// The language switch.
 //
 // PER TURN, not per session and not per save. It is a small addition to the instructions, not a
 // rewrite of the system prompt, so it does not cost the prompt cache — which is exactly why the
@@ -13,7 +13,7 @@
 export const LANGUAGE_STATE_KEY = "lares.language";
 
 /** The per-turn instruction. Empty when neither source names a language, which is what every
- * agent did before step 2 — follow the counterpart — and is what keeps the
+ * agent did before languages were declared — follow the counterpart — and is what keeps the
  *  byte-identical gate green for the three that set none. */
 export function languageInstruction(sessionLanguage: string | null, definitionLanguage: string | undefined): string {
   const session = (sessionLanguage ?? "").trim();

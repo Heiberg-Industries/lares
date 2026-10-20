@@ -1,9 +1,9 @@
 import {assertManagedRuntimeCurrent, managedIdentity, NO_OWNER_CONNECTION} from './door-authority.js';
-// The permissions board's approval check (agent-definitions spec, Part 3; step 1). Every gated
+// The permissions board's approval check. Every gated
 // tool's `approval` is this policy. It decides per call:
 //   1. the board's level for (agent, capability) from the `ratchet` table, else the agent's own level;
 //   2. never → denied (with a reason the model relays) — for EVERY tool, always-ask ones included
-//      (final review F3: 🚫 only tightens; no setting loosens always-ask);
+//      (🚫 only tightens; no setting loosens always-ask);
 //   3. always-ask by engine policy (money, delete, first contact, publish, changing its own autonomy) → ask;
 //   4. autonomous → run, gated → ask.
 // The read is cached for 30 s per (agent, capability) and times out after 5 s. An unreadable table, an
@@ -27,7 +27,7 @@ export type ContactHistory = (recipient: string, toolInput: unknown) => Promise<
  *  service) never blocks approval indefinitely. */
 export const CONTACT_HISTORY_TIMEOUT_MS = 10_000;
 
-/** Final review F8: the permissions-table read gets the same treatment — past this, it counts as
+/** The permissions-table read gets the same treatment — past this, it counts as
  *  unreadable and the call asks. */
 export const BOARD_READ_TIMEOUT_MS = 5_000;
 
@@ -44,7 +44,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
 export interface BoardDeps {
   explicitLevel(agent: string, capability: string, action?: string): Promise<AutonomyLevel | null>;
   /** `callId` is eve's id for the call: eve consults the policy again when an answered card
-   *  resumes, with the same id, so the evidence keeps one row per id (final review F6). */
+   *  resumes, with the same id, so the evidence keeps one row per id. */
   record(e: { agent: string; capability: string; tool: string; decision: ApprovalDecision; reason: string; callId?: string }): Promise<void>;
   now(): number;
 }
@@ -80,15 +80,14 @@ export async function decideApproval(
   const recipientsOf = RECIPIENTS_OF[input.tool];
   // A history-checked contact tool skips only the CONTACT static lock — its "ask first" is
   // decided per call, below, once the level is known. Any OTHER always-ask category
-  // (money/delete/publish) still locks, same as every other tool (fix-round-1
-  // review, I8 — the original code skipped mustAlwaysAsk wholesale for a RECIPIENTS_OF tool,
-  // which would have silently bypassed a future money/delete/publish tool that also happened
-  // to be history-checked).
+  // (money/delete/publish) still locks, same as every other tool (skipping mustAlwaysAsk
+  // wholesale for a RECIPIENTS_OF tool would silently bypass a future money/delete/publish
+  // tool that also happened to be history-checked).
   const forced = recipientsOf !== undefined
     ? mustAlwaysAskExceptContact(input.tool)
     : mustAlwaysAsk(input.tool);
 
-  // Final review F3 (controller ruling): a locked tool still reads the level, but only so that 🚫
+  // A locked tool still reads the level, but only so that 🚫
   // can refuse it. Nothing below can loosen the lock: an unreadable table asks with the lock's
   // own reason (as before), and any other level asks.
   const key = `${input.agent}/${input.capability}/${input.action ?? ""}`;
@@ -173,16 +172,15 @@ export function boardApproval(
     contactHistory?: ContactHistory;
     action?: string;
     defaultLevel?: AutonomyLevel;
-    /** step 2: the DEFINITION's level for this capability, read per call. Without it the
-     *  fallback is whatever the image was built with, which is exactly the frozen autonomy this
-     *  whole step exists to end. The chief of staff has 16 `ratchet` rows and those still win where they
-     *  exist; the travel agent and the creative agent have none, so for two of the three agents this fallback is the
-     *  only thing deciding.
+    /** The DEFINITION's level for this capability, read per call. Without it the
+     *  fallback is whatever the image was built with, which is exactly the frozen autonomy that
+     *  reading the definition exists to end. `ratchet` rows still win where they
+     *  exist; for an agent with none, this fallback is the only thing deciding.
      *
      *  Resolved lazily, and PER SESSION — not per process. `sessionId` is passed through so this
      *  call shares the conversation's own single read of the definition, which is both why it is
      *  a map lookup after the first call of that session and why the persona the model was given
-     *  can never disagree with the level applied to its writes. A definition edited on the box
+     *  can never disagree with the level applied to its writes. A definition edited on the server
      *  therefore reaches the next conversation, not the next container.
      *
      *  It must NEVER be read at module load: eve evaluates this module during `eve build`, with
@@ -195,7 +193,7 @@ export function boardApproval(
 ): (ctx?: ApprovalCallContext) => Promise<ApprovalStatus> {
   const m = parseManifest(manifest);
   const capability = capabilityOfTool(tool);
-  // ── THE AREA IS THE ACTION (W5C controller ruling, 2026-09-19) ──────────────────────────────
+  // ── THE AREA IS THE ACTION ──────────────────────────────
   // One `vault` capability replaced `brain`, `atlas` and `memory`, and the capability WAS the
   // ratchet key: `atlas_resolve_proposal` read `(agent, "atlas", "")` and `forget` read
   // `(agent, "memory", "")`. Left alone, the merge would have put both on ONE row — switching the
@@ -209,7 +207,7 @@ export function boardApproval(
   // undo it.
   const action = opts?.action ?? (capability === "vault" ? areaOfTool(tool) : undefined);
   // A vault tool the area table does not know has no key of its own. Falling back to the bare
-  // capability row would put it back on the merged `action = ''` row this ruling exists to empty,
+  // capability row would put it back on the merged `action = ''` row this rule exists to empty,
   // so it fails closed exactly as an unknown capability does below — it asks, every time.
   const vaultWithoutArea = capability === "vault" && action === undefined;
   return async (ctx?: ApprovalCallContext) => {

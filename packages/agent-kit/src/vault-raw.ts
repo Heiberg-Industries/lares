@@ -1,13 +1,12 @@
 /**
  * An UNCOMMITTED write into the vault.
  *
- * The counterpart to `services/box/lib/brain-source.ts`'s `writeRaw`, described there as
- * "no git commit — untracked attachment storage". Conversation logs use it: one commit-and-push
+ * No git commit — untracked storage, the uncommitted counterpart to `vault-git.ts`.
+ * Conversation logs use it: one commit-and-push
  * per conversation turn would be noisy in history and would put a git push on the latency path
  * of every reply.
  *
- * Verified on the box 2026-08-19: `_meta/conversations/` holds 160 markdown files and
- * `git ls-files _meta/conversations` returns 0 — they have always been untracked. Preserving
+ * Files under `_meta/conversations/` have always been untracked, and preserving
  * that is deliberate; whether they SHOULD be tracked is a separate question.
  *
  * Path containment reuses `resolveInStore` — the same traversal- and symlink-safe check

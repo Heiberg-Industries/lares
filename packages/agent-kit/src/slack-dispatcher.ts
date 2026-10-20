@@ -18,12 +18,12 @@
  */
 import { Dispatcher, ProxyAgent, getGlobalDispatcher, setGlobalDispatcher } from "undici";
 
-/** Where squid listens on the box's internal network. Matches the `slack-proxy` service. */
+/** Where squid listens on the server's internal network. Matches the `slack-proxy` service. */
 const DEFAULT_PROXY_URL = "http://slack-proxy:8888";
 
 /**
  * Slack's own domains. `slack-files.com` is where `files.slack.com` 302s a file download (seen
- * for every PDF, 2026-09-14,. fetch follows that redirect through this same dispatcher,
+ * for every PDF). fetch follows that redirect through this same dispatcher,
  * so a domain missing here goes direct and dies against the seal as a 10 s connect timeout.
  */
 const SLACK_DOMAINS = ["slack.com", "slack-files.com"];

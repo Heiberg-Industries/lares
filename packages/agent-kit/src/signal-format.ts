@@ -1,7 +1,7 @@
 /**
  * One anatomy, one palette, for every operational message in the fleet — the spine's Slack
  * consumer and the agents' own door messages render through this file, which is what makes an
- * alert from GCP and a card from the chief of staff read as siblings (spec 2026-09-04 §6).
+ * alert from a monitoring source and a card from the chief of staff read as siblings.
  *
  *   1  <icon> *<Project> · <title>*                 the only bold line
  *   2  <description>                                 omitted when none (never for events)
@@ -11,7 +11,7 @@
  * Times are Slack date tokens (`<!date^…^{time}|HH:MM UTC>`), so every reader sees their own
  * local time; the fallback inside the token is UTC. The card is sent as top-level Block Kit
  * blocks — NOT as a coloured attachment: Slack renders `text` AND an attachment, which showed
- * every card twice (seen 2026-09-05); with blocks present, `text` is the notification preview
+ * every card twice; with blocks present, `text` is the notification preview
  * only. The icon alone carries the colour. Nothing here may pick another emoji.
  */
 export type ViewState = "error" | "warn" | "info" | "recovered" | "report";

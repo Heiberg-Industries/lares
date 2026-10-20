@@ -1,17 +1,16 @@
 /**
  * which timezone the owner is standing in, right now. One answer, every agent.
  *
- * Every schedule in the fleet used to read `Europe/Oslo` off a constant, and four of the chief of staff's copied
- * the same `osloSlotNow` helper. That has already cost real messages:/128 and each
- * fired a job on a clock nobody was standing on (a morning post fired on the wrong clock). Quiet hours make it worse rather than better — a quiet window on the wrong clock is a gate
+ * Every schedule in the fleet used to read a fixed home zone off a constant, with several schedules
+ * copying the same slot helper. That cost real messages: jobs fired on a clock nobody was
+ * standing on (a morning post fired on the wrong clock). Quiet hours make it worse rather than better — a quiet window on the wrong clock is a gate
  * that opens at 3 a.m.
  *
- * Three sources, in a FIXED priority, and the order is the decision (spec 2026-09-03, Ruling 1):
+ * Three sources, in a FIXED priority, and the order is the decision:
  *
- *   1. **trip** — the travel agent's `config.json`: a date window plus the destination's timezone. The
- *      strongest signal there is, because a human declared it in advance. Read from the file both
- * agents already mount, NOT from the travel agent's booking-derived arrival refinement: the
- *      two must give the same answer, and a shared file is the only way that holds.
+ *   1. **trip** — a trips file, `<dir>/config.json`: a date window plus the destination's timezone. The
+ *      strongest signal there is, because a human declared it in advance. Every agent reads
+ *      the same file: the answers must agree, and a shared file is the only way that holds.
  *   2. **slack-profile** — the timezone Slack reports for the owner's own account, refreshed every 30
  *      minutes by `services/chief-of-staff/agent/schedules/owner-clock.ts`. Slack updates it from the
  *      device, so it catches the trip nobody filed. Counts only while it is FRESH (24 h): a signal
@@ -19,7 +18,7 @@
  *   3. **home** — `OWNER_HOME_TZ`, default UTC. The floor. Reached whenever the two
  *      above say nothing, which is most days.
  *
- * Calendar travel events are deliberately NOT a source in v1 (plan Ruling 2).
+ * Calendar travel events are deliberately NOT a source.
  *
  * TWO ABSOLUTE RULES, both learned the hard way:
  *
@@ -29,7 +28,7 @@
  *   loudly in the log and silently to the caller.
  * - **A candidate timezone is validated before it is believed.** `Intl.DateTimeFormat` throws on an
  *   unknown zone, and this value reaches every slot computation in the service: one bad string in
- *   The travel agent's config or a legacy Slack profile would otherwise stop every schedule at once.
+ *   the trips file or a legacy Slack profile would otherwise stop every schedule at once.
  *
  * All wall-clock arithmetic reuses `./proactivity.ts`'s zone helpers (`ownerDay`, `wallClock`) —
  * one formatter path in the kit, not two, because "date and time off the same clock" is precisely
@@ -49,7 +48,7 @@ export type OwnerClockDb = Pick<Pool, "query">;
 export const DEFAULT_HOME_TZ = "UTC";
 
 /** How long a Slack-profile observation counts for. Slack refreshes it from the device; a whole
- *  day of silence means the signal is stale, not that he is still there. */
+ *  day of silence means the signal is stale, not that the owner is still there. */
 export const SLACK_SIGNAL_MAX_AGE_HOURS = 24;
 
 /** The source that won, and enough detail for a console row or a log line to say WHY. */
@@ -59,7 +58,7 @@ export interface OwnerClock {
   detail: string;
 }
 
-/** A trip as this resolver needs it — the flattened slice of the travel agent's `Trip`. */
+/** A trip as this resolver needs it — the flattened slice of one entry in the trips file. */
 export interface OwnerClockTrip {
   slug: string;
   name?: string;
@@ -123,9 +122,8 @@ export function dateIn(now: Date, tz: string): string {
  * The fleet's slot key: `"<date>T<hour>"` on minute 0 of `hour` in `tz`, `null` otherwise.
  *
  * The shape is load-bearing rather than cosmetic — a slot-based schedule compares it against the
- * last slot it ran, so it is both the "is it time" test and the once-per-slot dedupe key (and,
- * from on, an `event`-class initiation's already-seen key). Copied by hand into four the chief of staff
- * schedules as `osloSlotNow`; this is the one definition they now share.
+ * last slot it ran, so it is both the "is it time" test and the once-per-slot dedupe key (and
+ * an `event`-class initiation's already-seen key). This is the one definition every schedule shares.
  */
 export function slotKey(now: Date, tz: string, hour: number): string | null {
   const { date, hour: h, minute } = clockParts(now, tz);
@@ -162,10 +160,10 @@ const HOUR_MS = 3_600_000;
  * Pure: given the sources, which clock is the owner on? Trip → Slack profile → home.
  *
  * A trip is active when `start <= <today in the trip's own timezone> <= end`, both ends inclusive.
- * The trip's OWN clock decides — not the home clock, which is what `services/chief-of-staff/lib/travel-store.ts`
- * deliberately uses for the brief's day boundary. The two differ on purpose: the brief must be
+ * The trip's OWN clock decides — not the home clock, which is what the brief's day boundary
+ * deliberately uses. The two differ on purpose: the brief must be
  * composed on one day boundary (the owner's), while the question here is literally "what time is it
- * where he is", and on the far side of the Atlantic that answer flips six hours before Oslo's
+ * where the owner is", and on the far side of the Atlantic that answer flips six hours before the home zone's
  * midnight does.
  */
 export function resolveOwnerClockFromSources(now: Date, opts: OwnerClockSources): OwnerClock {
@@ -227,11 +225,9 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * The trips in the travel agent's `<dir>/config.json`.
+ * The trips in the trips file, `<dir>/config.json`.
  *
- * Mirrors, not imports, the travel service config shape — separate services, separate images (the same
- * reasoning `services/chief-of-staff/lib/travel-store.ts` sets out at length, and its contract test is
- * what keeps the mirror honest). Per-entry validation: one malformed trip must not hide the five
+ * Mirrors, not imports, the writer's config shape — separate services, separate images. Per-entry validation: one malformed trip must not hide the five
  * good ones beside it. Every failure is no trips plus a log line — on most days there IS no trip,
  * so emptiness cannot be an error here.
  */
@@ -291,7 +287,7 @@ export async function readSlackProfileSignal(
 }
 
 /**
- * Upsert the Slack-profile signal. ONE row per (owner, source): the question is "where is he
+ * Upsert the Slack-profile signal. ONE row per (owner, source): the question is "where is the owner
  * now", so a history of observations would be a different table and a different feature.
  *
  * Throws on a database failure — deliberately, unlike every read here. Its only caller is the
@@ -309,8 +305,8 @@ export async function recordSlackProfileSignal(db: OwnerClockDb, owner: string, 
 
 export interface ResolveOwnerClockOptions {
   now: Date;
-  /** The travel agent's data root as this process sees it (`TRAVEL_PATH` for the chief of staff, the travel agent's own data-root
-   *  variable for the travel agent). Omitted → trips are simply not a source here. */
+  /** The directory holding the trips file, as this process sees it (`TRAVEL_PATH`).
+   *  Omitted → trips are simply not a source here. */
   tripsDir?: string;
   /** Omitted → the Slack-profile signal is not a source here. */
   db?: OwnerClockDb;

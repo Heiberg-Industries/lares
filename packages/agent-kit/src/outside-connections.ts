@@ -79,7 +79,7 @@ export function bareToolName(connection: string, toolName: string): string {
 }
 
 /**
- * The request-time approval policy (owner decision).
+ * The request-time approval policy.
  *
  * - untrusted (the default): every call asks, reads included. A read's arguments go to a server the
  *   agent has no reason to believe, and its answer is outside text.

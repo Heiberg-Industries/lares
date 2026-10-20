@@ -6,7 +6,7 @@ import { HttpsProxyAgent } from "https-proxy-agent";
  * Langfuse as an OpenTelemetry backend.
  *
  * Langfuse ingests OTLP/HTTP with HTTP Basic auth: public key as username, secret key as
- * password. Both live in one box secret file, two lines, read at startup and never at
+ * password. Both live in one secret file, two lines, read at startup and never at
  * module scope — `eve build` evaluates this module in CI, which has no secrets.
  */
 
@@ -53,7 +53,7 @@ export interface LangfuseExporterConfig {
    *
    * It has to be a proxy: each agent's box seal permits gateway + db + slack-proxy + DNS
    * only, so a direct POST to Langfuse dies as a HANG, not an error — the failure
-   * shape. Left undefined when no proxy is configured, so a local run still exports
+   * shape (the quietest way to fail). Left undefined when no proxy is configured, so a local run still exports
    * directly.
    */
   httpAgentOptions?: () => Agent;

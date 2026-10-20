@@ -1,25 +1,19 @@
 import { KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, isVaultArea, scopeAtLeast, type KnownSkill, type VaultArea } from "./skill-grants.js";
 export { KNOWN_SKILLS, KNOWN_CAPABILITIES, VAULT_AREAS, assertSkillsWithinGrants, isVaultArea, scopeAtLeast, type KnownSkill, type VaultArea } from "./skill-grants.js";
 const KNOWN_CAPABILITY_SET: ReadonlySet<string> = new Set(KNOWN_CAPABILITIES);
-// The agent declaration — `agent.json` — and the boot-time seam that turns it into a toolset
-// 
+// The agent declaration — `agent.json` — and the boot-time seam that turns it into a toolset.
 //
-// PORTED, NOT INVENTED. The schema is `services/agent-runtime/lib/adapters/loader.ts`'s
-// `manifestSchema` (loader.ts:7-19), field for field. The one deliberate change: the autonomy
-// level enum is widened from the old loader's two-way `gated | autonomous` (loader.ts:8) to
-// the three-way `never | gated | autonomous` that the old runtime's OWN governance module
-// already used (`lib/governance/ratchet.ts:3`). The loader was narrower than the semantics it
-// fed; the governance module is the one that matters, so it wins.
+// The autonomy level is the three-way `never | gated | autonomous` (the same dial as
+// `governance-ratchet.ts`), so a declaration can say "never" as well as "ask first".
 //
-// The autonomy semantics are `lib/governance/decide.ts`'s `decideAction` (decide.ts:17-43):
+// The autonomy semantics:
 //
-//   - The scope matrix answers FIRST (`lib/capabilities.ts:28-40`): ungranted or `none` →
+//   - The scope matrix answers FIRST: ungranted or `none` →
 //     deny; a read, or a plain `write` scope → allow; `write-with-confirm` → confirm.
-//   - `never` is a hard deny that overrides the grant, for reads and writes alike
-//     (decide.ts:29-31).
-//   - Autonomy otherwise bites ONLY on the `confirm` class (decide.ts:33-39): `gated` → ask
+//   - `never` is a hard deny that overrides the grant, for reads and writes alike.
+//   - Autonomy otherwise bites ONLY on the `confirm` class: `gated` → ask
 //     for the 👍, `autonomous` → execute and summarise. It never reaches a read.
-//   - An unset level defaults to the safe baseline `"gated"` (ratchet.ts:9, ratchet.ts:25).
+//   - An unset level defaults to the safe baseline `"gated"`.
 //
 // That last-but-one point is load-bearing for a typical agent. A manifest can say
 // `twenty: read` AND `twenty: gated`; the read tools carry no `approval`. Reading
@@ -42,30 +36,29 @@ import { boardApproval } from "./board-approval.js";
 // Schema
 // ---------------------------------------------------------------------------
 
-/** The registry's scope matrix, verbatim from `loader.ts:7` / `lib/capabilities.ts:1`. */
+/** The registry's scope matrix. */
 export const SCOPES = ["none", "read", "write", "write-with-confirm"] as const;
 export type Scope = (typeof SCOPES)[number];
 
-/** The trust-ratchet dial, verbatim from `governance/ratchet.ts:3` (ADR-0009 §Decision 1).
- *  Wider than `loader.ts:8`'s two-way enum on purpose — see this file's header. */
+/** The trust-ratchet dial. Three-way on purpose — see this file's header. */
 export const AUTONOMY_LEVELS = ["never", "gated", "autonomous"] as const;
 export type AutonomyLevel = (typeof AUTONOMY_LEVELS)[number];
 
-/** `ratchet.ts:9` / `ratchet.ts:25`: an unset level resolves to the safe baseline. */
+/** An unset level resolves to the safe baseline. */
 export const DEFAULT_AUTONOMY: AutonomyLevel = "gated";
 
 const scope = z.enum(SCOPES);
 const level = z.enum(AUTONOMY_LEVELS);
 
 // ---------------------------------------------------------------------------
-// Skills (skills-layer spec, 2026-09-01). A skill composes capabilities the agent ALREADY
+// Skills. A skill composes capabilities the agent ALREADY
 // holds; it can sequence, constrain and add policy — it can never widen access. The `requires`
 // list is what the build checks against `grants`; a skill asking for more than the grants give
 // fails the build, which is the never-widen property made structural.
 // ---------------------------------------------------------------------------
 
 /** Every CODE skill the fleet knows — a tool whose implementation composes other capabilities'
- *  libraries under an ENFORCED policy (the skills spec's second altitude). Instruction skills
+ *  libraries under an ENFORCED policy. Instruction skills
  *  (`agent/skills/*.md`) are eve-native and are not listed here. */
 /** Which TOOL each code skill is served by — the skills-layer counterpart of a capability doc's
  *  `tools` list, and the reason it exists here rather than in a persona doc.
@@ -73,13 +66,12 @@ const level = z.enum(AUTONOMY_LEVELS);
  *  A skill is not a capability: `renderEnvironment` names tools only through `capability-docs`,
  *  and a skill has no doc, so before this table the generated "where I run" section rendered
  *  `- **commercial** — composes twenty:read.` and stopped. Under that section's own
- *  heading — **"My only capabilities are the tools below."** — that made the chief of staff's instructions.md
- *  the Wave-1 bug in its purest form: `commercial_who_to_contact` is compiled, callable, and
- *  named NOWHERE in the file that claims to be the whole truth about her tools (whole-branch
- * review of, Critical #1).
+ *  heading — **"My only capabilities are the tools below."** — that made the chief of staff's persona
+ *  under-claim in its purest form: `commercial_who_to_contact` is compiled, callable, and
+ *  named NOWHERE in the file that claims to be the whole truth about the agent's tools.
  *
  *  `Record<KnownSkill, …>` is load-bearing: adding a name to KNOWN_SKILLS without adding its
- *  tools here is a TYPE error, not a silently under-claiming persona. `tests/manifest-skills.ts`
+ *  tools here is a TYPE error, not a silently under-claiming persona. `tests/manifest-skills.test.ts`
  *  adds the runtime half (no entry may be empty), and each service's agent-declaration test
  *  asserts its own SKILL_TOOLS table equals this one, so the fleet cannot drift from the kit. */
 export const KNOWN_SKILL_TOOLS: Record<KnownSkill, readonly string[]> = {
@@ -128,10 +120,9 @@ const skillSchema = z.strictObject({
 export type SkillRequirement = z.infer<typeof skillRequirementSchema>;
 export type SkillDeclaration = z.infer<typeof skillSchema>;
 
-// STRICT, where `loader.ts:10` was not. The one deliberate deviation from port fidelity, and
-// port fidelity is about field names and semantics, not about tolerating unknown keys.
+// STRICT: unknown keys are rejected.
 //
-// The reason is that the consequence of a typo is NEW here. Misspell "grants" as "grant" and a
+// The reason is that the consequence of a typo is severe. Misspell "grants" as "grant" and a
 // non-strict schema parses happily, `grants` takes its `[]` default, every
 // `resolveExtensionTool` returns `disableTool()`, `assertDeclarationIntegrity` passes — and
 // The chief of staff boots with its ten extension tools silently gone, no error anywhere. Under the old
@@ -143,37 +134,36 @@ export const manifestSchema = z.strictObject({
   name: z.string().min(1),
   // The name the assembled persona speaks as ("I am the chief of staff"). Optional: without it the
   // assembler (bin/assemble-instructions.ts) uses `name`. It moved here from each service's
-  // package.json `--display` flag so an overlay's agent.json carries its own.
+  // package.json `--display` flag so each agent.json carries its own.
   display: z.string().min(1).optional(),
   model: z.string().min(1),
-  // Path to a persona file, relative to the agent folder. Optional since step 2: a
+  // Path to a persona file, relative to the agent folder. Optional: a
   // definition folder (`/srv/lares/agents/<name>/`) has no `agent/persona.md` — the persona is
   // ASSEMBLED at session start from the role template + duties + voice and never written to
   // disk there. The default matches what every service's own committed `agent.json` already
-  // names (Task 5 renamed `agent/instructions.md` to `agent/persona.md` across all three
-  // services and role templates), so a definition that says nothing keeps today's meaning.
+  // names, so a definition that says nothing keeps today's meaning.
   // `assertDeclarationIntegrity`'s `persona.trim() === ""` check still holds — the default is
   // non-empty, so only an explicit empty string in a hand-edited definition can trip it.
   persona: z.string().min(1).default("agent/persona.md"),
   // Which role template under `packages/agent-kit/templates/<role>/` this agent's assembled
-  // instructions are built from Phase 3). Declarative only — the build hook is told
+  // instructions are built from. Declarative only — the build hook is told
   // the role path on its command line — but it is what makes the agent say, in its own
   // declaration, which shared role it wears.
   role: z.string().optional(),
   // Whose agent is this? A personal agent's stores resolve to the SPEAKING user's (the chief of staff —
   // one chief of staff per member); an org agent is one shared instance that knows which
-  // member is talking (the creative agent). Spec: Lares org/multi-user design, Part 3. Store binding
-  // by this field lands with config-driven agents; declaring it now is what lets that land.
+  // member is talking (the creative agent). Store binding
+  // by this field comes with config-driven agents; declaring it now is what lets that land.
   scope: z.enum(["personal", "org"]).default("personal"),
   channels: z.array(z.string()).default([]),
   // eve FRAMEWORK tools this agent keeps enabled. These are NOT capabilities and NOT grants:
   // they are eve's own built-ins, which `agent.json` does not govern — an agent enables one by
-  // authoring `agent/tools/<name>.ts` (the travel agent's `web_search.ts`) and disables it with a
-  // `disableTool()` sentinel (the chief of staff's and the creative agent's). Declaring one here changes nothing at
-  // runtime; it exists so the GENERATED "where I run" section can tell the truth about it
-  // Phase 3). The travel agent is the only agent in the fleet with web search live, and without
-  // this field his assembled persona would have said "I cannot search the web" — the Wave-1
-  // bug the whole plan exists to end, in generated text this time.
+  // authoring `agent/tools/<name>.ts` (a `web_search.ts`) and disables it with a
+  // `disableTool()` sentinel (the chief of staff and the creative agent do). Declaring one here changes nothing at
+  // runtime; it exists so the GENERATED "where I run" section can tell the truth about it.
+  // An agent that keeps web search live would, without
+  // this field, have an assembled persona saying "I cannot search the web" — a false
+  // denial, in generated text.
   //
   // It must match what `eve build` actually compiled, or it is just a hand-set flag that drifts:
   // each service's tests/agent-declaration.test.ts asserts this list against its OWN
@@ -194,12 +184,7 @@ export const manifestSchema = z.strictObject({
 export type AgentManifest = z.infer<typeof manifestSchema>;
 export type CapabilityGrant = AgentManifest["grants"][number];
 
-/** Every capability name the fleet knows. The first fifteen are the old runtime's registered
- *  hands, read from `services/agent-runtime/lib/adapters/hands/*.ts`'s `name:` fields — a
- *  superset of the fifteen the chief of staff's `agents/the chief of staff/agent.json` declares, which omits `studio` and
- *  includes `read_url`. The last three name the chief of staff tools that the old declaration never gave a
- * capability at all (`echo_note`, `outreach_track`, `voice_guide` — Ruling 3). Task 3
- *  appends the travel agent's names to this list. */
+/** Every capability name the fleet knows. */
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
@@ -259,8 +244,8 @@ export function autonomyOf(manifest: AgentManifest, capability: string): Autonom
   return manifest.autonomy[capability] ?? DEFAULT_AUTONOMY;
 }
 
-/** Whether the agent holds `capability` at all. A `none` scope is a declared non-grant
- *  (`lib/capabilities.ts:32`), not a grant. */
+/** Whether the agent holds `capability` at all. A `none` scope is a declared non-grant,
+ *  not a grant. */
 export function isGranted(manifest: AgentManifest, capability: string): boolean {
   const grant = grantFor(manifest, capability);
   return grant !== undefined && grant.scope !== "none";
@@ -273,9 +258,9 @@ export function isGranted(manifest: AgentManifest, capability: string): boolean 
  *
  * NEVER WIDEN. An area is in the answer only because the declaration's `vault` grant names it
  * in `areas`. `brain`, `atlas` and `memory` are not aliased to an area — they left
- * `KNOWN_CAPABILITIES` at W5C-s5/s6, so a definition that still spells one of them fails
- * `assertDeclarationIntegrity` before this function ever runs (W5C-s9). A `none` scope is a
- * declared NON-grant and a `never` autonomy is a hard deny (`decide.ts:31`), so both give the
+ * `KNOWN_CAPABILITIES`, so a definition that still spells one of them fails
+ * `assertDeclarationIntegrity` before this function ever runs. A `none` scope is a
+ * declared NON-grant and a `never` autonomy is a hard deny, so both give the
  * area nothing — the same two tests `grantedToolNames` makes before it hands a tool over.
  *
  * The result is ordered by `VAULT_AREAS`, never by the order the grants happen to be written
@@ -298,7 +283,7 @@ export function grantedVaultAreas(manifest: AgentManifest): VaultArea[] {
  *
  * Used by a job that writes on the agent's behalf without a model turn (the digest filing an
  * article in the shared area), so it can only ever write where the agent's own definition says it
- * may. `write-with-confirm` counts because the owner has ruled that, for the digest, the
+ * may. `write-with-confirm` counts because, for the digest, the
  * installation's article area setting being `shared` is one standing approval to file articles into
  * the shared area's `articles/` folder with no confirmation per write; the grant check here is the
  * part that is not waived. It never adds an area; it only ever reads the grant.
@@ -344,11 +329,10 @@ export interface ResolvableTool {
  *  reading of an understated declaration is a silently ungated write.
  *
  *  The reverse — "a `write-with-confirm` grant over a tool carrying no approval" — is NOT an
- *  error, because a capability spans both action classes. `lib/capabilities.ts:33-34` is
- *  explicit: `isWrite = cap.writes.includes(action)`, and a non-write action under a
- *  `write-with-confirm` capability returns `allow`. Deployed proof: `brain` is
- *  `write-with-confirm`, its three `brain_*` tools carry `always()`, and its four `vault_*`
- *  tools (`readTool("brain")` and friends, `src/note-tools.ts`) carry no approval at all. A
+ *  error, because a capability spans both action classes: a non-write action under a
+ *  `write-with-confirm` capability is allowed. Deployed proof: `vault` is
+ *  `write-with-confirm`, its three write tools carry `always()`, and its four read
+ *  tools (`readTool` and friends, `src/note-tools.ts`) carry no approval at all. A
  *  per-tool assertion in that direction would refuse `vault_read` and kill the chief-of-staff service's build.
  *
  *  The aggregate truth that direction was reaching for — "a `write-with-confirm` capability has
@@ -372,8 +356,8 @@ function describe(tool: ResolvableTool): string {
 /** Resolve one extension tool against the agent's declaration.
  *
  *  This is the third of the three seams eve gives us (agent config, extension config, per-tool
- *  override) and the load-bearing one: both agents carry the same ten override files, and what
- *  each agent ends up with is decided by its `agent.json`. To give the travel agent Brain you add a
+ *  override) and the load-bearing one: every agent carries the same override files, and what
+ *  each agent ends up with is decided by its `agent.json`. To give an agent the Vault you add a
  *  grant; you do not write or delete code.
  *
  *  `manifest` is `unknown` so the JSON-module import at the call site type-checks — TypeScript
@@ -388,17 +372,17 @@ export function resolveExtensionTool<T extends ResolvableTool>(
   const m = parseManifest(manifest);
   const grant = grantFor(m, capability);
 
-  // The scope matrix answers first (lib/capabilities.ts:32).
+  // The scope matrix answers first.
   if (!grant || grant.scope === "none") return disableTool();
 
-  // `never` is a hard deny that overrides the grant, for reads and writes alike (decide.ts:31).
+  // `never` is a hard deny that overrides the grant, for reads and writes alike.
   const level = autonomyOf(m, capability);
   if (level === "never") return disableTool();
 
   assertClassMatchesScope(tool, grant);
 
-  // step 1: autonomy is decided PER CALL by the permissions board (board-approval.ts), with this
-  // declaration's level as the fallback — no longer frozen here at build. A tool without an approval is
+  // Autonomy is decided PER CALL by the permissions board (board-approval.ts), with this
+  // declaration's level as the fallback — not frozen here at build. A tool without an approval is
   // a read (assertClassMatchesScope guarantees it) and is returned unchanged.
   if (tool.approval !== undefined) {
     const withBoard = { ...tool, approval: boardApproval(manifest, `agent-kit__${toolName ?? "unnamed"}`) } as unknown as ToolDefinition<unknown, unknown>;

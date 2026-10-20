@@ -1,4 +1,4 @@
-// The definition (agent-definitions spec, Part 2; ADR-0015). An agent is a FOLDER, not an image:
+// The definition (ADR-0015). An agent is a FOLDER, not an image:
 //
 //   /srv/lares/agents/<name>/
 //     agent.json   this schema — today's declaration plus six fields the builder writes
@@ -26,7 +26,7 @@ import { manifestSchema } from "./manifest.js";
 
 /** The keys `manifestSchema` (manifest.ts) knows about, as a Set for O(1) membership tests.
  *  DERIVED, not hand-listed: a definition-only field added to `definitionSchema.extend({...})`
- *  in a later task is invisible to this set automatically, so it is stripped by `manifestViewOf`
+ *  is invisible to this set automatically, so it is stripped by `manifestViewOf`
  *  below without anyone having to remember to update a parallel list here. Shared with
  *  `definition-validate.ts`, which had this same derivation before `manifestViewOf` existed. */
 const MANIFEST_KEYS: ReadonlySet<string> = new Set(Object.keys(manifestSchema.shape));
@@ -47,7 +47,7 @@ export function manifestViewOf(d: AgentDefinition): unknown {
 
 export const DEFAULT_DEFINITION_DIR_ENV = "LARES_DEFINITION_DIR";
 
-/** ADR-0013's five purposes behind any installation prefix (plan D4). The engine names no
+/** ADR-0013's five purposes behind any installation prefix. The engine names no
  *  installation, so it cannot check the prefix — the builder supplies it from a setting. */
 export const MODEL_ALIAS_RE = /^[a-z0-9]+-(brain|writer|utility|gate|embed)$/;
 
@@ -56,8 +56,8 @@ export const GENDERS = ["female", "male", "agent"] as const;
 const doorSchema = z.strictObject({
   kind: z.enum(["slack", "telegram", "email"]),
   /** A door may be SAVED while its setup is pending; it may not be switched on until its
-   *  secrets exist (spec Part 2). `enabled` is that switch; the keeper refuses `true` without
-   *  the secret (Task 3's door-secret check, enforced in Task 12). */
+   *  secrets exist. `enabled` is that switch; the keeper refuses `true` without
+   *  the secret (the door-secret check). */
   enabled: z.boolean().default(true),
   /** Per-door settings the door adapter reads (channel id, chat id, mailbox). NEVER a secret —
    *  secrets are files under /etc/lares/secrets/. */
@@ -101,13 +101,13 @@ export const definitionSchema = manifestSchema.extend({
   description: z.string().optional(),
   /** This agent's default conversation language. ABSENT means "no instruction — follow the
    *  counterpart", which is exactly today's behaviour and is what keeps the byte-identical gate
-   *  green (plan D3). The builder always sets one for a new agent. */
+   *  green. The builder always sets one for a new agent. */
   language: z.string().min(2).optional(),
   /** The duties file's name inside the definition folder. A path, not the text. */
   duties: z.string().default("duties.md"),
-  /** name -> on/off (+ times, per. ANDed with EVE_SCHEDULES_LIVE (plan D6). */
+  /** name -> on/off (+ times, per schedule). ANDed with EVE_SCHEDULES_LIVE. */
   schedules: z.record(z.string(), scheduleSchema).default({}),
-  /** Several per agent, each with its own setup flow (spec Part 5). When absent, derived from
+  /** Several per agent, each with its own setup flow. When absent, derived from
    *  the legacy `channels` list, so today's three declarations need no edit. */
   doors: z.array(doorSchema).optional(),
   /** Outside (MCP) tool servers. OPTIONAL WITH NO DEFAULT on purpose: a default of `[]` would
@@ -169,8 +169,8 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-/** Stable identity of the whole definition — the three files together. Task 4 stores it and
- *  compares it at session start to notice a hand edit; the keeper stores it on every save. */
+/** Stable identity of the whole definition — the three files together. A stored copy is
+ *  compared with it to notice a hand edit; the keeper stores it on every save. */
 export function hashOf(loaded: Pick<LoadedDefinition, "definition" | "dutiesMd" | "voiceMd">): string {
   const canonical = JSON.stringify(canonicalize(loaded.definition));
   return createHash("sha256")
@@ -192,7 +192,7 @@ async function readOr(path: string, fallback: string | null): Promise<string> {
 /** Load this agent's definition. With `LARES_DEFINITION_DIR` set, the mounted folder is the only
  *  truth — a missing or malformed `agent.json` THROWS rather than falling back, because a silent
  *  fallback to the image's neutral persona is exactly the half-configured state ADR-0015 rule 8
- *  forbids. Task 4 is what turns that throw into "keep running on the last valid one". */
+ *  forbids. The definition cache is what turns that throw into "keep running on the last valid one". */
 export async function loadDefinition(opts: { serviceDir: string; env?: NodeJS.ProcessEnv }): Promise<LoadedDefinition> {
   const env = opts.env ?? process.env;
   const mounted = env[DEFAULT_DEFINITION_DIR_ENV];

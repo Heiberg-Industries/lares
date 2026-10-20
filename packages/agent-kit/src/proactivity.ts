@@ -1,13 +1,13 @@
 /**
- * the one gate every proactive message passes, and the per-door ledger behind it.
+ * The one gate every proactive message passes, and the per-door ledger behind it.
  *
- * Three facts already paid for, and each was decided per-feature until now:
+ * Three facts already paid for, which used to be decided per feature:
  *
  *   - **An alerting agent was paused for spam.** The diagnosis is precise: not proactive messaging, but
  *     proactive messaging *on model-judged importance*. A model may rank; it may never ring the
  *     phone.
- *   - **The travel agent posted roughly fourteen times before one trip** — from a seven-day window, until
- * cut it to two slots. A window has no ceiling; a named slot list is one.
+ *   - **A polling agent once posted roughly fourteen times before one trip** — from a seven-day window, until
+ *     it was cut to two slots. A window has no ceiling; a named slot list is one.
  *   - **The briefs earn their keep**, because they are named slots that stay silent when there is
  *     nothing to say. Silence is correct output.
  *
@@ -23,7 +23,7 @@
  *    item permanently, which is worse than a rare duplicate. Suppressions and deferrals ARE
  *    recorded at decision time: they are the audit trail the console shows.
  *
- *    **The ledger grows per HELD ITEM, not per tick.** Most gating surfaces are pollers — the travel agent
+ *    **The ledger grows per HELD ITEM, not per tick.** Most gating surfaces are pollers — a poller
  *    ticks every minute, the chief of staff keeps a reminder eligible right through a do-not-disturb spell — so a
  *    row per call would be up to ~1,440 rows a day for ONE item, drowning the console's held-back
  *    view and the table alike. Two reuses prevent it, and both re-decide first, then reuse: an open
@@ -33,8 +33,8 @@
  *    An `already-seen` suppression is deliberately NOT reused: it is the terminal state, reached at
  *    most once per item per surface, and its row is the plainest audit line the console has.
  * 2. **A dead ledger fails OPEN for sending**, with a warning that names the consequence. A missed
- * suppression is an annoyance; a silent stop is the ten-dead-days shape: the digest ran
- *    nowhere for ten days and everything looked healthy). The gate never throws into a schedule.
+ *    suppression is an annoyance; a silent stop is the ten-dead-days shape (a digest that ran
+ *    nowhere for ten days while everything looked healthy). The gate never throws into a schedule.
  *    The one thing it will not do is invent a DND: DND is off only because a read SUCCEEDED and
  *    found no row — an unreachable database means "send, and say so".
  *
@@ -43,9 +43,9 @@
  * makes explicit: a rare duplicate beats an item lost for good. Already-seen still holds for every
  * later tick, which is where the duplicates would otherwise compound.
  *
- * All time math is done in the request's `tz` (the owner clock, Task 2's resolver) with
+ * All time math is done in the request's `tz` (the owner clock, see `owner-clock.ts`) with
  * `Intl.DateTimeFormat` and no library — date and time come off the SAME clock, which is exactly
- * what/128 and got wrong (a job fired on a clock nobody was standing on).
+ * what an earlier version got wrong (a job fired on a clock nobody was standing on).
  *
  * `wouldSend` answers "would you let this through right now?" — the same reads and the
  * same recorded hold as `gateInitiation`, but never a `sent` row — so a caller can check the
@@ -197,7 +197,7 @@ const dayMinutes = (date: string): number => {
  * The loop does NOT assert convergence, because one case cannot converge: a wall-clock time inside
  * the spring-forward gap never happens, so the correction oscillates. It is capped at three
  * corrections and returns the last guess, which for that case is the instant just BEFORE the gap —
- * 01:30 local for a requested 02:30 on 2026-03-29 in Europe/Oslo. Early rather than never, which
+ * 01:30 local for a requested 02:30 on 2026-03-29 in a European zone. Early rather than never, which
  * is the right direction for a quiet-end boundary; asserted in the tests so a change is visible.
  */
 export function instantAt(date: string, hhmm: string, tz: string): Date {
@@ -259,8 +259,8 @@ export function isWithinQuietHours(hhmm: string, start: string, end: string): bo
  * own switch and outranks everything. Already-seen is second because a duplicate is the one thing
  * no later rule can undo. Quiet hours come before the ceilings so that a night-time item is
  * deferred to the morning rather than to the abstract "next day". Scheduled slots skip the
- * ceilings (they are bounded by the slot list) and are DROPPED, not deferred, inside quiet hours —
- * The travel agent's rule: a very late catch-up post is worse than no post.
+ * ceilings (they are bounded by the slot list) and are DROPPED, not deferred, inside quiet hours:
+ * a very late catch-up post is worse than no post.
  */
 export function decideInitiation(req: InitiationRequest, s: ProactivitySettings, state: LedgerState): Decision {
   if (s.dnd) {

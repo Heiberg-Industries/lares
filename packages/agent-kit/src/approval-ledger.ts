@@ -2,8 +2,8 @@
  * src/approval-ledger.ts — the approval ledger: what was asked, and what the owner answered.
  * Backs `services/box/sql/001_baseline.sql`.
  *
- * WHY THIS EXISTS, NOT A SECOND `approval_events`. `approval_events` (box 038,
- * `packages/agent-kit/src/ratchet.ts`) records what the POLICY decided — asked, autonomous,
+ * WHY THIS EXISTS, NOT A SECOND `approval_events`. `approval_events`
+ * (`packages/agent-kit/src/ratchet.ts`) records what the POLICY decided — asked, autonomous,
  * denied, locked, failed-closed — one row per call id. It has never recorded what happened next:
  * whether the owner approved, cancelled, or never answered. This module is the other half.
  *
@@ -16,17 +16,17 @@
  * throws, never blocks, and a failure is logged at most once per process: recording an ask or an
  * answer must not be able to cost the turn that produced it.
  *
- * `used_at`/`use_count` (W7A-s5b) COUNT, THEY DO NOT ENFORCE. 086 has no execution marker, so a
+ * `used_at`/`use_count` COUNT, THEY DO NOT ENFORCE. The table has no execution marker, so a
  * second execution of an approved call id cannot be told from the first, and eve has a legitimate
  * durable-replay path nobody has observed live. `assertApprovedCall`, after a PASS on an existing
  * row, bumps them via `markUsed` (best-effort, never able to turn a pass into a refusal) and, on a
  * repeat, warns once — naming the tool and the call id, never the payload — and still passes.
  * Whether to refuse a repeat is a later, one-line decision made once those numbers exist.
  *
- * `assertApprovedCall` IS THE ONE PART THAT REFUSES (W7A-s5), and it refuses in exactly three
+ * `assertApprovedCall` IS THE ONE PART THAT REFUSES, and it refuses in exactly three
  * shapes, never in a fourth:
  *   1. NO CALL ID, OR NO ROW ⇒ return. A missing row is also what an autonomous, un-carded call
- *      looks like, and what every call looks like on a box that has not applied box 086 —
+ *      looks like, and what every call looks like on a box that has not applied this table's migration —
  *      refusing there would refuse exactly the calls the permissions board deliberately allowed.
  *      The APPROVER check (`services/<role>/lib/approvals.ts`) is the unconditional one; this is
  *      the additional one. For the same reason a ledger that THROWS is treated as case 1:
@@ -48,7 +48,7 @@ import type { Queryable } from "@lares/vault-format/forget-ledger";
 import { getPool } from "./db.js";
 
 /** The outcomes this table can record. `expired` and `payload-changed` are settled by the
- *  freshness check (W7A-s5), never by the hook. */
+ *  freshness check, never by the hook. */
 export const ASK_OUTCOMES = [
   "approved", "cancelled", "ignored", "invalid", "expired", "payload-changed",
 ] as const;
@@ -64,7 +64,7 @@ export interface AskRow {
   answeredAt: Date | null;
   outcome: AskOutcome | null;
   answeredVia: string | null;
-  /** First time an approved call PASSED `assertApprovedCall`'s checks. Counting only (W7A-s5b) —
+  /** First time an approved call PASSED `assertApprovedCall`'s checks. Counting only —
    *  see the module header. */
   usedAt: Date | null;
   useCount: number;
@@ -154,7 +154,7 @@ function toAskRow(row: {
  * re-parked, or a retry) keeps the FIRST asked_at — `ON CONFLICT DO NOTHING` with no target
  * covers both the primary key (request_id) and the unique call index.
  *
- * BEST-EFFORT. Never throws; warns once per process when box 086 is missing.
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
  */
 export async function recordAsk(
   db: Queryable,
@@ -176,7 +176,7 @@ export async function recordAsk(
  * Records the answer for a request id. First answer wins (`WHERE outcome IS NULL`) — a settled
  * row is never overwritten.
  *
- * BEST-EFFORT. Never throws; warns once per process when box 086 is missing.
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
  */
 export async function recordAnswer(
   db: Queryable,
@@ -197,7 +197,7 @@ export async function recordAnswer(
  * Reads the card for a call id, or null when there is none — a missing table, a missing row, or
  * an unreadable database all answer null rather than throwing.
  *
- * BEST-EFFORT. Never throws; warns once per process when box 086 is missing.
+ * BEST-EFFORT. Never throws; warns once per process when the table is missing.
  */
 export async function askForCall(db: Queryable, callId: string): Promise<AskRow | null> {
   try {
@@ -246,10 +246,10 @@ export async function answeredVia(requestId: string): Promise<string | null> {
 }
 
 /* ------------------------------------------------------------------------------------------- *
- * W7A-s5 — the card is still fresh, and it showed these arguments.
+ * The card is still fresh, and it showed these arguments.
  * ------------------------------------------------------------------------------------------- */
 
-/** How long a card stays an answer. Owner decision A2; 24 hours is the safe default.
+/** How long a card stays an answer. 24 hours is the safe default.
  *  One constant, exported, so a door cannot quietly hold a different opinion. */
 export const APPROVAL_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -313,7 +313,7 @@ export interface ApprovalLedgerReader {
   ask(callId: string): Promise<AskRow | null>;
   settle(requestId: string, outcome: "expired" | "payload-changed"): Promise<void>;
   /** Records that an approved call PASSED, atomically. Best-effort: any implementation must
-   *  answer `null` on error, never throw — see `approvalLedger()`. Counting only (W7A-s5b); the
+   *  answer `null` on error, never throw — see `approvalLedger()`. Counting only; the
    *  return value never changes whether the call passes. */
   markUsed(requestId: string): Promise<{ useCount: number } | null>;
 }
@@ -398,7 +398,7 @@ export async function assertApprovedCall(
  *
  * `settle` writes only over a row that is unsettled or `approved`, so a cancelled card cannot be
  * rewritten as expired by a late call. `answered_at` keeps the moment the OWNER answered where
- * there was an answer — box 086's check constraint requires the two columns to agree.
+ * there was an answer — the table's check constraint requires the two columns to agree.
  *
  * `markUsed` is ONE atomic statement — `use_count = use_count + 1` in the same UPDATE that reads
  * it back, so two concurrent passes on the same row both land, not one clobbering the other.

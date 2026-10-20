@@ -9,7 +9,7 @@
  *
  * BEST-EFFORT BY CONSTRUCTION, in the shape of `./approval-ledger.ts`. NEVER throws, never
  * blocks, and a failure is logged at most once per process: recording a call must not be able to
- * cost the turn that made it. A box that has not applied 005 simply records nothing.
+ * cost the turn that made it. A box that has not applied that migration simply records nothing.
  *
  * RETENTION. After each insert the same call removes this agent's rows older than
  * `MODEL_STEPS_RETENTION_DAYS` (insert-then-delete, the shape `./conversation-control.ts` uses

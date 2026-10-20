@@ -1,4 +1,4 @@
-/** A capability/action's autonomy level — the trust-ratchet dial (ADR-0009 §Decision 1).
+/** A capability/action's autonomy level — the trust-ratchet dial.
  *  3-way: never (hard deny) · gated (👍) · autonomous (act + summary). */
 export type AutonomyLevel = "autonomous" | "gated" | "never";
 

@@ -1,6 +1,6 @@
-// A secret nobody declared is invisible (W6A-s4). Two lists claim to say which secret files an
+// A secret nobody declared is invisible. Two lists claim to say which secret files an
 // installation needs — the integration manifests (`integrations/<id>/integration.json`) and
-// `integrations/installation.json`, together rendered as `connections.ts` (W6A-s3). Neither list
+// `integrations/installation.json`, together rendered as `connections.ts`. Neither list
 // is checked against what the fleet's OWN CODE actually reads. A secret a door or a client reads
 // but no list names it does not get rotated with the rest, the console cannot show it, and an
 // export or an erase pass that walks the declared set silently misses it.
@@ -64,7 +64,7 @@ function walkTsFiles(root: string): string[] {
 
 /** Every secret name declared anywhere: an integration manifest's own `secrets` field, plus
  *  every connection instance's secret files (`connections.ts`, generated from
- *  `integrations/installation.json` — W6A-s3). The two are checked together because Slack's and
+ *  `integrations/installation.json`). The two are checked together because Slack's and
  *  Google's manifests declare `secrets: []` on purpose (their real names are per agent instance,
  *  installation data) — the manifest alone would under-count what IS declared. */
 function declaredSecrets(dir: string): Set<string> {
