@@ -119,9 +119,9 @@ export function assertApprover(
  * they answered — the same arguments, and not a stale one (`assertApprovedCall`,
  * `@lares/agent-kit/approval-ledger`, W7A-s5). Never a replacement for `assertApprover`: a
  * missing call id or a missing row PASSES here (evidence never fails an action — see that
- * module's header) — which is also this service's whole situation until a later slice adds an
- * `approval_asks` recorder here (W7A-s4's hook is chief-of-staff-only so far), so today this
- * always resolves to "no row" and the check is a no-op that costs nothing.
+ * module's header). This service records its cards and their answers in `approval_asks` through
+ * `agent/hooks/approval-record.ts` and `agent/hooks/approval-supersede.ts`, so a gated call here
+ * is checked for freshness, for the arguments the card showed, and for a card that was cancelled.
  *
  * `input` MUST be the tool's own raw first argument, unmodified — never a destructured-and-
  * rebuilt object. `payloadFingerprint` treats a key present with an `undefined` value as
