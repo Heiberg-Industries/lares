@@ -37,7 +37,7 @@ die() { printf 'lares: %s\n' "$1" >&2; exit "$2"; }
 
 usage() {
   cat <<'EOF' >&2
-Usage: lares update --release <name> [--yes] [--even-though-the-backup-is-unproven]
+Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-backup-is-unproven]
        lares rollback [--dry-run] [--yes]
        lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
        lares doctor [--help]
@@ -66,12 +66,13 @@ export LARES_PREFIX="$PREFIX"
 export DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-$ROOT}"
 
 cmd_update() {
-  local name="" extra=() new on code
+  local name="" extra=() new on code dry=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --release)
         [ "$#" -ge 2 ] || die "--release needs a release name. Nothing was changed." "$EX_USAGE"
         name="$2"; shift 2 ;;
+      --dry-run) dry=1; extra+=("$1"); shift ;;
       *) extra+=("$1"); shift ;;
     esac
   done
@@ -89,6 +90,12 @@ cmd_update() {
   if [ "$code" -ne 0 ]; then
     printf 'lares: the update stopped (exit %s). This server is still on %s; read what update.sh printed above. It is safe to run again.\n' "$code" "${on:-the previous release}" >&2
     exit "$code"
+  fi
+  # A dry run stops after update.sh's own dry run: install.sh --yes would change the keeper and
+  # its settings, and current must keep pointing at the release that is actually running.
+  if [ "$dry" -eq 1 ]; then
+    printf 'lares: dry run finished. This server is still on %s; the release files for %s were downloaded to %s but nothing else was changed.\n' "${on:-the previous release}" "$name" "$new"
+    return 0
   fi
   code=0
   bash "$new/services/box/ops/install.sh" --yes --release "$new/release.json" || code=$?
