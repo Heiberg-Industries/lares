@@ -6,7 +6,7 @@
  * exists for three reasons that all point the same way:
  *
  * 1. **It is read on every turn and on every tick.** `agent/instructions/clock.ts` renders the
- *    per-turn clock block; Task 3 puts all seven slot schedules on it too, and the busiest of those
+ *    per-turn clock block; the slot schedules are on it too, and the busiest of those
  *    fire every minute. Resolving from scratch each time would mean a `config.json` read and a
  *    `SELECT` per turn, for an answer that changes at most a few times a year. Hence the 5-minute
  *    cache: worst case, a trip's first slot of the day fires on the previous clock, five minutes
@@ -14,8 +14,8 @@
  * 2. **The env is read per call, never at module scope.** `eve build` evaluates this module with no
  *    environment at all, so `OWNER_HOME_TZ` and `AGENT_OWNER_USER_ID` are looked up inside the resolve.
  * 3. **It cannot fail loudly.** A clock failure that propagates takes a turn or a schedule with it,
- *    which is the shape (ten silent dead days). Every failure here returns the home
- *    timezone and logs ONCE per failure spell — this runs on every message she answers, so a
+ *    which is how a job goes silently dead for days. Every failure here returns the home
+ *    timezone and logs ONCE per failure spell — this runs on every message the agent answers, so a
  *    per-call log line would be its own outage.
  */
 import { getPool } from "@lares/agent-kit/db";
@@ -31,7 +31,7 @@ import { ownerId } from "./principals.js";
 export const OWNER_TZ_CACHE_MS = 5 * 60_000;
 
 // The owner this service speaks for lives in `lib/principals.ts` as `ownerId()` — ONE export, not
-// two names for one env var (fix round 1). `owner_clock_signals.owner`, `initiations.owner` and
+// two names for one env var. `owner_clock_signals.owner`, `initiations.owner` and
 // `proactivity_settings.owner` are all that same key, and the clock and the ledger disagreeing about
 // whose day it is would be invisible until a quiet-hours window silently applied to nobody.
 

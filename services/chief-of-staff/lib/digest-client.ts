@@ -1,12 +1,10 @@
 /**
- * Enqueues a digest run request for `agent/tools/digest_run.ts`.
+ * Enqueues a digest run request for `catalogue/digest_run.ts`.
  *
- * Ported VERBATIM from `services/box/lib/digest-store.ts`'s `enqueueDigestRequest` —
- * table and column names must match exactly, because the row this writes is read by the
- * UNTOUCHED old digest container (`claimDigestRequests`, same file, polling the same
+ * Table and column names must match exactly, because the row this writes is read by the digest
+ * consumer (`claimDigestRequests` in `lib/digest-store.ts`, polling the same
  * `digest_requests` table over the same `db` service). This is a queue-enqueue, not a
- * gated write: the plan's own TOOL verdict for `digest_run` carries no approval gate,
- * unlike the write tools in later tasks.
+ * gated write: the `digest_run` tool carries no approval gate.
  */
 import type { Pool } from "pg";
 

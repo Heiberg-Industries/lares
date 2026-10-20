@@ -1,7 +1,7 @@
 /**
  * Conversation reader for the dream cycle.
  *
- * THIS MODULE NAMES NO PERSON AND NO PERSONA (W3B-s7). A legacy log's body has exactly one
+ * THIS MODULE NAMES NO PERSON AND NO PERSONA. A legacy log's body has exactly one
  * bold label that is the running agent's own reply line; every other bold label is a speaker —
  * a person on a door turn, or a scheduled lane's name on a machine-authored one. Which label is
  * "the agent's" is not this module's business to know: every function below takes it as an
@@ -23,9 +23,7 @@
  *
  * readConversationEntries(reader, brain, { agent, since, agentLabel }) → Promise<TurnLogEntry[]>
  *   ADR-0020's table (`conversation_entries`) is the primary source. See its own doc comment
- *   below for the NO GAP, NO DOUBLE READ rule this function implements — a rule this slice
- *   (W3B-s3) adds; the plan that named this function did not specify one (see that comment and
- *   this builder's report for why).
+ *   below for the NO GAP, NO DOUBLE READ rule this function implements.
  */
 
 import type { ConversationEntry } from "@lares/agent-kit/conversation-record";
@@ -145,9 +143,9 @@ function parseBody(body: string, agentLabel: string): { input: string; reply: st
  * the boundary entry from the previous dream cycle.
  *
  * Scheduled turns (entries carrying a `lane`) are EXCLUDED. The dream cycle exists to
- * learn how he works from what HE said; a scheduled lane's "input" is a machine-generated
+ * learn how the owner works from what the owner said; a scheduled lane's "input" is a machine-generated
  * nudge with no human in it. It carries zero signal, and feeding it back in only risks
- * her promoting observations about her own briefs.
+ * the agent promoting observations about its own briefs.
  */
 export async function readConversationLogs(
   brain: LogReaderBrain,
@@ -172,7 +170,7 @@ export async function readConversationLogs(
     const entry = parseConversationLog(markdown, opts.agentLabel);
     if (!entry) continue;
 
-    // A scheduled turn is not him talking — nothing to learn from it.
+    // A scheduled turn is not the owner talking — nothing to learn from it.
     if (entry.lane) continue;
 
     // STRICT greater-than: exclude boundary entry
@@ -200,7 +198,7 @@ export interface EntryReader {
   }): Promise<ConversationEntry[]>;
 }
 
-/** Postgres' "relation does not exist" (42P01) — the shape an unapplied migration 060
+/** Postgres' "relation does not exist" (42P01) — the shape an unapplied schema
  *  produces. The same code `lib/turn-capture.ts`'s `isMissingTableError` checks on the write
  *  side; duplicated here rather than imported because that helper is module-private there. */
 function isMissingTableError(err: unknown): boolean {
@@ -229,14 +227,13 @@ function toTurnLogEntry(row: ConversationEntry): TurnLogEntry {
  * `_meta/conversations/**\/*.md` is read only for the one gap the table cannot itself answer
  * for, and only until that gap is gone.
  *
- * NO GAP, NO DOUBLE READ — a rule this slice adds. The plan that named this function assumed a
- * clean cutover (the table always has everything since the cursor); the code as actually
- * shipped by the slice before this one (W3B-s2/turn-capture.ts) DUAL-WRITES, keeping the
- * markdown log on so the dream cycle would not go blind before this slice landed. That leaves
- * a real installation-lifetime case: a box that applies migration 060 (or starts the dual
- * write) LATER than its dream cycle's own cursor. On that box, the table has nothing before
- * the moment writes started landing in it, even though the cursor points further back — and
- * everything between the cursor and that moment exists ONLY in markdown.
+ * NO GAP, NO DOUBLE READ. A clean cutover (the table always has everything since the cursor)
+ * cannot be assumed: turn capture used to dual-write, keeping the markdown log on so the dream
+ * cycle would not go blind. That leaves a real installation-lifetime case: an installation
+ * whose table (or dual write) started LATER than its dream cycle's own cursor. There, the
+ * table has nothing before the moment writes started landing in it, even though the cursor
+ * points further back — and everything between the cursor and that moment exists ONLY in
+ * markdown.
  *
  *   1. Ask the table for its EARLIEST row for this agent (`since: EPOCH, limit: 1`,
  *      excluding scheduled lanes the same way the main read does). If that row is AT OR
@@ -250,7 +247,7 @@ function toTurnLogEntry(row: ConversationEntry): TurnLogEntry {
  *      combine it with whatever the table did return. The two windows are disjoint by
  *      construction (nothing the table returned has an `at` before its own earliest row), so
  *      no turn is ever read from both sources.
- *   3. If the table cannot be queried at all — migration 060 has not been applied, Postgres'
+ *   3. If the table cannot be queried at all — the schema has not been applied, Postgres'
  *      42P01 — the read fails soft to markdown for the WHOLE window, with one warning, and
  *      the nightly job still completes. This is the same failure `lib/turn-capture.ts`
  *      recognises on the write side; here it is not throttled, because the dream cycle runs
@@ -258,7 +255,7 @@ function toTurnLogEntry(row: ConversationEntry): TurnLogEntry {
  *
  * Once every installation's table has been given a chance to catch up past its own cursor,
  * step 1 always finds coverage and steps 2/3 stop firing on their own — no code needs to
- * change to retire them, only the markdown corpus itself (a later slice's job).
+ * change to retire them, only the markdown corpus itself.
  */
 export async function readConversationEntries(
   reader: EntryReader,

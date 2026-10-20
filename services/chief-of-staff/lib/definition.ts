@@ -1,6 +1,6 @@
-// THIS agent's definition, resolved once PER SESSION (agent-definitions spec, Part 3).
+// THIS agent's definition, resolved once PER SESSION (ADR-0015).
 //
-// WHY PER SESSION AND NOT PER PROCESS. The spec's Part 3 table resolves instructions, model,
+// WHY PER SESSION AND NOT PER PROCESS. ADR-0015 resolves instructions, model,
 // tools and skills at SESSION START — the model now on the session's first STEP, which eve 0.60
 // made the earliest scope that can carry a constructed provider rather than a routable model id
 // (packages/agent-kit/src/definition-model.ts); it is still once per conversation, before any
@@ -43,7 +43,7 @@ import manifest from "../agent.json";
 import { emitSignal } from "./signal-emit.js";
 
 /** The role template ships in the image: the builder does `COPY packages/agent-kit
- *  packages/agent-kit` (templates/ is not in .dockerignore) and the overlay's runtime stage
+ *  packages/agent-kit` (templates/ is not in .dockerignore) and the runtime stage
  *  does `COPY --from=build /app /app`, so /app/packages/agent-kit/templates/chief-of-staff/role.md
  *  is present beside the app. No Dockerfile change was needed for this. */
 const ROLE_TEMPLATE = "chief-of-staff";
@@ -104,7 +104,7 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
   // the alias it pinned and never reads again. So the exposure is a window of one step between
   // those two reads, plus the approval fallback, which is the only consumer that reads later in
   // the session. Accepted deliberately over
-  // an unbounded map (step 2 review round 2).
+  // an unbounded map.
   while (pinned.size > MAX_PINNED) {
     const oldest = pinned.keys().next();
     if (oldest.done === true) break;
@@ -120,7 +120,7 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
 async function resolveFresh(): Promise<Resolved> {
   const serviceDir = process.cwd();
   return resolveDefinition({
-    // RULING R11 (2026-09-16): the agent's identity is an INPUT, never inferred from a file that
+    // The agent's identity is an INPUT, never inferred from a file that
     // may be corrupt. The keeper sets LARES_AGENT_NAME beside LARES_DEFINITION_DIR; with no folder
     // mounted this is the service's own committed name, which is what every test and every
     // `eve build` sees. Without it, a folder of unparseable bytes has no identity to attribute a

@@ -1,9 +1,9 @@
 /**
- * Task 10, B3 — classifyIntent: ONE bounded model read of the counterparty's LAST
+ * classifyIntent: ONE bounded model read of the counterparty's LAST
  * message in a surviving thread, to tell "they asked me something" (`expects_reply`) from
  * "they closed the loop" (`closes_loop`) or "no answer expected" (`fyi`). Mirrors the house
  * style of `lib/email-triage.ts`'s one-word triage prompt/regex (~L205-212), re-aimed at
- * "does THIS message still need him" instead of "does this email need a reply at all".
+ * "does THIS message still need the owner" instead of "does this email need a reply at all".
  *
  * NO retry — and that is enforced BY THE CALLER, not here: this module only declares the
  * `complete` dep, so the attempt count lives at the wire. Both call sites
@@ -21,15 +21,15 @@
  * on the radar rather than silently vanishing from it. Missing/empty text skips the call
  * entirely — there's nothing to read, so there's nothing to ask the model.
  *
- * Task B5 wires the real `complete` (`gatewayComplete` from `lib/llm-complete.ts`) and enforces
+ * The pipeline (`lib/obligation-pipeline.ts`) wires the real `complete` (`gatewayComplete` from `lib/llm-complete.ts`) and enforces
  * `INTENT_MAX_PER_PASS` across a pass; the cap is declared here because it's a property of this
  * classification (one bounded read per item), not of the caller's loop.
  */
 
 export type Intent = "expects_reply" | "closes_loop" | "fyi" | "unreadable";
 
-/** Per-pass ceiling on how many obligations get a model read — enforced by the caller
- *  (Task B5), declared here because it belongs to this classification's cost budget. */
+/** Per-pass ceiling on how many obligations get a model read — enforced by the caller,
+ *  declared here because it belongs to this classification's cost budget. */
 export const INTENT_MAX_PER_PASS = 8;
 
 export interface IntentDeps {
@@ -71,7 +71,7 @@ export async function classifyIntent(
   return matched ? (matched[0].toLowerCase() as Intent) : "unreadable";
 }
 
-/** The words that go on the brief line — set by the caller (Task B5) as `Obligation.reason`.
+/** The words that go on the brief line — set by the caller as `Obligation.reason`.
  *  `closes_loop`/`fyi` obligations never reach the brief (they're dropped upstream), so their
  *  strings here are for the log line only. */
 export function intentReason(intent: Intent, o: { isRePing: boolean }): string {

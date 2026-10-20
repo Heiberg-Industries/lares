@@ -2,9 +2,7 @@
  * The digest's `FileNoteFn` — write the destination note AND retire its `_inbox` source in ONE
  * git commit.
  *
- * Ported from `services/box/lib/brain-source.ts`'s `makeBrainDeps().fileNote` (:175-197).
- *
- * WHY THIS IS NOT `commitNote`. `lib/vault-git.ts`'s `commitNote` serves `vault_write`: it
+ * WHY THIS IS NOT `commitNote`. `@lares/agent-kit/vault-git`'s `commitNote` serves `vault_write`: it
  * hardcodes its commit message and knows nothing about a source note. Wiring the digest to it
  * would leave every filed clip sitting in `_inbox`, to be re-classified, re-filed and re-posted
  * on the next pass — a duplicate-filing loop that grows daily and reads, in the logs and in
@@ -15,9 +13,9 @@
  * window in which the note exists in both places; a crash inside that window leaves it there
  * permanently, and the next pass files it again.
  *
- * ONE DELIBERATE DEPARTURE from brain-source.ts, authorised in the plan: a failed
+ * ONE DELIBERATE DEPARTURE from the box's own digest filing: a failed
  * `git push` THROWS (`VaultPushFailedError`) instead of warning and returning success. That
- * matches `lib/vault-git.ts`'s service-wide posture, and it composes correctly here —
+ * matches `@lares/agent-kit/vault-git`'s service-wide posture, and it composes correctly here —
  * `runDigest` catches per item, so the throw becomes one entry in `summary.errors`: the pass
  * continues, every other note still files, and the failure is REPORTED in the digest's error
  * thread reply instead of being swallowed. The local commit is durable either way.

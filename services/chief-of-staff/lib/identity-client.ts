@@ -1,15 +1,14 @@
 /**
- * Read-only identity-registry lookup for `agent/tools/identity_my_addresses.ts`.
+ * Read-only identity-registry lookup for `catalogue/identity_my_addresses.ts`.
  *
- * Ported (simplified) from `services/agent-runtime/lib/identity.ts`'s `listAliases`. That
- * module wraps the same query in a process-wide cache plus a 2s timeout and a
- * failure-degrade window, because it is called on nearly every turn by a hand built
- * eagerly at boot — a hang there is a boot hang, and its documented fallback is to pass
- * unknown aliases through rather than throw. None of that applies here: this tool is
+ * A simplified lookup of the register's aliases. A process-wide cache plus a short timeout and a
+ * failure-degrade window would suit a caller on nearly every turn, built eagerly at boot —
+ * a hang there is a boot hang, and passing unknown aliases through beats throwing. None of
+ * that applies here: this tool is
  * called on demand, not eagerly, so a genuine registry failure throws
  * `IdentityUnavailableError` instead of silently degrading to `[]` (an
  * unreachable registry must never look identical to "this user really has no email
- * aliases on file", which the old module's degrade-to-[] behavior would otherwise cause).
+ * aliases on file", which a degrade-to-[] behaviour would otherwise cause).
  *
  * Configured ownership is read at operation time through `configuredOwnerId()`.
  * No owner value is captured during imports or builds. `canonicalUserId(db)` reads
@@ -30,7 +29,7 @@ export class IdentityUnavailableError extends Error {
 }
 
 /**
- * A caller that assumed exactly one owner (most of this codebase, today — owner decision D1)
+ * A caller that assumed exactly one owner (most of this codebase, today)
  * hit a register holding more than one `users` row. Thrown by `canonicalUserId`, never
  * swallowed into a guessed answer — see that function's docstring.
  */
@@ -50,8 +49,8 @@ export class SeveralPeopleOnThisInstallation extends Error {
  * data keyed by that id, so guessing is worse than refusing.
  *  - zero rows (register unseeded, or sql/001_baseline.sql not yet applied) and any query
  *    failure both throw `IdentityUnavailableError` — the register could not answer.
- *  - more than one row (a second member has joined — not supported by any caller yet, owner
- *    decision D1) throws `SeveralPeopleOnThisInstallation` rather than silently picking the
+ *  - more than one row (a second member has joined — not supported by any caller yet)
+ *    throws `SeveralPeopleOnThisInstallation` rather than silently picking the
  *    first row.
  */
 export async function canonicalUserId(db: Pool): Promise<string> {
@@ -84,20 +83,20 @@ export function ownerIdFromEnvOrConstant(env: NodeJS.ProcessEnv = process.env): 
   return ownerId(env);
 }
 
-// ── W5I-s5b: the configured key and the register are checked against each other ────────────
+// ── The configured key and the register are checked against each other ────────────────────
 //
-// W5I-s5 gave this service one owner key in CODE (`ownerId()` / `CANONICAL_USER_ID` /
-// `ownerIdFromEnvOrConstant`) — but every owner-keyed row this agent WRITES still goes under
+// This service has one owner key in CODE (`ownerId()` / `CANONICAL_USER_ID` /
+// `ownerIdFromEnvOrConstant`) — but every owner-keyed row this agent WRITES goes under
 // that fail-soft key, while notion-sync's forgotten-file guard, the person resolver
 // (`services/box/lib/person-identity.ts`) and `canonicalUserId` above all identify the owner
-// from the identity REGISTER (`users`). Nothing compared the two. On an installation whose
-// register id is not the one literal fallback this service still carries — i.e. every
-// open-source installation until that literal is gone — the agent would file memory under one
-// name while forget/export/erase look under another, and it would do so silently: a forget
-// stops protecting, an erase reports success and leaves the rows. This function is the loud
-// version of that failure. It never throws (a caller wires it in fire-and-forget, once per
-// process — see `agent/instructions/standing-facts.ts`) and it never repairs anything itself:
-// switching keys at runtime would strand every row already written under the old one.
+// from the identity REGISTER (`users`). Without a check, the two could differ. On an installation whose
+// register id is not the one literal fallback this service still carries, the agent would file
+// memory under one name while forget/export/erase look under another, and it would do so
+// silently: a forget stops protecting, an erase reports success and leaves the rows. This
+// function is the loud version of that failure. It never throws (a caller wires it in
+// fire-and-forget, once per process — see `agent/instructions/standing-facts.ts`) and it never
+// repairs anything itself: switching keys at runtime would strand every row already written
+// under the old one.
 export type OwnerKeyAgreement = "agree" | "disagree" | "several-members" | "register-unreadable";
 
 const OWNER_KEY_REPAIR_KIND = "identity";
@@ -117,17 +116,17 @@ export function resetOwnerKeyCheckForTests(): void {
  * `@lares/agent-kit/repairs` itself: a query failure is a verdict (`register-unreadable`),
  * never a throw.
  *
- *  - `agree` — the common case, the real installation's shape today. Resolves any
+ *  - `agree` — the common case. Resolves any
  *    previously-opened disagreement repair, but only touches the database when this process
  *    actually opened one (`ownerKeyRepairMayBeOpen`) — an agreeing installation must not pay a
  *    write on every call.
- *  - `disagree` — the defect this slice reports: exactly one member, and its id is not the
+ *  - `disagree` — the defect this check reports: exactly one member, and its id is not the
  *    configured key. Logs ONE `console.error` line for the whole process (ids only, no
  *    content — the repo's convention throughout `lib/`, e.g. `email-triage.ts`,
  *    `obligation-pipeline.ts`) and opens a repair with a fixed sentence naming neither content
  *    nor a person by name.
- *  - `several-members` — the known, written-down multi-user gap (`person-identity.ts` / W5I-s1:
- *    "not supported by any caller yet, owner decision D1"). Not this slice's defect: opens and
+ *  - `several-members` — the known, written-down multi-user gap (`person-identity.ts`:
+ *    not supported by any caller yet). Not this check's defect: opens and
  *    logs nothing.
  *  - `register-unreadable` — zero rows, or the query itself failed (register not yet applied,
  *    box unreachable). Already reported on every path that actually depends on the register

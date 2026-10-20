@@ -3,7 +3,7 @@
  * which language the morning/evening brief renders in. Shaped like the sibling settings stores
  * in this package (`readLadderEnabled` in `lib/deadlines-store.ts`): a plain function taking `db: Pool` first.
  *
- * The owner's amendment of 2026-09-18: the supported set is not fixed at "nb"/"en" — it is
+ * The supported set is not fixed at "nb"/"en" — it is
  * English plus the four Nordic languages today, and a "global list" that will grow later. The
  * SQL column therefore only checks the two-letter FORMAT (`^[a-z]{2}$}`); this file is the single
  * place that knows which of those codes are actually supported.

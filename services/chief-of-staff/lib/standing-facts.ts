@@ -5,7 +5,7 @@
  * times in one conversation: the hotel is for tonight, not all day; the call is remote;
  * the train, not the car, between the two offices. Every one of those was durable, and every one
  * died when the chat ended. The nightly dream cycle is the slow lane (it distils conversation
- * logs into the Brain overnight); this is the fast one — the owner says it once, and it is
+ * logs into the vault overnight); this is the fast one — the owner says it once, and it is
  * standing from the next turn onward.
  *
  * A FACT IS THE owner'S WORDS. `fact` holds what the owner said, verbatim, never the agent's
@@ -74,7 +74,7 @@ export interface StandingFact {
   retiredAt: Date | null;
   /**
    * Always `"owner"` — the table's CHECK constraint admits no other
-   * class (Owner decision A2). `rememberFact` computes this; it is not a caller-supplied field.
+   * class. `rememberFact` computes this; it is not a caller-supplied field.
    */
   origin: Origin;
   /** When the ROW was written. Differs from `statedAt` only for a hand-dated backfill, which
@@ -84,7 +84,7 @@ export interface StandingFact {
    *  `"remember"` for every row this store has ever held. */
   source: string;
   /** The id of the row that replaced this one, or null. Set only by `supersedeFact`
-   *  (W4A-s2); `forgetFact` leaves it null, because a retirement is not a replacement. */
+   *  `forgetFact` leaves it null, because a retirement is not a replacement. */
   supersededBy: number | null;
   /** Which shelf this fact belongs on (ADR-0018 rule 7) — DERIVED from `category`, never
    *  stored: see `shelfOf`. */
@@ -100,17 +100,17 @@ export interface StandingFact {
 export const MAX_STANDING_FACTS = 40;
 
 /**
- * How long a standing-facts read may take before the caller gives up on it (fix round 1).
+ * How long a standing-facts read may take before the caller gives up on it.
  *
  * THE HOLE THIS CLOSES. Every reader of this store treats a failure as "no facts this turn" —
- * but a `catch` only fires on a REJECTION, and the failure this box actually produces is a
- * STALL: `db` up but unresponsive (a full disk, which has happened here before, or
+ * but a `catch` only fires on a REJECTION, and the failure a box actually produces is a
+ * STALL: `db` up but unresponsive (a full disk, or
  * `max_connections` exhausted). `getPool()` sets no `connectionTimeoutMillis` and eve applies no
  * timeout to a dynamic-instruction resolver, so an unbounded `pool.query` neither resolves nor
  * rejects — and the owner's message gets NO reply at all, rather than a reply without the memory.
  *
  * 1500 ms because the read is ONE indexed SELECT of at most 40 short rows. It is deliberately far
- * below any human patience threshold: the right trade here is always to answer him without her
+ * below any human patience threshold: the right trade here is always to answer the owner without the agent's
  * memory rather than to wait for it.
  *
  * The bound is applied at each call site with `withTimeout` (lib/timeout.ts) rather than on
@@ -141,7 +141,7 @@ const HEDGED = /\b(i think|i believe|probably|maybe|perhaps|seems? to|it seems|j
 
 /**
  * The refusal, or null when the fact may be stored. Returned as a model-facing sentence rather
- * than thrown: `remember` answers the model with it, and the model can then quote him properly
+ * than thrown: `remember` answers the model with it, and the model can then quote the owner properly
  * or drop the fact — a thrown error would just cost the turn.
  */
 export function rejectFact(fact: string): string | null {
@@ -239,7 +239,7 @@ export async function rememberFact(db: Pool, f: NewStandingFact): Promise<Standi
 }
 
 /**
- * Store a fact while clearing a matching forget-ledger entry, in ONE transaction (W5B-s3) —
+ * Store a fact while clearing a matching forget-ledger entry, in ONE transaction —
  * called only when the owner has been told a fact was forgotten and explicitly says to keep it
  * anyway (`remember`'s `evenThoughForgotten`). Injected the same way `forgetFact`'s `ledger`
  * writer is: this file keeps no dependency on `@lares/agent-kit/forget-ledger`, and the caller
@@ -290,12 +290,12 @@ export async function rememberFactClearingForgotten(
 export type ForgetLedgerWriter = (client: PoolClient, f: StandingFact) => Promise<void>;
 
 /**
- * Retire a fact he has superseded. Returns the retired row, or null when the id is unknown,
+ * Retire a fact the owner has superseded. Returns the retired row, or null when the id is unknown,
  * already retired, or owned by a DIFFERENT user — the caller tells those apart from a success,
  * and none of them is an error. Scoping this by owner means one member can never retire a fact
  * another member stated, even by guessing or brute-forcing an id.
  *
- * Never deletes: the superseded row is what explains why she used to say "train".
+ * Never deletes: the superseded row is what explains why the agent used to say "train".
  *
  * ONE TRANSACTION WITH THE LEDGER. `ledger`, when given, is called with the SAME client that ran
  * the retirement, before `COMMIT` — so a ledger write that throws rolls the retirement back too:
@@ -314,7 +314,7 @@ export async function forgetFact(
   try {
     await client.query("BEGIN");
     // `superseded_by` is deliberately left NULL: a retirement is not a replacement. The row that
-    // both closes and links is `supersedeFact` (W4A-s2).
+    // both closes and links is `supersedeFact`.
     const { rows } = await client.query<StandingFactRow>(
       `UPDATE standing_facts SET retired_at = COALESCE($3, now())
         WHERE id = $1 AND user_id = $2 AND retired_at IS NULL
@@ -358,7 +358,7 @@ export class UnknownFactError extends Error {
  *
  * WHY THIS EXISTS. Until now the model was told to call `forget` and then `remember`, which
  * leaves two unrelated rows: a retired one and a fresh one, with nothing recording that they are
- * the same fact changing. So "why did she used to say train?" has no answer, and a reversed
+ * the same fact changing. So "why did the agent say train before?" has no answer, and a reversed
  * decision does not outrank the decision it reversed — they are just two rows with two dates.
  * This function is the only writer of `superseded_by`.
  *
@@ -376,7 +376,7 @@ export class UnknownFactError extends Error {
  *
  * THE OLD FACT STOPS BEING TRUE EXACTLY WHEN THE NEW ONE STARTS. Both dates come from the same
  * `f.statedAt ?? now()`, and `now()` is the transaction's timestamp, so the two instants are
- * equal to the microsecond: no gap in which the owner had no answer, no overlap in which he had
+ * equal to the microsecond: no gap in which the owner had no answer, no overlap in which the owner had
  * two.
  *
  * NOTHING IS DELETED. The closed row keeps its words, its dates, its source and its origin, and
@@ -467,7 +467,7 @@ export async function listActiveFacts(
 
 /**
  * How many retired facts `listRetiredFacts` ever returns in one call — "what have I retired?"
- * (owner ruling). Fifty is generous for what this table actually
+ * Fifty is generous for what this table actually
  * accumulates and matches the spirit of `MAX_STANDING_FACTS`'s reasoning: a bound that says so
  * when it cuts, rather than an unbounded read.
  */
@@ -485,8 +485,8 @@ export interface RetiredFact {
 }
 
 /** What `listRetiredFacts` produced. `cut` is true when more retired facts exist past the
- *  limit — the caller says so rather than silently truncating (BUILDER task: "cap the list (50)
- *  and say when it was cut"). */
+ *  limit — the caller says so rather than silently truncating (the list is capped at 50 and
+ *  says when it was cut). */
 export interface RetiredFactsPage {
   facts: RetiredFact[];
   cut: boolean;
@@ -546,12 +546,12 @@ export function standingFactLine(f: StandingFact): string {
 }
 
 /**
- * The block's ceiling in CHARACTERS, not rows (Owner decision B1).
+ * The block's ceiling in CHARACTERS, not rows.
  *
  * WHY CHARACTERS. A row cap cannot bound a prompt: `MAX_STANDING_FACTS` (40) at
  * `MAX_FACT_LENGTH` (300) is roughly 12 kB of worst-case system prompt, and this block rides on
  * every session of every door. 3,000 characters is about 750 tokens — roughly twenty ordinary
- * facts, and comfortably more than any real box holds today.
+ * facts, and comfortably more than any real box holds.
  *
  * WHAT IT DOES WHEN THE FACTS DO NOT FIT. It reports; it does not cut. See `FACT_LOOKUP_TOOL`.
  */
@@ -587,7 +587,7 @@ export interface FactsCore {
    *  back. Rendered into the block, with the tool that reaches them, when it is non-zero. */
   omitted: number;
   /** Whether the rendered block is larger than the budget. True only on the no-cut path; it is
-   *  what an operator (or a later slice) reads to know a box has outgrown 3,000 characters. */
+   *  what an operator (or a later change) reads to know a box has outgrown 3,000 characters. */
   overBudget: boolean;
 }
 
@@ -708,7 +708,7 @@ export function standingFactsMarkdown(facts: readonly StandingFact[]): string {
 }
 
 /**
- * The turn-scoped correction (W4B-s3, ADR-0018 rule 9): what changed since the session's block
+ * The turn-scoped correction (ADR-0018 rule 9): what changed since the session's block
  * (`buildFactsCore`) was built — or `""` when nothing did, which is the ordinary turn and the
  * case that must cost nothing. eve deletes an empty resolver's slot outright rather than
  * reserving space for it (`agent/instructions/standing-facts.ts`'s header), so an unchanged turn
@@ -733,7 +733,7 @@ export function standingFactsMarkdown(facts: readonly StandingFact[]): string {
  * only by `supersededBy`, which a resolver reading the ACTIVE list alone cannot see on the closed
  * row (`listActiveFacts` selects `WHERE retired_at IS NULL`).
  *
- * `notes` (W4B-s5) is this session's OWN `agent_notes` rows, oldest first — never another
+ * `notes` is this session's OWN `agent_notes` rows, oldest first — never another
  * session's. Rendered under "I have noted, this conversation:", so a note left on turn 3 is in
  * front of the model on turn 4 without touching the session prefix. Defaults to `[]` so every
  * existing two-argument call site and test keeps its exact behaviour.

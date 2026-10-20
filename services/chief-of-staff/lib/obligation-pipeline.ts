@@ -1,24 +1,19 @@
 /**
  * The obligation radar's resolve → read → explain pipeline, and the gather that composes it.
  *
- * extracted VERBATIM from `lib/brief-content.ts`, where it shipped as Task 10.
- * Nothing here was rewritten — the function bodies, the constants, the log strings and every
- * comment are the same bytes they were in `brief-content.ts`; only the imports are new. If this
- * file behaves differently from the file it came from, that is a bug in the move, not a design
- * decision.
- *
- * WHY IT MOVED. `brief-content.ts` had grown to ~2,300 lines holding five separable things (the
+ * It lives apart from `lib/brief-content.ts` because that file holds five separable things (the
  * Gmail scan, the selection rule, the surfaces, this pipeline, and both brief renderers), and
- * this was the one piece with a clean seam: it consumes `Obligation`s and hands back
+ * this is the one piece with a clean seam: it consumes `Obligation`s and hands back
  * `Obligation`s, and nothing that renders a brief ever calls into it.
  *
- * AND WHY THE CYCLE HAD TO GO WITH IT. `brief-content.ts` imported `RESOLUTION_LOOKUP_TIMEOUT_MS`
- * from `obligation-resolution.ts` while `obligation-resolution.ts` imported `withTimeout` back
- * out of `brief-content.ts` — a genuine value-level ESM cycle. It was harmless under Vitest and
- * `tsc` only because neither binding is read at module-init time; one top-level use of either,
- * on either side, and `eve build`'s rollup would have turned it into a "Cannot access … before
- * initialization" crash at container boot. `withTimeout` now lives in `lib/timeout.ts` (a leaf
- * with no imports at all), so the cycle is gone rather than merely dormant.
+ * KEEPING IT OUT OF AN IMPORT CYCLE. Had `brief-content.ts` imported
+ * `RESOLUTION_LOOKUP_TIMEOUT_MS` from `obligation-resolution.ts` while `obligation-resolution.ts`
+ * imported `withTimeout` back out of `brief-content.ts`, that would be a genuine value-level
+ * ESM cycle. It would be harmless under Vitest and `tsc` only because neither binding is read
+ * at module-init time; one top-level use of either, on either side, and `eve build`'s rollup
+ * would turn it into a "Cannot access … before initialization" crash at container boot.
+ * `withTimeout` lives in `lib/timeout.ts` (a leaf with no imports at all), so the cycle does
+ * not exist rather than merely lying dormant.
  *
  * THE DEPENDENCY DIRECTION IS ONE-WAY, deliberately: this module reads `brief-content.ts`'s scan
  * and selection rule, and `brief-content.ts` reads nothing here. Keep it that way — the moment a
@@ -41,15 +36,14 @@ import {
 // Gather — Gmail scan → candidates → dismissals applied → seen-state persisted. Both the
 // evening and morning schedules, and the re-ping schedule, call this same composition (each on
 // its own tick — Gmail is the source of truth; nothing about "which obligations are open" is
-// cached between ticks). Ported from
-// services/agent-runtime/lib/adapters/obligations/gather.ts, minus rank.ts (see module header).
+// cached between ticks). There is no ranking pass (see `lib/brief-content.ts`'s module header).
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface GatherObligationsDeps {
-  /** Every address he owns — never a constant. */
+  /** Every address the owner owns — never a constant. */
   myAddresses(): Promise<string[]>;
   gmail: GmailSourceDeps;
-  /** Thread ids he has said "handled" on — never resurfaced. */
+  /** Thread ids the owner has said "handled" on — never resurfaced. */
   dismissed(): Promise<Set<string>>;
   /** Persist what THIS pass saw as an open obligation. */
   upsertSeen(o: Obligation, now: Date): Promise<void>;
@@ -58,12 +52,11 @@ export interface GatherObligationsDeps {
    * (credentials resolved, `ownUserId`/clock supplied) so this file stays free of Slack
    * knowledge, exactly like `gmail` above. `undefined` is a real, supported state, not a
    * placeholder to fill in later: `evening-brief.ts` and `reping.ts` never pass one, by design
-   * (D4 in the Slack-reads design — proactive
-   * delivery stays paused fleet-wide, and Slack obligations must reach the morning brief only).
+   * (Slack obligations must reach the morning brief only, never a proactive push).
    * Only `morning-brief.ts` supplies this.
    *
    * UNLIKE `gmail`, a failure here does NOT take down the whole gather — see the try/catch
-   * below. A Slack outage, a revoked token, or a rate limit must never cost him his Gmail
+   * below. A Slack outage, a revoked token, or a rate limit must never cost the owner the Gmail
    * obligations too.
    */
   slack?(): Promise<ThreadSnapshot[]>;
@@ -76,7 +69,7 @@ export interface GatherObligationsDeps {
    *
    * BEST EFFORT, one `.catch` per call. The candidate table is where an OFFER is recorded — "do
    * you want this to be a deadline?" — and a dead table costs the brief one offer line. It must
-   * never cost him the gather; the schedules that wire this hand back their whole obligation
+   * never cost the owner the gather; the schedules that wire this hand back their whole obligation
    * list from the same call.
    *
    * `undefined` is a fully supported state: `evening-brief.ts` and `reping.ts` never pass one,
@@ -85,9 +78,9 @@ export interface GatherObligationsDeps {
    */
   recordCandidate?(c: { threadId: string; subject: string; sender: string; seenAt: Date }): Promise<void>;
 
-  // ─── Task 10 (B5) — resolve, then read, then explain ──────────────────────────────
+  // ─── Resolve, then read, then explain ─────────────────────────────────────────────
   // EVERY dep below is optional, and that is the fail-open contract in the type system: a
-  // schedule that wires none of them gets exactly the pre-Task-10 behaviour, and a stage whose
+  // schedule that wires none of them gets plain scan-and-select behaviour, and a stage whose
   // dep is missing is SKIPPED with the item kept. Nothing here may ever remove an obligation
   // from the radar by failing.
 
@@ -96,11 +89,11 @@ export interface GatherObligationsDeps {
    *  message — see `dropResolved`. */
   resolved?(): Promise<ReadonlyMap<string, Date>>;
   /**
-   * "Did he already answer them somewhere else?" — `lib/obligation-resolution.ts`'s
+   * "Did the owner already answer them somewhere else?" — `lib/obligation-resolution.ts`'s
    * `resolveElsewhere`, wired by the schedule with the real lookups.
    *
-   * Returns the WHOLE outcome rather than `Resolution | null` (which is what Task B5's brief
-   * sketched) because `unreadable` is at its most load-bearing precisely when `resolution` is
+   * Returns the WHOLE outcome rather than `Resolution | null`
+   * because `unreadable` is at its most load-bearing precisely when `resolution` is
    * null: "no answer found anywhere" and "no answer found, but the calendar could not be read"
    * are different claims, and only the second obliges the brief to say so.
    */
@@ -109,7 +102,7 @@ export interface GatherObligationsDeps {
    *  the item still dropped: the answer elsewhere is a fact, the write is bookkeeping. */
   markResolved?(o: Obligation, r: Resolution): Promise<void>;
   /**
-   * The already-known verdict for this thread's CURRENT last message (Task B4's `cachedIntent`),
+   * The already-known verdict for this thread's CURRENT last message,
    * or null when nobody has read it yet.
    *
    * SPLIT FROM `classifyIntent` DELIBERATELY, and the split is the whole reason `INTENT_MAX_PER_PASS`
@@ -148,28 +141,28 @@ export interface ResolveOutcome {
 export const RESOLUTION_PASS_TIMEOUT_MS = 15_000;
 
 /** In-flight resolutions (four metadata lookups each) and model reads. Matches the concurrency
- *  the task brief fixes for this pass; `INTENT_MAX_PER_PASS` caps the model reads themselves. */
+ *  chosen for this pass; `INTENT_MAX_PER_PASS` caps the model reads themselves. */
 const RESOLUTION_CONCURRENCY = 4;
 
-/** He is still owed this, and we could not establish otherwise — a lookup threw, the model
+/** The owner is still owed this, and we could not establish otherwise — a lookup threw, the model
  *  threw, or the stage ran out of budget. NEVER a reason to drop something. */
 export const RESOLUTION_UNVERIFIED_REASON = "could not verify — kept on the radar";
 
 /** Past `INTENT_MAX_PER_PASS`: nobody read their last message this pass, so nothing is known
- *  about it — which is not the same as knowing it needs him, and the line says so. */
+ *  about it — which is not the same as knowing it needs the owner, and the line says so. */
 export const INTENT_UNREAD_REASON = "not yet read — kept on the radar";
 
 /**
  * Applies a recorded cross-channel resolution to a list of obligations.
  *
- * THE COMPARISON IS THE WHOLE POINT. A resolution is a statement about ONE moment: "he
+ * THE COMPARISON IS THE WHOLE POINT. A resolution is a statement about ONE moment: "the owner
  * answered them on 2026-08-11". If they wrote again on the 12th, that statement is stale and
  * the thread is owed again — dropping it on the mere PRESENCE of a resolution row would make a
  * single answered message silence a counterparty forever. Only `resolvedAt > lastMessageAt`
  * drops.
  *
  * Shared by `gatherOpenObligations`'s first step and `agent/schedules/reping.ts` (which applies
- * it before `assignSurfaces`, so a thread he has already handled can never buy an interrupt) —
+ * it before `assignSurfaces`, so a thread the owner has already handled can never buy an interrupt) —
  * one rule, one implementation, no chance of the two drifting.
  */
 export function dropResolved(
@@ -191,11 +184,11 @@ export function dropResolved(
  *
  * THROWS on a Gmail source failure (a Gmail read, an unenrolled mailbox, a store write) — it
  * does not catch and does not degrade to `[]`. `[]` would read as "nobody is waiting on a
- * reply", a claim about his obligations that a query which threw has not earned. Callers turn
+ * reply", a claim about the owner's obligations that a query which threw has not earned. Callers turn
  * a throw into "unavailable" (never a rendered brief) and log it.
  *
  * A `deps.slack` FAILURE IS DIFFERENT: it is caught here, logged loudly (naming what failed),
- * and the gather continues with Gmail-only results — a Slack outage must never cost him his
+ * and the gather continues with Gmail-only results — a Slack outage must never cost the owner the
  * Gmail obligations, let alone the whole brief.
  */
 export async function gatherOpenObligations(deps: GatherObligationsDeps, now: Date): Promise<Obligation[]> {
@@ -259,7 +252,7 @@ export async function gatherOpenObligations(deps: GatherObligationsDeps, now: Da
     now,
   );
 
-  // ─── Task 10 (B5), step 1: apply what a PREVIOUS pass already established ──────────
+  // ─── Step 1: apply what a PREVIOUS pass already established ──────────
   // Cheap, local, and it shrinks the list every later step (and every paid lookup) works on.
   // A read failure here is best-effort by construction: `deps.resolved` absent, or throwing,
   // means nothing is dropped — the radar keeps everything rather than going quiet.
@@ -277,7 +270,7 @@ export async function gatherOpenObligations(deps: GatherObligationsDeps, now: Da
   const open = dropResolved(candidates, resolvedAlready);
 
   // ─── step 2: persist what THIS pass saw, BEFORE anything reads or writes against the row ──
-  // This moved AHEAD of the resolve and intent passes (Task B5's brief listed it last) and the
+  // This runs AHEAD of the resolve and intent passes, and the
   // ordering is load-bearing, not cosmetic: `markResolved` and `recordIntent` are both
   // UPDATE-only — they exist to write pointers onto a row `upsertSeen` alone knows how to
   // create. Run the other way round, both would silently update ZERO rows, every resolution
@@ -312,8 +305,8 @@ export async function gatherOpenObligations(deps: GatherObligationsDeps, now: Da
       err,
     );
     // An item POSITIVELY removed before the budget blew stays removed. Re-adding it would put a
-    // thread he demonstrably answered — one this pass already recorded as resolved in the
-    // database — back on his brief, which is the exact false report the whole stage exists to
+    // thread the owner demonstrably answered — one this pass already recorded as resolved in the
+    // database — back on the owner's brief, which is the exact false report the whole stage exists to
     // stop, and it would arrive labelled "could not verify" as though nothing were known.
     return materialize(open, progress);
   } finally {
@@ -369,7 +362,7 @@ function materialize(open: readonly Obligation[], progress: StageProgress): Obli
  * carrying the `reason` its brief line will render.
  *
  * Every path through this function that cannot establish something keeps the item. The three
- * ways an item leaves the list are all POSITIVE findings: a resolution hit ("he answered them
+ * ways an item leaves the list are all POSITIVE findings: a resolution hit ("the owner answered them
  * on 2026-08-11"), `closes_loop`, or `fyi`. Nothing leaves because a lookup broke.
  *
  * `progress` is written AS decisions are made rather than assembled at the end: the caller's
@@ -381,7 +374,7 @@ async function resolveAndExplain(
   deps: GatherObligationsDeps,
   progress: StageProgress,
 ): Promise<Obligation[]> {
-  // Step 3 — did he already answer them elsewhere?
+  // Step 3 — did the owner already answer them elsewhere?
   //
   // EVERY per-item decision is made INSIDE the mapper, not in a loop after it. `mapWithConcurrency`
   // is a barrier: one hung lookup means the whole pass never resolves, so a verdict reached in a
@@ -408,7 +401,7 @@ async function resolveAndExplain(
       console.log(`obligations: resolved elsewhere ${o.threadId} via ${resolution.via} — ${resolution.evidence}`);
       // Recorded as dropped BEFORE the write is awaited: the decision is already made, and the
       // budget may expire inside that await. The drop happens whether or not the write lands —
-      // he HAS answered them; a failed write costs one repeated lookup next pass, not a brief
+      // the owner HAS answered them; a failed write costs one repeated lookup next pass, not a brief
       // line about something already handled.
       progress.dropped.add(o.threadId);
       if (deps.markResolved) {
@@ -424,7 +417,7 @@ async function resolveAndExplain(
     })
   ).filter((o): o is Obligation => o !== null);
 
-  // Step 4 — of what is left, does their last message actually still need him?
+  // Step 4 — of what is left, does their last message actually still need the owner?
   await readIntents(survivors, deps, progress);
 
   return materialize(open, progress);
@@ -457,7 +450,7 @@ async function readIntents(
    *  cached verdict and a fresh one can never be acted on differently. */
   const apply = (o: Obligation, intent: Intent): void => {
     if (intent === "closes_loop" || intent === "fyi") {
-      // THE ONE LOG LINE THAT MATTERS when he asks "why wasn't X in my brief?". It is the only
+      // THE ONE LOG LINE THAT MATTERS when the owner asks "why wasn't X in my brief?". It is the only
       // record that an obligation was removed by a reading rather than by a fact — the acceptance
       // case is a counterpart's "sounds good, see you then" (slack:im:D00000002:1700000000.000100),
       // which is a closed loop no structural rule could ever have told from an open one.
@@ -470,7 +463,7 @@ async function readIntents(
 
   // SORTED EXPLICITLY, never inherited. `selectObligations` already returns most-overdue-first,
   // but a cap spent against an assumed ordering is a bug waiting for the day someone re-sorts
-  // upstream — and the half that silently loses the budget is the oldest, i.e. the items he has
+  // upstream — and the half that silently loses the budget is the oldest, i.e. the items the owner has
   // most stopped seeing. Ties break on the thread id so the same pass twice reads the same eight.
   const byAge = [...survivors].sort(
     (a, b) => b.ageHours - a.ageHours || a.threadId.localeCompare(b.threadId),
@@ -482,8 +475,8 @@ async function readIntents(
   // survivor the verdict that had already come back. Same reason the resolve pass writes from
   // inside its callback.
   //
-  // And each read is BOUNDED, unlike before. The four channel lookups have carried a per-source
-  // ceiling since Task B2; this one had none, so a wedged connection could pin the whole pass
+  // And each read is BOUNDED. The four channel lookups each carry a per-source ceiling, and so
+  // does this one: without it a wedged connection could pin the whole pass
   // against the 15s stage budget on a read that should take a millisecond. A timed-out or
   // throwing read is a MISS, never a verdict — a broken cache costs a model call, never an
   // item's explanation, and it can certainly never drop an obligation.

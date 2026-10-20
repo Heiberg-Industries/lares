@@ -1,14 +1,13 @@
 /**
  * Raw Twenty client for the CRM routing engine's scan/classify loop.
  *
- * Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s activity-read and
- * opportunity endpoints (verified against crm.owner.example 2026-06-20). This is deliberately
- * separate from the gated `agent/tools/twenty_*.ts` files: the entry script's own comment on the
- * old routing tick explains why — "the route engine is bin-specific orchestration that
- * legitimately needs a RAW Twenty client (not a hand)". The routing schedule reads
- * participants/messages/events/opportunities to CLASSIFY a signal; it never writes — the
- * actual write, once the owner approves, goes through the already-gated
- * `twenty_create_opportunity`/`twenty_set_stage` tools (Task 5).
+ * The activity-read and opportunity endpoints (verified against a live Twenty instance).
+ * This is deliberately
+ * separate from the gated `catalogue/twenty_*.ts` files: the route engine is bin-specific
+ * orchestration that needs a RAW Twenty client (not a tool). The routing
+ * schedule reads participants/messages/events/opportunities to CLASSIFY a signal; it never
+ * writes — the actual write, once the owner approves, goes through the already-gated
+ * `twenty_create_opportunity`/`twenty_set_stage` tools.
  *
  * Uses `lib/twenty-client.ts`'s generic `twentyGet` verb, so a genuine Twenty failure surfaces
  * as the same typed `TwentyUnavailableError`/`TwentyNotFoundError` every other Twenty read in

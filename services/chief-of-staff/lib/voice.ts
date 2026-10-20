@@ -3,8 +3,7 @@
  * prompt "voice block" (Core + the matching language section), and pick the per-language
  * model. No I/O — DB access lives in lib/voice-store.ts.
  *
- * Lang + detectLanguage moved to @lares/compose-contract — this file forked them
- * byte-for-byte from services/agent-runtime/lib/voice/profile.ts; re-exported here so
+ * Lang + detectLanguage live in @lares/compose-contract; they are re-exported here so
  * existing importers are unaffected.
  */
 import { detectLanguage, type Lang } from "@lares/compose-contract";

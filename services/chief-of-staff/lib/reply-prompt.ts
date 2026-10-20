@@ -8,7 +8,7 @@
  *  - **No brevity rule.** "Write a brief, warm, specific reply" produced 130–650 tokens of text
  *    and read as thin next to the same person's real mail. Length now comes from
  *    the examples — the owner's own sent mail from THIS mailbox — not from an adjective.
- *  - **Examples first, guide second.** His sent mail is the strongest evidence of how he writes;
+ *  - **Examples first, guide second.** The owner's sent mail is the strongest evidence of how the owner writes;
  *    the distilled bullet list (`voiceBlock`) is a summary of it and must not outrank it. On a
  *    thinking model a prescriptive list written for an earlier model tends to lower quality.
  *  - **The compose contract stays verbatim** (language, no invented commitments) — shared law

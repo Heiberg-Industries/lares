@@ -3,15 +3,13 @@
 // (lib/person/gather.ts). All vendor shapes stop here; lib/person/ never sees a Gmail header,
 // a Twenty record, or a Google Calendar event.
 //
-// Ported (Task 8) from services/agent-runtime/lib/adapters/person-sources.ts. The `PersonWiring`
-// SHAPE and every source function's LOGIC — the crm/mail/meetings/transcripts/company
-// fan-out and its per-source honesty rules — is carried over unchanged. What changes is what
-// `PersonWiring` is built FROM: the old file's interface expected old-runtime adapter functions
-// injected by a caller; `eveSagaPersonWiring()` below constructs the same interface directly
+// The `PersonWiring` SHAPE and every source function's LOGIC — the
+// crm/mail/meetings/transcripts/company fan-out and its per-source honesty rules — are
+// described below. `eveSagaPersonWiring()` constructs the `PersonWiring` interface directly
 // from the chief of staff's own already-built clients (identity-client, twenty tools,
-// google.ts, notes-store) — no old-runtime adapters exist here to inject.
+// google.ts, notes-store), so no caller has to inject adapter functions.
 //
-// THE UNIFORM RULE FOR EVERY SOURCE BELOW (carried over from fix round 1 of the original): when
+// THE UNIFORM RULE FOR EVERY SOURCE BELOW: when
 // a source cannot determine its answer, it must THROW. lib/person/gather.ts's attempt() turns a
 // throw into {status:"failed"}, which renders as COULD NOT READ. Returning [] (or null) renders
 // as "nothing found" — a claim about the WORLD. A source may only return [] when it genuinely
@@ -38,8 +36,8 @@ import type { CompanyFacts, MailItem, MeetingItem, PersonSources, TranscriptItem
 
 export interface PersonWiring {
   myAddresses(): Promise<string[]>;
-  /** chief-of-staff's `TwentyLookupResult` (agent/tools/twenty_lookup.ts) has no `warnings` field —
-   *  unlike the old adapter's PersonWiring, because `lib/twenty-client.ts`'s `twentyGet` never
+  /** chief-of-staff's `TwentyLookupResult` (catalogue/twenty_lookup.ts) has no `warnings` field,
+   *  because `lib/twenty-client.ts`'s `twentyGet` never
    *  swallows a sub-query failure into a warning string; it throws `TwentyUnavailableError`
    *  directly. */
   twentyLookup(args: { query: string }): Promise<TwentyLookupResult>;
@@ -55,9 +53,9 @@ export interface PersonWiring {
   listEvents(o: { timeMin: string; timeMax: string; max: number; calendarId?: string }): Promise<CalendarEvent[]>;
   vaultSearch(q: string): Promise<string[]>;
   vaultRead(path: string): Promise<string>;
-  /** Atlas is a note store of exactly the same shape as the Brain (a directory of
+  /** Atlas is a note store of exactly the same shape as the vault (a directory of
    *  markdown behind `searchNotes`/`storeRoot` in @lares/agent-kit), so it is wired here the same
-   *  way `vaultSearch` is: as a search function, NOT by calling `agent/tools/atlas_search.ts`.
+   *  way `vaultSearch` is: as a search function, NOT by calling the vault search tool (`catalogue/agent-kit__vault_search.ts`).
    *  That tool is a model-facing hand; this is an internal read, and routing it through the tool
    *  would make the dossier depend on eve's tool plumbing to answer a question it can answer
    *  itself. A store that cannot be read THROWS (notes-store's StorePathNotConfiguredError /
@@ -105,12 +103,12 @@ const ORG_STORES: readonly OrgStore[] = ["brain", "atlas"];
 const ORG_HITS_PER_TERM = 3;
 const ORG_HITS_PER_STORE = 4;
 
-/** One TwentyPersonLite (agent/tools/twenty_lookup.ts) → Candidate. `email` is
+/** One TwentyPersonLite (catalogue/twenty_lookup.ts) → Candidate. `email` is
  *  singular+nullable on the real record — there is no `emails` array and no company NAME
  *  (only companyId; see twentyCompanyForPerson in PersonWiring, used by company() below).
  *  chief-of-staff's `mapPerson` always synthesises a non-empty `name` (falling back to the primary
  *  email, then `"(unnamed)"`), so the empty-name guard below is defensive, not reachable in
- *  practice — kept for parity with the ported `crm()` "none carried a usable name" check. */
+ *  practice— kept as the `crm()` "none carried a usable name" check. */
 function asTwentyCandidate(p: TwentyPersonLite): Candidate[] {
   const name = p.name?.trim();
   if (!name) return [];
@@ -126,12 +124,10 @@ export function makePersonSources(w: PersonWiring): PersonSources {
       // becomes N calls, one per address, unioned by sourceId. A plain email/name query is
       // just the N=1 case of the same shape.
       const terms = q.emails && q.emails.length > 0 ? q.emails : [q.email ?? q.name ?? ""];
-      // Fix round 2 (reviewer finding on Task 8): restore the old adapter's partial-tolerance
-      // for a multi-term merge query. `Promise.all` would let ONE term's transient Twenty
+      // Partial tolerance for a multi-term merge query. `Promise.all` would let ONE term's transient Twenty
       // hiccup (e.g. address 1 of 2 on a job-change merge) sink the whole call even though
       // address 2 still resolves — losing the "a partial read that found someone despite one
-      // degraded sub-query is still a find" behaviour the old adapter's own fix round 1
-      // hardened. The `twentyLookup` wiring has no `warnings` field to inspect (`twentyGet` never
+      // degraded sub-query is still a find" behaviour. The `twentyLookup` wiring has no `warnings` field to inspect (`twentyGet` never
       // swallows a failure into a warning) — the equivalent signal here is simply
       // whether THIS term's call threw. `Promise.allSettled` catches each individually so the
       // remaining terms still run; only surface `failed` when every term either errored or
@@ -175,7 +171,7 @@ export function makePersonSources(w: PersonWiring): PersonSources {
     mail: async (person, mine) => {
       // Without `mine` there is no way to tell "the owner sent this" from "they did" — every
       // message would satisfy `!mineSet.has(...)`, so a degraded identity registry (gather.ts
-      // passes mine:[] when its own source fails) would make every thread look like one he
+      // passes mine:[] when its own source fails) would make every thread look like one the owner
       // owes a reply on, which is a much louder and more actionable wrong answer than silence.
       if (mine.length === 0) {
         throw new Error("cannot tell whose replies are whose: the identity registry returned no addresses for the owner");
@@ -198,7 +194,7 @@ export function makePersonSources(w: PersonWiring): PersonSources {
 
       // Keep only the newest message per thread — the thread's current state is what says who
       // owes whom. Calendar notices are dropped: Google sends an RSVP FROM the attendee's real
-      // address, so an "Accepted:" would otherwise read as them writing to him.
+      // address, so an "Accepted:" would otherwise read as them writing to the owner.
       const newest = new Map<string, MailMessage>();
       for (const m of msgs) {
         if (m.isCalendarNotice) continue;
@@ -292,10 +288,10 @@ export function makePersonSources(w: PersonWiring): PersonSources {
     organisation: async (org: OrgQuery): Promise<OrgFacts | null> => {
       // THE CRM GOES FIRST, and not for tidiness. Its answer changes the QUESTION: Twenty's
       // person record carries a companyId and no company name, so for a CRM-sourced person the
-      // only place the name exists is one of these two calls. Asked afterwards — as this stage
-      // first did — `dana@atbridgeco.example` searched the stores for "atbridgeco.example" and "atbridgeco"
-      // only, and every Brain note that calls the company "Bridgeco" and never writes the domain
-      // was missed. That is the ticket's own scenario, failing inside its own fix.
+      // only place the name exists is one of these two calls. Asked afterwards,
+      // `dana@atbridgeco.example` would search the stores for "atbridgeco.example" and "atbridgeco"
+      // only, and every vault note that calls the company "Bridgeco" and never writes the domain
+      // would be missed.
       const crmHit = org.domain ? await w.crmCompanyByDomain(org.domain) : null;
       const crmName = org.crmRecordId && !org.name ? await w.twentyCompanyForPerson(org.crmRecordId) : null;
 
@@ -349,7 +345,7 @@ export function makePersonSources(w: PersonWiring): PersonSources {
 }
 
 // -----------------------------------------------------------------------------------------
-// chief-of-staff's real PersonWiring — calls the clients this task was told to rewire onto.
+// chief-of-staff's real PersonWiring — calls chief-of-staff's own clients.
 // No I/O happens at construction (matches lib/google.ts's laziness discipline); everything
 // below is a thin function reference until person_lookup.ts's `execute()` actually calls it.
 // -----------------------------------------------------------------------------------------
@@ -372,9 +368,9 @@ export function eveSagaPersonWiring(): PersonWiring {
 
     // mailSearch/mailRead resolve the Gmail client fresh on each call — cheap: googleClients()
     // itself does no I/O, and `.gmail()` caches nothing across calls by design (lib/google.ts).
-    // The old adapter's PersonWiring had no `account` parameter either; `googleClients().gmail()`
+    // `googleClients().gmail()`
     // with no account defaults to the primary (most-recently-updated) mailbox, which is the
-    // same "the one mailbox this hand acts on" behaviour the old hand had.
+    // same "the one mailbox this hand acts on" behaviour.
     mailSearch: async (query, max) => (await googleClients().gmail()).search(query, max),
     mailRead: async (id) => (await googleClients().gmail()).read(id),
 

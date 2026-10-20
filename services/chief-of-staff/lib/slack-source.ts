@@ -1,25 +1,23 @@
 /**
- * The real `SlackSourceDeps` (Task 4) — implements the interface
- * `./brief-content-slack.ts` documents. Read that file's header before editing this one; its
- * interface and `scanSlackThreads` logic have passed review and are not touched here.
+ * The real `SlackSourceDeps` — implements the interface
+ * `./brief-content-slack.ts` documents. Read that file's header before editing this one.
  *
  * EGRESS: chief-of-staff is sealed. `installSlackProxyDispatcher()` is already installed process-wide
  * at module load by `agent/channels/slack.ts` (via `@lares/agent-kit/slack-dispatcher`), so any
  * `fetch` to `*.slack.com` from anywhere in this process is already routed through the squid
- * proxy. This file adds NO proxy plumbing of its own — that is the task's explicit
- * binding constraint, and re-adding it here would be redundant at best.
+ * proxy. This file adds NO proxy plumbing of its own, and re-adding it here would be redundant at best.
  *
  * TOKEN: read from the SAME `oauth_tokens` table the Google refresh tokens use —
  * `provider='slack'` instead of `'google'` — via `@lares/agent-kit/google-auth`'s
  * `getMostRecentRefreshToken`, which is already parameterized by provider. No second
- * encryption path is written here (binding constraint: reuse the existing decrypt
+ * encryption path is written here (reuse the existing decrypt
  * path rather than duplicate it). Missing token → `SlackUnenrolledError`, loud, never a
  * silent no-op — the OAuth install is a human step (the Slack user-token runbook).
  *
- * MESSAGE TEXT (Task 10, B1): `push()` now carries `text` onto the returned
+ * MESSAGE TEXT: `push()` carries `text` onto the returned
  * `SlackThreadMessage` — IN FLIGHT ONLY, for the last-message-in-flight feature
  * (`brief-content-slack.ts`'s `buildDirectSnapshot`/`buildChannelSnapshots` trim it onto
- * `ThreadSnapshot.lastMessageText`, feeding Task B3's bounded model read and Task B5's reason
+ * `ThreadSnapshot.lastMessageText`, feeding the bounded model read and the reason
  * line). It is never persisted anywhere by this file, and `lib/obligations-store.ts`'s
  * `upsertSeen` never writes it to `obligation_threads` — only pointer columns reach that table.
  */
@@ -115,12 +113,12 @@ type UsersInfoResponse = {
     id: string;
     deleted?: boolean;
     real_name?: string;
-    /** the owner clock's second source. An IANA zone name ("Europe/Oslo"), which Slack
-     *  sets from the device and updates on its own, which is exactly why it catches the trip
-     *  nobody filed with the travel agent. Slack also returns `tz_label` and `tz_offset`; neither is read
+    /** The owner clock's second source. An IANA zone name ("Europe/Oslo"), which Slack
+     *  sets from the device and updates on its own, which is exactly why it catches a trip
+     *  nobody told the agent about. Slack also returns `tz_label` and `tz_offset`; neither is read
      *  here, because an offset cannot survive a DST boundary and a label is not a zone id.
      *
-     *  INFERRED CONTRACT (per the root CLAUDE.md's third-party rule): Slack documents `tz` on the
+     *  INFERRED CONTRACT (per the repo's rule on third-party responses (AGENTS.md)): Slack documents `tz` on the
      *  user object, but nothing promises it is always an IANA id or always present — an account
      *  that never set one, or a legacy zone name, is possible. So the reader below returns null
      *  rather than a guess, and `@lares/agent-kit/owner-clock` validates any candidate against
@@ -135,7 +133,7 @@ type UsersInfoResponse = {
  * throws `SlackRateLimitError` instead). Carries Slack's own `error` code — self-contained, like its
  * response-shape types. Lets `getUserInfo` distinguish a genuine "no such user"
  * (`user_not_found`/`users_not_found`) from a real failure (`missing_scope`, `invalid_auth`, a
- * malformed response) that must never be swallowed into `null` — review round 2, Critical 2.
+ * malformed response) that must never be swallowed into `null`.
  */
 export class SlackApiError extends Error {
   constructor(
@@ -149,8 +147,7 @@ export class SlackApiError extends Error {
 
 /** Slack's own built-in bot user id — uniquely among bots it carries a real `userId` with no
  *  `bot_id` either. `./brief-content-slack.ts` already filters it defensively, but this reader
- *  is the one this ticket names as responsible for mapping it to `isBot` at the source
- *  (review round 2, Important 5 — a stated requirement of this task, left undone until now). */
+ *  is the one responsible for mapping it to `isBot` at the source. */
 const SLACKBOT_USER_ID = "USLACKBOT";
 
 async function callSlack<T extends { ok: boolean; error?: string }>(
@@ -291,7 +288,7 @@ export function createSlackSourceDeps(opts: SlackSourceReaderOptions): SlackSour
         cursor = data.response_metadata?.next_cursor || undefined;
       } while (cursor);
 
-      // review round 3, CRITICAL: DMs/group-DMs are partitioned AHEAD of channels
+      // DMs/group-DMs are partitioned AHEAD of channels
       // here, before this list is ever sliced. `scanSlackThreads`
       // (brief-content-slack.ts) truncates this list to `maxConversations` with NO ordering
       // preference of its own — it trusts this reader's order. Slack's own
@@ -374,20 +371,19 @@ export function createSlackSourceDeps(opts: SlackSourceReaderOptions): SlackSour
         data = await callSlack<UsersInfoResponse>(fetchImpl, token, "users.info", { user: userId }, signal);
       } catch (err) {
         if (err instanceof SlackRateLimitError) throw err;
-        // review round 2, Critical 2: ONLY a genuine "no such user" degrades to null. Every
+        // ONLY a genuine "no such user" degrades to null. Every
         // other failure (missing_scope, invalid_auth, a malformed response) MUST propagate —
         // resolveIdentity (./brief-content-slack.ts) would otherwise silently fall back to a
         // raw Slack id forever on a real, ongoing failure (e.g. an under-scoped token) rather
-        // than surfacing it. Harmless-degrade-cosmetically here (unlike the importer, where the
-        // same swallow corrupts the graph), but the asymmetry between the two readers is itself
-        // a trap, so this mirrors the importer's fix exactly.
+        // than surfacing it. The degrade is cosmetic for a genuine miss only; every real failure
+        // stays strict, so this reader and any sibling must agree on exactly this split.
         if (err instanceof SlackApiError && (err.code === "user_not_found" || err.code === "users_not_found")) {
           return null;
         }
         throw err;
       }
       if (!data.user || data.user.deleted) return null;
-      // D3: users:read.email is load-bearing — absence degrades to a name-only identity
+      // users:read.email is load-bearing — absence degrades to a name-only identity
       // (email: null), matching resolveIdentity's own no-throw contract in brief-content-slack.ts.
       const email = data.user.profile?.email ?? null;
       const displayName = data.user.profile?.display_name || data.user.profile?.real_name || data.user.real_name || null;

@@ -22,8 +22,6 @@
  * Future: add an AUTO_CONFIDENCE threshold so high-confidence proposals return "auto" and the
  * schedule executes them directly without a 👍. One constant + one schedule branch; no engine
  * rewrite.
- *
- * Ported verbatim from `services/agent-runtime/lib/adapters/route/engine.ts`.
  */
 
 import type { RouteBrand, RouteStage, RouteDecision, RouteActivity, OpenOpportunity } from "./route-classify.js";

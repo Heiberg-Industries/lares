@@ -2,8 +2,8 @@
 // CORE — vendor-neutral. No I/O, no SDKs: this file only decides WHAT organisation question to
 // put, never asks it. The adapter (lib/person-sources.ts) does the asking.
 //
-// . person-360 knew people and not companies, so an intro call with a stranger at
-// Bridgeco came out of the brief as
+// Why this exists: a person-only dossier knows people and not companies, so an intro call with a
+// stranger at Bridgeco came out of the brief as
 // "first contact, no prior history — worth a quick look at Bridgeco". The person half was right.
 // The company half was never asked.
 import { PERSONAL_DOMAINS } from "@lares/junk";

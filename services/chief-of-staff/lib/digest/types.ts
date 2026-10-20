@@ -1,4 +1,4 @@
-// services/agent-runtime/lib/adapters/digest/types.ts
+// digest/types.ts
 export type DigestType = "transcript" | "inspiration" | "writing-seed" | "reference" | "person-signal";
 export type DigestRoute = "file" | "ask";
 

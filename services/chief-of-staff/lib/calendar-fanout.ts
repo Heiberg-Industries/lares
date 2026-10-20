@@ -1,13 +1,13 @@
 /**
  * lib/calendar-fanout.ts — every calendar the owner actually looks at, as ONE event list.
  *
- * WHY THIS EXISTS, in incident terms: an evening brief once said "nothing to say" while the next
- * day held a three-hour meeting. Two independent holes fed that silence. The narrow attendee
- * rule is fixed in `lib/brief-content.ts`; THIS file fixes the other one — the brief read
- * `calendarId: "primary"` on ONE account, so anything living on a second calendar (a shared
- * calendar) or a second Google account was never fetched at all.
+ * WHY THIS EXISTS: an evening brief could say "nothing to say" while the next
+ * day held a three-hour meeting. Two independent holes feed that silence. The narrow attendee
+ * rule is handled in `lib/brief-content.ts`; THIS file handles the other one — a brief that
+ * reads `calendarId: "primary"` on ONE account never fetches anything living on a second
+ * calendar (a shared calendar) or a second Google account.
  *
- * Three rules, each learned the hard way:
+ * Three rules, each a failure mode:
  *
  *  1. **A truncated read throws.** Same reasoning as `listTomorrowMeetings`: a short list reads
  *     as "a quiet day", a claim a cut-off read has not earned. Checked PER CALENDAR, because
@@ -24,7 +24,7 @@
  *  3. **Nothing read at all still throws.** If no account yielded a client, the brief must not
  *     render "no meetings" off zero sources.
  *
- * Calendar SELECTION: `listCalendars()` already keeps only calendars he owns or can write,
+ * Calendar SELECTION: `listCalendars()` already keeps only calendars the owner owns or can write,
  * which drops subscribed noise (holiday feeds, daily activity banners). The deny
  * list here is the second line of defence for owned-but-noisy calendars — Birthdays, Tasks —
  * because those are all-day events, and all-day events now COUNT. Override with
@@ -35,7 +35,7 @@ import { GoogleConfigError } from "@lares/agent-kit/google-auth";
 
 import { GoogleUnenrolledError, type CalendarEvent, type CalendarSummary } from "./google.js";
 
-/** Substring matches against a calendar's display name. All-day feeds he never "attends". */
+/** Substring matches against a calendar's display name. All-day feeds the owner never "attends". */
 const DEFAULT_CALENDAR_DENY = [
   "birthday", "bursdag",
   "helligdag", "holiday",
@@ -50,7 +50,7 @@ export function calendarDenyPatterns(env: NodeJS.ProcessEnv = process.env): stri
 }
 
 /** Calendars whose events belong in a brief. Primary is always kept: a deny pattern that
- *  happens to match his own name must never blind the brief to his main calendar. */
+ *  happens to match the owner's own name must never blind the brief to the owner's main calendar. */
 export function selectBriefCalendars(
   calendars: readonly CalendarSummary[], deny: readonly string[] = calendarDenyPatterns(),
 ): CalendarSummary[] {
@@ -67,7 +67,7 @@ export interface FanoutCalendarClient {
 }
 
 export interface CalendarFanoutDeps {
-  /** Every Google account enrolled for him — the same token rows Gmail fans out over. */
+  /** Every Google account enrolled for the owner — the same token rows Gmail fans out over. */
   accounts(): Promise<string[]>;
   /** A calendar client for one account. Throwing `GoogleConfigError`/`GoogleUnenrolledError`
    *  means "not wired on this host" and skips that account (rule 2). */
@@ -110,9 +110,9 @@ export async function listEventsEverywhere(
     }
     reached++;
 
-    // `includeReadOnly` on purpose: his a company calendar is SUBSCRIBED (accessRole
+    // `includeReadOnly` on purpose: the owner's company calendar is SUBSCRIBED (accessRole
     // "reader"), and the default owner/writer filter — written so a create-event tool only
-    // offers writable calendars — would drop it. Reading someone else's calendar he follows is
+    // offers writable calendars — would drop it. Reading someone else's calendar the owner follows is
     // exactly what a night-before brief needs; the deny list keeps the read-only NOISE
     // (holiday feeds) out by name.
     for (const cal of selectBriefCalendars(await client.listCalendars({ includeReadOnly: true }))) {

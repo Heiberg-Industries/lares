@@ -1,5 +1,5 @@
 /**
- * lib/telegram-tap-gate.ts — who may answer an approval card on Telegram (W7A-s3).
+ * lib/telegram-tap-gate.ts — who may answer an approval card on Telegram.
  *
  * WHY THIS EXISTS. The framework discards the tapper. eve's Telegram channel resumes a
  * human-in-the-loop tap with `.respond([...], { auth: null })`
@@ -55,7 +55,7 @@ import { isAllowedPrincipalId } from "./principals.js";
  */
 export const HITL_CALLBACK_PREFIX = "eve:";
 
-/** What a refused tapper is told, on the tap itself (owner decision A3). Names no payload. */
+/** What a refused tapper is told, on the tap itself. Names no payload. */
 export const TAP_REFUSAL = "Only this installation's owner can answer an approval. Nothing was done.";
 
 export interface RefusedTap {

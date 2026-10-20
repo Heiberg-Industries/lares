@@ -1,13 +1,11 @@
 /**
  * The obligation radar's pure logic, its Gmail/Calendar adapters, and the two brief-content
- * builders this task actually delivers — `buildEveningBrief` / `buildMorningBrief`.
+ * builders: `buildEveningBrief` / `buildMorningBrief`.
  *
- * THE ONE FEATURE EXCEPTION in this wave (see the Wave-1 plan): every other task in this wave
- * is a faithful port. This one is deliberately NEW. The old system reported obligations in
- * three narrated voices (a morning brief, a night-before pass, a re-ping nudge) that between
- * them re-told the same open item on more than one surface and, at least once, asked about a
- * proposal the owner had already rejected the day before. The contract here is narrower and
- * stricter:
+ * Obligations are reported BY EXCEPTION. A radar that re-told the same open item on several
+ * surfaces (a morning brief, a night-before pass, a re-ping nudge), or asked about a proposal
+ * the owner had already rejected, teaches the owner to skip it. The contract is narrow and
+ * strict:
  *
  *   - Obligations are reported BY EXCEPTION. If nothing is owed, say nothing — no "nobody's
  *     waiting on a reply", no negative assurances. The radar speaks only when it caught
@@ -16,51 +14,37 @@
  *     people in them.
  *   - Morning (08:00) = today's PLATE, prioritised: today's commitments (not a delta — the
  *     frame the rest hangs on), plus the obligations that are new or changed since the evening
- *     pass (still strictly a delta). Amended 2026-08-18 at the owner's request; it was
- *     delta-only, which meant it never told him what his day held.
+ *     pass (still strictly a delta). A delta-only morning brief never told the owner what the
+ *     owner's day held, which is why the commitments are there.
  *   - Scheduled output exists to inform, not to prove checking happened.
  *
  * SPLIT OFF THE PIPELINE. The resolve → read → explain stage and the gather that
  * composes it (`gatherOpenObligations`, `GatherObligationsDeps`, `dropResolved`, and the
- * `RESOLUTION_*` constants) now live in `lib/obligation-pipeline.ts`, moved verbatim; the
- * `withTimeout` helper that used to be declared here lives in `lib/timeout.ts`. Both moves are
- * behaviour-neutral, and the second also removed a real ESM import cycle between this file and
- * `lib/obligation-resolution.ts`. The dependency runs ONE WAY now — `obligation-pipeline.ts`
- * imports this file's scan and selection rule, and nothing here imports it back.
+ * `RESOLUTION_*` constants) live in `lib/obligation-pipeline.ts`; the `withTimeout` helper
+ * lives in `lib/timeout.ts`. Keeping them out of this file also avoids an ESM import cycle
+ * between this file and `lib/obligation-resolution.ts`. The dependency runs ONE WAY:
+ * `obligation-pipeline.ts` imports this file's scan and selection rule, and nothing here
+ * imports it back.
  *
- * Ported near-verbatim, consolidated into this one file (the Wave-1 plan's file list gives
- * this task exactly `lib/brief-content.ts` + `lib/obligations-store.ts`, so every piece of the
- * pipeline that isn't a Postgres query lived here, in clearly banded sections, until 
- * moved the band named above):
- *   - `services/agent-runtime/lib/obligations/types.ts` — `ThreadSnapshot`, `Obligation`.
- *   - `services/agent-runtime/lib/obligations/candidate.ts` — `selectObligations`.
- *   - `services/agent-runtime/lib/obligations/surfaces.ts` — `assignSurfaces`,
- *     `nightBeforeCoveredDay`. Ported with `Obligation[]` in place of the old `RankedObligation[]`
- *     (see "Ranking is OFF" below) — the function never reads `.reason`/`.promise`, so nothing
- *     about the RULE changes.
- *   - `services/agent-runtime/lib/obligations/reping-budget.ts` — `rePingRemaining`/
- *     `rePingRecord`, verbatim. REMOVED by the re-ping cap is now the proactivity
- *     gate's central escalation ceiling (3 per owner-day per door, in `@lares/agent-kit`'s
- *     `initiations` ledger), not this file's per-process count. `heldBackLine` stands where
- *     that band was.
- *   - `services/agent-runtime/lib/adapters/obligations/gmail-source.ts` — `scanThreads`,
- *     `isAutomatedSender`, verbatim (against Task 6's `lib/google.ts` client instead of the old
- *     `gmail-client.ts`).
- *   - `services/agent-runtime/lib/adapters/brief/night-before-calendar.ts` — narrowed to the
- *     "tomorrow" case only (`listExternalMeetings`); the new morning brief's simpler delta
- *     rule (see `buildMorningBrief` below) never needs the "today" case the old morning brief
- *     used for its own participant-matching suppression.
- *   - `services/agent-runtime/lib/adapters/brief/ingested-picks.ts` — `readIngestedPicks`,
- *     verbatim logic, ported without pulling in the digest package's own `parseFrontmatter`
- *     (a five-line function, copied here rather than importing an unrelated module for it).
+ * What this file holds, in clearly banded sections:
+ *   - the thread and obligation types (`ThreadSnapshot`, `Obligation`);
+ *   - candidate selection (`selectObligations`);
+ *   - surface assignment (`assignSurfaces`, `nightBeforeCoveredDay`), which works on
+ *     `Obligation[]`: it never reads `.reason`/`.promise`, so ranking plays no part in the rule;
+ *   - `heldBackLine`. The re-ping cap is the proactivity gate's central escalation ceiling
+ *     (3 per owner-day per door, in `@lares/agent-kit`'s `initiations` ledger), not a
+ *     per-process count in this file;
+ *   - the Gmail scan (`scanThreads`, `isAutomatedSender`) against the `lib/google.ts` client;
+ *   - the calendar read, narrowed to the "tomorrow" case (`listExternalMeetings`): the morning
+ *     brief's simpler delta rule (see `buildMorningBrief` below) never needs a "today" read for
+ *     participant-matching suppression;
+ *   - `readIngestedPicks`, with a five-line `parseFrontmatter` copied here rather than
+ *     importing an unrelated module for it.
  *
- * RANKING IS OFF, entirely — not just for the re-ping lane (the old system's `{ rank: false }`)
- * but everywhere in this task. `surfaces.ts`'s own header already argues ranking has no
- * business deciding what interrupts; this task goes further and never spends the model call at
- * all, for any surface. `candidate.ts`'s `selectObligations` already returns most-overdue-first,
- * which is the only ordering anything here needs — `lib/adapters/obligations/rank.ts` (the
- * LLM-reason-per-item pass) is not ported. No message body is ever retained in memory beyond a
- * single tick, and none is ever persisted (`sql/001_baseline.sql`'s own banner).
+ * RANKING IS OFF, entirely, for every surface: ranking has no business deciding what
+ * interrupts, so no model call is spent on it. `selectObligations` returns most-overdue-first,
+ * which is the only ordering anything here needs. No message body is ever retained in memory
+ * beyond a single tick, and none is ever persisted (`sql/001_baseline.sql`'s own banner).
  *
  * WHAT THIS FILE DELIBERATELY DOES NOT DO: write prose. `BriefContent` carries raw facts —
  * meetings, obligations, picks — never a pre-written sentence. The schedules
@@ -108,14 +92,14 @@ export function addressOf(header: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Types — ported from services/agent-runtime/lib/obligations/types.ts
+// Types
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
  * One thread reduced to the facts the rule needs — deliberately NOT the messages.
  *
  * Everything here is structural: who spoke last, how many of their messages went unanswered,
- * whether he was addressed. None of it requires reading a word of content, which is what lets
+ * whether the owner was addressed. None of it requires reading a word of content, which is what lets
  * detection run with no model and no stored bodies.
  */
 export interface ThreadSnapshot {
@@ -127,7 +111,7 @@ export interface ThreadSnapshot {
   lastMessageAt: Date;
   /** The most recent message in the thread came from them. */
   lastSpeakerIsThem: boolean;
-  /** He was in To:, not merely Cc:. Being copied is not being asked. */
+  /** The owner was in To:, not merely Cc:. Being copied is not being asked. */
   addressedToHim: boolean;
   /** A list, a no-reply@, a notification. */
   isAutomated: boolean;
@@ -143,17 +127,17 @@ export interface ThreadSnapshot {
   isDeadlineCandidate?: boolean;
   /** How many of their messages sit unanswered at the end of the thread. ≥2 is a re-ping. */
   theirUnansweredCount: number;
-  /** Set when he has said "handled" — the item is closed for good. */
+  /** Set when the owner has said "handled" — the item is closed for good. */
   dismissedAt?: Date;
   /**
-   * IN FLIGHT ONLY (Task 10, B1) — the counterparty's last message, trimmed to
-   * `LAST_MESSAGE_MAX_CHARS`. Feeds Task B3's bounded model read and Task B5's reason line.
+   * IN FLIGHT ONLY — the counterparty's last message, trimmed to
+   * `LAST_MESSAGE_MAX_CHARS`. Feeds the bounded model read and the reason line.
    * Never persisted — `lib/obligations-store.ts`'s `upsertSeen` writes pointer columns only and
    * has no column for this.
    */
   lastMessageText?: string;
-  /** Every address this counterparty is known by, for Task B2's cross-channel resolution
-   *  ("did he answer them on email / calendar / Slack / iMessage after their message?"). */
+  /** Every address this counterparty is known by, for the cross-channel resolution
+   *  ("did the owner answer them on email / calendar / Slack / iMessage after their message?"). */
   counterpartyEmails?: string[];
   counterpartySlackUserId?: string;
   /** Set by each scanner (`scanThreads` / the Slack builders) — never inferred from the
@@ -162,7 +146,7 @@ export interface ThreadSnapshot {
 }
 
 /** The counterparty's last message, in flight, is trimmed to this many characters before it
- *  ever reaches an `Obligation` — bounding both the model read (Task B3) and the log/prompt
+ *  ever reaches an `Obligation` — bounding both the model read and the log/prompt
  *  surface it passes through on the way there. */
 export const LAST_MESSAGE_MAX_CHARS = 2000;
 
@@ -174,7 +158,7 @@ export interface Obligation {
   lastMessageAt: Date;
   ageHours: number;
   /** They messaged again on top of their own unanswered message. A FACT, not a judgement — and
-   *  the only thing in this system permitted to interrupt him. */
+   *  the only thing in this system permitted to interrupt the owner. */
   isRePing: boolean;
   /**
    * How many of their messages sit unanswered at the end of the thread — carried through from
@@ -189,7 +173,7 @@ export interface Obligation {
   counterpartySlackUserId?: string;
   /** Derived from the snapshot that produced this obligation — see `ThreadSnapshot.source`. */
   source: "gmail" | "slack";
-  /** Why it is on the list, in words — rendered on every brief line. Set by Task B5. */
+  /** Why it is on the list, in words — rendered on every brief line. Set by the explain step. */
   reason?: string;
 }
 
@@ -199,7 +183,7 @@ export interface CandidateOptions {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Candidate selection — ported from services/agent-runtime/lib/obligations/candidate.ts
+// Candidate selection
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /** Below this it is not late, it is Tuesday. */
@@ -221,11 +205,11 @@ export function selectObligations(
 
   const out: Obligation[] = [];
   for (const t of threads) {
-    if (t.dismissedAt) continue;              // he has closed it; it does not come back
-    if (!t.lastSpeakerIsThem) continue;       // he spoke last — the ball is not his
+    if (t.dismissedAt) continue;              // the owner has closed it; it does not come back
+    if (!t.lastSpeakerIsThem) continue;       // the owner spoke last — the ball is not the owner's
     if (t.isAutomated) continue;              // a list is not a person waiting
     // Workstream B — a due notice is a DEADLINE, not an owed reply. Nobody at the sender is
-    // waiting for him to write back; the brief offers it once as a candidate and stops.
+    // waiting for the owner to write back; the brief offers it once as a candidate and stops.
     if (t.isDeadlineCandidate) continue;
     if (!t.addressedToHim) continue;          // being copied is not being asked
 
@@ -250,13 +234,12 @@ export function selectObligations(
   }
 
   // Most overdue first. Recency ordering would bury the item that has been waiting longest,
-  // which is exactly the one he has stopped seeing.
+  // which is exactly the one the owner has stopped seeing.
   return out.sort((a, b) => b.ageHours - a.ageHours);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Surfaces — ported from services/agent-runtime/lib/obligations/surfaces.ts, with Obligation[]
-// in place of the old file's RankedObligation[] (ranking is off — see the module header).
+// Surfaces. `assignSurfaces` works on Obligation[] (ranking is off — see the module header).
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface SurfaceAssignment {
@@ -266,7 +249,7 @@ export interface SurfaceAssignment {
 }
 
 /**
- * Membership is decided BY RULE: an obligation owed to someone he is meeting tomorrow belongs
+ * Membership is decided BY RULE: an obligation owed to someone the owner is meeting tomorrow belongs
  * to the evening pass, everything else to the morning; no item is ever on both.
  *
  * The boundary this whole design turns on: interrupt = re-pings only. A re-ping is a FACT —
@@ -277,7 +260,7 @@ export function assignSurfaces(
   items: Obligation[],
   tomorrowsParticipants: Set<string>,
   /**
-   * thread id → the unanswered count that was true when this thread last nudged him. A MAP
+   * thread id → the unanswered count that was true when this thread last nudged the owner. A MAP
    * (not a Set) so the same bump stays quiet while a NEW one (a higher unanswered count) earns
    * one more nudge — still a mechanical comparison of two integers.
    */
@@ -296,7 +279,7 @@ export function assignSurfaces(
     if (o.counterpartyAddress && meeting.has(o.counterpartyAddress.toLowerCase())) nightBefore.push(o);
     else brief.push(o);
 
-    // `>` not `>=`: an unchanged count is the SAME bump he was already told about. A count that
+    // `>` not `>=`: an unchanged count is the SAME bump the owner was already told about. A count that
     // has GROWN is new information — they asked again after being told.
     const announcedAt = alreadyAnnounced.get(o.threadId);
     if (o.isRePing && (announcedAt === undefined || o.unansweredCount > announcedAt)) interrupt.push(o);
@@ -311,14 +294,14 @@ export function assignSurfaces(
  * `night_before_delivered_day`, so the two can never drift apart.
  *
  * this was the home clock's tomorrow. At 20:00 in New York it is already past midnight
- * at home, so the pass prepared him for the day AFTER tomorrow and stamped that day too. The
+ * at home, so the pass prepared the owner for the day AFTER tomorrow and stamped that day too. The
  * morning pass reads the stamp back as `dateIn(now, tz)` — ITS today on the same owner clock —
  * and the two must move together: a stamp written on one clock and read on the other matches
  * nothing, which repeats last night's obligations (the safe direction, but a repeat).
  *
  * If the owner's clock CHANGES between the evening and the next morning, the two dates still
  * agree in every ordinary case (the morning after is the day after, on either clock). The one
- * exception is a jump so far east that his next 08:00 falls two dates on (an evening in Los
+ * exception is a jump so far east that the owner's next 08:00 falls two dates on (an evening in Los
  * Angeles, the next morning in Auckland): the stamp then names a day no morning pass asks for,
  * nothing is left out, and that brief repeats what the evening covered. A duplicate mention,
  * never a silent omission — the direction this file always picks.
@@ -331,26 +314,25 @@ export function nightBeforeCoveredDay(now: Date, tz: string = homeTzFromEnv()): 
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Held back — what the gate kept from him since the last brief
+// Held back — what the gate kept from the owner since the last brief
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /**
- * REPLACES the local re-ping budget that used to live in this band (`rePingRemaining`/
- * `rePingRecord`/`EMPTY_REPING_BUDGET`, ported verbatim from the old runtime's
- * `obligations/reping-budget.ts`). That cap was one lane's private, in-memory, per-process
- * count of one kind of message; moves the ceiling into `@lares/agent-kit`'s ledger,
- * where it is durable, shared across every lane and door, and visible on the console. A per-lane
- * copy beside it could only ever disagree with it.
+ * REPLACES the local re-ping budget that used to live in this band. That cap was one lane's
+ * private, in-memory, per-process count of one kind of message; the proactivity gate in
+ * `@lares/agent-kit` now holds the ceiling in its ledger, where it is durable, shared across
+ * every lane and door, and visible on the console. A per-lane copy beside it could only ever
+ * disagree with it.
  *
- * What the brief owes him in exchange is this one line: the gate is allowed to stay quiet, but
+ * What the brief owes the owner in exchange is this one line: the gate is allowed to stay quiet, but
  * it is never allowed to be SILENT about having done so. `deferredSince` counts each held item
  * once per door, however many ticks reconsidered it, so this line says "3 things are waiting",
  * not "480 deferrals were logged".
  *
- * Pure — it is rendered into the brief's context, not spoken by the model. `lang` is required
- *every caller must say which language it wants, rather than this file assuming
+ * Pure — it is rendered into the brief's context, not spoken by the model. `lang` is required:
+ * every caller must say which language it wants, rather than this file assuming
  * Norwegian. Returns `null` when nothing is held back, which is what keeps a normal day's prompt
- * byte-identical to the one before .
+ * byte-identical to what it was before the held-back line existed.
  */
 export function heldBackLine(rows: Array<{ door: string; count: number }>, lang: BriefLanguage): string | null {
   const s = BRIEF_STRINGS[lang].heldBack;
@@ -364,7 +346,7 @@ export function heldBackLine(rows: Array<{ door: string; count: number }>, lang:
 }
 
 /** `slack:U0ABC` → "Slack". An unrecognised prefix is named as itself rather than dropped: a
- *  door this function has never heard of is still a door he was not reached on. */
+ *  door this function has never heard of is still a door the owner was not reached on. */
 function doorLabel(door: string): string {
   const kind = door.split(":")[0] ?? door;
   if (kind === "slack") return "Slack";
@@ -373,13 +355,12 @@ function doorLabel(door: string): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Gmail scan source — ported from
-// services/agent-runtime/lib/adapters/obligations/gmail-source.ts. Real performance
-// engineering: the old shape (1 list + 1 messages.get PER candidate + 1 threads.get per thread
-// SEQUENTIALLY) reliably timed out against a real 60-day inbox and — worse — was wrong before
-// it was slow, since 200 newest-first messages out of 60 days is roughly the last week. This
-// is N list pages (paged to the END, throwing rather than truncating) + exactly ONE
-// threads.get per unique candidate thread, at bounded concurrency.
+// Gmail scan source. Real performance engineering: the obvious shape (1 list + 1 messages.get
+// PER candidate + 1 threads.get per thread SEQUENTIALLY) reliably timed out against a real
+// 60-day inbox and — worse — was wrong before it was slow, since 200 newest-first messages
+// out of 60 days is roughly the last week. This is N list pages (paged to the END, throwing
+// rather than truncating) + exactly ONE threads.get per unique candidate thread, at bounded
+// concurrency.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface GmailSourceDeps {
@@ -406,10 +387,10 @@ export function isAutomatedSender(from: string, headers: Record<string, string>)
   return /(^|[.+_-])no-?reply@/.test(addr) || addr.startsWith("mailer-daemon@") || addr.startsWith("bounce");
 }
 
-// ─── Workstream B: institutional due-notice mail ───────────────────────────────────
+// ─── Institutional due-notice mail ───────────────────────────────────
 //
-// THE MISFILING THIS FIXES, verbatim from the ticket: an accounting system's VAT reminder rode the
-// morning brief as an OWED REPLY, in the list of people waiting on him. Nobody there is waiting on
+// THE MISFILING THIS PREVENTS: an accounting system's VAT reminder rode the
+// morning brief as an OWED REPLY, in the list of people waiting on the owner. Nobody there is waiting on
 // anything. The mail is a DUE NOTICE — a date with a consequence — and the only honest thing to
 // do with it is to offer it once as a deadline candidate and then be quiet.
 //
@@ -426,7 +407,7 @@ export function isAutomatedSender(from: string, headers: Record<string, string>)
 //      newsletter titled "Fristen nærmer seg" carries a due word and no date, and is a
 //      newsletter.
 //
-// THE OTHER DIRECTION IS THE ONE THAT COSTS HIM SOMETHING, so it is named here rather than left
+// THE OTHER DIRECTION IS THE ONE THAT COSTS THE OWNER SOMETHING, so it is named here rather than left
 // to be inferred: a PERSON writing "Frist for tilbud 15. mai?" from a company domain is not a
 // due notice, whatever the subject says. The automated-sender precondition on arm 2 is the whole
 // guard — without it, every human who ever wrote the word "frist" with a date would fall off the
@@ -514,7 +495,7 @@ export async function scanThreads(
 
   // `in:inbox` finds every thread with INBOUND mail in the window (not the thread's full
   // message set — readThread below supplies the walk data). `-from:me` is safe narrowing: a
-  // thread only becomes a candidate through an inbound message, so removing his own outbound
+  // thread only becomes a candidate through an inbound message, so removing the owner's own outbound
   // mail cannot drop a thread.
   const threadIds = await deps.searchThreadIds(
     `in:inbox -from:me newer_than:${windowDays}d`,
@@ -523,7 +504,7 @@ export async function scanThreads(
 
   // ONE fetch per unique thread, bounded. A Google-generated RSVP is sent FROM the attendee's
   // real address, so drop it before counting or "Accepted: Pilot" becomes an unanswered
-  // message he supposedly owes a reply to.
+  // message the owner supposedly owes a reply to.
   const threads = await mapWithConcurrency(threadIds, THREAD_FETCH_CONCURRENCY, async (threadId) => ({
     threadId,
     msgs: (await deps.readThread(threadId)).filter((m) => !m.isCalendarNotice),
@@ -569,11 +550,9 @@ export async function scanThreads(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Tomorrow's external meetings — narrowed from
-// services/agent-runtime/lib/adapters/brief/night-before-calendar.ts to the "tomorrow" case
-// only. The old file's "today" case existed solely to feed the old morning brief's
-// participant-matching suppression; buildMorningBrief below uses a simpler delta rule (the
-// night_before_delivered_day stamp alone) and never needs it.
+// Tomorrow's external meetings. Only the "tomorrow" case is read: a "today" read would exist
+// solely to feed participant-matching suppression in the morning brief, and buildMorningBrief
+// below uses a simpler delta rule (the night_before_delivered_day stamp alone) and never needs it.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface NightBeforeMeeting {
@@ -585,7 +564,7 @@ export interface NightBeforeMeeting {
   /** Where, when the event says so. Part of why an attendee-less block counts. */
   location?: string;
   /**
-   * When it ENDS (fix round 1, Finding 2). Absent in two cases, both deliberate: the event
+   * When it ENDS. Absent in two cases, both deliberate: the event
    * carried no end at all, and EVERY all-day row (`listMeetingsOn` omits it — see there). An
    * all-day block's "end" is the exclusive next midnight, which is not a clock time and must
    * never render as one.
@@ -609,8 +588,8 @@ export interface NightBeforeMeeting {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // event KINDS.
 //
-// A morning brief once said "you're based at Hotel A all day" off an
-// all-day hotel reservation, and called a venue-less 16:30 intro call a "hard clash" with a
+// Without event kinds, a brief could say "you're based at Hotel A all day" off an
+// all-day hotel reservation, and call a venue-less 16:30 intro call a "hard clash" with a
 // 17:00 session 100 km away. One cause: nothing downstream knew what kind of event it was
 // looking at, so a booking confirmation and a real commitment were the same shape.
 //
@@ -622,7 +601,7 @@ export interface NightBeforeMeeting {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export type EventKind =
-  /** A place he SLEEPS. Never presence: check-in is usually late evening. */
+  /** A place the owner SLEEPS. Never presence: check-in is usually late evening. */
   | "lodging"
   /** A journey — a flight, a train. Where he MOVES, and only during it. */
   | "transport"
@@ -646,8 +625,8 @@ export function isTravelContext(kind: EventKind): boolean {
 const TRAVEL_CONTEXT_LABEL: Record<string, string> = {
   "lodging": "lodging — where he sleeps",
   "transport": "transport — where he moves",
-  // FIX ROUND 1 (Finding 3) — ONE kind covers two different eventTypes (`outOfOffice` and
-  // `workingLocation`), and a working location is a statement about where he IS, not an
+  // ONE kind covers two different eventTypes (`outOfOffice` and
+  // `workingLocation`), and a working location is a statement about where the owner IS, not an
   // absence. The label therefore names both rather than asserting the wrong one of them; the
   // part that matters downstream — not a commitment — is true of either.
   "out-of-office": "out of office or a working-location marker — not a commitment",
@@ -662,7 +641,7 @@ const TRAVEL_CONTEXT_LABEL: Record<string, string> = {
  *
  * NOTE — a deliberate departure from acceptance criteria, which listed the bare word
  * "reservation" as a lodging pattern: the real calendar's one "Reservation at …" row is a
- * RESTAURANT booking, a place he actually goes. Calling that lodging would assert he sleeps
+ * RESTAURANT booking, a place the owner actually goes. Calling that lodging would assert the owner sleeps
  * there. So lodging keys off stay/hotel words, and "Reservation at Hotel B" still
  * lands as lodging via "hotel" while the restaurant stays an ordinary commitment.
  */
@@ -670,7 +649,7 @@ const TRANSPORT_TITLE = /\b(flight|flights|flyv|avreise|departure|boarding|train
 const LODGING_TITLE = /\b(stay at|hotel|hotell|motel|motell|hostel|resort|airbnb|lodging|overnatting|guest ?house|check[-\s]?in|innsjekk)\b/i;
 
 /** A link is not a place. Google puts Meet/Zoom/Teams URLs in `location` often enough that
- *  treating one as a venue is how a remote call becomes somewhere he has to travel to. */
+ *  treating one as a venue is how a remote call becomes somewhere the owner has to travel to. */
 const LINK_LOCATION = /^https?:\/\//i;
 const CONFERENCE_HOST = /(meet\.google\.com|zoom\.us|teams\.microsoft\.com|whereby\.com|meet\.jit\.si)/i;
 
@@ -681,8 +660,8 @@ export interface ClassifiableEvent {
   /** Google's `eventType`, verbatim (`lib/google.ts`'s `CalendarEvent.eventType`). */
   eventType?: string;
   location?: string;
-  /** People on the invitation OTHER than him — the brief's own `participants`, not the raw
-   *  attendee list. An event whose only attendee is himself is a block, not a call. */
+  /** People on the invitation OTHER than the owner — the brief's own `participants`, not the raw
+   *  attendee list. An event whose only attendee is the owner is a block, not a call. */
   participants?: readonly string[];
   hasConferenceLink?: boolean;
 }
@@ -712,9 +691,9 @@ export function classifyEvent(e: ClassifiableEvent): EventKind {
   // A statement about availability, whatever else it carries.
   if (type === "outofoffice" || type === "workinglocation") return "out-of-office";
 
-  // Gmail-created: a booking confirmation, not something he was invited to. The title only
+  // Gmail-created: a booking confirmation, not something the owner was invited to. The title only
   // picks WHICH kind of travel context it is; anything that is neither a stay nor a journey
-  // falls through to the ordinary rules below (a restaurant booking with a venue is a place he
+  // falls through to the ordinary rules below (a restaurant booking with a venue is a place the owner
   // really goes).
   if (type === "fromgmail") {
     const title = e.summary ?? "";
@@ -722,13 +701,13 @@ export function classifyEvent(e: ClassifiableEvent): EventKind {
     if (LODGING_TITLE.test(title)) return "lodging";
   }
 
-  // FIX ROUND 1 (Finding 1) — A VENUE YOU CAN BE AT OUTRANKS A LINK YOU CAN JOIN.
+  // A VENUE YOU CAN BE AT OUTRANKS A LINK YOU CAN JOIN.
   //
-  // The first cut read "attendees and (no location or a conference link) → remote-call", which
-  // made the link decisive. Google Workspace adds a Meet link to nearly every invitation by
+  // A rule that treated "attendees and (no location or a conference link)" as remote-call made
+  // the link decisive. Google Workspace adds a Meet link to nearly every invitation by
   // default, so a board meeting at a counterpart's office came out announced as "not somewhere
-  // he must be" — own defect, inverted, and worse: the first version at least erred
-  // toward telling him about a place.
+  // the owner must be" — the same defect inverted, and worse: the opposite error at least erred
+  // toward telling the owner about a place.
   //
   // So the venue is checked FIRST and unconditionally. A conference link now only matters when
   // there is nowhere to go, which also makes `remote-call ⇒ no venue` an invariant the render
@@ -739,7 +718,7 @@ export function classifyEvent(e: ClassifiableEvent): EventKind {
   return "block";
 }
 
-/** The owner's wall-clock time in `tz` (was hardcoded to Europe/Oslo). An all-day
+/** The owner's wall-clock time in `tz`. An all-day
  *  block never reaches this — its instant is a UTC midnight, which would render as a
  *  meaningless 02:00. */
 function wallTime(d: Date, tz: string): string {
@@ -747,11 +726,11 @@ function wallTime(d: Date, tz: string): string {
 }
 
 /**
- * One commitment row, shared by BOTH briefs (they rendered identical copies of this before
- * ; a shared function is the only way "both briefs must agree" survives the next edit).
+ * One commitment row, shared by BOTH briefs (a shared function is the only way "both briefs
+ * must agree" survives the next edit).
  *
  * Three things the row is careful about:
- *  - it prints the SPAN, not just a start (fix round 1, Finding 2) — an overlap the model
+ *  - it prints the SPAN, not just a start  — an overlap the model
  *    states should come from the two end points, not from a guess at how long things run;
  *  - a `remote-call` renders "(remote)" and nothing else, which is now literally true:
  *    classification gives that kind only when no venue survived `venueOf`;
@@ -759,7 +738,7 @@ function wallTime(d: Date, tz: string): string {
  *    without ever being mistaken for the venue's absence.
  *
  * `tz` is required: every caller says which clock to read, rather than this file
- * assuming Europe/Oslo.
+ * assuming a fixed zone such as Europe/Oslo.
  */
 export function commitmentLine(m: NightBeforeMeeting, tz: string): string {
   const when = m.allDay
@@ -781,7 +760,7 @@ export function commitmentLine(m: NightBeforeMeeting, tz: string): string {
  * One travel-context row.
  *
  * Two deliberate differences from a commitment row. No participants line: a hotel booking's
- * only "attendee" is himself, and printing it invites the model to treat a reservation as a
+ * only "attendee" is the owner, and printing it invites the model to treat a reservation as a
  * meeting. And the time never LEADS the row as `all day — <title>` — that exact phrasing
  * (`morning-brief.ts` as it stood) is what produced "you're based at Hotel A
  * Airport all day" from a booking whose check-in was that evening. An all-day entry says so as
@@ -797,7 +776,7 @@ export function travelContextLine(m: NightBeforeMeeting, tz: string): string {
   return `- ${m.title}${where} [${TRAVEL_CONTEXT_LABEL[m.kind] ?? m.kind}; ${when}]`;
 }
 
-/** Today's/tomorrow's rows split into what he must BE at and what merely frames the day. */
+/** Today's/tomorrow's rows split into what the owner must BE at and what merely frames the day. */
 export function splitCommitments(meetings: readonly NightBeforeMeeting[]): {
   commitments: NightBeforeMeeting[];
   travel: NightBeforeMeeting[];
@@ -839,7 +818,7 @@ export function eventKindClauses(
   const lines: string[] = [];
   if (travel.length > 0) {
     // The Travel context block is anchored to the day this brief covers, which at 20:00 is
-    // TOMORROW. A hotel booking or a flight is a reservation, never evidence of where he is.
+    // TOMORROW. A hotel booking or a flight is a reservation, never evidence of where the owner is.
     lines.push(
       "The Travel context block in this brief is where he sleeps or moves, never where he is now —",
       "a hotel booking or a flight in it is not evidence of his whereabouts, so never say he is",
@@ -860,25 +839,25 @@ export function eventKindClauses(
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // the brief may state a REAL departure
 //
-// A morning brief, about a 17:00 in Town B: "trains Oslo→Town B run roughly
-// hourly, about 1h40". Unverifiable, and useless for the only question he had — WHICH
-// departure gets him there. `agent-kit__transit_plan` (Entur, granted `transit: read`) answers
+// A morning brief, about a 17:00 in another town: "trains from the home city run roughly
+// hourly, about 1h40". Unverifiable, and useless for the only question the owner had — WHICH
+// departure gets the owner there. `agent-kit__transit_plan` (Entur, granted `transit: read`) answers
 // it with a real time, a real platform and a real arrival, and supports arrive-by, which is
-// what makes "be in Town B by 17:00" a question at all rather than a duration.
+// what makes "be in the other town by 17:00" a question at all rather than a duration.
 //
 // WHAT THIS CODE OWNS AND WHAT IT DELEGATES, and the split is deliberate:
 //
 //   - The KINDS that could ever need a departure are deterministic, so they are decided here.
 //     A remote call has no venue by construction (`classifyEvent`) and a travel-context
-//     row is not somewhere he must get to — neither can reach the tool at all.
-//   - The ARRIVE-BY instant is computed here too, as ISO-8601 with the real Oslo offset. eve
+//     row is not somewhere the owner must get to — neither can reach the tool at all.
+//   - The ARRIVE-BY instant is computed here too, as ISO-8601 with the real UTC offset. eve
 //     injects no date (`@lares/agent-kit`'s `clock.ts` header records what two wrong reminders
 //     cost), so a model asked to build that string is guessing at both the date and whether
-//     Oslo is currently +01:00 or +02:00.
+//     the zone is currently on summer or winter time.
 //   - Whether the venue is in a DIFFERENT TOWN is NOT decided here, because it cannot be. The
 //     17:00's `location` is the bare string "Fjord Kommunikasjon" — no town in it anywhere. A
 //     string comparison against a hardcoded home town would answer "unknown" on the very row
-//     this ticket was filed about. The tool's own result names the resolved locality, so the
+//     the row this exists for. The tool's own result names the resolved locality, so the
 //     grounded way to learn the town is to ask it; the clause says so.
 //
 // NO NEW BILLED CALL. This is text spliced into a prompt the brief already sends — one tool
@@ -886,10 +865,10 @@ export function eventKindClauses(
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 /** The owner's wall-clock instant, in `tz`, as ISO-8601 WITH offset — the shape `transit_plan`
- *  requires (was hardcoded to Europe/Oslo).
+ *  requires.
  *
  *  The offset is MEASURED (`tz`'s wall clock read back against the UTC instant), never assumed:
- *  most zones (Oslo included) are one offset half the year and another the other half, and an
+ *  most zones  are one offset half the year and another the other half, and an
  *  `arriveBy` an hour out picks the wrong train in the most plausible-looking way possible.
  *  `sv-SE` because it formats as `YYYY-MM-DD HH:MM:SS` — the same reason `lib/recurrence.ts`
  *  reaches for it. */
@@ -917,7 +896,7 @@ function isoWithOffset(d: Date, tz: string): string {
  *    plan a journey to without it;
  *  - not all-day, because `arriveBy` is an instant and an all-day row's `startsAt` is a UTC
  *    midnight — rendering a clock time from one is the lesson, and doing so here would
- *    send him to a station for an 02:00 that does not exist.
+ *    send the owner to a station for an 02:00 that does not exist.
  *
  * Travel-context rows never appear here because `splitCommitments` has already taken them out;
  * both briefs pass `commitments`, not `content.meetings`.
@@ -933,19 +912,19 @@ export function transitCandidates(commitments: readonly NightBeforeMeeting[]): N
 export type BriefDay = "today" | "tomorrow";
 
 /**
- * The two sentences that must reach the model whatever the day looks like — REVIEW FINDING 1.
+ * The two sentences that must reach the model whatever the day looks like.
  *
  * The first cut returned `[]` when no commitment qualified for a lookup, which dropped the
  * PROHIBITION along with the instruction. An all-day in-person row is excluded from
  * `transitCandidates` for a good reason (no instant to arrive by) and still puts an out-of-town
  * venue in front of the model with no transport rule attached — which is precisely the
- * 2026-08-25 regression, arriving through the door the fix left open.
+ * out-of-town-venue regression, arriving through the door the fix left open.
  *
  * So the ban is unconditional in both briefs, on every day, candidates or none. It deliberately
  * does NOT name the tool: naming it here would make "the tool is instructed" true of a day of
  * remote calls, and a prohibition is not an instruction to use anything.
  *
- * REVIEW FINDING 4 — the tool has THREE non-answers, not two. `{notFound: {query}}` (a place
+ * The tool has THREE non-answers, not two. `{notFound: {query}}` (a place
  * name that did not resolve) is literally neither a failure nor an empty result, so a rule
  * written as "fails, or comes back with nothing" leaves it uncovered. It is named.
  *
@@ -964,14 +943,14 @@ const TRANSIT_BAN: readonly string[] = [
 ];
 
 /**
- * REVIEW FINDING 3 — what to do when the origin is not knowable, which is the NORMAL case.
+ * What to do when the origin is not knowable, which is the NORMAL case.
  *
  * Nothing in the prompt, the persona or `agent.json` grounds where the owner is. `to` is grounded
  * (the calendar's own venue string, which the geocoder either resolves or refuses) and
  * `arriveBy` is computed here — `from` is the one input the model supplies from nothing.
  *
  * Get it wrong and the tool still returns a REAL departure, with a real platform, from a place
- * he is not: "14:05 fra Oslo S, spor 3" while he is somewhere else. An address-resolved origin
+ * the owner is not: "14:05 from Central Station, platform 3" while the owner is somewhere else. An address-resolved origin
  * comes back as a nearby stop, so the wrong answer arrives wearing the same detail the right one
  * would. Two sentences turn the most convincing possible failure into a visible one: state the
  * assumption out loud, or decline to make it.
@@ -1001,9 +980,9 @@ const ORIGIN_HONESTY: readonly string[] = [
  * precedent for lifting the contract's wording into a brief's own clause rather than editing
  * the contract — the invariant clauses stay byte-stable.
  *
- * REVIEW FINDING 2 — `day` exists because the evening pass composes at 20:00 about TOMORROW.
- * "Where he already is" is true in the morning and false the night he is in Bergen for a
- * Bergen meeting tomorrow: read against a model's Oslo default it plans a 06:12 he is 460 km
+ * `day` exists because the evening pass composes at 20:00 about TOMORROW.
+ * "Where the owner already is" is true in the morning and false the night the owner is in another town for a
+ * meeting there tomorrow: read against a model's home-city default it plans a 06:12 the owner is 460 km
  * from. The lodging ban (correctly) removes the one row that hinted otherwise, so the evening
  * text has to say plainly that tonight's town is not tomorrow's answer.
  */
@@ -1023,7 +1002,7 @@ export function transitClause(
   const today = day === "today";
   return [
     "Getting there — these commitments have a real venue and a time he has to be at it:",
-    // REVIEW FINDING 6 — the venue is free text off Google Calendar and may carry a newline;
+    // The venue is free text off Google Calendar and may carry a newline;
     // unflattened it splits this row in two and `— arriveBy …` reads as a second commitment.
     ...candidates.map(
       (m) => `- ${m.title} — venue: ${(m.location ?? "").replace(/\s+/g, " ").trim()} — arriveBy ${isoWithOffset(m.startsAt, tz)}`,
@@ -1067,15 +1046,15 @@ export function transitClause(
 }
 
 /**
- * the "Standing facts — his words" block, or "" when he has told her nothing.
+ * The labelled standing-facts block, or "" when the owner has told the agent nothing.
  *
  * A sibling of `travelContextBlock` and shared by both briefs for the same reason: the two read
  * the same facts, so they must render them the same way. `labeledContext` drops the block when
  * it is empty (@lares/compose-contract) — no `emptyText`, deliberately: an absent block here
- * carries no meaning worth stating, and "(none)" would invite her to remark on having no memory.
+ * carries no meaning worth stating, and "(none)" would invite the agent to remark on having no memory.
  *
- * These already reach the agent through `agent/instructions/standing-facts.ts`, once per session
- * (W4B-s2), brief turns included. They are repeated here as a LABELED block because a brief is
+ * These already reach the agent through `agent/instructions/standing-facts.ts`, once per session,
+ * brief turns included. They are repeated here as a LABELED block because a brief is
  * composed under the contract's grounding rules, and those rules apply per block: a fact the
  * agent is expected to ACT on in the brief has to be a named piece of context in it, not
  * background it happens to carry.
@@ -1102,11 +1081,11 @@ export function standingFactsClause(facts: readonly StandingFact[]): string[] {
  * the ONE thing both briefs must be told about a `person_lookup` that comes back with
  * no record of the PERSON.
  *
- * The morning this was filed, the brief said of a 16:30 intro call: "first contact, no prior
+ * Without this, the brief would say of a 16:30 intro call: "first contact, no prior
  * history — worth a quick look at Bridgeco if you want a steer going in." Bridgeco is a customer
- * organisation the owner knows well; the dossier simply had no
- * organisation half, so the only honest thing she could say about the company was nothing. Now
- * that the dossier HAS one, she still needs telling that an unknown person and an unknown company
+ * organisation the owner knows well; a dossier with no
+ * organisation half, so the only honest thing the agent could say about the company was nothing. Now
+ * that the dossier HAS one, the agent still needs telling that an unknown person and an unknown company
  * are two different findings — and that the second one is usually the useful half.
  *
  * Unconditional, unlike `standingFactsClause` and `eventKindClauses`: those describe a BLOCK that
@@ -1125,9 +1104,9 @@ export function organisationLookupClause(): string[] {
     "with the organisation is. That section lists NOTES, a store and a path each: read the note",
     "before you use it and say only what it says. Never infer a relationship from a filename and",
     "never fill the gap from memory.",
-    // review fix — "memory" and the "What the owner has told me" block are two different
+    //  "memory" and the "What the owner has told me" block are two different
     // things, and this same prompt carries both. Without this sentence a literal reader takes
-    // "never fill the gap from memory" as an instruction to suppress his standing facts when
+    // "never fill the gap from memory" as an instruction to suppress the owner's standing facts when
     // writing about a company, which is the opposite of what either clause asks for.
     "\"Memory\" there means your own recollection of the company. His standing facts are not that:",
     "they are his own words, and they apply here like everywhere else.",
@@ -1137,7 +1116,7 @@ export function organisationLookupClause(): string[] {
 
 export interface CalendarSourceDeps {
   listEvents(o: { timeMin: string; timeMax: string; max: number }): Promise<CalendarEvent[]>;
-  /** Every address he owns — comparison against attendees is done lowercased. */
+  /** Every address the owner owns — comparison against attendees is done lowercased. */
   myAddresses(): Promise<string[]>;
 }
 
@@ -1147,34 +1126,34 @@ const MEETINGS_MAX = 250;
 // Wide on purpose: a naive "UTC midnight" guess at tomorrow's bounds lands hours off the owner's
 // true midnight, by a different amount in every zone and season. Fetching generously and
 // filtering by CALENDAR DATE on the owner's clock sidesteps the guess entirely — at a 20:00
-// pass "tomorrow" is the 4th to the 28th hour from now wherever he is, well inside 48.
+// pass "tomorrow" is the 4th to the 28th hour from now wherever the owner is, well inside 48.
 const FETCH_WINDOW_MS = 48 * 3600_000;
 
 /** A block this short with nobody else on it, no location and no all-day span is a personal
- *  marker (a buffer, a reminder-shaped hold), not something to prepare him for. */
+ *  marker (a buffer, a reminder-shaped hold), not something to prepare the owner for. */
 const COMMITMENT_MIN_MINUTES = 60;
 
 /**
  * Tomorrow's real commitments — tomorrow on the owner's clock, `tz` (see
  * {@link nightBeforeCoveredDay}).
  *
- * the rule was ONCE "has an attendee outside his own addresses", and that silence
+ * the rule was ONCE "has an attendee outside the owner's own addresses", and that silence
  * cost a three-hour meeting: the meeting at a venue, copied in from another calendar, carrying no
- * attendee list at all. Attendee metadata turns out to be the exception in his calendar, not
- * the rule — he blocks working time deliberately, and copied/forwarded invitations arrive
+ * attendee list at all. Attendee metadata turns out to be the exception in the owner's calendar, not
+ * the rule — the owner blocks working time deliberately, and copied/forwarded invitations arrive
  * bare. So an event counts when ANY of these is true:
  *
- *   - someone outside his own addresses is on it   (the original rule, still the strongest)
+ *   - someone outside the owner's own addresses is on it   (the original rule, still the strongest)
  *   - it is an all-day block                       (a travel day IS the day)
- *   - it names a location                          (he is going somewhere)
- *   - it runs an hour or longer                    (he set aside real time for it)
+ *   - it names a location                          (the owner is going somewhere)
+ *   - it runs an hour or longer                    (the owner set aside real time for it)
  *
  * A missed meeting is far worse than an extra line in a brief, so the tie goes to including.
  * What stays out is the short attendee-less hold with no place attached.
  *
  * THROWS on a read failure, on a truncated window, or when the identity registry cannot say
- * which addresses are his — never returns `[]` for any of those. `[]` renders as "nothing on
- * tomorrow", a claim his day has not earned from a failed or untrustworthy read.
+ * which addresses are the owner's — never returns `[]` for any of those. `[]` renders as "nothing on
+ * tomorrow", a claim the owner's day has not earned from a failed or untrustworthy read.
  */
 export async function listTomorrowMeetings(
   deps: CalendarSourceDeps, now: Date, tz: string = homeTzFromEnv(),
@@ -1193,8 +1172,8 @@ const TODAY_LOOKBACK_MS = 12 * 3600_000;
  * Today's commitments, today on the owner's clock `tz` — same rule as
  * `listTomorrowMeetings`, different day.
  *
- * The morning brief was a pure delta and said nothing about his day (the owner wanted the
- * brief to say what is on his plate that day). Repeating what last night's prep
+ * The morning brief was a pure delta and said nothing about the owner's day (the owner wanted the
+ * brief to say what is on the owner's plate that day). Repeating what last night's prep
  * covered is DELIBERATE here — at 08:00 the day's fixed points are the frame everything else
  * hangs on, and the evening pass is 12 hours old.
  */
@@ -1207,7 +1186,7 @@ export async function listTodayMeetings(
 }
 
 /**
- * The window's events plus his own addresses — the I/O half of a calendar pass, split out
+ * The window's events plus the owner's own addresses — the I/O half of a calendar pass, split out
  * so the SAME read can feed both the day's rows and the conflict pass without
  * fetching twice. Behaviour is unchanged: every throw below is the throw `listMeetingsOn`
  * already made, in the same order.
@@ -1281,7 +1260,7 @@ function meetingsFromEvents(
       startsAt: new Date(e.start),
       participants,
       // classified HERE, once, off `participants` rather than the raw attendee list:
-      // an event whose only "attendee" is himself (every Gmail-created booking is) must not
+      // an event whose only "attendee" is the owner (every Gmail-created booking is) must not
       // read as a call. Nothing is filtered out at this point; the renderers decide what may
       // be shown as a commitment.
       kind: classifyEvent({
@@ -1290,7 +1269,7 @@ function meetingsFromEvents(
       }),
       ...(e.allDay === true ? { allDay: true as const } : {}),
       ...(location !== "" ? { location } : {}),
-      // Fix round 1, Finding 2 — the end was computed above for the duration floor and thrown
+      // The end was computed above for the duration floor and thrown
       // away. An all-day entry's "end" is the exclusive next midnight, which is not a clock
       // time and must never render as one.
       ...(e.end && e.allDay !== true ? { endsAt: new Date(e.end) } : {}),
@@ -1310,7 +1289,7 @@ async function listMeetingsOn(
 // the conflict pass, on the calendar read the brief already makes.
 //
 // The chief of staff once caught two overlapping hotel bookings and a status meeting that landed
-// at 06:00 where he actually was — unprompted, off no code at all. The model happened to
+// at 06:00 where the owner actually was — unprompted, off no code at all. The model happened to
 // notice. `lib/calendar-conflicts.ts` is the deterministic version of that noticing; this is
 // where the morning brief runs it.
 //
@@ -1318,7 +1297,7 @@ async function listMeetingsOn(
 //
 //  1. **The SAME read, not a second one.** `readCalendarWindow` is fetched once and feeds both
 //     the day's rows and the conflict pass. A second fan-out would double the brief's calendar
-//     cost, and — worse — could disagree with the first one about what is on his day.
+//     cost, and — worse — could disagree with the first one about what is on the owner's day.
 //  2. **Detection is bounded to the brief's DAY, not to the fetched window.** The window runs
 //     from 12 hours back to 48 hours forward (`TODAY_LOOKBACK_MS`/`FETCH_WINDOW_MS`), so
 //     without this bound a clash tomorrow evening would crowd a brief that is about today. A
@@ -1362,7 +1341,7 @@ export async function listTodayCalendar(
 }
 
 /** At most this many clash lines reach a brief. The radar can find more; a morning message
- *  that opens with six of them is a wall, and the ones past the third are the ones he would
+ *  that opens with six of them is a wall, and the ones past the third are the ones the owner would
  *  have skipped anyway. The block says plainly when it is holding some back. */
 export const CONFLICT_LINES_MAX = 3;
 
@@ -1394,21 +1373,21 @@ const CONFLICT_LABEL: Record<ConflictKind, string> = {
  * BY EXCEPTION, like the obligations it sits beside: an empty block is DROPPED by
  * `labeledContext`, never rendered as "no conflicts". That is not a formatting preference —
  * this file's own header spells out why a brief never writes negative assurances, and a radar
- * that reports its own silence every morning is the fastest way to teach him to skip the
+ * that reports its own silence every morning is the fastest way to teach the owner to skip the
  * block on the morning it has something.
  *
  * The note names what the rows are AND what they are not. the plain
  * "nothing here has been resolved, checked against mail, or acted on" wording is now only
  * true of a pass that found no evidence, and that is EXACTLY the case that keeps rendering it —
  * `hasEvidence` here means "at least one shown row already carries a resolution", never
- * "a search ran". A pass with no evidence anywhere is byte-identical to before this slice, note
+ * "a search ran". A pass with no evidence anywhere is byte-identical to one without any evidence feature, note
  * included; only once a row actually carries the mail's own sentence does the wording — and the
  * `thirdParty` flag below — change with it.
  *
  * `thirdParty: true` is always set: a clash row carries calendar titles (and, with evidence, a
  * mail's own sender/date/subject), all of it attacker-controllable words, so the block carries
  * `THIRD_PARTY_NOTICE` (`@lares/compose-contract`) directly under its heading, per the
- * origin-model spec's in-turn taint rule.
+ * in-turn taint rule of the origin model.
  */
 export function conflictsBlock(conflicts: readonly ResolvedConflict[], lang: BriefLanguage = "en"): string {
   if (conflicts.length === 0) return "";
@@ -1432,16 +1411,16 @@ export function conflictsBlock(conflicts: readonly ResolvedConflict[], lang: Bri
   ]);
 }
 
-/** The ONE sentence that tells her what to do with the block above — and only when there is a
+/** The ONE sentence that tells the agent what to do with the block above — and only when there is a
  *  block. Same shape and same reason as `standingFactsClause`: the block states the facts, the
- *  clause says she must pass them on rather than quietly reasoning about them.
+ *  clause says the agent must pass them on rather than quietly reasoning about them.
  *
- * a row with no evidence keeps this clause byte-identical to before: no deciding,
+ * A row with no evidence keeps this clause unchanged: no deciding,
  * no mail, no offering. When at least one row already carries a strong resolution, ONE extra
  * sentence is appended (never a rewrite of the three lines above it) that truthfully narrows
- * the ban: she may now mention that a cancellation mail already exists and OFFER to remove the
+ * the ban: the agent may now mention that a cancellation mail already exists and OFFER to remove the
  * stale entry — always behind `calendar_delete_event`'s own approval card, and only after
- * waiting for his answer. Nothing here lets her decide which booking stands or act without him.
+ * waiting for the owner's answer. Nothing here lets the agent decide which booking stands or act without the owner.
  */
 export function conflictsClause(conflicts: readonly ResolvedConflict[]): string[] {
   if (conflicts.length === 0) return [];
@@ -1493,8 +1472,8 @@ export function signalsClause(signals: readonly SignalRow[]): string[] {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // Frister — the deadline block
 //
-// A statutory due date is a FIXED POINT of his day, in the same family as a meeting he has to be
-// at, and nothing like a reply he owes a person. That is why the block sits above the obligations
+// A statutory due date is a FIXED POINT of the owner's day, in the same family as a meeting the owner has to be
+// at, and nothing like a reply the owner owes a person. That is why the block sits above the obligations
 // heading in the morning prompt and why `deadlinesClause` exists at all: the one failure mode
 // worth a sentence of prompt is the model folding these lines into the owed-a-reply list, which
 // is exactly the misfiling Workstream B removes on the other side of the pipeline.
@@ -1511,7 +1490,7 @@ export function signalsClause(signals: readonly SignalRow[]): string[] {
  *  `vendor`/`amount`/`currency` are who is paid and how much, mostly meaningful for a
  *  `'renewal'` row but not restricted to one (`deadline_add` accepts them on any source — see its
  *  own header). All three optional and independently nullable, matching `DeadlineRow` — a row
- *  minted before this ticket, or one with only some of the three filled in, is ordinary, not an
+ *  minted without them, or one with only some of the three filled in, is ordinary, not an
  *  error. */
 export interface DeadlineLine {
   id: string;
@@ -1536,11 +1515,11 @@ export interface CandidateLine {
 
 /**
  * At most this many CANDIDATE lines reach one brief — the `CONFLICT_LINES_MAX` precedent above,
- * for the same reason and one this ticket can date.
+ * for the same reason.
  *
- * The scan reads a 60-day inbox, so the first tick after this ships flags every institutional
+ * The scan reads a 60-day inbox, so the first tick on a fresh installation flags every institutional
  * mail in that window at once. Uncapped, day one is a brief that opens with a wall of offers,
- * which is the fastest way to teach him to skip the block on the morning it has one that matters.
+ * which is the fastest way to teach the owner to skip the block on the morning it has one that matters.
  * Capped, the rest stay UNSTAMPED and drain five a morning until the backlog is gone.
  *
  * Applied where the list is BUILT (agent/schedules/morning-brief.ts), never here: only the
@@ -1548,8 +1527,8 @@ export interface CandidateLine {
  * would stamp six and show five.
  *
  * DELIBERATELY NO "(N more …)" TAIL, unlike `conflictsBlock`. A held-back clash is a fact about
- * today he is not being told; a held-back candidate is an offer that has not been made yet, and
- * announcing the size of a queue of offers is noise about the system rather than news about his
+ * today the owner is not being told; a held-back candidate is an offer that has not been made yet, and
+ * announcing the size of a queue of offers is noise about the system rather than news about the owner's
  * day.
  */
 export const CANDIDATE_LINES_MAX = 5;
@@ -1619,7 +1598,7 @@ function candidateRow(c: CandidateLine, lang: BriefLanguage): string {
 
 /**
  * At most this many DEADLINE lines reach one brief — the same reasoning as `CANDIDATE_LINES_MAX`
- * above, for a case that arrives all at once (review fix).
+ * above, for a case that arrives all at once.
  *
  * A statutory mint is a WHOLE YEAR in one approval: twelve rows for a Norwegian AS, and a second
  * entity doubles it. `MENTION_DAYS` alone keeps most mornings short, but the day two entities' 30-
@@ -1642,7 +1621,7 @@ export const DEADLINE_LINES_MAX = 8;
  *
  * BY EXCEPTION, like `conflictsBlock` beside it: an empty block is DROPPED rather than rendered
  * as "ingen frister". A brief that reports its own silence every morning is the fastest way to
- * teach him to skip the block on the morning it has something.
+ * teach the owner to skip the block on the morning it has something.
  *
  * ORDER: overdue and imminent (≤2 days) first — most overdue first, then closest — and the rest
  * closest-first behind them, which is one ascending sort by `daysToDue` and is written as one.
@@ -1671,9 +1650,9 @@ export function deadlinesBlock(rows: readonly DeadlineLine[], candidates: readon
   return labeledContext([{ label: s.blockLabel, content: lines.join("\n"), thirdParty: true }]);
 }
 
-/** The ONE sentence that tells her what to do with the block above — and only when there is a
+/** The ONE sentence that tells the agent what to do with the block above — and only when there is a
  *  block. Same shape and same reason as `conflictsClause`: the block states the facts, the
- *  clause stops her folding them into the list of people waiting on him. `lang` required, same
+ *  clause stops the agent folding them into the list of people waiting on the owner. `lang` required, same
  *  reason as `deadlinesBlock` beside it. */
 export function deadlinesClause(rows: readonly DeadlineLine[], candidates: readonly CandidateLine[], lang: BriefLanguage): string[] {
   if (rows.length === 0 && candidates.length === 0) return [];
@@ -1681,9 +1660,8 @@ export function deadlinesClause(rows: readonly DeadlineLine[], candidates: reado
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Ingested picks — ported from services/agent-runtime/lib/adapters/brief/ingested-picks.ts.
-// Notes that entered the Brain (the vault's raw/ folder, BRIEF_PICKS_DIR) recently — reading,
-// never events or meetings.
+// Ingested picks. Notes that entered the vault (the vault's raw/ folder, BRIEF_PICKS_DIR)
+// recently — reading, never events or meetings.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface IngestedPick {
@@ -1691,14 +1669,14 @@ export interface IngestedPick {
   url?: string;
   /** Filename inside the declared dir (vault-relative to raw/). */
   path: string;
-  /** Oslo calendar day the note entered the Brain, "YYYY-MM-DD". */
+  /** Home-clock calendar day the note entered the vault, "YYYY-MM-DD". */
   created: string;
 }
 
 /** Cap so the brief's nudge stays lean. */
 export const PICKS_MAX = 8;
 
-/** How far back "entered the Brain recently" reaches, in Oslo days (inclusive boundary). */
+/** How far back "entered the vault recently" reaches, in home-clock days (inclusive boundary). */
 export const PICKS_WINDOW_DAYS = 7;
 
 const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -1711,9 +1689,8 @@ function unquote(v: string): string {
 
 /**
  * Parse the YAML frontmatter block at the top of a note body — a flat key→value map of string
- * scalars only. Ported from `services/agent-runtime/lib/adapters/digest/extract.ts`'s
- * `parseFrontmatter` (a five-line function, copied here rather than importing an unrelated
- * digest module for it).
+ * scalars only. A five-line copy of the digest module's `parseFrontmatter`, kept here rather
+ * than importing an unrelated digest module for it.
  */
 function parseFrontmatter(body: string): Record<string, string> {
   const result: Record<string, string> = {};
@@ -1748,7 +1725,7 @@ const nodePicksReader: PicksReader = {
 };
 
 /**
- * Notes that entered the Brain within the window. `dir` = the vault's raw/ folder (declared —
+ * Notes that entered the vault within the window. `dir` = the vault's raw/ folder (declared —
  * no magic paths). Newest-first, capped at PICKS_MAX. Returns [] when the input is off, the
  * dir is unreadable, or nothing qualifies. Never throws — a brief must still send.
  */
@@ -1787,7 +1764,7 @@ export function readIngestedPicks(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// BriefContent — the two functions this task actually delivers. Both pure: given the raw facts
+// BriefContent — the two brief builders. Both pure: given the raw facts
 // (already gathered by the caller — a schedule, in production; a fake in tests), decide
 // whether there is anything to say and, if so, what belongs in it. Neither writes prose and
 // neither touches Postgres, Gmail, or the calendar — that I/O lives in gatherOpenObligations /
@@ -1800,7 +1777,7 @@ export interface BriefContent {
   /** The obligations this brief covers — the evening's nightBefore bucket, or the morning's
    *  delta. Never the same threadId on both surfaces. */
   obligations: Obligation[];
-  /** Notes that entered the Brain recently — morning only; always [] on the evening brief. */
+  /** Notes that entered the vault recently — morning only; always [] on the evening brief. */
   picks: IngestedPick[];
   /**
    * TRUE when a source this brief normally reads could not be read at all this pass
@@ -1847,10 +1824,10 @@ export interface BriefContent {
    * the open deadlines the brief names today (`mentionsToday`, applied by the
    * schedule), and the mails that look like due notices and have never been offered.
    *
-   * Morning only; the evening brief never carries either. BY EXCEPTION and OPTIONAL, the 
+   * Morning only; the evening brief never carries either. BY EXCEPTION and OPTIONAL, the
    * `conflicts` pattern exactly: absent and empty both mean "nothing rendered", so every
    * existing construction site keeps meaning what it meant and a morning with no deadlines
-   * renders byte-for-byte the brief this function returned before .
+   * renders byte-for-byte the brief this function returned before deadlines existed.
    *
    * The two are NOT symmetric in what they earn (see `buildMorningBrief`): a due deadline makes
    * a brief happen, a candidate does not.
@@ -1894,7 +1871,7 @@ export interface EveningBriefInput {
  *
  * Stamping `night_before_delivered_day` (lib/obligations-store.ts's `markNightBeforeDelivered`)
  * is deliberately NOT done here: it must happen only after the schedule's send has actually
- * succeeded (mirroring the old system's `recordNightBeforeDelivery`, which never marks on an
+ * succeeded (a delivery stamp must never be written for an
  * unconfirmed send) — this function has no I/O and cannot know that. The returned content's
  * `obligations` list IS the exact set of threads "actually covered", for the caller to stamp.
  */
@@ -1914,18 +1891,18 @@ export function buildEveningBrief(input: EveningBriefInput): BriefContent | null
 
 export interface MorningBriefInput {
   /** TODAY's commitments (listTodayMeetings) — the frame the rest hangs on. Unlike the
-   *  obligations below these are NOT a delta: last night's prep is 12 hours old, and he asked
-   *  for the morning to open with what's on his plate (2026-08-18). */
+   *  obligations below these are NOT a delta: last night's prep is 12 hours old, and the owner wanted
+   *  for the morning to open with what's on the owner's plate. */
   meetings: NightBeforeMeeting[];
   /** ALL currently open obligations, already gathered (gatherOpenObligations). */
   obligations: Obligation[];
   /** Thread ids whose night-before message covered TODAY (lib/obligations-store.ts's
    *  `nightBeforeDelivered(nightBeforeCoveredDay-of-yesterday's-pass)`, i.e. what last night's
-   *  20:00 pass actually told him about) — the only thing that may buy a thread's silence
+   *  20:00 pass actually told the owner about) — the only thing that may buy a thread's silence
    *  here. Threads NOT in this set are new or changed since last night and belong in the
    *  delta. */
   deliveredLastNight: ReadonlySet<string>;
-  /** Notes that entered the Brain recently (readIngestedPicks). */
+  /** Notes that entered the vault recently (readIngestedPicks). */
   picks: IngestedPick[];
   /** see `BriefContent.slackUnavailable`. Set by the schedule when its Slack
    *  obligation source failed or outran its budget and the gather continued Gmail-only. */
@@ -1960,32 +1937,32 @@ export interface MorningBriefInput {
 }
 
 /**
- * What's on his plate today: TODAY's commitments, the obligation DELTA since last night's
+ * What's on the owner's plate today: TODAY's commitments, the obligation DELTA since last night's
  * pass, and recently-ingested picks. `null` only when all three are empty AND every source was
  * actually read (see the `slackUnavailable` branch below) — a day with meetings is
  * never silent, even when nothing changed overnight.
  *
  * The obligations half is still strictly a delta (the owner wants a change called out
- * when it happens); the calendar half deliberately is not, because his day's
+ * when it happens); the calendar half deliberately is not, because the day's
  * fixed points are the frame the rest hangs on and last night's prep is 12 hours stale by the
- * time he reads this.
+ * time the owner reads this.
  *
  * KNOWN LIMITATION (accepted, not a bug): this is a flat filter on `deliveredLastNight` — it
- * does not recompute against today's calendar, so it loses the old system's "a meeting was
- * cancelled overnight → resurface what was owed to that person immediately" behaviour. The
- * blast radius is bounded: `deliveredLastNight` is scoped per Oslo calendar day
+ * does not recompute against today's calendar, so it cannot resurface what was owed to a
+ * person when a meeting with them was cancelled overnight. The
+ * blast radius is bounded: `deliveredLastNight` is scoped per home-clock calendar day
  * (`obligations-store.ts`'s `nightBeforeDelivered`), so a still-open obligation reappears the
  * FOLLOWING morning regardless — a one-day delay on an item that was already ≥48h overdue, never
- * a permanent drop. Restoring the old behaviour would cost a second calendar read here for that
- * bounded, minor timeliness gain; ruled not worth it (Task 12 fix round).
+ * a permanent drop. Resurfacing it immediately would cost a second calendar read here for that
+ * bounded, minor timeliness gain, which is not worth it.
  */
 export function buildMorningBrief(input: MorningBriefInput): BriefContent | null {
   const obligations = input.obligations.filter((o) => !input.deliveredLastNight.has(o.threadId));
 
   // a DROPPED SOURCE breaks the silence rule, deliberately. The `null` contract above
   // reads "all three are empty, so there is nothing to say"; that is a claim about what is on
-  // his plate, and a pass whose Slack half never returned has not earned it. Staying silent
-  // here would be the same lie the ticket was filed about — an unread source rendered
+  // the owner's plate, and a pass whose Slack half never returned has not earned it. Staying silent
+  // here would be the same lie — an unread source rendered
   // identically to a read-and-empty one — just at the outer edge instead of inside the prose.
   // So: absent ≠ empty, all the way up. A quiet morning with every source read is still silent.
   if (

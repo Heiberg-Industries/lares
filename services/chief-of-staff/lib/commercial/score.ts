@@ -1,8 +1,6 @@
 /**
  * Pure rules-based contact scorer: blends numeric signals (warmth, recency, ICP fit)
  * with configurable weights and floors. No I/O, no LLM, no Date — fully deterministic.
- *
- * Ported verbatim from `services/agent-runtime/lib/commercial/score.ts`.
  */
 
 export interface Signals {

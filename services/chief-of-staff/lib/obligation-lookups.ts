@@ -1,6 +1,6 @@
 /**
- * Task 10, B5 — the two REAL lookups behind `lib/obligation-resolution.ts`'s
- * `resolveElsewhere`: "did he email them after their message?" and "did he sit in a room (or a
+ * The two REAL lookups behind `lib/obligation-resolution.ts`'s
+ * `resolveElsewhere`: "did the owner email them after their message?" and "did the owner sit in a room (or a
  * call) with them after it?".
  *
  * They live HERE, once, rather than inside each schedule, because the morning brief and the
@@ -17,8 +17,8 @@
  * FAIL DIRECTION, deliberately asymmetric. A throw from either function reaches
  * `resolveElsewhere`, which records that source as `unreadable` and contributes NOTHING to the
  * verdict — so the obligation stays on the radar. That is the safe direction: a lookup that
- * broke must never look like "he never answered them", and it must certainly never look like
- * "he did". The one place this file swallows anything is an account that is not wired on THIS
+ * broke must never look like "the owner never answered them", and it must certainly never look like
+ * "the owner did". The one place this file swallows anything is an account that is not wired on THIS
  * host (rule 2 of `lib/calendar-fanout.ts`) — a deterministic, host-level absence, not a data
  * gap a retry could fix.
  *
@@ -34,7 +34,7 @@
  *      ones contained by it — which is what makes a meeting that started before their message
  *      and ended after it visible at all. If Google ever narrowed that, this leg would silently
  *      stop resolving overnight meetings and every one of these tests would stay green.
- *      Note the ASYMMETRY the branch review fixed: this assumption can now only ever cost a HIT
+ *      Note the ASYMMETRY: this assumption can now only ever cost a HIT
  *      (a meeting Google declines to return is one this leg never sees), never cause a false
  *      one — the window is re-checked in code on both sides, so an event Google returns that
  *      ended before their message is rejected here rather than trusted through.
@@ -47,8 +47,8 @@ import { addressOf, mapWithConcurrency } from "./brief-content.js";
 import { GoogleUnenrolledError, type CalendarEvent, type ThreadMessage } from "./google.js";
 import type { ResolutionDeps } from "./obligation-resolution.js";
 
-/** Sent-mail search ceiling. Generous on purpose: the search is already narrowed to HIS mail,
- *  TO these addresses, after a specific date — a result set anywhere near this is a person he
+/** Sent-mail search ceiling. Generous on purpose: the search is already narrowed to the owner's mail,
+ *  TO these addresses, after a specific date — a result set anywhere near this is a person the owner
  *  is in constant contact with, which is exactly the case where the answer matters. */
 export const SENT_SEARCH_CEILING = 200;
 
@@ -74,7 +74,7 @@ export function gmailAfterDate(since: Date): string {
 }
 
 /**
- * "Did he email any of these addresses after `since`?" — the Gmail leg of `resolveElsewhere`.
+ * "Did the owner email any of these addresses after `since`?" — the Gmail leg of `resolveElsewhere`.
  *
  * `myAddresses` is read ONCE and memoised for the life of the returned function (one schedule
  * tick), not once per obligation: it is a Postgres read of the identity registry, and a pass
@@ -94,8 +94,8 @@ export function makeGmailSentAfter(
       const pending = myAddresses().then((addresses) => {
         if (addresses.length === 0) {
           // The same guard `gatherOpenObligations` makes at the top of the pass, for the same
-          // reason: with no addresses on file NOTHING would ever match him, so every lookup
-          // would answer "he never replied" — a confident wrong answer in the direction that
+          // reason: with no addresses on file NOTHING would ever match the owner, so every lookup
+          // would answer "the owner never replied" — a confident wrong answer in the direction that
           // keeps obligations alive forever. Louder is better; the caller turns this into an
           // `unreadable` source.
           throw new Error(
@@ -122,7 +122,7 @@ export function makeGmailSentAfter(
     const threads = await mapWithConcurrency(threadIds, SENT_THREAD_CONCURRENCY, (id) => gmail.readThread(id));
 
     // `from:me` narrows the THREAD, never the message: a matched thread carries their replies
-    // too. Both conditions are re-checked here — the sender must actually be him, and the
+    // too. Both conditions are re-checked here — the sender must actually be the owner, and the
     // moment must actually be after theirs (Gmail's `after:` only resolves to a day).
     let latest: number | null = null;
     for (const msgs of threads) {
@@ -138,7 +138,7 @@ export function makeGmailSentAfter(
 }
 
 export interface CalendarLookupDeps {
-  /** Every Google account enrolled for him — the same list the briefs' calendar fan-out uses. */
+  /** Every Google account enrolled for the owner — the same list the briefs' calendar fan-out uses. */
   accounts(): Promise<string[]>;
   /** A calendar client for one account. Throwing `GoogleConfigError`/`GoogleUnenrolledError`
    *  means "not wired on this host" and skips that account. */
@@ -149,11 +149,11 @@ export interface CalendarLookupDeps {
 
 /**
  * "Did a meeting with any of these addresses END between `since` and `now`?" — the calendar leg
- * of `resolveElsewhere`. A meeting he actually sat through answers a question far better than
+ * of `resolveElsewhere`. A meeting the owner actually sat through answers a question far better than
  * an email does, which is why it is worth a lookup of its own.
  *
  * The account's DEFAULT calendar only — no `calendarId` fan-out across every subscribed
- * calendar the briefs walk. A meeting with this person is on the calendar he keeps; the extra
+ * calendar the briefs walk. A meeting with this person is on the calendar the owner keeps; the extra
  * round-trips (one `listCalendars` plus one `listEvents` per calendar, per account, per
  * obligation) would cost far more than the marginal hit is worth, and a miss here is the safe
  * direction anyway.
@@ -162,7 +162,7 @@ export interface CalendarLookupDeps {
  * sides — Google echoes whatever case the inviter typed); the event must carry an `end`; and
  * that end must be in the PAST. An all-day entry is excluded outright — its "end" is the
  * exclusive next midnight, a date boundary rather than a moment two people stopped talking, and
- * an out-of-office block spanning a week would otherwise resolve every obligation he has.
+ * an out-of-office block spanning a week would otherwise resolve every obligation the owner has.
  */
 export function makeCalendarEndedWith(deps: CalendarLookupDeps): ResolutionDeps["calendarEndedWith"] {
   return async (addresses: string[], since: Date, now: Date) => {

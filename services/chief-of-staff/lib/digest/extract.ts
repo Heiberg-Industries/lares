@@ -24,7 +24,7 @@ export interface ExtractAttachmentOpts {
   /**
    * The turn this extraction runs in, when there is one. Optional because the digest pipeline
    * also runs from a schedule (`agent/schedules/digest.ts`), which has no turn at all — when
-   * absent, extraction behaves exactly as before W3A-s5. When present, any non-null result
+   * absent, extraction behaves as a plain extraction. When present, any non-null result
    * taints the turn (see `extractAttachment`'s own comment).
    */
   turn?: TurnKey;
@@ -72,7 +72,7 @@ export function stripFrontmatter(body: string): string {
  *
  * Returns { text: "", kind: "image" } for recognised image types (PNG/JPG/GIF/WEBP).
  *
- * W3A-s5 — every non-null return taints `opts.turn` (when there is one) at `third_party`: the
+ * Every non-null return taints `opts.turn` (when there is one) at `third_party`: the
  * attachment was sent by whoever sent the breadcrumb, not written by the owner
  * (the origin model, "The in-turn taint rule"). The image branch
  * taints too even though its own text is empty — the model still learns an image arrived and

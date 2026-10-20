@@ -1,9 +1,9 @@
 /**
- * Read a Notion page the owner links to (round 5).
+ * Read a Notion page the owner links to.
  *
- * Before this, a notion.so link went to the readability worker, which cannot sign in: it got an
- * empty app shell and answered "fetch failed", and the chief of staff told the owner "the reader is down"
- * (the meeting follow-up). Notion pages are read through the Notion API instead,
+ * A notion.so link must not go to the readability worker, which cannot sign in: it gets an
+ * empty app shell and answers "fetch failed", and the chief of staff would tell the owner
+ * "the reader is down". Notion pages are read through the Notion API instead,
  * using the integration token the chief of staff already holds for meeting follow-ups. Only pages shared with
  * that integration are visible; any other page answers 404, and the error below says so plainly.
  *
@@ -15,7 +15,7 @@
 import { readFileSync } from "node:fs";
 
 const NOTION_API = "https://api.notion.com";
-// Verified against developers.notion.com 2026-08-04 — the version meeting-followup.ts pins.
+// The API version meeting-followup.ts pins.
 const NOTION_VERSION = "2026-03-11";
 /** What read_url hands the model, at most. Matches the readability worker's PDF cap. */
 const MAX_TEXT_CHARS = 200_000;

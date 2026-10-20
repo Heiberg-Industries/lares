@@ -1,20 +1,20 @@
 /**
  * detectProposedWindow — does an inbound email propose a meeting time, and if so, over what
- * window should the calendar be checked before drafting a reply? (Task 2.)
+ * window should the calendar be checked before drafting a reply?
  *
  * PURE by design: `now` is always a parameter, never `new Date()`/`Date.now()` read from
  * inside this file. eve injects no ambient clock into agents — every computed date is a
- * guess without one, and that guess has already produced two wrong reminders in this fleet
- * (see recurrence.ts's port notes). A detector with a silent internal clock would carry the
+ * guess without one, and that guess produces wrong reminders
+ * (see `@lares/agent-kit`'s `clock.ts` header). A detector with a silent internal clock would carry the
  * same risk into email drafting.
  *
  * NO MODEL CALL, ever. The email-triage schedule caps billed calls at
  * TRIAGE_CEILING_PER_TICK = 10, one per message — a detector call here would double that,
- * and an uncapped retry loop is exactly what turned into a $250 leak in August. This also
+ * and an uncapped retry loop around a billed call is a runaway-spend risk. This also
  * keeps the detector unit-testable, which a model call is not.
  *
  * Conservative on purpose: a miss costs nothing (the draft is no worse than today, since
- * Task 3's calendar read simply doesn't happen); a false positive costs one calendar read.
+ * the calendar read simply doesn't happen); a false positive costs one calendar read.
  * So every pattern below is written to avoid firing on ordinary prose, even at the cost of
  * missing some real proposals — see the per-pattern comments for the specific collisions
  * that ruled each shape in or out.
@@ -34,7 +34,7 @@ export interface ProposedWindow {
 
 interface DayMatch {
   index: number;
-  date: string; // Oslo-local YYYY-MM-DD
+  date: string; // home-zone YYYY-MM-DD
   label: string;
 }
 
@@ -62,7 +62,7 @@ const EN_MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-/** "Weekday D Month" for a resolved Oslo date, e.g. "Tuesday 2 September" — always rendered
+/** "Weekday D Month" for a resolved home-zone date, e.g. "Tuesday 2 September" — always rendered
  *  in English regardless of the source language, since this feeds a prompt block rather than
  *  the draft itself (the draft's own language matching is voice.ts's job, not this file's). */
 function labelForDate(dateStr: string): string {
@@ -108,18 +108,17 @@ function daysInMonth(year: number, month: number): number {
 }
 
 /**
- * Resolve a day+month mention to a concrete Oslo YYYY-MM-DD.
+ * Resolve a day+month mention to a concrete home-zone YYYY-MM-DD.
  *
  * An explicit year in the text (`explicitYear`) is honoured verbatim — a sender who states a
  * year has given the most reliable signal in the message, and guessing over it would discard
- * a true positive (review, finding 2: "3. september 2028" written in August 2026 must
+ * a true positive ("3. september 2028" written in August 2026 must
  * resolve to 2028, not silently roll to 2026/2027 via the yearless heuristic below) — but only
  * when it's a PLAUSIBLE year. The year-capture regex has no way to know it's looking at a year
  * rather than any other bare 4-digit token that happens to follow a day+month phrase — a
  * Norwegian postal code right after a date in an address ("3. september, 1400 Ski") is exactly
- * that shape, and without a plausibility check it would resolve to the year 1400 (
- * review round 3: this file's own finding-2 fix reintroduced the wrong-positive-with-a-garbage-
- * value failure class it was written to eliminate). Outside [now-1, now+10], the captured token
+ * that shape, and without a plausibility check it would resolve to the year 1400 (a
+ * garbage-value wrong positive, the failure class this check exists to eliminate). Outside [now-1, now+10], the captured token
  * is treated as NOT a year — falling back to the same yearless rollover guess below, rather than
  * returning null outright, because the day+month mention itself is still a perfectly good
  * signal; only the trailing digits' meaning as "a year" was ever in doubt.
@@ -130,8 +129,7 @@ function daysInMonth(year: number, month: number): number {
  *
  * Returns null when `day` does not exist in that month for the resolved year — "31 April" (no
  * year has a 31st in April) or "29 February" landing on a non-leap year — rather than letting
- * it silently normalize to a different calendar date the way JS `Date` overflow would (
- * review, finding 1).
+ * it silently normalize to a different calendar date the way JS `Date` overflow would.
  */
 function resolveMonthDay(now: Date, month: number, day: number, explicitYear: number | null): string | null {
   const todayStr = osloDate(now);
@@ -159,7 +157,7 @@ function findExplicitDate(text: string, now: Date): DayMatch | null {
     const month = Number(iso[2]);
     const day = Number(iso[3]);
     // Same month-length rule as the day+month forms below — Date-overflow normalization
-    // would otherwise silently turn "2026-02-30" into March 2 (review, finding 1).
+    // would otherwise silently turn "2026-02-30" into March 2.
     if (month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth(year, month)) {
       const date = `${iso[1]}-${iso[2]}-${iso[3]}`;
       candidates.push({ index: iso.index, date, label: labelForDate(date) });

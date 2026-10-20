@@ -12,9 +12,10 @@
  * habit of tapping twice without reading.
  *
  * WHY NOT THE RUNBOOK. The CRM comm-state-fields runbook documents these as
- * *lowercase* (`email_sent`, …), "verified 2026-06-24 by the owner from the live Twenty settings
- * UI". The live schema disagrees. Trusting that page is exactly what caused , so the
- * values here come from the API and the runbook has been corrected to point at this file.
+ * *lowercase* (`email_sent`, …), "verified by the owner from the live Twenty settings
+ * UI". The live schema disagrees. Trusting that page is exactly what caused the double
+ * approval above, so the values here come from the API and the runbook has been corrected to
+ * point at this file.
  *
  * WHY A SHARED CONSTANT. Four gated write tools touch these three fields. Hand-copying an enum
  * into each one means four places to be wrong when Twenty's options change, and the failure

@@ -1,7 +1,6 @@
 // services/chief-of-staff/lib/person/gather.ts
 // CORE — vendor-neutral. Every source is an injected function, so this whole file
 // tests with no I/O and no mocking framework.
-// Ported verbatim from services/agent-runtime/lib/person/gather.ts (Task 8) — logic unchanged.
 import { contactAnchor, partitionByAnchor } from "./anchor.js";
 import { resolvePerson, type Resolution } from "./resolve.js";
 import { deriveOrgQuery } from "./org.js";
@@ -41,7 +40,7 @@ export interface PersonDossier {
   query: PersonQuery;
   resolution: Resolution;
   anchor: EngagementEvent | null;
-  /** After the anchor — what he has not seen. */
+  /** After the anchor — what the owner has not seen. */
   fresh: { mail: MailItem[]; meetings: MeetingItem[]; transcripts: TranscriptItem[] };
   /** Before the anchor — context, not news. */
   history: { mail: MailItem[]; meetings: MeetingItem[]; transcripts: TranscriptItem[] };
@@ -103,7 +102,7 @@ async function attemptNullable<T>(source: string, run: () => Promise<T | null>):
 }
 
 /**
- * What this lookup is FOR — which decides what it is worth asking (review fix).
+ * What this lookup is FOR — which decides what it is worth asking.
  *
  * `organisation: false` means the caller renders no ORGANISATION section, so the stage is not
  * started at all. The only such caller today is the outbound email drafter, whose `bounded`
@@ -144,13 +143,13 @@ export async function gatherPerson(
   // the ORGANISATION stage starts HERE, above the resolved-only fan-out, because the
   // shape it exists for is precisely the one that never reaches it: a first-contact address
   // resolves to UNKNOWN, and the domain inside it is at that moment the only thing anyone knows.
-  // Derived from a resolved candidate only, an intro call with a stranger at a vendor he already
-  // self-hosts would stay unanswered — which is the bug this ticket was filed about.
+  // Derived from a resolved candidate only, an intro call with a stranger at a vendor the owner already
+  // self-hosts would stay unanswered — which is the failure this stage exists to prevent.
   //
   // AMBIGUOUS is the one resolution that skips it: that branch renders a question and nothing
   // else, so the I/O would buy output nobody ever reads.
   //
-  // NOT ASKED AT ALL is checked first (review fix): `opts.organisation === false` says the caller
+  // NOT ASKED AT ALL is checked first: `opts.organisation === false` says the caller
   // renders no organisation section, and starting the stage anyway would buy nothing but blocked
   // event-loop time. See `GatherOptions`.
   const organisationP: Promise<SourceResult<OrgFacts>> =
@@ -188,7 +187,7 @@ export async function gatherPerson(
           return sources.organisation(orgQuery);
         });
 
-  // Ambiguous or unknown: STOP. Fanning out on a guessed person is the merge Task 2 refuses
+  // Ambiguous or unknown: STOP. Fanning out on a guessed person is the merge `resolvePerson` refuses
   // to make, arriving one layer later and dressed as a complete answer.
   if (resolution.kind !== "resolved") {
     return {

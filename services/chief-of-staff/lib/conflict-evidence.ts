@@ -8,7 +8,7 @@
  * the rule those slices will call: given one stay and a short list of candidate mails, does
  * any of them look like a cancellation of THAT booking, specifically?
  *
- * THE BIAS IS CONSERVATIVE ON PURPOSE. A wrong "yes, this was cancelled" leads a later slice
+ * THE BIAS IS CONSERVATIVE ON PURPOSE. A wrong "yes, this was cancelled" leads the calling tool
  * to PROPOSE DELETING A LIVE BOOKING. A wrong "no match" leaves the plain clash flag standing,
  * which is exactly what happens today. Those two mistakes are not symmetric, so every rule
  * below is written to fail toward "no match": a missing vendor, a veto phrase anywhere in the
@@ -121,7 +121,7 @@ function escapeRegExp(s: string): string {
 }
 
 /** The `YYYY-MM-DD` a booking's `start` (timed or all-day) reads as its check-in day — read
- *  straight off the date STRING, never through a `Date` round-trip (the /lesson:
+ *  straight off the date STRING, never through a `Date` round-trip (the lesson:
  *  a timezone conversion can walk an all-day date onto the wrong side of midnight). Exported
  * so `lib/conflict-resolution.ts`'s Gmail query builder reads the same check-in
  *  day this module matches against, rather than a second copy of the regex drifting from it. */

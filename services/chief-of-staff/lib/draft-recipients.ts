@@ -1,9 +1,9 @@
 /**
- * Changing who an EXISTING Gmail draft goes to (2026-09-08). The owner: recipients must be editable
+ * Changing who an EXISTING Gmail draft goes to. Recipients must be editable
  * "both via Gmail AND by telling the chief of staff". Gmail already works — it is a normal draft. Telling the chief of staff
  * means rewriting the draft's raw RFC 822 message IN PLACE: only the To/Cc header lines above the
  * first blank line change, so the body, the HTML alternative and the appended signature survive
- * byte for byte. Pure: no I/O. The tool (agent/tools/gmail_draft_recipients.ts) reads the raw,
+ * byte for byte. Pure: no I/O. The tool (catalogue/gmail_draft_recipients.ts) reads the raw,
  * calls these, and writes the raw back with drafts.update.
  */
 import { bareAddress } from "./reply-recipients.js";

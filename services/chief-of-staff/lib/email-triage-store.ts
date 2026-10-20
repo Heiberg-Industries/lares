@@ -22,8 +22,7 @@ export type TriageOutcome = "drafted" | "fyi" | "automated" | "error";
 /** How many times a message that keeps failing (read or triage) gets re-claimed before the
  *  schedule gives up and reports it loudly instead of retrying again. Small on purpose — a
  *  billed triage call may already have happened by a later attempt, so this bounds worst-case
- *  re-billing the same way the Aug 14/15 incident's fix bounds retry loops generally
- *  (the August 2026 spend-leak write-up). */
+ *  re-billing the same way other retry loops are bounded generally. */
 export const MAX_ATTEMPTS = 3;
 
 export interface ClaimResult {

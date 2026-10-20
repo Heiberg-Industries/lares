@@ -1,5 +1,5 @@
 /**
- * lib/schedule-hours.ts — /s3/s4. A small in-process cache in front of
+ * lib/schedule-hours.ts — a small in-process cache in front of
  * `@lares/agent-kit/schedule-settings`'s `readScheduleHours`, for the slot schedules that poll
  * every minute.
  *

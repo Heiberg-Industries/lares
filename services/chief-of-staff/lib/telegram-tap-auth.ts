@@ -1,6 +1,5 @@
 /**
- * lib/telegram-tap-auth.ts — give an approval-card tap on Telegram the verified owner's identity
- * (B2b).
+ * lib/telegram-tap-auth.ts — give an approval-card tap on Telegram the verified owner's identity.
  *
  * THE PROBLEM, PROVEN BY RUNNING (tests/telegram-owner-tap.test.ts). eve's Telegram channel resumes
  * a tap on an approval card with `.respond([...], { auth: null })`. For an ordinary gated tool that

@@ -1,15 +1,13 @@
 /**
  * The paged `listPeople` capability — the ONE place allowed to call it directly.
  *
- * Task 5 deliberately did not build a `listPeople` tool ("the full-contact-dump guard"):
- * handing the model a raw dump of every CRM person is exactly the surface Task 13's
+ * There is deliberately no `listPeople` tool ("the full-contact-dump guard"):
+ * handing the model a raw dump of every CRM person is exactly the surface the
  * `commercial_who_to_contact` tool exists to gate — it pulls the full universe here, then
  * filters/scores/ranks it down to a handful of names before anything reaches a model.
  *
- * Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `listPeople` (the
- * per-page REST call and field mapping) and the paging loop (the 2000-record cap), collapsed
- * into one function since chief-of-staff has no integration-registry layer — this file is that
- * wiring's replacement.
+ * One function holds the per-page REST call, the field mapping and the paging loop (the
+ * 2000-record cap), since chief-of-staff has no integration-registry layer.
  */
 import { twentyGet } from "./twenty-client.js";
 
@@ -72,9 +70,9 @@ function mapPerson(r: Record<string, any>): TwentyPerson {
 /**
  * List CRM people with the commercial radar's signal fields, paging with Twenty's
  * `starting_after` cursor convention until the cursor runs out or `cap` is reached (default
- * 2000, matching the old registry's hard fan-out cap). A genuine Twenty failure
+ * 2000, the hard fan-out cap). A genuine Twenty failure
  * (`TwentyUnavailableError`) on any page propagates — it is not swallowed into a partial
- * result, per .
+ * result, so a partial list can never look like a complete one.
  */
 export async function listPeopleCapped(opts: { cap?: number; pageSize?: number } = {}): Promise<TwentyPerson[]> {
   const cap = opts.cap ?? 2000;

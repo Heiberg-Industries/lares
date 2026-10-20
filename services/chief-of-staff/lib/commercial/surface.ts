@@ -1,18 +1,17 @@
 /**
  * Surface orchestrator — ties together the commercial radar pipeline:
- *   listPeople (T1) → doNotContact filter → pre-floor
- *   → ICP read (T2) + think → scoreContact (T3) → rank per brand
+ *   listPeople → doNotContact filter → pre-floor
+ *   → ICP read + think → scoreContact → rank per brand
  *
  * Brand relevance is computed from per-brand ICP fit (there is no brand filter stage) — one
  * contact can surface under several brands.
  *
  * "subset" mode: pre-floor on warmth/recency before calling expensive think. The
  * `commercial_who_to_contact` tool only ever calls this mode.
- * "sweep"  mode: skip pre-floor, score everything (full universe pass) — kept for fidelity
- * with the ported source and future reuse, not currently wired to any chief-of-staff caller.
+ * "sweep"  mode: skip pre-floor, score everything (full universe pass) — kept for future
+ * reuse, not currently wired to any chief-of-staff caller.
  *
- * Ported near-verbatim from `services/agent-runtime/lib/commercial/surface.ts`. 
- * posture (new to this port, not present upstream): `getCompanyForPerson` and `listPeople`
+ * Error posture: `getCompanyForPerson` and `listPeople`
  * are called with NO try/catch here — deliberately, so a genuine Twenty failure propagates
  * out of `surfaceCommercial` rather than silently producing an empty/partial result.
  * `think` and `opportunitiesForPerson` stay wrapped in try/catch — each is a
@@ -25,8 +24,7 @@ import type { ScoreConfig } from "./score.js";
 import { isJunkContact } from "./junk.js";
 
 // Canonical relationship-strength order (weakest→strongest). Inlined (not imported) so this module has no
-// cross-package dependency beyond @lares/junk — matching the upstream source's own reasoning
-// for inlining this table rather than importing crm-intelligence's copy.
+// cross-package dependency beyond @lares/junk, rather than importing crm-intelligence's copy.
 const STRENGTH_LEVELS = [
   "NO_CONNECTION",
   "VERY_WEAK",

@@ -1,4 +1,4 @@
-// lib/adapters/dream/store.ts — bi-temporal observation/preference store.
+// lib/dream/store.ts — bi-temporal observation/preference store.
 //
 // Persists two tables:
 //   dream_observations  — append-only signals extracted from conversation logs.
@@ -7,9 +7,7 @@
 //                         on the old row (never deletes).
 //
 // `db` is the minimal MiniPool interface so the store stays unit-testable with an
-// injected fake — no real Postgres required. Inlined rather than imported: the
-// upstream source (services/agent-runtime/lib/adapters/heartbeat.ts) is on the
-// retired runtime, and chief-of-staff must not take a dependency on it.
+// injected fake — no real Postgres required.
 
 import type { Pool } from "pg";
 
@@ -52,10 +50,10 @@ export interface ObservationRow {
   subject: string;
   confidence: number;
   source: string | null;
-  /** Which of the five ADR-0018/origin-spec classes produced this row. Never null — see
+  /** Which of the five ADR-0018 origin classes produced this row. Never null — see
    *  `ensureDreamTables`'s ALTER TABLE for the backfill default and why it is `'agent'`. */
   origin: Origin;
-  /** The identity register's canonical id this row belongs to (box 084, ruling D5). NULL for a
+  /** The identity register's canonical id this row belongs to. NULL for a
    *  row written before this column existed AND not labelled by `labelExistingDreamRows` (the
    *  installation had more than one member at the time, or none). Never NULL for a row this
    *  store itself inserts — `makeDreamStore`'s `owner` is bound once, at construction, and every
@@ -73,7 +71,7 @@ export interface PreferenceRow {
   subject: string;
   confidence: number;
   source: string | null;
-  /** Which of the five ADR-0018/origin-spec classes produced this row. Never null. */
+  /** Which of the five ADR-0018 origin classes produced this row. Never null. */
   origin: Origin;
   /** Same rule as `ObservationRow.owner` — see there. */
   owner: string | null;
@@ -120,26 +118,22 @@ export async function ensureDreamTables(db: MiniPool): Promise<void> {
   await db.query(
     `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS text_norm text`,
   );
-  // Origin (docs/decisions/0018-learning-and-dreaming.md, the origin model). DEFAULT 'agent' is the correct backfill: every row that exists today was
-  // produced by the reflector reasoning over conversation logs (cycle.ts), which is the
-  // `agent` class by the spec's rule 2. Unlike `standing_facts`, there is deliberately NO
-  // CHECK constraint here — these tables legitimately hold all five classes once the taint
-  // reaches them. Wave 4's promotion gate is the thing that will read this column.
+  // Origin (docs/decisions/0018-learning-and-dreaming.md, the origin model). DEFAULT 'agent' is
+  // the correct backfill: every row that exists was produced by the reflector reasoning over
+  // conversation logs (cycle.ts), which is the `agent` class. Unlike `standing_facts`, there is
+  // deliberately NO CHECK constraint here — these tables legitimately hold all five classes once
+  // the taint reaches them. The promotion gate is what reads this column.
   await db.query(
     `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent'`,
   );
-  // Owner (box 001_baseline.sql, ruling D5, WIDENED later). NULLABLE, NO DEFAULT
-  // unlike `origin` above, an ALTER must never INVENT an owner: a row this store did not write
-  // itself either predates the column, or belongs to an installation this code cannot see. THIS
-  // CREATE TABLE, and this ALTER, are the column's one truth (`owner text`, nullable, no
-  // default): box 084 runs the byte-identical `ALTER TABLE … ADD COLUMN IF NOT EXISTS owner
-  // text` against a database where these tables already exist, so the two can never disagree
-  // about the column's shape, whichever happens to run first — a fresh installation never sees
-  // 084 do anything (box migrations run before this service ever starts, so the tables are not
-  // here yet), and the one existing installation has both apply, in either order, to the same
-  // result. Labelling an existing NULL row as the installation's one member (when there is
-  // exactly one) is a SEPARATE, explicit step — `labelExistingDreamRows` below, and box 084's own
-  // equivalent — never something this ALTER does on its own.
+  // Owner. NULLABLE, NO DEFAULT: unlike `origin` above, an ALTER must never INVENT an owner — a
+  // row this store did not write itself either predates the column, or belongs to an
+  // installation this code cannot see. THIS CREATE TABLE, and this ALTER, are the column's one
+  // truth (`owner text`, nullable, no default); these tables are created here at runtime, not by
+  // a numbered migration, so nothing else can disagree about the column's shape. Labelling an
+  // existing NULL row as the installation's one member (when there is exactly one) is a
+  // SEPARATE, explicit step — `labelExistingDreamRows` below — never something this ALTER does
+  // on its own.
   await db.query(
     `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS owner text`,
   );
@@ -168,7 +162,7 @@ export async function ensureDreamTables(db: MiniPool): Promise<void> {
   );
 }
 
-// ─── Labelling pre-existing rows (box 084, ruling D5) ─────────────────────────────────────────
+// ─── Labelling pre-existing rows ─────────────────────────────────────────
 
 /** What `labelExistingDreamRows` did. */
 export interface DreamLabelResult {
@@ -178,30 +172,28 @@ export interface DreamLabelResult {
   owner: string | null;
   /** True when the register does not resolve to exactly one person — including when it holds
    *  none at all, or is not on this database — so labelling would be a guess. The name follows
-   *  the owner's ruling (D5), which was written against the common "a second member joined"
-   *  case; an empty or missing register reaches the same, more conservative, answer. */
+   *  the common "a second member joined" case; an empty or missing register reaches the same,
+   *  more conservative, answer. */
   skippedBecauseSeveralMembers: boolean;
 }
 
 /**
- * Label pre-existing dream rows as the installation's single member (owner ruling D5, widened later). Does nothing, and says so, when `users` holds anything other than exactly one row
+ * Label pre-existing dream rows as the installation's single member. Does nothing, and says so, when `users` holds anything other than exactly one row
  * or is not on this database at all.
  *
- * THE SAME RULE AS BOX 084's OWN LABELLING STEP, expressed here for two callers the SQL file
- * cannot reach: a deploy where `ensureDreamTables` added the column (at chief-of-staff startup)
- * before 084 happened to be applied by hand over SSH, and the erase CLI's `--prepare` path (a
- * later slice). Running either implementation, or both, in either order, ends at the same
+ * Written for callers the SQL files cannot reach: a deploy where `ensureDreamTables` added the
+ * column (at chief-of-staff startup) after rows already existed, and any other explicit
+ * labelling run. Running it more than once, in any order, ends at the same
  * answer — every row that predates the column, and only those, get exactly one owner: the
  * register's one member, when there is exactly one; otherwise nothing changes.
  *
  * ONE TRANSACTION, table-level locked: a member added or removed while this runs waits for this
  * transaction to finish, so the count this decides on and the UPDATEs it gates can never see a
- * different answer than each other (the same guarantee box 083's header states for its own
- * rewrite). Only rows with `owner IS NULL` are touched — a row already labelled, by this
+ * different answer than each other. Only rows with `owner IS NULL` are touched — a row already labelled, by this
  * function or by a write that carried its own owner, is never revisited.
  *
  * ASSUMES both tables already exist — call `ensureDreamTables(db)` first (every real caller
- * already does, to write or read through the store at all). Unlike box 084's own labelling step,
+ * already does, to write or read through the store at all). Note:
  * this function does not itself guard a missing `dream_observations`/`dream_preferences`.
  */
 export async function labelExistingDreamRows(db: Pool): Promise<DreamLabelResult> {
@@ -260,7 +252,7 @@ export async function labelExistingDreamRows(db: Pool): Promise<DreamLabelResult
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 
-/** No owner was bound to this store, and a write was attempted anyway (box 084, ruling D5).
+/** No owner was bound to this store, and a write was attempted anyway.
  *  Every NEW dream row must carry the installation member it belongs to — a caller that
  *  constructs a read-only store (`makeDreamStore(db)`, no second argument) gets a loud error
  *  here instead of a silently NULL-owned row. */
@@ -282,7 +274,7 @@ function requireOwner(owner: string | undefined): string {
  * call to add a per-write owner argument without changing the kit for every role. Binding it at
  * construction keeps this service's contract with the kit unchanged and makes the owner
  * EXPLICIT at exactly the one place a future multi-user caller has to change: which store an
- * agent's turn constructs, not the generic gate that writes through it (box 084, ruling D5).
+ * agent's turn constructs, not the generic gate that writes through it.
  *
  * Optional because the read-only callers (`lib/dream-store.ts`'s `activePreferences`, read by
  * `agent/schedules/weekly-summary.ts`) never write, and requiring an owner they do not have and
@@ -378,7 +370,7 @@ export function makeDreamStore(db: MiniPool, owner?: string) {
   };
 }
 
-// ─── Usage clock (W4C-s11, ADR-0018 rule 8) ───────────────────────────────────
+// ─── Usage clock (ADR-0018 rule 8) ───────────────────────────────────
 
 /** Which store a used row belongs to — one table, two sources, because retirement will have to
  *  treat them alike and a second table would guarantee they drift. */
@@ -404,7 +396,7 @@ function warnAboutMemoryUse(err: unknown): void {
  *
  * BEST-EFFORT BY CONSTRUCTION. NEVER throws, never blocks, and a failure is logged at most once
  * per process: a usage clock must not be able to cost a turn. Starts the clock ADR-0018 rule 8's
- * retirement will read; this slice does not read it back (see `tests/memory-use.test.ts`'s last
+ * retirement will read; nothing reads it back yet (see `tests/memory-use.test.ts`'s last
  * case).
  */
 export async function recordUse(

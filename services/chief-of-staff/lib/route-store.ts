@@ -9,11 +9,9 @@
  *                     scanner uses to know where to resume. Enforced as singleton via
  *                     CHECK (id = 1).
  *
- * Ported from `services/agent-runtime/lib/adapters/route/store.ts`, retyped against `Pool`
- * from "pg" instead of that file's `MiniPool` structural interface — matching every other
- * chief-of-staff store (`lib/proposals-store.ts`, `lib/reminders-store.ts`), none of which use that
- * abstraction. Same table/column names as upstream: other consumers (e.g. a future console
- * view) may read these tables directly.
+ * Typed against `Pool` from "pg" rather than a `MiniPool` structural interface — matching every
+ * other chief-of-staff store (`lib/proposals-store.ts`, `lib/reminders-store.ts`), none of which
+ * use that abstraction. Other consumers (e.g. a console view) may read these tables directly.
  *
  * Kept as its own file rather than folded into `lib/proposals-store.ts`: the two stores share
  * no tables, no columns, and no callers — route_proposals is a dedup ledger keyed on

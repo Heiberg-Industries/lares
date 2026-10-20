@@ -1,13 +1,12 @@
 /**
- * lib/conflict-resolution.ts — the bounded mailbox search per clash (
- * resolution half).
+ * lib/conflict-resolution.ts — the bounded mailbox search per clash (the resolution half).
  *
  * WHAT THIS DOES. For each `overlapping-stay` clash the detector already found
  * (`lib/calendar-conflicts.ts`), ask whether exactly ONE of the two bookings has a strong
  * cancellation match (`lib/conflict-evidence.ts`). When exactly one does, attach a
  * `resolution` naming that event; otherwise the clash keeps today's plain flag. Nothing here
  * ever deletes, declines or drafts anything — this only decides which stale-event proposal, if
- * any, a LATER slice (s5) is allowed to surface behind an approval card.
+ * any, the calling tool is allowed to surface behind an approval card.
  *
  * THE SAFETY PROPERTY THAT MATTERS MOST: mail text can never choose WHICH event a resolution
  * points at, and it can never invent a clash. `resolveConflicts` only ever iterates the
@@ -20,18 +19,16 @@
  * nothing; see `tests/conflict-resolution.test.ts`'s "cannot be steered by mail text" cases.
  *
  * NO CTX, DELIBERATELY. This module is a plain library function, injected with a `gmailFor`
- * dependency — it is not itself an eve tool and nothing wires it into a turn yet (that is
- * s5, out of this slice's scope). There is therefore no `ctx` to thread an origin-taint stamp
- * through, and none is invented here: the moment a catalogue tool calls this function inside a
- * turn, THAT call site is where `taintTurn`/`turnKeyFrom` belongs (the same convention
- * `catalogue/gmail_search.ts` and `catalogue/calendar_conflicts.ts` already follow), exactly
- * as `gmail_search` and `gmail_read` do for a direct Gmail read. Whoever builds s5 must add
- * that there, not here.
+ * dependency — it is not itself an eve tool. There is therefore no `ctx` to thread an
+ * origin-taint stamp through, and none is invented here: the call site inside a turn
+ * (`catalogue/calendar_conflicts.ts`) is where `taintTurn`/`turnKeyFrom` belongs (the same
+ * convention `catalogue/gmail_search.ts` follows), exactly as `gmail_search` and `gmail_read`
+ * do for a direct Gmail read.
  *
  * BOUNDED, NEVER A SWEEP. Three named caps ({@link MAX_CLASHES_PER_PASS},
  * {@link MAX_MESSAGES_PER_EVENT}, {@link CLASH_TIMEOUT_MS}), plus the query's own date window
  * ({@link SEARCH_WINDOW_BEFORE_DAYS}/{@link SEARCH_WINDOW_AFTER_DAYS}) and its restriction to
- * `overlapping-stay` clashes only (the owner's own decision: a meeting "cancellation" is
+ * `overlapping-stay` clashes only (a meeting "cancellation" is
  * usually a calendar update, not a mail — double-booked and timezone-trap clashes are never
  * searched).
  *
@@ -100,7 +97,7 @@ export function buildCancellationQuery(vendor: string, checkInDay: string): stri
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 export interface ConflictResolution {
-  /** The id of the event a later slice may propose deleting — always one of THIS clash's own
+  /** The id of the event the calling tool may propose deleting — always one of THIS clash's own
    *  two event ids, from calendar data; never derived from mail text. */
   readonly staleEventId: string;
   /** Carried from that event's own `account`/`calendarId`, when the fan-out set

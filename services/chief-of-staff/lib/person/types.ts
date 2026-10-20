@@ -1,6 +1,5 @@
 // services/chief-of-staff/lib/person/types.ts
 // CORE — vendor-neutral (no zod, no pg, no SDKs).
-// Ported verbatim from services/agent-runtime/lib/person/types.ts (Task 8) — logic unchanged.
 
 /**
  * The four states a source can be in, kept apart on purpose.
@@ -47,7 +46,7 @@ export class NotApplicableError extends Error {
  * How far back (and, for the calendar, forward) each source is actually searched.
  *
  * Stated in the rendered output on purpose. An unstated window turns "we found nothing in
- * the last 400 days" into "he has never met them" — an assertion about the relationship
+ * the last 400 days" into "the owner has never met them" — an assertion about the relationship
  * that the query never established. The adapter that does the searching imports these, so
  * the numbers the render quotes are the numbers the search used, not a second copy that
  * can drift.
@@ -62,7 +61,7 @@ export const SEARCH_WINDOW_DAYS = {
 export interface DatedItem { at: Date }
 
 /**
- * An interaction the owner ACTIVELY took part in: mail he sent, a meeting he attended,
+ * An interaction the owner ACTIVELY took part in: mail the owner sent, a meeting the owner attended,
  * a transcript naming them both.
  *
  * Their unanswered inbound mail is deliberately NOT an engagement. If it were, every
@@ -80,8 +79,8 @@ export interface EngagementEvent extends DatedItem {
  *
  *  `emails` (plural) is the MERGE form: "these addresses are one human". It exists because a
  *  job change gives someone two mailboxes, and without it that person is permanently
- *  ambiguous — he can pick one address, but never see the whole relationship. When he supplies
- *  the list he has already made the identity judgement, so this form never returns ambiguous. */
+ *  ambiguous — the owner can pick one address, but never see the whole relationship. When the owner supplies
+ *  the list the owner has already made the identity judgement, so this form never returns ambiguous. */
 export interface PersonQuery {
   name?: string;
   email?: string;

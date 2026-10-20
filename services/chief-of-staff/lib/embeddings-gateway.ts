@@ -1,11 +1,11 @@
 /**
- * EU embeddings through the LiteLLM gateway (OpenAI-compatible /v1/embeddings). Ported from
- * services/agent-runtime/lib/adapters/embeddings-gateway.ts. Keeps the corpus in memory
- * (small, single enrolled user) and does cosine top-k — no vector DB needed at this scale.
+ * EU embeddings through the LiteLLM gateway (OpenAI-compatible /v1/embeddings). Keeps the
+ * corpus in memory (small, single enrolled user) and does cosine top-k — no vector DB needed
+ * at this scale.
  *
- * identity-encoding: 2026-08-14/15 cost incident (see lib/gateway-provider.ts's
+ * identity-encoding: a cost incident (see lib/gateway-provider.ts's
  * IDENTITY_ENCODING_HEADERS) — this is a raw fetch against the same gateway, so it carries
- * the same header defensively even though embeddings weren't implicated in the original
+ * the same header defensively even though embeddings were not implicated in the original
  * incident.
  */
 import { IDENTITY_ENCODING_HEADERS } from "./gateway-provider.js";

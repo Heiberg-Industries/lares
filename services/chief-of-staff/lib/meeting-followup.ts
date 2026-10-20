@@ -8,7 +8,7 @@
  *  1. The raw transcript never appears. It is never read, so it cannot leak.
  *  2. Notion's footnote anchors are stripped. They are deep links into a page externals
  *     cannot open, and a recap full of dead links reads as carelessness.
- *  3. No Notion link at all (spec Q5). The page's own content contains the transcript, so a
+ *  3. No Notion link at all. The page's own content contains the transcript, so a
  *     shareable link would publish it — the one thing this feature may not do.
  */
 import { createHash } from "node:crypto";
@@ -58,7 +58,7 @@ export function parseAttendees(raw: string): Array<{ name: string; email: string
 /**
  * One-off follow-ups keep only the SHARED action items. A one-off intro with an
  * external got the member's full internal action list — "Silje's fund work",
- * "publish internal code" — which reads as his side of the room, not a shared recap. Rule: an
+ * "publish internal code" — which reads as the owner's side of the room, not a shared recap. Rule: an
  * item that names only the member (any of `names.self`, on word boundaries, case-insensitive) and
  * none of the recipients is theirs alone and is dropped; an item naming a recipient, or nobody,
  * is shared. Recurring series are NOT filtered — the caller decides; the list is the team's record.
@@ -132,9 +132,9 @@ export function buildFollowupPrompt(input: FollowupInput): string {
  * of what Notion rendered, never of what the counterpart speaks.
  *
  * This gathers REAL correspondence: the owner's own prior mail to the recipients (what language
- * he already writes them in is the single best predictor of what he wants written now).
+ * the owner already writes them in is the single best predictor of what the owner wants written now).
  * Best-effort and bounded — at most `cap` messages across the recipient list, first hits win,
- * every failure degrades to "" so the caller falls back to exactly the old behaviour. Returns
+ * every failure degrades to "" so the caller falls back to the plain behaviour. Returns
  * the joined bodies, or "" when nothing was found.
  */
 export async function priorCorrespondenceText(
