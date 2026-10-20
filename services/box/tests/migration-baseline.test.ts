@@ -25,6 +25,7 @@ const STANDING_FACTS_FILENAME = "002_standing_facts.sql";
 const OUTSIDE_TOOL_SEEN_FILENAME = "003_outside_tool_seen.sql";
 const WEB_INBOX_FILENAME = "004_web_inbox.sql";
 const MODEL_STEPS_FILENAME = "005_model_steps.sql";
+const APPROVAL_SESSION_FILENAME = "006_approval_session.sql";
 
 /** Every table the baseline creates, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
@@ -124,11 +125,11 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
-      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME]);
+      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME]);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'");
       expect(rows[0].n).toBeGreaterThan(50);
       const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
@@ -163,7 +164,7 @@ describe("a database the pre-release history built", () => {
     const adopted: AppliedMigration = { ...oldRow(BASELINE_FILENAME, 1), checksum: files[0]!.checksum, how: "adopted" };
     const plan = planMigrations(files, [adopted]);
     expect(plan.refusals).toEqual([]);
-    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply"]);
+    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply"]);
   });
 });
 
@@ -201,8 +202,8 @@ describe("adopting the baseline", () => {
     expect(result.adopted).toEqual([BASELINE_FILENAME]);
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
-    // Later files still run after adoption: the baseline is skipped, 002 to 005 are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME], refused: [] });
+    // Later files still run after adoption: the baseline is skipped, 002 to 006 are applied.
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });
@@ -228,6 +229,21 @@ describe("adopting the baseline", () => {
     await expect(db.pool.query("UPDATE outside_tool_pins SET seen_hash = 'short'")).rejects.toThrow(/outside_tool_pins_seen_shape/);
     await expect(db.pool.query(`UPDATE outside_tool_pins SET seen_tools = '{"name":"x"}'`)).rejects.toThrow(/outside_tool_pins_seen_shape/);
     await db.pool.query("TRUNCATE outside_tool_pins");
+  });
+
+  it("the approval-session file runs twice, leaves old cards without a session, and takes a 'revised' settlement", async () => {
+    const sql = readFileSync(join(SQL, APPROVAL_SESSION_FILENAME), "utf8");
+    await db.pool.query(sql);
+    await db.pool.query(sql);
+    await db.pool.query("INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash) VALUES ('r1', 'c1', 'assistant', 'gmail_send', 'h')");
+    await db.pool.query("INSERT INTO approval_asks (request_id, call_id, agent, tool, payload_hash, session_id, turn_sequence, target_hash) VALUES ('r2', 'c2', 'assistant', 'gmail_send', 'h', 's1', 3, 't')");
+    await db.pool.query("UPDATE approval_asks SET outcome = 'cancelled', answered_at = now(), answered_via = 'revised' WHERE request_id = 'r2'");
+    const { rows } = await db.pool.query("SELECT request_id, session_id, turn_sequence, target_hash, outcome, answered_via FROM approval_asks ORDER BY request_id");
+    expect(rows).toEqual([
+      { request_id: "r1", session_id: null, turn_sequence: null, target_hash: null, outcome: null, answered_via: null },
+      { request_id: "r2", session_id: "s1", turn_sequence: 3, target_hash: "t", outcome: "cancelled", answered_via: "revised" },
+    ]);
+    await db.pool.query("TRUNCATE approval_asks");
   });
 
   it("refuses when the old history is not whole, and leaves the ledger alone", async () => {
