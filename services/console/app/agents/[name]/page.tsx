@@ -8,6 +8,7 @@ import { checkOutsideUrl, outsideToolsInEffect } from "@lares/agent-kit/outside-
 import { AgentDetail } from "../../../components/AgentDetail";
 import { getOutsideToolEvidence } from "../../../lib/outside-tools";
 import { fallbackNotes } from "../../../lib/delivery-notes";
+import { getPromptCacheLine } from "../../../lib/agent-detail";
 export const dynamic = "force-dynamic";
 export default async function AgentPage({
   params,
@@ -30,10 +31,11 @@ export default async function AgentPage({
   }
   const agent = agents.find((a) => a.name === name);
   if (!agent) notFound();
-  const [board, definition, events] = await Promise.allSettled([
+  const [board, definition, events, promptCache] = await Promise.allSettled([
     getBoardRows({ strict: true }),
     builderData(name),
     getPermissionEvents({ agent: name, limit: 12 }),
+    getPromptCacheLine(name),
   ]);
   const saved =
     definition.status === "fulfilled" ? definition.value.initial?.definition : undefined;
@@ -65,6 +67,7 @@ export default async function AgentPage({
       routing={routing}
       outsideTools={outsideTools}
       agent={agent}
+      promptCache={promptCache.status === "fulfilled" ? promptCache.value : null}
       board={
         board.status === "fulfilled"
           ? {
