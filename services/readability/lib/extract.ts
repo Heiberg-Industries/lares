@@ -12,11 +12,15 @@ export interface Extracted {
   excerpt?: string;
   /** Set for an image link: the picture itself, for the caller to show a vision model. */
   image?: { mediaType: string; base64: string };
+  /** Set only when the reader cut the document at its size limit. */
+  truncated?: true;
+  /** Set with `truncated`: the length of the whole text before the cut. */
+  totalChars?: number;
 }
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024; // 5 MB hard cap
 const MAX_PDF_BYTES = 20 * 1024 * 1024; // PDFs are bigger than pages; still bounded
-const MAX_PDF_TEXT_CHARS = 200_000;     // the caller (read_url) sees at most this much
+export const MAX_PDF_TEXT_CHARS = 200_000;     // the caller (read_url) sees at most this much
 // An image link is handed back as the picture. Only the types the model accepts, and
 // under eve's own 3 MiB warning — it is persisted in the session and re-sent on every call.
 const MODEL_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"];
@@ -114,7 +118,11 @@ export async function extractPdf(bytes: Uint8Array | string, url: string): Promi
   const metaTitle = typeof (meta.info as Record<string, unknown>)["Title"] === "string" ? String((meta.info as Record<string, unknown>)["Title"]).trim() : "";
   const fileName = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "") || "PDF";
   const clean = String(text).replace(/\n{3,}/g, "\n\n").trim();
-  return { title: metaTitle || fileName, text: clean.slice(0, MAX_PDF_TEXT_CHARS) };
+  if (clean.length > MAX_PDF_TEXT_CHARS) {
+    // Say so: the caller must be able to tell a cut document from a whole one.
+    return { title: metaTitle || fileName, text: clean.slice(0, MAX_PDF_TEXT_CHARS), truncated: true, totalChars: clean.length };
+  }
+  return { title: metaTitle || fileName, text: clean };
 }
 
 function err(status: number, msg: string): Error & { status: number } {

@@ -40,11 +40,12 @@
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-import { readUrl, readUrlModelOutput } from "@lares/agent-kit/readability-client";
+import { pageReadUrlResult, readUrl, readUrlModelOutput } from "@lares/agent-kit/readability-client";
 import { taintTurn, turnKeyFrom } from "@lares/agent-kit/origin-taint";
 import { asksAfterUntrustedText, TAINTED_FETCH_REASON } from "@lares/agent-kit/tainted-approval";
 import { approvalLedger, callIdFrom } from "@lares/agent-kit/approval-ledger";
 import { assertApproval } from "../lib/approvals.js";
+import { DEFAULT_READ_LIMIT } from "@lares/agent-kit/bounded-text";
 import { notionPageIdFromUrl, readNotionPage } from "../lib/notion-page.js";
 import { googleDocFromUrl, readGoogleDoc } from "../lib/google-doc.js";
 import { driveApisFor } from "../lib/google-drive.js";
@@ -81,8 +82,20 @@ export default defineTool({
     "ReadabilityNoContentError = a page with no usable article text (paywall stub, listing); " +
     "NotionPageUnavailableError = a Notion page not shared with the integration; " +
     "GoogleDocUnavailableError = a Google document not reachable (the reason says why). " +
+    `A long page comes back ${DEFAULT_READ_LIMIT} characters at a time: when \`pagingNote\` says more ` +
+    "characters remain, call again with the same url and `offset` set to `nextOffset`. If " +
+    "`sourceNote` is present the reader itself stopped early on a very large document; say so " +
+    "rather than guessing at the rest. " +
     `Opening a link can ask the owner first: ${TAINTED_FETCH_REASON}.`,
-  inputSchema: z.object({ url: z.string() }),
+  inputSchema: z.object({
+    url: z.string(),
+    offset: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Character of the text to start from; omit for the start. Use nextOffset from the previous page."),
+  }),
   // `input`, not `{ url }`: `assertApproval` fingerprints the RAW first argument, and a
   // destructured-and-rebuilt object hashes differently from the one the card was shown (W7A-s6).
   async execute(input, ctx) {
@@ -92,18 +105,18 @@ export default defineTool({
       const result = await readNotionPage(url);
       const k = turnKeyFrom(ctx);
       if (k) taintTurn(k, "synced");
-      return result;
+      return pageReadUrlResult(result, input.offset);
     }
     if (googleDocFromUrl(url)) {
       const result = await readGoogleDoc(url, { apis: () => driveApisFor() });
       const k = turnKeyFrom(ctx);
       if (k) taintTurn(k, "third_party");
-      return result;
+      return pageReadUrlResult(result, input.offset);
     }
     const result = await readUrl(url);
     const k = turnKeyFrom(ctx);
     if (k) taintTurn(k, "third_party");
-    return result;
+    return pageReadUrlResult(result, input.offset);
   },
   approval: asksAfterUntrustedText(),
   toModelOutput: readUrlModelOutput,

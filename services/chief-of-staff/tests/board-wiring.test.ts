@@ -154,6 +154,7 @@ describe("read_url's card, where there is one, is re-checked before the fetch", 
         return { title: "t", text: "x" };
       },
       readUrlModelOutput: (r: unknown) => r,
+      pageReadUrlResult: (r: unknown) => r,
     }));
     return { fetched, checked };
   };
@@ -204,6 +205,7 @@ describe("read_url's card, where there is one, is re-checked before the fetch", 
         return { title: "t", text: "x" };
       },
       readUrlModelOutput: (r: unknown) => r,
+      pageReadUrlResult: (r: unknown) => r,
     }));
     await (await readUrlTool()).execute({ url: "https://example.test/a" }, ctx);
     expect(fetched).toEqual(["https://example.test/a"]);
