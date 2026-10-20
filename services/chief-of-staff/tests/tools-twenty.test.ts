@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AddressInfo } from "node:net";
 
-import twentyLookup, { buildLookupQueries } from "../catalogue/twenty_lookup.js";
+import twentyLookup, { buildLookupQueries, buildStrictPersonQueries } from "../catalogue/twenty_lookup.js";
 import twentyGetPerson from "../catalogue/twenty_get_person.js";
 import twentyCompanyForPerson from "../catalogue/twenty_company_for_person.js";
 import twentyNote from "../catalogue/twenty_note.js";
@@ -128,7 +128,7 @@ const READ_CTX = {} as never;
 describe("twenty_lookup", () => {
   it("dedupes people across sub-queries and returns matched companies", async () => {
     const queries = buildLookupQueries("Jane Doe");
-    expect(queries).toHaveLength(5); // two tokens x (firstName, lastName), then company-name
+    expect(queries).toHaveLength(7); // literal x2 tokens x2 fields, wildcard for "jane" x2 fields, company
 
     const none = { status: 200, body: { data: { people: [] } } };
     await listen([
@@ -155,6 +155,8 @@ describe("twenty_lookup", () => {
           },
         },
       },
+      none,
+      none,
       { status: 200, body: { data: { companies: [{ id: "c1", name: "Acme" }] } } },
     ]);
 
@@ -185,26 +187,45 @@ describe("twenty_lookup", () => {
 describe("buildLookupQueries (tolerant name and email matching)", () => {
   const decoded = (term: string) => buildLookupQueries(term).map((q) => decodeURIComponent(q.path));
 
-  it("a three-part name queries every token against both name fields, plus the company", () => {
+  it("a three-part name queries every token literally first, then wildcards for long tokens", () => {
     const paths = decoded("Anna Mølle Brekke");
-    for (const pattern of ["%_nn_%", "%m_ll_%", "%br_kk_%"]) {
-      expect(paths).toContain(`/people?filter=name.firstName[ilike]:${pattern}&limit=20`);
-      expect(paths).toContain(`/people?filter=name.lastName[ilike]:${pattern}&limit=20`);
-    }
-    expect(paths).toContain("/companies?filter=name[ilike]:%Anna Mølle Brekke%&limit=20");
-    expect(paths).toHaveLength(7);
+    const people = paths.filter((p) => p.startsWith("/people"));
+    expect(people.slice(0, 6)).toEqual(
+      ["anna", "mølle", "brekke"].flatMap((t) => [
+        `/people?filter=name.firstName[ilike]:%${t}%&limit=20`,
+        `/people?filter=name.lastName[ilike]:%${t}%&limit=20`,
+      ]),
+    );
+    // wildcards: longest first, trimmed by the ten-query cap (company query always kept)
+    expect(people.slice(6)).toEqual([
+      "/people?filter=name.firstName[ilike]:%br_kk_%&limit=20",
+      "/people?filter=name.lastName[ilike]:%br_kk_%&limit=20",
+      "/people?filter=name.firstName[ilike]:%m_ll_%&limit=20",
+    ]);
+    expect(paths[paths.length - 1]).toBe("/companies?filter=name[ilike]:%Anna Mølle Brekke%&limit=20");
+    expect(paths.length).toBeLessThanOrEqual(10);
   });
 
-  it("an accented and an unaccented spelling give the same wildcard pattern", () => {
-    expect(decoded("Müller")[0]).toContain("%m_ll_r%");
-    expect(decoded("Muller")[0]).toContain("%m_ll_r%");
+  it("an accented and an unaccented spelling both get the same wildcard pattern", () => {
+    expect(decoded("Müller").join()).toContain("%m_ll_r%");
+    expect(decoded("Muller").join()).toContain("%m_ll_r%");
+  });
+
+  it("short tokens get no wildcard query", () => {
+    expect(decoded("Ola Al").filter((p) => p.includes("_"))).toEqual([]);
   });
 
   it("drops tokens shorter than two letters and keeps at most four tokens", () => {
-    const short = decoded("A Brekke");
-    expect(short.filter((p) => p.startsWith("/people"))).toHaveLength(2);
-    const long = decoded("Anna Bo Cato Dag Eli Finn");
-    expect(long.filter((p) => p.startsWith("/people"))).toHaveLength(8);
+    const literal = (term: string) => decoded(term).filter((p) => p.startsWith("/people") && !p.includes("_"));
+    expect(literal("A Brekke")).toHaveLength(2);
+    expect(literal("Anna Bo Cato Dag Eli Finn")).toHaveLength(8);
+  });
+
+  it("the cap holds with four long tokens and keeps the company query", () => {
+    const qs = buildLookupQueries("Annabel Brekke Christoffer Davidsen");
+    expect(qs.length).toBeLessThanOrEqual(10);
+    expect(qs[qs.length - 1]!.kind).toBe("company-name");
+    expect(qs.slice(0, 8).every((x) => !decodeURIComponent(x.path).includes("_"))).toBe(true);
   });
 
   it("never returns more than ten sub-queries", () => {
@@ -216,6 +237,21 @@ describe("buildLookupQueries (tolerant name and email matching)", () => {
     expect(paths).toEqual([
       "/people?filter=emails.primaryEmail[eq]:anna.brekke@example.com&limit=5",
       "/people?filter=emails.primaryEmail[ilike]:anna.brekke@%&limit=20",
+    ]);
+  });
+});
+
+describe("buildStrictPersonQueries (note linking)", () => {
+  it("issues exactly the original queries for a two-part name", () => {
+    expect(buildStrictPersonQueries("Anna Brekke")).toEqual([
+      { kind: "people-name", path: "/people?filter=name.firstName[ilike]:%25Anna%25&limit=5" },
+      { kind: "people-name", path: "/people?filter=name.lastName[ilike]:%25Brekke%25&limit=5" },
+      { kind: "company-name", path: "/companies?filter=name[ilike]:%25Anna%20Brekke%25&limit=5" },
+    ]);
+  });
+  it("issues the exact email query for an address", () => {
+    expect(buildStrictPersonQueries("a@example.com")).toEqual([
+      { kind: "people-email", path: "/people?filter=emails.primaryEmail[eq]:a%40example.com&limit=5" },
     ]);
   });
 });

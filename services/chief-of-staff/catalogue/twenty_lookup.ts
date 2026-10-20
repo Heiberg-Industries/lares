@@ -72,6 +72,26 @@ function accentPattern(token: string): string {
   return [...token].map((ch) => (/[b-df-hj-np-tv-xz]/.test(ch) ? ch : "_")).join("");
 }
 
+/** The original, narrow builder: first token on firstName, last token on lastName, literal
+ *  ilike, limit 5. Note linking needs "exactly one person", so it must not use the wider
+ *  accent-tolerant queries below. */
+export function buildStrictPersonQueries(term: string): LookupQuery[] {
+  const t = term.trim();
+  if (!t) return [];
+  const enc = (s: string) => encodeURIComponent(s);
+  if (t.includes("@")) {
+    return [{ kind: "people-email", path: `/people?filter=emails.primaryEmail[eq]:${enc(t)}&limit=5` }];
+  }
+  const tokens = t.split(/\s+/);
+  const first = tokens[0]!;
+  const last = tokens[tokens.length - 1]!;
+  return [
+    { kind: "people-name", path: `/people?filter=name.firstName[ilike]:${enc(`%${first}%`)}&limit=5` },
+    { kind: "people-name", path: `/people?filter=name.lastName[ilike]:${enc(`%${last}%`)}&limit=5` },
+    { kind: "company-name", path: `/companies?filter=name[ilike]:${enc(`%${t}%`)}&limit=5` },
+  ];
+}
+
 /** Pure: turn a free-text term into the REST sub-queries to try (at most ten). */
 export function buildLookupQueries(term: string): LookupQuery[] {
   const t = term.trim();
@@ -90,13 +110,19 @@ export function buildLookupQueries(term: string): LookupQuery[] {
     }
     return queries;
   }
+  const toks = nameTokens(t);
+  const q = (field: string, pat: string): LookupQuery => ({
+    kind: "people-name",
+    path: `/people?filter=name.${field}[ilike]:${enc(`%${pat}%`)}&limit=${PER_QUERY_LIMIT}`,
+  });
+  // Literal spellings first, so an exact spelling is never crowded out by the wildcard ones.
   const names: LookupQuery[] = [];
-  for (const tok of nameTokens(t)) {
-    const pattern = enc(`%${accentPattern(tok)}%`);
-    for (const field of ["firstName", "lastName"]) {
-      names.push({ kind: "people-name", path: `/people?filter=name.${field}[ilike]:${pattern}&limit=${PER_QUERY_LIMIT}` });
-    }
-  }
+  for (const tok of toks) names.push(q("firstName", tok), q("lastName", tok));
+  // Then accent-tolerant patterns, for tokens of 4+ letters whose pattern differs, longest first.
+  const wild = toks
+    .filter((tok) => tok.length >= 4 && accentPattern(tok) !== tok)
+    .sort((a, b) => b.length - a.length);
+  for (const tok of wild) names.push(q("firstName", accentPattern(tok)), q("lastName", accentPattern(tok)));
   return [
     ...names.slice(0, MAX_SUB_QUERIES - 1),
     { kind: "company-name", path: `/companies?filter=name[ilike]:${enc(`%${t}%`)}&limit=${PER_QUERY_LIMIT}` },

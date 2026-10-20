@@ -21,7 +21,7 @@ import { z } from "zod";
 
 import { twentyGet, twentyPost } from "../lib/twenty-client.js";
 import { assertApproval } from "../lib/approvals.js";
-import { buildLookupQueries } from "./twenty_lookup.js";
+import { buildStrictPersonQueries } from "./twenty_lookup.js";
 import { approvalFor } from "../lib/board.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -52,7 +52,7 @@ async function resolvePersonId(target: string, opts?: { swallowErrors?: boolean 
   const swallowErrors = opts?.swallowErrors ?? true;
   if (UUID_RE.test(target)) return target;
   const seen = new Set<string>();
-  for (const q of buildLookupQueries(target)) {
+  for (const q of buildStrictPersonQueries(target)) {
     if (q.kind === "company-name") continue;
     try {
       const body = await twentyGet<{ data?: { people?: any[] } }>(q.path);
