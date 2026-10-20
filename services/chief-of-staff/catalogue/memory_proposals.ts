@@ -1,6 +1,6 @@
 // List the memory changes waiting for the owner: a standing preference a nightly run wants to
-// replace, which it is not allowed to replace on its own (ADR-0018 rule 2). Read-only, ungated
-// — memory_resolve_proposal is the gated one.
+// replace, which it is not allowed to replace on its own (ADR-0018 rule 2). Read-only, ungated;
+// memory_resolve_proposal is the gated one.
 //
 // The third lane of the shape catalogue/notion_proposals.ts and catalogue/atlas_proposals.ts
 // already established. Two differences from those two, both deliberate:
@@ -11,8 +11,7 @@
 //   2. Every word of it comes off the stored row. Nothing the model believes about a proposal
 //      can reach the apply step, which re-reads the row by id (lib/memory-proposal-apply.ts).
 //
-// Role-neutral throughout: "the owner", never a name. The Atlas and Notion pair this is modelled
-// on still carry one; a copy is not a licence to carry it forward.
+// Role-neutral throughout: "the owner", never a name.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

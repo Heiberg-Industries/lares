@@ -1,6 +1,5 @@
-// Return busy windows on a calendar between two RFC-3339 timestamps — use to judge
-// whether/when to offer a booking link. Ported from hands/calendar.ts's "free_busy" action
-// (hands/calendar.ts:35,51).
+// Return busy windows on a calendar between two RFC-3339 timestamps. Use it to judge
+// whether/when to offer a booking link.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

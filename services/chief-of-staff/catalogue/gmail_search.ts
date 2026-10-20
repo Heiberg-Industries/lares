@@ -1,8 +1,6 @@
-// Search the connected mailbox with a Gmail query. Ported from
-// services/agent-runtime/lib/adapters/hands/gmail.ts's "search" action (hands/gmail.ts:15) —
-// same query/max marshaling as the old hand, now against lib/google.ts's ported adapter.
+// Search the connected mailbox with a Gmail query (query/max go to lib/google.ts's Gmail adapter).
 //
-// W3A-s5 — always taints `third_party` on a successful call: message ids alone are still someone
+// Always taints `third_party` on a successful call: message ids alone are still someone
 // else's mailbox contents, not the owner's own words
 // (the origin model, "The in-turn taint rule"). A thrown call taints
 // nothing.

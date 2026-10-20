@@ -1,7 +1,6 @@
-// Move an opportunity to a pipeline stage. GATED WRITE — requires the owner to tap Approve on the card on every call.
+// Move an opportunity to a pipeline stage. GATED WRITE: requires the owner to tap Approve on the card on every call.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `setOpportunityStage`
-// (PATCH /opportunities/{id} { stage }).
+// PATCH /opportunities/{id} { stage }.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

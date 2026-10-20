@@ -1,6 +1,5 @@
-// List the WRITABLE calendars inside a Google account — used to resolve a calendar by NAME
-// (e.g. "the team calendar") before creating an event in it. Ported from hands/calendar.ts's
-// "list_calendars" action (hands/calendar.ts:45,55), an addition.
+// List the WRITABLE calendars inside a Google account. Used to resolve a calendar by NAME
+// (e.g. "the team calendar") before creating an event in it.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

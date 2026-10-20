@@ -1,16 +1,16 @@
-// Grant or revoke autonomous meeting follow-ups for one recurring series, by command
-//. The Console (Task 11) already lists and revokes these; this tool is the
-// spoken-to-chief-of-staff path onto the SAME rows.
+// Grant or revoke autonomous meeting follow-ups for one recurring series, by command.
+// The Console already lists and revokes these; this tool is the
+// spoken-to-the-agent path onto the SAME rows.
 //
 // ALWAYS gated, and that is not redundant with `meeting_followup_send`'s own per-series
 // gate: this tool is what SETS the level `meeting_followup_send`'s policy later reads.
-// Switching a series to auto-send must itself be a decision the owner makes deliberately —
-// never something a conversational turn can talk the chief of staff into on his behalf.
+// Switching a series to auto-send must itself be a decision the owner makes deliberately,
+// never something a conversational turn can talk the agent into on the owner's behalf.
 //
 // TWO CAPABILITY NAMES, do not confuse them: this tool is DECLARED under `agent.json`'s
-// `autonomy` capability (what THIS tool is allowed to do — change an autonomy level). It
+// `autonomy` capability (what THIS tool is allowed to do: change an autonomy level). It
 // WRITES ratchet rows whose `capability` COLUMN is `meeting_followup` (what is being granted
-// autonomy over) — the same capability `meeting_followup_send.ts`'s `followupApproval` reads
+// autonomy over), the same capability `meeting_followup_send.ts`'s `followupApproval` reads
 // via `KitRatchet.level(agentName(), FOLLOWUP_CAPABILITY, seriesKey)`.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -62,8 +62,8 @@ export default defineTool({
       FOLLOWUP_CAPABILITY,
       input.level,
       seriesKey,
-      // The audit trail records WHO granted it. This is a single-tenant system (One Brain
-      // W5, `lib/identity-client.ts`) — `assertApprover` above has already confirmed the
+      // The audit trail records WHO granted it. This is a single-tenant system
+      // (`lib/identity-client.ts`): `assertApprover` above has already confirmed the
       // caller is the one allowed human, on whichever channel they used — so the canonical
       // identity id is what belongs in the column, not a channel-native address (that trap
       // is `lib/google.ts`'s "PRINCIPAL TRAP" comment, which is about a different table).

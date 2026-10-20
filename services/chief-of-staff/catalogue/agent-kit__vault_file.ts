@@ -1,29 +1,25 @@
-// This role's `@lares/agent-kit` contribution, held directly in its OWN catalogue rather than
+// This agent's `@lares/agent-kit` contribution, held directly in its own catalogue rather than
 // reached through `agent/extensions/agent-kit/tools/vault_file.ts`. That
-// override file is now an unconditional `disableTool` sentinel — see its own header — because
+// mount file is an unconditional `disableTool` sentinel (see its own header), because
 // a resolver-emitted tool under the same prefixed key (`agent-kit__vault_file`) replaces an
-// authored/mounted tool of that name completely (Task 1, Q1c).
+// authored/mounted tool of that name completely.
 //
-// Carries an approval (a vault write, gated the same way `agent-kit__vault_write` is — see that
-// file's header) — the resolver in `agent/tools/catalogue.ts` copies it across unconditionally,
-// and `sourcesForTool` (Task 8 §11) inspects this moved tool rather than going blind on the
+// Carries an approval (a vault write, gated the same way `agent-kit__vault_write` is; see that
+// file's header). The resolver in `agent/tools/catalogue.ts` copies it across unconditionally,
+// and `sourcesForTool` inspects this tool rather than going blind on the
 // disabled mount file.
 //
-// Built here rather than re-exported (W5C-s4), and narrowed to the private area alone: see
-// `agent-kit__vault_write.ts`'s header for both, and for why the catalogue entry's capability
-// stays `brain` in this slice.
+// Built here rather than re-exported, and narrowed to the private area alone: see
+// `agent-kit__vault_write.ts`'s header.
 //
-// W7A-s2 — AND IT NAMES ITSELF TO THE PERMISSIONS BOARD. Until now this tool's approval was the
-// kit factory's hard-coded `always`, so the board was never consulted: a 🚫 on "Private notes"
-// did not refuse it and it wrote no `approval_events` row. `approvalFor` is `boardApproval` bound
-// to this role's declaration, and for a `vault` tool the AREA is the ratchet action (W5C-s6b), so
-// the row read is `(agent, "vault", "private")` — the one the console renders as "Private notes".
+// It names itself to the permissions board. `approvalFor` is `boardApproval` bound
+// to this agent's declaration, and for a `vault` tool the AREA is the ratchet action, so
+// the row read is `(agent, "vault", "private")`, the one the console renders as "Private notes".
 // No per-action key is passed here, and none is wanted: the key is derived inside
 // `boardApproval` from the tool's own area, and naming one here would override that derivation.
-// With no row on the board the fallback is the declaration's own `vault: "gated"`, which is the
-// same card this tool has always shown.
-// W7A-s6 — AND THE CARD IT WAS SHOWN. See `agent-kit__vault_write.ts`'s header for why this is
-// injected here rather than called inside the kit's factory.
+// With no row on the board the fallback is the declaration's own `vault: "gated"`.
+// `assertApprovedCall` (the check against the card that was shown) is injected here rather than
+// called inside the kit's factory; see `agent-kit__vault_write.ts`'s header for why.
 import { approvalLedger, assertApprovedCall, callIdFrom } from "@lares/agent-kit/approval-ledger";
 import { fileTool } from "@lares/agent-kit/note-write-tools";
 

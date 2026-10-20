@@ -1,4 +1,4 @@
-// Dismiss a deadline, or a mail-scanner candidate, on the owner's word. GATED — same reason as
+// Dismiss a deadline, or a mail-scanner candidate, on the owner's word. GATED, for the same reason as
 // `deadline_done`: a wrong dismiss can hide a filing that was never actually done.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

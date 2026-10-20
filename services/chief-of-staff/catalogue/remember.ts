@@ -1,54 +1,53 @@
 /**
- * agent/tools/remember.ts — store something the owner has told her, in his words.
+ * catalogue/remember.ts: store something the owner has told the agent, in the owner's words.
  *
- * Ported in SHAPE from `services/travel/agent/tools/remember.ts` — an ungated, model-called
- * note-to-self, and the ONLY way a fact reaches the store — but not in storage: the travel agent's facts
- * are about a trip and live in that trip's `trip.md`; the chief of staff's are about the owner and live in
- * `standing_facts` (`lib/standing-facts.ts`, `services/box/sql/002_standing_facts.sql`).
+ * An ungated, model-called note-to-self, and the ONLY way a fact reaches the store. The
+ * facts are about the owner and live in `standing_facts` (`lib/standing-facts.ts`,
+ * `services/box/sql/002_standing_facts.sql`).
  *
- * UNGATED, deliberately. Every gated tool the chief of staff has reaches something outside this box — an
- * email, a calendar invite, a CRM record, a Brain commit. Writing down what he just said reaches
- * nobody: it changes what SHE knows, not what the world sees. Putting an approval card in front
- * of "husk: jeg tar bussen" would cost more of his attention than the correction it saves. Its
- * `agent.json` grant is therefore `memory: write` (renamed from `facts`, ) — an ungated write, which the declaration
+ * UNGATED, deliberately. Every gated tool the agent has reaches something outside this box: an
+ * email, a calendar invite, a CRM record, a vault commit. Writing down what the owner just said reaches
+ * nobody: it changes what the agent knows, not what the world sees. Putting an approval card in front
+ * of "husk: jeg tar bussen" would cost more of the owner's attention than the correction it saves. Its
+ * `agent.json` grant is therefore `memory: write`, an ungated write, which the declaration
  * conformance test (`tests/agent-declaration.test.ts`) checks per-tool.
  *
  * WHAT MAKES A ROW LEGITIMATE is a contract carried mostly by the description below, because
- * that is where it can be: no code can tell his sentence from a fluent paraphrase of it. Two
- * failures ARE mechanical, and `rejectFact` refuses both — an empty fact, and one that is true
+ * that is where it can be: no code can tell the owner's sentence from a fluent paraphrase of it. Two
+ * failures ARE mechanical, and `rejectFact` refuses both: an empty fact, and one that is true
  * only today ("I'm at the office until 14:00 today", which is precisely the
  * correction that must NOT become standing). A refusal comes back as a message, not a throw:
- * the model can requote him, and a bad memory never costs him the turn.
+ * the model can requote the owner, and a bad memory never costs the owner the turn.
  *
- * A THIRD FAILURE IS MECHANICAL TOO, and was missed on the first pass (review fix): a turn with
- * NO HUMAN IN IT. Ungated does not mean unattributed. The 08:00 and 20:00 briefs run as the app
- * principal with no utterance of his anywhere in them, and their prompts now carry the standing
- * facts block plus "apply these" — so the model reading tomorrow's Travel row beside the train
- * fact has everything it needs to call `remember("he stays at the airport hotel before early flights")`,
- * which `rejectFact` would happily pass. The result is a sentence in the chief of staff's words living forever
- * under the heading "his own words" — the one thing this store must never hold. `humanTurnRefusal`
+ * A THIRD FAILURE IS MECHANICAL TOO: a turn with
+ * NO HUMAN IN IT. Ungated does not mean unattributed. The morning and evening briefs run as the app
+ * principal with no utterance of the owner anywhere in them, and their prompts carry the standing
+ * facts block plus "apply these", so the model reading tomorrow's travel row beside the train
+ * fact has everything it needs to call `remember("the owner stays at the airport hotel before early flights")`,
+ * which `rejectFact` would happily pass. The result is a sentence in the agent's words living forever
+ * under the "What I have been told" heading, the one thing this store must never hold. `humanTurnRefusal`
  * (lib/approvals.ts) therefore requires an allowlisted HUMAN on `ctx.session.auth.current`, the
  * same allowlist every gated tool here checks, and the brief prompts name both tools in their
  * REPORT ONLY line so the model is told as well as blocked.
  *
- * REPLACING A FACT IS THE SAME ACT, SO IT IS THE SAME TOOL (W4A-s2). `supersedes` names the fact
+ * REPLACING A FACT IS THE SAME ACT, SO IT IS THE SAME TOOL. `supersedes` names the fact
  * a new one closes, and both gates above stand in front of it unchanged: an unattended turn and
  * a turn that has read somebody else's words are refused BEFORE the id is ever looked at. That is
- * why closing a fact lives here rather than in its own tool — a second door would be a second
+ * why closing a fact lives here rather than in its own tool: a second door would be a second
  * place to get those two checks right, and this store already has the one write path it wants.
  *
- * A FOURTH CHECK: WHAT WAS FORGOTTEN DOES NOT COME BACK BY ITSELF (W5B-s3, follow-up).
+ * A FOURTH CHECK: WHAT WAS FORGOTTEN DOES NOT COME BACK BY ITSELF.
  * `forget` writes a one-way hash of the retired words into `forget_ledger`
  * (`@lares/agent-kit/forget-ledger`) so a later import or the nightly dream cannot quietly
  * reintroduce them. This tool is the other door those words could come back through, so it is
- * checked here too — but ONLY for a fresh fact (`supersedes` names an explicit replacement, which
+ * checked here too, but ONLY for a fresh fact (`supersedes` names an explicit replacement, which
  * is a decision the owner just made, not a resurrection) and only once (`evenThoughForgotten` is
- * Owner's one-step way to mean it anyway, once they have been told). A hit REFUSES with the
- * date it was forgotten, never with the forgotten words themselves — the ledger holds no words to
+ * the owner's one-step way to mean it anyway, once they have been told). A hit REFUSES with the
+ * date it was forgotten, never with the forgotten words themselves: the ledger holds no words to
  * quote. When the owner does override, the ledger row is cleared in the SAME transaction that
  * writes the fact (`rememberFactClearingForgotten`), so the ledger can never go on contradicting
  * a standing fact that now says otherwise. A missing ledger table means no check was possible, so
- * it means no refusal — the same fail-open shape `forget` already uses.
+ * it means no refusal, the same fail-open shape `forget` uses.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -123,12 +122,11 @@ export default defineTool({
     );
     if (notHim) return { remembered: false as const, message: notHim };
 
-    // W3A-s7 — Owner decision A4: a tainted turn REFUSES rather than storing at a lower trust
-    // class. `standing_facts`'s CHECK constraint (services/box/sql/002_standing_facts.sql) admits only
+    // A tainted turn REFUSES rather than storing at a lower trust class. `standing_facts`'s CHECK constraint (services/box/sql/002_standing_facts.sql) admits only
     // `owner`, so once this turn has read somebody else's words there is no class left this row
     // could honestly carry — storing it as `third_party` would put a row here that the origin
     // model's own hard rule says must never reach a system prompt, i.e. a fact the owner believes
-    // was remembered and which never applies. A visible refusal he can act on beats that silently.
+    // was remembered and which never applies. A visible refusal the owner can act on beats that silently.
     const key = turnKeyFrom(ctx);
     const stamped = key ? stampFor("owner", key) : "third_party";
     if (stamped !== "owner") {
@@ -144,7 +142,7 @@ export default defineTool({
     const refusal = rejectFact(fact);
     if (refusal) return { remembered: false as const, message: refusal };
 
-    // W5B-s3 — what was forgotten does not come back by itself. Checked only for a FRESH fact:
+    // What was forgotten does not come back by itself. Checked only for a FRESH fact:
     // `supersedes` is the owner naming an explicit replacement by id, which is a decision they just
     // made, not a resurrection, so it bypasses this check entirely (see the tool's doc comment).
     // `evenThoughForgotten` is their one-step way to mean it anyway, once they have been told — this
@@ -152,11 +150,11 @@ export default defineTool({
     if (supersedes === undefined && !evenThoughForgotten) {
       let forgotten: Awaited<ReturnType<typeof wasForgotten>> = null;
       try {
-        // HOT-PATH HONESTY (W5I-s7): CANONICAL_USER_ID is the fail-soft configured owner key
+        // HOT PATH: CANONICAL_USER_ID is the fail-soft configured owner key
         // (`ownerId`), read once at process start, not a live register lookup — this runs
         // inside a turn, and a `users` round-trip on every `remember` would cost the turn for a
-        // value that practically never changes mid-process. `checkOwnerKeyAgreement` (W5I-s5b,
-        // `lib/identity-client.ts`) is what actually verifies this key still agrees with the
+        // value that practically never changes mid-process. `checkOwnerKeyAgreement`
+        // (`lib/identity-client.ts`) is what actually verifies this key still agrees with the
         // register, once per process, and raises a repair rather than a throw when it does not —
         // by the time that repair fires, a mismatched write may already have happened, but no
         // FURTHER one goes unnoticed. `wasForgotten` itself also refuses a value that does not
@@ -185,9 +183,9 @@ export default defineTool({
     const sourceTurn = ctx.session?.turn?.id ?? ctx.session?.id ?? "unknown";
 
     // CANONICAL_USER_ID, not a resolved principal: the principal check above already guarantees
-    // the writer is the allowlisted human, and live principal→user resolution is Phase 3's
-    // reader-path work (multi-user substrate plan) — a half-wiring here would break brief turns,
-    // which run as the app principal with no session user to resolve.
+    // the writer is the allowlisted human, and live principal→user resolution is not wired for
+    // this path: a half-wiring here would break brief turns, which run as the app principal
+    // with no session user to resolve.
     const replacement = { fact, category, sourceTurn, userId: configuredOwnerId() };
 
     if (supersedes === undefined) {
@@ -196,9 +194,9 @@ export default defineTool({
         // ONE TRANSACTION: the fact is written and the ledger entry for these exact words is
         // cleared together, or neither happens — see `rememberFactClearingForgotten`'s header.
         try {
-          // Same hot-path honesty as the `wasForgotten` call above: `replacement.userId` is
+          // Same hot-path reasoning as the `wasForgotten` call above: `replacement.userId` is
           // CANONICAL_USER_ID, the fail-soft configured key, not a fresh register read — see that
-          // call site's comment for why, and `checkOwnerKeyAgreement` (W5I-s5b) for what backstops it.
+          // call site's comment for why, and `checkOwnerKeyAgreement` for what backstops it.
           stored = await rememberFactClearingForgotten(getPool(), replacement, (client) =>
             removeForgotten(client, { owner: replacement.userId, kind: "fact", words: replacement.fact }),
           );

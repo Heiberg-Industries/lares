@@ -1,5 +1,5 @@
-// Send a real email from the connected mailbox. GATED WRITE — requires the owner to tap Approve
-// on every call (this puts mail in a real inbox). Ported from hands/gmail.ts's "send" action.
+// Send a real email from the connected mailbox. GATED WRITE: requires the owner to tap Approve
+// on every call (this puts mail in a real inbox).
 // Set `threadId` + `inReplyTo` to reply within an existing thread; `account` to act as a
 // specific connected mailbox (defaults to the primary).
 import { defineTool } from "eve/tools";

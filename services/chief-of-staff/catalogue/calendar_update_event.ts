@@ -1,6 +1,5 @@
-// Update an existing calendar event by id. GATED WRITE — requires the owner to tap Approve on every card.
-// Ported from hands/calendar.ts's "update_event" action (hands/calendar.ts:37,53). Attendees
-// are emailed about the change unless notify is false — same sendUpdates threading as
+// Update an existing calendar event by id. GATED WRITE: requires the owner to tap Approve on every card.
+// Attendees are emailed about the change unless notify is false, with the same sendUpdates threading as
 // calendar_create_event.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

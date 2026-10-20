@@ -1,13 +1,9 @@
 // Read a single CRM person by record id. Read-only HTTP against TWENTY_BASE_URL.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `getPersonImpl`.
-//
-// posture: the old client returned `null` for BOTH a real 404 and a genuine network
-// failure (`getOrNull` treats any non-404 error path the same as a legitimate miss further
-// up). The hand's own description already treats "not found" as a normal, expected outcome
-// ("...or a not-found note") — that stays a returned value here. What changes is that a
-// `TwentyUnavailableError` (network failure, non-404 HTTP error) is no longer swallowed into
-// the same shape: it propagates, because a backend failure is not a valid tool result.
+// "Not found" is a normal, expected outcome ("...or a not-found note" in the tool's description),
+// so a real 404 stays a returned value. A `TwentyUnavailableError` (network failure, non-404 HTTP
+// error) is not swallowed into the same shape: it propagates, because a backend failure is not a
+// valid tool result.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

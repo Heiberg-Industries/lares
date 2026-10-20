@@ -1,7 +1,6 @@
-// Create a CRM opportunity. GATED WRITE — requires the owner to tap Approve on the card on every call.
+// Create a CRM opportunity. GATED WRITE: requires the owner to tap Approve on the card on every call.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `createOpportunity`
-// (POST /opportunities { name, stage, brand, pointOfContactId? }).
+// POST /opportunities { name, stage, brand, pointOfContactId? }.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

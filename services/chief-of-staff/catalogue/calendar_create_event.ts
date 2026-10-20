@@ -1,6 +1,5 @@
-// Create a calendar event. GATED WRITE — requires the owner to tap Approve on every card (this puts a
-// real event on the calendar). Ported from hands/calendar.ts's "create_event" action
-// (hands/calendar.ts:36,52). Attendees ARE emailed an invitation unless notify is false —
+// Create a calendar event. GATED WRITE: requires the owner to tap Approve on every card (this puts a
+// real event on the calendar). Attendees ARE emailed an invitation unless notify is false:
 // lib/google.ts's `sendUpdatesFor` threads `notify`
 // through to sendUpdates verbatim: notify unless explicitly told not to.
 import { defineTool } from "eve/tools";

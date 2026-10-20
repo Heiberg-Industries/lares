@@ -1,9 +1,9 @@
-// Reset a deadline's escalation ladder back to rung 0. UNGATED — Decision: a
+// Reset a deadline's escalation ladder back to rung 0. UNGATED: a
 // reset only adds noise back (the ladder may ring again from rung 1), it never silences
 // anything or changes what is owed, so a card here would gate something harmless.
 //
-// UNGATED IS NOT UNATTRIBUTED (review fix, ), the same rule `remember.ts`'s header states
-// and `deadline_add.ts` now carries: "harmless" is measured against a HUMAN asking. Restarting a
+// UNGATED IS NOT UNATTRIBUTED, the same rule `remember.ts`'s header states
+// and `deadline_add.ts` carries: "harmless" is measured against a HUMAN asking. Restarting a
 // ladder on a scheduled turn is a phone that rings again because a model re-read a brief, so
 // `humanTurnRefusal` requires an allowlisted human on this turn before anything moves.
 import { defineTool } from "eve/tools";

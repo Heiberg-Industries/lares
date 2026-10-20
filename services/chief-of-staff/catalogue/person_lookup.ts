@@ -1,20 +1,17 @@
-// Everything the chief of staff holds about one person, in one call — CRM, relationship warmth, mail,
+// Everything the agent holds about one person, in one call: CRM, relationship warmth, mail,
 // meetings, transcripts, and company, fanned out over every source and reported per-source
-// (found/empty/failed/not-applicable — see lib/person/types.ts).
+// (found/empty/failed/not-applicable; see lib/person/types.ts).
 //
-// Ported from `services/agent-runtime/lib/adapters/hands/person.ts` (Task 8): description and
-// schema copied verbatim; the fan-out/merge/render logic lives in `lib/person/` (ported
-// verbatim) and `lib/person-sources.ts` (the chief-of-staff-specific rewiring). Read-only, no
-// approval gate — matches the old hand.
+// The fan-out/merge/render logic lives in `lib/person/` and `lib/person-sources.ts` (the
+// chief-of-staff-specific wiring). Read-only, no approval gate.
 //
-// W3A-s5 (beyond the slice's own file list — found auditing the catalogue for the register-
-// completeness test, tests/origin-taint-reads.test.ts). `lib/person-sources.ts`'s `mail` source
-// is `googleClients.gmail.search`/`.read` — the exact same primitive `gmail_read.ts`/
-// `gmail_search.ts` taint — and `lib/person/render.ts:35` renders each mail item's `subject`
+// Taint. `lib/person-sources.ts`'s `mail` source
+// is `googleClients.gmail.search`/`.read`, the exact same primitive `gmail_read.ts`/
+// `gmail_search.ts` taint, and `lib/person/render.ts` renders each mail item's `subject`
 // verbatim into the dossier text this tool returns. That is third-party prose by the same rule
 // those two tools taint on, reached through a different call site, so it taints identically:
-// `third_party` whenever the mail source found anything. Not a new design — the same primitive,
-// applied where the audit found it missing.
+// `third_party` whenever the mail source found anything. The register-completeness test
+// (tests/origin-taint-reads.test.ts) covers it.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

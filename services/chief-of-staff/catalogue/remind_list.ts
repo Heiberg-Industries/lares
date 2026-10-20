@@ -1,5 +1,4 @@
-// List the owner's pending reminders. Read-only, ungated — matches the plan's TOOL verdict for
-// remind_list (only remind_set/remind_cancel are gated, the deliberate tightening).
+// List the owner's pending reminders. Read-only, ungated (only remind_set/remind_cancel are gated).
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

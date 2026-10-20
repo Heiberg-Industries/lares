@@ -1,4 +1,4 @@
-// Approve or reject a waiting memory change. GATED WRITE — the owner taps Approve on the card
+// Approve or reject a waiting memory change. GATED WRITE: the owner taps Approve on the card
 // on every call, and only that tap applies anything (ADR-0018 rule 2).
 //
 // Shaped on catalogue/atlas_resolve_proposal.ts, with two differences that matter:
@@ -8,23 +8,23 @@
 //      approval and the change are one step, and the consequence sentence says so.
 //   2. THE MODEL SUPPLIES AN ID, AND NOTHING ELSE THAT REACHES A WRITE. `applyMemoryProposal`
 //      re-reads the proposal by that id inside the transaction that writes, so the words that
-//      land in memory are the words the row has held since the night it was recorded — never a
+//      land in memory are the words the row has held since the night it was recorded, never a
 //      text this call passed in, and never a row other than the one the proposal names. If that
 //      standing row has changed since, the apply refuses and says so plainly.
 //
 // THREE CHECKS STAND IN FRONT OF IT, and they are not the same check:
 //
-//   - `assertApprover(approverFrom(ctx.session.auth))` — WHO pressed it. This is the check the
+//   - `assertApprover(approverFrom(ctx.session.auth))`: WHO pressed it. This is the check the
 //     approval card needs: eve resumes an inline-keyboard tap with `auth: null`, so
 //     `approverFrom` attributes the tap to the session's channel-verified initiator and the
 //     allowlist decides. `humanTurnRefusal` (which `remember` uses) deliberately does NOT
-//     appear here: it answers a different question — "did a human UTTER something on this turn"
-//     — and only `auth.current` can answer it, which on a card tap is empty by eve's own
+//     appear here: it answers a different question ("did a human UTTER something on this turn")
+//     and only `auth.current` can answer it, which on a card tap is empty by eve's own
 //     construction. Using it here would refuse every real approval. See lib/approvals.ts, whose
 //     header states exactly this split.
-//   - the card itself — an unattended turn cannot get past it: `approval` suspends the call
+//   - the card itself: an unattended turn cannot get past it. `approval` suspends the call
 //     until the owner answers, so a schedule can raise this question but never settle it.
-//   - the turn taint — `remember`'s second refusal, reused verbatim in spirit. If this turn has
+//   - the turn taint: `remember`'s second refusal, reused verbatim in spirit. If this turn has
 //     already read somebody else's words, those words are not allowed to be what changes what
 //     the agent believes about its owner. A fresh message costs one sentence; a laundered
 //     preference costs everything downstream of it.

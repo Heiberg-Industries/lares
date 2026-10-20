@@ -1,14 +1,13 @@
-// Record that a meeting follow-up's approval card was declined — the other half of the
-// dead end this ticket closes. `meeting_followup_send`'s own approval gate can only say yes or
-// no; it has no way to write anything back once a human taps 👎. eve simply resumes THIS agent's
-// own turn with the rejection and lets the conversation continue from there — see
-// `agent/schedules/meeting-followup.ts`'s module header ("DENIED, AND WHY THE SCHEDULE DOES NOT
-// WRITE IT") for why nothing else in this codebase can observe that decision at all: the
-// schedule's own tick has long since finished waiting by the time a human actually taps.
+// Record that a meeting follow-up's approval card was declined. `meeting_followup_send`'s own
+// approval gate can only say yes or no; it has no way to write anything back once a human taps
+// "decline". eve simply resumes THIS agent's own turn with the rejection and lets the conversation
+// continue from there. See `agent/schedules/meeting-followup.ts`'s module header ("DENIED, AND WHY
+// THE SCHEDULE DOES NOT WRITE IT") for why nothing else in this codebase can observe that decision
+// at all: the schedule's own tick has long since finished waiting by the time a human actually taps.
 //
 // This tool's ONLY caller is that resumed turn. The schedule's own send-turn prompt
 // (`buildSendTurnPrompt`, agent/schedules/meeting-followup.ts) tells the model, in the SAME turn
-// it is asked to call `meeting_followup_send`, to call this — with the same `notionPageId` — if
+// it is asked to call `meeting_followup_send`, to call this (with the same `notionPageId`) if
 // and only if that call comes back declined by a human. Nothing here re-checks that condition;
 // the model is trusted the same way it is already trusted to compose the email in the first
 // place, and a wrong or speculative call costs at most one page being reconsidered on a later
@@ -17,21 +16,21 @@
 //
 // DELIBERATELY UNGATED, like `gmail_read`/`gmail_search`/`gmail_signature` (see the "gmail"
 // capability doc, packages/agent-kit/src/persona/capability-docs.ts): it changes nothing a human
-// can see from the outside — only this feature's own internal bookkeeping — so gating it would
+// can see from the outside, only this feature's own internal bookkeeping, so gating it would
 // mean the declining tap itself has to be approved a SECOND time before it can even be written
 // down.
 //
 // NARROWER THAN A BARE `recordOutcome` CALL, ON PURPOSE: being
 // ungated and model-callable means a confused or prompt-injected turn could call this against
 // ANY notionPageId it has seen mentioned, not only the one it was just gated on. `recordOutcome`'s
-// own guard is only `outcome <> 'sent'` — wide enough that such a call against a deliberately
+// own guard is only `outcome <> 'sent'`, wide enough that such a call against a deliberately
 // `'skipped'` (internal-only) meeting, or one already `'denied'`, would flip it to `'denied'`
 // too, which then makes it re-readable and re-draftable the next time that page is edited for any
 // reason. `recordDenial` (lib/meeting-followup-store.ts) is the narrow store function this tool
 // actually calls: it only ever moves a `'queued'` row (a card genuinely pending an answer) or the
 // in-flight `'error'` sentinel to `'denied'`, never creates a row, and never touches `'sent'`,
 // `'skipped'` or an already-`'denied'` row. The `recorded` field this tool returns is exactly
-// whether that row existed and changed — never a blind `true`.
+// whether that row existed and changed, never a blind `true`.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

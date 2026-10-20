@@ -3,23 +3,22 @@
 //
 // A distinct tool rather than a policy on `gmail_send`, deliberately: gmail_send's input
 // carries no meeting or series identity, so a policy there would have to infer "this is the
-// Meeting follow-up" from a subject line — and loosening gmail_send would loosen every
-// email the chief of staff ever sends, not just follow-ups.
+// Meeting follow-up" from a subject line, and loosening gmail_send would loosen every
+// email the agent ever sends, not just follow-ups.
 //
-// ⚠️ CAPABILITY NOTE: since 's follow-up-note wiring, `execute` sends the email
-// (`gmail`) AND writes a Twenty CRM note per recipient (`twenty`) via `createTwentyNote` — so
+// CAPABILITY NOTE: `execute` sends the email
+// (`gmail`) AND writes a Twenty CRM note per recipient (`twenty`) via `createTwentyNote`, so
 // this tool is deliberately declared under BOTH capabilities in
 // tests/agent-declaration.test.ts's CAPABILITY_TOOLS (both granted `write-with-confirm` in
 // agent.json). That double listing, not this comment, is what makes the CRM write auditable:
 // someone reading the declaration sees `twenty` and knows this tool touches the CRM, without
 // having to read its source. The note is folded into this tool rather than calling the gated
 // `twenty_note` tool separately (which would demand a second approval per recipient for something
-// that isn't a separate decision — see the CRM-note block below).
+// that isn't a separate decision; see the CRM-note block below).
 import { defineTool } from "eve/tools";
-// eve 0.45.0 moved the capability-specific helpers off `eve/tools` and onto dedicated
-// `eve/tools/*` entrypoints (CHANGELOG 0.45.0, 6252784). `ApprovalStatus` is the same type,
-// re-exported from `node_modules/eve/dist/src/public/tools/approval/index.d.ts`; this is the
-// subpath `packages/agent-kit/src/board-approval.ts` already imports it from.
+// eve keeps the capability-specific helpers on dedicated `eve/tools/*` entrypoints rather than
+// on `eve/tools`. `ApprovalStatus` comes from the approval subpath, the same one
+// `packages/agent-kit/src/board-approval.ts` imports it from.
 import type { ApprovalStatus } from "eve/tools/approval";
 import { z } from "zod";
 
@@ -36,8 +35,8 @@ import { agentName } from "../lib/agent-name.js";
 export const FOLLOWUP_CAPABILITY = "meeting_followup";
 
 /**
- * Local-parts that mark a recipient as a shared/group inbox rather than a person (spec Q4:
- * "an alias hides who actually receives it, so it stays gated forever"). Deliberately
+ * Local-parts that mark a recipient as a shared/group inbox rather than a person (an alias
+ * hides who actually receives it, so it stays gated forever). Deliberately
  * CONSERVATIVE and cannot be complete — every organisation invents its own aliases, and this
  * list can only ever be a sample of the common ones. It is matched case-insensitively against
  * the part before `@` only, and it fails toward ASKING, never toward sending: an unrecognised
@@ -50,10 +49,10 @@ export const GROUP_ALIAS_LOCAL_PARTS: ReadonlySet<string> = new Set([
   "noreply", "no-reply", "firmapost",
 ]);
 
-/** Exported (finding-1-regression fix): `makeLiveSend`'s pre-check in
+/** Exported so `makeLiveSend`'s pre-check in
  *  agent/schedules/meeting-followup.ts imports this SAME function rather than
  *  re-implementing the rule, so the pre-check and this policy can never diverge on whether a
- *  recipient is an alias. See that file's own comment for why divergence there is now
+ *  recipient is an alias. See that file's own comment for why divergence there is
  *  dangerous, not merely cosmetic. */
 export function isGroupAlias(email: string): boolean {
   const at = email.indexOf("@");
@@ -85,7 +84,7 @@ function isAppPrincipal(current: unknown): boolean {
 /**
  * Decides, per call, whether this follow-up needs a human.
  *
- * RUNTIME, not build time — and that is the whole point. eve resolves the agent-kit
+ * RUNTIME, not build time, and that is the whole point. eve resolves the agent-kit
  * extension's autonomy levels once per `eve build` and bakes them into the image.
  * A per-series level read there would mean flipping the switch in the Console changes
  * nothing until the next redeploy, silently. This function runs on every tool call.
@@ -100,8 +99,8 @@ export function followupApproval(deps: FollowupApprovalDeps) {
     const to = Array.isArray(input.to) ? input.to.filter((r): r is string => typeof r === "string") : [];
     if (input.forceApproval === true) return "user-approval";
 
-    // A group/alias recipient (post@, hei@, …) hides who actually receives the mail — spec Q4
-    // rules that keeps the series GATED FOREVER. Checked before anything else, including the
+    // A group/alias recipient (post@, hei@, …) hides who actually receives the mail, so it keeps
+    // the series GATED FOREVER. Checked before anything else, including the
     // ratchet, so a matching fingerprint or an opted-in series can never override it: without
     // this, a first autonomous send has no fingerprint baseline (`previous === null` below →
     // `approved`), and an opted-in series containing e.g. post@company.no would auto-send into
@@ -125,7 +124,7 @@ export function followupApproval(deps: FollowupApprovalDeps) {
     }
     if (level !== "autonomous") return "user-approval";
 
-    // Opted in — but only for the people it was opted in FOR. A series that gains a
+    // Opted in, but only for the people it was opted in FOR. A series that gains a
     // participant pauses ONCE; the opt-in itself is untouched, and approving resumes it.
     let previous: string | null;
     try {
@@ -167,7 +166,7 @@ export default defineTool({
     // authority is the ratchet row a human wrote, which `approval` above already checked on
     // THIS call. Asserting an approver there would refuse exactly the case the ratchet exists
     // to enable. The exemption is the app principal and nothing else, so absence, an unknown
-    // channel, and the wrong human all still refuse (security review) — and a
+    // channel, and the wrong human all still refuse, and a
     // human-approved resume arrives with `current: null` (Telegram) or the clicker's own auth
     // (Slack), neither of which is the app, so it takes the strict `assertApprover` path.
     if (!isAppPrincipal(ctx.session.auth?.current)) {
@@ -190,15 +189,15 @@ export default defineTool({
       ...(signatureHtml ? { signatureHtml } : {}),
     });
 
-    // fix round 2 (CRITICAL): this is the ONLY place that may record a "sent"
-    // outcome — this line runs only once the send above has genuinely resolved, and only
-    // when execute runs at all means the send was authorised (approved, or autonomous).
+    // This is the ONLY place that may record a "sent"
+    // outcome: this line runs only once the send above has genuinely resolved, and `execute`
+    // only runs at all when the send was authorised (approved, or autonomous).
     // The schedule that calls this tool cannot make the same claim: its own session-send
     // resolves once the model's TURN ends, which for a gated call is the moment the approval
     // card renders, not the moment (if ever) a human taps approval — recording "sent" there made a
     // declined or never-clicked card look permanently done, with no retry and no signal.
     // A store failure here must not turn a real, successful send into something that LOOKS
-    // failed to the caller — log and continue, the same containment every other caller of
+    // failed to the caller: log and continue, the same containment every other caller of
     // this store uses (see meeting-followup.ts's own recordOutcome/recordSent wrapping).
     try {
       await recordSent(getPool(), input.notionPageId, input.seriesKey, input.to);
@@ -218,7 +217,7 @@ export default defineTool({
     // must never make a successful send look failed to the caller: catch per-recipient, log
     // with the page id, and keep going — the same containment recordSent uses just above.
     //
-    // `requireResolvedPerson: true` (security-review fix): skip creating the note entirely
+    // `requireResolvedPerson: true`: skip creating the note entirely
     // when the recipient doesn't resolve to a CRM person, rather than `createTwentyNote`'s
     // default of creating it unlinked. An unlinked note here would carry the FULL sent email
     // body with no way to ever find it again — every send to someone not yet in Twenty would
