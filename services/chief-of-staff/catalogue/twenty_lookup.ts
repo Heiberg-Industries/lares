@@ -1,9 +1,13 @@
 // Look up a CRM person or company by name/email. Read-only HTTP against TWENTY_BASE_URL.
 //
 // Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `lookup` +
-// `buildLookupQueries` (this Twenty instance splits names inconsistently across
-// firstName/lastName, so the first token is matched against firstName and the last token
-// against lastName; results are de-duplicated by id).
+// `buildLookupQueries` (a Twenty instance may split names inconsistently across
+// firstName/lastName, so every name token is matched against BOTH fields, with vowels and
+// accented letters as a one-character wildcard; results are de-duplicated by id, ranked by
+// how many tokens match the folded name/email, and cut to ten).
+//
+// Additional emails: the lookup matches `emails.primaryEmail` only. It leaves additional
+// emails out until `tests/live/twenty-lookup.live.mts` shows Twenty's REST filter supports them.
 //
 // deviation from the old client: the old `lookup` caught every sub-query failure and
 // folded it into a `warnings` string array — so a genuine "Twenty is down" looked, to the
@@ -35,22 +39,74 @@ export interface LookupQuery {
   path: string;
 }
 
-/** Pure: turn a free-text term into the REST sub-queries to try. */
+const MAX_NAME_TOKENS = 4;
+const MAX_SUB_QUERIES = 10;
+const MAX_PEOPLE = 10;
+const PER_QUERY_LIMIT = 20;
+
+/** Lowercase, strip accents; letters that do not decompose are spelled out. */
+export function foldName(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .toLowerCase()
+    .replace(/ø/g, "o")
+    .replace(/æ/g, "ae")
+    .replace(/ß/g, "ss");
+}
+
+/** Name tokens worth searching: letters only, two or more of them, at most four. */
+function nameTokens(term: string): string[] {
+  const out: string[] = [];
+  for (const raw of term.normalize("NFC").split(/[^\p{L}]+/u)) {
+    const tok = raw.toLowerCase();
+    if (tok.length >= 2 && !out.includes(tok)) out.push(tok);
+    if (out.length === MAX_NAME_TOKENS) break;
+  }
+  return out;
+}
+
+/** Consonants a-z stay; every vowel and every other letter becomes the one-character
+ *  wildcard `_`, so "gluck" and "glück" both give `gl_ck`. */
+function accentPattern(token: string): string {
+  return [...token].map((ch) => (/[b-df-hj-np-tv-xz]/.test(ch) ? ch : "_")).join("");
+}
+
+/** Pure: turn a free-text term into the REST sub-queries to try (at most ten). */
 export function buildLookupQueries(term: string): LookupQuery[] {
   const t = term.trim();
   if (!t) return [];
   const enc = (s: string) => encodeURIComponent(s);
   if (t.includes("@")) {
-    return [{ kind: "people-email", path: `/people?filter=emails.primaryEmail[eq]:${enc(t)}&limit=5` }];
+    const local = t.slice(0, t.indexOf("@"));
+    const queries: LookupQuery[] = [
+      { kind: "people-email", path: `/people?filter=emails.primaryEmail[eq]:${enc(t)}&limit=5` },
+    ];
+    if (local) {
+      queries.push({
+        kind: "people-email",
+        path: `/people?filter=emails.primaryEmail[ilike]:${enc(`${local}@%`)}&limit=${PER_QUERY_LIMIT}`,
+      });
+    }
+    return queries;
   }
-  const tokens = t.split(/\s+/);
-  const first = tokens[0]!;
-  const last = tokens[tokens.length - 1]!;
+  const names: LookupQuery[] = [];
+  for (const tok of nameTokens(t)) {
+    const pattern = enc(`%${accentPattern(tok)}%`);
+    for (const field of ["firstName", "lastName"]) {
+      names.push({ kind: "people-name", path: `/people?filter=name.${field}[ilike]:${pattern}&limit=${PER_QUERY_LIMIT}` });
+    }
+  }
   return [
-    { kind: "people-name", path: `/people?filter=name.firstName[ilike]:${enc(`%${first}%`)}&limit=5` },
-    { kind: "people-name", path: `/people?filter=name.lastName[ilike]:${enc(`%${last}%`)}&limit=5` },
-    { kind: "company-name", path: `/companies?filter=name[ilike]:${enc(`%${t}%`)}&limit=5` },
+    ...names.slice(0, MAX_SUB_QUERIES - 1),
+    { kind: "company-name", path: `/companies?filter=name[ilike]:${enc(`%${t}%`)}&limit=${PER_QUERY_LIMIT}` },
   ];
+}
+
+/** How many of the term's tokens appear in this person's folded name or email. */
+function matchScore(tokens: string[], p: TwentyPersonLite): number {
+  const hay = foldName(`${p.name} ${p.email ?? ""}`);
+  return tokens.filter((tok) => hay.includes(tok)).length;
 }
 
 function mapPerson(r: any): TwentyPersonLite {
@@ -97,14 +153,24 @@ export async function twentyLookup(term: string): Promise<TwentyLookupResult> {
       }
     }
   }
+  const tokens = t.includes("@")
+    ? [foldName(t), foldName(t.slice(0, t.indexOf("@")))].filter(Boolean)
+    : nameTokens(t).map(foldName);
+  out.people = out.people
+    .map((p, i) => ({ p, i, score: matchScore(tokens, p) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .slice(0, MAX_PEOPLE)
+    .map((x) => x.p);
   return out;
 }
 
 export default defineTool({
   description:
     "Look up a CRM record — read-only HTTP call to TWENTY_BASE_URL. Matches people by " +
-    "first/last name token or exact email, and companies by name substring. Returns " +
-    "deduplicated lightweight candidates (id, name, email/domain). An empty result is a " +
+    "ANY name token (first or last name, extra or misspelt middle names are fine), " +
+    "tolerates accents (Müller finds Muller), or by email address / the part before the @, " +
+    "and companies by name substring. Returns at most ten deduplicated candidates (id, " +
+    "name, email/domain), best match first. An empty result is a " +
     "real answer (no matching records); TwentyUnavailableError is thrown only on a genuine " +
     "transport/HTTP failure against Twenty.",
   inputSchema: z.object({ name: z.string() }),
