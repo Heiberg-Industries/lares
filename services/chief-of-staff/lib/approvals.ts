@@ -89,8 +89,8 @@ export function approverFrom(
 }
 
 /**
- * The check an UNGATED, model-called write needs when its authority is "the owner just said so"
- * (fix). Returns a refusal sentence, or null when this turn really is the owner's.
+ * The check an UNGATED, model-called write needs when its authority is "the owner just said so".
+ * Returns a refusal sentence, or null when this turn really is the owner's.
  *
  * WHY THIS IS NOT `assertApprover`. That one answers "may this principal APPROVE an external
  * action" and is reached from a card tap, so it accepts the Telegram null-auth resume via

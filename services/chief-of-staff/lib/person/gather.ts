@@ -149,7 +149,7 @@ export async function gatherPerson(
   // AMBIGUOUS is the one resolution that skips it: that branch renders a question and nothing
   // else, so the I/O would buy output nobody ever reads.
   //
-  // NOT ASKED AT ALL is checked first : `opts.organisation === false` says the caller
+  // NOT ASKED AT ALL is checked first: `opts.organisation === false` says the caller
   // renders no organisation section, and starting the stage anyway would buy nothing but blocked
   // event-loop time. See `GatherOptions`.
   const organisationP: Promise<SourceResult<OrgFacts>> =
