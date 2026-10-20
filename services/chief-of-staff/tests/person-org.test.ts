@@ -118,7 +118,7 @@ describe("deriveOrgQuery", () => {
   });
 
   /**
-   * fix round 1, Finding 2a. Twenty's person record carries a companyId and no company
+   * Twenty's person record carries a companyId and no company
    * NAME, so a CRM-only person on a personal mailbox used to derive to null and render as "no
    * company on file" — while the CRM had one on file, one call away.
    */
@@ -180,7 +180,7 @@ describe("orgSearchTerms", () => {
 });
 
 /**
- * fix round 1, Finding 1 — a cap needs a known ordering.
+ * A cap needs a known ordering.
  *
  * `searchNotes`' primary pass returns WALK ORDER, not relevance. Slicing that list unranked is how
  * twelve notes mentioning "Northwind Audio" become three clippings and a daily note, with

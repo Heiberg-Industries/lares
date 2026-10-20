@@ -62,7 +62,7 @@ describe("classifyEvent", () => {
 
   it("a Gmail-created event that is neither a stay nor a journey stays a normal commitment", () => {
     // "Reservation at Restaurant A" is a RESTAURANT
-    // booking Gmail created — a place he actually goes. The bare word
+    // booking Gmail created — a place the owner actually goes. The bare word
     // "reservation" is not a lodging pattern; so lodging keys off
     // stay/hotel words and a reservation with a venue stays a commitment.
     expect(kindOf({ summary: "Reservation at Restaurant A", eventType: "fromGmail" })).toBe("block");
@@ -89,9 +89,9 @@ describe("classifyEvent", () => {
   });
 
   it("THE HYBRID CASE: a venue he can be at outranks a link he can join", () => {
-    // Fix round 1, Finding 1. Google Workspace adds a Meet link to nearly every invitation by
+    // Google Workspace adds a Meet link to nearly every invitation by
     // default, so letting the link decide announced a meeting at a counterpart's office as
-    // "not somewhere he must be" — the ticket's defect, inverted.
+    // "not somewhere the owner must be" — the ticket's defect, inverted.
     expect(kindOf({
       summary: "Styremøte",
       eventType: "default",
@@ -173,7 +173,7 @@ describe("wrapCalendarApi.listEvents — the fields classification needs", () =>
   });
 });
 
-// ── the 2026-08-25 replay, end to end ───────────────────────────────────────────────────────
+// ── the replay of the morning the brief got it wrong, end to end ───────────────────────────────────────────────────────
 
 /** 08:00 Oslo on the morning the brief got it wrong. */
 const THAT_MORNING = new Date("2026-08-25T06:00:00Z");
@@ -258,7 +258,7 @@ describe(" regression — the morning of 2026-08-25", () => {
     const prompt = buildMorningPrompt(buildMorningBrief({ meetings, obligations: [], deliveredLastNight: new Set(), picks: [] })!);
     const calendar = sectionAfter(prompt, "## Today's calendar (meetings, and the blocks he set aside)");
 
-    // Fix round 1, Finding 2 — the SPAN, so "the 16:30 runs into the 17:00" is read, not invented.
+    // The SPAN, so "the 16:30 runs into the 17:00" is read, not invented.
     expect(calendar).toContain("16:30–17:00 — Intro call — Dana Rowe (remote)");
     expect(calendar).toContain("17:00–18:50 — AI & Agenter - Example Comm (Example Venue)");
     expect(prompt.replace(/\s+/g, " ")).toContain("marked (remote) has no venue");

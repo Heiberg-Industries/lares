@@ -4,7 +4,7 @@
  * nothing a human can see, so this suite proves it against a REAL Postgres, the same
  * testcontainers pattern `tests/tools-deadline.test.ts` uses, rather than a mock.
  *
- * review fix round 1: the tool calls the NARROW `recordDenial` store function
+ * The tool calls the NARROW `recordDenial` store function
  * (lib/meeting-followup-store.ts), not a bare `recordOutcome`, precisely because this tool is
  * ungated and model-callable — a confused or prompt-injected turn must not be able to flip a
  * `'skipped'` or already-`'denied'` row just by naming its page id. This file proves all five

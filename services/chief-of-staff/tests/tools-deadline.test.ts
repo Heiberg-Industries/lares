@@ -1,9 +1,8 @@
 /**
- * Task 3 — the six `deadline_*` tools, against a REAL Postgres (testcontainers, the
+ * The six `deadline_*` tools, against a REAL Postgres (testcontainers, the
  * pattern): a fake pool that never executes SQL is forbidden here. Same migration
- * sequence as `tests/deadlines-store.test.ts` (031, then 036 — 036 seeds two heartbeat rows,
- * so 031's table must exist first — then 063,-s1's vendor/amount/currency columns and
- * the `'renewal'` source), and the same fake-`ctx` shape `tests/remind-set-clock.test.ts`
+ * sequence as `tests/deadlines-store.test.ts` (the deadlines table first, then the heartbeat seed rows that
+ * depend on it, then the vendor/amount/currency columns and the `'renewal'` source), and the same fake-`ctx` shape `tests/remind-set-clock.test.ts`
  * uses for a gated tool's `assertApprover` check: a Slack auth context inside the allowlist.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach } from "vitest";
@@ -75,7 +74,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  process.env["OWNER_HOME_TZ"] = "Europe/Oslo";
+  process.env["OWNER_HOME_TZ"] = "Europe/Berlin";
 });
 
 afterEach(async () => {
@@ -202,7 +201,7 @@ describe("deadline_mint_statutory", () => {
     expect(deadlines).toHaveLength(12);
   });
 
-  // ── The already-past skip (review fix,) ────────────────────────────────────────────
+  // ── The already-past skip ────────────────────────────────────────────
   //
   // A year long gone is the extreme case of a mid-year mint: EVERY rule is behind today, so an
   // unguarded mint would insert twelve rows that are overdue on arrival — and the brief names an
@@ -346,7 +345,7 @@ describe("deadline_reset", () => {
 });
 
 /**
- * WHO IS ASKING — the review fix that made `deadline_add` and `deadline_reset` refuse a turn with
+ * WHO IS ASKING — `deadline_add` and `deadline_reset` refuse a turn with
  * no human on it.
  *
  * Both are ungated by design (a wrong add costs a line in a brief; a reset only adds noise back),
@@ -356,7 +355,7 @@ describe("deadline_reset", () => {
  *
  * Both directions, the `remember` precedent: the app principal is refused with NOTHING written,
  * and the allowlisted human still succeeds (a check that refused everyone would pass the first
- * half of this and quietly cost him the tool).
+ * half of this and quietly cost the owner the tool).
  */
 describe("the principal check on the two ungated writes", () => {
   it("deadline_add refuses a scheduled turn and writes NO row", async () => {

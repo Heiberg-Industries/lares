@@ -4,7 +4,7 @@ import { alreadySentToday } from "../lib/initiation.js";
 import { agentName } from "../lib/agent-name.js";
 
 /**
- *-s2 — `alreadySentToday`'s own contract, in isolation from a schedule: a single-slot
+ * `alreadySentToday`'s own contract, in isolation from a schedule: a single-slot
  * schedule's extra "at most one per owner-day" guard, now that a schedule's hour is a setting that
  * can change mid-day (see `lib/initiation.ts`'s own doc-comment for why the ledger's item-key
  * dedupe alone cannot catch this).

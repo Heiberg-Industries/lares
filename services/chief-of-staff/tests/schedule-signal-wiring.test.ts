@@ -4,7 +4,7 @@ import { osloLocalToDate } from "../lib/recurrence.js";
 import { closePool } from "@lares/agent-kit/db";
 
 /**
- * Task 3 (final-review Fix 3) — every schedule's error path must reach `emitSignal`, not just
+ * Every schedule's error path must reach `emitSignal`, not just
  * a `console.error`. `lib/signal-emit.ts` itself was already fully tested
  * (`tests/signal-emit.test.ts`) — this file proves the WIRING: that each of the 7 schedules'
  * `run()` actually calls it when the tick fails, not merely that `emitSignal` works in
@@ -17,7 +17,7 @@ import { closePool } from "@lares/agent-kit/db";
  * with ECONNREFUSED — driving the same catch block a real outage would.
  *
  * Each test freshly re-imports its schedule module (`vi.resetModules()` in `beforeEach`) so
- * module-scope state (`lastSlot`, `running`, `liveState`, `tablesEnsured`, the `lib/db.ts`
+ * module-scope state (`lastSlot`, `running`, `liveState`, `tablesEnsured`, the `@lares/agent-kit/db`
  * pool singleton) never leaks between cases — `vi.mock` registrations survive `resetModules`,
  * so the `emitSignal` spy stays wired across every fresh import.
  */

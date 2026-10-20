@@ -10,7 +10,7 @@ import { registerApprovalSummary, summarizeApproval } from "@lares/agent-kit/app
 import { extractToolApprovalInputRequests } from "eve-internals/input-extraction";
 
 // Pure summarizeApproval() formatting coverage lives in
-// packages/agent-kit/tests/approval-summary.test.ts ( Task C) — this file keeps only
+// packages/agent-kit/tests/approval-summary.test.ts — this file keeps only
 // the half that is genuinely chief-of-staff's own: proving the eve patch actually wires the shared
 // formatter into the approval-card title, which depends on eve-internals and the pnpm patch
 // that only exists in this workspace member.
@@ -37,8 +37,8 @@ describe("the eve patch — the card actually USES the summary", () => {
   });
 
   it("falls back to eve's own title when the global is absent", () => {
-    // Not hypothetical: patches/eve.patch covers every workspace member, and travel-agent
-    // never registers a formatter. Its cards must keep working, unchanged.
+    // Not hypothetical: patches/eve.patch covers every workspace member, and an agent
+    // that never registers a formatter must keep its cards working, unchanged.
     const [request] = extractToolApprovalInputRequests({
       content: content("gmail_send", { to: ["tor@ledgerly.example"], subject: "Re: Acme" }),
     });
@@ -86,7 +86,7 @@ describe("meeting_followup_send card", () => {
   });
 });
 
-describe("meeting_followup_auto card ( Task 12 fix round 1)", () => {
+describe("meeting_followup_auto card", () => {
   it("names both the meeting and the level on a well-formed call", () => {
     const summary = summarizeApproval("meeting_followup_auto", {
       seriesKey: "s1",

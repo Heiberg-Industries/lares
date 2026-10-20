@@ -14,8 +14,8 @@ import {
 } from "../lib/obligation-lookups.js";
 
 /**
- * Task 10 (B5) — the two REAL lookups behind `resolveElsewhere`'s Gmail and calendar
- * legs. Both answer the same question in their own channel ("did he reach this person after
+ * The two REAL lookups behind `resolveElsewhere`'s Gmail and calendar
+ * legs. Both answer the same question in their own channel ("did the owner reach this person after
  * their last message?") and both are wired identically by the morning and evening briefs, which
  * is why they live in one shared module rather than twice inside two schedules.
  *

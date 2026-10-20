@@ -12,18 +12,18 @@ import type { InitiationOutcome } from "../lib/initiation.js";
 import type { LadderStep } from "@lares/agent-kit/deadlines";
 
 /**
- * Task 5 — the ladder, offline. No pool, no Telegram, no gate: the tick factory takes
+ * The ladder, offline. No pool, no Telegram, no gate: the tick factory takes
  * store, gate and send as deps, so every branch below is exercised with fakes.
  *
- * The clock matters in every case, so it is always explicit: Oslo is UTC+2 in June, and
+ * The clock matters in every case, so it is always explicit: Berlin is UTC+2 in June, and
  * `ladderStep` (kit) keys on the owner-clock day and hour.
  */
-const TZ = "Europe/Oslo";
-/** 2026-06-17 15:00 Oslo — rung 1's moment for a deadline due 2026-06-18. */
+const TZ = "Europe/Berlin";
+/** 2026-06-17 15:00 Berlin — rung 1's moment for a deadline due 2026-06-18. */
 const T_MINUS_ONE_1500 = new Date("2026-06-17T13:00:00Z");
-/** 2026-06-18 09:00 Oslo — rung 2's moment for the same deadline. */
+/** 2026-06-18 09:00 Berlin — rung 2's moment for the same deadline. */
 const DUE_DAY_0900 = new Date("2026-06-18T07:00:00Z");
-/** 2026-06-19 09:00 Oslo — the day after, rung 3's moment. */
+/** 2026-06-19 09:00 Berlin — the day after, rung 3's moment. */
 const OVERDUE_0900 = new Date("2026-06-19T07:00:00Z");
 
 function deadline(over: Partial<DeadlineRow> = {}): DeadlineRow {
@@ -279,11 +279,11 @@ describe("rungText", () => {
     );
   });
 
-  // ── The stop at rung 0 (review fix,) ─────────────────────────────────────────────
+  // ── The stop at rung 0 ─────────────────────────────────────────────
   //
   // `ladderStep` never catches a rung up, so a deadline whose date passed while the LADDER WAS
   // OFF reaches the final stop having been raised zero times. The count line then read "jeg har
-  // tatt opp … 1 ganger" — a claim he can check and find false, in a plural that is wrong twice
+  // tatt opp … 1 ganger" — a claim the owner can check and find false, in a plural that is wrong twice
   // over. The stop must say what actually happened instead.
   it("rung 3 from rung 0 says the date went by unannounced — no count, no false claim", () => {
     expect(rungText(deadline({ rung: 0 }), step(3), -4, "nb")).toBe(

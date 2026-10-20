@@ -7,7 +7,7 @@
  * red if the exclusion were dropped — an all-day placeholder beside a meeting, a declined
  * invitation, an event marked free, two tentatives, an out-of-office marker, an early start at
  * home, and above all the same meeting read off two calendars, which is the single most common
- * shape in his data (both accounts, every calendar, plus the read-only one he subscribes to).
+ * shape in the owner's data (both accounts, every calendar, plus the read-only one the owner subscribes to).
  *
  * FIXTURES ARE SHAPED, not verbatim: these are hand-built `CalendarEvent` literals in the shape
  * `lib/google.ts`'s mapper produces, not recorded Google responses. What that buys and what it
@@ -100,8 +100,8 @@ describe("double-booked time", () => {
 
 describe("double-booked time — the false-positive rules", () => {
   it("an all-day placeholder overlapping a real meeting is NOT a conflict", () => {
-    // The ticket names this one explicitly, and it is the most common shape on his calendar:
-    // an all-day label ("Oslo", a holiday, a travel day) is not a place he is standing in.
+    // The ticket names this one explicitly, and it is the most common shape on the owner's calendar:
+    // an all-day label ("Oslo", a holiday, a travel day) is not a place the owner is standing in.
     expect(kinds([
       allDay({ start: DAY, end: "2026-08-27", summary: "Oslo" }),
       timed({ from: "10:00", to: "11:00" }),
@@ -165,7 +165,7 @@ describe("double-booked time — the false-positive rules", () => {
   });
 
   it("an event with no attendee data at all is his own block, not an unanswered invitation", () => {
-    // the ticket's lesson: attendee metadata is the exception on his calendar, not the rule.
+    // the ticket's lesson: attendee metadata is the exception on the owner's calendar, not the rule.
     expect(commitmentOf(timed({ from: "10:00", to: "11:00" }))).toBe("committed");
   });
 });
@@ -228,7 +228,7 @@ describe("overlapping stays", () => {
   });
 
   it("does NOT report an overlap on a night OUTSIDE the window — he already slept through it", () => {
-    // Both stays reach into the window day, but the night they share is behind him.
+    // Both stays reach into the window day, but the night they share is behind the owner.
     expect(kinds([
       { id: "s1", summary: "Hotel A", start: "2026-08-24T15:00:00+02:00", end: "2026-08-26T11:00:00+02:00" },
       { id: "s2", summary: "Hotel B", start: "2026-08-25T15:00:00+02:00", end: "2026-08-26T11:00:00+02:00" },
@@ -280,7 +280,7 @@ describe("timezone traps", () => {
 
   it("does NOT report a 06:00 home event on an ordinary home day", () => {
     // The ticket names this one too. Without the "the event's own zone must differ" guard,
-    // every early start on his calendar would be a finding.
+    // every early start on the owner's calendar would be a finding.
     expect(kinds([timed({ from: "06:00", to: "07:00" })])).toEqual([]);
   });
 
@@ -344,7 +344,7 @@ describe("timezoneOn", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// The same commitment, seen twice — the shape his own data produces constantly
+// The same commitment, seen twice — the shape the owner's own data produces constantly
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 describe("de-duplication: one meeting on two calendars is one meeting", () => {
@@ -444,11 +444,11 @@ describe("the pass itself", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-//-s1 — event refs carry which account and calendar they came from, when the fan-out
+// event refs carry which account and calendar they came from, when the fan-out
 // set it. Groundwork only: a later ticket uses this to target the right calendar on delete.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-describe("-s1 — account and calendar identity on conflict refs", () => {
+describe("account and calendar identity on conflict refs", () => {
   it("carries account and calendarId onto a finding's event refs, when the fan-out set them", () => {
     const found = detectCalendarConflicts(
       [

@@ -14,7 +14,7 @@ beforeEach(() => resetTaintForTests());
 
 describe("the taint hook", () => {
   it("names every tool that brings back somebody else's words", () => {
-    // calendar_list_events is deliberately absent — W3A-s5 moved its classification to the
+    // calendar_list_events is deliberately absent — its classification lives at the
     // tool's own call site, where the arguments (was a specific calendar named?) are in hand.
     expect([...TAINTING_TOOLS.keys()].sort()).toEqual(
       ["gmail_read", "gmail_search", "read_url"],

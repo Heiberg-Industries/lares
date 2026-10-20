@@ -37,11 +37,11 @@ function deps(
     send: async (payload) => { sent.push(payload); },
     // Defaults to "sent" — matters only for a test that opts into an autonomous send
     // (`send` returning `{ autonomous: true }`); every other test's `send()` returns void,
-    // so `getOutcome` is never consulted for it (finding 1's read-back only runs on the
+    // so `getOutcome` is never consulted for it (the read-back only runs on the
     // autonomous pre-check path).
     getOutcome: async () => "sent",
     // Captures every call so a test can assert WHICH outcome string landed — this is the
-    // thing fix round 2 exists to get right: "queued" after a dispatched turn,
+    // thing that must be right: "queued" after a dispatched turn,
     // never "sent" (only the tool itself may ever claim that — see meeting-followup.ts's
     // module header).
     recordOutcome: async (pageId, outcome) => { outcomes.push([pageId, outcome]); },
@@ -83,7 +83,7 @@ describe("makeFollowupTick", () => {
   });
 
   it("records 'queued' after a successful turn, and NEVER 'sent' — only the tool may claim that", async () => {
-    // The critical fix ( fix round 2): to(...).send() resolving means the model's turn
+    // The critical fix: to(...).send() resolving means the model's turn
     // ended, not that mail left. A first-of-series send renders a card that may be declined
     // or never clicked — recording "sent" here would mark that meeting done forever with no
     // retry, no error, no signal. Only meeting_followup_send's own execute() may write "sent".
@@ -106,7 +106,7 @@ describe("makeFollowupTick", () => {
   });
 
   it("skips an internal-only meeting entirely", async () => {
-    // the owner is a solo founder; an internal-only meeting is him and a recording. There is
+    // the owner is a solo founder; an internal-only meeting is the owner and a recording. There is
     // nobody to follow up with, and a second template for that population would be dead code.
     const d = deps({ listMeetings: async () => [meetingRow({ attendees: "owner-1 <owner@owner.example>" })] });
     const res = await makeFollowupTick(d.impl).tick(NOW);
@@ -121,9 +121,9 @@ describe("makeFollowupTick", () => {
   });
 
   it("stops composing at the per-tick ceiling — exactly 5, not merely at most 5", async () => {
-    // The Aug 14/15 lesson: a backfill must not fire one billed call per row with no limit.
+    // A backfill must not fire one billed call per row with no limit.
     // toBe(5), not toBeLessThanOrEqual(5): the looser assertion would also pass an
-    // implementation that composes zero (coordinator review, fix round 2).
+    // implementation that composes zero.
     const many = Array.from({ length: 12 }, (_, n) => meetingRow({ pageId: `page-${n}` }));
     const d = deps({ listMeetings: async () => many });
     const res = await makeFollowupTick(d.impl).tick(NOW);
@@ -131,12 +131,12 @@ describe("makeFollowupTick", () => {
   });
 
   it("does not let permanently-unready rows ahead of the queue starve the ready ones behind them", async () => {
-    // fix round 3, Important: a row whose Summary property is filled but whose
+    // Important: a row whose Summary property is filled but whose
     // <summary> block can never be extracted (isReady=false forever) must not occupy a
     // ceiling slot — the engine's own isReady filter runs BEFORE the ceiling loop, so 3 such
     // rows sorted ahead of 6 genuinely-ready ones must still leave room for 5 composes.
     //
-    // Post-fix-round-4 review (Important): these MUST sit inside FOLLOWUP_MAX_AGE_DAYS, not
+    // These MUST sit inside FOLLOWUP_MAX_AGE_DAYS, not
     // outside it — dated outside the window (the original Aug 20/21/22 fixture), the engine's
     // OWN age gate deletes them before `isReady` is ever consulted, and this test's stated
     // concern (isReady ordering vs. the ceiling) is never actually exercised. 60/45/30 minutes
@@ -178,7 +178,7 @@ describe("makeFollowupTick", () => {
     expect(d.notified.join(" ")).toContain("Weekly Sync");
   });
 
-  describe("finding 1 (CRITICAL) — a failed autonomous send must not be reported as sent", () => {
+  describe("a failed autonomous send must not be reported as sent", () => {
     it("the happy autonomous path posts exactly one success line", async () => {
       const d = deps({ send: async () => ({ autonomous: true }), getOutcome: async () => "sent" });
       const res = await makeFollowupTick(d.impl).tick(NOW);
@@ -208,7 +208,7 @@ describe("makeFollowupTick", () => {
     });
   });
 
-  describe("finding 3 (Important) — the final claim attempt's failure is reported loudly", () => {
+  describe("the final claim attempt's failure is reported loudly", () => {
     it("emits a dropped-signal when a send fails on the final allowed attempt", async () => {
       const d = deps({
         claim: async () => ({ claimed: true, attempt: 3, isFinalAttempt: true }),
@@ -267,7 +267,7 @@ describe("makeFollowupTick", () => {
     });
   });
 
-  describe("-s3 — the precheck runs before compose, not merely before send", () => {
+  describe("the precheck runs before compose, not merely before send", () => {
     it("a held precheck means compose is never called, held=1, composed stays 0, and no outcome is recorded", async () => {
       const composeSpy = vi.fn(async () => ({ subject: "s", bodyText: "b" }));
       const sendSpy = vi.fn(async () => {});

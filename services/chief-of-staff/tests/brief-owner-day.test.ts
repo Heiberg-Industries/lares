@@ -143,7 +143,7 @@ describe("BUG — an evening brief at 20:00 New York is about the OWNER's tomorr
   const AWAY_WEEK: CalendarEvent[] = [
     allDay("wed all day", "2026-09-16", "2026-09-17"),
     timed("wed 10:00 new york", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z"),
-    // 22:00 on his Wednesday — already Thursday 04:00 at home.
+    // 22:00 on the owner's Wednesday — already Thursday 04:00 at home.
     timed("wed 22:00 new york", "2026-09-17T02:00:00Z", "2026-09-17T03:00:00Z"),
     allDay("thu all day", "2026-09-17", "2026-09-18"),
     timed("thu 10:00 new york", "2026-09-17T14:00:00Z", "2026-09-17T15:00:00Z"),
@@ -174,12 +174,12 @@ describe("BUG — an evening brief at 20:00 New York is about the OWNER's tomorr
 describe("BUG — a morning brief at 08:00 Tokyo is about the OWNER's today", () => {
   /** 08:00 in Tokyo on Wednesday the 16th — 01:00 the same Wednesday in Oslo. The two DATES agree
    *  at this instant; what differs is where the day ENDS: Tokyo's Wednesday is over seven hours
-   *  before Oslo's, so the home clock pulls his Thursday-morning hours into "today". */
+   *  before Oslo's, so the home clock pulls the owner's Thursday-morning hours into "today". */
   const MORNING_TOKYO = new Date("2026-09-15T23:00:00Z");
 
   const TOKYO_WEEK: CalendarEvent[] = [
     timed("wed 22:30 tokyo", "2026-09-16T13:30:00Z", "2026-09-16T14:30:00Z"),
-    // 00:30 on his Thursday — still 17:30 on Wednesday at home.
+    // 00:30 on the owner's Thursday — still 17:30 on Wednesday at home.
     timed("thu 00:30 tokyo", "2026-09-16T15:30:00Z", "2026-09-16T16:30:00Z"),
   ];
 
@@ -195,7 +195,7 @@ describe("BUG — a morning brief at 08:00 Auckland, while it is still yesterday
   const MORNING_AUCKLAND = new Date("2026-09-15T20:00:00Z");
 
   const AUCKLAND_WEEK: CalendarEvent[] = [
-    // 22:00 on his Tuesday — noon on the home clock's "today".
+    // 22:00 on the owner's Tuesday — noon on the home clock's "today".
     timed("tue 22:00 auckland", "2026-09-15T10:00:00Z", "2026-09-15T11:00:00Z"),
     allDay("tue all day", "2026-09-15", "2026-09-16"),
     allDay("wed all day", "2026-09-16", "2026-09-17"),

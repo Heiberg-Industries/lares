@@ -1,5 +1,5 @@
 /**
- * W3A-s8 (docs/decisions/0018-learning-and-dreaming.md, the origin model) — coverage for `ensureDreamTables`'s `origin` column and the two dream-store write
+ * (docs/decisions/0018-learning-and-dreaming.md, the origin model) — coverage for `ensureDreamTables`'s `origin` column and the two dream-store write
  * paths (`record`, `addPreference`) that now require an `Origin`.
  *
  * This is the container half the plan's own note calls for: `ensureDreamTables` is a real
@@ -15,7 +15,7 @@
  * round-trip — unrelated to the store's origin column, and `log-reader.ts` is off-limits for
  * this slice — so it is left untouched and this file is created fresh instead.
  *
- * W4C-s2 added the `ownerRecurrenceCount` block below, which is where the origin column stops
+ * The `ownerRecurrenceCount` block below is where the origin column stops
  * being bookkeeping and starts deciding something.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -65,7 +65,7 @@ describe("origin on dream rows", () => {
       subject: "",
       confidence: 0.4,
       evidenceRefs: [],
-      // Required on `Observation` since W4C-s1. What `record` stores is its third argument, not
+      // Required on `Observation`. What `record` stores is its third argument, not
       // this field — the next case is the one that proves the two can differ.
       origin: "third_party",
     };
@@ -73,7 +73,7 @@ describe("origin on dream rows", () => {
     expect(row.origin).toBe("third_party");
   });
 
-  // W4C-s2: `seenSimilar` ("has anybody ever said this?") gave way to `ownerRecurrenceCount`
+  // `seenSimilar` ("has anybody ever said this?") gave way to `ownerRecurrenceCount`
   // ("how many times is the OWNER on record as having said this?"). These two cases are the
   // reason the gate above them is worth anything — they run the real SQL, against a real
   // Postgres, because the whole rule is one WHERE clause.
@@ -102,7 +102,7 @@ describe("origin on dream rows", () => {
     expect(await store.ownerRecurrenceCount(text)).toBe(2);
   });
 
-  it("never counts a row stamped 'agent' by the pre-wave-4 backfill", async () => {
+  it("never counts a row stamped 'agent' by the backfill", async () => {
     const pool = getPool();
     const store = makeDreamStore(pool, "fixture-owner");
     // A row as it exists on a live box from before the origin column: `ensureDreamTables`'s

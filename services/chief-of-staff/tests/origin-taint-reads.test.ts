@@ -1,9 +1,9 @@
 /**
- * W3A-s5 — which reads taint, and at which level
+ * Which reads taint, and at which level
  * (the origin model, "The in-turn taint rule").
  *
  * Each tool's own `execute` is driven directly against an injected/mocked client, the pattern
- * `tests/tools-deadline.test.ts` and `tests/origin-taint-hook.test.ts` both use. W3A-s4's hook
+ * `tests/tools-deadline.test.ts` and `tests/origin-taint-hook.test.ts` both use. The hook
  * (`agent/hooks/origin-taint.ts`) taints on the RESULT alone, because a hook cannot see a tool's
  * arguments; this slice moves the argument-aware refinements to the tools themselves, at the
  * call sites where the arguments are in hand.
@@ -251,7 +251,7 @@ function catalogueToolNames(...serviceDirParts: string[]): string[] {
 const TAINTS: Record<string, ReadonlySet<string>> = {
   "chief-of-staff": new Set<string>([
     ...TAINTING_TOOLS.keys(), // gmail_read, gmail_search, read_url — the hook's own blanket coverage
-    "calendar_list_events", // self-taints on calendarId/account (Owner decision A3)
+    "calendar_list_events", // self-taints on calendarId/account
     "person_lookup", // self-taints when the mail source finds something
     "calendar_conflicts", // self-taints unconditionally — reads beyond the primary calendar by design
   ]),
@@ -268,14 +268,14 @@ const TAINTS: Record<string, ReadonlySet<string>> = {
  */
 const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
   "chief-of-staff": {
-    // Kit tools mounted directly in this catalogue ( step 2) — vault/registry/signal
+    // Kit tools mounted directly in this catalogue — vault/registry/signal
     // reads over the OWNER's own stores, or structured lookups rather than freeform prose.
     "agent-kit__vault_drop": "gated vault DELETE — a write, returns only what was deleted",
     "agent-kit__vault_file": "gated vault write — a write, echoes only what was written",
     "agent-kit__vault_write": "gated vault write — a write, echoes only what was written",
     "agent-kit__signals_recent": "the owner's own persisted operational-signal spine",
     "agent-kit__transit_plan": "structured journey/route data, not freeform prose",
-    // W5C-s3: one set of note tools, told which area. Both areas they can open are the
+    // One set of note tools, told which area. Both areas they can open are the
     // installation's own — the owner's private store and the business's shared one — so the
     // classification is the same whichever the model names, and the three `atlas_*` reads this
     // list used to carry beside them are gone.
@@ -283,7 +283,7 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     "agent-kit__vault_list": "the installation's own Vault, internal, in either area",
     "agent-kit__vault_read": "the installation's own Vault, internal, in either area",
     "agent-kit__vault_search": "the installation's own Vault, internal, in either area",
-    atlas_proposals: "Test Owner's OWN Notion/canonical-source edits, re-derived — a synced pipeline (W3A-s9's job), not a live third-party read",
+    atlas_proposals: "Test Owner's OWN Notion/canonical-source edits, re-derived — a synced pipeline, not a live third-party read",
     atlas_resolve_proposal: "gated write — approve/reject only, no new content surfaces",
     calendar_create_event: "gated write — echoes only what the model itself supplied",
     calendar_delete_event: "gated write — no content returned",
@@ -309,15 +309,15 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     meeting_followup_record_denial: "internal store write",
     meeting_followup_redraft: "internal store write — resets a claim, returns no new content",
     meeting_followup_send: "write — subject/body/meetingTitle are model-supplied inputs, never read back from an external source",
-    // The memory lane (W4C-s5). `memory_proposals` returns the owner's OWN standing preference
+    // The memory lane. `memory_proposals` returns the owner's OWN standing preference
     // beside what a nightly run proposes putting in its place — and `memory_proposals`' own
     // CHECK admits nothing but `origin = 'owner'`, so by construction there is no third-party
     // prose in either field. The resolve tool is a gated decision that echoes back only the
     // stored row's consequence sentence.
     memory_proposals: "the owner's own standing preferences and the proposed replacements, origin-restricted to 'owner' at the table",
     memory_resolve_proposal: "gated write — approve/reject only, echoes the stored consequence sentence and no new content",
-    memory_used: "structured kind/ref/via labels a call site itself recorded at the moment of reading (memory_reads, box 075) — ids and paths, never a note's own body",
-    notion_proposals: "edits OWNER_SLACK_ID made in Notion, re-derived — a synced pipeline (W3A-s9's job), not a live third-party read",
+    memory_used: "structured kind/ref/via labels a call site itself recorded at the moment of reading (memory_reads) — ids and paths, never a note's own body",
+    notion_proposals: "edits OWNER_SLACK_ID made in Notion, re-derived — a synced pipeline, not a live third-party read",
     notion_resolve_proposal: "gated write — approve/reject only",
     obligation_dismiss: "internal store write, changes only what is shown",
     outreach_track: "internal bookkeeping write",
@@ -341,7 +341,7 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     vault_write: "gated write — a write, echoes only what was written",
     set_language: "session state write, always-present tool",
     studio_ideate: "runs an internal multi-model pipeline over the model's own brief; not an outside read",
-    // W5C-s3: the same one set of note tools, under this role's own names.
+    // The same one set of note tools, under this role's own names.
     vault_list: "the business's own shared Vault, internal",
     vault_read: "the business's own shared Vault, internal",
     vault_search: "the business's own shared Vault, internal",

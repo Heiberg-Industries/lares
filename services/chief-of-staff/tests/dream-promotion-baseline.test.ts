@@ -1,34 +1,27 @@
 /**
  * A tripwire for ADR-0018 ("Agents learn by adding; consolidation proposes, never edits in
- * place; third-party content never becomes memory"), rule 4. Until W4C-s2 the dream-cycle
- * promoter (`lib/dream/promote.ts`) promoted a low-confidence observation once it RECURRED, with
- * no regard for where the observation's text came from. The gate it now calls
+ * place; third-party content never becomes memory"), rule 4. Promoting a low-confidence observation merely because it RECURRED, with
+ * no regard for where its text came from, would be unsafe. The gate the dream-cycle promoter
+ * (`lib/dream/promote.ts`) calls
  * (`@lares/agent-kit/learning`) counts recurrence only across owner-originated observations, and
  * never promotes a third-party-, synced- or system-origin observation at all, at any recurrence.
  *
- * THE ATTACK THIS STANDS FOR ("prompt laundering", the pre-launch practitioner sweep, citing IronCore Labs 2026-08-26): an attacker sends the SAME email
+ * THE ATTACK THIS STANDS FOR ("prompt laundering"): an attacker sends the SAME email
  * three times. Each pass through the dream cycle extracts the same low-confidence observation.
  * The promoter never asked who said it — only whether it has been seen before — so on the second
  * occurrence "recurring" was true and the observation was promoted into long-term memory. Every
  * later process that reads preferences then trusts a fact planted by a third party, laundered
  * through nightly consolidation into something that reads as learned about the owner.
  *
- * HISTORY, kept because it is the point of the file. When this test was written, `Observation`
- * (`lib/dream/reflect.ts`) had NO origin field — ADR-0018's rule 1 precondition, not yet built —
- * so test B could not literally mark an observation `third_party` and put the third-party nature
- * in its text and subject instead, the most realistic stand-in that type allowed. W4C-s1 added
- * the field, computed by code from the turns an observation cites, and test B now says
- * `origin: "third_party"` outright.
+ * `Observation` (`lib/dream/reflect.ts`) carries an origin field, computed by code from the turns
+ * an observation cites, so test B marks its observation `origin: "third_party"` outright and also
+ * puts the third-party nature in the text and subject.
  *
  * Test A is the safe case throughout: a single observation the owner made once is held, never
- * promoted. It stayed green across the change.
+ * promoted.
  *
- * Test B is the unsafe case ADR-0018 exists to close, and it was `it.fails` (vitest passes an
- * `it.fails` test only while its body FAILS) from the day it was written until **W4C-s2,
- * 2026-09-19**, when the promotion gate moved into `@lares/agent-kit/learning` and stopped
- * trusting confidence and bare recurrence. On that change the body started passing, vitest
- * reported the `it.fails` as a failure — the flip this file was built to signal — and `.fails`
- * was deleted in the same commit. It has been an ordinary assertion ever since: the three
+ * Test B is the unsafe case ADR-0018 exists to close: the promotion gate lives in
+ * `@lares/agent-kit/learning` and does not trust confidence or bare recurrence, so the three
  * identical third-party observations are rejected `not-owner-origin`, and nothing is promoted.
  * Do not delete the test itself; that would delete the guard this whole file exists to be.
  */
@@ -102,7 +95,7 @@ describe("dream-cycle promotion baseline (ADR-0018 tripwire)", () => {
       confidence: PROMOTE_CONFIDENCE - 0.2,
       evidenceRefs: ["2026-09-18T09:00:00.000Z"],
       // The owner's own words, said once. Held — which is now true at ANY confidence, not just
-      // a low one; `tests/learning-promote.test.ts` pins the 0.99 case.
+      // a low one; `packages/agent-kit/tests/learning-promote.test.ts` pins the 0.99 case.
       origin: "owner",
     };
 
@@ -120,8 +113,8 @@ describe("dream-cycle promotion baseline (ADR-0018 tripwire)", () => {
       const promoter = makePromoter({ store });
 
       // The same text three times, standing in for the same phishing email sent three times.
-      // Since W4C-s1 the observation can say so itself — `origin` is computed by code from the
-      // turns it cites — so the third-party nature is now in the field the gate reads, not only
+      // The observation can say so itself — `origin` is computed by code from the
+      // turns it cites — so the third-party nature is in the field the gate reads, not only
       // in the wording (see header comment).
       const text =
         "An email from billing@vendor-example.com says the owner agreed to switch the company " +
@@ -144,8 +137,8 @@ describe("dream-cycle promotion baseline (ADR-0018 tripwire)", () => {
 
       const result = await promoter.run(observations);
 
-      // Until W4C-s2 this line failed: the second occurrence promoted on recurrence alone.
-      // That failure is what this test was built to pin — see the header comment.
+      // Recurrence alone must not promote: the second occurrence stays held, which is what this
+      // test pins — see the header comment.
       expect(result.promoted).toEqual([]);
       // And the run can say WHY, in a value a report can count rather than prose it has to
       // parse (ADR-0018 rule 6).

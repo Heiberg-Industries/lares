@@ -24,8 +24,8 @@ import type { PreferenceRow } from "../lib/dream/store.js";
 const EPOCH = "1970-01-01T00:00:00.000Z";
 
 /** An in-memory brain whose `commitNote` runs the REAL `serializeFrontmatter` (the same
- *  function `lib/vault-git.ts`'s real `commitNote` uses) so the round-trip in Finding 2's
- *  test exercises real serialization on the write side and `cycle.ts`'s real regex parsing
+ *  function `@lares/agent-kit`'s real `commitNote` (vault-git) uses) so the round-trip in the
+ *  frontmatter test exercises real serialization on the write side and `cycle.ts`'s real regex parsing
  *  on the read side — not two separately-mocked halves. */
 function fakeBrain(initial: Record<string, string> = {}): DreamCycleBrain & { files: Record<string, string> } {
   const files: Record<string, string> = { ...initial };
@@ -57,17 +57,16 @@ const emptyResult: PromoterResult = { promoted: [], superseded: [], held: [], ne
 
 /** A `conversation_entries` table with nothing in it — every scenario in this file is about
  *  cursor resolution and note-writing, not the table (that is `dream-modules.test.ts`'s
- *  `readConversationEntries` block, W3B-s3). With an empty table,
+ *  `readConversationEntries` block). With an empty table,
  *  `readConversationEntries` falls all the way back to `brain`'s markdown for the whole
  *  window after the cursor — exactly the behaviour these tests already pin. */
 const emptyEntries: EntryReader = { since: async () => [] };
 const AGENT = "canary";
-/** Neutral, caller-supplied label for the fixture below — the reader knows no name of its own
- *  (W3B-s7). */
+/** Neutral, caller-supplied label for the fixture below — the reader knows no name of its own. */
 const AGENT_LABEL = "Helper";
 
 /** Renders a `TurnLogEntry` in the legacy markdown format the retired writer
- *  (`lib/conversation-log.ts`, removed W3B-s8) used to produce — inlined here as a plain
+ *  (`lib/conversation-log.ts`, since removed) used to produce — inlined here as a plain
  *  fixture builder (mirrors dream-modules.test.ts's own `renderMd`), since nothing in
  *  production writes this format any more but the reader still parses it for its own
  *  markdown gap-fill. */
@@ -91,7 +90,7 @@ function renderLog(e: TurnLogEntry): { relPath: string; text: string } {
   return { relPath, text };
 }
 
-describe("makeDreamCycle(...).runOnce() — the full orchestration path (Finding 1)", () => {
+describe("makeDreamCycle(...).runOnce() — the full orchestration path", () => {
   it("a normal pass reads logs since the cursor, reflects, promotes, and writes a dated note", async () => {
     const entry: TurnLogEntry = {
       at: "2026-08-19T10:00:00.000Z",
@@ -110,7 +109,7 @@ describe("makeDreamCycle(...).runOnce() — the full orchestration path (Finding
       subject: "communication style",
       confidence: 0.9,
       evidenceRefs: [entry.at],
-      // Required since W4C-s1 and computed by code there; this file fakes the promoter, so the
+      // Required, and computed by code in production; this file fakes the promoter, so the
       // value only has to be present and honest for the fixture — the turn it cites is the
       // owner's own.
       origin: "owner",
@@ -232,7 +231,7 @@ describe("makeDreamCycle(...).runOnce() — the full orchestration path (Finding
   });
 });
 
-describe("resolveCursor's epoch fallback — round-trip and silent-degradation guard (Finding 2)", () => {
+describe("resolveCursor's epoch fallback — round-trip and silent-degradation guard", () => {
   it("round-trips the cursor through commitNote's real frontmatter serialization and cycle's real parsing", async () => {
     const brain = fakeBrain();
     const reflector = fakeReflector();
@@ -364,10 +363,10 @@ describe("resolveCursor's epoch fallback — round-trip and silent-degradation g
   });
 });
 
-// ─── W4C-s7: one reviewable commit per dream ──────────────────────────────────
+// ─── One reviewable commit per dream ──────────────────────────────────
 
 /** A committed note, captured RAW — the arguments `runOnce` actually passed to `commitNote`,
- *  not a round-trip through `serializeFrontmatter` (that round-trip is Finding 2's concern; this
+ *  not a round-trip through `serializeFrontmatter` (that round-trip is the frontmatter test's concern; this
  *  one is about what the cycle hands the brain, including `message`, which `fakeBrain` above
  *  does not thread through). No prior dream note, so `since` resolves to EPOCH and every
  *  scenario below writes exactly one note. */

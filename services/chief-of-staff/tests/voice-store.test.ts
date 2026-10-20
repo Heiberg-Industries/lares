@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import { loadVoiceProfile, loadVoiceExemplars, makeDbVoiceAccess } from "../lib/voice-store.js";
 
-/** Real, disposable Postgres — the house pattern ( lesson): reads the SAME migrations
+/** Real, disposable Postgres — the house pattern: reads the SAME migrations
  *  the box runs (services/box/sql/001_baseline.sql), not a
  *  hand-rolled schema guess. */
 const MAILBOX = "owner@owner.example";

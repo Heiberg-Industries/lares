@@ -10,7 +10,7 @@ import type { LadderStep } from "@lares/agent-kit/deadlines";
  * — pins the deadline ladder's fixed sentences (`agent/schedules/deadlines.ts`'s
  * `rungText`) to TODAY's exact Norwegian wording, copied verbatim from the source before this
  * ticket's edits (see `git show 4c9a142:services/chief-of-staff/agent/schedules/deadlines.ts`).
- * Same shape as `tests/brief-language.test.ts` (-s2): a pin proves the current behaviour
+ * Same shape as `tests/brief-language.test.ts`: a pin proves the current behaviour
  * BEFORE the refactor, then gets re-pointed at `lang: "nb"` after — see the second describe block.
  *
  * Every rung and every branch `rungText` has: rung 1 with/without a consequence, rung 2

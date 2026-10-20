@@ -9,7 +9,7 @@
  * cites: a fake Pool that never executes SQL is the "built+tested+non-functional" defect class
  * this project has already been bitten by): that a captured turn lands a row in
  * `conversation_entries` with the fields ADR-0020 rule 2 and need, and that an
- * installation which has not applied migration 060 — or whose database stalls — costs the
+ * installation which has not applied the conversation-entries migration — or whose database stalls — costs the
  * conversation record, never the turn, per the hold in lib/turn-capture.ts's module header.
  */
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
@@ -150,7 +150,7 @@ describe("captureTurn writes the conversation record — real Postgres, real bas
     expect(rows[0].lane).toBeNull();
   });
 
-  // FAIL SOFT, ALWAYS. An installation that has not applied 060 yet must still get its reply —
+  // FAIL SOFT, ALWAYS. An installation that has not applied the migration yet must still get its reply —
   // and must not be warned about it once per turn forever.
   it("fails soft when conversation_entries does not exist, and throttles the warning", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

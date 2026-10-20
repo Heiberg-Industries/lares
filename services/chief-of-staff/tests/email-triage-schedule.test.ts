@@ -54,7 +54,7 @@ describe("makeEmailTriageTick", () => {
     expect(prunedRef()).toBe(true);
   });
 
-  // fix round 1 — the heartbeat schedule stamps only when tick() resolves true.
+  // The heartbeat schedule stamps only when tick() resolves true.
   it("resolves true on a completed pass, even with zero candidates", async () => {
     const { deps } = harness({ searchCandidates: async () => [] });
     await expect(makeEmailTriageTick(deps).tick()).resolves.toBe(true);
@@ -131,7 +131,7 @@ describe("makeEmailTriageTick", () => {
     expect(triageCalls).toHaveLength(1);
   });
 
-  // Task 4 — the tick already fetches the thread (for hasHumanReplyAfter); it must
+  // The tick already fetches the thread (for hasHumanReplyAfter); it must
   // pass that SAME array down to triage() rather than discarding it, and must not fetch it
   // a second time.
   it("passes the already-fetched thread through to triage, and calls readThread exactly once for that message", async () => {
@@ -172,7 +172,7 @@ describe("makeEmailTriageTick", () => {
     await makeEmailTriageTick(deps).tick();
     expect(triaged).toHaveLength(10); // TRIAGE_CEILING_PER_TICK
     expect(claimedIds).toHaveLength(10); // the rest were never even claimed — free to retry next tick
-    // Task 4 review (Minor 2): "exactly once per message" is only earned across MORE
+    // "exactly once per message" is only earned across MORE
     // than one message — one readThread call for each of the 10 messages that actually got
     // processed, never a second call for any of them, and never a call for the 5 left unclaimed.
     expect(readThreadCalls).toBe(10);
@@ -265,7 +265,7 @@ describe("makeEmailTriageTick", () => {
     expect(calls).toBe(1);
   });
 
-  // fix round 1 (controller ruling) — a tick whose OUTER catch swallowed the whole pass
+  // A tick whose OUTER catch swallowed the whole pass
   // is a FAILED pass and must not stamp the heartbeat; only a per-item failure inside the loop
   // still counts as completed (see the "per-item failure" case above).
   it("a tick-level failure (mailboxes() throws) does not throw out of tick(), and resolves false", async () => {
@@ -285,7 +285,7 @@ describe("makeEmailTriageTick", () => {
   });
 });
 
-// Task 4 review (Important finding) — renderDossier's `ambiguous`/`unknown` branches
+// renderDossier's `ambiguous`/`unknown` branches
 // are second-person instructions written for the chief of staff-the-conversationalist ("ask him which one",
 // "you have no search tool, only read_url.fetch"), not facts about the counterpart. Feeding
 // them verbatim into a reply-drafting prompt risks a draft that leaks tool names or CRM
@@ -309,7 +309,7 @@ describe("renderDossierForDraft", () => {
   };
 
   /**
-   * fix round 1, Finding 3 — the leak this suite exists to prevent, arriving through the
+   * The leak this suite exists to prevent, arriving through the
    * new stage. A RESOLVED dossier DOES reach the drafter, and the organisation block carries
    * internal vault paths, a CRM org number and an instruction to go and read them, into a prompt
    * that writes a reply to an external counterparty. `bounded` drops it; this is the guard that
@@ -391,10 +391,10 @@ describe("renderDossierForDraft", () => {
     expect(out).not.toContain("Ask him");
   });
 
-  // fix wave, Finding 3: a failed source collapsing into "unknown" (indistinguishable
+  // A failed source collapsing into "unknown" (indistinguishable
   // from a genuinely never-seen sender) must still be logged — the function's RETURN VALUE
   // stays null either way (this never blocks the draft), but the outage must leave a trace.
-  describe("logging a non-resolved dossier (Finding 3)", () => {
+  describe("logging a non-resolved dossier", () => {
     let errorSpy: ReturnType<typeof vi.spyOn>;
     beforeEach(() => { errorSpy = vi.spyOn(console, "error").mockImplementation(() => {}); });
     afterEach(() => { errorSpy.mockRestore(); });
@@ -437,7 +437,7 @@ describe("renderDossierForDraft", () => {
 });
 
 /**
- * review fix, Finding 2 — the TRIAGE PATH specifically. `renderDossierForDraft` renders
+ * The TRIAGE PATH specifically. `renderDossierForDraft` renders
  * `bounded`, which drops the ORGANISATION section from every draft, so gathering it was pure
  * cost: up to six synchronous full-note-store walks plus a Twenty call, per inbound message, per
  * tick, on the same event loop that serves Telegram webhooks and the morning Slack scan.

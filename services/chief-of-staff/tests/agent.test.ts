@@ -62,8 +62,8 @@ describe("chief-of-staff agent config", () => {
     expect(agent.modelContextWindowTokens).toBeUndefined();
   });
 
-  // step 2: `model` is a dynamic resolver — the definition picks the model per
-  // conversation. The chief of staff is the owner's daily driver and, until this review, nothing touched her
+  // `model` is a dynamic resolver — the definition picks the model per
+  // conversation. The chief of staff is the owner's daily driver and, until this review, nothing touched the agent
   // model wiring at all; every constraint below fails INVISIBLY if it regresses.
   it("declares step.started and NOTHING else, so no scope can hand eve a routable model id", async () => {
     // The whole safety argument of this wiring. eve resolves `session.started` and

@@ -1,5 +1,5 @@
 /**
- * The one-time markdown-corpus importer (W3B-s8, `bin/import-conversation-logs.ts`). This file
+ * The one-time markdown-corpus importer (`bin/import-conversation-logs.ts`). This file
  * is the ONLY place that ever runs the importer — always against a disposable testcontainers
  * Postgres, never a real installation's database (the importer itself is hand-run; see its own
  * header). Coverage: parsing a pre-ADR log into an entry, the origin rule for each of the three
@@ -93,7 +93,7 @@ describe("importing the old corpus", () => {
     expect(rows[0].at.toISOString()).toBe("2026-08-19T10:00:00.000Z");
   });
 
-  // W3B-s8's correction to the plan: origin is the LEAST TRUSTED class that is honest for
+  // Origin is the LEAST TRUSTED class that is honest for
   // legacy data. A scheduled lane's prompt is `system`; an exchange that has a reply is
   // `third_party` — never `agent` — because nothing records whether that reply read outside
   // content; an exchange with no reply at all is `owner`, since there is nothing else in it.

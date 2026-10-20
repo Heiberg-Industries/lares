@@ -1,6 +1,6 @@
 /**
  * tests/live/telegram-approval-tap.live.mts — the LIVE sweep behind the Telegram tap gate
- * (`lib/telegram-tap-gate.ts`, W7A-s3).
+ * (`lib/telegram-tap-gate.ts`).
  *
  * Per the root CLAUDE.md's third-party rule — "a fixture is what we believe an API does; only a
  * live call is what it does." `tests/telegram-tap-gate.test.ts` proves the decision against a

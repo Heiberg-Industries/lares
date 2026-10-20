@@ -9,9 +9,9 @@ import { buildSlackBinding } from "eve-internals/slack-api";
 import { slackChannel } from "eve-internals/slack-channel";
 
 /**
- * THE DEFECT (, measured live 2026-08-24 on an meeting-followup card).
+ * THE DEFECT (measured live on a meeting-followup card).
  *
- * Every Slack-pushing schedule addresses the owner's DM by his USER id — `to(slack, {
+ * Every Slack-pushing schedule addresses the owner's DM by its USER id — `to(slack, {
  * channelId: allowedSlackUserIds()[0] })`, i.e. `U_EXAMPLE_OWNER`. Slack accepts a user id as
  * `chat.postMessage`'s `channel` and silently delivers into the DM channel `D00000001`,
  * so the card RENDERS. But the session was filed under the continuation token

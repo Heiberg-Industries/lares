@@ -11,7 +11,7 @@ import declaration from "../agent.json";
 
 describe("the catalogue index", () => {
   it("names every tool's real capability — a new tool without one fails here", () => {
-    // Ruling R2: an always-present tool has no capability to name. `capabilityOfTool` returns
+    // An always-present tool has no capability to name. `capabilityOfTool` returns
     // undefined for it by design, so it is exempt here and carries ALWAYS_PRESENT_CAPABILITY.
     for (const [name, entry] of Object.entries(CATALOGUE)) {
       if (ALWAYS_PRESENT.includes(name)) {
@@ -22,7 +22,7 @@ describe("the catalogue index", () => {
     }
   });
 
-  // W5C-s5/s6 — the second narrowing `vault` needs. `capabilityOfTool` above no longer separates
+  // The second narrowing `vault` needs. `capabilityOfTool` above no longer separates
   // the personal store from the shared one from the standing facts: all three answer `vault`.
   // `areaOfTool` is what does, and it is what `grantedToolNames` refuses a tool on, so it gets
   // the same both-directions check the capability does.
@@ -66,13 +66,13 @@ describe("the catalogue index", () => {
 });
 
 /** The areas this role's committed `agent.json` grants, and the vault tools it was
- *  offered the day before the merge — literals, read out of the tree at W5C-s4. */
+ *  offered before one `vault` grant replaced the separate area grants — literals, not recomputed. */
 const GRANTED_AREAS: readonly string[] = ["private", "shared", "facts"];
 const VAULT_TOOLS_BEFORE = ["agent-kit__vault_backlinks", "agent-kit__vault_drop", "agent-kit__vault_file", "agent-kit__vault_list", "agent-kit__vault_read", "agent-kit__vault_search", "agent-kit__vault_write", "atlas_proposals", "atlas_resolve_proposal", "facts_list", "forget", "memory_proposals", "memory_resolve_proposal", "memory_used", "remember", "save_note"];
 
-// THE COMMIT'S WHOLE CLAIM, FOR THIS ROLE (W5C-s5/s6): one capability doc and one grant replaced
+// THE CLAIM, FOR THIS ROLE: one capability doc and one grant replaced
 // three, and NOBODY'S TOOL LIST CHANGED. Asserted against the committed declaration and the real
-// pool, as a literal set read out of the tree before the merge — not recomputed from the code
+// pool, as a literal set — not recomputed from the code
 // this test is watching.
 describe("the vault tools this role is offered", () => {
   const offered = grantedToolNames(CATALOGUE, parseDefinition(declaration));

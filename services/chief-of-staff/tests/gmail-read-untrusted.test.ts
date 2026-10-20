@@ -1,5 +1,5 @@
 /**
- * W7D-s1 — owner decision D2: mail comes back quoted, as somebody else's words.
+ * Mail comes back quoted, as somebody else's words.
  *
  * `vi.resetModules()` before each test, then a fresh dynamic import of the tool AFTER
  * `vi.doMock` — the same fix `tests/origin-taint-reads.test.ts`'s header documents at length:
@@ -73,7 +73,7 @@ describe("gmail_read quotes the body it returns", () => {
     expect(result).toEqual({ ok: false, reason: "message not found" });
   });
 
-  it("keeps every character of a body that fits one page — nothing is shortened (owner decision D2)", async () => {
+  it("keeps every character of a body that fits one page — nothing is shortened", async () => {
     const longBody = "word ".repeat(2000).trimEnd();
     vi.doMock("../lib/google.js", () => ({
       googleClients: () => ({

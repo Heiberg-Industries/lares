@@ -10,7 +10,7 @@ import { buildReplyPrompt } from "../lib/reply-prompt.js";
  *  - No brevity rule. "Write a brief, warm, specific reply" produced 130–650 tokens of text
  *    and read as thin next to the same person's real mail. Length comes from the
  *    examples, not from an adjective.
- *  - Examples FIRST, guide second. the owner's own sent mail is the strongest evidence of how he
+ *  - Examples FIRST, guide second. the owner's own sent mail is the strongest evidence of how the owner
  *    writes; the distilled bullet list is a summary of it and must not outrank it.
  *  - The compose contract (language, no commitments) stays verbatim — it is shared law.
  *  - The exact return-format line stays — splitDraft parses it.

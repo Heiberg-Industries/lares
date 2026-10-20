@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { applyRecipientChanges, currentRecipients, rewriteRecipientHeaders } from "../lib/draft-recipients.js";
 
 /**
- * 2026-09-08: "add Mats to the reply to Henrik" — the chief of staff changes who an EXISTING Gmail draft goes
+ * "Add Mats to the reply to Henrik" — the chief of staff changes who an EXISTING Gmail draft goes
  * to. The draft's raw RFC 822 message is rewritten in place: only the To/Cc header lines above the
  * first blank line change, so the body, the HTML part and the appended signature survive byte for
  * byte. Folded headers (continuation lines starting with whitespace) are unfolded first.

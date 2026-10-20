@@ -1,7 +1,7 @@
 /**
  * — a gated write on Telegram must survive a session that a SCHEDULE opened.
  *
- * The live failure (2026-08-23): the owner asked for a reminder on Telegram, approved the card,
+ * The live failure: the owner asked for a reminder on Telegram, approved the card,
  * and got "couldn't confirm the approver identity". Cause, from `workflow.workflow_hooks`:
  *
  *   06:00 UTC  morning brief   → retired the previous day's token

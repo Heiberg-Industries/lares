@@ -20,7 +20,7 @@ import {
 import type { DueReminder } from "../lib/reminders-store.js";
 
 /**
- * Task 10 — reminders: store, gated set/cancel, delivery schedule.
+ * Reminders: store, gated set/cancel, delivery schedule.
  *
  * Three layers, per the brief's Step 1 (schedule-gate.ts's own coverage now lives with the
  * module in @lares/agent-kit,):
@@ -28,7 +28,7 @@ import type { DueReminder } from "../lib/reminders-store.js";
  *      pattern) — the table it reads/writes already exists on the box's shared `lares_state`
  *      database (services/box/sql/001_baseline.sql), replicated here for the disposable
  *      test instance.
- *   2. lib/recurrence.ts's nextOccurrence, spot-checked against the ported reference cases.
+ *   2. lib/recurrence.ts's nextOccurrence, spot-checked against reference cases.
  *   3. agent/schedules/reminders.ts's makeReminderTick — the delivery algorithm itself,
  *      entirely offline via fake store/doors, proving: due-only delivery, pinned-door
  *      routing, the GENERIC (not email-specific) fallback re-route, re-arm-before-

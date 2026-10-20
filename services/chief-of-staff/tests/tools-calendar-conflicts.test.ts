@@ -1,15 +1,15 @@
 /**
- * catalogue/calendar_conflicts.ts —-s5, on request the tool returns the proposed fix.
+ * catalogue/calendar_conflicts.ts — on request the tool returns the proposed fix.
  *
  * PIN FIRST: the first group below runs the tool with events that produce a real
  * `overlapping-stay` clash but NO cancellation mail anywhere in the mocked mailbox, and asserts
  * the row comes back exactly as detection alone would have produced it — no `resolution` key,
- * nothing extra. That is today's contract (-s3 landed the resolver as a library only;
- * this slice is what first wires it into a live tool), and it must hold before anything below
+ * nothing extra. That is today's contract (the resolver is a library; this file is what
+ * first wires it into a live tool), and it must hold before anything below
  * is allowed to depend on the new wiring actually attaching a proposal.
  *
  * `../lib/calendar-fanout.js` is mocked to hand back events directly, already stamped with
- * `account`/`calendarId` the way the real fan-out does (-s1) — this file is about the
+ * `account`/`calendarId` the way the real fan-out does — this file is about the
  * TOOL's wiring, not the fan-out or the detector, both covered elsewhere
  * (tests/calendar-fanout.test.ts, tests/calendar-conflicts.test.ts). `../lib/google.js` is
  * mocked only for the `gmail()` factory `resolveConflicts` needs; `listEnrolledMailboxes` and

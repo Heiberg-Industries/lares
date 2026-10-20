@@ -260,7 +260,7 @@ describe("turn-capture hook — correlation", () => {
     await hook.onTurnStarted(started("turn_0"), c);
     await hook.onMessageReceived(received("turn_0", "book the flight"), c);
     await hook.onActionsRequested(actions("turn_0", [toolCall("calendar_create_event")]), c);
-    // No terminal reply — the chief of staff is waiting on approval. He types something new instead.
+    // No terminal reply — the chief of staff is waiting on approval. The owner types something new instead.
     await hook.onMessageReceived(received("turn_1", "actually never mind"), c);
 
     expect(capture).toHaveBeenCalledTimes(1);
@@ -382,7 +382,7 @@ describe("turn-capture hook — a scheduled push into the owner's session", () =
    * THE CRITICAL. Schedules do not get their own session: `to(telegram, { chatId }).send(...)`
    * goes through `deliver()` → `runtime.dispatchContinuation({command, continuationToken})`,
    * which RESUMES a session by token, and for a private chat that token is the same one the owner's
-   * own messages resolve to. So a morning brief lands INSIDE his live session.
+   * own messages resolve to. So a morning brief lands INSIDE the owner's live session.
    *
    * A HITL button tap seeds an empty-input slot (`turn.started` with no `message.received`).
    * When re-seeding was gated on a non-empty input, the brief's prompt was filled into that slot
@@ -402,7 +402,7 @@ describe("turn-capture hook — a scheduled push into the owner's session", () =
       current: { ...scheduleAppAuth, attributes: { lane: "morning-brief" } },
     });
 
-    // He taps an approval button: a turn starts, with no message.received at all.
+    // The owner taps an approval button: a turn starts, with no message.received at all.
     await hook.onTurnStarted(started("turn_4"), tap);
     await hook.onActionsRequested(actions("turn_4", [toolCall("twenty_create_opportunity")]), tap);
 
@@ -554,7 +554,7 @@ describe("turn-capture hook — the human's words, not the envelope", () => {
     expect(entry.input).toBe("Good morning!");
   });
 
-  // Every malformed shape falls back to the raw text: losing his words would be far worse than
+  // Every malformed shape falls back to the raw text: losing the owner's words would be far worse than
   // keeping a little markup.
   it("falls back to the raw text when there is no <content> block", async () => {
     const c = ctx({ kind: "slack", current: humanSlackAuth });
@@ -659,7 +659,7 @@ describe("turn-capture hook — what must NOT be written", () => {
    *
    * Note the companion path, which is NOT this one: once a terminal reply has been delivered the
    * exchange is already flushed and gone, so a later `turn.failed` writes nothing extra and
-   * cannot unwrite it. A reply he has already read is a fact.
+   * cannot unwrite it. A reply the owner has already read is a fact.
    */
   it("writes a failed turn's question, without a reply", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -726,7 +726,7 @@ describe("turn-capture hook — what must NOT be written", () => {
 
 describe("turn-capture hook — totality and hygiene", () => {
   // eve turns a thrown hook into `turn.failed`. Capture is an artifact of the turn, not part of
-  // it: nothing in here may ever cost the owner his reply.
+  // it: nothing in here may ever cost the owner a reply.
   it("NEVER throws when the capture sink rejects", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     capture.mockRejectedValueOnce(new Error("disk full"));
@@ -817,7 +817,7 @@ describe("turn-capture hook — totality and hygiene", () => {
    * THE EVICTION BOUNDARY, upper half — and the legitimate reply-less file.
    *
    * An exchange that ends on a gated proposal nobody ever approves produces a question and
-   * proposals but no reply. The old runtime wrote exactly such files (3 of them in the 160-file
+   * proposals but no reply. Real logs contain such exchanges (3 of them in a 160-file
    * corpus). Eviction must therefore WRITE what it holds, not discard it.
    */
   it("WRITES an exchange abandoned past the ceiling, question and proposals intact", async () => {

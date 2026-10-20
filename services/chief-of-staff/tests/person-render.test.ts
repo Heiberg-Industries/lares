@@ -1,5 +1,5 @@
 // services/chief-of-staff/tests/person-render.test.ts
-// Task 1b — `renderDossier(d, { bounded })`. Pure, no I/O: the fixture below is a
+// `renderDossier(d, { bounded })`. Pure, no I/O: the fixture below is a
 // hand-built PersonDossier, not run through gatherPerson/Docker, because render.ts's job is
 // "dossier → text" and that boundary is exactly what these tests hold fixed.
 import { describe, it, expect } from "vitest";
@@ -147,8 +147,8 @@ describe("renderDossier — bounded: true drops the three EARLIER sections and O
     expect(text).toContain("A source marked COULD NOT READ is a gap in YOUR reading, not an absence in the world.");
   });
 
-  // fix round 1 — the subtraction list grew by one. The ORGANISATION section joins the
-  // three EARLIER blocks in what bounded removes (Finding 3: its one caller is the outbound email
+  // The subtraction list grew by one. The ORGANISATION section joins the
+  // three EARLIER blocks in what bounded removes (its one caller is the outbound email
   // drafter). This assertion is the guard that it removes those FOUR and still nothing else.
   it("bounded output is exactly the default minus the EARLIER blocks and ORGANISATION — nothing else moves", () => {
     const full = renderDossier(fixture);
@@ -240,7 +240,7 @@ describe("renderDossier — the Organisation section", () => {
   });
 
   /**
-   * FIX ROUND 1, Finding 3. The ONE bounded caller is the outbound email drafter
+   * The ONE bounded caller is the outbound email drafter
    * (agent/schedules/email-triage.ts), whose prompt writes a reply to an external counterparty.
    * Internal vault paths, CRM org numbers and "go read these notes" are exactly what
    * introduced `bounded` to keep out of that prompt.

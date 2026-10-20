@@ -40,7 +40,7 @@ import type { ProposalRow, AtlasUnannouncedRow } from "../lib/proposals-store.js
 import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
 
 /**
- * Task 11 — Notion + Atlas proposal tools and watch schedule.
+ * Notion + Atlas proposal tools and watch schedule.
  *
  * Layers, per the brief's Step 1:
  *   1. lib/proposals-store.ts against a REAL Postgres (testcontainer, pattern) — the
@@ -76,11 +76,11 @@ function ctx(auth: unknown) {
 
 const READ_CTX = {} as never;
 
-// ─── Schema (mirrors services/box/sql/015-019) ──────────────────────────────────────
-// Moved to tests/helpers/proposals-schema.ts ( Task 4) so
+// ─── Schema (mirrors services/box/sql/001_baseline.sql) ──────────────────────────────────────
+// Moved to tests/helpers/proposals-schema.ts so
 // tests/schedule-heartbeat-wiring.test.ts can share the same mirror rather than a second copy.
 
-describe("proposals (Task 11)", () => {
+describe("proposals", () => {
   let container: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
@@ -173,7 +173,7 @@ describe("proposals (Task 11)", () => {
       await expect(resolveProposal(getPool(), 999_999, "approve")).rejects.toThrow(/no open proposal/);
     });
 
-    it("approveConsequence/rejectConsequence vary by kind and notionOwned, exactly as the ported source states", async () => {
+    it("approveConsequence/rejectConsequence vary by kind and notionOwned, exactly as the source states", async () => {
       const create = { kind: "create" as const, notionOwned: false };
       const notionOwned = { kind: "update" as const, notionOwned: true };
       const mirror = { kind: "update" as const, notionOwned: false };
@@ -506,7 +506,7 @@ describe("proposals (Task 11)", () => {
         async notionMarkAnnounced(id) { notionStamped.push(id); },
         async atlasUnannounced() { atlasCalls += 1; return atlas; },
         async atlasMarkAnnounced(id) { atlasStamped.push(id); },
-        // The memory lane (W4C-s5) — always empty here; `tests/memory-proposal-apply.test.ts`
+        // The memory lane — always empty here; `tests/memory-proposal-apply.test.ts`
         // owns it. Present rather than omitted so this fake stays a real ProposalsWatchStore:
         // a lane whose store method is missing throws into its own catch and reports the whole
         // tick as failed, which is how this was found.
@@ -551,7 +551,7 @@ describe("proposals (Task 11)", () => {
     });
 
     // A send failure is caught INSIDE the per-proposal loop, not by the lane's outer catch — it
-    // still counts as a completed pass ( fix round 1: only an OUTER-catch failure, not a
+    // still counts as a completed pass (only an OUTER-catch failure, not a
     // per-item one, may withhold the heartbeat stamp).
     it("a send that throws leaves the proposal unstamped for the next tick, and the lane still completes", async () => {
       const { store, notionStamped } = fakeStore([row({ id: 8 })], []);
@@ -581,13 +581,13 @@ describe("proposals (Task 11)", () => {
       state.notionRunning = true; // simulate a previous notion turn still in flight
       // The notion lane's own overlap guard makes ITS pass incomplete this call — even though
       // the atlas lane genuinely completes, the combined tick must not stamp the heartbeat on
-      // a half-run pass ( fix round 1: true only when BOTH lanes complete).
+      // a half-run pass (true only when BOTH lanes complete).
       await expect(makeProposalsWatchTick({ store, door }, state).tick()).resolves.toBe(false);
       expect(calls().notionCalls).toBe(0); // never even polled
       expect(sent.filter((s) => s.startsWith("Atlas proposal"))).toHaveLength(1); // atlas unaffected
     });
 
-    // fix round 1 (controller ruling) — a lane's OUTER catch swallowing a genuine
+    // A lane's OUTER catch swallowing a genuine
     // failure (here, store.notionUnannounced() itself throwing) is a FAILED lane pass: the
     // combined tick must resolve false so the caller does not stamp the heartbeat, even though
     // the atlas lane completes normally.

@@ -11,7 +11,7 @@ import { closePool } from "@lares/agent-kit/db";
 import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
 
 /**
- * — the wiring, not the helper (tests/schedule-heartbeat.test.ts in the kit proves
+ * — the wiring, not the helper (packages/agent-kit/tests/schedule-heartbeat.test.ts proves
  * that). Three facts per schedule, each driven through the real `run()`:
  *   1. a closed gate stamps NOTHING — the ten-day digest shape (EVE_DIGEST_LIVE=0) must page;
  *   2. a pass that fails stamps no pass (its tick row still moves for the slot-based ones);
@@ -32,7 +32,7 @@ import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
  * Same fresh-import discipline as tests/schedule-signal-wiring.test.ts, for the same reason:
  * module-scope `lastSlot`/`running`/`liveState` must not leak between cases.
  *
- * The database starts holding ONLY migration 031 (the heartbeat table) — no domain tables at
+ * The database starts holding ONLY the heartbeat table — no domain tables at
  * all. Every schedule's first real domain query (a SELECT/UPDATE against a table this DB never
  * got) throws, which is what makes "gate open, pass fails" deterministic without mocking any
  * individual store: `DATABASE_URL` points at a real, disposable Postgres, so the heartbeat
@@ -198,7 +198,7 @@ async function age(key: string): Promise<number> {
  * file's ONE shared container. Left alone, an earlier case's ensure-table call would leave a
  * later case's "domain tables missing" premise false (an empty table reads as "nothing to do"
  * instead of "never migrated", the exact difference this suite exists to keep apart). Dropping
- * every non-heartbeat table between cases keeps each one honestly at "only migration 031", same
+ * every non-heartbeat table between cases keeps each one honestly at "only the heartbeat table", same
  * as the file header claims.
  */
 async function resetDomainTables(): Promise<void> {
@@ -309,7 +309,7 @@ describe("owner-clock is a sensor, not a messenger (the ticket's deliberate exce
 
 /**
  * The list above is a hand-maintained mirror of a directory, which is the shape that silently falls
- * behind — `owner-clock` shipped in Task 2 and was absent from both tables until fix round 1, so
+ * behind — `owner-clock` was once absent from both tables, so
  * eve's newest schedule had none of this file's three facts asserted about it and nothing said so.
  * Pinning the two tables to the directory means the next schedule cannot be added without either
  * registering it here or failing this test.

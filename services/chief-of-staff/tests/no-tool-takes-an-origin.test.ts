@@ -22,10 +22,9 @@ function schemaBlocks(src: string): string[] {
 }
 
 /**
- * DEVIATION FROM THE SLICE'S GIVEN TEST CODE, and why (reported per BUILDER.md).
+ * WHY THE SCAN IS WIDER THAN `services/chief-of-staff/catalogue`.
  *
- * The plan's literal fixture scans only `services/chief-of-staff/catalogue`. Running it as
- * given surfaces two real gaps:
+ * Scanning only that folder leaves two real gaps:
  *
  *  1. Three of chief-of-staff's own catalogue entries — `agent-kit__vault_write.ts` among them,
  *     the exact file this slice changes — are THIN RE-EXPORTS with no `inputSchema:` text of
@@ -37,7 +36,7 @@ function schemaBlocks(src: string): string[] {
  *     looked at the re-export's target — the vault write tools would have been invisible to
  *     this guard. So the kit's own tools directory is scanned directly, not only through the
  *     mount.
- *  2. W3A-s5's own register-completeness audit (`origin-taint-reads.test.ts:11-19`) already
+ *  2. The register-completeness audit (`origin-taint-reads.test.ts:11-19`) already
  *     established the precedent that a catalogue-wide guard in this track enumerates the
  *     role services (chief-of-staff, creative) straight off the filesystem, not one —
  *     "a tool added to any catalogue later and left unclassified fails this suite until someone

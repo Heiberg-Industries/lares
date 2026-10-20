@@ -10,11 +10,9 @@ import type { PreferenceRow } from "../lib/dream-store.js";
 import type { StandingFact } from "../lib/standing-facts.js";
 
 /**
- * Task 12 fix round — Important finding: buildEveningPrompt/buildMorningPrompt/buildRePingPrompt
- * are pure, exported functions that directly implement this task's central guard-rail promise
- * (never say "nothing outstanding") yet had zero coverage. This closes that gap, and covers the
- * Critical-finding fix's own buildWeeklySummaryPrompt (lib/dream-store.ts-backed weekly summary)
- * for consistency.
+ * buildEveningPrompt/buildMorningPrompt/buildRePingPrompt are pure, exported functions that
+ * directly implement the central guard-rail promise (never say "nothing outstanding"). This also
+ * covers buildWeeklySummaryPrompt (lib/dream-store.ts-backed weekly summary) for consistency.
  *
  * The tone-rule sentence is asserted with whitespace normalised (collapse runs of whitespace,
  * including the `\n` evening/morning wrap it across two joined lines, to a single space) — the
@@ -103,9 +101,9 @@ describe("buildMorningPrompt", () => {
   });
 });
 
-/**-s4 — the brief's clock times follow the owner's actual timezone, carried through
+/** the brief's clock times follow the owner's actual timezone, carried through
  *  `render.tz`, rather than a Europe/Oslo literal baked into `lib/brief-content.ts`. */
-describe("buildMorningPrompt honors render.tz (-s4)", () => {
+describe("buildMorningPrompt honors render.tz", () => {
   const withMeeting: BriefContent = {
     meetings: [meeting({ startsAt: new Date("2026-08-25T14:00:00Z"), kind: "remote-call" })],
     obligations: [],
@@ -126,10 +124,10 @@ describe("buildMorningPrompt honors render.tz (-s4)", () => {
   });
 });
 
-/**-s4 — same contract, the evening pass. `buildEveningPrompt` had no `render` parameter
+/** same contract, the evening pass. `buildEveningPrompt` had no `render` parameter
  *  before this ticket; it gains one here, trailing and defaulted, for the same reason every
  *  other optional parameter on these two functions is trailing and defaulted. */
-describe("buildEveningPrompt honors render.tz (-s4)", () => {
+describe("buildEveningPrompt honors render.tz", () => {
   const withMeeting: BriefContent = {
     meetings: [meeting({ startsAt: new Date("2026-08-25T14:00:00Z"), kind: "remote-call" })],
     obligations: [],
@@ -162,8 +160,8 @@ describe("standing facts in the briefs", () => {
       userId: "fixture-owner",
       statedAt: new Date("2026-08-25T06:00:00Z"),
       retiredAt: null,
-      // The rest of what a stored row carries: `origin` (sql/004) and the three dated-facts
-      // fields (sql/005). `tsconfig.json` excludes `tests/`, so nothing but this comment would
+      // The rest of what a stored row carries: `origin` and the three dated-facts
+      // fields (services/box/sql/002_standing_facts.sql). `tsconfig.json` excludes `tests/`, so nothing but this comment would
       // have told the next person the literal had fallen behind the interface.
       origin: "owner",
       recordedAt: new Date("2026-08-25T06:00:00Z"),
@@ -233,7 +231,7 @@ describe("buildRePingPrompt", () => {
   });
 });
 
-// ─── buildWeeklySummaryPrompt (Task 12 fix round — Critical finding) ───────────────────────
+// ─── buildWeeklySummaryPrompt ───────────────────────
 // Different tone rule (report warmly, not the obligation guard-rail) — confirmed here only to
 // not fabricate claims: it must ground the summary in the listed preferences and instruct a
 // report, not an action.
@@ -261,7 +259,7 @@ describe("buildWeeklySummaryPrompt", () => {
   });
 });
 
-// ─── makeWeeklySummaryTick gate (Task 12 fix round — Critical finding) ─────────────────────
+// ─── makeWeeklySummaryTick gate ─────────────────────
 // Proves the actual gate behaviour with a fully offline fake store/door: empty active
 // preferences → zero door.send() calls; non-empty → exactly one send, carrying the preference
 // text and the report-don't-act framing.
@@ -313,7 +311,7 @@ describe("makeWeeklySummaryTick", () => {
     expect(sent).toHaveLength(1); // the door WAS asked; the gate is what said no
   });
 
-  // fix round 1 (controller ruling) — a failed send is a FAILED pass: tick() must not
+  // A failed send is a FAILED pass: tick() must not
   // throw (the caller's schedule survives it), but it must resolve false so the caller does not
   // stamp the heartbeat on a pass that never delivered.
   it("a send that throws does not throw out of tick(), and resolves false", async () => {
@@ -338,7 +336,7 @@ describe("makeWeeklySummaryTick", () => {
  * The shape it exists for: a 16:30 intro call with Dana at Bridgeco. `person_lookup` correctly
  * reports UNKNOWN for the PERSON and now also returns an ORGANISATION section naming the notes
  * that hold the relationship — Bridgeco is a customer organisation the owner knows well. Without
- * this clause the brief says "first contact, no prior history" and sends him off to research his
+ * this clause the brief says "first contact, no prior history" and sends the owner off to research the owner's
  * own vendor.
  */
 describe("the organisation clause in the briefs", () => {
@@ -391,7 +389,7 @@ describe("the organisation clause in the briefs", () => {
 });
 
 /**
- * review fix, Finding 1 — the prompt half. Both tools refuse an app-principal turn
+ * The prompt half. Both tools refuse an app-principal turn
  * outright (tests/standing-facts.test.ts), but a model should be TOLD, not left to discover a
  * refusal: nothing in a brief is something the owner said, so there is never anything here to
  * remember or retire. The old "no notes" clause named neither tool.
@@ -409,7 +407,7 @@ describe("the briefs forbid `remember` and `forget` by name", () => {
   for (const [name, prompt] of prompts) {
     it(`${name}: names both tools in its REPORT ONLY prohibition`, () => {
       const text = normalizeWhitespace(prompt);
-      // The MORNING brief names a third ( review fix) — its own Frister block prints the
+      // The MORNING brief names a third — its own Frister block prints the
       // `deadline_add` call beside every candidate, so the one prompt that can hand the model that
       // call is the one that has to forbid it by name too.
       expect(text).toContain(
@@ -430,7 +428,7 @@ describe("the briefs forbid `remember` and `forget` by name", () => {
 });
 
 /**
- * review fix — the organisation clause says "never fill the gap from memory" in the SAME
+ * The organisation clause says "never fill the gap from memory" in the SAME
  * prompt that says "apply these standing facts". A literal reader can take the first as licence
  * to suppress the second when writing about a company; one sentence disambiguates them.
  */
@@ -444,11 +442,11 @@ describe("'memory' in the organisation clause is not the standing-facts block", 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 10 (B5) — every obligation line says WHY it is there, and a cross-channel check
+// Every obligation line says WHY it is there, and a cross-channel check
 // that could not read a source admits it rather than letting the list look complete.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-describe("obligation lines carry a reason ( Task 10, B5)", () => {
+describe("obligation lines carry a reason", () => {
   const withReason = (reason?: string): BriefContent => ({
     meetings: [],
     obligations: [obligation(reason === undefined ? {} : { reason })],
@@ -495,7 +493,7 @@ describe("obligation lines carry a reason ( Task 10, B5)", () => {
     expect(prompt.match(/Sources behind that list/g)).toHaveLength(1);
     expect(prompt).toContain("Slack obligations could not be read this morning");
     expect(prompt).toContain("cross-channel check could not read: calendar");
-    // the ticket's lesson: a note the model is not told to pass on is a note he never sees.
+    // the ticket's lesson: a note the model is not told to pass on is a note the owner never sees.
     expect(prompt).toContain("could not be read this morning. Say so");
   });
 
@@ -506,12 +504,12 @@ describe("obligation lines carry a reason ( Task 10, B5)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 4 — the `## Frister` block's POSITION in the morning prompt, and its absence.
+// The `## Frister` block's POSITION in the morning prompt, and its absence.
 //
 // Position is the assertion that matters: the block sits under the calendar/clashes/travel and
-// ABOVE the "owed a reply" heading, because a statutory due date is a fixed point of his day and
+// ABOVE the "owed a reply" heading, because a statutory due date is a fixed point of the owner's day and
 // not something a person is waiting on. Rendered below the obligations it would read as one more
-// reply owed — the exact misfiling Workstream B fixes on the other side of the pipeline.
+// reply owed — the exact misfiling the pipeline's deadline-candidate path prevents.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 import { deadlinesBlock } from "../lib/brief-content.js";
@@ -591,7 +589,7 @@ describe("the Frister block in the morning brief", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 4, fix round 1 — WHEN a candidate is stamped, and HOW MANY are offered at once.
+// WHEN a candidate is stamped, and HOW MANY are offered at once.
 //
 // Both are schedule-level rules with no I/O in them, which is why they are two exported pure
 // functions rather than logic buried in `run()`: the pair "what is rendered" and "what is
@@ -616,7 +614,7 @@ function candidateRow(n: number): CandidateRow {
   };
 }
 
-describe("candidatesToStamp — a candidate is stamped on `sent` ONLY ( fix 1)", () => {
+describe("candidatesToStamp — a candidate is stamped on `sent` ONLY", () => {
   const rendered = briefCandidateLines([candidateRow(1), candidateRow(2)]);
 
   it("a real send stamps exactly what was rendered", () => {
@@ -640,7 +638,7 @@ describe("candidatesToStamp — a candidate is stamped on `sent` ONLY ( fix 1)",
   });
 });
 
-describe("briefCandidateLines — at most CANDIDATE_LINES_MAX per brief ( fix 1)", () => {
+describe("briefCandidateLines — at most CANDIDATE_LINES_MAX per brief", () => {
   const six = [1, 2, 3, 4, 5, 6].map(candidateRow);
 
   it("the cap is 5", () => {

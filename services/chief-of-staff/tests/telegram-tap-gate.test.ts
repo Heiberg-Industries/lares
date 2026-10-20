@@ -1,5 +1,5 @@
 /**
- * Who may answer an approval card on Telegram (W7A-s3).
+ * Who may answer an approval card on Telegram.
  *
  * The framework throws the tapper away: eve's Telegram channel resumes a HITL tap with
  * `.respond([...], { auth: null })`, so by the time a tap reaches the approval machinery there is
@@ -149,7 +149,7 @@ describe("the webhook front door, with the tap gate in it", () => {
   // ── Only Telegram may make this door ACT ─────────────────────────────────────────────────────
   // The framework's inner route checks the secret header, but it runs AFTER this one. Before this
   // fix the gate answered through the Bot API, and the day-boundary reset ran, on a body nobody
-  // had authenticated (found by the commit security review).
+  // had authenticated.
   function forged(body: string, secret?: string): Request {
     return new Request("http://127.0.0.1/eve/v1/telegram", {
       method: "POST",

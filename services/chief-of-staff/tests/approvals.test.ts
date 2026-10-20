@@ -10,7 +10,7 @@ import {
 } from "../lib/principals.js";
 
 /**
- * Task 3 — the approver re-check, extracted from `echo_note.ts` (Task 9) and widened from
+ * The approver re-check, extracted from `echo_note.ts` and widened from
  * Slack-only to two channels. `tests/gate.test.ts` keeps proving the Slack-specific,
  * echo_note-integrated path unmodified; this file proves the shared plumbing directly,
  * including the scenario that only exists once a second channel does: a principal id

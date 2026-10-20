@@ -1,8 +1,7 @@
 /**
- * W4C-s1 — an observation is classed by the turns it cites, never by the model.
+ * An observation is classed by the turns it cites, never by the model.
  *
- * THE ATTACK THIS CLOSES ("prompt laundering", IronCore Labs 2026-08-26, read in
- * the pre-launch practitioner sweep): an attacker emails the agent
+ * THE ATTACK THIS CLOSES ("prompt laundering"): an attacker emails the agent
  * the same claim three nights running. The text is correctly recognised as somebody else's
  * words on every turn, and it still reaches the daily record — because nightly consolidation
  * promoted it for RECURRING. The gate that stops that (ADR-0018 rule 4) can only be written

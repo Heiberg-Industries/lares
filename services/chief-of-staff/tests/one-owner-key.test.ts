@@ -86,7 +86,7 @@ describe("one owner key, not two that agree by luck", () => {
       expect(rows[0]!.note).toBe("written before this slice");
     });
 
-    // ── W5I-s5b: the configured key and the register are checked against each other ─────────
+    // ── The configured key and the register are checked against each other ─────────
     describe("checkOwnerKeyAgreement", () => {
       const env = { AGENT_OWNER_USER_ID: "fixture-owner" };
 

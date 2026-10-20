@@ -19,8 +19,8 @@ import { telegramChannel } from "eve-internals/telegram-channel";
  * Slack from marking an unanswered card as answered.
  *
  * WHAT THE NOTICE MAY SAY. It used to assert "the agent restarted since it was
- * posted" on ANY delivery failure. That was a hard-coded guess, and live on 2026-08-24 it
- * was simply false — the container's RestartCount was 0 and the card was posted 11 minutes
+ * posted" on ANY delivery failure. That was a hard-coded guess, and live it
+ * was simply false — the container had not restarted and the card was posted minutes
  * after start. The real cause was an address mismatch (see
  * tests/eve-slack-schedule-card-address.test.ts). A wrong diagnosis printed to a human is
  * worse than a raw error: it invites a shrug and a re-trigger that fails the same way. So

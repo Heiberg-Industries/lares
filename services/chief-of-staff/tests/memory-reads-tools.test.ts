@@ -1,14 +1,14 @@
 /**
- * tests/memory-reads-tools.test.ts — the four read tools record what they opened (W5A-s3).
+ * tests/memory-reads-tools.test.ts — the four read tools record what they opened.
  *
  * `facts_list` and `agent-kit__vault_read` each fetch a specific remembered thing
- * by id or by path (never a search hit — Owner decision A2) and now call `recordRead`
- * (`lib/memory-reads.ts`, box 075) so a later `memory_used` call can say this turn's answer
+ * by id or by path (never a search hit) and now call `recordRead`
+ * (`lib/memory-reads.ts`) so a later `memory_used` call can say this turn's answer
  * opened it. `recordRead` itself — never throws, no-ops on an empty ref list, warns once — is
  * `tests/memory-reads.test.ts`'s job; only the CALL SITES are under test here: which kind, which
  * ref, and that a turn that cannot be named records nothing rather than a guess.
  *
- * MOCKING RULE (WAVE-3 note, "Added after W3A-s5/s6"): every `vi.doMock` here is paired with a
+ * MOCKING RULE: every `vi.doMock` here is paired with a
  * dynamic `await import(...)` AFTER `vi.resetModules()`, and undone in `afterEach` — a static
  * top-level import would bind to a different module instance than the mock.
  */
@@ -133,7 +133,7 @@ describe("facts_list records what it handed back", () => {
   });
 });
 
-// ── facts_list retired=true — "what have I retired?" (owner ruling) ─────
+// ── facts_list retired=true — "what have I retired?" ─────
 
 describe("facts_list retired=true", () => {
   it("lists retired facts, mapped to id/text/category/statedAt/retiredAt/supersededBy, and records nothing", async () => {
@@ -276,7 +276,7 @@ describe("facts_list retired=true", () => {
 
 // ── agent-kit__vault_read: the path ASKED FOR, never one parsed out of the body ──
 //
-// W5C-s3: there is ONE read tool now, told which AREA to open, so the separate `atlas_read`
+// There is ONE read tool now, told which AREA to open, so the separate `atlas_read`
 // this block used to drive is gone and both cases below go through
 // `catalogue/agent-kit__vault_read.ts` with a different `area`. It is built by the `readTool`
 // factory (`@lares/agent-kit/note-tools`) and wires the factory's `onRead` dep to `recordRead`,

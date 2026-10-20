@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, it, expect } from "vitest";
 
 /**
- * review round 2, Minor 2 — makes D4 self-defending rather than relying solely on the
+ * Makes D4 self-defending rather than relying solely on the
  * loud comments at each `gatherOpenObligations` call site
  * (agent/schedules/evening-brief.ts, agent/schedules/reping.ts). D4
  * of the Slack-reads design: Slack obligations
@@ -31,7 +31,7 @@ const SLACK_SOURCE_MARKERS = [
   "createSlackSourceDeps",
   "resolveSlackToken",
   "buildSlackObligationSource",
-  // — the Slack scan's budget/cancellation wrapper. Newly exported, and exported
+  // The Slack scan's budget/cancellation wrapper. It is exported, and exported
   // symbols are exactly how a Slack source would reach another schedule cheaply; the marker
   // list has to grow with the surface or the guard quietly loosens as the module gains API.
   "scanSlackWithBudget",
@@ -62,7 +62,7 @@ describe(" D4 — evening-brief and reping never wire a Slack obligation source"
     expect(src).toContain("createSlackSourceDeps");
   });
 
-  // review round 3, Minor — nothing else asserted that the Slack scan stays wrapped in
+  // Nothing else asserts that the Slack scan stays wrapped in
   // its own sub-timeout; a future edit deleting `withTimeout(...)` around it would keep the
   // rest of the suite green while reintroducing the round-2 CRITICAL (a slow Slack scan riding
   // the shared gather budget to "no brief at all"). Static, same reasoning as the D4 checks
@@ -73,8 +73,8 @@ describe(" D4 — evening-brief and reping never wire a Slack obligation source"
     // loosened this from `\s*` to also admit comment lines between the two calls —
     // the wrapper gained an explanatory comment; the property guarded (the scan lives
     // INSIDE withTimeout) is unchanged and still what the regex requires.
-    // Task 10 (B5): the scan is now `scanSlackThreadsWithOwnActivity` (the same walk,
-    // also returning "when did he last write to this person"), so the name matches a prefix.
+    // The scan is now `scanSlackThreadsWithOwnActivity` (the same walk,
+    // also returning "when did the owner last write to this person"), so the name matches a prefix.
     expect(src).toMatch(/withTimeout\(\s*(?:\/\/[^\n]*\n\s*)*scanSlackThreads\w*\(/);
     expect(src).toContain("SLACK_SCAN_TIMEOUT_MS");
   });

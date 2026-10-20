@@ -1,5 +1,5 @@
 /**
- * ONE owner key for the whole deadline feature — a source-level guard (review fix,).
+ * ONE owner key for the whole deadline feature — a source-level guard.
  *
  * The defect this exists to stop is not a failing query; it is a silent split. Every deadline
  * WRITE used `CANONICAL_USER_ID` ("the owner", a literal in `lib/identity-client.ts`) while every

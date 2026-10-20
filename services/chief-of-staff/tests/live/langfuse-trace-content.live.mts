@@ -1,6 +1,6 @@
 /**
- * tests/live/langfuse-trace-content.live.mts — the LIVE round trip behind W2-s9's `tracePolicy`
- *, a real Langfuse ingest-then-read, never a fixture.
+ * tests/live/langfuse-trace-content.live.mts — the LIVE round trip behind `tracePolicy`:
+ * a real Langfuse ingest-then-read, never a fixture.
  *
  * NOT part of `pnpm test`, and deliberately so: it sends one real trace to whatever Langfuse
  * project `LANGFUSE_HOST` names and reads it back over Langfuse's own public API. Run it by
@@ -19,7 +19,7 @@
  * secret. The author of this file has no Langfuse credentials and did not look for any — it is
  * WRITTEN, never RUN, by the builder; the owner supplies real values and runs it.
  *
- * WHY THIS FILE EXISTS, AND WHAT IT ADDS OVER THE W2-s1 CAPTURE HARNESS.
+ * WHY THIS FILE EXISTS, AND WHAT IT ADDS OVER THE CAPTURE HARNESS.
  * `packages/board-evals/scripts/capture-snapshot.sh` already proves, on this branch, that each
  * role's `agent/instrumentation.ts` exports OTLP traces carrying `gen_ai.tool.definitions` and
  * `gen_ai.system_instructions` off the model-call span — but it points `LANGFUSE_HOST` at a
@@ -97,7 +97,7 @@ function info(label: string): void {
 
 const traceId = randomBytes(16).toString("hex"); // 32 hex chars, per the OTLP spec
 const spanId = randomBytes(8).toString("hex"); // 16 hex chars
-const marker = `lares-w2-s9-live-probe-${randomBytes(6).toString("hex")}`;
+const marker = `lares-live-probe-${randomBytes(6).toString("hex")}`;
 const startMs = Date.now();
 const endMs = startMs + 5;
 
@@ -105,7 +105,7 @@ const otlpBody = {
   resourceSpans: [
     {
       resource: {
-        attributes: [{ key: "service.name", value: { stringValue: "lares-w2-s9-live-probe" } }],
+        attributes: [{ key: "service.name", value: { stringValue: "lares-live-probe" } }],
       },
       scopeSpans: [
         {
@@ -114,12 +114,12 @@ const otlpBody = {
             {
               traceId,
               spanId,
-              name: "w2-s9-instrumentation-live-probe",
+              name: "instrumentation-live-probe",
               kind: 1, // SPAN_KIND_INTERNAL — API's INTERNAL (0) offset by 1 per the OTLP transform
               startTimeUnixNano: String(BigInt(startMs) * 1_000_000n),
               endTimeUnixNano: String(BigInt(endMs) * 1_000_000n),
               attributes: [
-                { key: "lares.probe", value: { stringValue: "w2-s9-instrumentation-live-probe" } },
+                { key: "lares.probe", value: { stringValue: "instrumentation-live-probe" } },
                 { key: "lares.probe.marker", value: { stringValue: marker } },
               ],
               status: { code: 1 }, // STATUS_CODE_OK

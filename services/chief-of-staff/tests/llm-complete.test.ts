@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 /**
- * Task 10 (B5), branch review — `gatewayComplete`'s `maxRetries` passthrough.
+ * Branch review — `gatewayComplete`'s `maxRetries` passthrough.
  *
  * WHY THIS FILE EXISTS AT ALL: `lib/obligation-intent.ts` documents itself as "NO retry", and
  * `INTENT_MAX_PER_PASS = 8` is sized as a spend ceiling on that basis. The claim was false at the
@@ -37,7 +37,7 @@ beforeEach(() => {
 });
 
 /**
- * the sync meeting 2026-09-07: the first real `writer` call after pointed `lares-writer` at a
+ * The first real `writer` call after `lares-writer` was pointed at a
  * thinking-on model. The compose call asked for `maxOutputTokens: 1024`, sized for the visible
  * email alone; the model spent 540–630 of those tokens thinking (gateway spend log,
  * `completion_tokens_details.reasoning_tokens`) and the JSON it returned was cut off mid-string

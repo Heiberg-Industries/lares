@@ -13,12 +13,12 @@ import {
 import type { ToolContext } from "eve/tools";
 
 /**
- * The read-only hands (Task 10). Engine behaviour is covered in notes-store.test.ts; this
+ * The read-only note tools. Engine behaviour is covered in notes-store.test.ts; this
  * file covers the wiring that engine tests cannot: that each tool reads the RIGHT env var,
  * that Brain and Atlas do not cross, and that the typed errors survive the tool boundary
  * instead of arriving as a bare Error the model cannot act on.
  *
- * Task 2: vault_search/vault_read/vault_backlinks live mounted in the
+ * vault_search/vault_read/vault_backlinks live mounted in the
  * @lares/agent-kit eve extension (agent-kit__vault_*), not as local files this test can
  * import by relative path. Unlike config-bound extension tools (see tools-read-batch.test.ts's
  * header comment), the factory these build — searchTool/readTool/backlinksTool from
@@ -28,8 +28,8 @@ import type { ToolContext } from "eve/tools";
  * logic, not a weakened stand-in — it just skips eve's extension-config binding machinery,
  * which this tool never touches anyway.
  *
- * W5C-s3: there is ONE set of these now, told which area to read, and the separate atlas_*
- * hands are gone. `areas` stands in for `lib/vault-areas.ts`'s per-session definition read —
+ * There is ONE set of these now, told which area to read, and the separate atlas_*
+ * tools are gone. `areas` stands in for `lib/vault-areas.ts`'s per-session definition read —
  * this agent's declaration grants both note areas, so both are open here. The narrower case
  * (an agent granted one area reaching for the other) is proved against the guard itself, in
  * packages/agent-kit/tests/vault-areas.test.ts, and once more below.
@@ -40,7 +40,7 @@ const vaultRead = readTool({ areas: bothAreas });
 const vaultBacklinks = backlinksTool({ areas: bothAreas });
 const vaultList = listTool({ areas: bothAreas });
 
-// The hands never touch ctx — they read the filesystem directly rather than through eve's
+// These tools never touch ctx — they read the filesystem directly rather than through eve's
 // sandbox — so an empty cast exercises execute() without booting the runtime.
 const ctx = {} as ToolContext;
 
@@ -139,7 +139,7 @@ describe("the posture, at the tool boundary", () => {
   it("an unmounted store is an error, never an empty result", async () => {
     dir = mkdtempSync(join(tmpdir(), "eve-hands-"));
     process.env["VAULT_PATH"] = join(dir, "not-mounted");
-    // The defect this exists to prevent: she reports "nothing in the vault about X" when
+    // The defect this exists to prevent: the agent reports "nothing in the vault about X" when
     // the vault simply is not there.
     await expect(vaultSearch.execute({ area: "private", q: "anything" }, ctx)).rejects.toThrow(
       StoreUnhealthyError,

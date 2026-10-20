@@ -9,8 +9,8 @@ import type { OwnerClock } from "@lares/agent-kit/owner-clock";
 const TZ = "Europe/Oslo";
 
 /**
- * Task 2, the chief of staff's half of the owner clock: the tz-parameterised slot helpers her seven slot
- * schedules move onto in Task 3, the cached per-service resolver every turn and schedule reads, and
+ * The chief of staff's half of the owner clock: the tz-parameterised slot helpers the agent's seven slot
+ * schedules use, the cached per-service resolver every turn and schedule reads, and
  * the 30-minute refresh that keeps the Slack-profile signal alive.
  *
  * The one rule that outranks correctness here: a clock failure must never stop a schedule. Every

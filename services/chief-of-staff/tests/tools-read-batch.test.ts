@@ -20,7 +20,7 @@ import digestRun from "../catalogue/digest_run.js";
 import { agentName } from "../lib/agent-name.js";
 
 /**
- * The read-tools batch (Task 4): identity, vault/atlas listing, read_url,
+ * The read-tools batch: identity, vault/atlas listing, read_url,
  * digest_run. Every tool that touches an external store proves both a real answer AND the
  * posture — a sick backend is a typed error the model sees, never an empty result
  * that looks like a legitimate zero-hit query.
@@ -30,7 +30,7 @@ import { agentName } from "../lib/agent-name.js";
  * each authored module — see eve's dist/src/internal/authored-module-map-loader.js), not
  * through a plain import the way this file's other tools are unit-tested.
  *
- * vault_list moved into the same extension under Task 2, but the
+ * vault_list moved into the same extension, but the
  * list tool's execute() touches zero extension config (it reads VAULT_PATH/ATLAS_PATH from
  * process.env via storeRootForArea(), exactly as before), so reconstructing it directly from
  * @lares/agent-kit/note-tools below tests the real, unmodified logic without needing eve's
@@ -39,7 +39,7 @@ import { agentName } from "../lib/agent-name.js";
  */
 
 // These tools never read ctx — matches the posture already established in
-// tests/tools-readonly.test.ts for the note-store hands.
+// tests/tools-readonly.test.ts for the note-store tools.
 const ctx = {} as ToolContext;
 
 // ── identity_my_addresses / digest_run — real Postgres (: no mocked Pool) ──────
@@ -142,7 +142,7 @@ describe("identity_my_addresses and digest_run", () => {
 
 // ── vault_list, in each area ──────────────────────────────────────────────────────────
 //
-// W5C-s3: one list tool, told which area. The separate `atlas_list` this block used to import
+// One list tool, told which area. The separate `atlas_list` this block used to import
 // is gone; both cases below now go through the same object with a different `area`.
 
 let storeDir: string;

@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 /**
- * Task 12 — meeting_followup_auto: the spoken-to-the chief of staff path onto the same ratchet
+ * meeting_followup_auto: the spoken-to-the chief of staff path onto the same ratchet
  * rows `meeting_followup_send`'s policy reads (tests/meeting-followup-approval.test.ts) and
- * the Console (Task 11) lists/revokes. No real Postgres needed here — `KitRatchet` is
+ * the Console lists/revokes. No real Postgres needed here — `KitRatchet` is
  * stubbed the same way tests/meeting-followup-approval.test.ts stubs `../lib/google.js`:
  * a hoisted `vi.mock`, so `execute()` runs for real against a fake ratchet instead of a
  * live one.

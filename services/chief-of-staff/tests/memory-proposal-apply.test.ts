@@ -1,5 +1,5 @@
 /**
- * W4C-s5 — an unattended edit becomes a proposal, and only a 👍 applies it (ADR-0018 rule 2).
+ * An unattended edit becomes a proposal, and only a 👍 applies it (ADR-0018 rule 2).
  *
  * Against a REAL Postgres (a testcontainer, the pattern `tests/memory-proposals.test.ts`
  * already uses), because every property this slice claims is a property of a transaction:
@@ -370,7 +370,7 @@ describe("an approved add", () => {
     // The proposal itself stays `agent`: that is what it is, and the table's CHECK enforces it.
     // Only the row the approval writes carries the owner's class — and it carries it in
     // dream_preferences, never in standing_facts, whose CHECK (origin = 'owner') is reserved for
-    // words the owner actually said (owner decision X2).
+    // words the owner actually said.
     const id = await approvedAdd();
     await applyMemoryProposal(getPool(), id);
     const { rows } = await getPool().query<{ origin: string; source: string }>(

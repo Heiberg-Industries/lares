@@ -9,7 +9,7 @@ import { isDisabledToolSentinel } from "eve/tools";
  * require approval, and none of which are sandboxed here (`sandbox: null`). eve's own docs
  * say to review them before production use.
  *
- * The shadow's standing constraint is "reads only", so these five are removed outright.
+ * The standing constraint is "reads only", so these five are removed outright.
  * Discovered live: chief-of-staff answered a DM by correctly listing shell, file
  * search and web among its capabilities.
  */
@@ -22,19 +22,19 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
   web_search: () => import("../agent/tools/web_search.js"),
   agent: () => import("../agent/tools/agent.js"),
   // Fenced behind a path allowlist first, then removed: the
-  // authored Brain/Atlas hands cover note work, and these three could not work here anyway
+  // authored vault note tools cover note work, and these three could not work here anyway
   // — they proxy into a sandbox needing a writable .eve/sandbox-cache that a read-only
   // rootfs will not give it. Four framework tools remain: ask_question, todo, load_skill
   // and the harness's own bookkeeping.
   read_file: () => import("../agent/tools/read_file.js"),
   // glob and grep left eve's default tool set at 0.39.0, and 0.60.1 fails the build outright
   // on a disableTool() sentinel for a slot nothing provides ("disables a slot with no
-  // lower-precedence source") — W2-s8 retired both sentinel files. `defaultTools: false` was
+  // lower-precedence source") — both sentinel files were retired. `defaultTools: false` was
   // considered and NOT added: on this build it silently drops ask_question, todo and
   // load_skill too (no sentinel authors those slots, so eve stops granting them once its
-  // optional defaults are off), which would have violated the wave's safety bar — see
+  // optional defaults are off), which would have violated the safety bar — see
   // packages/board-evals/snapshots/tools-chief-of-staff.txt, where all three are baselined.
-  // task_cancel is new in eve 0.60.1 (W2-s8b): a new framework tool from a version bump is an
+  // task_cancel is new in eve 0.60.1: a new framework tool from a version bump is an
   // owner decision, not a side effect, so it is disabled the same as its `agent` neighbour.
   task_cancel: () => import("../agent/tools/task_cancel.js"),
 };
@@ -60,7 +60,7 @@ describe("tool harness lockdown", () => {
       }
       expect(disabled.sort()).toEqual(Object.keys(DISABLED).sort());
     },
-    // Task 8 added person_lookup.ts, whose module graph (lib/person-sources.ts →
+    // person_lookup.ts has a module graph (lib/person-sources.ts →
     // googleapis, pg) is heavier than any other single tool
     // file here — importing EVERY agent/tools/*.ts in one loop can exceed vitest's default
     // 5000ms on a cold run. The assertion itself is unchanged; only the budget for compiling
@@ -68,10 +68,10 @@ describe("tool harness lockdown", () => {
     15_000,
   );
 
-  // W5C-s3: the `atlas_search`/`atlas_read` entries this list used to name are gone — one set of
+  // The `atlas_search`/`atlas_read` entries this list used to name are gone — one set of
   // note tools takes an area now, and the two catalogue files below are that set's own copies.
   //
-  // vault_search/vault_read/vault_backlinks moved out under Task 2: they're mounted
+  // vault_search/vault_read/vault_backlinks moved out: they're mounted
   // from the @lares/agent-kit eve extension now (agent-kit__vault_*), so they no longer live
   // under agent/tools/ for this file's directory scan or its import-by-relative-path checks
   // to find. They were never at risk of the isDisabledToolSentinel check this block runs —
@@ -81,7 +81,7 @@ describe("tool harness lockdown", () => {
   // against a running eve instance instead (see task-2-report.md).
 
   /**
-   * The authored hands are what she actually reads with. Listed explicitly so that
+   * The authored read tools are what the agent actually reads with. Listed explicitly so that
    * deleting one shows up here rather than as a quietly less capable agent.
    */
   const AUTHORED: Record<string, () => Promise<{ default: unknown }>> = {

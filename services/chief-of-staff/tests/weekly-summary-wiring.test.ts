@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 /**
- *-s4 — the weekly summary gets `morning-brief.ts`/`evening-brief.ts`'s own belt-and-braces
- * guard: since-s3 its hour is a SETTING an owner can change mid-day, and the ledger's own
+ * The weekly summary gets `morning-brief.ts`/`evening-brief.ts`'s own belt-and-braces
+ * guard: its hour is a SETTING an owner can change mid-day, and the ledger's own
  * dedupe is keyed on the SLOT (`weekly-summary/<owner date>T<hour>`), not the day — a hour moved
  * AFTER this week's summary already went out gives the new hour's tick a BRAND NEW key the ledger
  * has never seen, and the gate alone would happily send a second one. `alreadySentToday` (already
@@ -19,7 +19,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../lib/owner-clock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/owner-clock.js")>()),
-  ownerTz: async () => "Europe/Oslo",
+  ownerTz: async () => "Europe/Berlin",
 }));
 
 // ─── the ledger's already-seen rule ─────────────────────────────────────────────────────────
@@ -52,7 +52,7 @@ vi.mock("../lib/dream-store.js", () => ({
 }));
 
 /**
- *-s4 — the same fake pool shape `brief-owner-day-wiring.test.ts` uses: `schedule_settings`
+ * the same fake pool shape `brief-owner-day-wiring.test.ts` uses: `schedule_settings`
  * (the kit's `readScheduleHours`, via `lib/schedule-hours.ts`) and the `alreadySentToday` guard's
  * own `initiations` lookup, both derived from THIS FILE's own `sentKeys` so the two never disagree
  * about what has gone out.
@@ -122,23 +122,23 @@ async function tick(schedule: Schedule, instant: string): Promise<void> {
   await schedule.run!(ctx);
 }
 
-describe("-s4 — a stored hour moves the slot; a mid-day change never double-sends", () => {
+describe("a stored hour moves the slot; a mid-day change never double-sends", () => {
   it("no row: the default Sunday 09:00 fires once", async () => {
-    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Oslo, Sunday
+    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Berlin, Sunday
     expect(sentKeys).toEqual(["weekly-summary/2026-09-20T9"]);
   });
 
   it("a stored hour moves the slot — the old hour no longer fires that day", async () => {
     scheduleHoursRow["weekly-summary"] = [10];
-    await tick(await weeklySummary(), "2026-09-20T08:00:00Z"); // 10:00 Oslo — the NEW hour
+    await tick(await weeklySummary(), "2026-09-20T08:00:00Z"); // 10:00 Berlin — the NEW hour
     expect(sentKeys).toEqual(["weekly-summary/2026-09-20T10"]);
 
-    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Oslo, the OLD hour, same day
+    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Berlin, the OLD hour, same day
     expect(sentKeys).toEqual(["weekly-summary/2026-09-20T10"]); // still just the one
   });
 
   it("the hour moves from 9 to 10 AFTER this week's summary already went out — no second send, including across a module reload", async () => {
-    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Oslo — the default hour
+    await tick(await weeklySummary(), "2026-09-20T07:00:00Z"); // 09:00 Berlin — the default hour
     expect(sentKeys).toEqual(["weekly-summary/2026-09-20T9"]);
 
     // The owner changes the setting in the console, and the process restarts in between — the
@@ -146,7 +146,7 @@ describe("-s4 — a stored hour moves the slot; a mid-day change never double-se
     // guard can still catch this.
     scheduleHoursRow["weekly-summary"] = [10];
     vi.resetModules();
-    await tick(await weeklySummary(), "2026-09-20T08:00:00Z"); // 10:00 Oslo, the SAME Sunday
+    await tick(await weeklySummary(), "2026-09-20T08:00:00Z"); // 10:00 Berlin, the SAME Sunday
 
     // "weekly-summary/2026-09-20T10" is a BRAND NEW item key the ledger has never seen — the
     // gate alone would happily send it. `alreadySentToday` is what stops it: one summary that day.

@@ -2,7 +2,7 @@
  * Tasks 4 + 5 — the digest queue's consumer half, the skip ledger, and the Karakeep sync.
  *
  * The SQL text is the contract with the untouched producer (`lib/digest-client.ts`, which
- * `agent/tools/digest_run.ts` already calls), so asserting on it is the point rather than a
+ * `catalogue/digest_run.ts` already calls), so asserting on it is the point rather than a
  * shortcut: if these two disagree about a column name, an on-demand digest silently never runs.
  */
 import { describe, it, expect } from "vitest";

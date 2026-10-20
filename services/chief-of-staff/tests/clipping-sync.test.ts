@@ -2,7 +2,7 @@
  * child (a) — the clipping sync and ledger against a REAL Postgres (testcontainers) and
  * the REAL official SDK client over a fake Notion (tests/helpers/fake-notion.ts).
  *
- * `box/sql/001_baseline.sql` and `001_baseline.sql` are applied verbatim from disk, so the
+ * `services/box/sql/001_baseline.sql` is applied verbatim from disk, so the
  * migration itself is exercised before any box sees it. The fake Notion is a FIXTURE; the live
  * probe (tests/live/notion-clipping.live.mts) is what proves the shapes.
  */

@@ -19,7 +19,7 @@ import { quiet } from "./helpers/quiet-pool.js";
 import { payloadFingerprint } from "@lares/agent-kit/approval-ledger";
 
 /**
- * Task 6 — the five Gmail tools, end to end against a REAL Postgres (oauth_tokens, matching
+ * The five Gmail tools, end to end against a REAL Postgres (oauth_tokens, matching
  * tests/google.test.ts's convention) with a STUBBED googleapis client
  * (`__setTestGmailApiFactory`) standing in for Google itself. Proves:
  *   - draft/send refuse without a valid approver, BEFORE any DB lookup or googleapis call
@@ -170,7 +170,7 @@ describe("gmail_read", () => {
     },
   };
 
-  it("reads a message and returns from/to/subject/body — the body comes back quoted (W7D-s1, owner decision D2)", async () => {
+  it("reads a message and returns from/to/subject/body — the body comes back quoted", async () => {
     const calls = await enroll({ get: { data: RAW } });
     const result = await gmailRead.execute({ id: "m1" }, READ_CTX);
     expect(result).toMatchObject({ id: "m1", threadId: "t1", from: "sender@example.com", subject: "Hello" });
@@ -179,8 +179,8 @@ describe("gmail_read", () => {
     expect((result as { bodyText: string }).bodyText).not.toBe("Body text");
     expect((result as { bodyText: string }).bodyText).toContain("Body text");
     expect((result as { note: string }).note).toMatch(/somebody else's words/);
-    // W7D-s2: the envelope also says whether the sender is someone the owner has written to
-    // (owner decision D3) — one extra, bounded lookup on the SAME first-contact check
+    // The envelope also says whether the sender is someone the owner has written to
+    // — one extra, bounded lookup on the SAME first-contact check
     // board-approval.ts already uses for sends (`isKnownRecipient`), which searches sent mail
     // for the sender's address once the (here, unreachable in-test) network leg is unavailable.
     expect(calls).toEqual([
@@ -272,7 +272,7 @@ describe("gmail_send", () => {
     expect(result.sentAt).toBe(new Date(1755331200000).toISOString());
   });
 
-  // W7A-s6 — the approver check and the card check, IN ORDER, against the real ledger table
+  // The approver check and the card check, IN ORDER, against the real ledger table
   // (086, applied in beforeAll above) rather than a fake: `ctxWithCall` gives execute() the
   // toolCallId a real eve run would, so `assertApproval` reaches `assertApprovedCall` for real.
   describe("and checks which card it was shown, after the approver and before any send", () => {

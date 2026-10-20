@@ -263,12 +263,12 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // Task 3 — the Henrik case: on 2026-08-23 a live draft told a commercial counterpart
-  // a meeting summary was "still coming" five days after it had actually been sent. The thread
+  // The already-sent case: a live draft once told a commercial counterpart
+  // a meeting summary was "still coming" days after it had actually been sent. The thread
   // (already in hand, no fetch) and the sent-history fetch (deps.gmail.search/read, 30d) both
   // carry the fact that the artefact already went out; noCommitments bans the model from
   // promising it again regardless.
-  it("the Henrik case — a thread where the account already sent the artefact carries the thread and sent-history blocks, plus the no-commitments clause", async () => {
+  it("the already-sent case — a thread where the account already sent the artefact carries the thread and sent-history blocks, plus the no-commitments clause", async () => {
     vi.mocked(gatewayComplete).mockImplementation(async (prompt: string) => {
       if (prompt.includes("Classify")) return "needs_reply";
       expect(prompt).toContain("Sent the meeting summary over"); // from the thread block
@@ -283,7 +283,7 @@ describe("triageOneMessage", () => {
           // A DIFFERENT thread from the current one ("t1") — an earlier, separate exchange
           // where the artefact went out. Distinct from the current-thread messages below on
           // purpose: proves the sent-history fetch is pulling in real OUT-of-thread history,
-          // not just re-surfacing what the thread block already carries ( review, Minor 2).
+          // not just re-surfacing what the thread block already carries.
           ? {
               id: "sent1", threadId: "t0-earlier", from: "owner@project.example", to: ["henrik@fjell.example"],
               subject: "Meeting summary attached",
@@ -311,7 +311,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // Task 3 — the collision case: an inbound message proposing a time must trigger a
+  // The collision case: an inbound message proposing a time must trigger a
   // free/busy check, and a busy block returned must reach the drafter.
   it("the collision case — a message proposing a time triggers freeBusy with the detected window, and the busy block reaches the prompt", async () => {
     const now = () => new Date("2026-08-24T08:00:00Z");
@@ -355,7 +355,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // review, Minor 1: the failure case above proves dossier errors don't block the
+  // the failure case above proves dossier errors don't block the
   // draft, but nothing proved the HAPPY path actually reaches the prompt — including a
   // COULD NOT READ marker, which must survive verbatim (a gap in OUR reading is not an
   // absence in the world; see person/render.ts).
@@ -379,7 +379,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // fix wave, Finding 1: the ## Person block must carry a `note` telling the model
+  // The ## Person block must carry a `note` telling the model
   // this text is reference material written for a different assistant — never to be quoted
   // or to leak the CRM/sources/tool names into the reply. Pinned on the exact string that
   // reaches gatewayComplete, not on render.ts (out of scope for this fix — see its header).
@@ -399,7 +399,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // fix wave, Finding 2: the ## Calendar block must (a) name the specific calendar
+  // The ## Calendar block must (a) name the specific calendar
   // that was checked in the "no conflicts" text, via the new optional `calendarLabel` dep,
   // and (b) carry a `note` scoping the claim — one calendar of two accounts, only relevant
   // when a time was actually proposed, never volunteered.
@@ -493,7 +493,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // review, Minor 2: the sent-history query also matches the account's own messages
+  // the sent-history query also matches the account's own messages
   // IN THE CURRENT THREAD, which the thread block already renders in full — filtered out so
   // the two blocks stay disjoint rather than duplicating content.
   it("sent-history results already in the current thread are filtered out — the thread block already carries them", async () => {
@@ -519,7 +519,7 @@ describe("triageOneMessage", () => {
     expect(result.outcome).toBe("drafted");
   });
 
-  // review, Controller ruling on Minor 3: the thread block is capped
+  // The thread block is capped
   // (THREAD_BLOCK_MAX_CHARS) rather than rendered "in full" unconditionally — these two tests
   // cover both sides of the cap.
   it("under the cap, every thread message is rendered with no omitted marker", async () => {

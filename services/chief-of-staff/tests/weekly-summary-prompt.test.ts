@@ -23,11 +23,11 @@ describe("buildWeeklySummaryPrompt — the owner's brief language", () => {
 });
 
 /**
- *-s3 — PIN, asserted against the source: `weeklyHour`/`WEEKLY_SUMMARY_HOUR` are gone (the
+ * PIN, asserted against the source: `weeklyHour`/`WEEKLY_SUMMARY_HOUR` are gone (the
  * hour is a setting now, `packages/agent-kit/src/schedule-settings.ts`'s `weekly-summary` key),
  * and the live tick asks `scheduleHours` before ever computing the slot.
  */
-describe("weekly-summary.ts reads its hour from the setting (-s3)", () => {
+describe("weekly-summary.ts reads its hour from the setting", () => {
   it("carries no weeklyHour/WEEKLY_SUMMARY_HOUR, and asks scheduleHours before slotIn", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/weekly-summary.ts", import.meta.url),

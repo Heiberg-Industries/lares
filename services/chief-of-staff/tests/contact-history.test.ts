@@ -1,19 +1,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 /**
- * step 1, Task 3b (fix round 1, 2026-09-15) — `lib/contact-history.ts`'s
+ * `lib/contact-history.ts`'s
  * `isKnownRecipient` (the engine's `ContactHistory` contract, `@lares/agent-kit/board-approval`),
  * exercised with the mail source faked — no real Gmail involved. Mocking follows
  * tests/meeting-followup-crm-note.test.ts's `vi.mock("../lib/google.js", ...)` style.
  *
- * Rewritten for the fix-round-1 review's owner rulings (task-3b-fix1-findings.md):
+ * Behaviour pinned here:
  *   - D-A: the CRM (Twenty) is REMOVED as a source entirely — no more `twenty-client.js` mock,
  *     no more commState cases.
  *   - D-B: "known" now means the OWNER wrote to them — the mail leg is SENT-only, verified
  *     against the returned message's own To/Cc/Bcc headers (not trusted from the search alone).
  *
  * All test addresses are example.com/example.org — this repo is the ENGINE; no installation-
- * specific (real owner) address belongs in it (fix-round-1 review, I9).
+ * specific (real owner) address belongs in it.
  *
  * Mail is the one source today.
  */
@@ -87,7 +87,7 @@ describe("isKnownRecipient", () => {
     await expect(isKnownRecipient("person@example.com", {})).resolves.toBe(false);
   });
 
-  // Fix round 1, I4: no recipient address, and no raw error message, may reach the log.
+  // No recipient address, and no raw error message, may reach the log.
   it("never logs the recipient address or the underlying error message on a source failure", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     gmailSearchMock.mockRejectedValue(new Error("gmail search failed for person@example.com"));
@@ -100,8 +100,8 @@ describe("isKnownRecipient", () => {
   });
 });
 
-// Fix round 2, item 1: `addressOf` took the FIRST '<...>' anywhere in the header entry — the
-// same flaw fix round 1's C1 fixed on the PARSING side, still present here on the VERIFICATION
+// `addressOf` took the FIRST '<...>' anywhere in the header entry — the
+// same flaw the PARSING side once had, still present here on the VERIFICATION
 // side. A crafted entry puts a fake address inside a quoted display name and the real
 // recipient in the trailing '<...>'; taking the first match misreads the fake one as real.
 describe("addressOf — takes the LAST '<...>' ending the entry, not the first", () => {

@@ -1,4 +1,4 @@
--- FIXTURE for tests/eve-workflow-upgrade.test.ts (W2-s8c). Frozen copy of
+-- FIXTURE for tests/eve-workflow-upgrade.test.ts. Frozen copy of
 -- services/chief-of-staff/sql/001-eve-workflow.sql exactly as committed before it was
 -- regenerated for @workflow/world-postgres beta.42 (the pre-regeneration, 33-statement,
 -- beta.32 shape — old primary key `workflow_events_pkey` on (id) alone). Stands in for "an

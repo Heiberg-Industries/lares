@@ -17,7 +17,7 @@ import { TwentyUnavailableError } from "../lib/twenty-client.js";
 import { UnauthorizedApproverError } from "../lib/approvals.js";
 
 /**
- * Task 5 — the Twenty tools, against a REAL local HTTP server (matching Task 3's
+ * The Twenty tools, against a REAL local HTTP server (matching twenty-client.test.ts's
  * `tests/twenty-client.test.ts` style), not a fetch stub: proves the actual REST calls each
  * tool makes (method, path, body), the not-found/unavailable split on the reads, and
  * — for the five write tools — that the approval gate refuses BEFORE any HTTP call happens.
@@ -466,7 +466,7 @@ describe("twenty_note", () => {
   it("refuses a Slack-allowed id presented with the Telegram authenticator, before any HTTP call", async () => {
     // the owner ("U_EXAMPLE_OWNER") is Slack-shaped, not numeric — telegramAuth()'s Number(userId)
     // coercion turned it into NaN, so this case previously exercised "a NaN id is refused"
-    // rather than "his real Slack id, presented on the wrong channel, is refused". Build the
+    // rather than "the owner's real Slack id, presented on the wrong channel, is refused". Build the
     // Telegram auth context directly instead, with attributes.user_id set to the raw Slack id
     // STRING — principalFromAuth() (lib/principals.ts) accepts a string there natively, so
     // this now genuinely proves a Slack-allowed id is refused under the Telegram authenticator,
@@ -613,7 +613,7 @@ describe("twenty_comm_state", () => {
   // — expectedPrevious OMITTED used to be treated as an assertion of null, so ANY
   // follow-up call on a person already past "never contacted" hit a CAS mismatch and
   // silently no-op'd forever: comm-state never advanced past the first hop. Omitting it now
-  // means "no assertion, set unconditionally" — this is agent/skills/sales-outreach.md's
+  // means "no assertion, set unconditionally" — this is agent/skills/sales-outreach/SKILL.md's
   // own send-time call shape (state: "email_sent", no expectedPrevious).
   it("omitted expectedPrevious sets unconditionally, even over a non-null current value", async () => {
     await listen([

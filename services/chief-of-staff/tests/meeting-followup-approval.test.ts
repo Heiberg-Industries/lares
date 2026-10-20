@@ -104,8 +104,8 @@ describe("followupApproval", () => {
     expect(await decide({} as never)).toBe("user-approval");
   });
 
-  it("finding 4: keeps a series gated forever when a recipient is a group/alias address, even fully opted in", async () => {
-    // Spec Q4: an alias hides who actually receives the mail, so the series must stay
+  it("keeps a series gated forever when a recipient is a group/alias address, even fully opted in", async () => {
+    // An alias hides who actually receives the mail, so the series must stay
     // gated no matter what the ratchet or the recipient-fingerprint history says. Checked
     // BEFORE the ratchet — a matching fingerprint on an otherwise-autonomous series must not
     // be able to override it.
@@ -118,7 +118,7 @@ describe("followupApproval", () => {
     } as never)).toBe("user-approval");
   });
 
-  it("finding 4: an ordinary personal-address list is unaffected — still approves autonomously", async () => {
+  it("an ordinary personal-address list is unaffected — still approves autonomously", async () => {
     const decide = policy({
       level: "autonomous",
       lastFingerprint: fingerprintRecipients(RECIPIENTS),
@@ -128,7 +128,7 @@ describe("followupApproval", () => {
   });
 });
 
-describe("meeting_followup_send default export — the approval gate is actually attached ( review)", () => {
+describe("meeting_followup_send default export — the approval gate is actually attached", () => {
   it("carries an approval policy — deleting the `approval:` line would make every follow-up send unconditional and leave the suite green", async () => {
     // Every case above proves followupApproval decides correctly IN ISOLATION, injected with
     // fixed deps. None of them proves the exported tool's `approval:` field is wired to it at
@@ -167,9 +167,9 @@ function ctxWithAuth(current: unknown, initiator: unknown = current) {
   return { session: { id: "s1", auth: { current, initiator } } } as never;
 }
 
-describe("meeting_followup_send execute() — the app-principal exemption ( review)", () => {
+describe("meeting_followup_send execute() — the app-principal exemption", () => {
   it("the app principal — the ONLY dispatcher an autonomous send ever has — is not asked to re-prove itself", async () => {
-    // This is the review finding: the brief's original `principal.absent !== true` check never
+    // A check on `principal.absent !== true` alone never
     // fires for a real autonomous dispatch, because eve's schedule dispatcher sets `current` to
     // the app principal, not to null — approverFrom would return it unchanged at its FIRST
     // branch, and assertApprover refuses "app" like any other unrecognised identity. Match all
@@ -183,7 +183,7 @@ describe("meeting_followup_send execute() — the app-principal exemption ( revi
   it("a fully-absent auth still refuses — the exemption did not become a general absence bypass", async () => {
     // The whole reason the exemption is an EXACT three-field match and not "current is not
     // null" or "principal.absent is not true": those looser checks both let this exact shape
-    // through, which is precisely the in-band bypass the security review refused.
+    // through, which is precisely the in-band bypass the exemption must refuse.
     sendMock.mockClear();
     await expect(meetingFollowupSend.execute(INPUT, ctxWithAuth(null, null))).rejects.toThrow(UnauthorizedApproverError);
     expect(sendMock).not.toHaveBeenCalled();

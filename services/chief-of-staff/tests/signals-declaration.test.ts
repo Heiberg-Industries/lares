@@ -14,9 +14,9 @@ describe("signals declaration and fleet gate", () => {
     expect(declaration.autonomy["signals"]).toBe("gated");
   });
 
-  // step 2, Task 9: signals_recent moved into the chief of staff's own catalogue, keyed
+  // signals_recent moved into the chief of staff's own catalogue, keyed
   // `agent-kit__signals_recent` — a resolver-emitted tool replaces an authored/mounted tool of
-  // the same name completely (Task 1, Q1c), so `agent/extensions/agent-kit/tools/
+  // the same name completely, so `agent/extensions/agent-kit/tools/
   // signals_recent.ts` is now an unconditional disableTool() sentinel (see that file's own
   // header) and the live check moves to the catalogue that superseded it.
   it("mounts signals_recent for the chief of staff, through her own catalogue now", async () => {

@@ -17,7 +17,7 @@ import type { Observation } from "../lib/dream/reflect.js";
 import type { PromoterResult, Rejection } from "../lib/dream/promote.js";
 
 /**
- * W4C-s6 — the dream note names what was REJECTED and why (ADR-0018 rule 6), and a run that
+ * The dream note names what was REJECTED and why (ADR-0018 rule 6), and a run that
  * rejects every candidate raises a signal instead of reading as a quiet zero, the way OpenClaw's
  * own provenance gate did for weeks (report 10, issue #121232).
  *
@@ -26,7 +26,7 @@ import type { PromoterResult, Rejection } from "../lib/dream/promote.js";
  * signal (sent off-box) would otherwise become a second laundering path for exactly the words
  * the promotion gate refused to trust.
  *
- * FOLLOW-UP (controller review): a single all-rejected night is not yet a problem — tonight's
+ * A single all-rejected night is not yet a problem — tonight's
  * strict gate makes that ordinary (a one-off owner remark is `below-recurrence`; the agent's own
  * inference is `agent-inference`). The alarm only fires once the SAME failure holds for
  * `DREAM_ALL_REJECTED_SIGNAL_AT` consecutive nights, and then every 7 nights beyond that — kept
@@ -437,7 +437,7 @@ function mockDreamRunDeps(
   }));
   vi.doMock("../lib/dream/promote.js", () => ({
     makePromoter: () => ({ run: async () => promoterResult }),
-    // W5X-s4 — the schedule builds one of these per run to file the run's `needsConfirm` items
+    // The schedule builds one of these per run to file the run's `needsConfirm` items
     // as memory proposals. A fake that files nothing keeps this report's tests about the report:
     // what a real one does is `tests/dream-confirmation-notice.test.ts`, against a real Postgres.
     makeProposeAdd: () => async () => null,

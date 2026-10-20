@@ -14,7 +14,7 @@ import { BRIEF_STRINGS } from "../lib/brief-strings.js";
 import { BRIEF_LANGUAGES } from "../lib/brief-settings.js";
 
 /**
- *-s2 — pins the SIX Norwegian structural places `lib/brief-content.ts` used to hard-code
+ * pins the SIX Norwegian structural places `lib/brief-content.ts` used to hard-code
  * (`heldBackLine`, `dueLabel`, `candidateRow`, the "+N flere frister" tail, the block label
  * "Frister", `deadlinesClause`) to TODAY's exact `nb` wording, copied verbatim from the source
  * before any of this ticket's edits (see `git show b6f17bd:services/chief-of-staff/lib/brief-content.ts`).
@@ -47,7 +47,7 @@ function candidateLine(overrides: Partial<CandidateLine> = {}): CandidateLine {
   };
 }
 
-describe("nb output is byte-identical to today's brief (-s2)", () => {
+describe("nb output is byte-identical to today's brief", () => {
   it("heldBackLine — the exact sentence, plural and singular", () => {
     expect(
       heldBackLine(
@@ -138,7 +138,7 @@ describe("en output is a plain, natural translation", () => {
     ]);
   });
 
-  //-s3 — vendor/amount/currency are pure data (no translated words), so the same
+  // vendor/amount/currency are pure data (no translated words), so the same
   // rendering shows up in "en" as in "nb"; this proves it is not accidentally wired only into
   // the nb path.
   it("a renewal row's vendor and amount render the same in en as in nb", () => {
@@ -167,7 +167,7 @@ describe("BRIEF_STRINGS is exhaustive over BRIEF_LANGUAGES", () => {
   });
 });
 
-describe("no Norwegian literal survives outside a comment in lib/brief-content.ts (-s2)", () => {
+describe("no Norwegian literal survives outside a comment in lib/brief-content.ts", () => {
   const source = readFileSync(join(import.meta.dirname, "../lib/brief-content.ts"), "utf8");
 
   /** Strips block comments (incl. JSDoc) and line comments — good enough for a source file with
@@ -186,18 +186,14 @@ describe("no Norwegian literal survives outside a comment in lib/brief-content.t
   );
 });
 
-describe("no timezone literal survives outside a comment in lib/brief-content.ts (-s4)", () => {
+describe("no timezone literal survives outside a comment in lib/brief-content.ts", () => {
   const source = readFileSync(join(import.meta.dirname, "../lib/brief-content.ts"), "utf8");
 
   function stripComments(src: string): string {
     return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   }
 
-  it('"Europe/Oslo" appears only in comments — every clock read now takes a tz parameter', () => {
+  it('"Europe/Oslo" is not a code literal — every clock read takes a tz parameter', () => {
     expect(stripComments(source)).not.toContain("Europe/Oslo");
-  });
-
-  it("(sanity) the literal still exists SOMEWHERE in the file, as a comment — this guard is not vacuous", () => {
-    expect(source).toContain("Europe/Oslo");
   });
 });

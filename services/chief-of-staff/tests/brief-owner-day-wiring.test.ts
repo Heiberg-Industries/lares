@@ -22,7 +22,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ─── the owner clock, movable ───────────────────────────────────────────────────────────────
 
-let ownerTzNow = "Europe/Oslo";
+let ownerTzNow = "Europe/Berlin";
 vi.mock("../lib/owner-clock.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/owner-clock.js")>()),
   ownerTz: async () => ownerTzNow,
@@ -52,7 +52,7 @@ vi.mock("@lares/agent-kit/schedule-heartbeat", () => ({
 vi.mock("../lib/signal-emit.js", () => ({ emitSignal: async () => {} }));
 
 /**
- *-s2 — the hour is a setting now, so this fake pool has to answer two new query shapes:
+ * the hour is a setting now, so this fake pool has to answer two new query shapes:
  * `schedule_settings` (the kit's `readScheduleHours`, via `lib/schedule-hours.ts`) and the
  * `alreadySentToday` guard's own `initiations` lookup. Both default to exactly the OLD behaviour
  * (no row / nothing sent), which is what every PIN above this point relies on: a test only sees a
@@ -157,7 +157,7 @@ beforeEach(() => {
   for (const k of ENV_KEYS) delete process.env[k];
   process.env["EVE_SCHEDULES_LIVE"] = "1";
   process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
-  ownerTzNow = "Europe/Oslo";
+  ownerTzNow = "Europe/Berlin";
   scheduleHoursRow = {};
   sentKeys.length = 0;
   stamped.clear();
@@ -211,27 +211,27 @@ const namedIn = (n: number): string[] =>
 describe("PIN — an ordinary day at home", () => {
   it("evening then morning: tomorrow's meeting, stamped for the 16th, read back as the 16th", async () => {
     calendarEvents = [
-      meeting("wed 10:00 oslo", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z"),
-      meeting("thu 10:00 oslo", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
+      meeting("wed 10:00 berlin", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z"),
+      meeting("thu 10:00 berlin", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
     ];
 
-    await tick(await evening(), "2026-09-15T18:00:00Z"); // 20:00 Oslo, Tuesday
+    await tick(await evening(), "2026-09-15T18:00:00Z"); // 20:00 Berlin, Tuesday
     expect(sentKeys).toEqual(["evening-brief/2026-09-15T20"]);
-    expect(namedIn(0)).toEqual(["wed 10:00 oslo"]);
+    expect(namedIn(0)).toEqual(["wed 10:00 berlin"]);
     expect(stamped.get("t1")).toBe("2026-09-16");
 
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo, Wednesday
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin, Wednesday
     expect(sentKeys).toEqual(["evening-brief/2026-09-15T20", "morning-brief/2026-09-16T8"]);
     expect(daysRead).toEqual(["2026-09-16"]);
-    expect(namedIn(1)).toEqual(["wed 10:00 oslo"]);
+    expect(namedIn(1)).toEqual(["wed 10:00 berlin"]);
   });
 });
 
 describe("PIN — the slot and its ledger key already follow the owner, one brief per owner-day", () => {
   it("abroad, the home clock's 08:00 and 20:00 fire nothing", async () => {
     ownerTzNow = "America/New_York";
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo = 02:00 New York
-    await tick(await evening(), "2026-09-16T18:00:00Z"); // 20:00 Oslo = 14:00 New York
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin = 02:00 New York
+    await tick(await evening(), "2026-09-16T18:00:00Z"); // 20:00 Berlin = 14:00 New York
     expect(sentKeys).toEqual([]);
   });
 
@@ -255,9 +255,9 @@ describe("PIN — the slot and its ledger key already follow the owner, one brie
   });
 
   it("the clock moves WEST after the morning brief: his second 08:00 that date is not a second brief", async () => {
-    calendarEvents = [meeting("wed 16:00 oslo", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z")];
+    calendarEvents = [meeting("wed 16:00 berlin", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z")];
 
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo, Wednesday
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin, Wednesday
     ownerTzNow = "America/New_York";
     vi.resetModules(); // the harder case: only the ledger remembers
     await tick(await morning(), "2026-09-16T12:00:00Z"); // 08:00 New York, the SAME Wednesday
@@ -269,29 +269,29 @@ describe("PIN — the slot and its ledger key already follow the owner, one brie
   it("the clock moves EAST past his 20:00: that evening's slot is never caught up — a skip, never a double", async () => {
     // Documented conservative behaviour — the choice ADR 0014 rule 4 makes for a slot lost to
     // quiet hours, applied to a slot lost to a moving clock: never caught up.
-    // 15:00 in Oslo is already 22:00 in Tokyo, so this Wednesday has no 20:00 left on his clock.
+    // 15:00 in Berlin is already 22:00 in Tokyo, so this Wednesday has no 20:00 left on the owner's clock.
     calendarEvents = [meeting("fri 10:00 tokyo", "2026-09-18T01:00:00Z", "2026-09-18T02:00:00Z")];
     const schedule = await evening();
 
     ownerTzNow = "Asia/Tokyo";
-    await tick(schedule, "2026-09-16T13:00:00Z"); // 15:00 Oslo = 22:00 Tokyo
-    await tick(schedule, "2026-09-16T18:00:00Z"); // 20:00 Oslo = 03:00 Tokyo — NOT his evening
+    await tick(schedule, "2026-09-16T13:00:00Z"); // 15:00 Berlin = 22:00 Tokyo
+    await tick(schedule, "2026-09-16T18:00:00Z"); // 20:00 Berlin = 03:00 Tokyo — NOT the owner's evening
     expect(briefKeys("evening-brief")).toEqual([]);
 
     await tick(schedule, "2026-09-17T11:00:00Z"); // 20:00 Tokyo, Thursday — the next one, once
     expect(briefKeys("evening-brief")).toEqual(["evening-brief/2026-09-17T20"]);
   });
 
-  it("New York morning, Oslo evening: one of each, stamped for the home Thursday the next morning reads", async () => {
+  it("New York morning, Berlin evening: one of each, stamped for the home Thursday the next morning reads", async () => {
     calendarEvents = [
       meeting("wed 10:00 new york", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z"),
-      meeting("thu 10:00 oslo", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
+      meeting("thu 10:00 berlin", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
     ];
     ownerTzNow = "America/New_York";
     await tick(await morning(), "2026-09-16T12:00:00Z"); // 08:00 New York, Wednesday
-    ownerTzNow = "Europe/Oslo";
-    await tick(await evening(), "2026-09-16T18:00:00Z"); // 20:00 Oslo, the same Wednesday
-    await tick(await morning(), "2026-09-17T06:00:00Z"); // 08:00 Oslo, Thursday
+    ownerTzNow = "Europe/Berlin";
+    await tick(await evening(), "2026-09-16T18:00:00Z"); // 20:00 Berlin, the same Wednesday
+    await tick(await morning(), "2026-09-17T06:00:00Z"); // 08:00 Berlin, Thursday
 
     expect(sentKeys).toEqual([
       "morning-brief/2026-09-16T8", "evening-brief/2026-09-16T20", "morning-brief/2026-09-17T8",
@@ -322,7 +322,7 @@ describe("BUG — New York: the evening brief is about HIS tomorrow, and the sta
     expect(briefKeys("morning-brief")).toEqual(["morning-brief/2026-09-16T8"]);
     // The morning pass asks for exactly the day last night's pass stamped — the two never drift.
     expect(daysRead).toEqual([stamped.get("t1")]);
-    expect(prompts).toHaveLength(2); // ONE evening brief and ONE morning brief for his day
+    expect(prompts).toHaveLength(2); // ONE evening brief and ONE morning brief for the owner's day
   });
 });
 
@@ -345,19 +345,19 @@ describe("BUG — Auckland: the morning brief is about HIS today while it is sti
 });
 
 describe("BUG — the clock changes between the morning and the evening brief", () => {
-  it("Oslo morning, New York evening: one of each, and the evening is about his New York tomorrow", async () => {
+  it("Berlin morning, New York evening: one of each, and the evening is about the owner's New York tomorrow", async () => {
     calendarEvents = [
-      meeting("wed 16:00 oslo", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z"),
+      meeting("wed 16:00 berlin", "2026-09-16T14:00:00Z", "2026-09-16T15:00:00Z"),
       meeting("thu 10:00 new york", "2026-09-17T14:00:00Z", "2026-09-17T15:00:00Z"),
       meeting("fri 10:00 new york", "2026-09-18T14:00:00Z", "2026-09-18T15:00:00Z"),
     ];
     const am = await morning();
     const pm = await evening();
 
-    await tick(am, "2026-09-16T06:00:00Z"); // 08:00 Oslo, Wednesday
+    await tick(am, "2026-09-16T06:00:00Z"); // 08:00 Berlin, Wednesday
     ownerTzNow = "America/New_York";
     await tick(am, "2026-09-16T12:00:00Z"); // 08:00 New York, the same Wednesday — no second brief
-    await tick(pm, "2026-09-16T18:00:00Z"); // 20:00 Oslo = 14:00 New York — not his evening
+    await tick(pm, "2026-09-16T18:00:00Z"); // 20:00 Berlin = 14:00 New York — not the owner's evening
     await tick(pm, "2026-09-17T00:00:00Z"); // 20:00 New York, Wednesday (02:00 Thursday at home)
 
     expect(sentKeys).toEqual(["morning-brief/2026-09-16T8", "evening-brief/2026-09-16T20"]);
@@ -368,33 +368,33 @@ describe("BUG — the clock changes between the morning and the evening brief", 
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-//-s2 — the hour is a setting now: a stored hour moves the slot, and a mid-day change
+// the hour is a setting now: a stored hour moves the slot, and a mid-day change
 // cannot double-send (the edge the ledger's item-key dedupe alone does not catch — see
 // lib/initiation.ts's alreadySentToday for why).
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-describe("-s2 — a stored hour moves the slot; a mid-day change never double-sends", () => {
+describe("a stored hour moves the slot; a mid-day change never double-sends", () => {
   it("no row: today's default hours (08:00 / 20:00) are unchanged", async () => {
-    calendarEvents = [meeting("wed 10:00 oslo", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo — no schedule_settings row
+    calendarEvents = [meeting("wed 10:00 berlin", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin — no schedule_settings row
     expect(sentKeys).toEqual(["morning-brief/2026-09-16T8"]);
   });
 
   it("a stored hour moves the slot — the old hour no longer fires that day", async () => {
     scheduleHoursRow["morning-brief"] = [7];
-    calendarEvents = [meeting("wed 10:00 oslo", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
+    calendarEvents = [meeting("wed 10:00 berlin", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
 
-    await tick(await morning(), "2026-09-16T05:00:00Z"); // 07:00 Oslo — the NEW hour
+    await tick(await morning(), "2026-09-16T05:00:00Z"); // 07:00 Berlin — the NEW hour
     expect(sentKeys).toEqual(["morning-brief/2026-09-16T7"]);
 
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo, the OLD hour, same day
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin, the OLD hour, same day
     expect(sentKeys).toEqual(["morning-brief/2026-09-16T7"]); // still just the one brief
   });
 
   it("the hour moves from 8 to 9 AFTER today's brief already sent — no second brief, even across a restart", async () => {
-    calendarEvents = [meeting("wed 10:00 oslo", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
+    calendarEvents = [meeting("wed 10:00 berlin", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z")];
 
-    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Oslo — the default hour
+    await tick(await morning(), "2026-09-16T06:00:00Z"); // 08:00 Berlin — the default hour
     expect(sentKeys).toEqual(["morning-brief/2026-09-16T8"]);
 
     // The owner changes the setting in the console, and the process restarts in between — the
@@ -402,7 +402,7 @@ describe("-s2 — a stored hour moves the slot; a mid-day change never double-se
     // schedule-hours cache are both gone, so only the DB-backed guard can still catch this.
     scheduleHoursRow["morning-brief"] = [9];
     vi.resetModules();
-    await tick(await morning(), "2026-09-16T07:00:00Z"); // 09:00 Oslo, the SAME Wednesday
+    await tick(await morning(), "2026-09-16T07:00:00Z"); // 09:00 Berlin, the SAME Wednesday
 
     // "morning-brief/2026-09-16T9" is a BRAND NEW item key the ledger has never seen — the gate
     // alone would happily send it. `alreadySentToday` is what stops it: one brief that day.
@@ -412,19 +412,19 @@ describe("-s2 — a stored hour moves the slot; a mid-day change never double-se
 
   it("the same edge for the evening brief, without a restart", async () => {
     calendarEvents = [
-      meeting("wed 10:00 oslo", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z"),
-      meeting("thu 10:00 oslo", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
+      meeting("wed 10:00 berlin", "2026-09-16T08:00:00Z", "2026-09-16T09:00:00Z"),
+      meeting("thu 10:00 berlin", "2026-09-17T08:00:00Z", "2026-09-17T09:00:00Z"),
     ];
     const pm = await evening();
 
-    await tick(pm, "2026-09-15T18:00:00Z"); // 20:00 Oslo, Tuesday — the default hour
+    await tick(pm, "2026-09-15T18:00:00Z"); // 20:00 Berlin, Tuesday — the default hour
     expect(sentKeys).toEqual(["evening-brief/2026-09-15T20"]);
 
     // No restart this time — the schedule-hours cache would still be warm (TTL 5 min) if this
     // were seconds later, so the clock is moved a full hour to prove the fix holds once the
     // cache itself has refreshed too, not only across a restart.
     scheduleHoursRow["evening-brief"] = [21];
-    await tick(pm, "2026-09-15T19:00:00Z"); // 21:00 Oslo, the SAME Tuesday
+    await tick(pm, "2026-09-15T19:00:00Z"); // 21:00 Berlin, the SAME Tuesday
 
     expect(sentKeys).toEqual(["evening-brief/2026-09-15T20"]);
     expect(prompts).toHaveLength(1);

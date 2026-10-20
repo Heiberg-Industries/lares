@@ -1,7 +1,7 @@
 /**
- * tests/memory-used-tool.test.ts — W5A-s5, the owner asks on a door which memories the previous
+ * tests/memory-used-tool.test.ts — the owner asks on a door which memories the previous
  * answer opened. Against a REAL disposable Postgres running the REAL migration file
- * (`memory_reads`, box 075), the house pattern (`tests/memory-reads.test.ts`,
+ * (`memory_reads`), the house pattern (`tests/memory-reads.test.ts`,
  * `packages/agent-kit/tests/memory-read.test.ts`).
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";

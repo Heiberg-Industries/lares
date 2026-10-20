@@ -1,5 +1,5 @@
 /**
- * W7D-s2 — owner decision D3: the read says whether the sender is someone the owner has
+ * The read says whether the sender is someone the owner has
  * written to before, in exactly one of three fixed sentences, never "trusted". `senderStanding`
  * is a pure-ish function over an injected lookup (`deps.known`), so these tests never touch
  * Gmail or the network db — `isKnownRecipient`'s own Gmail assumptions are covered by

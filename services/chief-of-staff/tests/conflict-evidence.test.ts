@@ -1,5 +1,5 @@
 /**
- * lib/conflict-evidence.ts —-s2, the pure matcher for "does this mail cancel this
+ * lib/conflict-evidence.ts — the pure matcher for "does this mail cancel this
  * booking?". Pure, no I/O: every fixture below is a hand-built, invented mail (never a real
  * address — `example.invalid` throughout), and the table is deliberately weighted toward the
  * cases that decide whether a later approval card can trust this module: a hotel and an

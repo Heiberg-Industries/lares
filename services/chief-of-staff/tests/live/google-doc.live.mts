@@ -1,5 +1,5 @@
 /**
- * tests/live/google-doc.live.mts — the LIVE check for read_url's Google Docs path ( batch 6).
+ * tests/live/google-doc.live.mts — the LIVE check for read_url's Google Docs path.
  *
  * NOT part of `pnpm test`. Runs inside the chief-of-staff container (tokens, OAuth client secrets and the
  * egress proxy are there). Bundle it first, the same way as tests/live/notion-page.live.mts, and
@@ -16,7 +16,7 @@
  *     'PGPASSWORD=$(cat /run/secrets/db_password) DATABASE_URL=postgres://lares@db:5432/lares_state \
  *      GOOGLE_DOC_LIVE_URL=<a Doc the owner can see> node node_modules/.cache/probe/gd.mjs'
  *
- * First run 2026-09-14, BEFORE the re-consent: both cases answered the plain "not yet allowed to
+ * Before the re-consent, both cases answered the plain "not yet allowed to
  * read Google Drive" sentence — Google's real 403 insufficient-scope, detected as such.
  *
  * Two modes, by what the enrolled tokens hold:

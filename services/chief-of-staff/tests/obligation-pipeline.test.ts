@@ -42,7 +42,7 @@ function threadMessage(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
 
 const NOW = new Date("2026-08-12T20:00:00Z"); // 22:00 CEST — an evening pass moment
 
-// ─── gatherOpenObligations (ported from adapters/obligations/gather.ts, minus rank.ts) ─────
+// ─── gatherOpenObligations (minus ranking) ─────
 
 // The institutional sender domains are installation data (INSTITUTIONAL_SENDER_DOMAINS); these
 // made-up ones are set for every test in this file.
@@ -166,12 +166,12 @@ describe("gatherOpenObligations", () => {
     }
   });
 
-  it("a Slack source that NEVER RESOLVES still yields the Gmail obligations — review round 2 CRITICAL: a slow scan must not ride the caller's shared timeout to 'no brief at all'", async () => {
+  it("a Slack source that NEVER RESOLVES still yields the Gmail obligations — a slow scan must not ride the caller's shared timeout to 'no brief at all'", async () => {
     // Mirrors the exact shape morning-brief.ts's buildSlackObligationSource now uses: the
     // underlying scan is wrapped in ITS OWN sub-timeout (withTimeout), so a hung/slow scan
     // rejects on its own clock and lands in gatherOpenObligations' best-effort catch — instead
     // of hanging (or riding a SHARED, caller-side timeout that discards the Gmail results
-    // already collected, the bug review round 2 caught).
+    // already collected, the bug this guards against).
     const errors: unknown[] = [];
     const spy = console.error;
     console.error = (...args: unknown[]) => { errors.push(args); };
@@ -214,7 +214,7 @@ describe("gatherOpenObligations", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 10 (B5) — the resolve → read → explain stage inside gatherOpenObligations.
+// The resolve → read → explain stage inside gatherOpenObligations.
 //
 // Every case here is a FAIL-OPEN case in disguise: the thing being pinned is that a lookup
 // that fails, a model that throws, a budget that blows, or a dep that is simply absent all
@@ -222,7 +222,7 @@ describe("gatherOpenObligations", () => {
 // radar going quiet because a dependency broke is the only outcome this stage may not have.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-describe("gatherOpenObligations — resolve, read, explain ( Task 10, B5)", () => {
+describe("gatherOpenObligations — resolve, read, explain", () => {
   /** `count` Gmail threads, oldest first: t-0 is the most overdue. */
   function gatherDeps(count: number, extra: Partial<GatherObligationsDeps> = {}): GatherObligationsDeps {
     const ids = Array.from({ length: count }, (_, i) => `t-${i}`);
@@ -400,7 +400,7 @@ describe("gatherOpenObligations — resolve, read, explain ( Task 10, B5)", () =
       const out = await pending;
 
       // t-0 was RESOLVED and RECORDED before the budget blew, so it stays dropped. Re-adding it
-      // would put a thread he demonstrably answered back on his brief, labelled "could not
+      // would put a thread the owner demonstrably answered back on the owner's brief, labelled "could not
       // verify" — a false report, arriving as though nothing were known.
       expect(marked).toEqual(["t-0"]);
       expect(out.map((o) => o.threadId)).toEqual(["t-1", "t-2", "t-3"]);
@@ -475,7 +475,7 @@ describe("gatherOpenObligations — resolve, read, explain ( Task 10, B5)", () =
     const out = await silenced(() => gatherOpenObligations(deps, NOW));
     expect(read).toHaveLength(INTENT_MAX_PER_PASS);
     // The ORDER, not the set: t-0 is the most overdue, t-9 the least, and the budget must be
-    // spent from the top of that list down — the oldest items are the ones he has stopped seeing.
+    // spent from the top of that list down — the oldest items are the ones the owner has stopped seeing.
     expect(read).toEqual(["t-0", "t-1", "t-2", "t-3", "t-4", "t-5", "t-6", "t-7"]);
     expect(out).toHaveLength(10);
     expect(out.filter((o) => o.reason === INTENT_UNREAD_REASON).map((o) => o.threadId)).toEqual(["t-8", "t-9"]);
@@ -659,7 +659,7 @@ describe("gatherOpenObligations — resolve, read, explain ( Task 10, B5)", () =
 
 // ─── dropResolved — the same rule the re-ping lane applies before assignSurfaces ────────────
 
-describe("dropResolved ( Task 10, B5)", () => {
+describe("dropResolved", () => {
   const owed = (threadId: string, lastMessageAt: string, isRePing = true): Obligation => ({
     threadId,
     subject: "Re: pilot terms",
@@ -697,14 +697,14 @@ describe("dropResolved ( Task 10, B5)", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// Task 4 — `recordCandidate`: an institutional due notice leaves the pipeline as a
+// `recordCandidate`: an institutional due notice leaves the pipeline as a
 // DEADLINE CANDIDATE and never as an obligation.
 //
 // The dep is optional and its failure is swallowed, which is the whole fail-open contract: a
-// dead `deadline_candidates` table costs the brief one offer line, never his owed replies.
+// dead `deadline_candidates` table costs the brief one offer line, never the owner's owed replies.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-describe("gatherOpenObligations — deadline candidates ( Task 4)", () => {
+describe("gatherOpenObligations — deadline candidates", () => {
   const billing = () =>
     threadMessage({
       threadId: "t-billing",

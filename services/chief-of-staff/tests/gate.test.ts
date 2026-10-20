@@ -7,11 +7,11 @@ import echoNote, { UnauthorizedApproverError } from "../catalogue/echo_note.js";
 import { allowedSlackUserIds, isAllowedSlackUserId } from "../lib/slack-allowlist.js";
 
 /**
- * Task 9 — the approval gate, proven on a harmless action before any real write exists.
+ * The approval gate, proven on a harmless action before any real write exists.
  *
  * `echo_note` appends a line to a log file and nothing else. Its only job is to be the
- * cheapest possible thing that can prove the mechanism the cutover will hang Gmail sends,
- * CRM writes and reminders on.
+ * cheapest possible thing that can prove the mechanism Gmail sends,
+ * CRM writes and reminders depend on.
  */
 
 const OWNER_SLACK_ID = "U_EXAMPLE_OWNER";
