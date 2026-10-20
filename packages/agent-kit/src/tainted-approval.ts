@@ -76,7 +76,7 @@ export function asksAfterUntrustedText(): (ctx?: unknown) => Promise<ApprovalSta
 /**
  * `asksAfterUntrustedText`, except that the next page of a link this turn already read does not
  * ask again. Reading page one taints the turn, so without this every further page of the same
- * link would show the owner a card for the address he has already seen and approved.
+ * link would show the owner a card for an address already seen and approved.
  *
  * The exemption is exactly: `offset` above zero, the same address as a read that SUCCEEDED earlier
  * in this same turn. A first read, an offset-0 re-read, a different address, another turn, or a
