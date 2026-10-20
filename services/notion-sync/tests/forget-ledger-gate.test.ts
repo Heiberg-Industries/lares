@@ -1,5 +1,5 @@
 // A file the owner told the agent to forget must not be resurrected by a later
-// Notion pull (ADR-0017 rule 7; WAVE-3-NOTES W5B-s4). `runApplySync`'s CREATE branch
+// Notion pull (ADR-0017 rule 7). `runApplySync`'s CREATE branch
 // consults an injected `pathWasForgotten` dependency for exactly this — see its
 // header in ../lib/apply-sync.ts for why it is a dependency rather than a direct
 // `@lares/vault-format/forget-ledger` call inside the engine (the engine takes no DB

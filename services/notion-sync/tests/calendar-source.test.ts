@@ -63,7 +63,7 @@ describe("fetchMailboxEvents", () => {
 
     // 90 days at the default 30-day slice size must be more than one call — this is
     // what a single un-paginated call over the real ~400-day window was silently
-    // skipping (Finding 1): only the newest slice's events used to be seen at all.
+    // skipping: only the newest slice's events used to be seen at all.
     const events = await fetchMailboxEvents(client, {
       timeMin: "2026-01-01T00:00:00.000Z", timeMax: "2026-04-01T00:00:00.000Z",
     });

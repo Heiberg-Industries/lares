@@ -158,7 +158,7 @@ describe("quotes", () => {
   });
 });
 
-describe("mentions (spec §4.1)", () => {
+describe("mentions", () => {
   it("emits the resolver's target verbatim inside [[...]]", () => {
     const resolve = mapResolver({
       "https://www.notion.so/1234": { target: "known" },
@@ -444,7 +444,7 @@ describe("one canonical output shape from both input shapes", () => {
   }
 });
 
-// The deploy probe that found this (Phase 3 live leg, 2026-08-04): the exact
+// A deploy probe that found this: the exact
 // bytes GET /v1/pages/:id/markdown returned for a page pushed from a
 // conventionally formatted vault file, and the exact vault body it must
 // reconstruct. Frontmatter travels as a Notion property, so it is not in either.
@@ -630,12 +630,12 @@ describe("normalizeForFidelity", () => {
   });
 });
 
-describe("round-trip against real Phase 2 fixtures", () => {
+describe("round-trip against real wiki fixtures", () => {
   // Fixtures whose vault source uses only BARE wikilinks (no `|alias`) and callouts
   // with no inline title — the two push-side constructs that lose information on
   // the way to Notion (alias text; title-vs-first-body-line) and so can never
   // byte-round-trip. freja-example.md / sample-ads.md hit both and are
-  // deliberately excluded — that gap is exactly what the fidelity gate (T4) exists
+  // deliberately excluded — that gap is exactly what the fidelity gate exists
   // to catch, not something this pure translator can paper over.
   const ROUND_TRIP_FIXTURES = [
     "README.md",

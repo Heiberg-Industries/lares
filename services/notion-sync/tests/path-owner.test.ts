@@ -1,4 +1,4 @@
-// `ownerOfPath` (W5I-s9) — the forgotten-file guard's per-path ownership question,
+// `ownerOfPath` — the forgotten-file guard's per-path ownership question,
 // against a real Postgres (the identity registry the guard actually reads). The
 // regression this file exists to pin: a second member in `users` used to switch the
 // guard off for EVERYONE (`resolveInstallationOwner` answered `null` the moment the
@@ -12,7 +12,7 @@ import { ownerOfPath } from "../lib/path-owner.js";
 
 // services/box/sql/001_baseline.sql gives every test DB the `users` / `user_aliases` pair and the
 // `forget_ledger` table (and seeds no person) — this file adds the two neutral fixture members the
-// slice's tests are written against, on top of that.
+// tests are written against, on top of that.
 
 let tdb: TestDb;
 let db: Pool;
@@ -62,7 +62,7 @@ describe("ownerOfPath — the forgotten-file guard's per-path owner", () => {
     await expect(ownerOfPath(db, "notes/x.md", "---\nowner: U_fixture\n---\n"))
       .resolves.toEqual({ owner: null, why: "register-unreadable" });
 
-    // Put back, so the tests below see a working register again — the slice's own regression
+    // Put back, so the tests below see a working register again — the regression
     // case needs `fixture-owner` to still resolve.
     await db.query("ALTER TABLE users_off RENAME TO users");
     await db.query("ALTER TABLE user_aliases_off RENAME TO user_aliases");

@@ -67,7 +67,7 @@ describe("parseNotionSyncConfig", () => {
   });
 });
 
-describe("parseNotionSyncConfig — wiki pass (Phase 2)", () => {
+describe("parseNotionSyncConfig — wiki pass", () => {
   const wikiValid = {
     ...valid,
     docsDataSourceId: "11111111-1111-1111-1111-111111111111",
@@ -75,7 +75,7 @@ describe("parseNotionSyncConfig — wiki pass (Phase 2)", () => {
     wikiProject: "Portfolio",
   };
 
-  it("keeps a Phase 1 config valid: no wiki keys ⇒ cfg.wiki stays undefined", () => {
+  it("keeps a config without wiki keys valid: no wiki keys ⇒ cfg.wiki stays undefined", () => {
     expect(parseNotionSyncConfig(valid).wiki).toBeUndefined();
   });
 
@@ -116,7 +116,7 @@ describe("parseNotionSyncConfig — wiki pass (Phase 2)", () => {
   });
 });
 
-describe("parseNotionSyncConfig — desk dirs (Phase 3)", () => {
+describe("parseNotionSyncConfig — desk dirs", () => {
   const wikiKeys = {
     docsDataSourceId: "11111111-1111-1111-1111-111111111111",
     wikiDir: "wiki",
@@ -133,7 +133,7 @@ describe("parseNotionSyncConfig — desk dirs (Phase 3)", () => {
     mirrorFilePrefixes: ["writing/ghost__"],
   };
 
-  it("keeps a Phase 2 config valid: no desk keys ⇒ cfg.desks stays undefined", () => {
+  it("keeps a config without desk keys valid: no desk keys ⇒ cfg.desks stays undefined", () => {
     expect(parseNotionSyncConfig({ ...valid, ...wikiKeys }).desks).toBeUndefined();
   });
 
@@ -227,7 +227,7 @@ describe("parseNotionSyncConfig — desk dirs (Phase 3)", () => {
   });
 });
 
-describe("parseNotionSyncConfig — deskDirs exclude (Phase 4)", () => {
+describe("parseNotionSyncConfig — deskDirs exclude", () => {
   const wikiKeys = {
     docsDataSourceId: "11111111-1111-1111-1111-111111111111",
     wikiDir: "wiki",
@@ -337,7 +337,7 @@ describe("parseNotionSyncConfig — deskDirs exclude (Phase 4)", () => {
   });
 });
 
-describe("parseNotionSyncConfig — transcripts (Phase 4)", () => {
+describe("parseNotionSyncConfig — transcripts", () => {
   const transcriptsValid = {
     ...valid,
     transcripts: {
@@ -346,7 +346,7 @@ describe("parseNotionSyncConfig — transcripts (Phase 4)", () => {
     },
   };
 
-  it("keeps a Phase 3 config valid: no transcripts key ⇒ cfg.transcripts is absent, not merely undefined", () => {
+  it("keeps a config without a transcripts key valid: no transcripts key ⇒ cfg.transcripts is absent, not merely undefined", () => {
     const cfg = parseNotionSyncConfig(valid);
     expect(cfg.transcripts).toBeUndefined();
     expect(cfg).not.toHaveProperty("transcripts");
@@ -403,8 +403,8 @@ describe("parseNotionSyncConfig — transcripts (Phase 4)", () => {
   });
 });
 
-describe("parseNotionSyncConfig — people (Phase 4)", () => {
-  it("keeps a Phase 3 config valid: no people key ⇒ cfg.people is absent, not merely undefined", () => {
+describe("parseNotionSyncConfig — people", () => {
+  it("keeps a config without a people key valid: no people key ⇒ cfg.people is absent, not merely undefined", () => {
     const cfg = parseNotionSyncConfig(valid);
     expect(cfg.people).toBeUndefined();
     expect(cfg).not.toHaveProperty("people");

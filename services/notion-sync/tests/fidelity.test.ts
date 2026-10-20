@@ -9,7 +9,7 @@ function makeReader(files: Record<string, string>): (path: string) => Promise<st
   };
 }
 
-// W4D-s3: the gate now also refuses any file that carries no lares_origin stamp (a
+// The gate also refuses any file that carries no lares_origin stamp (a
 // pull would otherwise leave it with no origin at all — see the describe block
 // below). The fixtures above that predate that rule get a stamp prefixed so each
 // keeps testing the ONE property it was written for (a wikilink, a safety rail, a
@@ -110,9 +110,8 @@ describe("the gate refuses a pull that would lose a stamp", () => {
   const read = (files: Record<string, string>) => async (p: string) => files[p]!;
 
   it("passes a file whose stamp would survive a pull unchanged", async () => {
-    // The slice's own snippet checked `passed` against an array of paths; the real
-    // RunFidelityResult.passed is a count (see fidelity.ts's runFidelity), so this
-    // asserts the count instead.
+    // `passed` on RunFidelityResult is a count, not an array of paths (see
+    // fidelity.ts's runFidelity), so this asserts the count.
     const { passed, failed } = await runFidelity(["a.md"], read({
       "a.md": "---\ntype: note\nlares_origin: synced\n---\n\nplain body\n",
     }));
@@ -142,7 +141,7 @@ describe("the gate refuses a pull that would lose a stamp", () => {
   });
 
   it("still reports a body mismatch as a body mismatch, not as a stamp problem", async () => {
-    // The slice's own fixture (a "broken table") round-trips cleanly in this
+    // A "broken table" fixture round-trips cleanly in this
     // codebase's real translate.ts/translate-pull.ts and never fails — an aliased
     // wikilink is the fixture already proven elsewhere in this file to produce a
     // genuine body mismatch, so it is used here instead to exercise the same intent.

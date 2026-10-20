@@ -59,7 +59,7 @@ describe("toMeetingRow", () => {
   });
 });
 
-//. Notion's meeting-notes feature stopped filling the `Date` property with a
+// Notion's meeting-notes feature stopped filling the `Date` property with a
 // time around 2026-08-10; the meeting's real start now arrives as a structured date
 // MENTION inside the title, and a hand-typed `Date` is date-only, which parses to
 // midnight and so can never fall inside the +/-15-minute match window. These are the
@@ -473,7 +473,7 @@ describe("getPageMarkdown", () => {
   });
 
   it("throws when the response is truncated", async () => {
-    // Hash-after-write is the sole defence against self-conflict (spec §3). Hashing
+    // Hash-after-write is the sole defence against self-conflict. Hashing
     // half a page as if it were whole would poison the stored hash silently, so a
     // truncated read must be loud instead.
     const fetchImpl = (async () => jsonResponse({
@@ -743,7 +743,7 @@ describe("updatePageMeta", () => {
   });
 
   it("throws when no fields are provided, without making a request", async () => {
-    // A no-op PATCH is a programming error (§ task brief) — catch it before any
+    // A no-op PATCH is a programming error — catch it before any
     // network call, not as a Notion 400.
     let calls = 0;
     const fetchImpl = (async () => {
@@ -760,8 +760,7 @@ describe("updatePageMeta", () => {
 });
 
 // Notion's real error shape ({"object":"error","status":...,"code":...,"message":...}),
-// for the three live-verified response bodies trashPage must tell apart (fix
-// round 1, Critical finding). Building the JSON body this way — not a bare
+// for the three live-verified response bodies trashPage must tell apart. Building the JSON body this way — not a bare
 // string like the old tests used — is what lets isAlreadyDone parse `code`
 // out of it, exactly as the real API's body would let the adapter parse it.
 function notionError(status: number, code: string, message: string): Response {
@@ -787,7 +786,7 @@ describe("trashPage", () => {
   });
 
   it("classifies a 404 object_not_found (page already gone) as alreadyDone: true, not a throw", async () => {
-    // Live-probed 2026-08-05 (fix round 1): a page already purged from Notion's
+    // Live-probed 2026-08-05: a page already purged from Notion's
     // trash, or a stale id, 404s this PATCH — success from the caller's point of
     // view (there is nothing left to trash), never a failure. This is what lets
     // the archive command's re-runs stay idempotent instead of erroring on their
@@ -815,7 +814,7 @@ describe("trashPage", () => {
   });
 
   it("classifies a repeat trash (400 validation_error, already archived) as alreadyDone: true — NOT a 200", async () => {
-    // THE Critical fix (fix round 1): live-probed 2026-08-05 against the real
+    // Live-probed 2026-08-05 against the real
     // Docs data source at the pinned version (2026-03-11) — create a page,
     // PATCH {in_trash:true} once (200, in_trash:true), then PATCH it AGAIN:
     //   400 {"code":"validation_error","message":"Can't edit block that is
@@ -893,7 +892,7 @@ describe("trashPage", () => {
 });
 
 // ---------------------------------------------------------------------------
-// The People database and the two Meetings properties beside it (Phase 4, T7)
+// The People database and the two Meetings properties beside it
 // ---------------------------------------------------------------------------
 
 const personPage = {

@@ -5,9 +5,9 @@ export interface ProjectMapping {
 }
 
 /**
- * The wiki mirror (Phase 2), assembled from the flat config keys
+ * The wiki mirror, assembled from the flat config keys
  * `docsDataSourceId` / `docsDatabaseId` / `wikiDir` / `wikiProject`. Present only
- * when `docsDataSourceId` is set — its absence is how a Phase 1 deployment says
+ * when `docsDataSourceId` is set — its absence is how a deployment without the wiki group says
  * "no wiki pass", and the pass then skips cleanly instead of failing.
  */
 export interface WikiConfig {
@@ -23,22 +23,22 @@ export interface WikiConfig {
   wikiDir: string;
   /**
    * The Notion `Project` select value every wiki row carries (config key
-   * `wikiProject`). Spec §1: the folder→Project mapping is config, never code.
+   * `wikiProject`). The folder→Project mapping is config, never code.
    */
   project: string;
 }
 
 /**
- * One desk folder ↔ the Notion `Project` select value its rows carry (Phase 3).
+ * One desk folder ↔ the Notion `Project` select value its rows carry.
  * Same "folder→Project is config, never code" rule as `projects[]` and
- * `wikiProject`; the push pass runs the Phase 2 engine once per entry.
+ * `wikiProject`; the push pass runs the wiki engine once per entry.
  */
 export interface DeskDirConfig {
   /** Vault-relative directory, bare (no leading or trailing slash). */
   dir: string;
   project: string;
   /**
-   * Dir-relative bare sub-paths carved out of this desk's scope (Phase 4).
+   * Dir-relative bare sub-paths carved out of this desk's scope.
    * `{dir: "acme", exclude: ["transcripts"]}` takes the vault path
    * `acme/transcripts/**` out of the desk pass entirely, so the transcript
    * pull engine (`transcripts`, below) can own that folder instead of two
@@ -51,15 +51,15 @@ export interface DeskDirConfig {
 }
 
 /**
- * The desk folders (Phase 3), assembled from the flat config keys `deskDirs` /
+ * The desk folders, assembled from the flat config keys `deskDirs` /
  * `twoWayDirs` / `mirrorFilePrefixes`. Present only when `deskDirs` is set — its
- * absence is how a Phase 2 deployment says "no desk folders", and the desk push
+ * absence is how a deployment without desk folders says "no desk folders", and the desk push
  * then skips cleanly, exactly like `wiki`.
  */
 export interface DesksConfig {
   deskDirs: DeskDirConfig[];
   /**
-   * The pilot dial (spec §18.5): only files under these dirs are eligible for
+   * The pilot dial: only files under these dirs are eligible for
    * `notion-sync enable-two-way`. Every entry must be one of `deskDirs`' dirs.
    * Being listed here does NOT flip any row on its own — direction changes only
    * through the explicit command, per file, after both fidelity legs pass.
@@ -67,14 +67,14 @@ export interface DesksConfig {
   twoWayDirs: string[];
   /**
    * Vault-path prefixes that stay one-way md→Notion whatever dir they live in
-   * (plan decision 8 — e.g. a folder's machine-generated files). `enable-two-way`
+   * (e.g. a folder's machine-generated files). `enable-two-way`
    * refuses them, so their direction never leaves `md_to_notion`.
    */
   mirrorFilePrefixes: string[];
 }
 
 /**
- * The transcript pull (Phase 4): Meetings rows land at
+ * The transcript pull: Meetings rows land at
  * `<vaultFolder>/<dir>/<date>-<slug>.md`, one `dir` shared by every project
  * (config key `transcripts.dir`, default "transcripts"). The `transcripts`
  * object itself is the presence flag — its absence is how a deployment says
@@ -95,7 +95,7 @@ export interface TranscriptsConfig {
 }
 
 /**
- * The People projection (Phase 4, spec §8.3): populated from
+ * The People projection: populated from
  * Twenty, keyed by email, read-mostly — never a third
  * contact store, and commercial-relationship promotion still happens in
  * Twenty. The `people` object itself is the presence flag; its absence is
@@ -135,10 +135,10 @@ export interface NotionSyncConfig {
   calendarWindowDays: number;
   /** The wiki one-way md→Notion pass. Absent ⇒ the pass logs a skip and does nothing. */
   wiki?: WikiConfig;
-  /** The desk folders (Phase 3). Absent ⇒ the desk push logs a skip and does nothing. */
+  /** The desk folders. Absent ⇒ the desk push logs a skip and does nothing. */
   desks?: DesksConfig;
-  /** The transcript pull (Phase 4). Absent ⇒ the pass logs a skip and does nothing. */
+  /** The transcript pull. Absent ⇒ the pass logs a skip and does nothing. */
   transcripts?: TranscriptsConfig;
-  /** The People projection (Phase 4). Absent ⇒ the pass logs a skip and does nothing. */
+  /** The People projection. Absent ⇒ the pass logs a skip and does nothing. */
   people?: PeopleConfig;
 }

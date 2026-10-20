@@ -45,8 +45,8 @@ describe("makeSignalNotify", () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     const [url, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
-    // Real intake: POST /ingest (services/signal-spine/server.ts), NOT /signals,
-    // and NOT the task brief's guessed {text: message} body.
+    // Real intake: POST /ingest, NOT /signals,
+    // and NOT a bare {text: message} body.
     expect(url).toBe("https://spine.example/ingest");
     expect(init.method).toBe("POST");
     const headers = init.headers as Record<string, string>;

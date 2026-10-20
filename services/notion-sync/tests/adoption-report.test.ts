@@ -1,8 +1,8 @@
-// T5 (Phase 4) — the adoption report (plan decision 2). Report only, zero
+// The adoption report. Report only, zero
 // writes: this engine reads two lists and returns buckets, and never gets the
 // chance to do anything else — see lib/adoption-report.ts's header for why that is
 // a property of the TYPE, and the forbidden-import test at the bottom of this file
-// for the proof T3's review demanded (its own precedent: archive-excluded.ts).
+// for the proof (the precedent is archive-excluded.ts).
 //
 // Every filename fixture below follows the shape of real exported vault filenames
 // (invented names, real structure) — this is deliberate. A matcher that only ever
@@ -33,10 +33,10 @@ function makeDeps(meetings: AdoptionMeetingRow[], vaultPaths: string[]): Adoptio
   };
 }
 
-/** Every count the brief demands, cross-checked against the result's own arrays —
+/** Every count the report promises, cross-checked against the result's own arrays —
  *  not just `summary`'s text, so a bug that corrupts the ARRAYS while leaving the
- *  string plausible-looking cannot pass silently. Four buckets since fix round 1
- *  (Critical) split title-only out of confident. */
+ *  string plausible-looking cannot pass silently. Four buckets: title-only is split
+ *  out of confident. */
 function assertCountsAddUp(result: Awaited<ReturnType<typeof runAdoptionReport>>): void {
   const ambiguousMeetings = result.ambiguous.reduce((n, g) => n + g.meetings.length, 0);
   const ambiguousFiles = result.ambiguous.reduce((n, g) => n + g.vaultPaths.length, 0);
@@ -46,7 +46,7 @@ function assertCountsAddUp(result: Awaited<ReturnType<typeof runAdoptionReport>>
     .toBe(result.totalVaultFiles);
 }
 
-describe("parseVaultFilename — the real, messy filenames the T5 brief documents", () => {
+describe("parseVaultFilename — the real, messy filenames", () => {
   it("the tidy <date>-<slug> shape", () => {
     expect(parseVaultFilename("acme/transcripts/2026-03-25-sample-review.md")).toEqual({
       vaultPath: "acme/transcripts/2026-03-25-sample-review.md",
@@ -106,7 +106,7 @@ describe("parseVaultFilename — the real, messy filenames the T5 brief document
     });
   });
 
-  it("fix round 1, Minor: a filename that is NOTHING but the bare 32-hex id (no title, no separator)", () => {
+  it("a filename that is NOTHING but the bare 32-hex id (no title, no separator)", () => {
     // TRAILING_PAGE_ID requires a separator BEFORE the id; a bare-id filename has
     // no character left for one. Confirmed live against the un-fixed engine: this
     // used to come back with pageIdHex: null.
@@ -119,7 +119,7 @@ describe("parseVaultFilename — the real, messy filenames the T5 brief document
   });
 
   it("NFC and NFD byte encodings of the same filename parse to the IDENTICAL titleSlug", () => {
-    // The box is Linux, the owner's clone is macOS — the same logical filename can
+    // The server is Linux, the owner's clone is macOS — the same logical filename can
     // arrive as different bytes. Constructed here rather than pasted, so the test
     // itself proves the two forms are byte-different before proving they compare equal.
     const nfc = "Example Company/transcripts/Sample Notion - Owen Example, Ivo , Åshild.md".normalize("NFC");
@@ -131,7 +131,7 @@ describe("parseVaultFilename — the real, messy filenames the T5 brief document
 });
 
 describe("runAdoptionReport — matching rules, over the real filenames", () => {
-  it("CONFIDENT: an exact page-id match — strictly better than fuzzy date+title (T5 brief)", async () => {
+  it("CONFIDENT: an exact page-id match — strictly better than fuzzy date+title", async () => {
     const PAGE = "00000000-0000-4000-8000-000000000003"; // dashed, as Notion's API returns it
     const PATH = "acme/transcripts/Owen & Dana @Today 13 00 00000000000040008000000000000003.md";
     const deps = makeDeps(
@@ -185,12 +185,12 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("TITLE-ONLY, a SEPARATE bucket from Confident (fix round 1, Critical): no date on either side to corroborate", async () => {
+  it("TITLE-ONLY, a SEPARATE bucket from Confident: no date on either side to corroborate", async () => {
     // The Sample Co file carries no date and no page id — title is the only signal.
-    // Fix round 1: this must NOT land in `confident` (that bucket is meant to be
+    // This must NOT land in `confident` (that bucket is meant to be
     // skimmed and trusted without opening a file, and a title-only match can be
     // a genuine false positive — see the "false positive" test below, executed
-    // against this same engine during review). It must still be reported, not
+    // against this same engine). It must still be reported, not
     // hidden — just in its own bucket, visibly lower-trust.
     const PATH = "Example Company/transcripts/Sample Notion - Owen Example, Ivo , Åshild.md";
     const deps = makeDeps(
@@ -210,8 +210,8 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Critical — the exact false positive the reviewer executed against this engine", async () => {
-    // Reviewer's own repro: a short, generic meeting title ("Board Sync") prefix-
+  it("the exact false positive: a generic title prefix-matching an unrelated file", async () => {
+    // A short, generic meeting title ("Board Sync") prefix-
     // matching an entirely unrelated personal notes file, with no competing
     // candidate on either side — before the fix this landed in `confident`,
     // skimmable-and-trustable, which is exactly wrong for a coincidental match.
@@ -254,7 +254,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     ]);
     expect(group.vaultPaths).toEqual([RAW, TIDY].sort());
     expect(group.candidates).toHaveLength(2);
-    // Every candidate is shown with why it matched (T5 brief) — one exact, one fuzzy.
+    // Every candidate is shown with why it matched — one exact, one fuzzy.
     const byPath = new Map(group.candidates.map((c) => [c.vaultPath, c]));
     expect(byPath.get(RAW)?.basis).toBe("page-id");
     expect(byPath.get(TIDY)?.basis).toBe("title-only");
@@ -280,8 +280,8 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Important — a page-id match reaches Confident even when an UNRELATED meeting's stray fuzzy edge touches a shared file", async () => {
-    // The reviewer's own adversarial repro, executed against the pre-fix engine:
+  it("a page-id match reaches Confident even when an UNRELATED meeting's stray fuzzy edge touches a shared file", async () => {
+    // The adversarial case:
     // M1 "Weekly Sync" exact-title-matches F1 "weekly-sync.md". M2 "Weekly Sync
     // Notes For September Board Update" carries its OWN page id (a different,
     // real file F2) but its long title also happens to prefix-start with F1's
@@ -321,7 +321,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Important — a page-id CONFLICT (two files embedding the same id) is never silently resolved either way", async () => {
+  it("a page-id CONFLICT (two files embedding the same id) is never silently resolved either way", async () => {
     // Pathological — real Notion page ids don't collide — but the peeling rule
     // has to not silently pick a winner if it ever happens (e.g. a botched
     // duplicate export). Both files claim the same meeting's id; neither is safe
@@ -340,7 +340,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Important — peeling runs to a FIXPOINT: one safe extraction can make a second one safe", async () => {
+  it("peeling runs to a FIXPOINT: one safe extraction can make a second one safe", async () => {
     // M1's page-id file F1 is uncontested, but M1 ALSO has a stray fuzzy edge to
     // F2 — and F2 is M2's OWN page-id file. On the first pass M2-F2 looks
     // contested (both M1's fuzzy edge and M2's page-id edge point at it) and is
@@ -375,8 +375,8 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Important — a meeting title arriving in NFD Unicode still matches a correctly-NFC'd vault file", async () => {
-    // Reviewer's own repro: transcriptSlug(NFC "Åshild") transliterates å->"aa" and
+  it("a meeting title arriving in NFD Unicode still matches a correctly-NFC'd vault file", async () => {
+    // transcriptSlug(NFC "Åshild") transliterates å->"aa" and
     // produces "...aashild", but transcriptSlug(NFD "Åshild") never sees the
     // precomposed "å" codepoint the transliteration table keys on (NFD spells it
     // as bare "a" + a separate combining ring), so the mark is simply stripped
@@ -398,7 +398,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("fix round 1, Minor — a file whose name embeds an id-shaped token that matches NO Meetings row is flagged, not silent", async () => {
+  it("a file whose name embeds an id-shaped token that matches NO Meetings row is flagged, not silent", async () => {
     const path = "acme/transcripts/Some Old Meeting @Today 10 00 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.md";
     const deps = makeDeps(
       [meeting({ pageId: "m-unrelated", title: "Something Completely Different", startsAt: null })],
@@ -494,7 +494,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     assertCountsAddUp(result);
   });
 
-  it("the whole 32-vs-50 shape at a workable scale: every green-bar fixture together, counts add up exactly", async () => {
+  it("the whole shape at a workable scale: every green-bar fixture together, counts add up exactly", async () => {
     const meetings: AdoptionMeetingRow[] = [
       meeting({ pageId: "p1", title: "Owen & Dana", startsAt: null }), // page-id
       meeting({ pageId: "p2", title: "Sample Review", startsAt: "2026-03-25T14:00:00.000+01:00" }), // date-title
@@ -519,7 +519,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
 
     expect(result.totalMeetings).toBe(5);
     expect(result.totalVaultFiles).toBe(6);
-    // Fix round 1: the Sample Co meeting is title-only (no date on either side) and
+    // The Sample Co meeting is title-only (no date on either side) and
     // now lands in its OWN bucket, not confident — see the dedicated test above
     // for why (a title-only match can be a genuine false positive).
     expect(result.confident.map((c) => c.vaultPath).sort()).toEqual([
@@ -535,7 +535,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
     expect(result.unmatchedMeetings.map((m) => m.pageId)).toEqual(["p5"]);
     expect(result.unmatchedFiles.map((f) => f.vaultPath)).toEqual(["acme/transcripts/analysis/analysis.md"]);
 
-    // The literal accounting the brief demands: every input on both sides is
+    // The literal accounting: every input on both sides is
     // spoken for exactly once, and the summary states every count in plain text.
     expect(result.summary).toBe(
       "5 Meetings rows, 6 vault files — 2 confident, " +
@@ -558,7 +558,7 @@ describe("runAdoptionReport — matching rules, over the real filenames", () => 
   });
 });
 
-describe("runAdoptionReport — has no write capability at all (T5's zero-writes proof, part 1 of 2)", () => {
+describe("runAdoptionReport — has no write capability at all (the zero-writes proof, part 1 of 2)", () => {
   // Part 2 — the WRAPPER (cli.ts's runAdoptionReportOnce) — lives in
   // tests/cli.test.ts, dynamically, for the exact reason archive-excluded.test.ts's
   // own version of this test states: cli.ts legitimately imports writeFileSync and
@@ -570,7 +570,7 @@ describe("runAdoptionReport — has no write capability at all (T5's zero-writes
     const forbidden = [
       "node:fs", "from \"fs\"", "vault-writer", "vault-files", "vault-walk",
       "readFileSync", "writeFileSync", "child_process", "execSync", "spawn",
-      // Beyond archive-excluded.ts's own list (T5 brief's explicit ask): this
+      // Beyond archive-excluded.ts's own list: this
       // engine also has no business importing the Notion HTTP adapter directly —
       // every read it needs arrives already resolved, through AdoptionReportDeps.
       "notion-client", "makeNotionClient",
@@ -586,9 +586,9 @@ describe("runAdoptionReport — has no write capability at all (T5's zero-writes
   it("AdoptionReportDeps has exactly two members, and both are reads — the structural half of the proof", () => {
     // Not a runtime assertion (TypeScript structural types have no runtime
     // footprint to introspect) — this is a literal transcription of the
-    // interface as a reviewer would read it, kept here so a future edit that
+    // interface as a reader would see it, kept here so a future edit that
     // widens the deps type has to touch this test and explain itself, rather
-    // than silently drifting past the property the brief asked to be load-bearing.
+    // than silently drifting past the property that is meant to be load-bearing.
     const here = dirname(fileURLToPath(import.meta.url));
     const src = readFileSync(join(here, "..", "lib", "adoption-report.ts"), "utf8");
     const depsBlock = src.slice(

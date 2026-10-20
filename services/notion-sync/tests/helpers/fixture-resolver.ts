@@ -6,7 +6,7 @@
 // pages they link to) have Notion pages already; everything else — `raw/` sources,
 // Obsidian-style capitalised links, wiki pages outside the fixture set — resolves
 // to null and must come out as an escaped literal. URLs use the id-no-dashes shape
-// the engine constructs from stored page ids (plan T4).
+// the engine constructs from stored page ids.
 import type { ResolvedWikiLink } from "../../lib/translate.js";
 
 const PAGES: Record<string, ResolvedWikiLink> = {

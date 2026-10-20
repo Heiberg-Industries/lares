@@ -5,13 +5,13 @@
 // translate.ts — the two files mirror each other's constants independently on
 // purpose, so a change to one is forced to be a deliberate, visible edit to both.
 //
-// Syntax authority: the same enhanced-markdown spec translate.ts cites (§4.1-4.3).
+// Syntax authority: the same enhanced-markdown spec translate.ts cites.
 //
 // Fidelity is asymmetric by construction and that is accepted, not a bug here:
 //   - push loses the distinction between a bare `[[x]]` link and an aliased
 //     `[[x|label]]` one (both become `<mention-page>` with only the resolved/alias
 //     label surviving) — so pull always reconstructs a BARE `[[target]]`, never
-//     an alias. Files that relied on alias text fail the fidelity gate (T4), which
+//     an alias. Files that relied on alias text fail the fidelity gate, which
 //     is exactly the gate's job; this file does not try to guess around it.
 //   - push also loses whether a callout's first line was an inline `[!type] title`
 //     or a separate body line — both flatten to the same <br>-joined child. Pull
@@ -28,7 +28,7 @@
 //
 // and again against the live wiki mirror, where a hard-wrapped source paragraph
 // came back as three "\n"-joined lines. So "\n" means BLOCK BOUNDARY here (the
-// in-block line break is `<br>`, spec §4.2), and the vault's own blank lines are
+// in-block line break is `<br>`), and the vault's own blank lines are
 // not recoverable from the markdown — that information no longer exists.
 //
 // This file therefore emits ONE canonical shape rather than mirroring whatever
@@ -100,7 +100,7 @@ export interface ResolvedWikiTarget {
    * as `[[target]]`, no further transformation. Deciding "bare stem when
    * unique, else directory-qualified" is the CALLER's job: only the caller's
    * index has visibility across the whole vault to know what's unique, so it
-   * belongs with the engine (T5+), not in this single-mention-at-a-time pure
+   * belongs with the engine, not in this single-mention-at-a-time pure
    * function.
    */
   target: string;
@@ -123,7 +123,7 @@ export interface ParsedNotionPage {
 }
 
 /** Must equal translate.ts's CALLOUT_STYLE map, inverted (icon|color -> type).
- *  Binding per spec §4.1, not a style preference — kept as a literal here rather
+ *  Binding, not a style preference — kept as a literal here rather
  *  than imported so the two files never silently drift without a diff on both. */
 const CALLOUT_STYLE_REVERSE: Record<string, string> = {
   "💡|blue": "summary",
@@ -292,7 +292,7 @@ function parsePlainText(text: string, resolvePage: Resolver, warnings: string[],
     out += unescapeAngleOnly(text.slice(cursor, m.index));
 
     if (tagName === "mention-page") {
-      // url= is what translate.ts emits; id= is accepted too since T4's live
+      // url= is what translate.ts emits; id= is accepted too since the live
       // probe against real Notion GET /markdown output hasn't run yet and
       // either attribute name is cheap to support now.
       const key = (/\burl="([^"]*)"/.exec(attrs) ?? /\bid="([^"]*)"/.exec(attrs))?.[1] ?? null;
@@ -707,7 +707,7 @@ function isInRanges(ranges: Array<[number, number]>, index: number): boolean {
  * Called by the engine on the reconstructed body BEFORE it is written into the
  * vault — the pull mirror of assertPushSafe. Throws on a Notion-signed expiring
  * URL (uploaded file/image links: they expire, and a stale one baked into a
- * vault file is worse than none — freeze the row, spec §4.4 as amended) and on
+ * vault file is worse than none — freeze the row) and on
  * a live `<transcript` block (no Obsidian-side construct to round-trip it into).
  *
  * Deliberately MORE precise than assertPushSafe, not just its mirror-image:
@@ -731,7 +731,7 @@ export function assertPullSafe(markdown: string): void {
     const line = normalized.slice(0, expiring.index).split("\n").length;
     throw new Error(
       `notion-sync: refusing to pull — Notion-signed expiring URL ("${expiring[0]}") at line ${line}; ` +
-        `it will go stale in the vault (spec §4.4, freeze the row)`,
+        `it will go stale in the vault (freeze the row)`,
     );
   }
 
@@ -749,7 +749,7 @@ export function assertPullSafe(markdown: string): void {
 // ---------------------------------------------------------------------------
 
 /**
- * The ONLY normalisation either leg of the fidelity gate (T4) applies before
+ * The ONLY normalisation either leg of the fidelity gate applies before
  * comparing a pulled body against the vault body it should match. Kept
  * deliberately minimal — every rule here is a fidelity difference the gate can
  * no longer see, so each one is named:

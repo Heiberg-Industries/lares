@@ -1,5 +1,5 @@
 // A transcript across CONSECUTIVE TICKS — the test this task's brief calls its
-// highest-risk area, because T3b was bitten TWICE by a change that looked right for
+// highest-risk area, because the create path was bitten TWICE by a change that looked right for
 // one tick and then froze or churned on the next.
 //
 // A one-tick test cannot see any of what this file is for. Three separate mechanisms
@@ -69,7 +69,7 @@ const TRANSCRIPT_OPTS: TranscriptSyncOptions = {
 };
 // Built through the REAL derivation, never a `() => true` stub — the engine probes
 // this predicate with a sentinel and refuses to run creates against one that is not
-// scoping anything (T3b fix round 2).
+// scoping anything.
 const APPLY_OPTS = { dryRun: false, inCreateScope: makeCreateScope(CONFIG) };
 
 const PAGE = "meeting-1";
@@ -103,7 +103,7 @@ function makeWorld() {
   let nextProposalId = 1;
 
   // Mutable: a retitle in Notion changes this property and nothing else, which is
-  // the case the path-fixing rule (decision 1) exists for.
+  // the case the path-fixing rule exists for.
   const meeting: TranscriptMeetingRow = {
     pageId: PAGE, title: TITLE, project: "Alpha", startsAt: "2026-08-05T09:00:00.000+02:00",
   };
@@ -218,7 +218,7 @@ function makeWorld() {
       // ON CONFLICT (notion_page_id): adopt the existing row (and only the columns
       // the real statement names), or insert a fresh docs row. The md_hash CASE is
       // modelled exactly — a meetings row takes the WRITTEN-BODY hash, a docs row
-      // keeps the render hash — because that distinction is the whole of N1.
+      // keeps the render hash — because that distinction is the whole point.
       const existing = store.get(doc.pageId);
       if (existing !== undefined) {
         existing.vaultPath = doc.vaultPath;
@@ -423,7 +423,7 @@ describe("a transcript, rejected", () => {
     expect(w.notionWrites).toEqual([]);
     expect(w.notion.get(PAGE)).toBe(MARKDOWN);
 
-    // TICKS 3, 4 and 5 — he is never asked again. Without a decline record this is
+    // TICKS 3, 4 and 5 — the owner is never asked again. Without a decline record this is
     // where the same DM would arrive every hour, forever. Asserted BEFORE the
     // mechanism below, so a regression shows up as the consequence the owner would
     // actually feel rather than as a hash that moved.
@@ -456,7 +456,7 @@ describe("a transcript, rejected", () => {
 });
 
 describe("a transcript whose edit was rejected, and then edited again", () => {
-  // N1 (review round 2). `notion_hash` means "the content this row has ACCOUNTED
+  // `notion_hash` means "the content this row has ACCOUNTED
   // FOR", and a rejected update deliberately advances it to the DECLINED content
   // while the file on disk still holds the previous version — that is what stops
   // pull re-asking. So a hand-edit test that compares the file against
@@ -517,14 +517,12 @@ describe("a transcript whose edit was rejected, and then edited again", () => {
 });
 
 describe("a transcript whose derived path is already tracked by a DOCS row", () => {
-  // THE EIGHTH instance of this phase's signature failure — correct for one tick,
-  // wrong on the next — and the first found BETWEEN two passes rather than inside
-  // one. T6 wrote the same reasoning down for the OTHER create proposer
-  // (notion-born-sync.ts, review round 1, Important B) and it was never carried
-  // back here.
+  // The failure class here is "correct for one tick, wrong on the next" — found
+  // BETWEEN two passes rather than inside one. The OTHER create proposer
+  // (notion-born-sync.ts) guards against the same thing.
   //
-  // The shape is not hypothetical, it is the live database: Phase 3's sweep put 32
-  // docs rows on `*/transcripts/*` paths, T3 deliberately ORPHANS those rows and
+  // The shape is not hypothetical, it is a real database: an earlier sweep can leave
+  // docs rows on `*/transcripts/*` paths, `archive-excluded` deliberately ORPHANS those rows and
   // leaves the files, and the file disappears the moment the owner acts on the
   // transcript pass's own skip text ("adoption is a decision for a human") by
   // deleting or renaming one. From that tick on, the disk check is quiet and only
@@ -536,7 +534,7 @@ describe("a transcript whose derived path is already tracked by a DOCS row", () 
   function seedLegacyDocsRow(w: ReturnType<typeof makeWorld>): void {
     w.store.set("legacy-doc-1", {
       pageId: "legacy-doc-1", vaultPath: PATH, target: "docs", direction: "md_to_notion",
-      // Exactly what T3's `archive-excluded` leaves behind: the Notion page is in the
+      // Exactly what `archive-excluded` leaves behind: the Notion page is in the
       // trash, the row is orphaned, the vault_path stays.
       state: "unmatched", mdHash: "legacy-render", notionHash: null, notionLastEdited: null,
     });
@@ -560,7 +558,7 @@ describe("a transcript whose derived path is already tracked by a DOCS row", () 
     // Nothing was ever asked, so nothing was ever refused.
     expect(w.proposals).toEqual([]);
     expect(w.vault.size).toBe(0);
-    // The docs row is untouched — this pass does not clean up after Phase 3.
+    // The docs row is untouched — this pass does not clean up after the earlier sweep.
     expect(w.store.get("legacy-doc-1")?.vaultPath).toBe(PATH);
     // …and every tick said why, naming the page holding the path so the owner can find it.
     expect(skips).toHaveLength(5);

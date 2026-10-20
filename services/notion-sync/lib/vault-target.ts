@@ -1,7 +1,7 @@
-// The ONE definition of "may this service CREATE a vault file at this path"
-// (Phase 4, T3b). A create is the first write in this service whose target path is
-// derived from Notion CONTENT — a Meetings row's title (T4), a Notion-born page's
-// title and Folder (T6) — rather than from a file the push pass already found on
+// The ONE definition of "may this service CREATE a vault file at this path".
+// A create is the first write in this service whose target path is
+// derived from Notion CONTENT — a Meetings row's title, a Notion-born page's
+// title and Folder — rather than from a file the push pass already found on
 // disk. Everything else this service writes, it first read; a create writes
 // somewhere nothing has ever been.
 //
@@ -27,7 +27,7 @@
  * SEGMENT anywhere in the path — `_archive/x.md` and `acme/_archive/x.md` are both
  * refused, `_archived-notes/x.md` is not.
  *
- * - `_archive` — retired files (spec §7). Creating one there is creating something
+ * - `_archive` — retired files. Creating one there is creating something
  *   already declared dead, where nothing will ever look for it.
  * - `_meta` — vault machinery, not content.
  */
@@ -80,7 +80,7 @@ function byteLength(text: string): number {
  * a character in half.
  *
  * Exported alongside the budgets because a proposer that DERIVES a filename from a
- * Notion title (T4's slug, T6's) has to fit it before asking, and the alternative —
+ * Notion title (a transcript's slug, a Notion-born page's) has to fit it before asking, and the alternative —
  * each proposer carrying its own idea of the limit — is how the two ends of one rule
  * drift apart. `refuseVaultTarget` stays the arbiter; this is what lets a caller
  * arrive with something it will accept.
@@ -104,16 +104,16 @@ export function truncateToBytes(text: string, maxBytes: number): string {
 
 /**
  * One vault path (or one filename) in the form BOTH filesystems the vault lives on
- * agree about (Phase 4, T6 review rounds 1–2).
+ * agree about.
  *
  * Every other rule in this module is a question about a string that a pure function
  * can settle. "Is something already there?" is the one that is asked of the KERNEL —
- * and the kernel answers for the filesystem it is running on. The box is Linux/ext4
+ * and the kernel answers for the filesystem it is running on. The server is Linux/ext4
  * and case-SENSITIVE; the machine the owner actually reads the vault on is APFS and is
  * not. So a hand-written `acme/Notater.md` genuinely does not exist at
- * `acme/notater.md` on the box: the `lstat` guard's answer is correct, the `O_EXCL`
- * write succeeds, and the commit the box pushes carries BOTH files. One `git pull`
- * later they are one path, his note is shadowed in the working tree and staged as
+ * `acme/notater.md` on the server: the `lstat` guard's answer is correct, the `O_EXCL`
+ * write succeeds, and the commit the server pushes carries BOTH files. One `git pull`
+ * later they are one path, the owner's note is shadowed in the working tree and staged as
  * modified-to-Notion's-content, and an Obsidian Git auto-commit overwrites it in
  * history. The guard was never violated; it was routed around by the filesystem.
  *
@@ -134,17 +134,17 @@ export function collisionKey(name: string): string {
 
 /**
  * THE predicate — one question, asked identically on both sides of the queue
- * (T6 review round 3): **is any of these existing vault paths the SAME FILE as
+ * **is any of these existing vault paths the SAME FILE as
  * `target` on a case-/normalisation-insensitive filesystem?** Returns the colliding
  * path (so a refusal can name it) or null.
  *
  * A shared `collisionKey` was not enough, and that is the mistake this replaces.
- * Round 2 shared the key and then built two different predicates on it: the propose
+ * Sharing only the key and then building two different predicates on it left a gap: the propose
  * side compared WHOLE PATHS against the whole vault, the apply side compared
  * BASENAMES inside the literally-spelled parent. Those disagree the moment the
  * variant is in an ancestor DIRECTORY — `acme/Prosjekt/` versus `acme/prosjekt/` —
  * because the apply side's `readdir` of the literal spelling ENOENTs, returns
- * nothing, and the create lands. Two directories and two files on the box; one of
+ * nothing, and the create lands. Two directories and two files on the server; one of
  * each on the Mac; the hand-written note shadowed on the next pull. Byte for byte
  * the destruction the guard was added to prevent.
  *
@@ -172,7 +172,7 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 /**
  * Is this vault-relative path one a create may target? Returns `null` when it is, or
  * a short human-readable REASON when it is not — phrased to be shown to the owner in a
- * DM or on the console card, because a refused create he cannot explain is
+ * DM or on the console card, because a refused create the owner cannot explain is
  * indistinguishable from a broken sync.
  *
  * Each refusal, and why it is here rather than left to the filesystem:
@@ -212,7 +212,7 @@ export function refuseVaultTarget(vaultPath: string): string | null {
 
   // The machine-owned names are matched case-INSENSITIVELY. On a case-insensitive
   // filesystem (an APFS Mac, where the vault is also cloned) `WIKI/note.md` is the
-  // mirror; on the Linux box it is a different folder. Refusing both costs nothing
+  // mirror; on a Linux server it is a different folder. Refusing both costs nothing
   // and means the guard does not depend on which machine it happens to run on.
   const segments = vaultPath.split("/");
   for (const segment of segments) {

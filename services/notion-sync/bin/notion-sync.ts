@@ -1,48 +1,46 @@
 #!/usr/bin/env tsx
 /**
  * bin/notion-sync.ts — the container entrypoint for the notion-sync passes:
- * attendees (Phase 1), transcripts and notion-born (Phase 4), then pull → apply → push wiki →
- * push each desk dir (Phase 3), and finally people (Phase 4), in that order per tick. The
+ * attendees, transcripts and notion-born, then pull → apply → push wiki →
+ * push each desk dir, and finally people, in that order per tick. The
  * order is not arbitrary — see `tickPasses` in lib/cli.ts for why push may never run before
  * pull, and why people runs last.
  *
  *   tsx bin/notion-sync.ts --once      → run one tick now (manual / verification)
  *   NOTION_SYNC_LIVE=1 tsx bin/...     → daemon: run a tick every NOTION_SYNC_TICK_MS
  *
- * Plus the nine one-shot operator modes (spec §18.5, §6; T3, T4, T5, T6 and T7 are
- * Phase 4/). They live here, not only in the commander CLI, because the box has
- * no lares checkout and the shared image ships THIS package only — this file is the
+ * Plus the one-shot operator modes. They live here, not only in the commander CLI, because the server has
+ * no source checkout and the shared image ships THIS package only — this file is the
  * sole way to run them where the vault, the database and the Notion token actually
- * are. **Every operator command the docs name must appear in this list**; four of
- * them did not until the final fix wave, which made the runbook's own steps
- * un-runnable on the box:
+ * are. **Every operator command the docs name must appear in this list**; a command
+ * missing here makes the runbook's own steps un-runnable on the server:
  *
  *   tsx bin/notion-sync.ts --fidelity-record        → record the offline gate's verdicts
  *   tsx bin/notion-sync.ts --reconcile              → go-live: read all, stamp, baseline
  *   tsx bin/notion-sync.ts --enable-two-way <dir>   → flip a desk dir's rows, per file
  *   tsx bin/notion-sync.ts --resolve <path> --keep md|notion
- *                                                   → decide a frozen row (spec §6)
+ *                                                   → decide a frozen row
  *   tsx bin/notion-sync.ts --archive-excluded [--no-dry-run]
- *                                                   → T3: trash the Docs rows config's
+ *                                                   → trash the Docs rows config's
  *                                                     deskDirs[].exclude carved out of
  *                                                     desk scope, orphan their state rows
- *   tsx bin/notion-sync.ts --adoption-report        → T5: match the 32 pre-existing vault
+ *   tsx bin/notion-sync.ts --adoption-report        → match pre-existing vault
  *                                                     transcripts against the Meetings
  *                                                     rows. READS ONLY — no database
  *                                                     connection is opened at all
- *   tsx bin/notion-sync.ts --transcripts [--dry-run] → T4: run just that pass
- *   tsx bin/notion-sync.ts --notion-born [--dry-run] → T6: run just that pass
- *   tsx bin/notion-sync.ts --people [--dry-run]      → T7: run just that pass
+ *   tsx bin/notion-sync.ts --transcripts [--dry-run] → run just that pass
+ *   tsx bin/notion-sync.ts --notion-born [--dry-run] → run just that pass
+ *   tsx bin/notion-sync.ts --people [--dry-run]      → run just that pass
  *   tsx bin/notion-sync.ts --approve <path>          → approve the open proposal for <path>
  *   tsx bin/notion-sync.ts --reject <path>           → reject the open proposal for <path>
  *
  * `--approve`/`--reject` are the same fix as `--resolve`, for the same reason:
  * the commander `approve <path>` / `reject <path>` subcommands (lib/cli.ts) had no
- * caller left once the lares CLI was deleted in the split, and typing that form on
- * the box — a bare positional argument — used to fall through silently into daemon
+ * caller left once the standalone CLI was removed, and typing that form on
+ * the server — a bare positional argument — used to fall through silently into daemon
  * mode instead of erroring.
  *
- * The three single-pass flags exist because the Phase 4 deploy enables one pass at a
+ * The three single-pass flags exist because a rollout enables one pass at a
  * time and previews each before enabling it: `--once --dry-run` would rehearse ALL
  * of them, including a ~400-day calendar re-scan, to preview one.
  *
@@ -57,14 +55,13 @@
  * odd one out in the OTHER direction: it trashes real Notion pages, so dry-run
  * is its DEFAULT — nothing is written unless `--no-dry-run` is passed — and it
  * REFUSES `--no-dry-run` alongside the shared --dry-run/NOTION_SYNC_DRY_RUN
- * safety net (fix round 1), the same posture as `--resolve` above: a genuine
+ * safety net, the same posture as `--resolve` above: a genuine
  * contradiction between "write" and "preview" must be a loud error, never a
  * silently-picked winner (see runOneShot below and archiveExcludedDryRun's own
  * doc comment, lib/cli.ts).
  *
- * Why a daemon and not a timer: the agent box has no cron container and no oneshot
- * service. Every scheduled job there (digest, dream, commercial-radar,
- * email-watcher, voice-learn) is a `restart: unless-stopped` container that ticks
+ * Why a daemon and not a timer: the stack has no cron container and no oneshot
+ * service. Every scheduled job is a `restart: unless-stopped` container that ticks
  * in-process. This matches that, so the job runs under the same non-root, read-only,
  * cap-dropped, internal-network containment as its neighbours instead of as a bare
  * root process on the host.
@@ -112,7 +109,7 @@ if (!Number.isFinite(TOLERANCE_MINUTES) || TOLERANCE_MINUTES <= 0) {
 // parseOneShotArgs refuses `--resolve --dry-run`; the env variant can only be
 // caught here, where the env is read. Same reason: `--resolve` carries out a
 // decision that has already been made, so a "rehearsal" of it would either show
-// the operator nothing or lie to them about what just happened. A box left with
+// the operator nothing or lie to them about what just happened. A server left with
 // NOTION_SYNC_DRY_RUN=1 must fail this command loudly, not write behind it.
 if (ONE_SHOT_MODE === "resolve" && DRY_RUN) {
   throw new Error(
@@ -121,8 +118,8 @@ if (ONE_SHOT_MODE === "resolve" && DRY_RUN) {
   );
 }
 
-// Same posture, same reason, for the other two decisions a human has already made
-//: parseOneShotArgs only catches a literal --dry-run flag (it is a pure
+// Same posture, same reason, for the other two decisions a human has already made:
+// parseOneShotArgs only catches a literal --dry-run flag (it is a pure
 // function of argv), so a standing NOTION_SYNC_DRY_RUN=1 needs this second check.
 if ((ONE_SHOT_MODE === "approve" || ONE_SHOT_MODE === "reject") && DRY_RUN) {
   throw new Error(
@@ -131,7 +128,7 @@ if ((ONE_SHOT_MODE === "approve" || ONE_SHOT_MODE === "reject") && DRY_RUN) {
   );
 }
 
-// The mirror-image refusal (fix round 1, Important 2): --no-dry-run is an
+// The mirror-image refusal: --no-dry-run is an
 // EXPLICIT request to write, and a standing NOTION_SYNC_DRY_RUN=1 (or an
 // explicit --dry-run) must not be silently overridden OR silently win either
 // — the operator asked for something the environment refuses. Without this,
@@ -183,7 +180,7 @@ async function runWikiPass(): Promise<number> {
 }
 
 /**
- * The Meetings transcripts Notion holds, proposed into the vault (T4). Writes
+ * The Meetings transcripts Notion holds, proposed into the vault. Writes
  * neither side itself; 0 when the pass is not configured (it logs its own skip).
  */
 async function runTranscriptPass(): Promise<number> {
@@ -197,7 +194,7 @@ async function runTranscriptPass(): Promise<number> {
 }
 
 /**
- * T6: pages a human created in Notion, proposed into the vault as NEW FILES. Writes
+ * Pages a human created in Notion, proposed into the vault as NEW FILES. Writes
  * neither side itself; 0 when the pass is not configured (it logs its own skip).
  */
 async function runNotionBornPass(): Promise<number> {
@@ -211,7 +208,7 @@ async function runNotionBornPass(): Promise<number> {
 }
 
 /**
- * T7: the people the Meetings rows name, projected from the source of truth, and
+ * The people the Meetings rows name, projected from the source of truth, and
  * the relation between the two. Writes only Notion (the People database and two
  * Meetings properties), never the vault and never the store — so it has no
  * bookkeeping to fail and returns its ERROR count instead, which is the same
@@ -302,7 +299,7 @@ const runTick = (): Promise<boolean> => runPassesContained(tickPasses({
 async function runOneShot(): Promise<boolean> {
   // The three single-pass previews. Each reuses the SAME runner the tick uses, so
   // the output an operator reads here is byte-for-byte the output the daemon would
-  // print — a second, prettier report for the box is a report that drifts. The exit
+  // print — a second, prettier report for the server is a report that drifts. The exit
   // code follows the tick's own contract: the runner returns the count of things
   // that did not reach the state database (people has no store of its own, so it
   // returns its ERROR count), and anything other than zero is a non-zero exit.
@@ -311,7 +308,7 @@ async function runOneShot(): Promise<boolean> {
   if (ONE_SHOT_MODE === "people") return await runPeoplePass() === 0;
 
   if (ONE_SHOT_MODE === "adoption-report") {
-    // T5. Never opens a database connection — see runAdoptionReportOnce's own doc
+    // Never opens a database connection — see runAdoptionReportOnce's own doc
     // comment for why that is a property of the function rather than a promise this
     // branch keeps, and cli.test.ts for the test that runs it with no Postgres
     // reachable at all. Nothing here may add one.
@@ -330,7 +327,7 @@ async function runOneShot(): Promise<boolean> {
       vaultPath: cfg.vaultPath,
       eligiblePrefixes: syncDirPrefixes(cfg),
       // The whole point of this mode: the table `enable-two-way` consults lives in
-      // the box's database, so the verdicts have to be recorded from the box.
+      // the server's database, so the verdicts have to be recorded from the server.
       record: true,
     });
     console.log(`notion-sync: ${run.summary}`);
@@ -342,7 +339,7 @@ async function runOneShot(): Promise<boolean> {
 
   if (ONE_SHOT_MODE === "resolve") {
     // The one operator action with no dry-run: the human has already decided
-    // which side wins, and the command writes only that side (spec §6).
+    // which side wins, and the command writes only that side.
     // Deliberately not wrapped — resolveFrozenDoc throws with the failing step
     // for a row that is not frozen, a path with no row, or a Notion write that
     // did not land, and the row stays frozen. Letting that escape prints the
@@ -355,7 +352,7 @@ async function runOneShot(): Promise<boolean> {
   // now runnable where the vault, the database and the token actually are. Both
   // print the SAME consequence line as the commander `approve <path>` / `reject
   // <path>` commands below (approveConsequence/rejectConsequence, shared with
-  // The chief of staff's DM, her hand and the console card) — one sentence, not a seventh
+  // the chief of staff's DM and the console card) — one sentence, not a seventh
   // author of it. Deliberately not wrapped, same reason as --resolve above:
   // approveProposal/rejectProposal throw when there is no open proposal for the
   // path, and that is exactly the report an operator wants to see.
@@ -373,10 +370,10 @@ async function runOneShot(): Promise<boolean> {
   if (ONE_SHOT_MODE === "archive-excluded") {
     // Extracted, pure and tested — see archiveExcludedDryRun's own doc comment
     // (lib/cli.ts) for the polarity table and why this line, not a bespoke
-    // expression here, decides it (fix round 1, Important 1).
+    // expression here, decides it.
     const dryRun = archiveExcludedDryRun(process.argv, DRY_RUN);
     const result = await syncArchiveExcludedOnce({ dryRun });
-    // "would trash" vs "trashed" (fix round 1, Important 2) — result.dryRun,
+    // "would trash" vs "trashed" — result.dryRun,
     // not the local `dryRun` const, is the source of truth: it is what the
     // engine actually did.
     const verb = result.dryRun ? "would trash" : "trashed";

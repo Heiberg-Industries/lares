@@ -1,4 +1,4 @@
-// The pull direction (Phase 3 plan T5, spec §18): what Notion says about pages
+// The pull direction: what Notion says about pages
 // this service owns, and what to do about it. Vendor-neutral and pure in exactly
 // the sense wiki-sync.ts is — every side effect arrives as an injected dep, every
 // failure is contained per document, the ordering is deterministic (sorted), and
@@ -7,12 +7,12 @@
 // The two things this engine must never get wrong:
 //
 //   1. "Notion changed" is `sha256(GET /markdown) != stored notion_hash` — NEVER a
-//      timestamp comparison (spec §3). last_edited_time is only the cheap
+//      timestamp comparison. last_edited_time is only the cheap
 //      pre-filter that decides whether the read is worth doing, and because Notion
 //      stamps it at MINUTE granularity the filter re-reads on `>=`, not `>`.
 //   2. It never merges. A mirror row's Notion-side edit is reverted from the
 //      vault; a desk row's becomes a PROPOSAL a human approves; anything ambiguous
-//      freezes (spec §6/§7). Nothing here deletes, and nothing here writes the
+//      freezes. Nothing here deletes, and nothing here writes the
 //      vault — that is runApplySync's job, after the 👍.
 import {
   assertPushSafe,
@@ -33,21 +33,21 @@ import type {
 } from "./store.js";
 
 /**
- * The push pass's property set, including the Phase 3 `Sync` stamp — the select
- * property added to the Docs DB by hand at deploy (plan decision 5), carrying the
+ * The push pass's property set, including the `Sync` stamp — the select
+ * property on the Docs DB, carrying the
  * mirror or desk marker.
  *
- * An alias, not an extension, since T7: the stamp moved INTO WikiDocProps when
+ * An alias, not an extension: the stamp moved INTO WikiDocProps when
  * the push pass started carrying it too (a created or patched desk row must land
  * stamped, not wait for the next `reconcile`). Kept as a distinct name because
  * this direction's vocabulary reads better at its own call sites, and because
- * every T5 signature already names it.
+ * every pull signature already names it.
  */
 export type PullDocProps = WikiDocProps;
 
 /**
- * One vault file as the PUSH pass would send it. Produced by the composition root
- * (T7), which is the only layer that knows the dir→project mapping and the
+ * One vault file as the PUSH pass would send it. Produced by the composition root,
+ * which is the only layer that knows the dir→project mapping and the
  * per-direction `sync` stamp — putting that config lookup in the engine would be
  * exactly the deployment-specific knowledge the neutrality rule keeps out.
  *
@@ -106,7 +106,7 @@ export function splitFrontmatter(source: string): { block: string; body: string 
 
 /**
  * The sha256 of a vault file's BODY — everything under the frontmatter block, with
- * the file's own final newline removed (Phase 4, T4).
+ * the file's own final newline removed.
  *
  * Lives beside splitFrontmatter, and for the same stated reason: two sides need the
  * exact same answer and must never disagree. The apply engine computes it over the
@@ -139,7 +139,7 @@ export interface PageWriteDeps {
 
 /**
  * "The vault wins" as one unit: replace the page's body, refresh its properties,
- * then read the page back and hash what NOTION stored (spec §6).
+ * then read the page back and hash what NOTION stored.
  *
  * The ordering is the hash-after-write rule and it is load-bearing: hashing the
  * body we pushed instead of the one Notion kept makes the next tick see a phantom
@@ -147,7 +147,7 @@ export interface PageWriteDeps {
  * refresh must never leave the title, frontmatter or `Sync` stamp describing the
  * previous version.
  *
- * Exported and shared (T9 fix wave) because there are now two callers that must
+ * Exported and shared because there are two callers that must
  * not drift: this engine's mirror revert, and `notion-sync resolve --keep md` in
  * cli.ts. It reports its failing step rather than throwing so each caller can
  * classify it in its own idiom — the engine's contained per-doc `fail`/freeze, the
@@ -179,8 +179,7 @@ export interface PullSyncOptions {
    * Has config carved this vault path out of the desk scope (`deskDirs[].exclude`)?
    * Pass `makeDeskExclusion(cfg.desks)` — there is no other correct value.
    *
-   * REQUIRED, unlike every other option here, and that is the point (Phase 4,
-   * plan decision 5). This pass treats a row whose Notion page has vanished as
+   * REQUIRED, unlike every other option here, and that is the point. This pass treats a row whose Notion page has vanished as
    * "recreate the page from the vault" (handleMissingPage, for any row that is
    * not two-way), so a call site that forgot to scope its rows would recreate
    * every page a human had just deliberately deleted, on the next tick, forever.
@@ -190,16 +189,16 @@ export interface PullSyncOptions {
   isExcluded: (vaultPath: string) => boolean;
   /** Wall clock for the stale-freeze age check. Injected so tests are deterministic. */
   now?: Date;
-  /** How long a freeze may sit before every tick re-pings it (spec §6). */
+  /** How long a freeze may sit before every tick re-pings it. */
   staleFreezeDays?: number;
   /**
    * How long an ANNOUNCED proposal may sit undecided before it escalates to
-   * #lares-alerts (spec §20.4). This is what replaced the retired per-proposal ping:
+   * #lares-alerts. This is what replaced the retired per-proposal ping:
    * The chief of staff asking is routine, the chief of staff asking and getting no answer is not.
    */
   staleProposalHours?: number;
   /**
-   * Reconciliation mode (spec §18.5, driven by `notion-sync reconcile`): read
+   * Reconciliation mode: read
    * EVERY synced row's page once, ignoring both the `lastEditedTime >=` timestamp
    * pre-filter and the "no baseline yet" skip.
    *
@@ -219,7 +218,7 @@ export interface PullSyncDeps {
   queryDocs: () => Promise<RemoteDocRow[]>;
   getDeskRows: () => Promise<Map<string, DeskRow>>;
   getFrozenDocs: () => Promise<FrozenDocRow[]>;
-  /** Proposals still pending long past a decision — announced or never announced (§20.4). */
+  /** Proposals still pending long past a decision — announced or never announced. */
   getStaleProposals: (hours: number) => Promise<StaleProposalRow[]>;
   getOpenProposals: () => Promise<ProposalRow[]>;
   /**
@@ -237,7 +236,7 @@ export interface PullSyncDeps {
   renderDoc: (vaultPath: string) => Promise<RenderedDoc>;
   /** Raw vault bytes — only for the diff preview; the engine never writes the vault. */
   readVaultFile: (vaultPath: string) => Promise<string>;
-  /** git mv to `_archive/<path>` (spec §7). The one vault mutation pull can cause. */
+  /** git mv to `_archive/<path>`. The one vault mutation pull can cause. */
   archiveVaultFile: (vaultPath: string) => Promise<void>;
   insertProposal: (input: ProposalInput) => Promise<number>;
   setProposalState: (id: number, state: ProposalState) => Promise<void>;
@@ -271,9 +270,9 @@ export interface PullSyncResult {
   archived: number;
   skipped: number;
   errored: number;
-  /** Rows re-pinged because their freeze has gone stale (spec §6). */
+  /** Rows re-pinged because their freeze has gone stale. */
   stalePinged: number;
-  /** Proposals escalated because the chief of staff asked and got no answer (spec §20.4). */
+  /** Proposals escalated because the chief of staff asked and got no answer. */
   staleProposalsPinged: number;
   /** Notion outcomes that could not be recorded locally — see wiki-sync.ts. */
   bookkeepingFailed: number;
@@ -316,7 +315,7 @@ const PAGE_ID_IN_TEXT = /[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-
  * trimmed lowercase string so a non-UUID id (a fixture, a hand-made row) still
  * matches itself.
  *
- * Exported (T7) so `notion-sync reconcile` joins its fresh `queryDocs` reading to
+ * Exported so `notion-sync reconcile` joins its fresh `queryDocs` reading to
  * the store's rows by the SAME notion of page identity this engine uses — a
  * second, subtly different join would silently baseline the wrong rows.
  */
@@ -341,7 +340,7 @@ function errorMessage(err: unknown): string {
  * Built here rather than injected: the map it needs IS getDeskRows's snapshot, and
  * a second source for it could disagree with the rows this tick is reasoning about.
  *
- * Exported (T6) so `notion-sync resolve <path> --keep notion` can build the same
+ * Exported so `notion-sync resolve <path> --keep notion` can build the same
  * resolver from its own getDeskRows() read, one-off, without duplicating this logic.
  */
 export function buildPageResolver(rows: Map<string, DeskRow>): (urlOrId: string) => ResolvedWikiTarget | null {
@@ -372,7 +371,7 @@ export function buildPageResolver(rows: Map<string, DeskRow>): (urlOrId: string)
  * "after" is what Notion returned (does not) — so a naive split gave the before
  * side one extra "" element that no edit ever produced. It could never be part of
  * the common suffix, so EVERY preview this service has ever shown carried a
- * spurious `- ` line at the end of its removals (T5 minor, fixed in the T9 wave).
+ * spurious `- ` line at the end of its removals.
  */
 function diffLines(text: string): string[] {
   if (text === "") return [];
@@ -388,7 +387,7 @@ function diffLines(text: string): string[] {
  * someone edited by hand in Notion the trimmed window IS the edit, and being
  * wrong here costs a slightly longer preview, never a wrong write.
  *
- * Exported (T6) so `notion-sync proposals` renders the SAME preview text this
+ * Exported so `notion-sync proposals` renders the SAME preview text this
  * engine already pings on propose — one algorithm, not two that could drift.
  */
 export function diffPreview(before: string, after: string): string {
@@ -431,8 +430,8 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
 
   // The same posture as the push pass's empty-listing guard: an empty Docs query
   // in front of a populated store is what a broken token, a wrong data-source id
-  // or a half-finished pagination looks like — never "a human trashed all 457
-  // pages". Treating it as the latter would archive the vault.
+  // or a half-finished pagination looks like — never "a human trashed every
+  // page". Treating it as the latter would archive the vault.
   if (remoteRows.length === 0 && rows.size > 0) {
     throw new Error(
       `notion-sync: the Docs query returned 0 rows while ${rows.size} doc row(s) exist — ` +
@@ -511,7 +510,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
   }
 
   /**
-   * Vault wins, always (spec §6): re-render the file and overwrite the page with
+   * Vault wins, always: re-render the file and overwrite the page with
    * it, through the shared overwritePageFromVault composition. Used for a mirror
    * row whose Notion copy drifted; `resolve --keep md` is the same three writes
    * from the CLI side, which is why they live in one exported function.
@@ -536,7 +535,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       // Notion refuses a patch when a human has nested a page under this one and
       // allow_deleting_content is false. That is the never-delete posture working,
       // not a flaky API call — so it freezes with an instruction instead of walking
-      // the 3-strike path to a generic 'error' (spec §18.1).
+      // the 3-strike path to a generic 'error'.
       if (outcome.step === "patch" && CHILD_CONTENT_ERROR.test(errorMessage(outcome.error))) {
         await freeze(
           vaultPath, MIRROR_CHILD_REASON,
@@ -592,7 +591,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     // no watermark move — and let apply land it.
     //
     // Asked BEFORE the conflict test below, and that order is the whole reason
-    // `resolve` converges (C1, final review). `resolve --keep notion` leaves
+    // `resolve` converges. `resolve --keep notion` leaves
     // exactly this shape behind: a forced proposal for the current Notion
     // content on a row whose vault render no longer matches the stored md_hash —
     // the very mismatch that froze it. With the conflict test first, the next
@@ -600,7 +599,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     // non-'synced' rows: the approved proposal could never land, and a second
     // `resolve` reproduced the same loop forever.
     //
-    // ONLY approved, and that is the narrow part (C1 re-review): apply runs
+    // ONLY approved, and that is the narrow part: apply runs
     // EARLIER IN THIS SAME TICK and consumes an approved proposal, so the row's
     // md_hash is stale for minutes, not indefinitely. Nothing consumes a PENDING
     // one — it waits on a human — so deferring the conflict question for it
@@ -619,7 +618,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     let body: string;
     try {
       const parsed = parseNotionPage(notionMarkdown, { resolvePage });
-      // The pull-direction rail (spec §4.4 as amended): an expiring Notion URL or a
+      // The pull-direction rail: an expiring Notion URL or a
       // live <transcript> block means the whole write-back is refused, not sanitised.
       assertPullSafe(parsed.body);
       body = parsed.body;
@@ -640,8 +639,8 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       return;
     }
 
-    // Both sides moved since the last successful sync: freeze-and-flag, never merge
-    // (spec §6). md_hash is what the last push stored; a different render now means
+    // Both sides moved since the last successful sync: freeze-and-flag, never merge.
+    // md_hash is what the last push stored; a different render now means
     // the vault changed too — and this engine has no business choosing a winner.
     if (docRenderHash(rendered) !== row.mdHash) {
       await freeze(
@@ -651,7 +650,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       return;
     }
 
-    // Never stack (§18.4), for the pending proposals the branch above no longer
+    // Never stack, for the pending proposals the branch above no longer
     // covers: an open proposal that already carries exactly this Notion content
     // IS this content's proposal, so it is left as it stands — no supersede, no
     // duplicate, no watermark move, which is what makes this tick-stable rather
@@ -672,9 +671,9 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       await tryRecord("supersede", vaultPath, () => deps.setProposalState(existing.id, "superseded"));
     }
 
-    // Computed BEFORE insertProposal (T6 review, F2) so the SAME preview text
+    // Computed BEFORE insertProposal so the SAME preview text
     // is both persisted (diff_preview — the console has no vault mount to
-    // re-derive one, spec §18.4's "diff visible" contract) and pinged, rather
+    // re-derive one, and the "diff visible" contract needs it) and pinged, rather
     // than two independent computations that could disagree. A failure here
     // degrades the preview to an empty "before" side, never the proposal
     // itself — the row above is already correct regardless.
@@ -684,7 +683,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     // body always comes back in the canonical block shape (translate-pull.ts's
     // OUTPUT SHAPE note), so diffing it against a vault file spaced any other
     // way reports every re-spaced line as a change and buries the human's
-    // actual edit — on a real file, a one-line edit read as 1549 changed lines.
+    // actual edit — on a real file, a one-line edit read as over a thousand changed lines.
     // Canonical vs canonical shows the edit and nothing else. The re-spacing is
     // still what gets WRITTEN; it is announced once, in the README and in the
     // `reflow` marker `enable-two-way` prints, rather than in every preview.
@@ -710,10 +709,10 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       });
     });
 
-    // NO PING HERE ANY MORE (spec §20.4). This was the only notify() call that
-    // asked a human to DECIDE something, and decisions now belong to the chief of staff: she polls the
-    // proposals table and opens a DM about each new one, where he can answer in words and
-    // 👍 her card. Pinging as well would mean he is told twice about the same thing on two
+    // NO PING HERE ANY MORE. This was the only notify() call that
+    // asked a human to DECIDE something, and decisions now belong to the chief of staff: it polls the
+    // proposals table and opens a DM about each new one, where the owner can answer in words and
+    // 👍 its card. Pinging as well would mean the owner is told twice about the same thing on two
     // surfaces, and #lares-alerts stops being a channel worth reading.
     //
     // The awareness pings all stay: freezes, errors, mirror reverts/recreates/archives,
@@ -722,7 +721,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     // stale-proposal escalation at the end of this pass: the spine hears about it only
     // when the NEW surface has failed to get a decision.
     //
-    // A log line stays, because the box's own logs are how an operator reconstructs a tick.
+    // A log line stays, because the server's own logs are how an operator reconstructs a tick.
     console.log(
       `notion-sync: proposed ${vaultPath}` +
       `${existing === undefined ? "" : " (supersedes an earlier proposal)"} — awaiting the owner's decision`,
@@ -730,22 +729,21 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
   }
 
   /**
-   * The page is gone from Notion — trashed or hard-archived by a human (spec §7 as
-   * amended). A MIRROR page is the vault's own projection, so it comes back; every
+   * The page is gone from Notion — trashed or hard-archived by a human. A MIRROR page is the vault's own projection, so it comes back; every
    * other direction is Notion-primary enough that a removal means "retire this
    * file", which is a move to `_archive/`, never a delete.
    *
-   * Asked as ownership rather than `!== two_way` (Phase 4): a `notion_to_md` row
+   * Asked as ownership rather than `!== two_way`: a `notion_to_md` row
    * whose page the owner trashed would otherwise be RECREATED from the vault — the
-   * service re-uploading a document he had just deleted at its source, and then
-   * pinning the row to the new page so his deletion could never take. Trashing the
+   * service re-uploading a document the owner had just deleted at its source, and then
+   * pinning the row to the new page so that deletion could never take. Trashing the
    * source of a projection means retire the projection.
    *
    * Excluded rows never reach here: the row snapshot is scoped once, at the single
-   * `getDeskRows` read (`withoutExcluded`, T2), so a carved-out path is absent from
+   * `getDeskRows` read (`withoutExcluded`), so a carved-out path is absent from
    * this loop entirely rather than filtered inside it. Retiring the rows an
-   * exclusion orphans is `notion-sync archive-excluded`'s deliberate one-off job
-   * (T3), never a side effect of a tick.
+   * exclusion orphans is `notion-sync archive-excluded`'s deliberate one-off job,
+   * never a side effect of a tick.
    */
   async function handleMissingPage(vaultPath: string, row: DeskRow): Promise<void> {
     if (vaultOwns(row.direction)) {
@@ -833,7 +831,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     const row = rows.get(vaultPath) as DeskRow;
 
     // A row that is frozen, erroring or orphaned is not in a state pull can reason
-    // about — push (or a human `resolve`) heals it first (§18.4). Frozen rows are
+    // about — push (or a human `resolve`) heals it first. Frozen rows are
     // still re-pinged below; that is the only attention they get.
     if (row.state !== "synced") {
       skipped += 1;
@@ -848,7 +846,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
 
     // No baseline yet. Two different situations hide behind that one NULL, and
     // treating them the same is what would make every file added after go-live
-    // invisible to this pass forever (T7 review, F1):
+    // invisible to this pass forever:
     //
     //   - The row HAS a real `notion_hash`. That hash came from a
     //     hash-after-write read, so the page and the store genuinely agree; all
@@ -889,7 +887,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
       continue;
     }
 
-    // THE test for "Notion changed" (spec §3). A timestamp moved for all sorts of
+    // THE test for "Notion changed". A timestamp moved for all sorts of
     // reasons — including this service's own write — but the content hash only
     // moves when the content did.
     const notionHash = sha256(notionMarkdown);
@@ -906,10 +904,10 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     // question is asked as ownership, not as `=== two_way`, because the else-branch
     // of that compare used to swallow `notion_to_md` and revert it as a mirror:
     // The owner's edit to a page Notion itself authored, overwritten from the vault
-    // copy, hourly, with no 👍 and a ping telling him the vault is the source.
+    // copy, hourly, with no 👍 and a ping telling the owner the vault is the source.
     //
     // Only a mirror is reverted. Everything else — negotiated (two_way) or
-    // Notion-owned (notion_to_md) — reaches him as a gated proposal, which is also
+    // Notion-owned (notion_to_md) — reaches the owner as a gated proposal, which is also
     // where the two-sided-conflict freeze lives (proposeDesk's md_hash check).
     if (vaultOwns(row.direction)) {
       await revertMirror(vaultPath, row, remote);
@@ -918,7 +916,7 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     }
   }
 
-  // Stale freezes (spec §6): a conflict nobody resolved is worse the longer it
+  // Stale freezes: a conflict nobody resolved is worse the longer it
   // sits, so it gets re-announced every tick past the threshold — once per row,
   // and never in dry-run.
   const staleCutoff = now.getTime() - staleMs;
@@ -931,9 +929,9 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
     );
   }
 
-  // Stale proposals (spec §20.4) — what REPLACES the retired per-proposal ping. the chief of staff
+  // Stale proposals — what REPLACES the retired per-proposal ping. The chief of staff
   // announced this one (announced_at is set) and it is still pending well past the
-  // threshold, so the conversational surface asked and got no answer: either he has not
+  // threshold, so the conversational surface asked and got no answer: either the owner has not
   // looked, or the chief of staff is down and the DM never really landed. That is worth #lares-alerts;
   // routine "here is an edit to approve" no longer is.
   //
@@ -944,9 +942,9 @@ export async function runPullSync(opts: PullSyncOptions, deps: PullSyncDeps): Pr
   // The message text is fixed per proposal so the spine's 24h fingerprint gate collapses
   // the repeats — same trick as the stale-freeze re-ping above, which sends identical
   // text every tick past its threshold.
-  // CONTAINED, unlike every other pass step here: this is the one dep that reads a column
-  // (`announced_at`) which does not exist until 017 is applied BY HAND on the box — i.e.
-  // it is guaranteed to be missing for some window after the image ships. Letting it throw
+  // CONTAINED, unlike every other pass step here: this is the one dep that reads the
+  // `announced_at` column, which a database whose schema lags the image (sql/001_baseline.sql
+  // not applied yet) does not have. Letting it throw
   // would abort the tick after all the real work was done, losing the pull summary line and
   // painting every cycle red, which is exactly the noise that hides a genuine failure.
   let staleProposals: StaleProposalRow[] = [];

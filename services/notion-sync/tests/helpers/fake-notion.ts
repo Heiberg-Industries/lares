@@ -1,5 +1,5 @@
 // A fake Notion over the exact HTTP surface lib/adapters/notion-client.ts speaks,
-// shared by every test that drives a real composition function (cli.test.ts's T7
+// shared by every test that drives a real composition function (cli.test.ts's reconcile
 // block, resolve-seam.test.ts). One fake, not several: the composition roots build
 // their own client from env, so the only seam a test has is `fetch` — and two
 // hand-rolled fakes of the same API would be free to disagree about the one thing
@@ -11,7 +11,7 @@ export interface FakeQueryRow {
   vaultPath: string;
   lastEditedTime: string;
   /**
-   * The three MEETINGS properties (Phase 4, T4), all optional so a Docs-query row
+   * The three MEETINGS properties, all optional so a Docs-query row
    * stays byte-identical to what this helper emitted before they existed. The
    * transcript pass reads the same data-source query endpoint through
    * `toMeetingRow`, so one fake still answers for both databases.
@@ -20,7 +20,7 @@ export interface FakeQueryRow {
   project?: string;
   startsAt?: string;
   /**
-   * The two DOCS properties a Notion-BORN page is placed by (Phase 4, T6) — `Name`
+   * The two DOCS properties a Notion-BORN page is placed by — `Name`
    * (the page title) and `Folder`. Optional for the same reason the three above are:
    * a row that omits them is byte-identical to what this helper emitted before they
    * existed. `Project` is shared with the meetings shape above, since it is the same
@@ -41,7 +41,7 @@ export interface FakeNotionState {
   markdown: Record<string, string>;
   /**
    * Successive data-source query responses; the LAST one repeats for every
-   * further query. That is what makes the §18.5 ordering assertion possible —
+   * further query. That is what makes the reconcile ordering assertion possible —
    * the second snapshot models the `last_edited_time` bump the stamping causes.
    */
   queries: FakeQueryRow[][];

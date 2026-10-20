@@ -1,4 +1,4 @@
-// The shape half of the create guard (T3b). Every case here is a path a Notion
+// The shape half of the create guard. Every case here is a path a Notion
 // title or Folder property could actually produce — this is the only write in the
 // service whose target is derived from content rather than from a file already on
 // disk.

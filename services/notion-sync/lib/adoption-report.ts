@@ -1,12 +1,12 @@
-// T5 (Phase 4): the adoption report — plan decision 2. Phase 3 swept 32
-// meeting-transcript files into Notion by accident; earlier Phase 4 tasks carved
-// them out of the sync scope and retired the bad Notion pages, but the 32 vault
-// files themselves were left exactly as they were. This engine answers ONE
-// question — "for each of the 50 Meetings rows, which (if any) of those 32 files
+// The adoption report. An earlier sweep can leave meeting-transcript files
+// in the vault that were once pushed into Notion by accident; the carve-out takes them
+// out of the sync scope and `archive-excluded` retires the bad Notion pages, but the
+// vault files themselves are left exactly as they were. This engine answers ONE
+// question — "for each Meetings row, which (if any) of those files
 // is plainly the same meeting?" — and answers it as a REPORT. It decides nothing.
 //
-// "Report only. Zero writes. the owner rules; adoption is a follow-up task, not this
-// one" (plan decision 2). That is not a policy this engine chooses to follow — it
+// Report only. Zero writes. The owner rules; adoption is a follow-up task, not this
+// one. That is not a policy this engine chooses to follow — it
 // is a property of its TYPE. AdoptionReportDeps below has exactly two members,
 // both reads (a Notion query, a file listing), and neither returns anything this
 // engine could hand to a write call even if it wanted to: no page id paired with a
@@ -14,16 +14,16 @@
 // call site cannot wire this engine to a write by mistake, because there is no
 // write-shaped dependency slot to put one in. tests/adoption-report.test.ts pins
 // this by scanning this file's own source for every write-capable import this
-// service owns (T3's precedent, `archive-excluded.ts`'s forbidden-import test) —
+// service owns (the precedent is `archive-excluded.ts`'s forbidden-import test) —
 // the filesystem module, the adapter that writes a vault file (it shells out to
 // git, so the module it uses to launch that subprocess is forbidden too), the
-// Notion HTTP adapter. tests/cli.test.ts pins the WRAPPER the same way T3's review demanded
-// after its first version scanned only the engine: a dynamic proof that
+// Notion HTTP adapter. tests/cli.test.ts pins the WRAPPER the same way
+// (a source scan of the engine alone is not enough): a dynamic proof that
 // `runAdoptionReportOnce` (cli.ts) touches neither the vault nor Notion's write
 // endpoints, because cli.ts itself legitimately writes files for other commands
 // and a source scan of the whole file would prove nothing.
 //
-// Read-only means no dry-run/live split (T5 brief) — there is only one mode, and
+// Read-only means no dry-run/live split — there is only one mode, and
 // no `--no-dry-run` exists for this command.
 //
 // Vendor-neutral and pure in the same sense as archive-excluded.ts/transcript-
@@ -37,11 +37,11 @@
 // want the same four fields today are not the same engine tomorrow.
 //
 // The one thing this file DOES import at runtime, deliberately: `transcriptSlug`
-// and `transcriptDate` from transcript-sync.ts (T4). The brief is explicit that
-// these should be reused, not reinvented — they already handle the vault's real
+// and `transcriptDate` from transcript-sync.ts. These
+// should be reused, not reinvented — they already handle the vault's real
 // mess (æøå transliterated before NFD, byte-length caps, `&`/em-dash/quote
 // collapsing) — and reusing them means a vault filename this report parses and a
-// vault filename T4 itself WRITES are guaranteed to slug identically, because they
+// vault filename the transcript pass itself WRITES are guaranteed to slug identically, because they
 // run through the same function. Both are pure, side-effect-free string
 // transforms; importing them pulls in no write capability (see the forbidden-
 // import test's own comment for why this is safe despite the source-scan
@@ -68,24 +68,22 @@ export interface AdoptionMeetingRow {
 /**
  * Why a (meeting, file) pairing was judged plausible, ordered strongest to
  * weakest — only to say, per candidate, what kind of evidence it is so the owner can
- * judge it themselves (T5 brief: "state your matching rules... so the owner can
- * judge the matcher, not just its output").
+ * judge it themselves (the owner can judge the matcher, not just its output).
  *
  * - "page-id": the filename embeds this meeting's own Notion page id. Exact, and
- *   GROUND TRUTH, not merely "strictly better than fuzzy" (T5 brief) — Notion's
- *   own id is not a hypothesis to be weighed against a fuzzy edge (fix round 1,
- *   Important 2). `peelSafePageIdMatches` below is what makes that true in code:
+ *   GROUND TRUTH, not merely "strictly better than fuzzy" — Notion's
+ *   own id is not a hypothesis to be weighed against a fuzzy edge. `peelSafePageIdMatches` below is what makes that true in code:
  *   a page-id pairing is settled Confident on its own terms and never gets
  *   dragged into an unrelated Ambiguous group just because ONE of its two nodes
  *   also has a weak fuzzy neighbour elsewhere. The one case it is NOT settled
  *   unilaterally is when the SAME meeting also fuzzy-matches a DIFFERENT file —
  *   see that function's own comment for why that has to stay Ambiguous (the
- *   brief's own two-files-one-meeting fixture is exactly this shape).
+ *   two-files-one-meeting fixture is exactly this shape).
  * - "date-title": the filename's leading date and its title slug both agree with
  *   the meeting's Date and title, exactly.
  * - "title-only": the title slug agrees, but at least one side has no date to
  *   corroborate it with. Weaker — and NEVER placed in the bucket meant to be
- *   skimmed and trusted without opening a file (fix round 1, Critical). See
+ *   skimmed and trusted without opening a file. See
  *   `AdoptionReportResult.titleOnly`.
  */
 export type MatchBasis = "page-id" | "date-title" | "title-only";
@@ -113,7 +111,7 @@ export interface MatchCandidate {
 
 /**
  * One meeting resolved to exactly one file, and vice versa — the shape both the
- * Confident bucket and the (fix round 1) title-only bucket carry. `basis` says
+ * Confident bucket and the title-only bucket carry. `basis` says
  * which: `confident` entries are always "page-id" or "date-title"; `titleOnly`
  * entries are always "title-only". Kept as one shape rather than two so a caller
  * (the CLI's print loop) has one row format to render regardless of which array
@@ -141,7 +139,7 @@ export interface AmbiguousMeetingRef {
 /**
  * Bucket 2: every meeting and every file connected by AT LEAST ONE plausible
  * pairing, when that connected set has more than one meeting or more than one
- * file. Covers both directions the brief names — one meeting with two candidate
+ * file. Covers both directions — one meeting with two candidate
  * files (the "same meeting in two files" case) and, symmetrically, one file that
  * two meetings could plausibly claim — under a single shape, because a reader
  * ruling on one is ruling on the other.
@@ -169,7 +167,7 @@ export interface UnmatchedFile {
   parsedTitleSlug: string;
   /**
    * A 32-hex Notion page id this filename embeds, if any — present here means the
-   * token was SEEN but matched no Meetings row (fix round 1, Minor). That is a
+   * token was SEEN but matched no Meetings row. That is a
    * different and more informative signal than "no id at all": it usually means
    * the Notion page this file came from was later deleted, or moved out of the
    * Meetings database, and is worth telling the owner rather than folding into the
@@ -181,8 +179,7 @@ export interface UnmatchedFile {
 export interface AdoptionReportDeps {
   /** Every Meetings row, read-only — the Notion HTTP adapter's `queryMeetings`, the same read the attendee
    *  and transcript passes make. No store dependency: this is a point-in-time comparison, not a sync pass,
-   *  and nothing about it needs to know what a prior tick already did (T5 brief's own "Read before writing"
-   *  list names only the Notion adapter and the vault file walkers — the store is deliberately not among them). */
+   *  and nothing about it needs to know what a prior tick already did (the store is deliberately not among the deps). */
   queryMeetings: () => Promise<AdoptionMeetingRow[]>;
   /** Every vault file under the configured transcript folders, as a vault-root-relative path
    *  ("acme/transcripts/2026-03-25-sample-review.md") — the composition root's job (cli.ts), which
@@ -196,12 +193,12 @@ export interface AdoptionReportResult {
   /** Skim-and-trust: exact page-id, or exact date+title with no competing candidate. */
   confident: ResolvedMatch[];
   /**
-   * (Fix round 1, Critical) A unique pairing whose ONLY evidence is a title-slug
+   * A unique pairing whose ONLY evidence is a title-slug
    * match with no date on either side to corroborate it — same shape as
    * `confident`, but deliberately a SEPARATE array rather than a `basis` field
    * inside `confident` a reader could skim past. A matcher can honestly produce a
    * false positive here (a coincidentally-similar-titled, wholly unrelated file —
-   * proven live against this engine, see the fix-round-1 report), so this bucket
+   * proven live against this engine), so this bucket
    * is "needs a quick look", never "trust without opening the file".
    */
   titleOnly: ResolvedMatch[];
@@ -225,15 +222,15 @@ export interface AdoptionReportResult {
 const TRAILING_PAGE_ID = /^(.*?)[\s-]([0-9a-f]{32})$/i;
 
 /**
- * The degenerate case `TRAILING_PAGE_ID` cannot reach (fix round 1, Minor): that
+ * The degenerate case `TRAILING_PAGE_ID` cannot reach: that
  * pattern requires a separator BEFORE the id, so a filename that is nothing but
  * the bare id (no title, no date — e.g. an export saved before Notion ever filled
  * in a title) has no character left for the separator to consume. Probably moot
- * against the real 32, cheap to cover.
+ * in practice, cheap to cover.
  */
 const BARE_PAGE_ID = /^[0-9a-f]{32}$/i;
 
-/** A leading `YYYY-MM-DD`, T4's own tidy shape — followed by a separator or the end of the string. */
+/** A leading `YYYY-MM-DD`, the transcript pass's own tidy shape — followed by a separator or the end of the string. */
 const LEADING_DATE = /^(\d{4}-\d{2}-\d{2})(?:[\s-]+|$)/;
 
 /**
@@ -244,7 +241,7 @@ const LEADING_DATE = /^(\d{4}-\d{2}-\d{2})(?:[\s-]+|$)/;
 const TODAY_TIME_SUFFIX = /\s*@Today\s+\d{1,2}(?:[\s:]\d{2})?\s*$/i;
 
 /**
- * A hand-tidied filename's own trailing time-of-day fragment — the T5 brief's
+ * A hand-tidied filename's own trailing time-of-day fragment — the
  * two-files-one-meeting example: an already-slugged name ending "...-12-00.md"
  * sitting alongside the same meeting's raw export. Deliberately narrow (exactly
  * two 1-2-digit groups) rather than "any trailing digits", so a title that
@@ -262,22 +259,22 @@ const TRAILING_HHMM = /[\s-](\d{1,2})[\s-](\d{2})$/;
  * Takes a vault filename apart into the pieces `matchReason` compares. Every
  * comparison this engine makes is on VALUES this function returns — never on the
  * raw path — which is what makes "normalise for comparison only, never on disk"
- * (T5 brief) a property of the code rather than a discipline to remember: nothing
+ * a property of the code rather than a discipline to remember: nothing
  * downstream of this function ever sees the original bytes.
  *
- * Order matters and mirrors how the real names are built (T4's own convention,
- * and the raw Notion export shape the brief documents): a trailing page id is
+ * Order matters and mirrors how the real names are built (the transcript pass's own convention,
+ * and the raw Notion export shape): a trailing page id is
  * stripped first (it is the most specific token — 32 hex characters cannot be
  * mistaken for anything else), then a leading date, then a trailing time
  * marker in either of the two shapes the vault actually contains.
  */
 export function parseVaultFilename(vaultPath: string): ParsedVaultFile {
   const basename = vaultPath.split("/").pop() ?? vaultPath;
-  // NFC, for comparison only — never written back anywhere. The box is Linux and
-  // The owner's clone is macOS; the same logical filename can arrive as different
+  // NFC, for comparison only — never written back anywhere. The server is Linux and
+  // the owner's clone is macOS; the same logical filename can arrive as different
   // bytes (NFC vs NFD) depending which machine listed it, and every later
   // comparison in this file (titleSlug via transcriptSlug, and this string itself)
-  // has to agree regardless of which one handed it to us (T5 brief).
+  // has to agree regardless of which one handed it to us.
   const stem = basename.replace(/\.md$/i, "").normalize("NFC");
 
   let pageIdHex: string | null = null;
@@ -303,9 +300,9 @@ export function parseVaultFilename(vaultPath: string): ParsedVaultFile {
   rest = rest.replace(TODAY_TIME_SUFFIX, "").trimEnd();
   rest = rest.replace(TRAILING_HHMM, "").trimEnd();
 
-  // transcriptSlug (T4) does the rest: lowercasing, æøå→ae/oe/aa before NFD,
+  // transcriptSlug does the rest: lowercasing, æøå→ae/oe/aa before NFD,
   // collapsing "&"/em-dash/comma/whitespace runs into single hyphens, byte-capping
-  // a pathological title. Reused rather than reinvented (T5 brief) — and because
+  // a pathological title. Reused rather than reinvented — and because
   // it is idempotent on an already-slugged string (a hyphen run collapses to the
   // same single hyphen), it is the ONE function for both the tidy `<date>-<slug>`
   // shape (where `rest` is already a slug) and the raw export shape (where `rest`
@@ -331,8 +328,8 @@ function normalizePageIdHex(pageId: string): string {
  *
  * Deliberately does NOT treat "the dates agree but the titles don't" as a
  * candidate at all: many meetings can share a calendar day, so a bare date match
- * is noise, not evidence, and the brief only ever asks for "date + title"
- * together or "title alone" — never "date alone".
+ * is noise, not evidence; only "date + title"
+ * together or "title alone" count — never "date alone".
  */
 function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basis: MatchBasis; reason: string } | null {
   const meetingIdHex = normalizePageIdHex(meeting.pageId);
@@ -340,8 +337,7 @@ function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basi
     return { basis: "page-id", reason: `the filename embeds this meeting's Notion page id (${file.pageIdHex})` };
   }
 
-  // NFC first — same reason `parseVaultFilename` normalises the file side (fix
-  // round 1, Important): Notion's API has no documented normal-form guarantee,
+  // NFC first — same reason `parseVaultFilename` normalises the file side: Notion's API has no documented normal-form guarantee,
   // and `transcriptSlug` is NOT normalisation-agnostic on its own — verified live
   // against this engine: `transcriptSlug(NFC "Åshild")` transliterates å→"aa" and
   // produces "aashild", but `transcriptSlug(NFD "Åshild")` never sees the precomposed
@@ -361,7 +357,7 @@ function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basi
   if (file.date !== null && meetingDate !== null) {
     // Both sides carry a date: the strong, corroborated case, and it earns the
     // STRICTER comparison below — exact slug equality only, no prefix fuzz. A
-    // dated file is, by construction, either T4's own `${date}-${transcriptSlug
+    // dated file is, by construction, either the transcript pass's own `${date}-${transcriptSlug
     // (title)}.md` (nothing appended after the slug) or a hand-tidied name meant
     // to look that way — either way a genuine match has no legitimate reason to
     // differ by more than the slug itself.
@@ -376,12 +372,12 @@ function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basi
 
   // At least one side has no date to corroborate with, so title is the only
   // signal available — and it is allowed to be looser here (agreement OR one
-  // slug being the other plus a "-something" tail), specifically for the T5
-  // brief's own two-files-one-meeting example: an already-slugged filename that
+  // slug being the other plus a "-something" tail), specifically for the
+  // two-files-one-meeting example: an already-slugged filename that
   // kept a trailing time fragment TRAILING_HHMM did not (or could not) strip
   // cleanly in every phrasing. Tightening this to exact equality would silence
-  // exactly the ambiguity (two files, one meeting) the brief requires this
-  // engine to surface.
+  // exactly the ambiguity (two files, one meeting) this
+  // engine must surface.
   const titleAgrees =
     file.titleSlug === meetingSlug
     || file.titleSlug.startsWith(`${meetingSlug}-`)
@@ -402,12 +398,11 @@ function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basi
 
 /**
  * Peels off page-id pairings that are safe to settle as Confident on their own,
- * BEFORE the fuzzy candidate graph is grouped at all (fix round 1, Critical +
- * Important 2).
+ * BEFORE the fuzzy candidate graph is grouped at all.
  *
  * The naive fix — "a page-id match is ground truth, so remove both nodes from
  * the graph before grouping runs" — is WRONG, and it is wrong in a way that
- * silently breaks the brief's own two-files-one-meeting fixture. Two adversarial
+ * silently breaks the two-files-one-meeting fixture. Two adversarial
  * cases pin the exact rule, both executed against this engine during review:
  *
  *   1. (The bug this function fixes.) Meeting M2 has its OWN page-id file F2,
@@ -417,13 +412,13 @@ function matchReason(meeting: AdoptionMeetingRow, file: ParsedVaultFile): { basi
  *      that has nothing to do with it. F2 is uncontested (nothing else points to
  *      it) — M2's stray fuzzy edge to F1 is the noise, not F2.
  *
- *   2. (Why "just remove every page-id pair" breaks fixture 1 of the green bar.)
+ *   2. (Why "just remove every page-id pair" breaks the two-files-one-meeting fixture.)
  *      Meeting M has its OWN page-id file (the raw Notion export) AND a SECOND,
  *      genuinely-plausible file (a hand-tidied duplicate with no date and no id —
- *      the brief's own "same meeting in two files" example). If M is removed
+ *      the "same meeting in two files" example). If M is removed
  *      from consideration the instant its page-id match is found, the second
  *      file has nothing left to connect to and quietly becomes "unmatched" — the
- *      exact silent loss of a real duplicate the brief says must never happen.
+ *      exact silent loss of a real duplicate, which must never happen.
  *
  * The rule that gets both right: a page-id pairing (M, F) is safe to extract
  * only when F has no OTHER meeting connected to it (trivially true in practice —
@@ -488,7 +483,7 @@ function peelSafePageIdMatches(
 /**
  * Plain union-find over string keys. Why a graph at all, rather than "does this
  * meeting have exactly one candidate": a meeting can genuinely have TWO
- * candidate files by two different (fuzzy) bases — the brief's own two-files-
+ * candidate files by two different (fuzzy) bases — the two-files-
  * one-meeting fixture, once the SAFE page-id extractions above have already
  * removed the pairings that were never really in question. Union-find is what
  * turns "everyone touching this ambiguity, however they're connected" into one
@@ -570,7 +565,7 @@ function toResolvedMatch(edge: MatchCandidate, meetingByPageId: Map<string, Adop
 }
 
 /**
- * `notion-sync adoption-report` (T5): matches the pre-existing vault transcripts
+ * `notion-sync adoption-report`: matches the pre-existing vault transcripts
  * against Notion's Meetings rows and reports — Confident / title-only / Ambiguous
  * / Unmatched — so the owner can rule on adoption. Writes nothing; see this file's
  * header for how that is structural rather than a promise.
@@ -581,7 +576,7 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
 
   const meetingByPageId = new Map(meetings.map((m) => [m.pageId, m]));
 
-  // Every plausible pairing, meetings × files. 50 × 32 in production — trivial
+  // Every plausible pairing, meetings × files. A few dozen of each in practice — trivial
   // either way, and this engine runs on demand, never on a tick.
   const edges: MatchCandidate[] = [];
   for (const meeting of meetings) {
@@ -600,7 +595,7 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
   const matchedMeetingIds = new Set(edges.map((e) => e.pageId));
   const matchedFilePaths = new Set(edges.map((e) => e.vaultPath));
 
-  // Ground truth first (fix round 1) — see peelSafePageIdMatches's own comment
+  // Ground truth first — see peelSafePageIdMatches's own comment
   // for the two adversarial cases that pin exactly what "safe" has to mean here.
   const { extracted, remaining } = peelSafePageIdMatches(edges);
 
@@ -615,7 +610,7 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
       .sort((a, b) => (a.vaultPath === b.vaultPath ? (a.pageId < b.pageId ? -1 : 1) : (a.vaultPath < b.vaultPath ? -1 : 1)));
 
     if (component.meetingIds.size === 1 && vaultPaths.length === 1) {
-      // "No competing candidate" (T5 brief) — one meeting, one file, connected by
+      // "No competing candidate" — one meeting, one file, connected by
       // exactly the one edge that put them in this component. Its basis can only
       // be "date-title" or "title-only" here: any lone, uncontested page-id edge
       // was already extracted above (see peelSafePageIdMatches's own closing
@@ -623,7 +618,7 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
       const only = candidates[0];
       const entry = toResolvedMatch(only, meetingByPageId);
       if (only.basis === "date-title") confident.push(entry);
-      else titleOnly.push(entry); // "title-only" — needs a quick look (fix round 1, Critical)
+      else titleOnly.push(entry); // "title-only" — needs a quick look
       continue;
     }
 
@@ -659,7 +654,7 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
 
   const unmatchedFiles: UnmatchedFile[] = files
     .filter((f) => !matchedFilePaths.has(f.vaultPath))
-    // parsedPageIdHex rides along even here (fix round 1, Minor): a file whose
+    // parsedPageIdHex rides along even here: a file whose
     // name embeds an id-shaped token that matched NO Meetings row is a different,
     // more informative signal than a file that never had one — usually the
     // Notion page it once pointed at is gone.
@@ -670,8 +665,8 @@ export async function runAdoptionReport(deps: AdoptionReportDeps): Promise<Adopt
   // guard: every meeting and every file is, by construction, in EXACTLY one of
   // {confident, title-only, some ambiguous group, unmatched} — a bug in the
   // peeling or grouping above (double-counting a node, or dropping one) would
-  // otherwise ship a report whose own numbers contradict each other, which the
-  // brief calls worse than no report at all. Checked here, once, rather than
+  // otherwise ship a report whose own numbers contradict each other, which is
+  // worse than no report at all. Checked here, once, rather than
   // trusted.
   const ambiguousMeetings = ambiguous.reduce((sum, g) => sum + g.meetings.length, 0);
   const ambiguousFiles = ambiguous.reduce((sum, g) => sum + g.vaultPaths.length, 0);

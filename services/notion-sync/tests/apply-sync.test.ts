@@ -8,11 +8,11 @@ import { sha256 } from "../lib/wiki-sync.js";
 import { makeCreateScope } from "../lib/desk-scope.js";
 import type { DocSyncedInput, LinkedRow, ProposalRow, ProposalState } from "../lib/store.js";
 
-// The desk-scope check a create must pass (fix round 1), built through the REAL
+// The desk-scope check a create must pass, built through the REAL
 // derivation rather than a hand-written `() => true` — the same posture
 // reject-seam.test.ts takes for `isExcluded`, and now enforced: the engine probes
 // the predicate with a sentinel and refuses to run creates against one that accepts
-// everything (fix round 2), so a stub would fail here exactly as it would in
+// everything, so a stub would fail here exactly as it would in
 // production. `wikipedia` is a desk dir purely so the wiki/wikipedia counter-case
 // below has somewhere legitimate to land.
 const TEST_SCOPE = makeCreateScope({
@@ -69,7 +69,7 @@ function makeRow(over: Partial<LinkedRow> = {}): LinkedRow {
     notionLastEdited: "2026-08-02T09:00:00.000Z",
     state: "synced",
     direction: "two_way",
-    // The apply pass reads rows across BOTH targets from Phase 4 on (a transcript's
+    // The apply pass reads rows across BOTH targets (a transcript's
     // state row is its Meetings row). Every row in this file is a desk document.
     target: "docs",
     ...over,
@@ -209,7 +209,7 @@ function makeDeps(cfg: Scenario) {
 }
 
 // The disk frontmatter is still lifted verbatim; the ONE key an approved pull adds is
-// the origin stamp (W4D-s2, ADR-0017 rule 9), inserted at the top of the block because
+// the origin stamp (ADR-0017 rule 9), inserted at the top of the block because
 // this file has no `type:` line to sit under. See the last describe in this file for
 // what decides its value.
 const STAMPED_SOURCE_BLOCK = "---\nlares_origin: synced\ntitle: Note\n---\n\n";
@@ -274,7 +274,7 @@ describe("runApplySync — approved proposals", () => {
     expect(result.errored).toBe(1);
   });
 
-  // I2 (final review): the freeze invariant has to hold in BOTH directions. The
+  // The freeze invariant has to hold in BOTH directions. The
   // rejected path has always been gated on state='synced'; the approved path was
   // not, so an approved proposal wrote the vault file of a frozen row — the one
   // thing "frozen means nothing is written on either side" promises cannot
@@ -334,11 +334,11 @@ describe("runApplySync — approved proposals", () => {
     expect(d.notified).toEqual([]);   // a rehearsal never pings
   });
 
-  // A stale approval on a TRANSCRIPT (review round 1). Reachable exactly as designed:
+  // A stale approval on a TRANSCRIPT. Reachable exactly as designed:
   // The owner edits the transcript in Obsidian while a proposal is pending, then taps
   // Approve. `freezeDoc` is `target='docs'`, so on a meetings row it updated nothing
-  // and the ping told him to run `notion-sync resolve`, which answers "no doc row" —
-  // and whose `--keep md` would be the md→Notion write §17.2 forbids outright.
+  // and the ping told the owner to run `notion-sync resolve`, which answers "no doc row" —
+  // and whose `--keep md` would be the md→Notion write that transcripts forbid outright.
   it("a stale approval on a MEETINGS row does not fake a freeze, and says something true", async () => {
     const d = makeDeps({
       open: [makeProposal({ baseMdHash: "the-hash-from-before-the-file-was-edited" })],
@@ -456,8 +456,8 @@ describe("runApplySync — rejected proposals", () => {
   });
 });
 
-// ── Create proposals (Phase 4, T3b) ────────────────────────────────────────────────
-// A create is the mechanism T4 (transcripts) and T6 (Notion-born pages) both need: a
+// ── Create proposals ────────────────────────────────────────────────
+// A create is the mechanism the transcript pass and the Notion-born pass both need: a
 // vault file that does not exist yet, brought into being through the SAME queue and
 // the SAME 👍. Everything here is about what happens between the tap and the write.
 
@@ -494,8 +494,8 @@ describe("runApplySync — approved create proposals", () => {
 
     // The proposed content IS the whole file — frontmatter included — because there
     // is no file on disk to lift a frontmatter block from. The one thing apply adds
-    // is the origin stamp, re-asserted rather than taken on trust from the proposer
-    // (W4D-s2); this fixture's proposer left it out, so it is inserted here.
+    // is the origin stamp, re-asserted rather than taken on trust from the proposer;
+    // this fixture's proposer left it out, so it is inserted here.
     expect(d.created).toEqual([{
       vaultPath: NEW_PATH,
       content: `---\nlares_origin: synced\ntitle: Standup\n---\n\nnotes pulled from Notion\n`,
@@ -655,11 +655,11 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     expect(d.notified[0]).toContain(NEW_PATH);
   });
 
-  // GUARD 3b (review round 2) — the TOCTOU shape the KERNEL cannot see. The two
+  // GUARD 3b — the TOCTOU shape the KERNEL cannot see. The two
   // guards above both ask the filesystem this process is running on, and it is not
   // the filesystem the owner reads the vault on: `Notater.md` and `notater.md` are two
-  // inodes on the box's ext4 and one path on his APFS Mac. So `vaultFileExists` says
-  // no, `O_EXCL` succeeds, and the commit the box pushes shadows his note the moment
+  // inodes on the server's ext4 and one path on the owner's APFS Mac. So `vaultFileExists` says
+  // no, `O_EXCL` succeeds, and the commit the server pushes shadows the owner's note the moment
   // it is pulled. Same window as the test above, and the same principle — the world
   // is re-checked as it is NOW, not as it was when the proposal was made.
   it("TOCTOU: a CASE-variant file appearing between propose and apply is refused, not shadowed", async () => {
@@ -682,7 +682,7 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     // …and the existing file is byte-identical: nothing was written near it at all.
     expect(d.onDisk.has(handWritten)).toBe(true);
     expect(d.onDisk.has(NEW_PATH)).toBe(false);
-    // He can see WHY, and the reason NAMES the file it would have shadowed — he
+    // The owner can see WHY, and the reason NAMES the file it would have shadowed — they
     // cannot spot the collision by reading either name on its own.
     expect(d.notified[0]).toMatch(/refused/i);
     expect(d.notified[0]).toMatch(/SAME FILE as that path on macOS/);
@@ -711,13 +711,13 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     expect(d.notified[0]).toMatch(/unicode form/);
   });
 
-  // ROUND 3's Important 1 — the shape round 2's guard was blind to. The variant is
-  // in an ANCESTOR DIRECTORY, so the round-2 predicate (basenames inside the
-  // literally-spelled parent) read an ENOENT, returned nothing, and the create
-  // landed: two directories and two files on the box, one of each on the Mac.
+  // A shape a basename-only guard is blind to. The variant is
+  // in an ANCESTOR DIRECTORY, so a predicate on basenames inside the
+  // literally-spelled parent reads an ENOENT, returns nothing, and the create
+  // lands: two directories and two files on the server, one of each on the Mac.
   //
   // A `Folder` naming a directory that does not exist yet is the ORDINARY way to file
-  // a new page, and he creates it himself after reading the DM — so the window guard
+  // a new page, and the owner creates it themselves after reading the DM — so the window guard
   // 3b exists to close is precisely where this lives.
   it("TOCTOU: a CASE-variant ANCESTOR DIRECTORY appearing between propose and apply is refused", async () => {
     const target = "acme/prosjekt/loepende-notater.md";
@@ -760,11 +760,11 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     expect(d.notified[0]).toMatch(/unicode form/);
   });
 
-  // Important 2: `listCollisionCandidates` REQUIRED is a type-level guarantee, and a
+  // `listCollisionCandidates` REQUIRED is a type-level guarantee, and a
   // type-level guarantee cannot catch a wrong-but-present value. Mutating the
   // composition root to `async () => []` compiled, ran, and left the whole package
   // green with guard 3b silently off. The probe is what makes that loud.
-  // TWO probes with CONTRADICTORY correct answers (round 4). One probe was half a
+  // TWO probes with CONTRADICTORY correct answers. One probe was half a
   // guard: `async () => []` failed it, and `async () => [".git"]` — an equally
   // plausible stub — satisfied it while guard 3b was completely off. No constant can
   // pass both of these.
@@ -829,7 +829,7 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     expect(result.errored).toBe(1);
     expect(d.proposalStates).toEqual([]);          // not superseded — retried
 
-    // AND IT REACHES THE OWNER (round 4). `fail` is console.error + recordDocError, and
+    // AND IT REACHES THE OWNER. `fail` is console.error + recordDocError, and
     // recordDocError is keyed on vault_path — a create has no row, so it matches
     // nothing. Without this ping the failure is one log line an hour, forever, seen
     // by nobody: the exact dead end the create-WRITE failure path already names.
@@ -894,7 +894,7 @@ describe("runApplySync — the create guards, re-checked at apply time", () => {
     expect(result.applied).toBe(1);
   });
 
-  // Shape is not scope. T6 reads the folder half of the path from a Notion `Folder`
+  // Shape is not scope. The Notion-born pass reads the folder half of the path from a Notion `Folder`
   // property, so a well-formed `personal/x.md` passes every shape rule and is still
   // a folder no pass was configured to sync — and pull, which scopes rows only by
   // `exclude`, would then keep that stray file in step with Notion forever.
@@ -1091,7 +1091,7 @@ describe("runApplySync — rejected create proposals", () => {
     expect(result.declined).toBe(1);
   });
 
-  // THE POLICY (Phase 4, T4): rejecting means "not this content", never "never this
+  // THE POLICY: rejecting means "not this content", never "never this
   // document". The declined content is recorded on the state row as accounted-for,
   // keyed by PAGE — the only key a rejected create has, since nothing was written
   // and so no path-bearing row exists. Without it the proposer sees Notion holding
@@ -1162,7 +1162,7 @@ describe("runApplySync — containment and dry-run", () => {
   });
 });
 
-// ── The stamp an approved pull carries (ADR-0017 rule 9, W4D-s2) ──────────────────
+// ── The stamp an approved pull carries (ADR-0017 rule 9) ──────────────────────────
 // Every write below goes through the SAME runApplySync and the same fake deps as
 // everything above; these two helpers only spare each case the scenario boilerplate.
 

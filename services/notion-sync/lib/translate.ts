@@ -1,21 +1,21 @@
 // Pure Obsidian-flavoured → Notion-flavored markdown translation. No I/O, no vendor
 // imports — the engine injects the wikilink resolver, and every byte of output is a
 // function of (source, path, resolve) alone, which is what makes the wiki pass
-// idempotent-by-construction (plan decision 2: the rendered output IS the hash input).
+// idempotent-by-construction (the rendered output IS the hash input).
 //
 // Syntax authority: Notion's enhanced-markdown spec (notion://docs/enhanced-markdown-spec),
 // fetched 2026-08-04. The rules that shaped this file:
 //   - backslash escapes the specials  \ * ~ ` $ [ ] < > { } | ^  — outside code only;
 //     code block/span content is literal and escapes there would corrupt it,
 //   - multi-line quotes and callout bodies must join with <br> — ordinary newlines
-//     split them into separate blocks (spec §4.2),
+//     split them into separate blocks,
 //   - callout children are tab-indented inside <callout icon=".." color=".."> tags,
-//   - headings 5-6 silently collapse to heading 4 (accepted; warned, spec §4.2),
+//   - headings 5-6 silently collapse to heading 4 (accepted; warned),
 //   - <page url> / <database url> MOVE content and DELETE it on removal — the one
-//     construct that can destroy data, so it gets assertPushSafe (spec §4.3).
+//     construct that can destroy data, so it gets assertPushSafe.
 //
 // Everything this file does NOT touch (headings 1-4, lists, to-dos, tables, code,
-// inline marks, links, images) is native in both dialects per spec §4.1 and passes
+// inline marks, links, images) is native in both dialects and passes
 // through verbatim.
 
 export interface ResolvedWikiLink {
@@ -33,8 +33,7 @@ export interface RenderWikiPageOptions {
   /**
    * Maps a raw wikilink target (exactly as written between the brackets, e.g.
    * "raw/foo" or "note#heading") to a synced Notion page, or null when the target
-   * has no page. MUST be deterministic given the store's path→page map (plan
-   * decision 2): pass 1 of a backfill escapes unresolved links, pass 2 re-renders
+   * has no page. MUST be deterministic given the store's path→page map: pass 1 of a backfill escapes unresolved links, pass 2 re-renders
    * with more targets resolvable, the hash differs, and exactly those files patch.
    */
   resolve: (target: string) => ResolvedWikiLink | null;
@@ -51,7 +50,7 @@ export interface RenderedWikiPage {
   warnings: string[];
 }
 
-/** Callout type map, spec §4.1 — binding, not a style preference. */
+/** Callout type map — binding, not a style preference. */
 const CALLOUT_STYLE: Record<string, { icon: string; color: string }> = {
   summary: { icon: "💡", color: "blue" },
   quote: { icon: "💬", color: "gray" },
@@ -64,7 +63,7 @@ const CALLOUT_STYLE: Record<string, { icon: string; color: string }> = {
  * A callout type outside the map still renders as a callout — dropping it to a
  * plain quote would silently lose the author's emphasis — but with a neutral
  * icon/color and a warning, mirroring how the pull direction will turn an
- * unrecognised icon into `> [!note]` (spec §4.1).
+ * unrecognised icon into `> [!note]`.
  */
 const DEFAULT_CALLOUT = { icon: "📝", color: "gray" };
 
@@ -111,7 +110,7 @@ function escapeAngles(text: string): string {
 
 /**
  * Escapes ALL Notion specials — for text that must render as exactly-literal
- * characters: unresolved wikilinks (`\[\[x\]\]`, spec §4.1) and mention labels.
+ * characters: unresolved wikilinks (`\[\[x\]\]`) and mention labels.
  * The escaped `|` also stops an aliased wikilink literal from splitting a table
  * row it happens to sit in.
  */
@@ -129,11 +128,11 @@ function attrSafe(url: string): string {
  * Why each refused tag is refused — carried into the error so an operator reading
  * a per-doc failure learns WHICH rule fired, not merely that one did.
  *
- * `page`/`database` are spec §4.3: they MOVE an existing page into this one and
+ * `page`/`database` MOVE an existing page into this one and
  * DELETE it when the tag is removed. They are the only construct in the format
  * that can destroy content.
  *
- * `transcript` is spec §17.2, and it arrived with Phase 4. Notion's own
+ * `transcript` is one-way by design. Notion's own
  * enhanced-markdown spec says the tag "cannot be edited by AI" and that attempting
  * to write it "will result in an error" — which is precisely why transcripts are
  * one-way Notion→vault permanently. Listing it here makes that rule a property of
@@ -146,11 +145,11 @@ function attrSafe(url: string): string {
  * partially-written page.
  */
 const REFUSED_TAGS: Record<string, string> = {
-  page: "<page>/<database> move content and delete it on removal (spec §4.3)",
-  database: "<page>/<database> move content and delete it on removal (spec §4.3)",
+  page: "<page>/<database> move content and delete it on removal",
+  database: "<page>/<database> move content and delete it on removal",
   transcript:
     "a <transcript> block cannot be written by the API, and transcripts are one-way " +
-    "Notion→vault permanently (spec §17.2)",
+    "Notion→vault permanently",
 };
 
 /**
@@ -173,7 +172,7 @@ const REFUSED_TAGS: Record<string, string> = {
  * surface) instead of being waved through on a heuristic.
  *
  * BE PRECISE ABOUT WHAT THIS CATCHES, because the honest answer is narrower than it
- * looks (review round 1). Every production caller passes `renderWikiPage`'s output,
+ * looks. Every production caller passes `renderWikiPage`'s output,
  * and that runs `escapeAngles` over prose first — so a live tag in ordinary text has
  * already become an inert `\<page` by the time this sees it. What reaches it live is
  * a tag inside a FENCED CODE BLOCK (fence content is verbatim and unescaped, which is
@@ -203,17 +202,17 @@ export function assertPushSafe(markdown: string): void {
 
 /**
  * The SOURCE-side half of the push lint: may this vault file be pushed to Notion AT
- * ALL? Called on the raw bytes, before any rendering (Phase 4, review round 1).
+ * ALL? Called on the raw bytes, before any rendering.
  *
  * It asks one question — does this file contain a live `<transcript>` block? — and
  * that is deliberately narrower than `assertPushSafe`'s three tags, because the two
  * rules are about different things:
  *
- *  - `<page>`/`<database>` (spec §4.3) must never be EMITTED. Escaping them
+ *  - `<page>`/`<database>` must never be EMITTED. Escaping them
  *    genuinely neutralises them, so a note that mentions one in prose renders to an
  *    inert literal and pushes correctly. Checking the source for those would break
  *    every such file for no safety gain.
- *  - `<transcript>` (spec §17.2) is not about emission: the DOCUMENT is one-way.
+ *  - `<transcript>` is not about emission: the DOCUMENT is one-way.
  *    Notion's own spec says the tag cannot be written by the API, and a file
  *    carrying one is a meeting transcript whose source is the Notion page. Escaping
  *    changes nothing about that — the escaped body would still be a transcript,
@@ -278,7 +277,7 @@ function stripMatchedQuotes(value: string): string {
 }
 
 /**
- * Title per plan decision 4: frontmatter `title:` → first H1 → filename stem.
+ * Title rule: frontmatter `title:` → first H1 → filename stem.
  * The frontmatter lookup is a line scan, not a YAML parser — `title` is a
  * top-level scalar in every vault file, and a YAML lib in lib/ is banned.
  */
@@ -351,7 +350,7 @@ function renderPlainText(text: string, resolve: Resolver): string {
     const resolved = resolve(target);
     if (resolved === null) {
       // Unsynced target: the whole literal, fully escaped, stays visibly in the
-      // text (spec §4.1) — pass 2 of a backfill re-renders it as a mention once
+      // text — pass 2 of a backfill re-renders it as a mention once
       // the target has a page.
       out += escapeLiteral(m[0]);
     } else {
@@ -394,7 +393,7 @@ function stripQuoteMarker(line: string): string {
  * One contiguous run of `>` lines → exactly one Notion block. Bodies join with
  * <br> and blank quote lines are normalised away, because ordinary newlines
  * split a Notion quote/callout into separate blocks and truly empty quote lines
- * render as empty blockquotes (both spec §4.2 hazards, 462 files exposed).
+ * render as empty blockquotes (both are known Notion hazards).
  */
 function renderQuoteGroup(
   group: string[],
@@ -490,7 +489,7 @@ export function renderWikiPage(source: string, opts: RenderWikiPageOptions): Ren
       continue;
     }
 
-    // A code span left open at end-of-line (spec §4.2: a newline breaks the span
+    // A code span left open at end-of-line (a newline breaks the span
     // and renders the backticks as literal text). Join following plain lines with
     // <br> until the span closes; if nothing in the paragraph ever closes it, the
     // backtick was a stray — leave the lines exactly as written.
@@ -517,7 +516,7 @@ export function renderWikiPage(source: string, opts: RenderWikiPageOptions): Ren
     i += 1;
   }
 
-  // Blank edges are stripped by Notion anyway (spec §4.2); trimming them here
+  // Blank edges are stripped by Notion anyway; trimming them here
   // keeps the rendered hash stable against trailing-newline churn in the vault.
   while (out.length > 0 && out[0].trim() === "") out.shift();
   while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();

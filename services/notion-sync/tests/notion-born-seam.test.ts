@@ -1,9 +1,9 @@
-// T6 (Phase 4) — a Notion-born page across CONSECUTIVE TICKS.
+// A Notion-born page across CONSECUTIVE TICKS.
 //
-// Its own file, and non-negotiable, because the failure mode this phase keeps
-// producing is a change that is correct for ONE tick and broken on the next: T3b
-// froze every approved document a tick later, T4 permanently retired a transcript
-// after a decline, and both were caught only by running several ticks in sequence.
+// Its own file, and non-negotiable, because the failure mode here is a change
+// that is correct for ONE tick and broken on the next: freezing every approved
+// document a tick later, or permanently retiring a transcript after a decline,
+// are caught only by running several ticks in sequence.
 // A create is the worst place for that class of bug — it is the one write that
 // makes a file where nothing was, and a churning create would either re-ask the owner
 // hourly or leave the row frozen with a `resolve` that pushes the vault back over
@@ -319,8 +319,8 @@ function makeWorld(folder = "") {
     },
     archiveVaultFile: async (vaultPath: string) => { vault.delete(vaultPath); },
     insertProposal: bornDeps.insertProposal,
-    // Faithful to the real statement, and the fidelity is the point of the Important
-    // B scenario below: `markDocOrphaned` sets the state and KEEPS `vault_path`. The
+    // Faithful to the real statement, and the fidelity is the point of the
+    // retired-row scenario below: `markDocOrphaned` sets the state and KEEPS `vault_path`. The
     // row goes on owning a path whose file has been retired to `_archive/`.
     markDocOrphaned: async (vaultPath: string) => {
       for (const r of rowsByPage.values()) {
@@ -382,7 +382,7 @@ describe("a Notion-born page, approved, across five ticks", () => {
     // The state row exists (the decision has somewhere to live) and carries no file.
     expect(w.rowsByPage.get(PAGE)?.vaultPath).toBeNull();
 
-    // A second tick BEFORE he decides must not stack a duplicate.
+    // A second tick BEFORE the owner decides must not stack a duplicate.
     await w.tick();
     expect(w.proposals).toHaveLength(1);
     expect([...w.vault.keys()]).toEqual([]);
@@ -490,8 +490,8 @@ describe("a Notion-born page, rejected", () => {
     // rejected create has, since no vault file and so no path-bearing row exists.
     expect(w.rowsByPage.get(PAGE)?.notionHash).toBe(sha256(NOTION_BODY));
 
-    // TICKS 3, 4, 5 — silent. This is the loop T3b could not close from where it
-    // stood and T4 settled: "reject means not this content", remembered durably.
+    // TICKS 3, 4, 5 — silent. This is the loop the apply engine cannot close on
+    // its own: "reject means not this content", remembered durably.
     await w.tick();
     await w.tick();
     await w.tick();
@@ -529,8 +529,8 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
     expect(w.notionWrites).toEqual([]);
   });
 
-  // Review round 2. The seam's vault is a JS Map — case-SENSITIVE, exactly like the
-  // box's ext4 — so `vaultFileExists` genuinely cannot see this collision and guard
+  // The seam's vault is a JS Map — case-SENSITIVE, exactly like a Linux
+  // server's ext4 — so `vaultFileExists` genuinely cannot see this collision and guard
   // 3b is the only thing standing between the approval and a shadowed note. That is
   // what makes this the realistic end-to-end shape rather than a unit case.
   it("refuses at APPLY time when a CASE-VARIANT file appears between propose and approve", async () => {
@@ -538,15 +538,15 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
     await w.tick();
     expect(w.proposals).toHaveLength(1);
 
-    // He reads the DM naming `alpha/loepende-notater.md` — and goes and writes his
-    // own note about it, capitalised the way he types.
+    // The owner reads the DM naming `alpha/loepende-notater.md` — and goes and writes their
+    // own note about it, capitalised the way they type.
     const handWritten = "alpha/Loepende-Notater.md";
     w.vault.set(handWritten, "# Mine egne notater\n");
     w.proposals[0].state = "approved";
 
     await w.tick();
 
-    // Nothing was created, his file is byte-identical, and the tap is closed with a
+    // Nothing was created, the owner's file is byte-identical, and the tap is closed with a
     // reason rather than left to retry forever.
     expect([...w.vault.keys()]).toEqual([handWritten]);
     expect(w.vault.get(handWritten)).toBe("# Mine egne notater\n");
@@ -554,7 +554,7 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
     expect(w.rowsByPage.get(PAGE)?.vaultPath).toBeNull();
     expect(w.notifications.some((n) => /SAME FILE as that path on macOS/.test(n))).toBe(true);
 
-    // …and the next tick does not quietly try again behind his back: the propose-side
+    // …and the next tick does not quietly try again behind the owner's back: the propose-side
     // half now sees the file too and says so.
     const after = await runNotionBornSync(BORN_OPTS, w.bornDeps);
     expect(after.proposed).toBe(0);
@@ -562,17 +562,17 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
     expect(w.notionWrites).toEqual([]);
   });
 
-  // ROUND 3's Important 1, end to end. The seam's vault is a JS Map — case-SENSITIVE
-  // exactly like the box's ext4 — and the variant is in an ancestor DIRECTORY, which
-  // is the shape round 2's apply-side predicate could not see at all.
+  // A case-variant ancestor directory, end to end. The seam's vault is a JS Map —
+  // case-SENSITIVE, exactly like a Linux server's ext4 — and the variant is in an ancestor
+  // DIRECTORY, which is the shape a basename-only apply-side predicate cannot see at all.
   it("refuses at APPLY time when a CASE-VARIANT ANCESTOR DIRECTORY appears between propose and approve", async () => {
     const w = makeWorld("alpha/prosjekt");
     await w.tick();
     expect(w.proposals).toHaveLength(1);
     expect(w.proposals[0].vaultPath).toBe("alpha/prosjekt/loepende-notater.md");
 
-    // He reads the DM naming `alpha/prosjekt/…` and makes the folder himself, typed
-    // the way he types — which is the ordinary way to file a new page.
+    // The owner reads the DM naming `alpha/prosjekt/…` and makes the folder themselves, typed
+    // the way they type — which is the ordinary way to file a new page.
     const his = "alpha/Prosjekt/Loepende-Notater.md";
     w.vault.set(his, "# Mine egne notater\n");
     w.proposals[0].state = "approved";
@@ -588,7 +588,7 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
   });
 
   it("refuses at APPLY time too, when the file appears between propose and approve", async () => {
-    // The TOCTOU shape, driven through T6's own proposal rather than a hand-made
+    // The TOCTOU shape, driven through this pass's own proposal rather than a hand-made
     // one: valid when proposed, occupied by the time the owner taps Approve.
     const w = makeWorld();
     await w.tick();
@@ -605,12 +605,12 @@ describe("a Notion-born page whose slug collides with a hand-written note", () =
   });
 });
 
-// ── Round 1, Important B ─────────────────────────────────────────────────────
+// ── A path a retired row still owns ──────────────────────────────────────────
 describe("a Notion-born page whose derived path a RETIRED row still owns", () => {
   it("is refused with a visible skip instead of being re-proposed every tick", async () => {
     // The shape, and it is ordinary rather than contrived: a page is created, the owner
     // trashes it in Notion, pull retires the file to `_archive/` and leaves the row
-    // at the old path — then he makes a NEW page with the same title. Nothing is on
+    // at the old path — then the owner makes a NEW page with the same title. Nothing is on
     // disk at that path, so the overwrite guard says "go ahead"; only the ROW knows.
     //
     // Before the fix this ran forever: propose → approve → apply's guard 0
@@ -625,7 +625,7 @@ describe("a Notion-born page whose derived path a RETIRED row still owns", () =>
     await w.tick();
     expect(w.vault.has(PATH)).toBe(true);
 
-    // He makes a NEW page with the same title, and trashes the old one. (Both in one
+    // The owner makes a NEW page with the same title, and trashes the old one. (Both in one
     // step because pull refuses to treat an EMPTY Docs query as "everything was
     // deleted" — its own guard, and a faithful world has to satisfy it.)
     w.notion.set("born-2", { markdown: NOTION_BODY, lastEditedTime: w.stamp() });
@@ -653,11 +653,11 @@ describe("a Notion-born page whose derived path a RETIRED row still owns", () =>
   });
 });
 
-// ── Round 1, Important A ─────────────────────────────────────────────────────
+// ── A slug that collides only by case ────────────────────────────────────────
 describe("a Notion-born page whose slug collides only by CASE with a hand-written note", () => {
-  it("is refused on every tick, so the box never commits two files that are one on APFS", async () => {
+  it("is refused on every tick, so the server never commits two files that are one on APFS", async () => {
     const w = makeWorld();
-    // What the box's own `lstat` cannot see: `Løpende Notater.md` does not answer to
+    // What the server's own `lstat` cannot see: `Løpende Notater.md` does not answer to
     // `loepende-notater.md` on ext4.
     w.vault.set("alpha/Loepende-Notater.md", "# Mine egne notater\n");
 
@@ -669,7 +669,7 @@ describe("a Notion-born page whose slug collides only by CASE with a hand-writte
     }
 
     expect(w.proposals).toEqual([]);
-    // Only the human's file exists — the commit the box would push holds ONE of them.
+    // Only the human's file exists — the commit the server would push holds ONE of them.
     expect([...w.vault.keys()]).toEqual(["alpha/Loepende-Notater.md"]);
     expect(reasons).toHaveLength(4);
     expect(reasons.every((r) => /SAME FILE as that path on macOS/.test(r))).toBe(true);

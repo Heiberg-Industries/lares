@@ -120,7 +120,7 @@ describe("makeVaultWriter — writeVaultFile", () => {
   });
 });
 
-// The authoritative half of the create guard (T3b). These are not the engine's
+// The authoritative half of the create guard. These are not the engine's
 // checks with fakes — this is the real filesystem, real symlinks, and the real
 // O_EXCL write, because "never overwrite" and "never escape the vault" are
 // properties of the syscall, not of the code that decided to call it.

@@ -1,7 +1,6 @@
 // services/notion-sync/lib/adapters/calendar-oauth.ts
 // The attendee resolver: decrypt one Google refresh token per enrolled mailbox and hand back a
-// READ-ONLY calendar client (events.list only). Rehomed here from the retired agent-runtime
-// — this was the ONE module notion-sync still took from that image. Reuses the SAME
+// READ-ONLY calendar client (events.list only). Reuses the SAME
 // oauth_tokens rows the agents use (one Google grant covers gmail + calendar), decrypted through
 // @lares/agent-box's injected-db reader, because this job connects with PG* env + the db secret
 // file, not DATABASE_URL. The write half (insert/patch/delete/freebusy) stayed with the agents.
@@ -24,8 +23,8 @@ export interface CalendarReadClient {
 const calFor = (calendarId: string | undefined): string => calendarId || "primary";
 
 /** When EGRESS_PROXY_URL is set, route the OAuth client's traffic (token refresh AND every API
- *  call — both go through gaxios' transporter) via the box's domain-allow-list proxy. Unset ⇒
- *  direct. Verbatim from the runtime's google-proxy.ts. */
+ *  call — both go through gaxios' transporter) via the server's domain-allow-list proxy. Unset ⇒
+ *  direct. */
 function applyEgressProxy(auth: unknown): void {
   const proxy = process.env["EGRESS_PROXY_URL"];
   if (!proxy) return;
@@ -43,7 +42,7 @@ export function wrapCalendarApi(api: ReturnType<typeof google.calendar>): Calend
           .map((a) => ({
             email: a.email as string,
             ...(a.displayName ? { displayName: a.displayName } : {}),
-            //. Spread conditionally, never `responseStatus: a.responseStatus` — an
+            // Spread conditionally, never `responseStatus: a.responseStatus` — an
             // explicit `undefined` is a PRESENT key, and every downstream `in` check and
             // deep-equality assertion would see a field that Google never sent.
             ...(a.responseStatus ? { responseStatus: a.responseStatus as CalAttendee["responseStatus"] } : {}),

@@ -1,4 +1,4 @@
-// The fidelity gate (Phase 3 plan T2, spec §4.5/§18.3): the local, offline
+// The fidelity gate: the local, offline
 // precondition for `enable-two-way` — no file's direction may flip to `two_way`
 // until it round-trips push→pull byte-for-byte (mod normalizeForFidelity). Pure:
 // no I/O, no vendor imports (neutrality.test.ts enforces); the vault walk and file
@@ -11,7 +11,7 @@
 // that rail's own message; a clean round trip that still differs byte-for-byte
 // fails with a compact reason naming the first differing line.
 //
-// The wikilink resolver used here is neither the real store (T2 has no database
+// The wikilink resolver used here is neither the real store (the gate has no database
 // dependency, on purpose — the gate must run offline, on a laptop, against a bare
 // vault checkout) nor resolver-free (a resolver that always returns null would
 // route every wikilink through escapeLiteral/unescapeLiteralPairs, which are exact
@@ -48,7 +48,7 @@ export interface FidelityFailure {
 }
 
 export interface FidelityReport {
-  /** Denominator recounted at run time (spec §18.3) — always `files.length`. */
+  /** Denominator recounted at run time — always `files.length`. */
   scanned: number;
   results: FidelityFileResult[];
 }
@@ -79,7 +79,7 @@ function echoResolvePage(urlOrId: string): ResolvedWikiTarget | null {
  * purpose, so a change to one is forced to be a deliberate, visible edit to
  * both"). This is what "the source's own body" is compared against.
  *
- * Exported (T7) for the gate's LIVE leg (spec §18.3): `notion-sync
+ * Exported for the gate's LIVE leg: `notion-sync
  * enable-two-way` reverse-translates a page's real `GET /markdown` and compares
  * it to the vault file — and "the vault file" has to mean exactly what it means
  * here, or a file could pass the offline leg and fail the live one purely
@@ -182,7 +182,7 @@ async function checkOne(
   }
 
   // Frontmatter travels as a Notion property, untranslated — it round-trips by
-  // construction. Asserted anyway (spec brief: "assert anyway") because a
+  // construction. Asserted anyway because a
   // divergence here would mean renderWikiPage's own frontmatter split disagrees
   // with this file's independent mirror of it, which is a bug worth surfacing
   // loudly rather than silently trusting.

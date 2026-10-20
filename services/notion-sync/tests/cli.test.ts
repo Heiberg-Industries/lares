@@ -42,7 +42,7 @@ async function withFidelityVault(fn: (vaultPath: string) => Promise<void>): Prom
   try {
     await mkdir(join(vaultPath, "wiki"), { recursive: true });
     await mkdir(join(vaultPath, "desks", "example-service"), { recursive: true });
-    // W4D-s3: the gate now also refuses any file with no lares_origin stamp, so
+    // The gate also refuses any file with no lares_origin stamp, so
     // every file here gets one — this fixture means to fail on the ALIAS, not
     // on a missing stamp (a downstream test asserts the exact "body mismatch" reason).
     const stamp = "---\nlares_origin: synced\n---\n\n";
@@ -86,7 +86,7 @@ describe("runPassesContained — the tick's pass isolation", () => {
   });
 });
 
-describe("tickPasses — the tick's order (A1, spec §6/§18.4)", () => {
+describe("tickPasses — the tick's order", () => {
   it("is attendees → transcripts → notion-born → pull → apply → push wiki → push desks → people, in that order", async () => {
     const ran: string[] = [];
     const spy = (name: string) => async (): Promise<number> => {
@@ -151,18 +151,18 @@ describe("parseOneShotArgs — the entrypoint's flag guard", () => {
     expect(parseOneShotArgs(["--archive-excluded"])).toEqual({ once: false, mode: "archive-excluded" });
     // Unrelated flags travel alongside untouched.
     expect(parseOneShotArgs(["--reconcile", "--dry-run"])).toEqual({ once: false, mode: "reconcile" });
-    // --no-dry-run is bin/notion-sync.ts's own concern (T3, runOneShot), not this
+    // --no-dry-run is bin/notion-sync.ts's own concern (archive-excluded, runOneShot), not this
     // parser's — it is not even a --dry-run variant this function recognises, so
     // it travels alongside untouched exactly like the line above.
     expect(parseOneShotArgs(["--archive-excluded", "--no-dry-run"]))
       .toEqual({ once: false, mode: "archive-excluded" });
   });
 
-  // FIX WAVE, ITEM 2. The box runs THIS package, never the `lares` CLI, so a
+  // The server runs THIS package, never the standalone CLI, so a
   // command that exists only as a commander subcommand cannot be run where the
   // vault, the database and the token are. `adoption-report` was in that state, and
   // so were the three single-pass previews the runbook's deploy steps call for.
-  it("reads the four Phase 4 modes the runbook tells an operator to run on the box", () => {
+  it("reads the four pass modes the runbook tells an operator to run on the server", () => {
     expect(parseOneShotArgs(["--adoption-report"])).toEqual({ once: false, mode: "adoption-report" });
     expect(parseOneShotArgs(["--transcripts"])).toEqual({ once: false, mode: "transcripts" });
     expect(parseOneShotArgs(["--notion-born"])).toEqual({ once: false, mode: "notion-born" });
@@ -201,8 +201,8 @@ describe("parseOneShotArgs — the entrypoint's flag guard", () => {
     expect(() => parseOneShotArgs(["--enable-two-way", "--dry-run"])).toThrow(/needs a desk dir/);
   });
 
-  // I1 (final review): `resolve` was reachable only through the commander CLI,
-  // which does not exist on the box — the one place with the vault, the database
+  // `resolve` was reachable only through the commander CLI,
+  // which does not exist on the server — the one place with the vault, the database
   // and the token. A frozen row was therefore unresolvable in production.
   it("reads --resolve with its path and side", () => {
     expect(parseOneShotArgs(["--resolve", "desks/example-service/note.md", "--keep", "md"]))
@@ -244,9 +244,9 @@ describe("parseOneShotArgs — the entrypoint's flag guard", () => {
       .toThrow(/--once runs the tick/);
   });
 
-  //: `approve <path>` / `reject <path>` existed only as commander subcommands
-  // (lib/cli.ts registerNotionSyncCommands) with no caller left after the lares CLI
-  // split, and the box has no lares checkout to run them from. Typing the old form
+  // `approve <path>` / `reject <path>` existed only as commander subcommands
+  // (lib/cli.ts registerNotionSyncCommands) with no caller left once the standalone CLI
+  // was removed, and the server has no source checkout to run them from. Typing the old form
   // there — a bare positional argument — used to fall through silently into daemon
   // mode instead of erroring, once starting a second sync tick mid-pull.
   it("reads --approve and --reject with their vault path", () => {
@@ -303,11 +303,11 @@ describe("parseOneShotArgs — the entrypoint's flag guard", () => {
   });
 });
 
-describe("archiveExcludedDryRun — the box's most destructive one-shot's polarity (fix round 1, Important 1)", () => {
+describe("archiveExcludedDryRun — the most destructive one-shot's polarity", () => {
   // Extracted from an inline `||`/`!includes` expression in bin/notion-sync.ts
   // specifically because nothing imports that file to catch a mutation of it —
-  // reviewer mutation-testing swapped the operators there and the whole
-  // 559-test suite stayed green. Four combinations; the fourth (--no-dry-run
+  // swapping the operators there left the whole
+  // suite green. Four combinations; the fourth (--no-dry-run
   // alongside a true sharedDryRun) is refused by bin/notion-sync.ts BEFORE this
   // function is ever called in the real entrypoint (mirrors the --resolve +
   // --dry-run refusal) — this function itself still answers it safely rather
@@ -335,17 +335,17 @@ describe("syncStampFor — one rule for what the Sync property says", () => {
     expect(syncStampFor({ direction: "two_way" })).toBe(SYNC_DESK);
     expect(syncStampFor({ direction: "md_to_notion" })).toBe(SYNC_MIRROR);
     // A file with no row yet is a create — and everything starts Mirror until an
-    // explicit enable-two-way flips it (plan decision 4).
+    // explicit enable-two-way flips it.
     expect(syncStampFor(undefined)).toBe(SYNC_MIRROR);
   });
 
-  // CHANGED in Phase 4 (T3b fix round 1). This assertion used to read
+  // This assertion used to read
   // `notion_to_md → SYNC_MIRROR`, which pinned the defect rather than a decision:
   // the stamp's contract is that Notion can never disagree with the behaviour the
   // store applies, and a Notion-owned row behaves like neither of the other two.
-  // 🔒 Mirror would tell the owner his edits here get reverted (they arrive as a 👍
+  // 🔒 Mirror would tell the owner their edits here get reverted (they arrive as a 👍
   // proposal) and would make `reconcile` LOCK the one kind of page whose whole
-  // purpose is that he writes it in Notion.
+  // purpose is that the owner writes it in Notion.
   it("gives a Notion-owned row its own stamp, never the mirror's", () => {
     expect(syncStampFor({ direction: "notion_to_md" })).toBe(SYNC_SOURCE);
     expect(SYNC_SOURCE).not.toBe(SYNC_MIRROR);
@@ -354,7 +354,7 @@ describe("syncStampFor — one rule for what the Sync property says", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T7 (Phase 4) — the People projection, through the REAL composition root.
+// The People projection, through the REAL composition root.
 //
 // No database anywhere in this block, deliberately: `syncPeopleOnce` never calls
 // poolFromEnv(), because the People rows in Notion ARE its state. A function that
@@ -480,7 +480,7 @@ describe("the pass compositions — unconfigured skips", () => {
     }
   }
 
-  // The real on-box Phase 1 config shape (see config.test.ts) — no wiki keys.
+  // The minimal on-server config shape (see config.test.ts) — no wiki keys.
   const phase1 = {
     notionVersion: "2026-03-11",
     meetingsDataSourceId: "00000000-0000-4000-8000-000000000001",
@@ -495,7 +495,7 @@ describe("the pass compositions — unconfigured skips", () => {
     wikiProject: "Portfolio",
   };
 
-  it("every doc-side pass returns null and logs a skip on a Phase 1 config", async () => {
+  it("every doc-side pass returns null and logs a skip on a minimal config", async () => {
     // The skip must happen before any pool or Notion client is built, so this
     // needs nothing but the config file itself.
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -506,7 +506,7 @@ describe("the pass compositions — unconfigured skips", () => {
         expect(await syncPullOnce({ dryRun: false })).toBeNull();
         expect(await syncApplyOnce({ dryRun: false })).toBeNull();
         expect(await runReconcile({ dryRun: false })).toBeNull();
-        // T7: no `people` section ⇒ the pass does nothing at all, and the vault
+        // No `people` section ⇒ the pass does nothing at all, and the vault
         // gains no fourth contact store by omission.
         expect(await syncPeopleOnce({ dryRun: false })).toBeNull();
       });
@@ -516,7 +516,7 @@ describe("the pass compositions — unconfigured skips", () => {
     }
   });
 
-  it("the desk push skips on a Phase 2 config while pull/apply still run — mirror rows are theirs too", async () => {
+  it("the desk push skips on a wiki-only config while pull/apply still run — mirror rows are theirs too", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await withConfig(phase2, async () => {
@@ -547,7 +547,7 @@ describe("the pass compositions — unconfigured skips", () => {
 });
 
 // ---------------------------------------------------------------------------
-// T5 (Phase 4) — the adoption report, through the REAL composition root.
+// The adoption report, through the REAL composition root.
 //
 // tests/adoption-report.test.ts proves the pure engine's matching rules and its
 // own lack of write capability (a source scan of lib/adoption-report.ts — safe
@@ -555,16 +555,17 @@ describe("the pass compositions — unconfigured skips", () => {
 // the vault writer). It cannot prove the WRAPPER is equally clean, because cli.ts
 // legitimately imports writeFileSync and the vault writer for half a dozen OTHER
 // commands — a source scan of the whole file would find them and mean nothing.
-// This is the dynamic proof T3's review demanded after its first version made
-// exactly that mistake for archive-excluded.ts: run the real `runAdoptionReportOnce`
-// against a real filesystem and a fake Notion, and show nothing moved.
+// This is the dynamic proof (a source scan of the engine alone is not enough, which
+// is the mistake a first version of archive-excluded.ts made): run the real
+// `runAdoptionReportOnce` against a real filesystem and a fake Notion, and show
+// nothing moved.
 //
 // Deliberately the ONLY describe block in this file that runs with NO Postgres
 // reachable at all — every other block spins up a real testcontainer in its
 // beforeAll. That absence IS one of the three proofs below: a function that
 // cannot open a database connection cannot leave a row in one.
 // ---------------------------------------------------------------------------
-describe("runAdoptionReportOnce — T5 (Phase 4): the adoption report, through the real composition root", () => {
+describe("runAdoptionReportOnce — the adoption report, through the real composition root", () => {
   let vaultPath: string;
   let cfgPath: string;
   let prevEnv: Record<string, string | undefined>;
@@ -594,7 +595,7 @@ describe("runAdoptionReportOnce — T5 (Phase 4): the adoption report, through t
     await mkdir(join(vaultPath, "acme", "transcripts", "analysis"), { recursive: true });
     await mkdir(join(vaultPath, "example-service", "transcripts"), { recursive: true });
 
-    // The exact filenames the T5 brief documents as measured on the live box —
+    // The exact filenames, as measured on a real vault —
     // an exact page-id match, a tidy date+title match, a nested two-deep file,
     // and (in a different project folder) an orphan with no Meetings row at all.
     await writeFile(join(vaultPath, SAMPLE_REVIEW), "# Sample Review\n\nnotes\n");
@@ -616,10 +617,10 @@ describe("runAdoptionReportOnce — T5 (Phase 4): the adoption report, through t
           { notionProject: "example-service", vaultFolder: "example-service" },
         ],
       },
-      // Deliberately NO wiki/desks section — T4's own report notes the transcripts
+      // Deliberately NO wiki/desks section — the transcripts
       // group is independent of the desks group, and this composition root never
       // reads either, so a report-only config with no other section configured is
-      // exactly what a brand-new deployment doing ONLY T5 would have.
+      // exactly what a brand-new deployment doing ONLY the adoption report would have.
     }));
 
     prevEnv = {
@@ -767,7 +768,7 @@ describe("runAdoptionReportOnce — T5 (Phase 4): the adoption report, through t
     }
   });
 
-  it("fix round 1, Minor — two transcripts.projects entries sharing one vaultFolder do not double-count that folder's files", async () => {
+  it("two transcripts.projects entries sharing one vaultFolder do not double-count that folder's files", async () => {
     // config.ts only rejects a duplicate notionProject, never a duplicate
     // vaultFolder (config.test.ts) — two Notion projects can legitimately share
     // one vault folder. Walking per PROJECT ENTRY rather than per RESOLVED
@@ -808,21 +809,21 @@ describe("runAdoptionReportOnce — T5 (Phase 4): the adoption report, through t
   });
 });
 
-// FIX WAVE, ITEM 2 — the entrypoint's OWN wiring, run as the box runs it.
+// The entrypoint's OWN wiring, run as the server runs it.
 //
 // Everything else in this file drives lib/. bin/notion-sync.ts is a different
 // artifact: it is the container's ONLY entry point (the image ships this package,
-// not the `lares` CLI, and the box has no lares checkout), and it is the file where
+// not the standalone CLI, and the server has no source checkout), and it is the file where
 // a missing flag makes a documented operator command simply not exist. Nothing
 // imported it, so nothing could catch that — which is exactly how `adoption-report`
 // and three single-pass previews shipped unreachable.
 //
 // So: spawn it, with the flags the runbook tells the owner to type, against a config
-// that has none of the Phase 3/4 sections. Each pass must recognise its flag, log
+// that has none of the optional sections. Each pass must recognise its flag, log
 // its own "not configured" skip and exit 0 — and the DISCRIMINATION is real, because
 // an unrecognised flag falls through to the daemon gate and prints "built ok —
 // daemon gated OFF" instead (which is what every one of these did before the fix).
-describe("bin/notion-sync.ts — the box's one-shot flags, spawned for real", () => {
+describe("bin/notion-sync.ts — the one-shot flags, spawned for real", () => {
   const ENTRYPOINT = join(import.meta.dirname, "..", "bin", "notion-sync.ts");
   const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
   let dir: string;
@@ -831,8 +832,8 @@ describe("bin/notion-sync.ts — the box's one-shot flags, spawned for real", ()
   beforeAll(async () => {
     dir = await mkdtemp(join(tmpdir(), "notion-sync-entrypoint-"));
     cfgPath = join(dir, "config.json");
-    // A Phase 1 config: no `transcripts`, no `people`, no `wikiDir`/`deskDirs`. Every
-    // Phase 4 pass gates on its own section and returns before it builds a pool or a
+    // A minimal config: no `transcripts`, no `people`, no `wikiDir`/`deskDirs`. Every
+    // optional pass gates on its own section and returns before it builds a pool or a
     // Notion client, so this run needs no database, no token and no network.
     await writeFile(cfgPath, JSON.stringify({
       notionVersion: "2026-03-11",
@@ -893,7 +894,7 @@ describe("bin/notion-sync.ts — the box's one-shot flags, spawned for real", ()
     expect(status).not.toBe(0);
   }, 60_000);
 
-  //: this used to be the bug — a flag this file does not know was not an
+  // This used to be the bug — a flag this file does not know was not an
   // error, it fell through to the daemon gate, and "the command ran and printed
   // something" was never evidence that the command exists. parseOneShotArgs now
   // refuses it outright, through the real spawned entrypoint, not just the unit
@@ -949,7 +950,7 @@ describe("runFidelityOnce — vault walk + engine wiring, no DB (record: false)"
   });
 });
 
-describe("runFidelityOnce — record: true persists via replaceFidelity (T3), real Postgres", () => {
+describe("runFidelityOnce — record: true persists via replaceFidelity, real Postgres", () => {
   // Same harness store.test.ts uses (agent-box's shared testcontainer helper, which
   // already applies 001_baseline.sql). runFidelityOnce hardcodes
   // poolFromEnv() internally — same as syncWikiOnce/syncAttendeesOnce — so the way
@@ -1023,7 +1024,7 @@ describe("runFidelityOnce — record: true persists via replaceFidelity (T3), re
   });
 });
 
-describe("T6 — the proposals surface (listOpenProposals / approve / reject / resolve)", () => {
+describe("the proposals surface (listOpenProposals / approve / reject / resolve)", () => {
   // Own container + its own PG*/NOTION_SYNC_CONFIG/NOTION_TOKEN env, same shape as
   // the "record: true" fidelity block above: every function under test here
   // hardcodes poolFromEnv()/loadNotionSyncConfig() internally, so the only way to
@@ -1091,7 +1092,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
   });
 
   describe("listOpenProposals", () => {
-    // F2 (T6 review): the diff shown is the ONE captured at propose time and
+    // The diff shown is the ONE captured at propose time and
     // persisted (diff_preview) — not a live re-diff against the vault file as
     // it stands now. No vault file is written in this test at all, proving
     // listOpenProposals no longer touches the filesystem to do its job.
@@ -1160,10 +1161,10 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       await expect(rejectProposal("desks/example-service/never-proposed.md")).rejects.toThrow(/no open proposal/);
     });
 
-    // The 7th string (fix round 4). The CLI is one of the three sanctioned
+    // The CLI is one of the three sanctioned
     // resolution surfaces, and its reject message was unconditional — "Notion
     // reverts to the vault version on the next tick" — which is false for two of
-    // the three outcomes. It survived three rounds because nothing tested it.
+    // the three outcomes. It survived because nothing tested it.
     //
     // These pin the DECIDED ROW the command returns, which is what the message is
     // built from; the message itself is `rejectConsequence`'s, shared with every
@@ -1204,9 +1205,9 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       const output = await runCliCommand("reject", path);
 
       expect(output).toContain(`rejected ${path}`);
-      // The string that stood here for three rounds — "Notion reverts to the vault
-      // version on the next tick" — is false for this row: round 2 stopped the
-      // engine writing Notion for a Notion-owned document.
+      // The old string — "Notion reverts to the vault
+      // version on the next tick" — is false for this row: the engine no longer
+      // writes Notion for a Notion-owned document.
       expect(output).not.toMatch(/revert/i);
       expect(output).toMatch(/left as it is/);
       expect(output).toMatch(/nothing is written on either side/);
@@ -1277,7 +1278,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       await expect(resolveFrozenDoc(path, "md")).rejects.toThrow(/not frozen/);
     });
 
-    // C1(b) (final review): `--keep md` used to unfreeze and hope the push pass
+    // `--keep md` used to unfreeze and hope the push pass
     // would heal the row. It cannot: pull runs FIRST in a tick, re-detects the
     // same two-sided conflict (both stored hashes are stale by definition on a
     // frozen row) and re-freezes — and push skips frozen rows, so it never got a
@@ -1346,7 +1347,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
     // The one place a human can still push the vault over a Notion-owned page, and
     // the exit the freeze ping used to point them at. It is allowed — this is the
     // manual override on a frozen row, and an operator who has read both sides must
-    // not be locked out — but it must never be silent (fix round 3).
+    // not be locked out — but it must never be silent.
     it("--keep md: WARNS before overwriting a Notion-owned page from the vault", async () => {
       const path = "desks/example-service/keep-md-owned.md";
       await writeFile(
@@ -1432,7 +1433,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       // that mismatch IS the conflict-freeze condition (pull-sync.ts
       // proposeDesk), so this fixture must mirror it rather than special-case
       // it away, or the test would not be exercising the state resolve
-      // actually runs against (F1: baseMdHash must be a FRESH render, not the
+      // actually runs against (baseMdHash must be a FRESH render, not the
       // stale stored value — see the "converges through approve+apply" test
       // below for the full loop this enables).
       await writeFile(
@@ -1465,13 +1466,13 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       expect(forced).toBeDefined();
       expect(forced?.state).toBe("pending");
       expect(forced?.proposedBody).toBe("current Notion body");
-      // A FRESH render of the vault file as it stands right now (F1 fix) —
+      // A FRESH render of the vault file as it stands right now —
       // NOT the row's stale stored md_hash, and specifically NOT equal to it:
       // this row is frozen exactly because those two differ.
       expect(forced?.baseMdHash)
         .toBe(docRenderHash(await makeDocRender(loadNotionSyncConfig(), db).renderDoc(path)));
       expect(forced?.baseMdHash).not.toBe("stale-hash-from-before-the-conflict");
-      // F2: a forced proposal gets a diff preview too — current vault body vs
+      // A forced proposal gets a diff preview too — current vault body vs
       // the proposed (reverse-translated) Notion content — persisted for the
       // console, which has no vault mount to derive one of its own.
       expect(forced?.diffPreview).toContain("- the vault's current body");
@@ -1488,10 +1489,10 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
       expect(docRow.state).toBe("synced");
     });
 
-    // F1 (review finding): the seam listOpenProposals/approveProposal/
+    // The seam listOpenProposals/approveProposal/
     // resolveFrozenDoc's own unit tests could not see — whether the forced
     // proposal actually converges once a human approves it and the engine
-    // (runApplySync, T7) applies it for real. Runs the FULL loop against the
+    // (runApplySync) applies it for real. Runs the FULL loop against the
     // real store and a real filesystem: freeze a row in genuine conflict
     // shape (vault content does not match the row's stored md_hash — the
     // conflict-freeze condition itself), resolve --keep notion, approve, then
@@ -1499,7 +1500,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
     // this always superseded-and-refroze on the first approval, because
     // baseMdHash was seeded from the same stale md_hash that caused the
     // freeze in the first place.
-    it("F1 — converges through a real approve+apply cycle: the applied vault file gets Notion's content", async () => {
+    it("converges through a real approve+apply cycle: the applied vault file gets Notion's content", async () => {
       const path = "desks/example-service/converge.md";
       const absPath = join(vaultPath, "desks", "example-service", "converge.md");
 
@@ -1524,7 +1525,7 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
 
       await approveProposal(path);
 
-      // Scoped to THIS test's own row/proposal: the "T6" describe block
+      // Scoped to THIS test's own row/proposal: the proposals-surface describe block
       // shares one database across every test in this file (see its
       // beforeAll), and earlier tests (approveProposal/rejectProposal) leave
       // rows behind with no vault files backing them — an unscoped
@@ -1589,21 +1590,21 @@ describe("T6 — the proposals surface (listOpenProposals / approve / reject / r
 });
 
 // ---------------------------------------------------------------------------
-// T7 — the shared render and the two rollout commands, against a real Postgres
+// The shared render and the two rollout commands, against a real Postgres
 // and a fake Notion. Every function under test hardcodes poolFromEnv() /
 // loadNotionSyncConfig() internally (the composition-root shape this package
 // uses everywhere), so the way to drive them for real is to point the process
 // env at a container, a temp vault and a real config file for the block.
 // ---------------------------------------------------------------------------
 
-describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fake Notion)", () => {
+describe("makeDocRender, reconcile and enable-two-way (real Postgres, fake Notion)", () => {
   let tdb: TestDb;
   let db: Pool;
   let vaultPath: string;
   let prevEnv: Record<string, string | undefined>;
 
   const DESK = "desks/example-service";
-  // W4D-s3: runEnableTwoWay's live leg now also refuses a file with no lares_origin
+  // runEnableTwoWay's live leg also refuses a file with no lares_origin
   // stamp (a pull would otherwise leave it with no origin at all). Fixtures below
   // that predate that rule and are meant to reach the live-leg body comparison get
   // this prefixed so they still test what they were written to test.
@@ -1687,7 +1688,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
 
       // A resolver-free render would leave "See \[\[target\]\] here." — which is
       // what made every wikilinked desk file read as a two-sided conflict before
-      // this composition was shared (T6 re-review).
+      // this composition was shared.
       expect(rendered.markdown)
         .toBe('See <mention-page url="https://www.notion.so/ptarget">Target</mention-page> here.');
       expect(rendered.props).toMatchObject({
@@ -1722,7 +1723,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
     });
   });
 
-  describe("runReconcile — §18.5 ordering: read, then stamp, then baseline", () => {
+  describe("runReconcile — ordering: read, then stamp, then baseline", () => {
     it("reads an unbaselined row the tick would skip, stamps it, and baselines from the LATER query", async () => {
       await writeFile(join(vaultPath, DESK, "rec.md"), "# Rec\n\nbody\n");
       const stored = "notion body";
@@ -1794,7 +1795,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       expect(propsPatch?.body).toMatchObject({ properties: { Sync: { select: { name: SYNC_DESK } } } });
     }, 30_000);
 
-    // The polarity, pinned in all three directions (fix round 2). The lock is a
+    // The polarity, pinned in all three directions. The lock is a
     // speed bump meaning "your edit here will be reverted"; it belongs to MIRROR
     // rows only. The test used to be `!isDesk`, which locked Notion-owned pages —
     // the one kind whose entire purpose is that the owner writes them in Notion.
@@ -1864,7 +1865,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
         ["ok.md", "pok", `${STAMP}hello\n`, "hello"],
         // Fidelity table says nothing about it — "not checked" is not "fine".
         ["nofid.md", "pnofid", `${STAMP}hello\n`, "hello"],
-        // Mirror by config, whatever the gate says (plan decision 8).
+        // Mirror by config, whatever the gate says.
         ["ghost__post.md", "pghost", `${STAMP}hello\n`, "hello"],
         // Passes offline, fails live: Notion's own serialisation differs.
         ["drift.md", "pdrift", `${STAMP}hello\n`, "something else entirely"],
@@ -1915,7 +1916,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       for (const name of ["nofid.md", "ghost__post.md", "drift.md"]) {
         expect(byPath.get(`${DESK}/${name}`)?.direction).toBe("md_to_notion");
       }
-      // A3: the watermark is a real observed reading, taken after the writes above.
+      // The watermark is a real observed reading, taken after the writes above.
       expect(byPath.get(`${DESK}/ok.md`)?.notion_last_edited?.toISOString())
         .toBe("2026-08-04T12:00:00.000Z");
       // …paired with the hash of the content that was actually read.
@@ -1925,7 +1926,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       expect(hash).toBe(sha256("hello"));
 
       // The unlock is part of enabling: a page that is now editable must not keep
-      // advertising a lock (§18.1).
+      // advertising a lock.
       const metaPatch = fake.requests.find((r) => r.method === "PATCH" && r.body?.is_locked !== undefined);
       expect(metaPatch?.body).toMatchObject({ is_locked: false, icon: null });
       const propsPatch = fake.requests.find((r) => r.method === "PATCH" && r.body?.properties !== undefined);
@@ -1936,7 +1937,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
         .toHaveLength(3);
     }, 30_000);
 
-    // W4D-s3: the live leg refuses a file with no lares_origin stamp, exactly as
+    // The live leg refuses a file with no lares_origin stamp, exactly as
     // lib/fidelity.ts's offline gate does — a stale "passed" fidelity row must not
     // let a pull silently drop a file's provenance.
     it("refuses to enable a file with no lares_origin stamp, naming what would be lost", async () => {
@@ -1959,7 +1960,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       expect(row.direction).toBe("md_to_notion");
     }, 30_000);
 
-    // F2 (T7 review): the store flip and the two Notion writes cannot be one
+    // The store flip and the two Notion writes cannot be one
     // transaction, so both halves of the recovery story need proving — a failure
     // must not abandon the rest of the dir, and a re-run must repair what it left.
     it("contains a mid-dir failure: the row is reported, the following files still get enabled", async () => {
@@ -2005,7 +2006,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       // two_way in the store, but Notion never got the unlock — what a failure
       // between the two writes leaves behind. The stored hash MATCHES what the
       // page holds: nothing was edited in Notion, so the baseline below is a
-      // watermark repair and not the absorption C2 forbids.
+      // watermark repair and not the absorption it forbids.
       await upsertDocSynced(db, {
         vaultPath: `${DESK}/half.md`, pageId: "phalf", mdHash: "h", notionHash: sha256("hello"),
         notionLastEdited: "2026-08-04T09:00:00.000Z", direction: "two_way",
@@ -2033,7 +2034,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
       expect(row.notion_last_edited?.toISOString()).toBe("2026-08-04T12:00:00.000Z");
     }, 30_000);
 
-    // C2 (final review): the re-assert branch baselined from the page it had just
+    // The re-assert branch used to baseline from the page it had just
     // read, whatever that page held. On a row whose page a human edited since the
     // last pull, that stored the edit's own hash as the "seen" baseline — pull
     // then compared the edit against itself, found no change, and the edit was
@@ -2114,7 +2115,7 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
     }, 30_000);
   });
 
-  describe("syncDeskPushOnce — the Phase 2 engine, once per desk dir", () => {
+  describe("syncDeskPushOnce — the wiki engine, once per desk dir", () => {
     it("creates a desk file's page with that dir's Project and the mirror stamp", async () => {
       await writeFile(join(vaultPath, DESK, "fresh.md"), "# Fresh\n\nbody\n");
       const fake = makeNotionFetch({ markdown: {}, queries: [[]] });
@@ -2142,24 +2143,24 @@ describe("T7 — makeDocRender, reconcile and enable-two-way (real Postgres, fak
 });
 
 // ---------------------------------------------------------------------------
-// T3 (Phase 4, fix round 1, Important 1c) — syncArchiveExcludedOnce, real
+// syncArchiveExcludedOnce, real
 // Postgres, fake Notion. THE gap this closes: archive-excluded.test.ts's unit
 // suite constructs `isExcluded` itself and hands it straight to the pure
 // engine, so it never exercises cli.ts's OWN `makeDeskExclusion(cfg.desks)`
-// wiring line at all — a mutation there (reviewer testing: `isExcluded: () =>
-// true`) left the entire 559-test suite green. This block drives the REAL
+// wiring line at all — a mutation there (`isExcluded: () =>
+// true`) left the entire test suite green. This block drives the REAL
 // syncArchiveExcludedOnce, so THIS wiring line is finally inside the test
 // boundary.
 //
-// A separate Postgres + config from T7's own block, deliberately: T7's shared
+// A separate Postgres + config from the reconcile block's own, deliberately: its shared
 // config has no `deskDirs[].exclude`, and adding one there would change the
-// scope every other T7 test reasons about. Same pattern the file already uses
-// three times over (runFidelityOnce/record:true, T6, T7) for exactly this
+// scope every other reconcile test reasons about. Same pattern the file already uses
+// three times over (runFidelityOnce/record:true, the proposals surface, reconcile) for exactly this
 // reason — one config per concern, not one shared config bent to fit all of
 // them.
 // ---------------------------------------------------------------------------
 
-describe("syncArchiveExcludedOnce — real Postgres, fake Notion (fix round 1, Important 1c)", () => {
+describe("syncArchiveExcludedOnce — real Postgres, fake Notion", () => {
   let tdb: TestDb;
   let db: Pool;
   let vaultPath: string;
@@ -2262,7 +2263,7 @@ describe("syncArchiveExcludedOnce — real Postgres, fake Notion (fix round 1, I
     expect(rows.get("wiki/some-page.md")?.state).toBe("synced");
   }, 30_000);
 
-  it("never touches the filesystem — a vaultPath pointed at a directory that does not exist still succeeds (fix round 1, Minor 2)", async () => {
+  it("never touches the filesystem — a vaultPath pointed at a directory that does not exist still succeeds", async () => {
     // The structural proof at the ENGINE level lives in archive-excluded.test.ts
     // ("has no filesystem capability at all"); that test explicitly scopes
     // itself to lib/archive-excluded.ts because cli.ts (home of
@@ -2310,15 +2311,14 @@ describe("syncArchiveExcludedOnce — real Postgres, fake Notion (fix round 1, I
 });
 
 // ---------------------------------------------------------------------------
-// Phase 4 fix round 2 — the composition roots that wire the two Notion-owned
+// The composition roots that wire the two Notion-owned
 // guards. Both are single lines in cli.ts, and BOTH can be neutered
 // (`new Set()`, `() => true`) with every unit test in this repo still green,
 // because the unit tests construct their own predicates. These drive the real
-// wrappers so the wiring itself is under test — the same answer T3's fix round
-// gave for `isExcluded`.
+// wrappers so the wiring itself is under test — the same answer `isExcluded` has.
 // ---------------------------------------------------------------------------
 
-describe("the Notion-owned wiring, through the real composition roots (fix round 2)", () => {
+describe("the Notion-owned wiring, through the real composition roots", () => {
   let tdb: TestDb;
   let db: Pool;
   let vaultPath: string;
@@ -2424,7 +2424,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
   // which is the only place a mis-wired hold-back set can be injected, since the
   // composition root derives its own. `new Set()` is the mutation; this is what it
   // costs. (Renamed from a version that claimed to test the throw and asserted no
-  // throw — fix round 3.)
+  // throw.)
   it("an EMPTY hold-back set is what the recount guard is protecting against: the page gets pushed", async () => {
     await writeFile(join(vaultPath, DESK, "owned2.md"), "# Owned\n\ndrifted\n");
     const rows = new Map([[`${DESK}/owned2.md`, {
@@ -2523,7 +2523,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
     expect(rows.get(`${DESK}/from-notion.md`)?.pageId).toBe("p-create-in");
   }, 60_000);
 
-  // ── T6 — the Notion-born page, through EVERY composition root ─────────────
+  // ── The Notion-born page, through EVERY composition root ──────────────────
   //
   // The in-memory seam (notion-born-seam.test.ts) proves the tick-to-tick logic
   // against a hand-modelled store. What it cannot prove is the part that only real
@@ -2536,7 +2536,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
   // the block above leaves files there whose rows this describe's beforeEach
   // deletes. Sharing it would mean the push adopting THOSE and the assertion below
   // being about the wrong thing.
-  describe("notion-born (T6)", () => {
+  describe("notion-born", () => {
     const BORN_PAGE = "born-page-1";
     const BORN_TITLE = "Løpende notater — strategi";
     const BORN_PATH = `${DESK}/loepende-notater-strategi.md`;
@@ -2604,7 +2604,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       await expect(readFile(join(bornVault, BORN_PATH), "utf8")).rejects.toThrow();
 
       // The owner taps Approve — through the ONE guarded transition every human-facing
-      // surface uses (spec §20.1), not a bare state write.
+      // surface uses, not a bare state write.
       await resolveProposal(db, open[0].id, "approve");
 
       // ── TICK 2 — apply writes it. ──────────────────────────────────────────
@@ -2696,7 +2696,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       }
     }, 60_000);
 
-    // Round 1, Important A — through the REAL walker, on a REAL filesystem. An
+    // Through the REAL walker, on a REAL filesystem. An
     // in-memory test cannot prove this: the whole defect is that `lstat` answers for
     // the filesystem underneath it, so the proof has to run against one.
     it("never creates a file that differs only by CASE from one already in the vault", async () => {
@@ -2718,7 +2718,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
           .toMatch(/SAME FILE as that path on macOS|already exists at that path/);
         expect(await getOpenProposals(db)).toEqual([]);
 
-        // The vault holds ONE of them — his.
+        // The vault holds ONE of them — the owner's.
         const listed = await readdir(join(bornVault, DESK));
         expect(listed.filter((f) => /loepende-notater-strategi\.md/i.test(f)))
           .toEqual(["Loepende-Notater-Strategi.md"]);
@@ -2727,7 +2727,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       }
     }, 60_000);
 
-    // Round 3, Important 2 — the `cli.ts` wiring itself. Mutating
+    // The `cli.ts` wiring itself. Mutating
     // `listCollisionCandidates: vault.listCollisionCandidates` to `async () => []`
     // used to leave the whole package green; now the apply pass refuses to run ANY
     // create against a lookup that answers nothing at the vault root, so every
@@ -2791,11 +2791,11 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       )).rejects.toThrow(/not resolving the path it was given/);
     }, 60_000);
 
-    // Round 4. The only shipped test that reached guard 3b through the real
+    // The only shipped test that reached guard 3b through the real
     // composition root was refused by guard 3 first on a case-insensitive Mac — so on
     // a developer machine nothing exercised the wiring at all, which is how a
     // non-empty wrong answer stayed invisible. An ANCESTOR collision is the shape that
-    // reaches 3b on Linux and on the box; on a Mac guard 3 still refuses it, so the
+    // reaches 3b on Linux and on the server; on a Mac guard 3 still refuses it, so the
     // test is a real proof there and an honest no-op here. Same property the adapter
     // tests already have.
     it("refuses an approved create whose ANCESTOR directory collides, through the real roots", async () => {
@@ -2817,11 +2817,11 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
 
         expect(result?.applied).toBe(0);
         expect(result?.superseded).toBe(1);
-        // His file is byte-identical…
+        // Their file is byte-identical…
         expect(await readFile(join(hisDir, "Loepende-Notater.md"), "utf8")).toBe("# Mine egne notater\n");
-        // …and no SECOND spelling of the directory was created beside his. On the box
-        // that is the whole damage: two dirs and two files there, one of each on his
-        // Mac, his note shadowed on the next pull.
+        // …and no SECOND spelling of the directory was created beside theirs. On the server
+        // that is the whole damage: two dirs and two files there, one of each on the owner's
+        // Mac, their note shadowed on the next pull.
         const spellings = (await readdir(join(bornVault, DESK)))
           .filter((name) => name.toLowerCase() === "prosjekt");
         expect(spellings).toEqual(["Prosjekt"]);
@@ -2875,7 +2875,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
     }, 60_000);
   });
 
-  // ── T4 — the transcript pass, through BOTH composition roots ───────────────
+  // ── The transcript pass, through BOTH composition roots ───────────────────
   //
   // The in-memory seam (transcript-seam.test.ts) proves the tick-to-tick logic
   // against a hand-modelled store. What it CANNOT prove is the thing this task's
@@ -2883,7 +2883,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
   // — that a transcript's create lands on the existing MEETINGS row instead of
   // violating `notion_page_id UNIQUE`, and that the row it lands on stays invisible
   // to every desk pass afterwards. That needs the real statements and a real table.
-  describe("transcripts (T4)", () => {
+  describe("transcripts", () => {
     const TRANSCRIPT_PAGE = "meeting-page-1";
     const TRANSCRIPT_PATH = `${DESK}/transcripts/2026-08-05-ukesmoete.md`;
     const MEETING_MD = "## Beslutninger\n- [x] valgte alternativ to\n\n<transcript>\nSam: ja\n</transcript>";
@@ -2925,7 +2925,7 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
 
     it("first sync → approve → apply: the file lands, and the MEETINGS row carries its path", async () => {
       // The attendee pass has already met this meeting and could not match it to a
-      // calendar event — the live shape for 6 of the 50 rows, and the one that would
+      // calendar event — a common real shape, and the one that would
       // strand a transcript behind a state gate that means something else.
       await recordMeetingUnmatched(db, TRANSCRIPT_PAGE, "no calendar candidate");
 
@@ -3033,13 +3033,12 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       expect(await syncTranscriptsOnce({ dryRun: false })).toBeNull();
     });
 
-    // FIX WAVE, ITEM 1 — the eighth instance of this phase's signature failure, and
-    // the first between two passes. Apply's guard 0 reads across BOTH targets and
+    // A failure BETWEEN two passes. Apply's guard 0 reads across BOTH targets and
     // refuses a create for a path any row owns; the proposer read `target='meetings'`
     // only, so it could not see the DOCS row sitting on the path it was claiming.
     //
-    // The shape is the live database, not a hypothetical: Phase 3's sweep left 32
-    // docs rows on `*/transcripts/*` paths, T3 orphans them and keeps them, and the
+    // The shape is not hypothetical: an earlier sweep can leave
+    // docs rows on `*/transcripts/*` paths, `archive-excluded` orphans them and keeps them, and the
     // file under one disappears the moment the owner acts on this pass's own skip text
     // by deleting or renaming a matched transcript.
     //
@@ -3074,14 +3073,14 @@ describe("the Notion-owned wiring, through the real composition roots (fix round
       expect(await getOpenProposals(db)).toEqual([]);
       await expect(readFile(join(vaultPath, TRANSCRIPT_PATH), "utf8")).rejects.toThrow();
       // The legacy row is untouched — this pass reads it, it does not clean up after
-      // Phase 3. That is `archive-excluded`'s job, and it has already run.
+      // the earlier sweep. That is `archive-excluded`'s job.
       const legacy = await db.query<{ vault_path: string }>(
         `SELECT vault_path FROM notion_sync_docs WHERE notion_page_id = 'legacy-doc-1'`,
       );
       expect(legacy.rows[0].vault_path).toBe(TRANSCRIPT_PATH);
     }, 60_000);
 
-    // THE CRITICAL (review round 1). The desk-scope carve-out is a line in a config
+    // The desk-scope carve-out is a line in a config
     // file, and an operator editing that file — adding a project, renaming a dir,
     // deleting a line — can remove it from under a transcript that synced fine last
     // week. From that tick the desk push's walker LISTS the file, `getDocRows`

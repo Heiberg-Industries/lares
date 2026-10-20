@@ -1,4 +1,4 @@
-// The 👍 loop's human ping (Phase 3 plan T6, spec §18.6 pin): every notify()
+// The 👍 loop's human ping: every notify()
 // call in pull-sync.ts/apply-sync.ts (a proposal awaiting approval, an applied
 // edit, a rejected edit reverted, a stale approval superseded, a stale freeze
 // re-pinged) lands here. Under adapters/ for the same reason notion-client.ts
@@ -6,24 +6,20 @@
 // spine's HTTP shape) the pure engines must not carry — PullSyncDeps/
 // ApplySyncDeps just take a bare `notify: (message: string) => Promise<void>`.
 //
-// Real intake, matched against the fleet's OTHER signal-spine caller
-// (services/agent-runtime/lib/adapters/signal-emit.ts, which itself cites the
-// spine's own source rather than guessing) and double-checked against the
-// spine's source directly (services/signal-spine/server.ts, lib/auth.ts,
-// lib/signal.ts, lib/validate.ts, lib/seed.ts) — NOT the task brief's guessed
-// `{text: message}` shape:
-//   POST {url}/ingest                    (signal-spine/server.ts — not /signals)
-//   Authorization: Bearer {token}        (signal-spine/lib/auth.ts tokenOk —
-//     constant-time compare against the spine's INGEST_TOKEN)
-//   Body: the full Signal (lib/signal.ts + lib/validate.ts signalSchema):
+// The spine's intake shape (checked against the spine's own source, not guessed;
+// a bare `{text: message}` body is NOT accepted):
+//   POST {url}/ingest                    (not /signals)
+//   Authorization: Bearer {token}        (constant-time compare against the
+//     spine's ingest token)
+//   Body: the full Signal (the spine's signal schema):
 //     { source, project, type, severity, title, body, fingerprint, url,
 //       occurredAt, raw? }
 //   type is a CLOSED enum with no "just tell a human something" member
 //   (app-exception | heartbeat-missed | service-down | backup-failed | disk |
 //   data-quality | capability-gap | deploy-failed). type="app-exception" is
-//   used here — the same type signal-emit.ts uses for failures (there always
-//   at severity "error") — because the seed routing table
-//   (signal-spine/lib/seed.ts) routes app-exception to Slack at EVERY
+//   used here — the type other callers use for failures (there always
+//   at severity "error") — because the spine's default routing table
+//   routes app-exception to Slack at EVERY
 //   severity, "info" included, so a routine proposal ping and an actual
 //   exception both surface in #lares-alerts, distinguished by severity/title
 //   text alone. That is the best fit the closed enum offers; it is not a
@@ -59,7 +55,7 @@ function toPayload(message: string, opts?: NotifyOptions): unknown {
     severity: opts?.severity ?? "info",
     title: message.slice(0, TITLE_MAX),
     body: message.slice(0, BODY_MAX),
-    // Dedupe is the spine's job (spec 2026-09-04): a repeat threads under the first Slack post
+    // Dedupe is the spine's job (a repeat threads under the first Slack post
     // and edits its counter. Nothing here suppresses; the fingerprint only has to be stable.
     fingerprint: createHash("sha256").update(`${SOURCE}|notify|${message}`).digest("hex"),
     url: null,
@@ -73,11 +69,11 @@ function toPayload(message: string, opts?: NotifyOptions): unknown {
  *
  * Unconfigured (no url or no token) falls back to console.log — the
  * deploy-ahead-of-env posture every other spine caller in this codebase takes
- * (signal-emit.ts's own NOOP) — so wiring this in before SIGNAL_SPINE_URL/
- * SIGNAL_SPINE_TOKEN land on the box is a byte-for-byte no-op, never a crash.
+ * (the other callers' own no-op) — so wiring this in before SIGNAL_SPINE_URL/
+ * SIGNAL_SPINE_TOKEN land on the server is a byte-for-byte no-op, never a crash.
  *
  * A failed POST (network error or non-2xx) is console.error, never thrown:
- * notify is best-effort by spec (§18.6) — a down spine must never fail a sync
+ * notify is best-effort by design — a down spine must never fail a sync
  * tick or make a completed write (an apply, a revert) look like a failure.
  */
 export function makeSignalNotify(opts: SignalNotifyOptions): Notify {

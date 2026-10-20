@@ -1,9 +1,8 @@
-// T4 (Phase 4) — the transcript pull engine, one tick at a time.
+// The transcript pull engine, one tick at a time.
 //
 // The multi-tick steady state lives in its own file (transcript-seam.test.ts),
 // because the two things a reader needs from this one — "does the right proposal
-// come out of this world?" — and the thing that has bitten this phase twice —
-// "does the SECOND tick do nothing?" — are different questions and read badly
+// come out of this world?" and "does the SECOND tick do nothing?" — are different questions and read badly
 // interleaved.
 import { describe, it, expect } from "vitest";
 import {
@@ -164,7 +163,7 @@ function makeDeps(world: World) {
 }
 
 // ---------------------------------------------------------------------------
-// Path derivation — the part decision 1 fixes forever
+// Path derivation — the part that is fixed forever
 // ---------------------------------------------------------------------------
 
 describe("transcriptSlug", () => {
@@ -196,8 +195,8 @@ describe("transcriptSlug", () => {
 
 describe("transcriptDate", () => {
   it("takes the LOCAL date of a zoned start time, not the UTC one", () => {
-    // 2026-08-05 23:30 in Europe/Oslo is 21:30 UTC on the same day, but 2026-08-06
-    // 00:30+02:00 is the 6th locally and the 5th in UTC. The date a human means
+    // 2026-08-06 00:30+02:00 (summer time in Europe/Berlin) is the 6th locally
+    // and 22:30 UTC on the 5th. The date a human means
     // is the one written in the offset the meeting was scheduled in.
     expect(transcriptDate("2026-08-06T00:30:00.000+02:00")).toBe("2026-08-06");
   });
@@ -227,7 +226,7 @@ describe("the composed file", () => {
     expect(body).toContain("<transcript>\nOwen: hva ble vi enige om\nHedda: vi tar det neste uke\n</transcript>");
   });
 
-  it("carries no trailing newline — the apply engine adds exactly one (T3b contract)", () => {
+  it("carries no trailing newline — the apply engine adds exactly one", () => {
     const file = transcriptFile({
       title: TITLE, markdown: NOTION_MARKDOWN, date: "2026-08-05", project: "Alpha", pageId: PAGE,
     });
@@ -302,7 +301,7 @@ describe("runTranscriptSync — first sync", () => {
     expect(proposal.vaultPath).toBe(PATH);
     expect(proposal.notionPageId).toBe(PAGE);
     expect(proposal.kind).toBe("create");
-    // T3b's contract, asserted rather than assumed.
+    // The apply engine's contract, asserted rather than assumed.
     expect(proposal.baseMdHash).toBe("");
     expect(proposal.proposedBody.endsWith("\n")).toBe(false);
     expect(proposal.proposedBody).toContain("<transcript>");
@@ -343,13 +342,13 @@ describe("runTranscriptSync — first sync", () => {
     expect(result.skipped[0].reason).toMatch(/Project/i);
   });
 
-  // decision 3; reshaped per. Notion's meeting-notes feature files a
+  // Notion's meeting-notes feature files a
   // new note under Project "Other"; nothing in transcripts.projects maps it, so the
-  // transcript is correctly skipped — and correctly skipping it silently is how the
-  // Acme meetings never reached the Brain for two weeks. A skip that means "this
+  // transcript is correctly skipped — and correctly skipping it silently is how a
+  // meeting's notes can sit unseen for weeks. A skip that means "this
   // meeting's notes are going nowhere" is a config gap, and config gaps are fixed by a
   // human who has been told WHICH meeting, not just which Project.
-  describe("the unmapped-project alert ()", () => {
+  describe("the unmapped-project alert", () => {
     it("pings once per page, naming the page's own title, not just its Project — for a meeting within the warning window", async () => {
       const d = makeDeps({
         meetings: [
@@ -494,7 +493,7 @@ describe("runTranscriptSync — first sync", () => {
     expect(new TextEncoder().encode(segment).length).toBeLessThanOrEqual(200);
   });
 
-  it("does not propose into a path already occupied — adoption is a human's call (decision 2)", async () => {
+  it("does not propose into a path already occupied — adoption is a human's call", async () => {
     const d = makeDeps({ onDisk: new Set([PATH]) });
     const result = await runTranscriptSync(OPTS, d.impl);
     expect(result.proposed).toBe(0);
@@ -503,8 +502,7 @@ describe("runTranscriptSync — first sync", () => {
     expect(d.reads).toEqual([]);
   });
 
-  // The eighth instance of this phase's signature failure, and the first found
-  // BETWEEN two passes: apply's guard 0 reads `getLinkedRows` (both targets) and
+  // A failure found BETWEEN two passes: apply's guard 0 reads `getLinkedRows` (both targets) and
   // refuses a create whose path any row already owns, so a proposer that reads only
   // `getMeetingRows` raises a proposal that can never land — proposed, approved,
   // refused, proposed again, hourly, forever. The multi-tick proof is in
@@ -597,7 +595,7 @@ describe("runTranscriptSync — first sync", () => {
   // The runbook sends an operator to --dry-run before the first live tick BECAUSE it
   // prints every skip with its reason. A preview that reports a different set of
   // skips than the live run would then hide the one problem in this pass only a
-  // human can fix (review round 1).
+  // human can fix.
   it("dry-run reports the SAME skips a live run would — the pre-flight cannot be optimistic", async () => {
     const world = {
       meetings: [meeting({ pageId: "m-a" }), meeting({ pageId: "m-b" })],
@@ -611,7 +609,7 @@ describe("runTranscriptSync — first sync", () => {
     expect(preview.skipped[0].reason).toMatch(/already has an open proposal/);
   });
 
-  // The contract T6 inherits has to be ENFORCED, not documented: a decline is
+  // The contract the Notion-born pass inherits has to be ENFORCED, not documented: a decline is
   // recorded against the state row, so a proposal raised without one closes over a
   // record that matched nothing and comes straight back.
   it("does not propose at all when the state row cannot be created", async () => {
@@ -719,7 +717,7 @@ describe("runTranscriptSync — a row that already has its file", () => {
     expect(result.skipped[0].reason).toMatch(/edited/i);
     expect(d.notified).toHaveLength(1);
     expect(d.notified[0]).toContain(PATH);
-    // …and it does NOT point him at `notion-sync resolve`, which cannot find a
+    // …and it does NOT point the owner at `notion-sync resolve`, which cannot find a
     // meetings row and whose `--keep md` would be the forbidden Notion write.
     expect(d.notified[0]).not.toMatch(/notion-sync resolve/);
   });
@@ -823,7 +821,7 @@ describe("runTranscriptSync — never stacking, and never re-asking", () => {
 
 describe("runTranscriptSync — cost and containment", () => {
   it("charges nothing for a meeting it can never sync — every skip happens BEFORE the read", async () => {
-    // The 32 hand-made transcripts and the 6 Project-less rows are permanent
+    // Hand-made transcripts and Project-less rows are permanent
     // residents of this pass's input. If any of them cost a GET, the tick would
     // spend an API call an hour, forever, to reach the same conclusion.
     const d = makeDeps({
@@ -858,7 +856,7 @@ describe("runTranscriptSync — cost and containment", () => {
     });
     const result = await runTranscriptSync(OPTS, d.impl);
     expect(result.mediaDeferred).toBe(1);
-    // Reported, not refused: a one-way import creates the file anyway (spec §4.4).
+    // Reported, not refused: a one-way import creates the file anyway.
     expect(result.proposed).toBe(1);
   });
 

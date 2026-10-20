@@ -1,14 +1,14 @@
-// T6 (Phase 4) — the Notion-born page pull engine, one tick at a time.
+// The Notion-born page pull engine, one tick at a time.
 //
 // This is the pass that can write ANYWHERE in the vault: its target folder comes
 // from a free-text `Folder` property the owner types into Notion, and its filename
 // comes from a page title. So the guard tests here are not decoration — they are
-// the reason the file is long. Each of the three guards from plan decision 3 is
-// driven through T6's OWN path derivation, because T3b proved the MECHANISM and
+// the reason the file is long. Each of the three create guards is
+// driven through this pass's OWN path derivation, because the apply tests prove the MECHANISM and
 // this proves the PROPOSER cannot smuggle a bad path into it.
 //
 // The multi-tick steady state lives in notion-born-seam.test.ts, for the same
-// reason T4 split its own: "does the right proposal come out of this world" and
+// reason the transcript tests split theirs: "does the right proposal come out of this world" and
 // "does the SECOND tick do nothing" are different questions and read badly
 // interleaved.
 import { describe, it, expect } from "vitest";
@@ -157,10 +157,10 @@ describe("runNotionBornSync — selection", () => {
     expect(inserted[0].vaultPath).toBe(PATH);
     expect(inserted[0].kind).toBe("create");
     expect(inserted[0].notionPageId).toBe(PAGE);
-    // T3b's contract, asserted rather than assumed: a create is proposed against no
+    // The apply engine's contract, asserted rather than assumed: a create is proposed against no
     // vault render, and the engine refuses one that carries a base hash.
     expect(inserted[0].baseMdHash).toBe("");
-    // …and the state row exists BEFORE the proposal does (T4's enforced contract).
+    // …and the state row exists BEFORE the proposal does (the transcript pass's enforced contract).
     expect(ensured).toEqual([PAGE]);
   });
 
@@ -188,7 +188,7 @@ describe("runNotionBornSync — selection", () => {
     expect(reads).toEqual([]);
   });
 
-  // Round 1, Minor 1: this used to pass a meetings row WITH a vaultPath, which the
+  // This used to pass a meetings row WITH a vaultPath, which the
   // test above already covers — it did not discriminate, and `PageStateRow.target`
   // was never read. The shape that matters is a meetings row with a NULL vault_path:
   // what `ensureMeetingRow` leaves behind after a DECLINED transcript.
@@ -201,7 +201,7 @@ describe("runNotionBornSync — selection", () => {
     expect(inserted).toEqual([]);
     // Reported, not silent: approving a create here would fill in the vault_path of
     // a MEETINGS row (linkPageToVaultFile conflicts on notion_page_id), taking over
-    // the row T4's pass owns.
+    // the row the transcript pass owns.
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0].reason).toMatch(/meetings database/);
   });
@@ -232,7 +232,7 @@ describe("runNotionBornSync — path derivation", () => {
     expect(inserted).toEqual([]);
     expect(result.skipped).toHaveLength(1);
     expect(result.skipped[0].reason).toMatch(/no Project/i);
-    // The one thing decision 3 explicitly forbids.
+    // The one thing the create scope explicitly forbids.
     expect(result.skipped[0].reason).not.toMatch(/_inbox/);
   });
 
@@ -304,11 +304,11 @@ describe("runNotionBornSync — GUARD: never overwrite", () => {
     expect(collided?.reason).toMatch(/d1/);
   });
 
-  // ── Round 1, Important A: the filesystem seam ────────────────────────────
+  // ── The filesystem seam ──────────────────────────────────────────────────
   //
   // `vaultFileExists` is an lstat, and an lstat answers for the filesystem it runs
-  // on. The box is case-SENSITIVE, the owner's Mac is not — so a guard that holds on
-  // the box can still lose on the machine he actually reads the vault on.
+  // on. The server is case-SENSITIVE, the owner's Mac is not — so a guard that holds on
+  // the server can still lose on the machine the owner actually reads the vault on.
   it("refuses a slug that differs from an existing file ONLY BY CASE", async () => {
     const { impl, inserted, reads } = makeDeps({ alsoOnDisk: ["alpha/Loepende-Notater-Strategi-Tall.md"] });
     const result = await runNotionBornSync(OPTS, impl);
@@ -349,7 +349,7 @@ describe("runNotionBornSync — GUARD: never overwrite", () => {
     expect(inserted).toHaveLength(1);
   });
 
-  // ── Round 1, Important B: a path a STATE ROW still owns ──────────────────
+  // ── A path a STATE ROW still owns ────────────────────────────────────────
   it("refuses a path a state row still tracks for ANOTHER page, though nothing is on disk", async () => {
     const { impl, inserted, reads } = makeDeps({
       rows: [["old", { pageId: "old", target: "docs", vaultPath: PATH, notionHash: "h" }]],
@@ -419,10 +419,10 @@ describe("runNotionBornSync — GUARD: never escape the vault", () => {
     expect(result.skipped[0].reason).toMatch(/carved out/i);
   });
 
-  // Round 1, Minor 6: `beta` is a desk dir with NO `exclude` — the config an operator
+  // `beta` is a desk dir with NO `exclude` — the config an operator
   // produces by deleting one line. The carve-out refusal above cannot fire (nothing is
   // carved out) and `makeCreateScope` says yes, so without the transcripts-dir half
-  // this lands a docs page among T4's transcripts.
+  // this lands a docs page among the transcripts.
   it("refuses a transcripts folder even when the desk dir has no exclude line at all", async () => {
     expect(makeCreateScope(CONFIG)("beta/transcripts/x.md")).toBe(true);
     expect(makeDeskExclusion(CONFIG.desks)("beta/transcripts/x.md")).toBe(false);
@@ -492,7 +492,7 @@ describe("runNotionBornSync — the body", () => {
     expect(inserted[0].proposedBody).toContain(`# ${TITLE}`);
   });
 
-  it("stores the WHOLE file with NO trailing newline — T3b's contract, since the engine adds exactly one", async () => {
+  it("stores the WHOLE file with NO trailing newline — the apply engine adds exactly one", async () => {
     const { impl, inserted } = makeDeps({});
     await runNotionBornSync(OPTS, impl);
     expect(inserted[0].proposedBody.startsWith("---\n")).toBe(true);
@@ -594,7 +594,7 @@ describe("runNotionBornSync — never stack, never re-ask", () => {
   });
 
   it("says nothing about content the state row has ACCOUNTED FOR — the decline, remembered", async () => {
-    // T4's policy, reused rather than reinvented: reject means "not this content",
+    // The transcript pass's policy, reused rather than reinvented: reject means "not this content",
     // never "never this document". The declined hash lives on the state row.
     const { impl, inserted } = makeDeps({
       rows: [[PAGE, {
@@ -618,7 +618,7 @@ describe("runNotionBornSync — never stack, never re-ask", () => {
 
 describe("runNotionBornSync — containment", () => {
   it("does not propose at all when the state row cannot be created", async () => {
-    // T4's enforced contract: `recordNotionAccounted` THROWS on a zero-row match,
+    // The transcript pass's enforced contract: `recordNotionAccounted` THROWS on a zero-row match,
     // so a proposal raised against a page with no row would leave a decision with
     // nowhere to live. Not proposing costs one tick; proposing costs a loop.
     const { impl, inserted } = makeDeps({ ensureThrows: true });

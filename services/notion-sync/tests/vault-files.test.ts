@@ -8,7 +8,7 @@ import { makeVaultFiles, makeVaultWalk } from "../lib/adapters/vault-files.js";
 /**
  * Is the filesystem the temp directory lives on case-SENSITIVE? Probed once, at load,
  * with real syscalls — there is no portable way to ask, and guessing from `platform`
- * is wrong on both sides (a Mac can mount a case-sensitive APFS volume; a Linux box
+ * is wrong on both sides (a Mac can mount a case-sensitive APFS volume; a Linux server
  * can mount a case-insensitive one).
  *
  * It gates ONE test, whose premise — two directories differing only in case — the
@@ -74,7 +74,7 @@ describe("makeVaultFiles", () => {
   });
 });
 
-describe("makeVaultFiles — exclude (Phase 4 deskDirs[].exclude)", () => {
+describe("makeVaultFiles — exclude (deskDirs[].exclude)", () => {
   let root: string;
 
   beforeAll(async () => {
@@ -195,7 +195,7 @@ describe("makeVaultWalk — the fidelity gate's whole-vault walk", () => {
     ]);
   });
 
-  // Guard 3b's input (T6 review rounds 2–3). Deliberately NOT the whole-vault walk:
+  // Guard 3b's input. Deliberately NOT the whole-vault walk:
   // it runs per approved create, so it resolves the target's ancestry and lists that,
   // which is O(depth) readdirs rather than a walk.
   describe("listCollisionCandidates", () => {
@@ -218,9 +218,9 @@ describe("makeVaultWalk — the fidelity gate's whole-vault walk", () => {
       expect(await vault.listCollisionCandidates("wiki/README.md")).not.toContain("wiki/people/jane.md");
     });
 
-    // ROUND 3's Important 1, at the adapter. Round 2 read the LITERAL parent, so a
-    // target under `wiki/People/` found nothing beside `wiki/people/` and the create
-    // landed — two directories on the box, one on the Mac.
+    // A case-variant ancestor, at the adapter. Reading the LITERAL parent would mean a
+    // target under `wiki/People/` finds nothing beside `wiki/people/` and the create
+    // lands — two directories on the server, one on the Mac.
     it("resolves an ancestor directory that differs only by CASE", async () => {
       const vault = makeVaultWalk({ vaultPath: root });
       const paths = await vault.listCollisionCandidates("WIKI/PEOPLE/jane.md");
@@ -231,12 +231,11 @@ describe("makeVaultWalk — the fidelity gate's whole-vault walk", () => {
     // hold the colliding file — so picking the first would be a coin flip on a
     // security guard.
     //
-    // EXPLICITLY skipped where the filesystem cannot represent the premise (round 4,
-    // Minor), rather than `return`ing mid-body and reporting as a pass. On a
+    // EXPLICITLY skipped where the filesystem cannot represent the premise rather than `return`ing mid-body and reporting as a pass. On a
     // case-insensitive Mac the old shape claimed coverage it did not have: it stayed
     // green under the literal-parent mutation, which is precisely the mutation it
-    // exists to kill. `TMPDIR` on a case-sensitive volume runs it for real; the box
-    // is Linux and always does.
+    // exists to kill. `TMPDIR` on a case-sensitive volume runs it for real; a Linux
+    // server always does.
     it.skipIf(!TMPDIR_IS_CASE_SENSITIVE)(
       "follows EVERY colliding spelling of an ancestor, not just the first",
       async () => {

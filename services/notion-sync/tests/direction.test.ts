@@ -1,4 +1,4 @@
-// The ownership vocabulary (Phase 4, T3b fix round 1). These are small, but they
+// The ownership vocabulary. These are small, but they
 // are the tests that stop the whole class of bug they were written for: every
 // branch point used to ask `=== "two_way"` and treat the else-branch as "mirror",
 // which silently gave `notion_to_md` the mirror's behaviour on every pass.
@@ -53,7 +53,7 @@ describe("notionOwns", () => {
   });
 });
 
-describe("pushHoldBack — what NO push may write (Phase 4, review round 1)", () => {
+describe("pushHoldBack — what NO push may write", () => {
   const linked = (direction: string, target: "docs" | "meetings") =>
     ({ ...row(direction), target });
 

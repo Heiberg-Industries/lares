@@ -151,7 +151,7 @@ describe("countByState", () => {
     expect(after.unmatched - before.unmatched).toBe(1);
     expect(after.error - before.error).toBe(1);
     expect(after.retrying - before.retrying).toBe(1);
-    // 'frozen' is reachable only via freezeDoc (Phase 3), never through any
+    // 'frozen' is reachable only via freezeDoc, never through any
     // function exercised above, so it must stay at 0 regardless of the above.
     expect(after.frozen).toBe(0);
   });
@@ -350,7 +350,7 @@ describe("getDeskRows", () => {
       mdHash: "hash-a",
       notionHash: "notion-a",
       // notion_last_edited must round-trip as the exact ISO string it was written
-      // with — pull-sync (T5) compares it directly against Notion's own
+      // with — pull-sync compares it directly against Notion's own
       // lastEditedTime strings (plan-context: minute-granular, `>=` not `>`), so a
       // driver-parsed Date here would silently break that comparison in production
       // while any fake-Queryable unit test (typed against this same interface)
@@ -375,7 +375,7 @@ describe("getDeskRows", () => {
   });
 });
 
-describe("upsertDocSynced — direction and freeze survival (Phase 3)", () => {
+describe("upsertDocSynced — direction and freeze survival", () => {
   it("stores the given direction on first insert", async () => {
     const vaultPath = "desks/example-service/two-way-new.md";
     await upsertDocSynced(db, {
@@ -442,7 +442,7 @@ describe("upsertDocSynced — direction and freeze survival (Phase 3)", () => {
     expect(frozen.state).toBe("frozen");
 
     // Simulates bookkeeping landing after the freeze — the guard keeps the row
-    // frozen until an explicit resolve (spec §6), but a frozen row's hashes may
+    // frozen until an explicit resolve, but a frozen row's hashes may
     // still refresh so the console shows current state on both sides.
     await upsertDocSynced(db, {
       vaultPath, pageId: "desk-freeze-1", mdHash: "md-2", notionHash: "notion-2",
@@ -569,10 +569,10 @@ describe("insertProposal / getOpenProposals / setProposalState", () => {
     expect(row.resolved_at).toBeNull();
     expect(row.vault_path).toBe("desks/example-service/proposal-a.md");
     expect(row.proposed_body).toBe("new body from Notion");
-    // No diffPreview given — 016's column default, not a NULL.
+    // No diffPreview given — the column default, not a NULL.
     expect(row.diff_preview).toBe("");
-    // No kind given — 018's column default. This is what keeps every caller written
-    // before Phase 4 correct without being touched.
+    // No kind given — the column default. This is what keeps every caller that
+    // predates the `kind` column correct without being touched.
     expect(row.kind).toBe("update");
   });
 
@@ -596,7 +596,7 @@ describe("insertProposal / getOpenProposals / setProposalState", () => {
 
   // notionOwned is JOINED from notion_sync_docs.direction, not stored on the
   // proposal — so it follows the row, and an `enable-two-way` flip is reflected on
-  // the very next read rather than by a stale copy (fix round 3).
+  // the very next read rather than by a stale copy.
   it("joins notionOwned from the doc row's direction, through every reader", async () => {
     const path = "acme/transcripts/owned-join.md";
     await upsertDocSynced(db, {
@@ -645,7 +645,7 @@ describe("insertProposal / getOpenProposals / setProposalState", () => {
     expect(created?.notionOwned).toBe(false);
   });
 
-  // Phase 4 (T4). A transcript's state row is its MEETINGS row, so the join that
+  // A transcript's state row is its MEETINGS row, so the join that
   // decides which consequence a surface states has to reach one. It used to carry
   // `AND d.target = 'docs'`, which could never change WHICH row matched
   // (vault_path is globally UNIQUE) and could only make it MISS this one — so a
@@ -677,7 +677,7 @@ describe("insertProposal / getOpenProposals / setProposalState", () => {
     })).rejects.toThrow(/kind/);
   });
 
-  it("persists diffPreview (T6 review, F2) and round-trips it through getOpenProposals", async () => {
+  it("persists diffPreview and round-trips it through getOpenProposals", async () => {
     const preview = "- old line\n+ new line";
     const id = await insertProposal(db, {
       vaultPath: "desks/example-service/proposal-diff.md", notionPageId: "page-diff",
@@ -787,7 +787,7 @@ describe("getRejectedUnexecuted / markProposalReverted", () => {
   });
 });
 
-// resolveProposal (spec §20.1) is THE guarded transition every human-facing surface
+// resolveProposal is THE guarded transition every human-facing surface
 // goes through — the console card, the chief of staff's 👍 card, the CLI. These tests are the
 // contract that keeps those surfaces from drifting apart.
 describe("resolveProposal — the one guarded transition", () => {
@@ -844,7 +844,7 @@ describe("resolveProposal — the one guarded transition", () => {
     // The race this closes: the hourly apply tick and a human 👍 are on a collision course
     // by design. A read-then-write guard can see the row open and still land its UPDATE
     // after the engine set 'applied' + resolved_at — producing a 'rejected' row WITH
-    // resolved_at, which getRejectedUnexecuted never picks up, so the Notion revert he
+    // resolved_at, which getRejectedUnexecuted never picks up, so the Notion revert the owner
     // asked for silently never happens.
     const id = await insertProposal(db, {
       vaultPath: "desks/example-service/resolve-race.md", notionPageId: "page-resolve-race",
@@ -863,8 +863,8 @@ describe("resolveProposal — the one guarded transition", () => {
     expect((await getRejectedUnexecuted(db)).map((p: { id: number }) => p.id)).not.toContain(id);
   });
 
-  it("resolves an already-approved proposal — changing his mind before the tick still works", async () => {
-    // 'approved' must stay resolvable: he can 👍 approve and then reject before the engine
+  it("resolves an already-approved proposal — changing the decision before the tick still works", async () => {
+    // 'approved' must stay resolvable: the owner can 👍 approve and then reject before the engine
     // gets to it. Only states the engine has finished with are closed.
     const id = await insertProposal(db, {
       vaultPath: "desks/example-service/resolve-rethink.md", notionPageId: "page-resolve-rethink",
@@ -878,7 +878,7 @@ describe("resolveProposal — the one guarded transition", () => {
   });
 });
 
-// The announce ledger (spec §20.3, migration 017) — what stops the chief of staff re-DMing the same
+// The announce ledger — what stops the chief of staff re-DMing the same
 // proposal on every poll and every restart.
 describe("announce ledger — getUnannouncedProposals / markProposalAnnounced / getStaleAnnouncedProposals", () => {
   it("lists a fresh pending proposal, and stops listing it once announced", async () => {
@@ -937,8 +937,8 @@ describe("announce ledger — getUnannouncedProposals / markProposalAnnounced / 
   });
 
   it("ESCALATES a proposal nobody ever announced, once past the longer threshold", async () => {
-    // The review catch. Excluding NULL announced_at assumed the poll always runs; it does
-    // not when 017 is unapplied, the chief-of-staff image predates the hand, the channel resolves
+    // Excluding NULL announced_at would assume the poll always runs; it does
+    // not when the schema lags, the chief-of-staff image predates the announce step, the channel resolves
     // empty, or the door is down — exactly the failures this alarm exists to catch.
     const id = await insertProposal(db, {
       vaultPath: "desks/example-service/announce-never.md", notionPageId: "page-announce-never",
@@ -1002,7 +1002,7 @@ describe("getFrozenDocs", () => {
     expect(row?.frozenAt).toBeInstanceOf(Date);
   });
 
-  it("the DB enforces one open proposal per vault_path (never stack, per §18.4)", async () => {
+  it("the DB enforces one open proposal per vault_path (never stack)", async () => {
     const vaultPath = "desks/example-service/proposal-unique.md";
     await insertProposal(db, {
       vaultPath, notionPageId: "page-unique-1", proposedBody: "body-1",
@@ -1039,7 +1039,7 @@ describe("replaceFidelity / getFidelityPassed", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 4 (T4) — the Meetings row as a transcript's state row
+// The Meetings row as a transcript's state row
 // ---------------------------------------------------------------------------
 
 describe("the transcript state row", () => {
@@ -1098,7 +1098,7 @@ describe("the transcript state row", () => {
     expect((await getDocRows(db)).has(path)).toBe(false);
   });
 
-  it("linkPageToVaultFile INSERTS a fresh docs row when the page has none — T6's shape, unchanged", async () => {
+  it("linkPageToVaultFile INSERTS a fresh docs row when the page has none — the Notion-born shape, unchanged", async () => {
     await linkPageToVaultFile(db, {
       vaultPath: "acme/born-in-notion.md", pageId: "page-born", mdHash: "md", notionHash: "nh",
       notionLastEdited: null, direction: "notion_to_md", writtenBodyHash: "body-hash",
@@ -1112,7 +1112,7 @@ describe("the transcript state row", () => {
     expect(row?.state).toBe("synced");
   });
 
-  // ── T6's half of the same mechanism ──────────────────────────────────────
+  // ── The Notion-born pass's half of the same mechanism ────────────────────
   it("ensureDocsRow creates the state row a Notion-BORN page's decision needs", async () => {
     await ensureDocsRow(db, "page-born-ensure");
 
@@ -1163,7 +1163,7 @@ describe("the transcript state row", () => {
 
   it("recordNotionAccounted remembers a declined CREATE against an ensureDocsRow row", async () => {
     // The loop this closes: without the row, this THROWS, the rejection stays
-    // unexecuted, and T6 stays silent rather than re-asking. With it, the decline
+    // unexecuted, and the Notion-born pass stays silent rather than re-asking. With it, the decline
     // is durable and the next tick's hash comparison finds it.
     await ensureDocsRow(db, "page-born-declined");
     await recordNotionAccounted(db, "page-born-declined", "declined-hash");
@@ -1175,7 +1175,7 @@ describe("the transcript state row", () => {
     await recordNotionAccounted(db, "page-accounted", "declined-hash");
     expect((await getMeetingRows(db)).get("page-accounted")?.notionHash).toBe("declined-hash");
 
-    // No row is a CONTRACT BREACH, not a no-op (review round 1). It still does not
+    // No row is a CONTRACT BREACH, not a no-op. It still does not
     // insert one — that would mean guessing a `target` for a page this function
     // knows nothing about — but silence let the rejected-create branch "succeed",
     // close the proposal, and re-ask on the very next tick.
@@ -1184,7 +1184,7 @@ describe("the transcript state row", () => {
     expect((await getMeetingRows(db)).has("page-that-does-not-exist")).toBe(false);
   });
 
-  // THE CRITICAL's second layer (review round 1). Even with every scope guard
+  // The second layer. Even with every scope guard
   // wrong, a docs-pass write must not be able to take over a path another target
   // owns. `vault_path` is UNIQUE across the whole table, so without the predicate
   // this upsert lands on whatever row holds the path.
