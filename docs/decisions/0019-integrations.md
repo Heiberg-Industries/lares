@@ -3,15 +3,13 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 **Supersedes:** —
-**Amends / reconciles:** the earlier engine/overlay inventory design (its "adapter ladder — private,
-contributed, shipped") and the integration programme's own preference for a typed client over a
-hosted MCP server (recorded in the accounting concept design). Neither document is withdrawn; this
-ADR states how they fit together (see Context).
+**Amends / reconciles:** the adapter ladder (private, contributed, shipped) and the preference for a
+typed client over a hosted MCP server for core concepts. Neither is withdrawn; this ADR states how
+they fit together (see Context).
 
 ## In plain language
 
-1. Today Lares talks to Notion four separate ways, Slack three separate ways, and signs a person
-   into Google five separate ways — each copy solving the same small problems (retries, rate
+1. Lares had grown several separate ways of talking to Notion and Slack, and of signing a person into Google — each copy solving the same small problems (retries, rate
    limits, refreshing a token) slightly differently.
 2. This decision says: one official software library per vendor, written once, used everywhere.
 3. For the handful of things every installation needs — a mailbox, a calendar, bookkeeping, a
@@ -29,81 +27,52 @@ ADR states how they fit together (see Context).
 7. Whether an integration is Lares's own work, a contribution, or a member's private connector is
    now a separate question from how good it is — a private integration can still meet the same
    quality bar, and a shipped one is always held to it.
-8. Nothing changes for an owner today; this is what the coding agents build from next.
+8. Nothing changes for an owner; this is what the coding agents build from.
 
 ## Context
 
-**The duplication is real and verified in this worktree.** Notion has three independent
-implementations: a hand-rolled HTTP client at `services/notion-sync/lib/adapters/notion-client.ts:172`
-(`const NOTION_API = "https://api.notion.com"`), a second at
-`services/chief-of-staff/lib/notion-page.ts:17`, and a third, fully independent one inline in a
-schedule at `services/chief-of-staff/agent/schedules/meeting-followup.ts:682-722` (its own
-`NOTION_API`, its own token reader, its own egress-proxy wiring — the file's own header explains
-why it cannot simply call the first client: it runs inside a sealed container whose only egress
-is a slack-proxy squid instance, so it builds its own dispatcher rather than reuse one). A fourth
-apparent site, `services/atlas/lib/adapters/notion-source.ts`, is **not** a duplicate: it takes
-`getPageMarkdown` as an injected dependency, and its own header says so — "takes `getPageMarkdown`
-as a dependency rather than building a client: the real one comes from [notion-sync]'s
-`makeNotionClient`" — and `services/atlas/bin/atlas-sync.ts:29` does import `makeNotionClient`
-from notion-sync. So the real count is three independent Notion clients; the fourth site already
-does what this ADR asks for everywhere else.
+**The duplication was real.** Notion had three independent hand-rolled HTTP clients, one of them
+inline in a schedule that runs inside a sealed container whose only egress is a proxy, so it built
+its own dispatcher rather than reuse the shared client. Slack was reached through hand-rolled
+clients against `https://slack.com/api` rather than the official package. Google sign-in had
+several separate OAuth wirings, all already built on the official `googleapis` package (or
+`googleapis-common`, deliberately, to keep `googleapis`'s large bundle out of the shared kit); the
+SDK choice was already right, but the refresh, retry and error handling around it was written
+several times over. Some consumers already do it right: the Atlas Notion source takes the page reader
+as an injected dependency rather than building its own client.
 
-Slack had three independent implementations, all hand-rolled against `https://slack.com/api`;
-two lived in the relationship tool, which has since left the engine, so one remains:
-`services/chief-of-staff/lib/slack-source.ts`. It does not import `@slack/web-api`.
+**The connections list was hand-maintained and drifted.** `packages/agent-kit/src/connections.ts`
+was a hand-written array describing credential custody, secrets and instances per vendor, and
+comments elsewhere pointed at a registry file that no longer exists. Stale comments are exactly
+the drift a generated registry removes by construction.
 
-Google sign-in has five separate OAuth wirings, all already built on the official `googleapis`
-package (or `googleapis-common`, deliberately, to keep `googleapis`'s 26 MB bundle out of the
-shared kit — `packages/agent-kit/src/google-auth.ts:229-236`): `packages/agent-kit/src/google-auth.ts`,
-`services/chief-of-staff/lib/google.ts:62`, `services/travel/lib/google.ts:79`,
-`services/notion-sync/lib/adapters/calendar-oauth.ts:12`, and `services/console/lib/account-oauth.ts:3`.
-The SDK choice is already right; the refresh, retry and error handling around it is written five
-times over.
-
-**The connections list is hand-maintained and already carries dangling references.**
-`packages/agent-kit/src/connections.ts` is a hand-written `const defs: ConnectionDef[] = [...]`
-array (`connections.ts:41`) describing credential custody, secrets and instances per vendor; its
-own header (`connections.ts:1-3`) says the other half of an integration lives in a file called
-`registry.ts`, which does not exist anywhere in this worktree (confirmed by search). Five other
-files carry comments pointing at `lib/integrations/registry.ts`
-(`services/chief-of-staff/tests/commercial.test.ts:52`, `services/chief-of-staff/lib/twenty-people.ts:10`,
-`services/chief-of-staff/agent/tools/commercial_who_to_contact.ts:5`,
-`services/creative/catalogue/studio_ideate.ts:29`) or `services/agent-runtime/lib/integrations/registry.ts`
-(`services/creative/lib/llm-complete.ts:14`) — `services/agent-runtime` itself does not exist in
-this repo (it was decommissioned and archived, per ADR-0016). These are stale comments from
-before the runtime split, not live code paths, but they are exactly the drift a generated
-registry removes by construction.
-
-**A region field already exists and is enforced.** `packages/agent-kit/src/persona/capability-docs.ts:99-105,137-138`
+**A region field already exists and is enforced.** `packages/agent-kit/src/persona/capability-docs.ts`
 defines `AdapterRegion` (`{countries, reason} | "global"`) and requires it on every
 `kind: "adapter"` capability doc, checked by `packages/agent-kit/tests/capability-region.test.ts`.
 The manifest below carries the same field forward rather than inventing a new one.
 
 **The never-widen check already exists**, one layer below where ADR-0015 describes it.
-`packages/agent-kit/src/manifest.ts:60-64` states the rule ("a skill composes capabilities the
+`packages/agent-kit/src/manifest.ts` states the rule ("a skill composes capabilities the
 agent ALREADY holds... it can never widen access"); the enforcement itself is
-`packages/agent-kit/src/skill-grants.ts:89-105`, `assertSkillsWithinGrants`, which throws naming
+`assertSkillsWithinGrants` in `packages/agent-kit/src/skill-grants.ts`, which throws naming
 the skill, the capability and both scopes when a skill's declared requirement exceeds its agent's
 grant.
 
-**Reconciling the two older positions.** The engine/overlay inventory design sets out an adapter
-ladder — private (outside the process, speaking MCP), contributed (a PR, reviewed against a
-six-point checklist: live probe, declared region, egress documented, secrets by declaration, no
-telemetry, contract tests), shipped (merged, maintained by the project) — and separately
-recommends that a member's *private* integration stay outside the engine and speak MCP against a
-concept contract (its parent design treated MCP as the reach mechanism, with no custom code per
-client). Separately, the accounting concept design states, for the accounting concept
-specifically: "The three public Fiken MCP servers are all read-only... they cover none of the write
-half, which is where the entire value is. Nothing to reuse there" — the closest statement of
-"prefer our own typed client over a remote MCP server". Read together, these are not in tension: the adapter ladder is about
-**provenance** — where an integration's code lives and who maintains it (private / contributed /
-shipped) — while "typed client, not MCP" is about **quality and capability** for the concepts the
-core needs to reason about precisely (a write needs a typed capability the ratchet can gate; a
-read-only MCP wrapper cannot express that). This ADR states explicitly what was implicit:
-provenance and quality tier are two separate axes. A private integration can be MCP and still
-meet the quality bar for its owner's own use; a *core* concept (mailbox, calendar, accounting,
-CRM) is always a typed adapter, whatever its provenance, because the ratchet and the approval
-cards need to know exactly what a write does.
+**Reconciling two positions.** The adapter ladder sets out private (outside the process, speaking
+MCP), contributed (a PR, reviewed against a six-point checklist: live probe, declared region,
+egress documented, secrets by declaration, no telemetry, contract tests) and shipped (merged,
+maintained by the project), and recommends that a member's *private* integration stay outside the
+engine and speak MCP. Separately, for accounting, the public MCP servers for the vendor are all
+read-only and cover none of the write half, which is where the entire value is — so there is
+nothing to reuse and a typed client is preferred. Read together, these are not in tension: the
+adapter ladder is about **provenance** — where an integration's code lives and who maintains it
+(private / contributed / shipped) — while "typed client, not MCP" is about **quality and
+capability** for the concepts the core needs to reason about precisely (a write needs a typed
+capability the ratchet can gate; a read-only MCP wrapper cannot express that). This ADR states
+explicitly what was implicit: provenance and quality tier are two separate axes. A private
+integration can be MCP and still meet the quality bar for its owner's own use; a *core* concept
+(mailbox, calendar, accounting, CRM) is always a typed adapter, whatever its provenance, because
+the ratchet and the approval cards need to know exactly what a write does.
 
 ## Decision
 
@@ -142,14 +111,11 @@ cards need to know exactly what a write does.
 10. **No third-party code runs inside the engine.** Un-reviewed tools reach an agent only through
     MCP, outside the engine process: a tool allow-list per connection; reads *and* writes stay
     behind approval until the connection is trusted; tool descriptions are pinned and diffed on
-    every change (a pre-launch research finding: an official vendor's own MCP server can carry commercial
-    instruction text in its tool descriptions — that text must never reach the core prompt
-    unreviewed); the server's own instruction text is kept out of the core prompt; where the
+    every change (an official vendor's own MCP server can carry commercial instruction text in its tool descriptions — that text must never reach the core prompt unreviewed); the server's own instruction text is kept out of the core prompt; where the
     server runs is recorded against the connection.
-11. **Microsoft 365 comes after launch**, on the official Graph SDK for JavaScript, behind the
+11. **Microsoft 365 comes after the first public release**, on the official Graph SDK for JavaScript, behind the
     same neutral mailbox/calendar contract as Google — not on Microsoft's own hosted "Work IQ"
-    MCP servers, and not on Google's own hosted Workspace MCP servers. Report 10's direct answer
-    (2026-09-18): both are previews, vendor-hosted, add a hop rather than remove one, and expose
+    MCP servers, and not on Google's own hosted Workspace MCP servers. Both are previews, vendor-hosted, add a hop rather than remove one, and expose
     either ten generic verbs (Microsoft's `do_action <path>` shape) or draft-only tools (Google's
     Gmail MCP has no send) — neither gives the ratchet the typed, named writes it needs, and both
     put an additional vendor gateway between Lares and a mailbox Lares can already reach directly
@@ -179,20 +145,17 @@ All four become derived output; none is hand-edited once the manifest exists.
 **Positive:**
 - One Notion client, one Slack client, one Google sign-in flow — the retry, rate-limit and
   refresh logic each current copy solves separately is solved once.
-- A stale registry (like the five dangling `lib/integrations/registry.ts` comments found in this
-  pass) becomes structurally impossible: the file the checker generates cannot disagree with the
+- A stale registry (like the dangling registry comments that motivated this) becomes structurally impossible: the file the checker generates cannot disagree with the
   manifest that produced it.
-- Provenance and quality no longer get confused with each other, which the overlay-inventory
-  doc's own ladder already needed but did not say plainly.
+- Provenance and quality no longer get confused with each other, which the adapter ladder already needed but did not say plainly.
 
 **Negative / accepted trade-offs:**
 - Collapsing three Notion clients and the Slack clients into one each is a real refactor across
   several services, not a small one; it touches `services/notion-sync`,
   `services/chief-of-staff` and `services/atlas`.
 - The manifest and checker are new build-time machinery that must itself be tested before
-  anything depends on it (a stale-generated-file bug here would be worse than today's
-  hand-maintained drift, because it would look authoritative).
-- Microsoft 365 stays unavailable at launch; an owner who needs it must wait.
+  anything depends on it (a stale-generated-file bug here would be worse than hand-maintained drift, because it would look authoritative).
+- Microsoft 365 stays unavailable in the first public release; an owner who needs it must wait.
 
 ## Operational rules
 
@@ -207,12 +170,11 @@ All four become derived output; none is hand-edited once the manifest exists.
 
 ## Open questions
 
-- The exact schema and CLI for the manifest scaffold (`pnpm lares:integration new`, a borrowed shape) — a build decision for wave 6 of the pre-launch programme, not this ADR.
+- The exact schema and CLI for the manifest scaffold (`pnpm lares:integration new`, a borrowed shape) — a build decision, not this ADR.
 - Whether the six-point checklist's "contract tests" need a formal neutral contract for `crm`
-  the way `accounting` already has one — `crm` has no contract document in this worktree today.
+  the way `accounting` already has one — `crm` has no contract document.
 
 ## Cross-references
 
-- The engine/overlay inventory design (adapter ladder) and the accounting concept design (typed contract over MCP, for accounting), neither of which is part of this repository
 - ADR-0015 (agents are definitions), ADR-0016 (eve)
-- Pre-launch research on Home Assistant/n8n (the manifest-generates-registry pattern) and a practitioner sweep (the Microsoft/Google MCP direct answer)
+- Research on Home Assistant/n8n (the manifest-generates-registry pattern) and on the Microsoft/Google hosted MCP servers

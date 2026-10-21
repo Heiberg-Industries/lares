@@ -13,9 +13,9 @@ nothing in this ADR touches replies.
 
 Three facts have already been paid for, and each was decided per-feature until now:
 
-- **An alerting agent was paused for spam.** The diagnosis is precise: not proactive messaging, but proactive
+- **An alerting agent had to be paused for spam.** The diagnosis is precise: not proactive messaging, but proactive
   messaging *on model-judged importance*. A model may rank; it may never ring the phone.
-- **The travel agent posted roughly fourteen times before one trip**, from a seven-day window, until a fix
+- **A trip-planning agent posted roughly fourteen times before one trip**, from a seven-day window, until a fix
   cut it to two named slots. A window has no ceiling; a named slot list is one.
 - **The briefs earn their keep**, because they are named slots that stay silent when there is nothing
   to say. Silence is correct output.
@@ -23,39 +23,32 @@ Three facts have already been paid for, and each was decided per-feature until n
 Until this contract the quietness rules lived wherever they were first needed, and each copy was weaker
 than it looked. The re-ping nudge kept its own count of "three per day" **in memory**, so it reset on
 every container restart, applied to that one lane, and was invisible to anything else that might be
-ringing the same phone at the same hour. The travel agent had a 22:00 rule of its own. The chief of staff had none at all —
+ringing the same phone at the same hour. One agent had a 22:00 rule of its own. The chief of staff had none at all —
 its slots simply happened to fall in daylight. Nothing anywhere could answer "how many times did the
-fleet interrupt him today", and nothing could be turned off without editing code.
+fleet interrupt the owner today", and nothing could be turned off without editing code.
 
 The second half of the problem is the clock. Quiet hours are worthless on the wrong clock: a window
-that opens at 07:00 in the owner's home zone opens at 03:00 for someone standing in New York. This has cost real
-messages already — two features read the date off one clock and the time off another, and another
-fired a checkout at 09:00 New York while the owner was in the air. So "which timezone is the owner in"
+that opens at 07:00 in the owner's home zone opens at 03:00 for someone standing in New York. Two features have read the date off one clock and the time off another, and another fired a checkout reminder at 09:00 New York while the owner was in the air. So "which timezone is the owner in"
 had to become one answer that every agent reads, not a constant copied into each schedule.
 
-The design was decided by the owner on 2026-09-04 (six defaults accepted; one owner clock for the
-whole fleet) and implemented on 2026-09-08. This ADR is the standing contract that design and
-implementation produced. It extends the earlier decision on the shared agent substrate (not part of
-this repository) with the rule for when that substrate is allowed to speak, and applies the
-"one owner per incident" rule of an earlier incident-handling decision to agents.
+The owner accepted six defaults and one owner clock for the whole fleet. This ADR is the standing
+contract that follows. It gives the shared agent substrate the rule for when it is allowed to speak,
+and applies the "one owner per incident" rule of an earlier incident-handling decision to agents.
 
 ## Decision
 
 1. **One gate, and a schedule may speak only through it.** Every proactive send in the fleet passes
-   `gateInitiation` / `gatedSend` in `packages/agent-kit/src/proactivity.ts`, reached through the
-   service's own one-line seam — `services/chief-of-staff/lib/initiation.ts` and
-   `services/travel/lib/initiation.ts`, both exporting `initiate()`. A schedule that calls a
+   `gateInitiation` / `gatedSend` in `packages/agent-kit/src/proactivity.ts`, reached through each service's own one-line seam — for the chief of staff, `services/chief-of-staff/lib/initiation.ts`, exporting `initiate()`. A schedule that calls a
    channel directly is a bug, whatever its own logic says. Three things are deliberately **not**
    initiations: a reply to a person (including an on-demand `digest_run`); an **edit** of a
-   message already sent — the travel agent's live flight card is edited in place precisely so it interrupts
-   once; and the **meeting-followup receipt**, the "what I did" line posted after an
+   message already sent — a live status card is edited in place precisely so it interrupts once; and the **meeting-followup receipt**, the "what I did" line posted after an
    autonomous send. That last one is ungated by design and the reason is narrow: the send it reports
    passed the gate moments earlier in the same lane, so gating the receipt could only ever produce a
    mail the owner was never told about — the worst outcome available. It is a receipt, not an
    interruption (`agent/schedules/meeting-followup.ts` says so at its `callSlackApi` call).
 
 2. **Three classes of initiation, each with a durable item key.** `scheduled` (a named slot: the
-   briefs, the digest, reminders, the travel agent's lifecycle posts) keyed by its slot; `event` (a thing
+   briefs, the digest, reminders, lifecycle posts) keyed by its slot; `event` (a thing
    happened: a mail worth a ping, a proposal, a meeting follow-up) keyed by the durable id of the
    thing; `escalation` (a repeat about something still unanswered) keyed with its rung number, so a
    genuinely new bump earns one more message and a re-run of the same bump does not.
@@ -67,7 +60,7 @@ this repository) with the rule for when that substrate is allowed to speak, and 
 
 4. **Quiet hours: 21:00–07:00 by default, on the owner's clock, movable but never removable.**
    - A **scheduled** slot inside quiet hours is **suppressed — dropped for good**, never caught up.
-     The travel agent's rule generalised: last night's "here is tomorrow's plan" at breakfast is worse than no
+     An agent's own late-evening rule, generalised: last night's "here is tomorrow's plan" at breakfast is worse than no
      post.
    - An **event** or **escalation** inside quiet hours is **deferred to the next quiet end** and
      lands then.
@@ -81,9 +74,9 @@ this repository) with the rule for when that substrate is allowed to speak, and 
 
 5. **`ownerSetTime` means quiet-hours exempt, and it has exactly two justifications:** an owner-set
    time (a reminder — the owner's own booking chose the hour) or a safety-critical alert (a flight
-   cancellation). **DND still suppresses both.** For the travel agent's cancellation that suppression is
-   **terminal**, and the ADR says so plainly: by the time the alert is offered, `diffFlightState` has
-   already written `cancelled: true` into `flight-state.json`, so the alert is never generated again.
+   cancellation). **DND still suppresses both.** For a flight-cancellation alert that suppression is
+   **terminal**, and this record says so plainly: by the time the alert is offered, the flight state has
+   already been written as cancelled, so the alert is never generated again.
    A hold would not be a delay; it would be silence about a cancelled flight.
 
 6. **Two daily ceilings, separate budgets, lower-only.** Per (owner, door) per owner-day: **20**
@@ -108,20 +101,17 @@ this repository) with the rule for when that substrate is allowed to speak, and 
    Suppressions and deferrals **are** recorded at decision time: they are the audit trail the console
    shows.
 
-9. **The ledger grows per held item, not per tick.** Most gating surfaces are pollers (the travel agent ticks
-   every minute), so a row per call would be ~1,440 rows a day for one item. An **open deferral** is
+9. **The ledger grows per held item, not per tick.** Most gating surfaces are pollers (some tick every minute), so a row per call would be ~1,440 rows a day for one item. An **open deferral** is
    reused — one row per hold — and a **same-day `dnd` or `quiet-hours` suppression** is reused — one
    row per item per owner-day. Both **re-decide first and only then reuse**, so the reuse is never a
    cached verdict and DND switched off releases the item on the very next tick. An `already-seen`
    suppression still writes per call: it is terminal, reached at most once per item per surface, and
-   its row is the plainest audit line the console has. On the travel agent's side the mirror rule is: a
-   **suppressed** scheduled post **keeps** its `sent.json` mark (it is dropped for good, and keeping
+   its row is the plainest audit line the console has. A poller keeps the mirror rule: a **suppressed** scheduled post **keeps** its sent mark (it is dropped for good, and keeping
    the mark is what stops the schedule re-offering it every minute), and only a **deferral** unmarks.
 
 10. **The gate fails open, and can only ever hold back more than before.** An unreachable or broken
     ledger logs a warning that names the consequence and returns **send**: a missed suppression is an
-    annoyance, a silent stop is the worse shape (a digest once ran nowhere for ten days and everything
-    looked healthy). `confirm()` never throws. The one thing the gate will not do is **invent** a DND —
+    annoyance, a silent stop is the worse shape (a digest that silently ran nowhere for ten days looked healthy). `confirm()` never throws. The one thing the gate will not do is **invent** a DND —
     DND is off only because a read succeeded and found no row.
 
     The gate is a filter, but it is **not only** a filter, and one lane proves it: **re-ping now sends
@@ -129,14 +119,12 @@ this repository) with the rule for when that substrate is allowed to speak, and 
     per door per owner-day, where the old in-memory cap sliced the batch to three THREADS in a single
     message). So on a day with three dropped balls the fleet sends three messages where it used to
     send one. That is the intended trade — the engine can only count what it sees one message at a
-    time — but "the gate can never cause a message that would not otherwise have been sent" is false,
-    and was worth correcting rather than repeating.
+    time — but "the gate can never cause a message that would not otherwise have been sent"  is false.
 
 11. **One owner clock for the whole fleet**, resolved in a fixed order by
-    `packages/agent-kit/src/owner-clock.ts`: **trip** (the travel agent's `config.json` date window, in the
-    trip's own timezone — the strongest signal, because a human declared it in advance) → **Slack
+    `packages/agent-kit/src/owner-clock.ts`: **trip** (a declared trip: a trips file's date window, in the trip's own timezone — the strongest signal, because a human declared it in advance) → **Slack
     profile** (believed only while **≤ 24 h old**; refreshed every 30 minutes by the chief of staff's
-    `agent/schedules/owner-clock.ts` via one `users.info` call) → **home** (`OWNER_HOME_TZ`, set by the installer). Calendar travel events are **deferred** to a follow-up. Every chief-of-staff slot schedule
+    `agent/schedules/owner-clock.ts` via one `users.info` call) → **home** (`OWNER_HOME_TZ`, set by the installer). Calendar travel events are **not** a source. Every chief-of-staff slot schedule
     computes its slot on this clock, and date and time always come off the *same* clock. On a day
     spent at home nothing changes.
 
@@ -158,8 +146,7 @@ this repository) with the rule for when that substrate is allowed to speak, and 
     and the console's `/proactivity` page shows today's decisions per door and the last fifty ledger
     rows.
 
-14. **One owner per fact.** Where two agents can see the same fact, one owns telling him — ADR-0012
-    §4 applied to agents. This is a documentation rule today, enforced by nothing, because no two
+14. **One owner per fact.** Where two agents can see the same fact, one owns telling the owner — the incident-handling rule applied to agents. This is a documentation rule today, enforced by nothing, because no two
     agents currently see one fact.
 
 ## Consequences
@@ -167,7 +154,7 @@ this repository) with the rule for when that substrate is allowed to speak, and 
 **Positive:**
 
 - Every quietness knob is in one place, durable, shared across lanes and doors, and visible: the
-  `initiations` table answers "how many times did the fleet interrupt him today, and what did it hold
+  `initiations` table answers "how many times did the fleet interrupt the owner today, and what did it hold
   back", which nothing could answer before.
 - Turning the fleet quiet is now a switch on a web page, not a code edit and a deploy.
 - The re-ping cap survives a restart, and applies across every lane rather than the one that owned it.
@@ -183,13 +170,12 @@ this repository) with the rule for when that substrate is allowed to speak, and 
   before this contract: no quiet hours, no DND, no ceilings, no dedupe. Chosen deliberately over the
   silent-stop failure.
 - **Two engine-number truths**, kit and console (rule 12), until the console can depend on the kit.
-- **A one-day edge on a departure day.** The owner clock switches to the destination when the travel agent's
-  trip window says so, which can be a day before the travel agent's own booking-derived arrival logic — the
-  day the owner is in the air. The design chose the trip as the strongest signal; this is the cost.
+- **A one-day edge on a departure day.** The owner clock switches to the destination when the declared trip
+  window says so, which can be a day before a booking-derived arrival — the
+  day the owner is in the air. The trip is the strongest signal; this is the cost.
 - **Up to ~35 minutes of lag on an unfiled timezone change**, from the 30-minute Slack refresh plus
   the resolver's 5-minute cache. Worst case, one slot fires on the previous clock, once.
-- **Between 21:00 and 22:00 the travel agent's own rule and the gate's window disagree**, so a lifecycle post
-  already an hour late in that hour is suppressed for good. The slot itself is unaffected.
+
 
 ## Operational rules
 
@@ -197,10 +183,10 @@ this repository) with the rule for when that substrate is allowed to speak, and 
   directly is a review failure, not a style preference.
 - **Do** branch bookkeeping on `handled` (`sent || alreadySeen`), never on "did it send". A lane that
   treats already-seen as a hold will re-detect — and possibly re-bill — the same item forever.
-- **Do** give every new knob a console surface as it is built (the Lares working agreement). The only
+- **Do** give every new knob a console surface as it is built. The only
   env-only knob this contract introduces is `OWNER_HOME_TZ`, and the console shows it read-only.
 - **Do** ship a new schedule with its heartbeat row in the same migration —
-  the owner-clock schedule's row is seeded by `sql/001_baseline.sql`.
+  the owner-clock schedule's row is seeded by `001_baseline.sql`.
 - **Don't** add a per-lane cap, counter, or quiet rule beside the gate's. A local copy can only ever
   disagree with the shared one, and that is the exact defect this contract retired.
 - **Don't** let a model decide whether to interrupt. A model may rank and may write; the decision to
@@ -223,7 +209,7 @@ Each of these is a known gap, filed here rather than left to be discovered:
   next tick's `claim` will not claim a message with an outcome — so nothing ever asks the gate about
   that ping again. The work is not lost (the draft is sitting in Gmail and the outcome row records it
   truthfully) and the fact is not hidden (the morning brief's held-back line names it), but the ping
-  itself is gone: he is told once, in the brief, rather than pinged when the window opens. Resolved by
+  itself is gone: the owner is told once, in the brief, rather than pinged when the window opens. Resolved by
   a "notified" column the poll can re-read.
 - **`heldBackLine` reports deferrals only.** A full DND day suppresses everything, including the brief
   that would have reported it — so a DND day is quiet about being quiet by construction. Resolved by
@@ -231,28 +217,25 @@ Each of these is a known gap, filed here rather than left to be discovered:
 - **The console mirrors the engine ceilings** rather than importing them (rule 12). Guarded by
   `services/console/tests/engine-drift.test.ts` for now; resolved when the console can depend on
   `@lares/agent-kit`.
-- **The travel agent's `makeCachedOwnerClock` duplicates the chief of staff's.** An obvious kit candidate; left duplicated
-  because the two services were wired in the same pass and a shared version was not yet proven.
+
 - **"One owner per fact" is a documentation rule** (rule 14), enforced by nothing. Resolved the first
   time two agents can see one fact — that is when it needs code.
-- **Calendar travel as an owner-clock source** was deferred (a ruling at the time). A work trip that is not a
-  travel-agent trip, and where Slack has not yet updated the profile, falls back to home until Slack
+- **Calendar travel as an owner-clock source** is not built. A work trip that is not a declared trip, and where Slack has not yet updated the profile, falls back to home until Slack
   catches up.
 
-## Amendment 2026-09-08 (evening) — event ceiling 10 → 20, owner ceiling 15 → 30
+## Amendment — event ceiling 10 → 20, owner ceiling 15 → 30
 
-Measured on the box before the first deploy: drafted-reply pings on the Slack door reached 8 per day
-on Sep 7 and Sep 8, and the same door carries meeting follow-ups and CRM proposals, so the spec's
-10 events per door per day was within one busy day's reach — and for email-triage a held-back ping
-is lost, not retried. The owner raised the engine defaults the same evening: **20 events per door per
+Measured before the first deploy: drafted-reply pings on the Slack door reached 8 per day
+on two consecutive days, and the same door carries meeting follow-ups and CRM proposals, so the
+original 10 events per door per day was within one busy day's reach — and for email-triage a held-back ping
+is lost, not retried. The engine defaults were raised to **20 events per door per
 day** and **30 per owner per day** (the owner ceiling moves with it so it does not become the
 binding limit at 20 per door). Escalations stay at 3. Settings can still only lower these; the
-console shows the engine maxima. The original design keeps its first numbers as the record of what was first decided.
+console shows the engine maxima.
 
-## Amendment 2026-09-18 — the two-lanes-bill-a-model gap is closed
+## Amendment — the two-lanes-bill-a-model gap is closed
 
-The Open questions entry "Two lanes bill a model on every retry of a held item" is resolved, by
-moving the gate ahead of the billed call in both lanes rather than caching what the call produced:
+The gap "two lanes bill a model on every retry of a held item" is closed by moving the gate ahead of the billed call in both lanes rather than caching what the call produced:
 
 - **`outreach-reply-watch`** rewrote `onReply` around one `gate(...)` call whose
   callback is the classify, the draft (positive/meeting-request only) and the send — so a held or

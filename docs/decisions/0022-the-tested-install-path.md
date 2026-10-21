@@ -3,12 +3,12 @@
 **Date:** 2026-09-18
 **Status:** Accepted
 **Supersedes:** —
-**Amends:** the installer and onboarding wizard design of 2026-09-14 — see "What changes" and
-"What stays" below.
+**Amends:** the earlier installer and onboarding wizard design (not part of this repository) — see
+"What changes" and "What stays" below.
 
 ## In plain language
 
-1. At launch there is exactly one installation path that has actually been tried and proven: a
+1. There is exactly one installation path that has actually been tried and proven: a
    fresh Ubuntu server, one command.
 2. The very first screen of setup offers "start fresh" or "restore from a backup" — restoring is
    not buried near the end.
@@ -20,64 +20,48 @@
    very first way an owner talks to their agent; connecting a chat app comes after.
 6. Running Lares on a Mac is "best-effort": expected to work, with known differences written
    down, but it is not the rehearsed, proven path.
-7. There is no promise of support. Help is a community chat channel with an agent answering, and
-   the owner will occasionally join in personally; realistic expectations are low numbers.
+7. There is no promise of support. Help is a community chat channel with an agent answering, and the maintainer will occasionally join in personally; realistic expectations are low numbers.
 8. Everywhere the documentation used to say "supported", it now says "tested path" — the honest
    word for what has actually been proven.
 
 ## Context
 
-**The design this amends, as it stood.** The installer and wizard design
+**The design this amends, as it stood.** The earlier installer and wizard design
 laid out a **ten-step wizard**: sign-in, models, "your house", knowledge, connect Google,
-first agent, doors (Slack/Telegram), backup, watchers, done. The model key is
-already tested with "one real call per provider through the gateway" at step 2 — that part of the
-ruling is already the design, not a change. Doors (Slack/Telegram) are step 7, and the first
-conversation the wizard proves is a reply inside whichever door the owner just claimed
-— there is no web-chat step at all in the ten-step table. Restore is not on
-the first screen: it is a separate flag on the install command itself
-(`… | bash -s -- --restore`) and, inside the wizard, backup only appears at **step 8**,
-near the end. The design's non-goals list states plainly that "the web chat door" is
-something that "will need to come fast after this phase" but is explicitly deferred, not built
-now. Mac support is described only as a later phase with "known
-differences recorded here so it is not re-discovered" — the design does not use the words
-"best-effort" anywhere.
+first agent, doors (Slack/Telegram), backup, watchers, done. The model key was
+already tested with "one real call per provider through the gateway" at step 2 — that part is
+unchanged. Doors (Slack/Telegram) were step 7, and the first conversation the wizard proved was a
+reply inside whichever door the owner just claimed — there was no web-chat step at all. Restore was
+not on the first screen: it was a separate flag on the install command itself
+(`… | bash -s -- --restore`) and, inside the wizard, backup only appeared at **step 8**,
+near the end. The design's non-goals list said "the web chat door" would "need to come fast after
+this phase" but deferred it. Mac support was described only as a later phase with "known
+differences recorded here so it is not re-discovered" — never as "best-effort".
 
-**The installed eve already ships the web-chat building blocks.** Checked on 2026-09-18 against
-the installed, pinned package (`node_modules/.pnpm/eve@0.32.0…/node_modules/eve/package.json`):
-its `exports` map includes `./next`, `./react` and `./client` (alongside `./vue`, `./svelte`,
-`./sveltekit` and `./nuxt`). Pre-launch research on eve describes the same surface upstream, grown into
-a Web Chat channel (`eve add channel/web`, a generated Next.js app with session URLs and resume on
-reload; an optional "Sign in with Vercel" variant, which Lares skips). The shapes of those exports
-must be re-read against whatever eve version Lares is pinned to when the console work starts (see
-ADR-0021) — the 0.32 → 0.60 upgrade sits between today and that work.
+**The pinned eve already ships the web-chat building blocks.** The pinned package's `exports` map
+includes `./next`, `./react` and `./client` (alongside `./vue`, `./svelte`, `./sveltekit` and
+`./nuxt`), and upstream describes the same surface grown into a Web Chat channel
+(`eve add channel/web`, a generated Next.js app with session URLs and resume on reload; an optional
+"Sign in with Vercel" variant, which Lares skips). The shapes of those exports must be re-read
+against whatever eve version Lares is pinned to when the console work starts (see ADR-0021).
 
-**The console does not use any eve chat client today.** A search of `services/console` for
-`useEveAgent` and `eve/client` returns no matches — there is nothing to migrate or build on;
-this would be new console surface.
+**The console did not use any eve chat client**, so web chat is new console surface, not a migration.
 
 **Every role's `agent/channels/eve.ts` already exists and gates eve's own HTTP session route.**
 `services/chief-of-staff/agent/channels/eve.ts` wires `eveChannel` with HTTP Basic auth read from
-a box secret file (`routePassword()`, lines 27-40) against `eve`'s built-in session routes; the
-same file, with only the username/secret-file literals changed — the chief-of-staff role's copy
-carries its own (persona-derived) username and secret-file name where the other two roles use the
-plain `eve` / `eve-route-password` — exists at
-`services/travel/agent/channels/eve.ts` and `services/creative/agent/channels/eve.ts` — confirmed
-identical apart from those literals by direct diff. This is the route a web-chat client would call
-through; it already exists and is already password-protected per role, but nothing in the console
-speaks to it yet.
+a box secret file against eve's built-in session routes; the creative role has the same file with
+only the username and secret-file literals changed. This is the route a web-chat client calls
+through; it already exists and is already password-protected per role.
 
 **Spend-cap defaults.** The installer design's defaults are "$5/day per agent
-key, $2/day per background-job key, $10/day installation ceiling; alerts at 85% and 95%". A later
-change, tracked outside this repository, made an agent say plainly when its spend cap is hit instead
-of failing with a generic error; what **is** present here is its implementation —
-`services/travel/agent/channels/telegram.ts` plus `services/travel/tests/telegram-budget-refusal.test.ts`, which change how a cap-exceeded
-refusal is *reported*, not the cap numbers themselves. Nothing found in this worktree changes the
-default figures above; whether the owner's later decisions moved them is to be checked in the
-project tracker, and this ADR keeps the installer design's numbers as still current pending that check.
+key, $2/day per background-job key, $10/day installation ceiling; alerts at 85% and 95%". Agents say
+plainly when their spend cap is hit instead of failing with a generic error; that changes how a
+cap-exceeded refusal is *reported*, not the cap numbers. This ADR keeps the installer design's
+numbers as current.
 
 ## Decision
 
-### Installer boundary clarified — owner ruling, 2026-09-24
+### Installer boundary clarified
 
 Web chat remains the first door, but the installer must not claim that a conversation exists before
 an agent exists. The neutral-stack installer configures the keeper and the first agent's binding;
@@ -90,7 +74,7 @@ the tested path is not: **first-agent creation, gateway-key provisioning, agent 
 web-chat turn must still be built and proved before Lares claims the tested path reaches a working
 conversation.** Slack and Telegram remain after that first web-chat turn.
 
-### Fresh-install creation prerequisites — owner ruling, 2026-09-24
+### Fresh-install creation prerequisites
 
 After migrations, the installer initializes two settings only when they are absent:
 `models.alias_prefix` is `lares` (the prefix of the shipped `lares-brain` alias), and
@@ -132,24 +116,21 @@ failed.
 ### What changes
 
 1. **The wizard is shorter.** Fewer questions stand between "run the install command" and a
-   working conversation than the ten-step table above. The exact revised step count and order is
-   a build decision for the wave that implements this (see Open questions); this ADR fixes the
+   working conversation than the ten-step table above. The exact revised step count and order is a build decision (see Open questions); this ADR fixes the
    *shape* — model key tested, then a conversation — not the final count.
 2. **Web chat in the console is the first door.** The owner reaches a working conversation with
    their agent before connecting Slack or Telegram, using the console's own chat surface against
    eve's existing (and already password-gated) HTTP session route. Slack/Telegram setup moves
    after first conversation, not before it.
 
-   **Approvals can be answered there, and here is exactly what that trusts** (owner decision B3,
-   wave 8). Without this, a fresh installation with no chat app connected could never approve
+   **Approvals can be answered there, and here is exactly what that trusts** Without this, a fresh installation with no chat app connected could never approve
    anything at all, so every gated action would be unreachable on the tested path. The signed-in
    console address is what counts as the approver: the console checks the session cookie, then
    tells the agent which member it is acting for, over the connection it has already authenticated
    with the agent's own route password.
 
    The honest limit, stated rather than left to be discovered: **anything holding an agent's route
-   password can claim to be any member, and so can approve anything that member could.** Today
-   that is the console container and the keeper, both on the owner's own server. A browser cannot
+   password can claim to be any member, and so can approve anything that member could.** That is the console container and the keeper, both on the owner's own server. A browser cannot
    do it — the console replaces whatever identity header the browser sent with the one it verified,
    and the agent reads that header only after the password has checked out — but a route password
    that leaks is not merely a way to talk to the agent, it is a way to authorise its actions. Treat
@@ -160,36 +141,31 @@ failed.
    members the console admits at sign-in. An unset or empty list admits nobody.
 3. **"Restore from a backup" moves to the very first screen**, offered alongside "start fresh",
    instead of living only as a separate install-command flag and a step-8 wizard page.
-4. **The model key is tested with a real completion**, kept exactly as designed in the current
-   spec's step 2, but called out here as the first thing the shortened wizard proves, not one
+4. **The model key is tested with a real completion**, kept exactly as designed in step 2 of the earlier design, but called out here as the first thing the shortened wizard proves, not one
    step among ten.
 5. **Wording changes everywhere:** "supported" becomes "tested path". This is a documentation and
    console-copy change, not a change in what is actually tested.
-6. **Mac is explicitly labelled best-effort.** The current spec already records Mac's known
-   differences so they are "not re-discovered" later; this ADR adds the formal label — expected
+6. **Mac is explicitly labelled best-effort.** The earlier design already recorded Mac's known differences so they are "not re-discovered" later; this ADR adds the formal label — expected
    to work, not rehearsed, not the tested path.
 
 ### What stays
 
 - One box. The keeper. The on-box gateway. Caddy as the one public listener. The one-time setup
-  link (the installer design's step 9). The spend-cap defaults named above, unless they have
-  since changed.
-- Single-user at launch; everything else in the current design's first three parts (what runs on one box,
+  link (the installer design's step 9). The spend-cap defaults named above.
+- Single-user in the first public release; everything else in the earlier design's first three parts (what runs on one box,
   the install command's pre-flight/base/images/secrets steps, the keeper's fixed action list) is
   unchanged by this ADR.
 
 ### No promised support
 
-The owner's words, recorded once, exactly:
-
-> "there is NO promised support on open source — that's a community Slack channel with an agent,
-> and I will chime in. Numbers will be LOW."
+The owner's decision, recorded once: there is no promised support on open source — help is a community
+Slack channel with an agent, and the owner will chime in. Numbers will be low.
 
 The README must therefore say: this is a **tested path**, not supported software; help is a
 community Slack channel with an agent answering questions, and the owner will occasionally
 answer personally; expected volumes are low; Mac is best-effort, not tested.
 
-### Amendment, 2026-10-20: the tested path is Docker only, in image mode
+### Amendment: the tested path is Docker only, in image mode
 
 From rc.12 the tested path is a fresh **Ubuntu 24.04 server with Docker (Compose v2), `curl` and
 `python3`, and nothing else**, installed in **image mode**: the owner downloads one script,
@@ -198,8 +174,7 @@ pulls the release's engine image by digest, unpacks the installer and its siblin
 and hands over to `install.sh`; a `lares` command (`update`, `rollback`, `restore`, `doctor`,
 `backups`) is then installed for looking after the server. The server never clones the repository,
 never runs `pnpm install`, never has Node.js and never builds an image. Updates and rollbacks are
-tested for rc.12 and later only; a server installed earlier switches over once, as the rc.12 notes
-describe. A rollback goes back one level.
+tested for rc.12 and later only; a server installed earlier switches over once, as the rc.12 release notes describe. A rollback goes back one level.
 
 What this changes in the decision above: "one command, a fresh Ubuntu server" now means this
 path, and the checkout-based install is no longer the tested path. What does not change: the
@@ -214,22 +189,17 @@ has tried it; treat a Mac as a place to experiment, not a server.
 ## Consequences
 
 **Positive:**
-- A shorter path to a working conversation addresses the loudest first-hour complaint in report
-  10's practitioner sweep (intimidating setup, "trust me bro" silence before the owner sees the
-  agent do anything) more directly than the current ten-step, doors-before-chat wizard does.
+- A shorter path to a working conversation addresses the loudest first-hour complaint in practitioner research (intimidating setup, "trust me bro" silence before the owner sees the
+  agent do anything) more directly than the ten-step, doors-before-chat wizard does.
 - Restore-first reduces the chance that a destroyed server becomes a panic instead of a known
-  procedure — the recovery kit and restore mode already exist in the current spec; this only
-  moves the entry point.
+  procedure — the recovery kit and restore mode already exist; this only moves the entry point.
 
 **Negative / accepted trade-offs:**
-- Web-chat-first requires building real console UI against eve's HTTP session routes, which
-  nothing in the console uses today (confirmed by search) — this is new, not yet started work,
+- Web-chat-first requires building real console UI against eve's HTTP session routes — new work,
   not a reshuffle of existing screens.
-- The eve web-chat building blocks this ADR assumes (`eve/next`, `eve/react`, `eve/client`) could
-  not be verified against the actually-pinned package in this pass, because this worktree has no
-  installed dependencies and installing them was out of scope for a docs-only task. This must be
-  confirmed — against whatever eve version is pinned at build time (ADR-0021) — before console
-  work starts, not assumed from upstream research alone.
+- The eve web-chat building blocks this ADR assumes (`eve/next`, `eve/react`, `eve/client`) must be
+  confirmed against whatever eve version is pinned at build time (ADR-0021) before console work
+  starts, not assumed from upstream research alone.
 - "No promised support" is a real trade-off for anyone expecting responsiveness; stating it
   plainly in the README is the honest choice, not a marketing softening of it.
 
@@ -249,15 +219,13 @@ has tried it; treat a Mac as a place to experiment, not a server.
 
 ## Open questions
 
-- The exact revised wizard step count and order once web chat and restore-first are inserted — a
-  slice-level build decision, not fixed by this ADR.
-- The exact shape of eve's web-chat exports on the 0.60.x line ADR-0021 moves to (they exist in
-  the installed 0.32.0 — see Context); to be re-read when the console work starts.
-- Whether the spend-cap defaults have since changed (checked in the project tracker).
+- The exact revised wizard step count and order once web chat and restore-first are inserted — a build decision, not fixed by this ADR.
+- The exact shape of eve's web-chat exports on the line ADR-0021 moves to; to be re-read when the console work starts.
+
 
 ## Cross-references
 
-- The installer and wizard design of 2026-09-14 (amended by this ADR; not part of this repository)
+- The earlier installer and wizard design (amended by this ADR; not part of this repository)
 - ADR-0015 (agents are definitions), ADR-0021 (releases and upgrades — governs which eve version
   is pinned when the web-chat building blocks are next checked)
-- Pre-launch research on eve web chat (upstream) and a practitioner sweep (first-hour friction)
+- Research on eve web chat (upstream) and a practitioner sweep (first-hour friction)
