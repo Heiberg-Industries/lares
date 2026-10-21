@@ -12,6 +12,7 @@ import { encryptSecret, decryptSecret } from '../lib/crypto.js';
 import { exportPerson } from '../lib/export-person.js';
 import { erasePerson } from '../lib/erase-person.js';
 import { APPROVAL_TTL_MS } from '../../../packages/agent-kit/src/approval-ledger.js';
+import { quiet } from './helpers/quiet-pool.js';
 
 const sqlDir=fileURLToPath(new URL('../sql/',import.meta.url));
 const key='1'.repeat(64);
@@ -56,8 +57,7 @@ async function pastAction(s:TrustedPersonalActionEnvelope) {
 }
 beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
-  db=new Pool({connectionString:container.getConnectionUri(),max:4});
-  db.on('error',()=>undefined);
+  db=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
   for(const name of readdirSync(sqlDir).filter(n=>n.endsWith('.sql')).sort()) await db.query(readFileSync(join(sqlDir,name),'utf8'));
   // Existing export/erase inventories include these runtime-created, member-scoped tables.
   await db.query('CREATE TABLE dream_observations(id bigserial PRIMARY KEY,owner text); CREATE TABLE dream_preferences(id bigserial PRIMARY KEY,owner text)');
@@ -171,7 +171,7 @@ describe('private immutable personal actions',()=>{
     expect((await restarted.claimAction(ref)).permit).toBeUndefined();
   });
   it('commits the permanent attempt before exposing its permit, even with a pool of one',async()=>{
-    const {ref}=await ready(),single=new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:2000});
+    const {ref}=await ready(),single=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:2000}));
     try {
       const one=new PgPersonalActionStore(single,crypto),won=await one.claimAction(ref);
       expect(won.permit).toBeDefined();
