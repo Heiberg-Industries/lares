@@ -70,7 +70,14 @@ export class PgAccountStore {
   }
 
   private async requireActiveMember(db: PoolClient, memberId: string): Promise<void> {
-    if (!await currentMember(db, memberId, { lock: 'share' })) throw new AccountAccessError();
+    // Admission callbacks may recheck grants. Match member/grant operations' organisation-first
+    // order before taking the member lock, and refuse a member moved while that lock waited.
+    const before = await currentMember(db, memberId);
+    if (!before) throw new AccountAccessError();
+    const organisation = await db.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE', [before.organisationId]);
+    if (organisation.rows.length !== 1) throw new AccountAccessError();
+    const member = await currentMember(db, memberId, { lock: 'share' });
+    if (!member || member.organisationId !== before.organisationId) throw new AccountAccessError();
   }
 
   private async row(db: PoolClient, memberId: string, id: string): Promise<Row> {
