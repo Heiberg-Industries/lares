@@ -1,4 +1,4 @@
-import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDenied} from './console-source-transaction.js';
+import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDenied,noteBudgetFinancialChange,type SourceTransactionBoundary} from './console-source-transaction.js';
 /** Server-only, inactive budget admission. Parsing a reference is NOT authentication.
  * Trusted request/gateway/recovery adapters must supply the observations below. No runtime
  * hook, HTTP endpoint, model tool, account opener or recovery reset is exported here. */
@@ -56,6 +56,10 @@ export interface BudgetGatewaySettlement {
   credentialGeneration:string;grantHash:string;pricingProfile:unknown;
 }
 export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied'|'unavailable';reason:string};
+export type BudgetFinancialOperation='prepare'|'admit'|'grant'|'unknown'|'settle';
+export interface BudgetFinancialWriter {
+  run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T>;
+}
 type Ref={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
 /** Burn synchronously BEFORE the first await/transport call; a thrown transport consumes it. */
@@ -65,11 +69,12 @@ export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:st
 const DENIED={state:'denied',reason:'Budget authority is unavailable or changed'} as const;
 type Row=Record<string,any>;
 export class PgBudgetAdmissionStore {
-  constructor(private readonly pool:Pool,private readonly env:NodeJS.ProcessEnv=process.env,private readonly intentLifetimeMs=30_000) {
+  constructor(private readonly pool:Pool,private readonly env:NodeJS.ProcessEnv=process.env,private readonly intentLifetimeMs=30_000,private readonly financialWriter?:BudgetFinancialWriter) {
     if(!Number.isSafeInteger(intentLifetimeMs)||intentLifetimeMs<1||intentLifetimeMs>30_000)throw new Error('Invalid intent lifetime');
   }
-  private async transaction<T>(fn:(db:PoolClient)=>Promise<T>):Promise<T> {
-    return consoleSourceTransaction(this.pool,db=>fn(db as PoolClient));
+  private async transaction<T>(fn:(db:PoolClient)=>Promise<T>,operation?:BudgetFinancialOperation):Promise<T> {
+    const work=(boundary?:SourceTransactionBoundary)=>consoleSourceTransaction(this.pool,db=>fn(db as PoolClient),boundary);
+    return operation&&this.financialWriter?this.financialWriter.run(operation,work):work();
   }
   /** Unlocked routing only; the pool query releases its client before owned admission. */
   async discoverGatewayTicket(ticket:string):Promise<BudgetGatewayTicket|undefined> {
@@ -88,8 +93,9 @@ export class PgBudgetAdmissionStore {
       await this.locks(db,found.installation_account_id,found.member_account_id,found.binding_id);
       const a=(await db.query('SELECT * FROM budget_attempts WHERE id=$1 FOR UPDATE',[found.id])).rows[0];
       if(a.state!=='admitted'||a.binding_id!==reference.bindingId||a.request_hash!==reference.requestHash)return false;
-      return (await db.query('INSERT INTO budget_gateway_grants(attempt_id,grant_hash) VALUES($1,$2) ON CONFLICT(attempt_id) DO NOTHING RETURNING attempt_id',[a.id,grantHash])).rows.length===1;
-    });
+      const inserted=(await db.query('INSERT INTO budget_gateway_grants(attempt_id,grant_hash) VALUES($1,$2) ON CONFLICT(attempt_id) DO NOTHING RETURNING attempt_id',[a.id,grantHash])).rows.length===1;
+      if(inserted)noteBudgetFinancialChange(db,'budget_gateway_grants',a.id);return inserted;
+    },'grant');
   }
   /** Immutable financial correlation survives current identity redaction and key rotation. */
   async gatewaySettlement(attemptId:string):Promise<BudgetGatewaySettlement|undefined> {
@@ -187,7 +193,8 @@ export class PgBudgetAdmissionStore {
         SELECT $23,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,t,t+($22::int*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t) c ON CONFLICT(invocation_hash) DO NOTHING RETURNING id`,
         [randomUUID(),hash(raw),installation.id,member.id,b.id,member.live_member_id,installation.active_window_id,member.active_window_id,b.endpoint_hash,b.credential_generation,installation.policy_generation,member.policy_generation,installation.endpoint_generation,installation.recovery_epoch,request.requestHash,payloadFingerprint('budget-authority',reference),JSON.stringify(reference),b.profile_hash,b.maximum_liability,iCap,mCap,this.intentLifetimeMs,invocationHash]);
       if(inserted.rows.length!==1)throw new Error('Budget authority is unavailable or changed');
-    });return raw;
+      noteBudgetFinancialChange(db,'budget_attempts',inserted.rows[0].id);
+    },'prepare');return raw;
   }
   async admit(ticket:string,observation:BudgetGatewayObservation,recovery:BudgetRecoveryReference):Promise<BudgetAdmission> {
     if(typeof ticket!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(ticket))return DENIED;
@@ -199,14 +206,14 @@ export class PgBudgetAdmissionStore {
         if(payloadFingerprint('budget-authority',ref)!==discovered.authority_hash)return undefined;
         let authorityValidUntil:string|null;
         try{authorityValidUntil=await this.validate(db,ref);}catch{
-          await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1 AND state='prepared'",[discovered.id]);return undefined;
+          await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1 AND state='prepared'",[discovered.id]);noteBudgetFinancialChange(db,'budget_attempts',discovered.id);return undefined;
         }
         await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[ref.binding.memberId]);
         const {installation:i,member:m,binding:b}=await this.locks(db,discovered.installation_account_id,discovered.member_account_id,discovered.binding_id);
         await db.query('SELECT id FROM budget_attempts WHERE id=$1 FOR UPDATE',[discovered.id]);
         const a=(await db.query('SELECT *,expires_at>clock_timestamp() AS fresh FROM budget_attempts WHERE id=$1',[discovered.id])).rows[0];
         if(a.state!=='prepared')return undefined;
-        const deny=async()=>{await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1",[a.id]);return undefined;};
+        const deny=async()=>{await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1",[a.id]);noteBudgetFinancialChange(db,'budget_attempts',a.id);return undefined;};
         if(!a.fresh||!b||b.state!=='active'||m.live_member_id!==ref.binding.memberId||b.live_member_id!==m.live_member_id||!await this.ready(db,i)||!await this.ready(db,m)||
           i.policy_generation!==a.installation_policy_generation||m.policy_generation!==a.member_policy_generation||i.active_window_id!==a.installation_window_id||m.active_window_id!==a.member_window_id||
           i.selected_endpoint!==a.endpoint_hash||i.endpoint_generation!==a.endpoint_generation||i.recovery_epoch!==a.recovery_epoch||
@@ -223,8 +230,9 @@ export class PgBudgetAdmissionStore {
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$2 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp())
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$3 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp()) RETURNING id`,[a.id,i.active_window_id,m.active_window_id,authorityValidUntil]);
         if(admitted.rows.length!==1){await checkConsoleSourceDeadlines(db);return deny();}
+        noteBudgetFinancialChange(db,'budget_attempts',a.id);
         return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string};
-      });
+      },'admit');
       if(!admitted)return DENIED;
       // Denial carries no account/aggregate metadata. The caller may separately ask
       // readStatus using its current authenticated context and authorised scope.
@@ -235,7 +243,7 @@ export class PgBudgetAdmissionStore {
   }
   async markUnknown(attemptId:string):Promise<void>{
     if(!uuid(attemptId))throw new Error('Invalid attempt');
-    await this.transaction(async db=>{await db.query("UPDATE budget_attempts SET state='unknown' WHERE id=$1 AND state='admitted'",[attemptId]);});
+    await this.transaction(async db=>{const result=await db.query("UPDATE budget_attempts SET state='unknown' WHERE id=$1 AND state='admitted' RETURNING id",[attemptId]);if(result.rows.length)noteBudgetFinancialChange(db,'budget_attempts',attemptId);},'unknown');
   }
   /** Receipt verification/correlation belongs to the trusted gateway adapter. Cancellation,
    * timeouts, missing logs and zero log rows are never affirmative nondispatch evidence. */
@@ -255,8 +263,9 @@ export class PgBudgetAdmissionStore {
       await db.query(`UPDATE budget_attempts SET state=$2,actual_amount=COALESCE(actual_amount,$3),settlement_hash=COALESCE(settlement_hash,$4),
         conflict_reason=COALESCE(conflict_reason,$5),conflict_hash=CASE WHEN $5::text IS NOT NULL THEN $4 ELSE conflict_hash END,highest_observed_liability=$6 WHERE id=$1`,[a.id,conflict?'conflict':'settled',actual,receipt.receiptHash,reason,decimal(high)]);
       if(conflict)await db.query("UPDATE budget_accounts SET state='frozen',reason=$2 WHERE id=$1 AND state<>'retired'",[a.installation_account_id,reason??'receipt_conflict']);
+      noteBudgetFinancialChange(db,'budget_attempts',a.id);
       return conflict?'conflict':'settled';
-    });
+    },'settle');
   }
   /** Authorisation uses the same current private-console authority, before account locks.
    * Members can read only their own account; installation scope requires a current owner. */

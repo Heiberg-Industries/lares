@@ -13,6 +13,7 @@
   "exports": {
     "./vault-files": "./src/vault-files.ts",
     "./budget-admission-store": "./src/budget-admission-store.ts",
+    "./console-source-transaction": "./src/console-source-transaction.ts",
     "./gateway-admission-protocol": "./src/gateway-admission-protocol.ts",
     "./gateway-pricing": "./src/gateway-pricing.ts",
     "./vault-area-store": "./src/vault-area-store.ts",
