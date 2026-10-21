@@ -208,3 +208,13 @@ export function loadIntegrationManifests(dir: string): IntegrationManifest[] {
     return manifest;
   });
 }
+
+/** A provider-neutral capability is implemented by the union of its provider manifests.
+ * Each host must still be explicitly declared by an implementing integration. */
+export function assertCapabilityHosts(manifests:readonly IntegrationManifest[],hostsFor:(capability:string)=>readonly string[]):void {
+  const capabilities=new Set(manifests.flatMap(m=>m.capability));
+  for(const capability of capabilities) {
+    const declared=new Set(manifests.filter(m=>m.capability.includes(capability)).flatMap(m=>m.outbound_hosts));
+    for(const host of hostsFor(capability))if(!declared.has(host))throw new Error(`Undeclared capability host: ${capability}/${host}`);
+  }
+}

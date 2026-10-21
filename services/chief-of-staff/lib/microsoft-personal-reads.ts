@@ -9,12 +9,12 @@ import { inWindow, timestamp, requiredId, optionalText, PersonalReadError, type 
 
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const consumer='9188040d-6c67-4c5b-b112-36a304b66dad';
-const settingsSchema=z.strictObject({tenantId:z.string().regex(uuid).refine(t=>t!==consumer),
+export const microsoftReadSettingsSchema=z.strictObject({tenantId:z.string().regex(uuid).refine(t=>t!==consumer),
   clientId:z.string().min(1).max(256),clientSecret:z.string().min(1).max(8192),tokenKeyHex:z.string().regex(/^[a-fA-F0-9]{64}$/)});
-export type MicrosoftReadSettings=z.infer<typeof settingsSchema>;
+export type MicrosoftReadSettings=z.infer<typeof microsoftReadSettingsSchema>;
 export interface MicrosoftReadIdentity { issuer:string; tenantId?:string|null; subject:string }
 export function validateMicrosoftIdentity(settings:MicrosoftReadSettings, identity:MicrosoftReadIdentity) {
-  settingsSchema.parse(settings);
+  microsoftReadSettingsSchema.parse(settings);
   if(identity.issuer!==`https://login.microsoftonline.com/${settings.tenantId}/v2.0` ||
     identity.tenantId!==settings.tenantId || !uuid.test(identity.subject)) throw new PersonalReadError();
 }

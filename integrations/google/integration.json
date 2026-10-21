@@ -3,7 +3,7 @@
   "name": "Google (Gmail + Calendar)",
   "provenance": "core",
   "concept": ["mailbox", "calendar"],
-  "capability": ["gmail", "calendar"],
+  "capability": ["gmail", "calendar", "personal_mailbox", "personal_calendar"],
   "region": "global",
   "data_path": "non_eu_cloud",
   "outbound_hosts": [".googleapis.com"],
