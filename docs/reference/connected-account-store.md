@@ -70,7 +70,8 @@ verified account can retain its row and authority generation.
 membership, ownership, account status, generation and resource-kind checks. A snapshot alone
 must not authorize later credential resolution. `withPersonalResourceCredential` repeats those
 checks and requires a matching generation-bound credential association in the same transaction.
-Its trusted server callback receives the existing encrypted credential material while member,
+Its trusted server callback receives the existing encrypted credential material and the same
+transaction client for current authority rechecks while member,
 account, resource, association and custody locks are held. Never return that material to a
 model, log or client, and never hold these locks while waiting for human approval.
 
@@ -104,7 +105,10 @@ member, account, resource and custody locks. It checks Google connector/issuer, 
 binding and an actual Gmail read scope from that same grant. A Google mailbox's stored external
 ID is the verified provider subject, never a Gmail `userId`; the existing adapter always calls
 `users.me` using the exact resolved credential. OAuth refresh and Gmail calls share a 15-second
-abort deadline with retries disabled. Errors contain no provider or credential details.
+abort deadline with retries disabled. A request interceptor enforces that deadline after the
+installed SDK merges its own refresh retry options, with no per-request timeout that can replace
+an expired shared signal. Authority rechecks reuse the locked transaction rather than acquiring
+a second pool connection. Errors contain no provider or credential details.
 
 Mail bodies retain quoted, bounded pages and third-party taint. Personal console reads report
 sender history as `I could not check`; they do not consult another account's sent mailbox.

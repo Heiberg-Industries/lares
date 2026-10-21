@@ -30,12 +30,12 @@ export async function withPersonalGmail<T>(ctx: ConsoleAuthorityContext, input: 
     if (!memberId || authority.spokenByMemberId !== memberId || authority.audience.participants.length !== 1 ||
       authority.audience.participants[0]?.kind !== 'member' || authority.audience.participants[0].memberId !== memberId) return refuse();
     return await new PgAccountStore(getPool()).withPersonalResourceCredential(memberId, selection, 'mailbox',
-      async ({ account, resource }, credential) => {
+      async ({ account, resource }, credential, db) => {
         if (account.connectorId !== 'google' || account.providerAccount.issuer !== 'https://accounts.google.com' ||
           resource.externalId !== account.providerAccount.subject ||
           !credential.scopes.some(scope => scope === 'https://www.googleapis.com/auth/gmail.readonly' ||
             scope === 'https://www.googleapis.com/auth/gmail.modify' || scope === 'https://mail.google.com/')) refuse();
-        await requireConsoleTurnAuthority(ctx);
+        await requireConsoleTurnAuthority(ctx, db);
         return work(personalGmailReader(credential, AbortSignal.timeout(15_000)));
       });
   } catch { return refuse(); }

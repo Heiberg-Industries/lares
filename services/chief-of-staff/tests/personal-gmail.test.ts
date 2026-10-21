@@ -155,6 +155,22 @@ describe('private console Gmail catalogue execution', () => {
     await expect(gmailRead.execute({ id: 'm', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(credentials).toEqual([]);
   });
+  it('rechecks authority on the same transaction with a one-connection pool', async () => {
+    const own = await account();
+    await closePool();
+    const pool = quiet(getPool());
+    pool.options.max = 1;
+    pool.options.connectionTimeoutMillis = 300;
+    store = new PgAccountStore(pool);
+    try {
+      await expect(gmailSearch.execute({ query: 'x', selection: own.selection }, ctx())).resolves.toEqual(['message-a']);
+      expect(credentials).toEqual(['refresh-subject-a']);
+      await pool.query('UPDATE console_session_bindings SET revoked_at=now()');
+      credentials.length = 0;
+      await expect(gmailSearch.execute({ query: 'x', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
+      expect(credentials).toEqual([]);
+    } finally { pool.options.max = 10; pool.options.connectionTimeoutMillis = 0; }
+  });
   it('holds account/member/resource/custody locks until provider work finishes', async () => {
     const own = await account(); let entered!:()=>void, release!:()=>void;
     const ready = new Promise<void>(resolve => { entered=resolve; }); const wait = new Promise<void>(resolve => { release=resolve; });
