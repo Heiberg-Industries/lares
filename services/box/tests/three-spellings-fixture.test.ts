@@ -1,4 +1,4 @@
-// services/box/tests/three-spellings-fixture.test.ts — W5I-s2. Proves the fixture itself: the
+// services/box/tests/three-spellings-fixture.test.ts —. Proves the fixture itself: the
 // real migration files apply in order to an empty, disposable Postgres, and the seed reaches
 // every member table the inventory (lib/member-scope.ts) lists, under all three (four, counting
 // `actor`) id conventions, for two distinct fictional people, and never names the real
@@ -26,7 +26,7 @@ describe("three-spellings fixture", () => {
     const kinds = new Set(FIXTURE_ROWS.map((r) => scopeOf(r.table)?.idKind));
     expect(kinds).toEqual(new Set(["registry", "principal", "owner-key", "actor"]));
     // A table still frozen on a legacy `principal` spelling (the inventory's
-    // LEGACY_PRINCIPAL_TABLES). `oauth_tokens` used to be the example here; box 085 renamed it
+    // LEGACY_PRINCIPAL_TABLES). `oauth_tokens` used to be the example here; the baseline schema keys it on the register's id
     // onto the register's id, so the fixture seeds it as `registry` and this assertion moved to
     // one of the five tables that genuinely still hold a legacy spelling.
     const legacy = FIXTURE_ROWS.find((r) => r.table === "workflow_jobs")!;

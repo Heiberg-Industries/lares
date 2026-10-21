@@ -83,7 +83,7 @@ describe("the runtime image's start script", () => {
     expect(() => execFileSync("/bin/sh", ["-n", FRAGMENT])).not.toThrow();
   });
 
-  // Added to the plan's four cases: the bar for this slice names an EMPTY secret file as a
+  // An EMPTY secret file is a
   // refusal too (a readable but empty gateway key means every model call comes back
   // unauthenticated — half-working, which is exactly what this guard exists to prevent), and it
   // names "no secret bytes, not even a secret's length" as the thing the refusal must not print.

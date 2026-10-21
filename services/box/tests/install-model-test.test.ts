@@ -1,5 +1,5 @@
-// W8C-s5 — the model key is tested with a real completion, before anything is built on it. The
-// live call and its parsing were built and probed in W8A-s7 (`services/box/bin/doctor.ts
+// The model key is tested with a real completion, before anything is built on it. The
+// live call and its parsing are built and probed in `services/box/bin/doctor.ts
 // --test-model`); this only proves that install.sh WIRES it correctly. `lares-doctor` is a
 // command resolved from PATH, exactly like docker/chown/ufw elsewhere in this script, so it is
 // stubbed here the same way — NOTHING in this file makes a real network call.
@@ -27,9 +27,9 @@ const RELEASE = JSON.stringify({
   breaking: [],
 });
 
-/** W8F-F7a: run_stack renders the installation's stack file through
+/** run_stack renders the installation's stack file through
  *  `pnpm -C <box> render-stack <release> <out> …` and refuses if nothing lands at <out>, so
- *  every `pnpm` stub in an installer test has to answer that one call — and, since W8F-F7b,
+ *  every `pnpm` stub in an installer test has to answer that one call — and
  *  the `render-keeper-config` call run_keeper makes at the end for the same reason. A placeholder stack file
  *  is enough here — this file is about the model check, not about what the stack contains.
  *  tests/install-stack.test.ts is where the REAL renderer runs. */
@@ -51,7 +51,7 @@ function stub(name: string, body = "exit 0") {
  *  answer) on every single case below. */
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
-    // `--release` is load-bearing since W8F-F7a: a fresh install given none refuses with
+    // `--release` is load-bearing: a fresh install given none refuses with
     // EX_USAGE before it writes anything. Every run here is given the fixture written in
     // beforeEach; tests/install-stack.test.ts is where the flag itself is the subject.
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", "--release", releaseFile, ...args], {
@@ -84,11 +84,11 @@ beforeEach(() => {
   stub("df", 'echo "/dev/x 100000000 1000000 99000000 1% /"');
   stub("ss", "exit 1");                                   // nothing listening on 80/443
   stub("lsb_release", "echo 24.04");
-  // DNS (owner decision C5): getent and hostname agree, so the fixture domain resolves here —
+  // DNS: getent and hostname agree, so the fixture domain resolves here —
   // this file is not about DNS, so it is fixed to "always fine" and never varied.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; fi');
   stub("hostname", 'if [ "$1" = "-I" ]; then echo "203.0.113.10"; fi');
-  // W8F-F7a: the installer renders its own stack file from the release it was given, one step
+  // The installer renders its own stack file from the release it was given, one step
   // before the model check. This file is not about that step, so it gets a minimal release and
   // a stubbed renderer (above) rather than a hand-placed compose fixture.
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, RELEASE);

@@ -150,7 +150,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // words "it is forbidden to copy, merge, publish, distribute, sublicense, and/or sell
       // the Software". Pushing a derived image to our registry, which every installation
       // pulls from, is exactly that. It would also break the one supply-chain control the
-      // project decided to keep (the pre-launch LiteLLM research): LiteLLM
+      // project decided to keep: LiteLLM
       // signs its images with cosign from v1.83.0, and a derived image is not the artefact
       // upstream signed, so nothing downstream could verify it. So the release manifest names
       // the UPSTREAM digest, and the script reaches the container as a read-only bind mount
@@ -160,7 +160,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // against the registry on 2026-09-21, reading each image's own config blob:
       // `ghcr.io/berriai/litellm` is `User: "root"`, `ghcr.io/berriai/litellm-non_root` is
       // `User: "65534"` (a uid only, so gid 0). The secrets below are `0440 root:$LARES_
-      // RUNTIME_GID` (owner decision A1, install.sh), and compose's file-secrets are bind
+      // RUNTIME_GID` (see install.sh), and compose's file-secrets are bind
       // mounts that preserve the host's owner and mode — the long-syntax `uid`/`gid`/`mode`
       // keys are swarm-only and silently ignored here. uid 65534 / gid 0 matches neither the
       // owner nor the group, and 0440 grants nothing to other: a non-root LiteLLM gets EACCES

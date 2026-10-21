@@ -122,7 +122,7 @@ function messageOf(err: unknown): string {
  * NEVER THROWS. Every error — a bad flag, an unadopted database, a migration that fails mid-apply
  * — is caught, written through `deps.out` as the sentence a person needs to read, and turned into
  * exit code 1. A CLI that throws prints a stack trace at the exact moment the reader most needs a
- * plain sentence, and the installer (wave 8C) branches on the exit code, not on an exception.
+ * plain sentence, and the installer branches on the exit code, not on an exception.
  */
 export async function main(
   argv: readonly string[],

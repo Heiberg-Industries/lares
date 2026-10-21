@@ -32,7 +32,7 @@ export interface DefinitionCompose {
     deleted?(name:string):Promise<void>;
     /** Names below secretsDir that this lifecycle created and may remove with the agent. */
     ownedSecrets?(name:string):string[];
-    /** Task14 owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
+    /** The lifecycle owns provisioning, compose generation and start. Absent = refuse create BEFORE writes. */
     create?(name: string, definition: AgentDefinition): Promise<unknown>;
 }
 export interface DefinitionStorage {

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
-# install.sh — the tested install path (begun by W8C-s1's preflight; completed by W8C-s9 —
-# docs/decisions/0022-the-tested-install-path.md: a fresh Ubuntu server, one command,
-# "tested path" never "supported"). It checks this box, prints every preflight problem
+# install.sh — the tested install path (docs/decisions/0022-the-tested-install-path.md:
+# a fresh Ubuntu server, one command, "tested path" never "supported"). It checks this box, prints every preflight problem
 # together with a paste-ready fix, and refuses before writing if anything is wrong. It
 # then creates the installation's secrets, records four answers, renders and starts the
 # release-pinned stack, proves the model, migrates the database, creates the owner and
@@ -214,8 +213,8 @@ DRY="$DRY_RUN"
 # installer never passes --remove-orphans.
 export COMPOSE_IGNORE_ORPHANS=1
 
-# Every later slice's write goes through this — unused today (this slice writes
-# nothing at all), kept here so the next slice has exactly one place to plug into.
+# Every write the installer makes goes through this, so a dry run (--dry-run) can say what it
+# would do instead of doing it.
 do_or_say() {
   if [ "$DRY" -eq 1 ]; then
     say "would run: $*"
@@ -224,7 +223,7 @@ do_or_say() {
   fi
 }
 
-# The box's doctor (W8A-s7 built `--test-model`). A `lares-doctor` on PATH wins — that is how an
+# The box's doctor (`--test-model` is its live model check). A `lares-doctor` on PATH wins — that is how an
 # installation that ships the command uses it, and how a test puts a stub ahead of it; with none,
 # this falls back to doctor inside the engine image. Without the fallback every real install
 # would refuse at the model check with "command not found". Doctor reads the key FILE it is
@@ -277,7 +276,7 @@ warn() {
   printf -- '- %s\n' "$1" >> "$WARNINGS"
 }
 
-# --- screen one: start fresh, or restore from a backup? (owner decision C3) -----------------
+# --- screen one: start fresh, or restore from a backup? -----------------
 # GUIDED, NEVER AUTOMATIC: this checks that an archive is genuine — a readable tar, a
 # manifest.json that parses, every file it names present with the right size and sha256 — the
 # same checks docs/runbooks/export-and-teardown.md section 4 has the owner do by hand. It never
@@ -310,7 +309,7 @@ is_unsafe_member() {
   esac
 }
 
-# verify_restore_archive <path> — the whole of "restore from a backup" in this slice. Exits
+# verify_restore_archive <path> — the whole of "restore from a backup" in this installer. Exits
 # the whole script itself (via die) on the first thing that is wrong; returns normally, having
 # written nothing outside $WORK, once a genuine archive has been reported on.
 verify_restore_archive() {
@@ -443,7 +442,7 @@ else
   esac
 fi
 
-# --- 2. memory (owner decision C7) -----------------------------------------------------
+# --- 2. memory -----------------------------------------------------
 LARES_MIN_MEMORY_MB="${LARES_MIN_MEMORY_MB:-6144}"
 MEM_TOTAL=$(free -m 2>/dev/null | awk '/^Mem:/ { print $2; exit }') || MEM_TOTAL=""
 case "$MEM_TOTAL" in
@@ -459,7 +458,7 @@ case "$MEM_TOTAL" in
     ;;
 esac
 
-# --- 3. free disk (owner decision C7) ---------------------------------------------------
+# --- 3. free disk ---------------------------------------------------
 LARES_MIN_DISK_MB="${LARES_MIN_DISK_MB:-20480}"
 AVAIL_KB=$(df -Pk "${PREFIX:-/}" 2>/dev/null | tail -1 | awk '{ print $4 }') || AVAIL_KB=""
 case "$AVAIL_KB" in
@@ -515,7 +514,7 @@ fi
 
 # --- 7. an existing installation ----------------------------------------------------------
 # Found, not fixed: a partial install is reported as what it is, never silently repaired
-# by this slice.
+# by this installer.
 REPAIR_MODE=0
 if [ -d "$PREFIX/srv/lares" ]; then
   REPAIR_MODE=1
@@ -575,7 +574,7 @@ else
   say "found no existing installation under $PREFIX/srv/lares — this would start a fresh install."
 fi
 
-# --- 6b. the release this install is for (W8F-F7a) ------------------------------------------
+# --- 6b. the release this install is for ------------------------------------------
 # --release has been parsed since the very first installer commit and read NOWHERE: advertised,
 # accepted, and silently ignored. From here on it is load-bearing — run_stack renders the whole
 # stack file from it, and every image in that file is a digest out of it, so an install with no
@@ -612,7 +611,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
   esac
 fi
 
-# --- 7. the installation's own credentials (W8C-s2) -----------------------------------------
+# --- 7. the installation's own credentials -----------------------------------------
 # OWNER DECISION A1: a secret is a FILE under /etc/lares/secrets/, root:lares 0440, mounted
 # into containers as a Docker secret. Never an environment value (they leak into
 # `docker inspect`, `ps` and every crash report), and never shown back.
@@ -639,7 +638,7 @@ fi
 # for openssl, and an installer that dies on a missing tool AFTER passing its own checks is
 # worse than one that uses the kernel's own source. Same bytes, one dependency fewer.)
 #
-# OWNERSHIP IS NUMERIC, NOT A NAMED GROUP (controller ruling W8C-s2b/a). Every runtime image
+# OWNERSHIP IS NUMERIC, NOT A NAMED GROUP. Every runtime image
 # runs `USER 10001:10001`, and compose bind-mounts each secret file with the HOST's ownership —
 # the container sees exactly the numeric owner the host gave the file, never a name. A named
 # host group (e.g. "lares") whose gid happens not to be 10001 on this particular box means the
@@ -669,7 +668,7 @@ ensure_secrets_dir() {
 #   encoding: hex (2 characters per byte) | base64url (URL-safe, no padding, no '+' or '/' and
 #   in particular no ':', so it is safe inside an HTTP Basic credential and inside a URL).
 #   The optional prefix is NOT secret — it exists because LiteLLM refuses a key that does not
-#   begin "sk-" (the pre-launch LiteLLM research).
+#   begin "sk-".
 lares_secret() {
   local name bytes encoding lead target tmp want got
   name="$1"; bytes="$2"; encoding="$3"; lead="${4:-}"
@@ -734,16 +733,14 @@ lares_secret() {
 }
 
 say "secrets (files under $SECRETS_DIR, owner 0:$LARES_RUNTIME_GID 0440 — never an environment value, never shown back):"
-# The model PROVIDER key is NOT in this list. It is not ours to invent: it is asked for in a
-# later slice and written straight to etc/lares/secrets/model-provider-key from the answer. A
+# The model PROVIDER key is NOT in this list. It is not ours to invent: it is asked for in the
+# wizard and written straight to etc/lares/secrets/model-provider-key from the answer. A
 # generated placeholder here would look exactly like a real key to every check after it.
 lares_secret console-session-secret 32 base64url  # writes $SECRETS_DIR/console-session-secret
 lares_secret database-password      32 base64url  # writes $SECRETS_DIR/database-password
 lares_secret eve-route-password     32 base64url  # writes $SECRETS_DIR/eve-route-password
 lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/gateway-key
-# gateway-master-key. CORRECTED W8F-F7a: the comment that stood here said "the engine itself
-# ships no gateway … so no engine code reads this file back", and BOTH halves have since become
-# false. The engine now renders the gateway service itself (lib/stack-compose.ts) and its
+# gateway-master-key. The engine renders the gateway service itself (lib/stack-compose.ts) and its
 # LiteLLM configuration (lib/gateway-config.ts), and images/gateway-runtime/start.sh reads THIS
 # file back as GATEWAY_MASTER_KEY_FILE and exports its contents as the value LiteLLM's
 # general_settings.master_key resolves. It is also the credential run_model_check presents
@@ -751,17 +748,16 @@ lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/ga
 lares_secret gateway-master-key     32 base64url "sk-"  # writes $SECRETS_DIR/gateway-master-key
 lares_secret token-enc-key          32 hex  # writes $SECRETS_DIR/token-enc-key
 
-# --- 8. four questions, asked once (W8C-s4, owner decision C4) -----------------------------
+# --- 8. four questions, asked once -----------------------------
 # FOUR THINGS ONLY: the domain, the e-mail address, the name, and a model provider key.
 # Everything else — the time zone, the gateway address, the model alias, Slack, Telegram,
 # Notion, backup — is either read from this machine or moved into the console, after the first
-# conversation (owner decision C4). Answers are written ONCE to $INSTALL_ENV; a re-run reads
+# conversation. Answers are written ONCE to $INSTALL_ENV; a re-run reads
 # them back (wizard_already_done, below) and never asks again, and never silently overwrites an
-# answer that is already there — the plan names no "change one answer" flag for this slice, so
-# none exists yet; changing a written answer today means editing the file by hand.
+# answer that is already there — there is no "change one answer" flag, so changing a written
+# answer means editing the file by hand.
 #
-# THE MODEL KEY IS A SECRET, handled exactly like every other one above (owner decision A1,
-# extended by owner decision C6 to the model provider's own key): it goes straight into its own
+# THE MODEL KEY IS A SECRET, handled exactly like every other one above, the model provider's own key included: it goes straight into its own
 # file under $SECRETS_DIR, 0440, 0:$LARES_RUNTIME_GID, through the same temp-name-then-mv
 # discipline as lares_secret, and an existing non-empty file is left exactly as it is. It NEVER
 # appears in $INSTALL_ENV, on a command line, in an environment variable, or on any stream this
@@ -772,21 +768,21 @@ lares_secret token-enc-key          32 hex  # writes $SECRETS_DIR/token-enc-key
 # of a newline or a control character (it is a person's name, not a hostname) — semicolons,
 # backticks, $(...), quotes. None of that may ever run as shell code. This script never
 # `source`s or `eval`s $INSTALL_ENV, and reads it back only through read_setting(), below, which
-# parses it with sed — never the shell's own word-splitting or expansion. Any later slice that
+# parses it with sed — never the shell's own word-splitting or expansion. Any later code that
 # wants a value out of this file should do the same, for the same reason: env_line() quotes a
 # value the moment it holds anything outside a safe, plain character set, so a value that round
 # trips through read_setting() is exactly the value that was typed, and a value that is merely
 # grepped out of the file (its own header says how) never needs unquoting at all unless it looks
 # quoted to begin with.
 INSTALL_ENV="$PREFIX/etc/lares/installation.env"
-# The gateway is the owner's own stack (owner decision C1 — not shipped by this engine), reached
-# on the fleet's own docker network under this compose service name, never the public internet.
+# The gateway is a compose service of the installation's own stack, reached on the fleet's own
+# docker network under this compose service name, never the public internet.
 # It is written plainly, as one address: the contract test's host rule names it as a fleet-internal
 # service and says why, which is the honest way past that rule — splitting the string so the rule
 # cannot see it would leave the next reader with a puzzle and the rule with a hole.
 GATEWAY_URL_DEFAULT="http://lares-gateway:4000"
 LARES_MODEL_ALIAS_DEFAULT="lares-brain"
-# A fresh install's default model is Opus (an owner ruling). Not a guess, not a
+# A fresh install's default model is Opus. Not a guess, not a
 # tuning knob picked here — the gateway's own config renderer (lib/gateway-config.ts) takes
 # whatever this settles on and never chooses one itself.
 LARES_MODEL_DEFAULT="anthropic/claude-opus-5"
@@ -934,7 +930,7 @@ server_addresses() {
   return 1
 }
 
-# check_domain_dns <domain> (owner decision C5) — refuses, before anything is written, unless
+# check_domain_dns <domain> — refuses, before anything is written, unless
 # the domain already resolves to THIS server: Let's Encrypt locks a domain out after repeated
 # failed attempts, so guessing here and finding out later is worse than stopping now and asking
 # again once the DNS record exists. No flag skips this check.
@@ -996,7 +992,7 @@ write_installation_env() {
   do_or_say mkdir -p "$(dirname "$INSTALL_ENV")"
   rm -f "$tmp"
   {
-    printf '%s\n' "# Written once by install.sh's four questions (owner decision C4)."
+    printf '%s\n' "# Written once by install.sh's four questions."
     printf '%s\n' "# Read this with read_setting() in that script, or with plain sed/grep —"
     printf '%s\n' "# never source or eval it: a name or an address typed here is data, not code."
     env_line LARES_DOMAIN "$LARES_DOMAIN"
@@ -1020,7 +1016,7 @@ write_installation_env() {
   do_or_say mv "$tmp" "$INSTALL_ENV"
 }
 
-# capture_model_key (owner decisions A1, C6) — the model PROVIDER key, read once and written
+# capture_model_key — the model PROVIDER key, read once and written
 # straight to its own secret file. An existing non-empty file is left exactly as it is, exactly
 # like lares_secret above, and this is the only place in the whole script that ever holds a
 # secret's actual bytes in a shell variable — bash has no other way to receive typed input. The
@@ -1101,7 +1097,7 @@ run_wizard() {
     ask_and_validate "$NAME_FLAG" "--name" "what is your name?" validate_name "that's either blank once invisible characters are removed, or over $LARES_NAME_MAX characters. Try again." strip
     LARES_OWNER_NAME="$ANSWER"
 
-    # Time zone (owner decision C4): read from the server, never asked.
+    # Time zone: read from the server, never asked.
     OWNER_HOME_TZ=""
     # timedatectl follows the active /etc/localtime link. On Ubuntu, /etc/timezone can
     # remain stale after set-timezone, so consult it only when timedatectl is unavailable.
@@ -1119,7 +1115,7 @@ run_wizard() {
   capture_model_key
 }
 
-# --- 9. the stack comes up, rendered from the release this run was given (W8F-F7a) ----------
+# --- 9. the stack comes up, rendered from the release this run was given ----------
 # THE FOUR QUESTIONS ARE ANSWERED AND NOTHING IS RUNNING YET. This is the step that turns a
 # release file into the installation's own compose file and starts it. It has to happen before
 # the model check below, because that check calls the gateway by its COMPOSE SERVICE NAME — a
@@ -1175,7 +1171,7 @@ run_stack() {
   [ -n "$owner_id" ] || die "the owner's id cannot be resolved, so the console cannot be configured. Nothing has been brought up." "$EX_REFUSED"
   owner_home_tz=$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")
 
-  # F7a-2: the two values the gateway's own config is rendered from (lib/gateway-config.ts),
+  # The two values the gateway's own config is rendered from (lib/gateway-config.ts),
   # read back exactly as LARES_DOMAIN is above — never re-derived, never defaulted here.
   model_alias=$(read_setting LARES_MODEL_ALIAS "$INSTALL_ENV")
   [ -n "$model_alias" ] || die "the model alias is not written down in $INSTALL_ENV, so the gateway's configuration cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
@@ -1229,14 +1225,14 @@ run_stack() {
 
   # THE CADDYFILE IS COMMITTED, NOT GENERATED. It lives beside this script (ops/Caddyfile) and
   # uses Caddy's own `{$LARES_DOMAIN}` substitution rather than a renderer, so there is nothing
-  # to render — but something has to put it where the compose file mounts it from, and until
-  # this slice nothing did. That is all this is.
+  # to render — but something has to put it where the compose file mounts it from, and this is
+  # the step that does that.
   [ -r "$HERE/Caddyfile" ] || die "the Caddyfile that belongs beside this script is missing ($HERE/Caddyfile), so Caddy would start with no site to serve. Nothing has been brought up." "$EX_REFUSED"
   do_or_say cp "$HERE/Caddyfile" "$caddyfile"
   do_or_say chmod 0644 "$caddyfile"
   say "installed $caddyfile (the domain reaches Caddy through the caddy service's own environment)."
 
-  # LiteLLM's virtual keys live in a separate database (installer design, Part 1), so create it
+  # LiteLLM's virtual keys live in a separate database so create it
   # before the gateway starts. Starting db alone is harmless on a re-run; the existence check
   # makes the database creation itself idempotent. The database name is an engine constant,
   # never owner input, so it is safe in the fixed SQL below. No password crosses argv or stdin:
@@ -1277,8 +1273,7 @@ run_stack() {
   say "the stack is up: db, console, lares-gateway, caddy."
 }
 
-# --- 9b. prove the key works, now that the gateway it calls is running (W8C-s5, moved here
-#          by W8F-F7a) ------------------------------------------------------------------------
+# --- 9b. prove the key works, now that the gateway it calls is running ------------------
 # WHY THIS IS A FUNCTION OF ITS OWN. It used to be step 9 INSIDE run_wizard, which put it
 # before anything had started the gateway it calls: `GATEWAY_URL` is http://lares-gateway:4000,
 # a compose service name, so on a fresh box the call could only fail, and the installer then
@@ -1288,14 +1283,14 @@ run_stack() {
 #
 # THE ONE LIVE CALL IN THE WHOLE INSTALLER, and it happens on the owner's server at install
 # time — never in a builder's test (CLAUDE.md: a fixture is what we believe an API does; only
-# a live call is what it does; W8A-s7 built and probed the call itself, this only wires it).
+# a live call is what it does; `bin/doctor.ts` makes and probes the call itself, this only wires it).
 # `lares_doctor` (above) prefers a `lares-doctor` on PATH, exactly like docker/chown/ufw, so a
 # test can stub it. The key travels only as a PATH to its file — never read into this script,
 # never on this or any other command's argument list, so it cannot appear in a log or a process
 # listing. A non-zero exit refuses (everything generated so far — every secret, $INSTALL_ENV,
 # the stack file, the containers already started — is left exactly as it is, so a re-run
 # resumes instead of starting over); the child's own stderr, never captured or rewritten here,
-# is what tells the owner what to change (W8A-s7 guarantees it carries no key and no gateway
+# is what tells the owner what to change (doctor guarantees it carries no key and no gateway
 # response body).
 #
 # WHICH CREDENTIAL IT PRESENTS, settled here rather than left to be rediscovered. This check
@@ -1328,10 +1323,8 @@ run_model_check() {
   fi
 }
 
-# --- 10. the database is created and migrated, or the install stops (W8C-s6) ---------------
-# THE COMPOSE FILE IS WRITTEN BY run_stack, IMMEDIATELY ABOVE (corrected W8F-F7a — the comment
-# that stood here said the neutral stack was "a later track, not built yet"; this IS that track
-# and lib/stack-compose.ts is that stack). This still reads the path from ONE variable and still
+# --- 10. the database is created and migrated, or the install stops ---------------
+# THE COMPOSE FILE IS WRITTEN BY run_stack, IMMEDIATELY ABOVE (lib/stack-compose.ts renders the stack). This reads the path from ONE variable and still
 # refuses by name if the file is not there, because "run_stack did not finish" and "somebody
 # moved the file between two runs" are both states this step must stop on rather than create a
 # database for a stack that will never come up.
@@ -1350,7 +1343,7 @@ run_model_check() {
 run_database() {
   # PGDATABASE / PGUSER / PGHOST / PGPORT are the SAME overridable names ops/update.sh and
   # lib/db.ts already read, with the same defaults — so this installation's spelling of them
-  # lives in one place and wave 9's naming sweep has one list to change, not a new literal here.
+  # lives in one place; a rename has one list to change, not a new literal here.
   local compose_file="$PREFIX/opt/lares/compose.yaml"
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
@@ -1485,10 +1478,10 @@ run_installation_settings() {
   fi
 }
 
-# --- 11. the owner becomes a real member, with a real id (W8C-s7) ---------------------------
+# --- 11. the owner becomes a real member, with a real id ---------------------------
 # THE MOST DANGEROUS STEP IN THIS INSTALLER — see services/box/lib/first-owner.ts's own header:
 # a wrong id here is silent and permanent. `createFirstOwner`'s id stays free text by design
-# (W5I-s7: no shape heuristics beyond "not blank"), so THIS is where a real installation's id is
+# (no shape heuristics beyond "not blank"), so THIS is where a real installation's id is
 # actually decided — --owner-id names it outright; without that flag it is derived from the
 # answered e-mail address's own local part (lower-cased, anything outside [a-z0-9-] turned into
 # a dash, runs of dashes collapsed, leading/trailing dashes trimmed). If that comes out blank,
@@ -1561,7 +1554,7 @@ run_first_organisation() {
   fi
 }
 
-# --- 12. the keeper is configured and started, from the same release (W8F-F7b) ---------------
+# --- 12. the keeper is configured and started, from the same release ---------------
 # WHAT THIS STEP IS. The keeper is the only thing in the fleet allowed to start, stop or
 # reconfigure an agent. It boots from ONE file, $PREFIX/etc/lares/keeper.json, whose shape is
 # services/keeper/lib/config.ts's own schema — a strict object that refuses anything it does not
@@ -1701,7 +1694,7 @@ run_keeper() {
   say "the keeper is up, and this installation's first-agent role defaults are bound to $OWNER_ID."
 }
 
-# --- 13. finish honestly at the console, before any agent exists (W8C-s9) -----------------
+# --- 13. finish honestly at the console, before any agent exists -----------------
 # The keeper configuration above carries first-agent role bindings, but it does not create or
 # reconcile that agent's definition/runtime, and no per-agent LiteLLM virtual key has been minted.
 # `/chat` therefore has no registered agent to show. The one honest address to print is the
@@ -1744,13 +1737,13 @@ if [ "$DRY_RUN" -eq 1 ]; then
   say "the four questions (domain, e-mail, name, model key) would be asked next, and the answers written to $INSTALL_ENV and $SECRETS_DIR/model-provider-key."
   say "then the release given with --release would be rendered into $PREFIX/opt/lares/compose.yaml, the stack brought up from it, the model proved through the gateway, the database created and migrated, the owner made a real member, and the keeper configured from the same release with first-agent role defaults bound to that owner. A real run needs --release <file>; a dry run asks nothing and writes nothing."
 else
-  # THE ORDER IS THE POINT, not a sequence of independent steps (W8F-F7a). run_stack must come
+  # THE ORDER IS THE POINT, not a sequence of independent steps. run_stack must come
   # before run_model_check: that check calls the gateway by its compose service name, so until
   # the stack is up there is nothing there to answer it — which is how a fresh install used to
   # end, with "the model key did not work" against a key that was fine. run_database follows
   # the model check so nothing is built on a model that cannot answer, and run_first_owner
   # follows the database it writes a row into, and run_keeper follows the owner whose id the one
-  # agent it defines is bound to (W8F-F7b). tests/install-stack.test.ts and
+  # agent it defines is bound to. tests/install-stack.test.ts and
   # tests/install-keeper.test.ts pin those orderings against the stub log rather than against
   # this comment.
   run_wizard        # the four questions ONLY — no outside call

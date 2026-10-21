@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# export.sh — -s2: one command, run by hand on the box, that takes the whole
+# export.sh — one command, run by hand on the box, that takes the whole
 # installation with you: every database, the vaults, the data directories, and a
 # manifest listing exactly what is inside. It shares no code with backup.sh — the
 # dump technique is copied, not imported, because the two scripts have different
@@ -19,7 +19,7 @@
 # backup.sh's own dump assertions.
 #
 # NO HEARTBEAT AND NO NETWORK. This is a command the owner runs by hand and reads the
-# manifest of afterwards (see docs/runbooks/export-and-teardown.md-s3) — it is
+# manifest of afterwards (see docs/runbooks/export-and-teardown.md) — it is
 # not a scheduled job with a liveness owner, and it must never phone anywhere.
 set -euo pipefail
 umask 077
@@ -54,9 +54,8 @@ EXPORT_DIR="${EXPORT_DIR:-/var/backups/export}"
 # much here: /tmp can be a small tmpfs, and this script's work dir holds full database
 # dumps plus vault bundles and data tars.
 EXPORT_WORKDIR_ROOT="${EXPORT_WORKDIR_ROOT:-/var/tmp}"
-# No ledger of applied SQL files here (WAVE-3-NOTES.md's ruling on this slice): an
-# older box has no record of that history to report. Just what the box that produced
-# this archive says it is.
+# No ledger of applied SQL files here: an older box has no record of that history to report.
+# Just what the box that produced this archive says it is.
 ENGINE_VERSION="${LARES_ENGINE_VERSION:-unknown}"
 
 SECRET_ROOTS="/etc/agent-box /etc/lares /run/secrets"
@@ -92,7 +91,7 @@ refuse_secret_path() {
 # configured path itself, a stray .env or *.age file could be sitting somewhere deeper
 # inside it without anyone having put it there on purpose. This refuses the whole
 # export rather than quietly excluding the file: an export that silently drops files
-# is this script's version of backup.sh's own incident (a green run that silently
+# is this script's version of backup.sh's own earlier failure (a green run that silently
 # skipped a database). Nothing is exported until the tree is proven clean.
 check_no_nested_secrets() {
   local dir="$1" hits
@@ -133,8 +132,8 @@ COMPOSE=(-f "$EXPORT_COMPOSE_FILE")
 dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
 
 # The role this installation uses. Same overridable name ops/install.sh, ops/update.sh and
-# lib/db.ts read, with the same default — an installation that kept the pre-2026-09-21 name
-# with an installation-specific role sets PGUSER in this script's environment. See §3.
+# lib/db.ts read, with the same default — an installation that kept an older role name
+# sets PGUSER in this script's environment. See §3.
 DB_USER="${PGUSER:-lares}"
 
 dc pg_isready -U "$DB_USER" >/dev/null || { echo "export: postgres unreachable — refusing an incomplete export" >&2; exit 1; }
@@ -143,8 +142,7 @@ dc pg_dumpall -U "$DB_USER" -l postgres --globals-only > "$WORKDIR/globals.sql"
 
 # THE DATABASE LIST IS READ FIRST, NOT PIPED INTO THE LOOP. `dc` is `docker compose
 # exec`, which consumes stdin even with -T, so piping the list into a while-read loop
-# would dump only the first database and silently skip the rest (backup.sh:70-76's own
-# incident). `</dev/null` on the dump call is the belt to that braces.
+# would dump only the first database and silently skip the rest (an earlier failure of backup.sh). `</dev/null` on the dump call is the belt to that braces.
 DBS=$(dc psql -U "$DB_USER" -d postgres -tAc \
   "SELECT datname FROM pg_database WHERE datistemplate=false")
 [ -n "$DBS" ] || { echo "export: postgres returned NO databases — refusing an incomplete export" >&2; exit 1; }

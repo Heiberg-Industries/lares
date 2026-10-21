@@ -1,4 +1,4 @@
-// export-runbook.test.ts (s3) — the leave-cleanly runbook is kept honest against the
+// export-runbook.test.ts — the leave-cleanly runbook is kept honest against the
 // script it documents.
 //
 // `docs/runbooks/export-and-teardown.md` is the written procedure for taking an installation
@@ -16,7 +16,7 @@
 // 3. THE PROOF COMES BEFORE THE DESTRUCTION. Every destructive block in the runbook is marked
 //    with a `# DESTRUCTIVE` comment line, and all four readability checks (checksums,
 //    `pg_restore --list`, `git bundle verify`, `tar -tf`) must appear earlier in the document
-//    than the first of those markers. This is the slice's stated acceptance test.
+//    than the first of those markers. This is the runbook's acceptance test.
 // 4. No person, host or installation is named (CLAUDE.md: this repository is the engine), and
 //    the word the install decision retired is not used (docs/decisions/0022, "tested path").
 //

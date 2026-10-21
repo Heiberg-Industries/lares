@@ -73,16 +73,16 @@ it('fails before recording a snapshot if Lares exists without encrypted-secret e
  expect(result.status).not.toBe(0);expect(result.stderr).toContain('secrets encryption is not configured');
  expect(()=>readFileSync(join(f.root,'restic-args.json'))).toThrow();
 });
-// -s6: without RESTIC_REPOSITORY, backup.sh must keep talking to restic exactly
-// as it always has — the Hetzner Storage Box over rclone is a real, deployed consumer
-// of that form, not a fallback to delete later.
+// Without RESTIC_REPOSITORY, backup.sh must keep talking to restic exactly
+// as it always has — that form is a real, deployed consumer, not a
+// fallback to delete later.
 it('keeps the rclone form when RESTIC_REPOSITORY is not set',()=>{
  const f=fixture(true);execFileSync('bash',[f.file],{env:f.env,stdio:'pipe'});
  const args=JSON.parse(readFileSync(join(f.root,'restic-args.json'),'utf8'));
  expect(args).toContain('-o');expect(args.some((a:string)=>a.startsWith('rclone.program='))).toBe(true);
  expect(args).toContain('-r');expect(args).toContain('rclone:test');
 });
-// -s6: when RESTIC_REPOSITORY is set, restic is pointed at it directly (any
+// When RESTIC_REPOSITORY is set, restic is pointed at it directly (any
 // repository restic supports: sftp:, s3:, a local path) and the rclone-over-SSH form
 // disappears entirely — no '-o'/'rclone.program' at all.
 it('uses RESTIC_REPOSITORY directly and drops the rclone option when it is set',()=>{

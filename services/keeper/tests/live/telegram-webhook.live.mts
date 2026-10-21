@@ -10,7 +10,7 @@ import {randomBytes} from 'node:crypto';
 const file=process.env.TELEGRAM_PROBE_TOKEN_FILE;
 const value=process.env.TELEGRAM_PROBE_URL;
 if(!file||!value) {
-  console.log('LIVE VALIDATION PENDING: provide a dedicated disposable bot token file and public HTTPS door URL in Task20. No network calls made.');
+  console.log('LIVE VALIDATION PENDING: provide a dedicated disposable bot token file and public HTTPS door URL. No network calls made.');
 } else {
   const url=new URL(value);
   if(url.protocol!=='https:'||url.username||url.password||url.search||url.hash||!/^\/api\/doors\/[a-z][a-z0-9-]{1,30}\/telegram\/events$/.test(url.pathname))throw new Error('Invalid probe door URL.');

@@ -1,4 +1,4 @@
-// services/box/tests/person-identity.test.ts — W5I-s1.
+// services/box/tests/person-identity.test.ts
 //
 // The point of this file is COMPLETENESS, PROVEN. "The resolver knows every spelling" is a claim
 // nobody can check by reading; the walk below checks it against the schema itself: for EVERY
@@ -12,7 +12,7 @@
 //
 // TWO DEVIATIONS FROM THE SLICE'S LITERAL TEST TEXT, both forced by the real schema:
 //  1. the ambiguity test's two `shared` alias rows are REMOVED again in a `finally`. Left behind,
-//     they make both fixture people share a spelling and the slice's own last test ("does not
+//     they make both fixture people share a spelling and this file's own last test ("does not
 //     confuse the two fixture people") contradicts its fourth.
 //  2. the stranger reminder is inserted with the columns `reminders` actually has
 //     (sql/001_baseline.sql: agent, owner, due_at, payload, created_by — there is no `text` column),
@@ -114,11 +114,11 @@ describe("person-identity — the resolver", () => {
   });
 
   // This test used to pin the opposite fact — that `oauth_tokens` held a frozen legacy spelling
-  // a `column = id` match missed entirely. Box 085 (ruling D4) renamed those values onto the
+  // a `column = id` match missed entirely. The baseline schema keys those values on the
   // register's id, so the Google token rows are now found by the id itself. The same paragraph
   // still matters for the five tables that ARE still frozen on a legacy spelling, so the second
   // half of the test moved to one of them.
-  it("finds the Google token rows by the register's id since box 085, and a frozen spelling by alias", async () => {
+  it("finds the Google token rows by the register's id, and a frozen spelling by alias", async () => {
     const p = await resolvePerson(db.pool, FIXTURE_OWNER);
     const tokens = await db.pool.query("SELECT 1 FROM oauth_tokens WHERE principal = $1", [p.id]);
     expect(tokens.rowCount).toBeGreaterThan(0);

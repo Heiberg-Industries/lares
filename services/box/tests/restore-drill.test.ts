@@ -83,7 +83,7 @@ beforeEach(() => {
     `#!/usr/bin/env python3
 import sys, os, shutil
 argv = sys.argv[1:]
-# -s6: log every call's argv (one call per "---"-separated block) so tests can
+# Log every call's argv (one call per "---"-separated block) so tests can
 # assert what restic was actually invoked with -- in particular, whether
 # RESTIC_REPOSITORY produced "-r <value>" with no rclone option at all.
 args_log = os.environ.get('RESTIC_ARGS_LOG')
@@ -431,8 +431,7 @@ describe("restore-drill.sh", () => {
     expect(scratchLeftovers()).toEqual([]);
   });
 
-  // -s6: the backup target can be any restic repository, not only the Hetzner
-  // Storage Box over rclone.
+  // The backup target can be any restic repository, not only the rclone-over-SSH form.
   it("keeps the rclone form and its target when RESTIC_REPOSITORY is not set", () => {
     const r = run();
     expect(r.code).toBe(0);

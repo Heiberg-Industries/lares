@@ -7,7 +7,7 @@ export interface AuditEntry {
   credential?: string;       // key/scope NAME only — never the secret
   argsSummary?: string;      // redacted human summary — never the raw payload
   confirmId?: string;        // the confirmation that authorised it, if any
-  principal?: string;        // ADR-0009 user attribution
+  principal?: string;        // who did it (the user attribution)
 }
 
 /** Append one row to the append-only audit log. */

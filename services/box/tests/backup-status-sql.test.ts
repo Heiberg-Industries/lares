@@ -1,4 +1,4 @@
-// -s2 — the backup_status table and its two seed rows in sql/001_baseline.sql, proved against a
+// The backup_status table and its two seed rows in sql/001_baseline.sql, proved against a
 // REAL Postgres (testcontainers, the same pattern services/chief-of-staff/tests/deadlines-store.test.ts
 // uses): the baseline applied verbatim from disk.
 import { afterAll, beforeAll, describe, expect, it } from "vitest";

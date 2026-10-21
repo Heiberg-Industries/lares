@@ -5,10 +5,10 @@
 //
 // READ-ONLY, except for the one call `--test-model` asks for. This file changes no setting, no
 // file, no database row, and restarts nothing. It also makes NO network call by default —
-// `--test-model` (W8A-s7, owner decision A2: only when you ask) is the one flag that does, and it
+// `--test-model` (only when you ask) is the one flag that does, and it
 // spends this installation's own money on this installation's own gateway to do it. It requires
 // `--gateway <url>`, `--alias <name>` and `--key-file <path>` all three, exactly the shape
-// W8C-s5's installer wizard calls it with (`lares-doctor --test-model --gateway "$GATEWAY_URL"
+// the installer wizard calls it with (`lares-doctor --test-model --gateway "$GATEWAY_URL"
 // --alias "$LARES_MODEL_ALIAS" --key-file "$SECRETS/model-provider-key"`) — this file bakes in no
 // default hostname, alias or key path of its own; every one of the three is the caller's own
 // value, read from THIS installation's settings, never this repository's.

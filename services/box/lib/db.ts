@@ -1,9 +1,8 @@
 // Small Postgres connection helper for the agent box.
 // The password is read from DATABASE_PASSWORD_FILE (default /run/secrets/database-password —
 // the name every agent, start.sh and compose-agents.ts already use), falling back to
-// /run/secrets/db_password for one older installation whose compose file was not written by
-// this engine (wave 9 removes that fallback once that box is migrated — see
-// docs/decisions), and finally to PGPASSWORD for local/dev use. Everything else comes from
+// /run/secrets/db_password for an older installation whose compose file was not written by
+// this engine, and finally to PGPASSWORD for local/dev use. Everything else comes from
 // PG* env (see .env.example). No secret is ever hard-coded here.
 import { readFileSync } from "node:fs";
 import { Pool, type PoolConfig } from "pg";
@@ -16,11 +15,9 @@ export interface Queryable {
 }
 
 const DEFAULT_SECRET_PATH = "/run/secrets/database-password";
-// The one older installation's spelling. Kept as a last-resort fallback by owner ruling:
-// that box's compose file mounts the Docker secret under this exact name, and
-// this repository ships no stack compose file of its own (owner decision C1) to fix it in.
-// Remove this fallback in wave 9, once that installation's compose file is migrated to the
-// name every other reader already uses.
+// An older installation's spelling, kept as a last-resort fallback: such a compose file mounts
+// the Docker secret under this exact name, and the engine cannot edit a compose file it did not
+// write. Remove it once no installation uses the old name, which every other reader has dropped.
 const LEGACY_SECRET_PATH = "/run/secrets/db_password";
 
 /** Where the password may be found. Injectable so a test never depends on a path that exists
@@ -28,7 +25,7 @@ const LEGACY_SECRET_PATH = "/run/secrets/db_password";
 export interface DatabasePasswordPaths {
   /** Used when DATABASE_PASSWORD_FILE is unset. */
   readonly primaryDefault?: string;
-  /** The one older installation's spelling. */
+  /** The older spelling (see LEGACY_SECRET_PATH). */
   readonly legacy?: string;
 }
 

@@ -1,4 +1,4 @@
-// services/box/lib/erase-person.ts — W5B-s6: erase a person from every table that names them,
+// services/box/lib/erase-person.ts — erase a person from every table that names them,
 // or erase nothing.
 //
 // THE ONE PROMISE. When this routine reports success, no row in this database names the person.
@@ -18,24 +18,24 @@
 // WHO. `opts.person` is whatever the operator typed — a canonical id, an old chat handle, an email
 // address. The first thing that happens is `resolvePerson` (lib/person-identity.ts), which is also
 // the membership check: the identity register is the list of this installation's members, so
-// anybody it does not hold is refused (owner ruling D2 — a member of this installation, never a
+// anybody it does not hold is refused (a member of this installation, never a
 // third party a note happens to be about). Every table is then matched with
 // `= ANY(spellingsFor(person, idKind))`, never `= <the id>`: the whole point of the identity track
 // is that rows written under an older spelling go too, and this routine must not assume the
-// migrations that unified those spellings (box 083/085) have been applied.
+// migration that unified those spellings has been applied.
 //
 // WHAT IS DELIBERATELY NOT DELETED.
-//  - An `actor` column records WHO DID something in an administrative log (owner ruling D6). The
+//  - An `actor` column records WHO DID something in an administrative log. The
 //    row stays and the name is replaced with the literal `erased`: the log still shows that
 //    somebody changed a permission, and no longer shows who.
 //  - A `clearedWholeOnly` table (the learned writing-voice corpus) has no person column at all. It
 //    is cleared in full ONLY when the person being erased is the installation's one member;
 //    otherwise it is left and named in the report.
 //  - A row whose person column is NULL cannot be attributed to anyone. It is counted and named,
-//    never guessed at — box 084's own rule for the dream tables, applied to every member table.
+//    never guessed at — the rule the dream tables follow, applied to every member table.
 //  - The path-keyed sync tables (`notion_sync_*`, `atlas_*`) are reached through vault paths, not
 //    through a person column. Without `opts.paths` they are named in `outstanding` and left
-//    alone; with it (W5B-s8, once the vault pass has run and knows which files just went) they
+//    alone; with it (once the vault pass has run and knows which files just went) they
 //    are deleted for exactly those paths, in the same transaction as everything else.
 //
 // TABLE AND COLUMN NAMES ARE INTERPOLATED INTO SQL, and can be only because every one of them
@@ -108,7 +108,7 @@ export const HELD_ID_SOURCES = ["standing_facts", "dream_preferences"] as const;
 
 /** Reached through a vault path rather than through a person column. Named in `outstanding` (and
  *  left untouched) when `opts.paths` is absent; deleted, keyed on exactly those paths, when
- *  `opts.paths` is given — W5B-s8, once the vault pass has run and knows which files just went. */
+ *  `opts.paths` is given (once the vault pass has run and knows which files just went). */
 const PATH_KEYED_SYNC_TABLES = [
   "notion_sync_docs",
   "notion_sync_proposals",
@@ -188,7 +188,7 @@ export function eraseHandlingFor(entry: ScopedTable): EraseHandling | null {
   return null;
 }
 
-/** The literal a cleared audit trail reads afterwards (owner ruling D6). */
+/** The literal a cleared audit trail reads afterwards. */
 const ERASED = "erased";
 
 /** Every column of a table that names a person: the inventory's own, plus the extras above. */
@@ -224,7 +224,7 @@ async function countWhere(q: Queryable, sql: string, params: unknown[] = []): Pr
 }
 
 /** Rows whose person column is NULL: nobody's, as far as this database can tell. Counted and
- *  stated, never deleted and never attributed — box 084's rule for the dream tables, which is the
+ *  stated, never deleted and never attributed — the rule the dream tables follow, which is the
  *  only honest rule for any nullable person column. Actor columns are excluded: a missing actor
  *  is a missing operator label, not a person's own data. */
 async function unattributedLines(q: Queryable): Promise<string[]> {
@@ -318,7 +318,7 @@ export async function erasePerson(
   opts: {
     person: string;
     dryRun: boolean;
-    /** Store-relative vault paths the vault pass (W5B-s7) just removed or found untracked, for
+    /** Store-relative vault paths the vault pass just removed or found untracked, for
      *  the SAME person, in the SAME run. When given (even as an empty array), the path-keyed
      *  sync-state tables are deleted for exactly these paths, inside the same transaction as the
      *  member deletes. When absent, those tables are untouched, as before this option existed. */
@@ -555,7 +555,7 @@ async function buildPlan(
 }
 
 /** One member table: a delete, unless the column is an audit trail's actor — then the row stays
- *  and only the name goes (owner ruling D6). */
+ *  and only the name goes. */
 async function memberStep(
   db: Queryable,
   entry: ScopedTable,

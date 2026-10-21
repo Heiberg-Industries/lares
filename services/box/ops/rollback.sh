@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# rollback.sh — W8D-s4. The command that puts the previous images back.
+# rollback.sh — the command that puts the previous images back.
 #
 # THIS IS THE COMMAND SOMEBODY RUNS AT TWO IN THE MORNING, after ops/update.sh has already
 # gone wrong. So it does exactly one thing and is unable to do a second:
@@ -13,14 +13,14 @@
 #   7. check they came up
 #   8. close the record with 'rolled-back'
 #
-# IT ONLY EVER GOES BACK ONE STEP (owner decision D3). The table keeps ten records so you can
+# IT ONLY EVER GOES BACK ONE STEP. The table keeps ten records so you can
 # SEE what happened; this command reads exactly one — the newest. Once that record says
 # 'rolled-back', running this again REFUSES rather than walking further back or flipping
 # forward again. There is no --steps and no --to-release, deliberately: the further back you
 # go the more likely the database has moved on in a way the old images cannot read, and there
 # are no down migrations by decision (services/box/lib/migration-runner.ts's own header).
 #
-# IT DOES NOT PUT THE DATABASE BACK, AND IT SAYS SO EVERY TIME (owner decision D4). It runs no
+# IT DOES NOT PUT THE DATABASE BACK, AND IT SAYS SO EVERY TIME. It runs no
 # migration in either direction, writes nothing to the database except its own record, and
 # restores nothing. Every update applies the migrations, and nothing written down says whether
 # a given one changed anything — so this command assumes one did, says so before it acts, and
@@ -244,7 +244,7 @@ OUTCOME=$(printf '%s\n' "$RECORD_LINE" | cut -f3)
 TO_RELEASE=$(printf '%s\n' "$RECORD_LINE" | cut -f4)
 SNAPSHOT_ID=$(printf '%s\n' "$RECORD_LINE" | cut -f5)
 
-# --- 2. one step, and only one (owner decision D3) ------------------------------------------
+# --- 2. one step, and only one ------------------------------------------
 case "$OUTCOME" in
   ok|failed)
     # 'ok' is the ordinary case. 'failed' is the case this command exists for: update.sh names
@@ -436,7 +436,7 @@ if [ -n "$MISSING" ]; then
 fi
 
 # --- 10. write down that this happened ---------------------------------------------------------
-# undo: none. This is what stops a second rollback from walking further back (owner decision D3).
+# undo: none. This is what stops a second rollback from walking further back.
 DETAIL=$(printf '%s' "put back the images recorded before release $TO_RELEASE; the database was not touched" | cut -c1-400)
 if ! recorder finish "$UPDATE_ID" rolled-back "$DETAIL"; then
   echo "rollback: the previous images are running, and I could not write that down (record id $UPDATE_ID). Until that row says rolled-back, this command will offer to do the same thing again." >&2

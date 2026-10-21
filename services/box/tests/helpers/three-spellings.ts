@@ -1,4 +1,4 @@
-// services/box/tests/helpers/three-spellings.ts — W5I-s2: the fixture every later slice of the
+// services/box/tests/helpers/three-spellings.ts — the fixture the rest of the
 // identity track (the resolver, the two migrations that rewrite person columns, the Google-token
 // rename, erase-a-person) is proven against — never the live server.
 //
@@ -46,7 +46,7 @@ export const FIXTURE_SECOND = "fixture-second";
 // convention, and five tables are still seeded under exactly these spellings (digest_requests,
 // workflow_jobs, meeting_followup_sent and the two agent_door tables — the inventory's
 // `LEGACY_PRINCIPAL_TABLES`). `oauth_tokens` and `email_watch_cursors` are NO LONGER among them:
-// box 085 renamed their principals onto the register's id, so the fixture seeds them the way a
+// the baseline schema keys their principals onto the register's id, so the fixture seeds them the way a
 // box looks after that migration, and tests/oauth-principal-rename.test.ts plants the legacy
 // spelling itself when it needs the before-picture.
 const LEGACY = "U_fixture";
@@ -73,7 +73,7 @@ function row(
 // ─── The seed, one entry per row this fixture writes ──────────────────────────────────────────
 // Order matters only where a foreign key requires it (users before anything that REFERENCES
 // users.id). Each entry both DOCUMENTS the row (table/column/value, read by
-// three-spellings-fixture.test.ts and by every later slice) and WRITES it — one definition, so
+// three-spellings-fixture.test.ts and by every later test) and WRITES it — one definition, so
 // the two can never drift apart.
 const SEED_ROWS: SeedRow[] = [
   // ── The identity register itself (001_baseline.sql) ──────────────────────────────────────
@@ -115,7 +115,7 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('fixture-agent', $1, 'fixture-workflow')`,
     [LEGACY]),
 
-  // ── 001_baseline.sql — the register's id since box 085 (ruling D4) ────────────────────
+  // ── 001_baseline.sql — the register's id ────────────────────
   row("oauth_tokens", "principal", FIXTURE_OWNER,
     `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc)
      VALUES ($1, 'google', 'fixture-org', 'owner@fixture.test', 'fixture-encrypted-blob')`,
@@ -131,7 +131,7 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('fixture-agent', 'fixture-capability', 'gated', $1)`,
     [FIXTURE_OWNER]),
 
-  // ── 001_baseline.sql — the register's id since box 085 (ruling D4) ─────────────
+  // ── 001_baseline.sql — the register's id ─────────────
   row("email_watch_cursors", "principal", FIXTURE_OWNER,
     `INSERT INTO email_watch_cursors (watcher, principal, email_address)
      VALUES ('fixture-watcher', $1, 'owner@fixture.test')`,
@@ -199,7 +199,7 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ($1, 'fixture-agent', 'slack', 'event', 'fixture-item', 'sent', CURRENT_DATE)`,
     [FIXTURE_OWNER]),
   row("owner_clock_signals", "owner", FIXTURE_OWNER,
-    `INSERT INTO owner_clock_signals (owner, source, tz) VALUES ($1, 'slack-profile', 'Europe/Oslo')`,
+    `INSERT INTO owner_clock_signals (owner, source, tz) VALUES ($1, 'slack-profile', 'Europe/Berlin')`,
     [FIXTURE_OWNER]),
 
   // ── 001_baseline.sql ─────────────────────────────────────────────────────────────────────
@@ -292,8 +292,8 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO forget_ledger (owner, kind, match_hash, reason) VALUES ($1, 'fact', repeat('0', 64), 'forget')`,
     [FIXTURE_OWNER]),
 
-  // ── dream tables (runtime DDL, not a numbered migration; box 084 gives them an `owner`
-  //    column, W5I-s6) — one row per fixture person in each table, so a later erase test can
+  // ── dream tables (runtime DDL, not a numbered migration; they carry an `owner`
+  //    column) — one row per fixture person in each table, so a later erase test can
   //    tell the two apart the same way it can for every numbered-migration member table. ─────
   row("dream_observations", "owner", FIXTURE_OWNER,
     `INSERT INTO dream_observations (text, kind, origin, owner)
@@ -352,7 +352,7 @@ const SEED_ROWS: SeedRow[] = [
     [FIXTURE_SECOND]),
 ];
 
-/** Every table the fixture puts a row in, with the spelling it used. Later slices assert
+/** Every table the fixture puts a row in, with the spelling it used. Later tests assert
  *  against THIS, so a table that gains rows must be added here (in SEED_ROWS above) in the
  *  same change. */
 export const FIXTURE_ROWS: ReadonlyArray<{ table: string; column: string; value: string }> =
@@ -360,8 +360,7 @@ export const FIXTURE_ROWS: ReadonlyArray<{ table: string; column: string; value:
 
 // ─── The dream tables' DDL, copied verbatim from services/chief-of-staff/lib/dream/store.ts's
 // `ensureDreamTables` (services/box cannot import services/chief-of-staff). Not a numbered
-// migration on a real box either — see lib/member-scope.ts's DREAM_STORE constant. AS OF box 084
-// (W5I-s6, ruling D5) both tables carry an `owner text` column (nullable, no default — kept in
+// migration on a real box either — see lib/member-scope.ts's DREAM_STORE constant. Both tables carry an `owner text` column (nullable, no default — kept in
 // step with that ALTER; see this fixture's SEED_ROWS below for the rows it seeds into them).
 const DREAM_TABLES_DDL = [
   `CREATE TABLE IF NOT EXISTS dream_observations (

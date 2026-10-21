@@ -1,4 +1,4 @@
-// W8C-s2 — the credentials the installer creates, and the two promises that make a failed
+// The credentials the installer creates, and the two promises that make a failed
 // install safe to re-run: a secret that already exists is NEVER regenerated, and no secret's
 // value ever leaves the file it was written into.
 //
@@ -21,7 +21,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
 
 /** The six the installer is responsible for. The model PROVIDER key is deliberately NOT here:
- *  it is ASKED for in a later slice, and a generated placeholder would be indistinguishable
+ *  it is ASKED for by the wizard, and a generated placeholder would be indistinguishable
  *  from a real key to every check that comes after. */
 const EXPECTED = [
   "console-session-secret", "database-password", "eve-route-password",
@@ -40,9 +40,9 @@ const RELEASE = JSON.stringify({
   breaking: [],
 });
 
-/** W8F-F7a: run_stack renders the stack file through
+/** run_stack renders the stack file through
  *  `pnpm -C <box> render-stack <release> <out> …` and refuses if nothing lands at <out>, so
- *  every `pnpm` stub in an installer test has to answer that one call — and, since W8F-F7b,
+ *  every `pnpm` stub in an installer test has to answer that one call — and
  *  the `render-keeper-config` call run_keeper makes at the end. This file is about the
  *  secrets, so a placeholder stack file is enough; tests/install-stack.test.ts is where the
  *  real renderer runs. */
@@ -63,9 +63,9 @@ function stub(name: string, body = "exit 0") {
 
 function run(args: string[], env: Record<string, string> = {}, opts: { giveModelKey?: boolean } = {}) {
   try {
-    // Since W8C-s4 the installer asks its four questions right after the secrets. These tests
+    // The installer asks its four questions right after the secrets. These tests
     // are about the secrets, so every run answers by flag (a dry run skips the questions anyway).
-    // `--release` is load-bearing since W8F-F7a: a fresh install given none refuses with
+    // `--release` is load-bearing: a fresh install given none refuses with
     // EX_USAGE before it writes anything, which is before this file's subject even begins.
     const answered = ["--release", releaseFile, ...args,
       "--domain", "lares.example.invalid", "--email", "owner@example.invalid",
@@ -113,10 +113,10 @@ beforeEach(() => {
   // Everything that would touch a host. `chown` and `chmod` are stubs so the permissions the
   // installer ASKS for are assertable without this test needing to be root; `openssl` is a stub
   // that is expected never to be called at all (the entropy comes from /dev/urandom).
-  // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
+  // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "getent", "lares-doctor"]) stub(name);
-  // The only `getent` the installer may run is the DNS lookup for the domain (W8C-s4); both
+  // The only `getent` the installer may run is the DNS lookup for the domain; both
   // seams agree on one address so that check passes. It must never look up a GROUP.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; else exit 2; fi');
   stub("hostname", 'if [ "$1" = "-I" ]; then echo "203.0.113.10"; fi');
@@ -144,7 +144,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("writes one file per secret, numerically owned and group-readable, and nothing else", () => {
-    // W8F-F7a: a completed run now also renders the stack file and brings it up before the
+    // A completed run now also renders the stack file and brings it up before the
     // database step, from the release fixture every run here is given — so nothing has to be
     // placed under $PREFIX by hand any more.
     expect(run(["--yes"]).code).toBe(0);
@@ -153,7 +153,7 @@ describe("the secrets the installer generates", () => {
     const asked = readFileSync(log, "utf8").split("\n");
     const chowns = asked.filter((l) => l.startsWith("chown "));
     const chmods = asked.filter((l) => l.startsWith("chmod "));
-    // Numeric, not a named group (controller ruling W8C-s2b/a): every runtime image runs
+    // Numeric, not a named group: every runtime image runs
     // USER 10001:10001, and compose bind-mounts secrets with the host's ownership — a name
     // resolves to whatever gid happens to have it on THIS box, which does not have to be 10001.
     // The OWNER ARGUMENT (the second word of the logged argv) is what must be numeric — the
@@ -163,7 +163,7 @@ describe("the secrets the installer generates", () => {
       .map((l) => l.split(" ")[1]);
     expect(ownerArgs.every((o) => o === "0:10001")).toBe(true);
     expect(ownerArgs.some((o) => /root|lares/.test(o!))).toBe(false);
-    // Owner decision A1: files under /etc/lares/secrets are 0:10001 0440. Every secret file is
+    // Files under /etc/lares/secrets are 0:10001 0440. Every secret file is
     // asked for exactly that mode, and the directory is never world-anything.
     for (const name of EXPECTED) {
       expect(chmods.some((l) => l.startsWith("chmod 0440 ") && l.includes(name)), name).toBe(true);
@@ -172,7 +172,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("never creates or references a named host group", () => {
-    // W8C-s6: see the fixture note on the test above — this needs a full run to succeed too.
+    // See the fixture note on the test above — this needs a full run to succeed too.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
     expect(run(["--yes"]).code).toBe(0);
@@ -196,14 +196,14 @@ describe("the secrets the installer generates", () => {
     for (const name of ["console-session-secret", "database-password", "eve-route-password"]) {
       expect(read(name), name).toMatch(/^[A-Za-z0-9_-]{43}$/);
     }
-    // LiteLLM refuses a key that does not begin sk- (the pre-launch LiteLLM research).
+    // LiteLLM refuses a key that does not begin sk-.
     for (const name of ["gateway-key", "gateway-master-key"]) {
       expect(read(name), name).toMatch(/^sk-[A-Za-z0-9_-]{43}$/);
     }
   });
 
   it("never regenerates a secret that already exists", () => {
-    // W8C-s6: see the fixture note above — this needs two full runs to succeed.
+    // See the fixture note above — this needs two full runs to succeed.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
     expect(run(["--yes"]).code).toBe(0);

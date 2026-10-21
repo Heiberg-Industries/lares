@@ -1,5 +1,5 @@
-// Pure generation: no host writes, reloads or ruleset flushing. Task 14 owns the
-// audited lifecycle integration; the installation supplies its retained services
+// Pure generation: no host writes, reloads or ruleset flushing. The audited
+// lifecycle owns integration; the installation supplies its retained services
 // and existing internal/direct exceptions. Squid tightens current agents by source;
 // nft deliberately retains the existing global direct-destination exception shape.
 //

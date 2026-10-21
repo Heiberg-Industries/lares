@@ -1,4 +1,4 @@
-/** HAND-RUN ONLY. Never part of `pnpm test`, never run by CI. Not yet run (slice 1).
+/** HAND-RUN ONLY. Never part of `pnpm test`, never run by CI.
  *
  * Purpose: a fixture is what we believe the gateway does; this is what it does. It exercises every
  * branch the keeper's gateway adapter (services/keeper/lib/gateway-admin.ts) takes on a gateway
@@ -11,7 +11,7 @@
  *   5. The `unreachable` and 3xx branches: a closed local port, and the raw status of each route
  * Optional (--read-only-key, informational, for the later external-gateway ticket): mint a throwaway
  * `key_type: read_only` key with the admin key, read /v1/model/info with it, check whether it can read
- * an agent key's /key/info (the "both user_id empty" question in the plan), then delete it.
+ * an agent key's /key/info (the "both user_id empty" question), then delete it.
  * This one mints and deletes a key, so it is behind a flag and needs LARES_PROBE_APPROVED=1.
  *
  * It never calls GET /health (that sends a paid test request to every model) and sends no POST

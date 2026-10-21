@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# vault-purge.sh — the deliberately hard-to-run second half of "erase a person"
-# (W5B-s9). Erasing a person (erase-person.ts, the database and vault halves)
+# vault-purge.sh — the deliberately hard-to-run second half of "erase a person".
+# Erasing a person (erase-person.ts, the database and vault halves)
 # removes a file from the working tree and commits that removal — but a git commit
 # only stops NEW clones from seeing the old content. `git log -p` can still show
 # every byte of a removed file, forever, in this same repository's history. This

@@ -1,4 +1,4 @@
-// services/box/bin/render-keeper-config.ts — W8F-F7b: the file the keeper boots from, and the
+// services/box/bin/render-keeper-config.ts — the file the keeper boots from, and the
 // variables its compose file refuses to start without, both out of the release file
 // `ops/install.sh` was given.
 //
@@ -142,8 +142,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const squidImage = imageFor(manifest, "lares-egress-proxy");
 
   // 0600, and chmod'd as well as passed as a mode: `mode:` is masked by the caller's umask, and
-  // install.sh sets `umask 077`, so a wider mode asked for here would silently not happen — the
-  // defect F7a-2 shipped. This file names every path this installation keeps a secret at, and
+  // install.sh sets `umask 077`, so a wider mode asked for here would silently not happen. This file names every path this installation keeps a secret at, and
   // the only process that reads it is the keeper container, which compose.lares-keeper.yaml
   // runs as `user: '0:0'`. Nothing but root has any use for it, so nothing but root gets it.
   writeFileSync(at("outFile"), `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
@@ -154,7 +153,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // the shell's environment is one a later change can drop without anything noticing until an
   // install fails on a box.
   const env = [
-    "# The keeper's compose variables, written by services/box/ops/install.sh (W8F-F7b).",
+    "# The keeper's compose variables, written by services/box/ops/install.sh.",
     "# Every name below is one compose.lares-keeper.yaml refuses to start without. The two",
     "# image digests come from the release file this installation was given; the paths are this",
     "# installation's own. Nothing here is a secret — no value, only names and paths.",

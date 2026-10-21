@@ -1,5 +1,5 @@
 // rollback.sh is the command a person runs at two in the morning, after an update has already
-// gone wrong (W8D-s4). It must do exactly one thing and be unable to do a second, so these
+// gone wrong. It must do exactly one thing and be unable to do a second, so these
 // tests drive the whole ordering with stubs and assert the exact sequence of external calls —
 // and, for the one property that matters most, run the real update.sh first:
 //

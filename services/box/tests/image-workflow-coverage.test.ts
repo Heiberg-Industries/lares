@@ -21,7 +21,7 @@
 // unrequireable, which silently dropped `patches`: `services/console/Dockerfile:39` is
 // `COPY patches patches`, `console-image.yml`'s `paths:` never named it, and CLAUDE.md's own
 // standing rule is "Root pnpm patches break every image unless the Dockerfile copies `patches/`
-// before `pnpm install`" — a live instance of exactly the bug this slice exists to catch, invisible
+// before `pnpm install`" — a live instance of exactly the bug this test exists to catch, invisible
 // to a test that looked like it covered it). Only `<src> == "."` (the whole build context) stays
 // unrequireable — it names no single thing to add to a filter.
 //
@@ -31,7 +31,7 @@
 // `console-image.yml` copies `packages/vault-format` (Dockerfile line 49) but its `paths:` names
 // only `packages/agent-kit` and `packages/taste`; a change to
 // `packages/vault-format` alone still will not rebuild the console image, and this test will not
-// say so. That is a real, separate gap (not one this slice closes) — finer-than-top-level-
+// say so. That is a real, separate gap (not one this test closes) — finer-than-top-level-
 // directory granularity is a follow-up, not this check.
 //
 // Never transcribed — a Dockerfile that starts copying from a new top-level directory, or a new

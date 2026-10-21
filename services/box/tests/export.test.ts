@@ -1,4 +1,4 @@
-// export.sh (s2) is the whole-installation export: every database dump, a
+// export.sh is the whole-installation export: every database dump, a
 // git bundle per vault path, a tar per data path, and a manifest.json naming the
 // engine version, the date, and each file's name/size/sha256 — all wrapped into one
 // lares-export-<date>.tar. It shares no code with backup.sh (copies the dump
@@ -272,7 +272,7 @@ it("contains no network call and no push", () => {
 // "lares" is the engine's own Postgres role name (used the same way throughout
 // backup.sh, restore-drill.sh and even restore-drill.test.ts) and the @lares/
 // package scope — not a person, host or installation, so it is not in this list.
-// /srv/brain.git, /srv/atlas.git, /srv/lares and /srv/taste are the plan's own
+// /srv/brain.git, /srv/atlas.git, /srv/lares and /srv/taste are the script's own
 // overridable defaults, not an installation's names.
 it("names no person, host or installation", () => {
   const script = readFileSync(SCRIPT, "utf8");

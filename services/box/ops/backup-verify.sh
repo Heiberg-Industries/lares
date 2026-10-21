@@ -1,33 +1,26 @@
 #!/usr/bin/env bash
 # backup-verify.sh — the SINGLE liveness owner for the agent box's nightly backup.
 #
-# WHY THIS EXISTS. On 22, 23 and 24 August 2026 the nightly backup unit
-# failed three nights running and nobody found out; it surfaced by accident while
-# writing an unrelated runbook. backup.sh had behaved perfectly — it hit its own
-# "postgres unreachable — refusing to take an empty snapshot" guard and exited 1,
-# exactly as designed. The design note said the rest out loud:
-#
-#   "exit non-zero so the heartbeat never fires and healthchecks.io alerts"
-#
-# That mechanism did not exist. `HC_URL=` in the deployed /etc/agent-box/backup.env
-# was EMPTY, and backup.sh's `if [ -n "${HC_URL:-}" ]` therefore skipped the ping
-# without a word — on the failing nights AND on every successful night before them.
-# There was no healthchecks.io check to go red. Loud is only useful if something is
-# listening, and nothing ever was.
+# WHY THIS EXISTS. A backup unit can fail night after night and nobody find out. backup.sh
+# behaves correctly when it does: it hits its own "postgres unreachable — refusing to take an
+# empty snapshot" guard and exits 1. But "exit non-zero so a heartbeat never fires and an
+# external monitor alerts" only works if the heartbeat is configured. With `HC_URL=` empty,
+# backup.sh's `if [ -n "${HC_URL:-}" ]` skips the ping without a word, on failing and successful
+# nights alike, so there is no monitor check to go red. Loud is only useful if something is
+# listening.
 #
 # WHY A VERIFIER RATHER THAN A HEARTBEAT IN backup.sh. A heartbeat measures that the
-# script RAN. This box has now twice been harmed by a run that succeeded and produced
-# nothing: two weeks of empty snapshots and one database of three
-# missing from the dumps. So this asks the ARCHIVE, not the job: is there a nightly snapshot
+# script RAN. A run can succeed and still produce nothing useful: empty snapshots, or one
+# database of several missing from the dumps. So this asks the ARCHIVE, not the job: is there a nightly snapshot
 # in the repository, is it recent, and does it carry everything it is supposed to? A
 # unit that never starts fails this check too — that is the point, since a unit that
 # never starts produces no failure to alert on.
 #
-# WHAT ADDED. Recency alone was never enough, and proved it: the
-# nightly ran green for weeks while an agent's entire live store was in no snapshot at all,
-# because the path list still named its old root and backup.sh's `[ -d "$p" ]` guard skipped
-# the renamed one in silence. A separate bug had the dump loop taking one database of three. Both are
-# the same shape: the backup RAN, and covered less than it claimed. So this now
+# COVERAGE, NOT ONLY RECENCY. Recency alone is not enough: the nightly can run green for weeks
+# while a live store is in no snapshot at all, because the path list still names an old root and
+# backup.sh's `[ -d "$p" ]` guard skips a renamed one in silence. A dump loop that takes one
+# database of several fails the same way. Both are the same shape: the backup RAN, and covered
+# less than it claimed. So this now
 # asserts COVERAGE as well as recency, and derives what "covered" means from the
 # LIVE BOX rather than from a list kept in step by hand:
 #

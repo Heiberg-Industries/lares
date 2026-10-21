@@ -1,4 +1,4 @@
-// The ONE place a decision's consequence becomes a sentence (Phase 4, fix round 3).
+// The ONE place a decision's consequence becomes a sentence.
 //
 // Why this file exists: six human-facing surfaces each wrote their own version of
 // "what does Reject do", and when the engine changed what Reject does for a

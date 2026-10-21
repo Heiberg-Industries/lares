@@ -1,4 +1,4 @@
-// services/box/lib/run-erase.ts — W5B-s8: wires the database half (lib/erase-person.ts) and the
+// services/box/lib/run-erase.ts — wires the database half (lib/erase-person.ts) and the
 // vault half (lib/erase-person-vault.ts) together, in the one order that keeps both halves'
 // promises, and composes the one report a person actually reads.
 //

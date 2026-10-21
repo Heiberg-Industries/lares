@@ -1,12 +1,11 @@
 /**
  * services/box/tests/live/gateway-completion.live.mts — the LIVE probe for `../../lib/doctor.ts`'s
- * `testModel`/`readModelTestResult` (W8A-s7b, the plan's own follow-up to W8A-s7:
- * `.claude/plans/2026-09-20-prelaunch-wave-8.md`, "8A", slice W8A-s7).
+ * `testModel`/`readModelTestResult`.
  *
  * NOT part of `pnpm test` (this file's `.live.mts` extension is not vitest's `*.test.*` glob, the
  * same convention every other file under a `tests/live/` directory in this repository already
- * uses). NOT run by whoever built W8A-s7, and not runnable from this worktree — it needs a real,
- * reachable gateway, which nothing in this repository's CI or dev environment has. Run it BY HAND
+ * uses). NOT run in CI or a dev checkout — it needs a real,
+ * reachable gateway, which neither has. Run it BY HAND
  * against a real installation's gateway, once after this file lands and again whenever LiteLLM is
  * upgraded or `doctor.ts`'s assumptions about its response shapes are next in doubt:
  *
@@ -19,7 +18,7 @@
  * WHY THIS FILE EXISTS. Per the root CLAUDE.md's fixture rule ("a fixture is what we believe an
  * API does; only a live call is what it does"), `readModelTestResult` in `../../lib/doctor.ts`
  * branches on FOUR assumed response shapes, none of them measured against a real gateway when
- * W8A-s7 was written:
+ * the code was written:
  *   1. a 200 whose body is `{ content: [{ type: ..., ... }, ...] }` (the documented Anthropic
  *      Messages shape the router route, `/v1/messages`, is supposed to answer with);
  *   2. a wrong key answers 401 or 403 (assumed from ordinary REST convention — LiteLLM's own
@@ -39,8 +38,7 @@
  * This file settles the other three: shape 1 by making one real, tiny, BILLED completion; shape 2
  * by sending the request again with a deliberately wrong key (never a real value that ever
  * worked — fabricated once, in this file, for this purpose); shape 3 by sending it again with a
- * deliberately unknown alias. Each answer is fed through the REAL `readModelTestResult` this
- * slice shipped, and the run asserts the verdict is the one `doctor.ts` promises.
+ * deliberately unknown alias. Each answer is fed through the REAL `readModelTestResult`, and the run asserts the verdict is the one `doctor.ts` promises.
  *
  * WHAT THIS PRINTS, for each of the three calls: the HTTP status and the KEY NAMES present in the
  * response envelope (`Object.keys(body)`, and `Object.keys(body.error)` when there is one) —

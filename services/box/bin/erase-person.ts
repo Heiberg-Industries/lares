@@ -1,4 +1,4 @@
-// services/box/bin/erase-person.ts — the ONLY way to run an erase (owner ruling D7).
+// services/box/bin/erase-person.ts — the ONLY way to run an erase.
 //
 // NEVER A TOOL, NEVER A SCHEDULE, NEVER A BUTTON IN THE CONSOLE. Erasing a person is not
 // something an agent should be able to decide to do, or be talked into doing, and it is not

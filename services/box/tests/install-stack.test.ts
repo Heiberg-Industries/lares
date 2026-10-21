@@ -1,7 +1,7 @@
-// W8F-F7a — the stack comes up BEFORE the model key is tested, and the release file the
+// The stack comes up BEFORE the model key is tested, and the release file the
 // installer was given is the one it uses.
 //
-// THE ORDER IS THE POINT. Until this slice, the model check sat inside run_wizard and called
+// THE ORDER IS THE POINT. The model check used to sit inside run_wizard and call
 // http://lares-gateway:4000 before anything had started that container, so a fresh install
 // always died with "the model key did not work" — naming the one thing that was not wrong. The
 // order test below reads the shared stub log and asserts that `docker compose … up -d` is
@@ -101,11 +101,11 @@ beforeEach(() => {
   // does not race the stub's exit while the writer is still sending the query.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
   stub("lares-doctor");
-  // `pnpm` reaches three of the box's own commands from this script: render-stack (this slice),
+  // `pnpm` reaches three of the box's own commands from this script: render-stack,
   // migrate and first-owner. Only the first is what this file is about, and only it runs for
   // real — through the pnpm this machine actually has, named by absolute path so the stub
   // ahead of it on PATH cannot call itself.
-  // W8F-F7b added a fourth: run_keeper's `render-keeper-config` at the end of the install. This
+  // A fourth is run_keeper's `render-keeper-config` at the end of the install. This
   // file is about the stack, so that one gets a placeholder pair of files, not the real
   // renderer — tests/install-keeper.test.ts is where THAT one runs for real.
   stub("pnpm", `case "$*" in *render-keeper-config*) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; *render-stack*) exec ${REAL_PNPM} "$@" ;; esac\nexit 0`);
@@ -115,7 +115,7 @@ beforeEach(() => {
   stub("df", 'echo "/dev/x 100000000 1000000 99000000 1% /"');
   stub("ss", "exit 1");                                   // nothing listening on 80/443
   stub("lsb_release", "echo 24.04");
-  // DNS (owner decision C5): getent and hostname agree, so the fixture domain resolves here.
+  // DNS: getent and hostname agree, so the fixture domain resolves here.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; fi');
   stub("hostname", 'if [ "$1" = "-I" ]; then echo "203.0.113.10"; fi');
 });
@@ -219,10 +219,10 @@ describe("the stack the installer brings up", () => {
     expect(readFileSync(mounted, "utf8")).toBe(readFileSync(COMMITTED_CADDYFILE, "utf8"));
   });
 
-  // F7c — THE GATEWAY'S START SCRIPT REACHES THE CONTAINER WITHOUT RE-HOSTING LITELLM'S IMAGE.
+  // THE GATEWAY'S START SCRIPT REACHES THE CONTAINER WITHOUT RE-HOSTING LITELLM'S IMAGE.
   // Nothing builds a gateway image (and nothing may: the official LiteLLM image carries its
   // `enterprise/` tree, whose licence forbids publishing or distributing it — see
-  // the pre-launch LiteLLM research), so the script is installed on the
+  // the LiteLLM licence), so the script is installed on the
   // host and bind-mounted in as the entrypoint. Two strings have to agree for that to start at
   // all — the path the volume mounts it at and the path the entrypoint executes — and they are
   // asserted against each other here, out of the file the installer actually wrote.
@@ -255,7 +255,7 @@ describe("the stack the installer brings up", () => {
     expect(calls()).toMatch(/docker compose -f \S+compose\.yaml up -d\s*$/m);
   });
 
-  // F7a-2 — the defect this slice closes: nothing ever wrote the file the compose file mounts
+  // Regression guard: nothing ever wrote the file the compose file mounts
   // into the gateway, so Docker created a DIRECTORY at that path and the gateway could never
   // read a config. render-stack now writes it too, from the same two settings the gateway's
   // own config renderer takes (services/box/lib/gateway-config.ts): LARES_MODEL_ALIAS and the
@@ -278,9 +278,8 @@ describe("the stack the installer brings up", () => {
     );
   });
 
-  // ADDED BY THE CONTROLLER during F7a-2's integration, with the mode itself corrected from
-  // 0640 to 0644. This file is mounted into the gateway container to be read by LiteLLM, and
-  // LiteLLM publishes a `-non_root` image variant (pre-launch LiteLLM research) — the image comes from the release manifest, so the engine does not get
+  // The mode is 0644, not 0640. This file is mounted into the gateway container to be read by LiteLLM, and
+  // LiteLLM publishes a `-non_root` image variant — the image comes from the release manifest, so the engine does not get
   // to assume the process reading this runs as root. A root-owned 0640 config is unreadable to
   // an unprivileged LiteLLM, which fails exactly the way the missing file did: the gateway
   // never serves, and the model check blames the key. Nothing here is secret — the provider key

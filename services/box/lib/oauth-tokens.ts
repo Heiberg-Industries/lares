@@ -11,8 +11,8 @@ export interface StoredOAuthToken {
 
 // ── "I looked, and there was nothing" is the quietest way this can break ────────────────────
 //
-// Box 085 (sql/001_baseline.sql) renamed every legacy `principal`
-// spelling onto the identity register's id. A deployment that applies it but leaves one reader's
+// The baseline schema (sql/001_baseline.sql) keys every `principal` on the identity register's id
+// rather than on a legacy spelling. A deployment that leaves one reader's
 // principal environment value at the old spelling does not crash: the SELECT below simply
 // matches no row, and the caller reports "no account connected". That is the ONE failure this
 // rename can cause, so it says so — once per process, naming the principal it looked under, so
@@ -24,7 +24,7 @@ function warnNoTokenForPrincipal(principal: string, provider: string): void {
   principalMissWarned = true;
   console.warn(
     `oauth tokens: no ${provider} token is stored under the principal "${principal}". ` +
-    `Box migration 085 renamed legacy principal spellings onto the identity register's id ` +
+    `Legacy principal spellings were replaced by the identity register's id ` +
     `(users.id): if this deployment still names the old spelling in its principal setting ` +
     `(GOOGLE_PRINCIPAL_ID / CONSOLE_PRINCIPAL_ID / NOTION_SYNC_PRINCIPAL), point it at the ` +
     `register's id instead. Said once per process.`,

@@ -1,20 +1,16 @@
-// W8C-s3 — screen one: start fresh, or restore from a backup (owner decision C3).
+// Screen one: start fresh, or restore from a backup.
 //
-// "Restore from a backup" NEVER restores anything in this slice. It checks the archive the
+// "Restore from a backup" NEVER restores anything. It checks the archive the
 // way docs/runbooks/export-and-teardown.md section 4 checks it by hand — a readable tar,
 // manifest.json present and parseable, every file it lists present with the right size and
 // sha256 — reports what it found (counts only, never contents), prints the runbook's path and
 // names the two steps nobody has rehearsed (5a: loading globals.sql, 5d: restoring a vault from
 // a bundle), and stops. "Start fresh" falls straight through into the installer unchanged.
 //
-// The plan's own failing-test snippet (`.claude/plans/2026-09-20-prelaunch-wave-8.md`, W8C-s3)
-// proves an archive is READABLE and stops there ("not really a tar" / "x" as the whole
-// archive). The task this slice was actually built against asks for a stronger check: the
-// archive must be a genuine, readable tar whose manifest.json really describes what's inside
-// (right size, right sha256 per file) — a bogus one-line string can never satisfy that, so
-// tests 3 and 4 below use a REAL crafted tar + manifest instead of the plan's placeholder
-// strings. Tests 1 and 2 are otherwise as the plan states them. Extra tests beyond the plan's
-// four cover the stronger bar directly: a tampered manifest, a hostile archive member (absolute
+// The check is stronger than "the archive is readable": it must be a genuine, readable tar
+// whose manifest.json really describes what's inside (right size, right sha256 per file) — a
+// bogus one-line string can never satisfy that, so the later tests use a REAL crafted tar +
+// manifest. Further tests cover a tampered manifest, a hostile archive member (absolute
 // path / "..") refused before a byte is extracted, and the non-interactive "no terminal, no
 // --yes, no --restore" case that must refuse rather than hang.
 //
@@ -183,9 +179,8 @@ describe("screen one: start fresh, or restore from a backup", () => {
     expect(readdirSync(prefix)).toEqual([]);
   });
 
-  // Adapted from the plan's own snippet: the plan's archive was the bare string "not really a
-  // tar", which only proves an unreadable-tar refusal (already covered above with a missing
-  // file). The bar this slice was actually built to is stronger — manifest.json must be
+  // A bare string "not really a tar" only proves an unreadable-tar refusal (already covered
+  // above with a missing file). The bar is stronger — manifest.json must be
   // present, parse, and match the archive's real files — so reaching "names the steps nobody
   // has rehearsed" needs a genuine archive, not a placeholder string.
   it("says plainly which two steps nobody has rehearsed", () => {

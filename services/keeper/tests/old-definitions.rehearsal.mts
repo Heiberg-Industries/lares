@@ -4,7 +4,7 @@
 // It is NOT a test and is not run by `pnpm test`. Run by hand from services/keeper:
 //   REHEARSAL_DATABASE_URL=postgres://lares:<password>@127.0.0.1:55432/<the rehearsal database> npx tsx tests/old-definitions.rehearsal.mts
 // Needs the rehearsal database (agent_resources
-// rows for chief-of-staff/creative, old-style agent_definitions rows, the 085 rename already applied).
+// rows for chief-of-staff/creative, old-style agent_definitions rows, the identity-register rename already applied).
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
