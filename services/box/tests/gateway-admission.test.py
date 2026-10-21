@@ -4,6 +4,7 @@ import importlib.util
 import json
 import pathlib
 import unittest
+from unittest import mock
 import ast
 import io
 import gzip
@@ -16,6 +17,7 @@ import subprocess
 import tempfile
 import os
 import base64
+import tarfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
@@ -186,6 +188,43 @@ class EmbeddedFixtureTests(unittest.TestCase):
         started=time.monotonic()
         module.bounded_capture(sys.executable,"-c","import time;time.sleep(60)",seconds=.05)
         self.assertLess(time.monotonic()-started,2)
+
+    def test_first_startup_failure_survives_shutdown_and_requires_both_ci_flags(self):
+        source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        names={"STARTUP_STATE_FILE","STARTUP_FAILURE_FILE","STARTUP_PHASES","STARTUP_STAGES"}
+        selected=[node for node in source.body if (isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in names) or (isinstance(node,ast.FunctionDef) and node.name=="record_startup_diagnostic")]
+        from admission_contract import canonical
+        namespace={"os":os,"pathlib":pathlib,"tempfile":tempfile,"canonical":canonical}
+        exec(compile(ast.Module(body=selected,type_ignores=[]),"startup-diagnostic","exec"),namespace)
+        probe_path=ROOT / "services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("startup_marker_probe",probe_path)
+        probe=importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
+        self.assertEqual(namespace["STARTUP_PHASES"],probe.STARTUP_PHASES)
+        self.assertEqual(namespace["STARTUP_STAGES"],probe.STARTUP_STAGES)
+        with tempfile.TemporaryDirectory() as folder:
+            state_file=pathlib.Path(folder)/"state.json";failure_file=pathlib.Path(folder)/"failure.json"
+            namespace.update(STARTUP_STATE_FILE=str(state_file),STARTUP_FAILURE_FILE=str(failure_file))
+            record=namespace["record_startup_diagnostic"]
+            for environment in ({"CI":"false","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"0"}):
+                with mock.patch.dict(os.environ,environment):record("process-starting")
+                self.assertFalse(state_file.exists())
+            with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"}):
+                record("process-starting");record("preflight-passed");record("native-lifespan-complete")
+                record("runtime-validation-failed","callback-registry")
+                record("native-lifespan-error","complete")
+                first=failure_file.read_bytes()
+                self.assertEqual(probe.validated_startup_marker(first),{"phase":"runtime-validation-failed","stage":"callback-registry"})
+                record("PRIVATE","PRIVATE")
+                self.assertEqual(first,failure_file.read_bytes())
+            self.assertEqual(probe.validated_startup_marker(b'{"phase":"PRIVATE","stage":"PRIVATE"}'),"unknown")
+            self.assertEqual(probe.validated_startup_marker(b'x'*1025),"unknown")
+            archive_bytes=io.BytesIO()
+            with tarfile.open(fileobj=archive_bytes,mode="w") as archive:
+                info=tarfile.TarInfo("failure.json");info.size=len(first);archive.addfile(info,io.BytesIO(first))
+            self.assertEqual(probe.startup_marker_from_archive(archive_bytes.getvalue(),"failure.json"),probe.validated_startup_marker(first))
+            self.assertEqual(probe.startup_marker_from_archive(b"not tar","failure.json"),"unknown")
+            noisy="Gateway admission runtime validation failed: callback-registry\n"+"shutdown traceback\n"*10000
+            self.assertEqual(probe.fixed_startup_log_markers(noisy),["runtime-validation-failed:callback-registry"])
 
     def test_only_exact_terminal_openai_stream_settles(self):
         done = {"id":"completion_fixture","choices":[{"index":0,"finish_reason":"stop"}]}

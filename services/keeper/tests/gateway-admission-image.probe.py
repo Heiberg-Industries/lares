@@ -7,6 +7,7 @@ Native-budget diagnostics remain a separate, unchanged experiment.
 import concurrent.futures
 import base64
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -16,6 +17,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import uuid
@@ -25,6 +27,9 @@ REPO = pathlib.Path(__file__).resolve().parents[3]
 ASSETS = REPO / "images/gateway-runtime"
 sys.path.insert(0, str(ASSETS))
 from admission_contract import Profile, canonical
+
+STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
+STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -154,7 +159,7 @@ def require(condition, message):
     if not condition: raise RuntimeError(message)
 
 
-def bounded_capture(*args, maximum=16384, seconds=10):
+def bounded_capture(*args, maximum=16384, seconds=10, binary=False):
     """CI diagnostics only: bound bytes/time before any output enters an artifact."""
     process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
     captured=bytearray();truncated=False;deadline=time.monotonic()+seconds
@@ -177,7 +182,7 @@ def bounded_capture(*args, maximum=16384, seconds=10):
         # Never retain a sliced secret/URL at the end of an overlong line.
         captured=captured[:maximum].rsplit(b"\n",1)[0] if b"\n" in captured[:maximum] else b""
         captured+=b"\n[diagnostic output truncated]"
-    return captured.decode("utf8",errors="replace")
+    return bytes(captured) if binary else captured.decode("utf8",errors="replace")
 
 
 def sanitize_diagnostic(value, secrets_to_hide):
@@ -196,6 +201,35 @@ def sanitize_diagnostic(value, secrets_to_hide):
     value=re.sub(r"(?i)\b(?:bearer\s+[^\s\"'<>]+|sk-[A-Za-z0-9_-]+|(?:authorization|x-api-key|api_key|password|secret|token)[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,}\"']+)","[redacted credential]",value)
     value=re.sub(r"\b[A-Za-z0-9_+/=-]{32,}\b","[redacted token-like value]",value)
     return "".join(char for char in value if char in "\n\t" or ord(char)>=32)[:16384]
+
+
+def validated_startup_marker(raw):
+    if len(raw)>1024:return "unknown"
+    try:
+        marker=json.loads(raw)
+        if set(marker)!={"phase","stage"} or marker["phase"] not in STARTUP_PHASES or marker["stage"] not in STARTUP_STAGES:return "unknown"
+        return marker
+    except (ValueError,TypeError):return "unknown"
+
+
+def startup_marker_from_archive(raw,filename):
+    if len(raw)>16384:return "unknown"
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw),mode="r:") as archive:
+            members=archive.getmembers()
+            if len(members)!=1:return "unknown"
+            member=members[0]
+            if member.name!=filename or not member.isreg() or member.size>1024:return "unknown"
+            with archive.extractfile(member) as source:return validated_startup_marker(source.read(1025))
+    except (tarfile.TarError,OSError,ValueError,TypeError):return "unknown"
+
+
+def fixed_startup_log_markers(raw):
+    markers=[]
+    for stage in sorted(STARTUP_STAGES):
+        if "Gateway admission runtime validation failed: "+stage in raw:markers.append("runtime-validation-failed:"+stage)
+    if "lares: gateway admission preflight passed" in raw:markers.append("preflight-passed")
+    return markers
 
 
 class Proof:
@@ -270,7 +304,7 @@ class Proof:
         if broken=="duplicate":document["config"]["litellm_settings"]["callbacks"].append("lares_gateway.gateway_hook")
         (folder/"config.yaml").write_bytes(canonical(document["config"]));(folder/"profile.json").write_bytes(canonical(document["profile"]))
         arguments=["--network-alias",suffix,"--mount",f"type=bind,src={self.root},dst=/fixture,readonly","--mount",f"type=bind,src={folder}/config.yaml,dst=/etc/litellm/config.yaml,readonly","--mount",f"type=bind,src={ASSETS},dst=/opt/lares-gateway,readonly","--entrypoint","/bin/sh"]
-        env={"MODEL_PROVIDER_KEY_FILE":"/fixture/provider","GATEWAY_MASTER_KEY_FILE":"/fixture/master","DATABASE_PASSWORD_FILE":"/fixture/password","PGHOST":"db","PGPORT":"5432","PGDATABASE":"litellm","PGUSER":"proof","LARES_GATEWAY_PROFILE_FILE":"/fixture/"+suffix+"/profile.json","LARES_GATEWAY_ADMISSION_URL":"https://fixture:8443","LARES_GATEWAY_ENDPOINT_HASH":"a"*64,"LARES_GATEWAY_SERVICE_KEY_FILE":"/fixture/service-key","SSL_CERT_FILE":"/fixture/ca.pem","LITELLM_LOCAL_MODEL_COST_MAP":"True","LITELLM_TELEMETRY":"False","PYTHONDONTWRITEBYTECODE":"1"}
+        env={"MODEL_PROVIDER_KEY_FILE":"/fixture/provider","GATEWAY_MASTER_KEY_FILE":"/fixture/master","DATABASE_PASSWORD_FILE":"/fixture/password","PGHOST":"db","PGPORT":"5432","PGDATABASE":"litellm","PGUSER":"proof","LARES_GATEWAY_PROFILE_FILE":"/fixture/"+suffix+"/profile.json","LARES_GATEWAY_ADMISSION_URL":"https://fixture:8443","LARES_GATEWAY_ENDPOINT_HASH":"a"*64,"LARES_GATEWAY_SERVICE_KEY_FILE":"/fixture/service-key","SSL_CERT_FILE":"/fixture/ca.pem","LITELLM_LOCAL_MODEL_COST_MAP":"True","LITELLM_TELEMETRY":"False","PYTHONDONTWRITEBYTECODE":"1","CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"}
         if broken=="authority":env.pop("LARES_GATEWAY_ADMISSION_URL")
         if broken=="profile":env["LARES_GATEWAY_PROFILE_FILE"]="/fixture/no-profile.json"
         if broken=="service-key":env["LARES_GATEWAY_SERVICE_KEY_FILE"]="/fixture/no-service-key"
@@ -297,10 +331,19 @@ class Proof:
 
     def startup_diagnostic(self,name,label):
         record={"case":label}
+        # A fixed first-failure file survives arbitrarily long shutdown traces.
+        # docker cp also works after the process has exited; never exec or inspect env.
+        for field,filename in (("firstFailure","lares-gateway-startup-first-failure.json"),("lastPhase","lares-gateway-startup-state.json")):
+            try:
+                raw=bounded_capture("docker","cp",name+":/tmp/"+filename,"-",maximum=16384,seconds=5,binary=True)
+                record[field]=startup_marker_from_archive(raw,filename)
+            except Exception:record[field]="unknown"
         try:
             template='{"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"error":{{json .State.Error}},"imageUser":{{json .Config.User}},"workingDirectory":{{json .Config.WorkingDir}}}'
             record["state"]=json.loads(bounded_capture("docker","inspect","--format",template,name,maximum=4096))
-            record["logs"]=bounded_capture("docker","logs","--tail","40",name)
+            scan=bounded_capture("docker","logs","--tail","400",name,maximum=65536,seconds=5)
+            record["fixedLogMarkers"]=fixed_startup_log_markers(scan)
+            record["logs"]=bounded_capture("docker","logs","--tail","40",name,maximum=8192,seconds=5)
         except Exception:record["diagnosticUnavailable"]=True
         # Never inspect the container environment or include an unsanitized log/error.
         safe=sanitize_diagnostic(json.dumps(record),self.disposable_secrets)

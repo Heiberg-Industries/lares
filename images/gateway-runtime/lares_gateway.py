@@ -12,6 +12,7 @@ import os
 import pathlib
 import ssl
 import sys
+import tempfile
 import time
 from datetime import timedelta
 from urllib.parse import urlsplit
@@ -34,6 +35,38 @@ from admission_contract import (
 
 current_request = contextvars.ContextVar("lares_gateway_request", default=None)
 runtime = None
+STARTUP_STATE_FILE = "/tmp/lares-gateway-startup-state.json"
+STARTUP_FAILURE_FILE = "/tmp/lares-gateway-startup-first-failure.json"
+STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
+STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+
+
+def record_startup_diagnostic(phase, stage="not-started"):
+    """CI-only, fixed vocabulary. Never store exception, config or provider values."""
+    if os.environ.get("CI") != "true" or os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") != "1": return
+    if phase not in STARTUP_PHASES or stage not in STARTUP_STAGES: return
+    temporary = None
+    try:
+        if phase == "process-starting":
+            for name in (STARTUP_STATE_FILE, STARTUP_FAILURE_FILE):
+                try: os.unlink(name)
+                except FileNotFoundError: pass
+        raw = canonical({"phase": phase, "stage": stage})
+        with tempfile.NamedTemporaryFile(prefix=".lares-gateway-startup-", dir=pathlib.Path(STARTUP_STATE_FILE).parent, delete=False) as destination:
+            temporary = destination.name
+            destination.write(raw)
+        os.replace(temporary, STARTUP_STATE_FILE)
+        temporary = None
+        if phase.endswith(("-failed", "-error")):
+            # An exclusive first-failure file survives subsequent shutdown labels.
+            try: fd = os.open(STARTUP_FAILURE_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            except FileExistsError: return
+            with os.fdopen(fd, "wb") as destination: destination.write(raw)
+    except OSError: pass # Diagnostics cannot change enforcement or startup outcomes.
+    finally:
+        if temporary is not None:
+            try: os.unlink(temporary)
+            except OSError: pass
 
 
 def refusal():
@@ -407,14 +440,22 @@ class GatewayApp:
 
     async def __call__(self, scope, receive, send):
         if scope["type"] == "lifespan":
+            record_startup_diagnostic("native-lifespan-starting")
             async def lifespan_send(message):
                 if message["type"] == "lifespan.startup.complete":
+                    record_startup_diagnostic("native-lifespan-complete")
                     try: runtime.check_runtime(startup=True)
                     except Exception:
+                        record_startup_diagnostic("runtime-validation-failed", runtime.validation_stage)
                         await send({"type": "lifespan.startup.failed", "message": "Gateway admission runtime validation failed: " + runtime.validation_stage})
                         return
+                    record_startup_diagnostic("ready", runtime.validation_stage)
+                elif message["type"] == "lifespan.startup.failed": record_startup_diagnostic("native-lifespan-failed")
                 await send(message)
-            await self.native(scope, receive, lifespan_send)
+            try: await self.native(scope, receive, lifespan_send)
+            except BaseException:
+                record_startup_diagnostic("native-lifespan-error", runtime.validation_stage)
+                raise
             return
         request, token = None, None
         try:
@@ -480,15 +521,23 @@ class GatewayApp:
 
 def main():
     global runtime
+    record_startup_diagnostic("process-starting")
+    phase = "preflight-failed"
     try:
         runtime = Runtime()
+        record_startup_diagnostic("preflight-passed")
         if "--check" in sys.argv:
             print("lares: gateway admission preflight passed")
             return
+        phase = "native-app-import-failed"
+        record_startup_diagnostic("native-app-import")
         from litellm.proxy.proxy_server import app
         import uvicorn
+        phase = "asgi-server-failed"
+        record_startup_diagnostic("asgi-server")
         uvicorn.run(GatewayApp(app), host="0.0.0.0", port=4000, workers=1, access_log=False)
     except Exception:
+        record_startup_diagnostic(phase, runtime.validation_stage if runtime is not None else "not-started")
         print("lares: gateway admission configuration is missing or invalid", file=sys.stderr)
         raise SystemExit(78) from None
 
