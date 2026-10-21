@@ -49,6 +49,12 @@ describe("member-scope inventory", () => {
     expect(scopeOf("keeper_credentials")).toMatchObject({ scope: "operational", createdBy: "services/box/sql/001_baseline.sql" });
   });
 
+  it("reaches every member admission table by the canonical member id", () => {
+    for (const table of ["member_invitations", "member_provider_identities", "member_sessions"]) {
+      expect(scopeOf(table)).toMatchObject({ scope: "member", column: "member_id", idKind: "registry", createdBy: "services/box/sql/007_member_identity_sessions.sql" });
+    }
+  });
+
   it("records the tables that are NOT created by a numbered migration, so nobody thinks they are covered", () => {
     for (const t of ["dream_observations", "dream_preferences"]) {
       expect(scopeOf(t), t).toMatchObject({ createdBy: "services/chief-of-staff/lib/dream/store.ts (runtime DDL)" });

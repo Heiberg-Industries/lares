@@ -332,6 +332,16 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ($1, 'fixture-agent', 'morning-brief', 'Fixture brief', 'Fixture message for the second person', 'fixture-inbox-2')`,
     [FIXTURE_SECOND]),
 
+  // Member admission metadata is reached by the same canonical id, never a provider subject.
+  ...[FIXTURE_OWNER, FIXTURE_SECOND].flatMap((member, index) => [
+    row("member_provider_identities", "member_id", member,
+      `INSERT INTO member_provider_identities(member_id,issuer,subject) VALUES($1,'https://identity.example.invalid',$2)`, [member, `subject-${index}`]),
+    row("member_invitations", "member_id", member,
+      `INSERT INTO member_invitations(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')`, [`invite-${index}`,member,String(index+1).repeat(64)]),
+    row("member_sessions", "member_id", member,
+      `INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 day')`, [`session-${index}`,member,String(index+3).repeat(64)]),
+  ]),
+
   // ── 001_baseline.sql — a source per person, then one ledger item under each (the ledger's
   //    foreign key needs its source first). ──────────────────────────────────────────────────
   row("clipping_sources", "owner", FIXTURE_OWNER,
