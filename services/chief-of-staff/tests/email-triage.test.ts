@@ -758,3 +758,30 @@ describe("recipientExamples recipients check", () => {
     expect(await recipientExamples(gmail, "p@example.com", "t1")).toHaveLength(1);
   });
 });
+
+
+describe("recipient-aware triage", () => {
+  it.each([
+    { position: "to", to: ["OWNER@PROJECT.EXAMPLE", "Taylor <t@example.com>"], cc: [], body: "What does this cost?", decision: "needs_reply", drafted: true },
+    { position: "cc", to: ["Taylor <t@example.com>"], cc: ["owner@project.example"], body: "Taylor, can you answer?", decision: "fyi", drafted: false },
+    { position: "cc", to: ["Taylor <t@example.com>"], cc: ["owner@project.example"], body: "Alex, can you answer?", decision: "needs_reply", drafted: true },
+    { position: "bcc_or_list", to: ["Taylor <t@example.com>"], cc: ["copy@example.com"], body: "Alex, please answer privately.", decision: "needs_reply", drafted: true },
+  ])("passes $position context through classification and enforces safe drafts", async ({ position, to, cc, body, decision, drafted }) => {
+    vi.mocked(gatewayComplete).mockImplementationOnce(async (prompt) => {
+      expect(prompt).toContain(`Owner recipient position: ${position}`);
+      expect(prompt).toContain("Other To names: Taylor");
+      expect(prompt).not.toContain("t@example.com");
+      expect(prompt).toContain("asks the owner by name or clearly expects the owner to answer");
+      return decision;
+    }).mockResolvedValueOnce("Subject: Re: Question\n\nThanks");
+    const gmail = fakeGmail();
+    const result = await triageOneMessage({ gmail, voice: noVoice, ownerName: "Alex", selfEmails: ["owner@project.example"] }, "owner@project.example", message({ to, cc, bodyText: body }));
+    expect(result.outcome).toBe(drafted ? "drafted" : "fyi");
+    if (!drafted) expect(gmail.draft).not.toHaveBeenCalled();
+    if (position === "bcc_or_list") {
+      expect(gmail.draft).toHaveBeenCalledWith(expect.objectContaining({ to: ["Prospect <p@example.com>"], cc: [] }));
+      expect(result).toMatchObject({ draftNote: expect.stringContaining("Private sender-only") });
+      expect(notifyTextFor(result)).toContain("Private sender-only");
+    }
+  });
+});
