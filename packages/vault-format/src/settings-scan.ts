@@ -136,7 +136,7 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // services/chief-of-staff/lib/principals.ts's `ENV_VAR_FOR` maps a channel to its env var name,
   // then a caller reads `process.env[ENV_VAR_FOR[channel]]` — never a literal for any of these.
   SLACK_ALLOWED_USER_IDS: "ENV_VAR_FOR in services/chief-of-staff/lib/principals.ts",
-  CONSOLE_SESSION_SECRET_FILE: "readSecret's own *_FILE half, in services/console/lib/account-oauth-state.ts",
+  CONSOLE_SESSION_SECRET_FILE: "readSecret's own *_FILE half, in services/console/lib/console-oidc.ts and services/console/lib/account-oauth-state.ts",
   SIGNAL_ADMIN_TOKEN: "readSecret in services/console/lib/signals.ts",
   SIGNAL_READ_TOKEN: "readSecret in services/console/lib/signals.ts",
   TWENTY_KEY: "readSecret in services/notion-sync/lib/cli.ts",
@@ -160,8 +160,17 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // (`GOOGLE_CLIENT_ID_${org.toUpperCase()}_FILE` in services/chief-of-staff/lib/google-orgs.ts,
   // `readSecret(`GOOGLE_CLIENT_ID_${org.toUpperCase()}`)` in console/lib/accounts.ts), so no
   // org-specific name is declared here: an org is installation data.
-  GOOGLE_CLIENT_ID_CONSOLE: "requireEnv in services/console/app/api/auth/[...route]/route.ts",
-  GOOGLE_CLIENT_SECRET_CONSOLE: "requireEnv in services/console/app/api/auth/[...route]/route.ts",
+  GOOGLE_CLIENT_ID_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
+  GOOGLE_CLIENT_SECRET_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
+  GOOGLE_CLIENT_ID_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  GOOGLE_CLIENT_SECRET_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  MICROSOFT_CLIENT_ID_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
+  MICROSOFT_CLIENT_ID_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  MICROSOFT_CLIENT_SECRET_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
+  MICROSOFT_CLIENT_SECRET_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  MICROSOFT_TENANT_ID_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
+  MICROSOFT_TENANT_ID_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  CONSOLE_ALLOWED_EMAILS: "ENV_VAR_FOR.console in role principals; no longer read by console admission",
   // services/keeper/lib/compose-agents.ts's `environment` object literal WRITES these as
   // property keys for the AGENT container the keeper renders — nothing in this repository's
   // TypeScript reads either one back off the environment object; they are consumed by
