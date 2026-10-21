@@ -26,6 +26,7 @@ const OUTSIDE_TOOL_SEEN_FILENAME = "003_outside_tool_seen.sql";
 const WEB_INBOX_FILENAME = "004_web_inbox.sql";
 const MODEL_STEPS_FILENAME = "005_model_steps.sql";
 const APPROVAL_SESSION_FILENAME = "006_approval_session.sql";
+const MEMBER_IDENTITY_FILENAME = "007_member_identity_sessions.sql";
 
 /** Every table the baseline creates, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
@@ -71,6 +72,9 @@ const EXPECTED_TABLES = [
   "memory_proposals",
   "memory_reads",
   "memory_use",
+  "member_invitations",
+  "member_provider_identities",
+  "member_sessions",
   "notion_sync_docs",
   "notion_sync_fidelity",
   "notion_sync_proposals",
@@ -125,11 +129,11 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
-      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME]);
+      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME]);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'");
       expect(rows[0].n).toBeGreaterThan(50);
       const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
@@ -164,7 +168,7 @@ describe("a database the pre-release history built", () => {
     const adopted: AppliedMigration = { ...oldRow(BASELINE_FILENAME, 1), checksum: files[0]!.checksum, how: "adopted" };
     const plan = planMigrations(files, [adopted]);
     expect(plan.refusals).toEqual([]);
-    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply"]);
+    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply", "apply"]);
   });
 });
 
@@ -202,8 +206,8 @@ describe("adopting the baseline", () => {
     expect(result.adopted).toEqual([BASELINE_FILENAME]);
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
-    // Later files still run after adoption: the baseline is skipped, 002 to 006 are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME], refused: [] });
+    // Later files still run after adoption: the baseline is skipped, 002 to 007 are applied.
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });

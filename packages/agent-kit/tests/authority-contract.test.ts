@@ -38,6 +38,14 @@ describe('authority contract shapes are not authentication', () => {
     expect(providerIdentitySchema.safeParse({ email: 'person@example.invalid' }).success).toBe(false);
     expect(providerIdentitySchema.safeParse({ issuer: 'issuer', subject: 'subject', email: 'person@example.invalid' }).success).toBe(false);
   });
+  it('preserves exact provider identifiers and refuses blank ones', () => {
+    const identity = { issuer: ' issuer ', subject: ' subject ', tenantId: ' tenant ' };
+    expect(providerIdentitySchema.parse(identity)).toEqual(identity);
+    for (const key of ['issuer', 'subject', 'tenantId']) {
+      expect(providerIdentitySchema.safeParse({ ...identity, [key]: '' }).success).toBe(false);
+      expect(providerIdentitySchema.safeParse({ ...identity, [key]: '   ' }).success).toBe(false);
+    }
+  });
   it('keeps actor, authentic speaker and resolver separate, without elevating resolver', () => {
     expect(turnAuthoritySchema.parse(turn).actingMemberId).toBe('actor');
     const resumed = turnAuthoritySchema.parse({ ...turn, origin: 'approval-resume', requestId: 'request', resolvedByMemberId: 'resolver' });

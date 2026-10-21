@@ -21,7 +21,9 @@ export const memberSchema = z.strictObject({
 export type Member = z.infer<typeof memberSchema>;
 export const newMemberSchema = memberSchema.refine(m => m.automationMode === 'draft-and-ask',
   'New members begin draft-and-ask');
-export const providerIdentitySchema = z.strictObject({ issuer: id, subject: id, tenantId: id.optional() });
+// Provider identifiers are opaque: trimming can conflate different authenticated subjects.
+const providerId = z.string().min(1).refine(value => value.trim().length > 0, 'Blank provider identifier');
+export const providerIdentitySchema = z.strictObject({ issuer: providerId, subject: providerId, tenantId: providerId.optional() });
 export type ProviderIdentity = z.infer<typeof providerIdentitySchema>;
 
 export const audienceParticipantSchema = z.discriminatedUnion('kind', [
