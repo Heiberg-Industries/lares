@@ -40,6 +40,7 @@
  * describes. The safe default while the owner is away is `"minute"`, unchanged: nothing here
  * switches it.
  */
+import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { buildClockMarkdown, DEFAULT_CLOCK_PRECISION } from "@lares/agent-kit/clock";
@@ -48,7 +49,8 @@ import { ownerTz } from "../../lib/owner-clock.js";
 
 export default defineDynamic({
   events: {
-    "turn.started": async () => {
+    "turn.started": async (_event, ctx) => {
+      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
       try {
         return defineInstructions({
           markdown: buildClockMarkdown(new Date(), await ownerTz(), DEFAULT_CLOCK_PRECISION),

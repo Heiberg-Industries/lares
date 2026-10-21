@@ -248,8 +248,9 @@ interface Conversation {
  *  and one older than that is not worth a page load. */
 async function conversations(agent: OwnedAgent, deps: WaitingDeps, only?: string): Promise<Conversation[]> {
   const { rows } = await deps.query(
-    `SELECT session_id, door FROM agent_conversations
+    `SELECT session_id, door FROM agent_conversations c
      WHERE agent = $1 AND incarnation = $2::uuid AND NOT terminal
+       AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id)
        AND observed_at > now() - interval '7 days' AND ($3::text IS NULL OR session_id = $3)
      ORDER BY observed_at DESC LIMIT 50`,
     [agent.name, agent.incarnation, only ?? null],

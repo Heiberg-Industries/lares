@@ -7,9 +7,20 @@ import { PgGrantStore } from '../src/grant-store.js';
 import { closePool } from '../src/db.js';
 import { searchTool,readTool,listTool,backlinksTool } from '../src/note-tools.js';
 import { vi } from 'vitest';
+import { MockLanguageModelV3 } from 'ai/test';
+import { definitionModel } from '../src/definition-model.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { bindConsoleSession, bindConsoleSessionStarted, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   consoleRouteAdmission, hasConsoleTurnAuthorityTag, type ConsoleAuthorityContext } from '../src/console-turn-authority.js';
+import { observeConversation, resetConversation } from '../src/conversation-control.js';
+import { verifyPrivateConsoleSession, markPrivateConsoleSurface } from '../src/private-console-surface.js';
+const keeperPath=new URL('../../../services/keeper/lib/conversations.js',import.meta.url).href;
+const actionPath=new URL('../../../services/keeper/lib/actions.js',import.meta.url).href;
+const waitingPath=new URL('../../../services/console/lib/waiting.js',import.meta.url).href;
+const {registerConversationActions}=await import(keeperPath);
+const {resetActions,runAction}=await import(actionPath);
+const {listWaiting}=await import(waitingPath);
+import { pathToFileURL,fileURLToPath } from 'node:url';
 import { quiet } from './helpers/quiet-pool.js';
 const migration = readFileSync(new URL('../../../services/box/sql/013_console_turn_authority.sql',import.meta.url),'utf8');
 const incarnation = '11111111-1111-4111-8111-111111111111';
@@ -30,13 +41,14 @@ beforeEach(async()=>{
  CREATE TABLE users(id text PRIMARY KEY,display_name text NOT NULL,primary_email text,status text,org_role text,org_id text REFERENCES orgs(id),created_at timestamptz DEFAULT now());
  CREATE TABLE org_member_policy(user_id text PRIMARY KEY REFERENCES users(id),allowed_capabilities text[]);
  CREATE TABLE agent_definitions(name text PRIMARY KEY,status text,hash text,definition jsonb);
+ CREATE TABLE agent_conversations(agent text,incarnation uuid,session_id text,door text,observed_at timestamptz DEFAULT now(),terminal boolean DEFAULT false,PRIMARY KEY(agent,incarnation,session_id));
  CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean);
  INSERT INTO orgs VALUES('org','Example');
  INSERT INTO users(id,display_name,status,org_role,org_id) VALUES('Owner-ID','Owner','active','owner','org'),('other','Other','active','owner','org');
  INSERT INTO org_member_policy VALUES('Owner-ID',NULL);
  INSERT INTO agent_definitions VALUES('helper','valid','definition-one','{"grants":[]}');
  INSERT INTO agent_resources VALUES('helper','${incarnation}','${incarnation}','ready',false);`);
- for(const file of ['007_member_identity_sessions.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
+ for(const file of ['007_member_identity_sessions.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
  await new PgGrantStore(db).adoptAgent('Owner-ID',{agentName:'helper',expectedDefinitionHash:'definition-one'},{designatedOwnerMemberId:'Owner-ID'});
 });
 describe('durable console authority on disposable PostgreSQL',()=>{
@@ -60,7 +72,7 @@ describe('durable console authority on disposable PostgreSQL',()=>{
   await expect(bindConsoleSession(tuple,db,env)).rejects.toThrow('Conversation authority');
   await expect(consoleRouteAdmission(request('', 'human',{}),db,env)).rejects.toThrow('Conversation authority');
   await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_access_capture');
-  await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id) VALUES('helper',$1,'historical','Owner-ID',repeat('z',43),'historical')",[incarnation]);
+  await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,revoked_at) VALUES('helper',$1,'historical','Owner-ID',repeat('z',43),'historical',clock_timestamp())",[incarnation]);
   const captureMigration=readFileSync(new URL('../../../services/box/sql/016_console_agent_access_capture.sql',import.meta.url),'utf8');
   await db.query(captureMigration);await db.query(captureMigration);
   expect((await db.query("SELECT revoked_at,agent_access_revision FROM console_session_bindings WHERE session_id='historical'")).rows[0]).toEqual({revoked_at:expect.any(Date),agent_access_revision:null});
@@ -225,4 +237,61 @@ it('all four real Vault readers require current authority before touching the st
   rmSync(directory,{recursive:true,force:true});
   for(const read of reads(ctx())) await expect(read()).rejects.toThrow('Conversation authority');
  }finally{rmSync(directory,{recursive:true,force:true});}
+});
+
+it('retires every pre-surface conversation and refuses old-binary active captures; reapply preserves new bindings',async()=>{
+ const surfaceMigration=readFileSync(new URL('../../../services/box/sql/017_private_console_surface_capture.sql',import.meta.url),'utf8');
+ await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_private_surface_capture');
+ const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
+ await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('helper',$1,'wrun_old','Owner-ID',repeat('z',43),'old',$2)",[incarnation,access!.accessRevision]);
+ await db.query(surfaceMigration);await db.query(surfaceMigration);
+ expect((await db.query("SELECT revoked_at,private_surface_revision FROM console_session_bindings WHERE session_id='wrun_old'")).rows[0]).toEqual({revoked_at:expect.any(Date),private_surface_revision:0});
+ const old={session:{id:'wrun_old',auth:{current:auth('human','Owner-ID','z'.repeat(43)),initiator:auth('human','Owner-ID','z'.repeat(43))}}};
+ await expect(verifyPrivateConsoleSession(old)).rejects.toThrow('Conversation authority');
+ // A new neutral prompt cannot bless a retired history, even if local readiness was retained.
+ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/context/container.js',import.meta.url))).href;
+ const {ContextContainer,contextStorage}=await import(dist);
+ await contextStorage.run(new ContextContainer(),async()=>{markPrivateConsoleSurface();await expect(verifyPrivateConsoleSession(old)).rejects.toThrow('Conversation authority');});
+ await expect(db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('helper',$1,'wrun_old_binary','Owner-ID',repeat('x',43),'old-binary',$2)",[incarnation,access!.accessRevision])).rejects.toThrow('console_binding_private_surface_capture');
+ await bindConsoleSession(tuple,db,env);await db.query(surfaceMigration);
+ await expect(requireConsoleSessionBinding(tuple,db,env)).resolves.toMatchObject({sessionId:tuple.sessionId});
+ await expect(db.query("UPDATE console_session_bindings SET private_surface_revision=0 WHERE session_id=$1",[tuple.sessionId])).rejects.toThrow('immutable');
+});
+it('old projected private rows stay invisible to keeper list/reset, runtime reset and Waiting, while native rows still work',async()=>{
+ await bindConsoleSession(tuple,db,env);
+ await db.query("INSERT INTO agent_conversations(agent,incarnation,session_id,door) VALUES('helper',$1,'wrun_test','http'),('helper',$1,'wrun_native','telegram')",[incarnation]);
+ resetActions();const keeperReset=vi.fn(async()=>({status:'reset'}));registerConversationActions(db,keeperReset);
+ const actionContext={actor:'owner@example.invalid',audit:vi.fn(async()=>{})};
+ const listed=await runAction('conversation.list',{name:'helper'},actionContext) as any[];
+ expect(listed.map(r=>r.sessionId)).toEqual(['wrun_native']);
+ await expect(runAction('conversation.reset',{name:'helper',incarnation,sessionId:'wrun_test',confirm:true},actionContext)).rejects.toThrow('Conversation');expect(keeperReset).not.toHaveBeenCalled();
+ const attach=vi.fn(()=>({reset:vi.fn(async()=>({status:'reset'}))}));
+ await expect(resetConversation({sessionId:'wrun_test',incarnation,confirm:true},attach,db,env)).rejects.toThrow('owned');expect(attach).not.toHaveBeenCalled();
+ const calls:string[]=[];
+ await listWaiting('owner@example.invalid',{
+  query:async(sql:string,values:unknown[])=>{
+   if(sql.includes('agent_door_connections'))return{rows:[{name:'helper',address:'172.29.0.10',state:'ready',status:'valid',runtime_control_token:incarnation,incarnation,doors:[{kind:'telegram',enabled:true}],claim:{kind:'telegram',owner_email:'owner@example.invalid'}}]};
+   if(sql.includes('notion_sync_proposals')||sql.includes('atlas_proposals'))return{rows:[]};
+   return db.query(sql,values);
+  },
+  signedInMember:async()=>({id:'Owner-ID',organisationId:'org',role:'owner',status:'active',automationMode:'draft-and-ask'}),
+  routePassword:()=> 'synthetic',fetch:async(input:string|URL|Request)=>{calls.push(String(input));return new Response('');},now:()=>new Date(),sleep:async()=>{},
+ } as never);
+ expect(calls).toHaveLength(1);expect(calls[0]).toContain('wrun_native');expect(calls[0]).not.toContain('wrun_test');
+ await resetConversation({sessionId:'wrun_native',incarnation,confirm:true},attach,db,env);expect(attach).toHaveBeenCalledOnce();
+});
+
+it('a real revoked binding stops a cached model before either fake provider execution mode',async()=>{
+ await bindConsoleSession(tuple,db,env);
+ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/context/container.js',import.meta.url))).href;
+ const {ContextContainer,contextStorage}=await import(dist);
+ await contextStorage.run(new ContextContainer(),async()=>{
+  markPrivateConsoleSurface();const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
+  const resolver=definitionModel({resolveAlias:async()=> 'synthetic-model',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
+  const selection=await resolver.events['step.started']!({},ctx() as never);
+  await db.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[tuple.sessionId]);
+  await expect(resolver.events['step.started']!({},ctx() as never)).rejects.toThrow('Conversation authority');
+  for(const method of ['doGenerate','doStream'] as const)await expect(selection.model[method]({prompt:[]})).rejects.toThrow('Conversation authority');
+  expect(call).not.toHaveBeenCalled();
+ });
 });

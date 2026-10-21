@@ -15,6 +15,7 @@
 // `session.started`, NOT `turn.started`. The system prompt is what the prompt cache keys on;
 // rebuilding it every turn would re-bill the whole conversation on every message. An
 // expensive retry-loop incident is why this is a rule and not a tuning choice.
+import { verifyPrivateConsoleSession, privateRoleInstructions, markPrivateConsoleSurface } from "@lares/agent-kit/private-console-surface";
 import { readFileSync } from "node:fs";
 
 import { defineDynamic, defineInstructions } from "eve/instructions";
@@ -35,6 +36,10 @@ export default defineDynamic({
     // falling back to the process-lifetime pin is far better than throwing, which would leave the
     // agent with no persona at all.
     "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
+      if (await verifyPrivateConsoleSession(ctx)) {
+        markPrivateConsoleSurface();
+        return defineInstructions({ markdown: privateRoleInstructions("creative") });
+      }
       const { loaded } = await thisAgent(ctx?.session?.id);
       // See lib/definition.ts: cwd is the app root at runtime and under vitest; import.meta.url
       // is not, because eve inlines this module into .output/server/index.mjs.

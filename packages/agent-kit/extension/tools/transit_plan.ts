@@ -29,6 +29,7 @@
  * the construction site. A plain `fetch` here compiles, passes the suite, and
  * then fails on the server as "unreachable".
  */
+import { assertPrivateConsoleTool } from "../../src/private-console-surface.js";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -183,7 +184,8 @@ export function createTransitPlanTool(deps: TransitPlanDeps) {
       "EnturUnavailableError — which means Entur was unreachable, NOT that there are no " +
       "departures.",
     inputSchema,
-    async execute({ from, to, departAfter, arriveBy, count }) {
+    async execute({ from, to, departAfter, arriveBy, count }, ctx) {
+      assertPrivateConsoleTool(ctx, "creative", "agent-kit__transit_plan");
       if (departAfter !== undefined && arriveBy !== undefined) {
         return {
           error:

@@ -33,12 +33,14 @@ export function registerConversationActions(pool:Pool,reset:(name:string,incarna
     const resource=await pool.query("SELECT ownership_token FROM agent_resources WHERE name=$1 AND runtime_control_token=ownership_token AND state='ready'",[agent]);
     if(!resource.rows.length)throw new KeeperRefusedError('Current agent incarnation unavailable');
     const rows=await pool.query(`SELECT session_id AS "sessionId",incarnation,door,observed_at AS "observedAt",terminal
-      FROM agent_conversations WHERE agent=$1 AND incarnation=$2 ORDER BY observed_at DESC LIMIT 50`,[agent,resource.rows[0].ownership_token]);
+      FROM agent_conversations c WHERE agent=$1 AND incarnation=$2
+      AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id) ORDER BY observed_at DESC LIMIT 50`,[agent,resource.rows[0].ownership_token]);
     return rows.rows;
   }});
   registerAction({name:'conversation.reset',input:z.strictObject({name,incarnation,sessionId,confirm:z.literal(true)}),run:async(input)=>{
     const {rows}=await pool.query(`SELECT c.session_id FROM agent_conversations c JOIN agent_resources r ON r.name=c.agent AND r.ownership_token=c.incarnation
-      WHERE c.agent=$1 AND c.incarnation=$2::uuid AND c.session_id=$3 AND r.runtime_control_token=r.ownership_token AND NOT r.pending AND r.state='ready'`,[input.name,input.incarnation,input.sessionId]);
+      WHERE c.agent=$1 AND c.incarnation=$2::uuid AND c.session_id=$3 AND r.runtime_control_token=r.ownership_token AND NOT r.pending AND r.state='ready'
+      AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id)`,[input.name,input.incarnation,input.sessionId]);
     if(!rows.length)throw new KeeperRefusedError('Conversation is not owned by the current agent incarnation');
     return reset(input.name,input.incarnation,input.sessionId);
   }});

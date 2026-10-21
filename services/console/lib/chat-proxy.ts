@@ -1,3 +1,4 @@
+import { assertPrivateConsoleEnvelope } from "@lares/agent-kit/private-console-envelope";
 import { randomBytes } from "node:crypto";
 import { bindConsoleSession, requireConsoleSessionBinding, requireConsoleAgentUse, type AuthorityPool,
   CONSOLE_MEMBER_ID_HEADER, CONSOLE_ADMISSION_HEADER, CONSOLE_PURPOSE_HEADER } from "@lares/agent-kit/console-turn-authority";
@@ -243,6 +244,10 @@ export async function forwardChat(request: Request, name: string, path: string, 
     }
     const body = isStream || request.method === "GET" ? undefined : await bounded(request.body, MAX_REQUEST_BYTES, signal);
 
+    if (body !== undefined) {
+      try { assertPrivateConsoleEnvelope(body.length ? JSON.parse(new TextDecoder().decode(body)) : {}, '/' + path); }
+      catch { return refuse(400, "Private conversation request is not supported."); }
+    }
     const nonce = tuple?.admissionNonce ?? randomBytes(32).toString("base64url");
     let purpose = isStream || request.method === "GET" ? "read" : /\/(cancel|clear|compact|reset)$/.test(path) ? "control" : "human";
     if (body && body.length > 0 && purpose === "human") {

@@ -12,7 +12,8 @@
 // real Twenty reads with NO try/catch here or in `surface.ts` — a genuine
 // `TwentyUnavailableError` propagates out of this tool rather than silently returning an
 // empty or wrong result.
-import { defineTool } from "eve/tools";
+import { verifyPrivateConsoleSession, assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
+import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { resolveSkillTool } from "@lares/agent-kit/manifest";
@@ -77,11 +78,16 @@ const tool = defineTool({
     "Returns a per-brand map of up to 8 contacts with name, email, score, and a short reason. " +
     "Read-only, ungated.",
   inputSchema: z.object({ brand: z.string().optional() }),
-  async execute({ brand }): Promise<Record<string, SurfacedContact[]>> {
+  async execute({ brand }, ctx): Promise<Record<string, SurfacedContact[]>> {
+    assertPrivateConsoleTool(ctx, "chief-of-staff", "commercial_who_to_contact");
     const allByBrand = await surfaceCommercial(liveDeps(), "subset");
     if (brand === undefined) return allByBrand;
     return brand in allByBrand ? { [brand]: allByBrand[brand]! } : {};
   },
 });
 
-export default resolveSkillTool(manifest, "commercial", tool);
+export default defineDynamic({ events: { "session.started": async (_event, ctx) => {
+  if (await verifyPrivateConsoleSession(ctx)) return null;
+  const resolved = resolveSkillTool(manifest, "commercial", tool);
+  return "execute" in resolved ? resolved : null;
+} } });

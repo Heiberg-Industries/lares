@@ -89,7 +89,7 @@ function fake(opts: {
     query: async (sql, values) => {
       queries.push({ sql, values });
       if (sql.startsWith("SELECT 1 FROM users") || sql.includes("FROM agent_resources r WHERE")) return {rows:[{}]};
-      if (sql.includes("console_session_bindings")) {
+      if (sql.includes("console_session_bindings") && !sql.includes("agent_conversations")) {
         const session = sessions[String(values[0])]?.find(s=>s.session_id === values[2]);
         if (!session || ["slack","telegram"].includes(session.door)) return {rows:[]};
         return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1,agent_access_revision:1}]};
