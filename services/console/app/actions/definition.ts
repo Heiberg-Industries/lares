@@ -36,7 +36,7 @@ export async function deleteAgent(input: {name: string; confirm: boolean}): Prom
   if (input.confirm !== true) throw new Error('Explicit deletion confirmation is required.');
   return call('definition.delete', {name:input.name,confirm:true}, email);
 }
-/** Task17 hook. A stored token is not proof of a connected or active door. */
+/** A stored token is not proof of a connected or active door. */
 export async function connectDoor(input: {name: string; kind:'slack'|'telegram'; secret: string; signingSecret?:string}): Promise<DefinitionActionResult<unknown>> {
   return call('door.connect', input, await actor());
 }

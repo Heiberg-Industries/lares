@@ -3,7 +3,7 @@
 // OWN frontmatter.
 //
 // This is the one place the job derives an Atlas file from other Atlas files, and it closes a
-// drift that had to be fixed by hand once: the index claimed a project was blocked seven weeks
+// drift that once had to be fixed manually: the index claimed a project was blocked seven weeks
 // after its repo said the blocker had COMPLETED. A card that restates a note's `status` and
 // `one_liner` cannot disagree with the note, because it IS the note.
 //
@@ -17,7 +17,7 @@ export interface ProjectCard {
   status: string;
   oneLiner: string;
   notePath: string;
-  /** Part A's confidentiality flag, carried so the map keeps saying it (design §3.4). */
+  /** The note's confidentiality flag, carried so the map keeps saying it. */
   confidential: boolean;
 }
 
@@ -52,7 +52,7 @@ export function cardFor(notePath: string, note: ParsedNote): ProjectCard {
     status: str("status"),
     oneLiner: str("one_liner"),
     notePath,
-    // Read from the BODY, because that is where Part A put it and where an agent drafting
+    // Read from the BODY, because that is where the seeded notes put it and where an agent drafting
     // outbound copy will see it. Naming a thing internally and publishing it are different
     // acts, and this flag governs the second.
     //
@@ -61,10 +61,10 @@ export function cardFor(notePath: string, note: ParsedNote): ProjectCard {
     // from CRLF-authored text `parseNote` doesn't normalise — is noise. So: split into
     // paragraphs FIRST (tolerating CRLF and indented blank lines), THEN collapse everything
     // within each paragraph to a single space. Doing it in the other order (collapse first,
-    // split second) was round 2's bug: a blanket `/\s+/g` before any split dissolves the
+    // split second) is a bug: a blanket `/\s+/g` before any split dissolves the
     // paragraph boundary itself, bridging two unrelated paragraphs. Splitting on a narrower
-    // pattern than the paragraphs actually use (LF-only, no CRLF) was this round's bug: it
-    // missed a CRLF wrap entirely, and doubled internal spaces were never handled by the
+    // pattern than the paragraphs actually use (LF-only, no CRLF) is another: it
+    // misses a CRLF wrap entirely, and doubled internal spaces were never handled by the
     // narrowed within-paragraph collapse either.
     confidential: CONFIDENTIAL.test(
       note.body.split(/\r?\n[ \t]*\r?\n/).map((para) => para.replace(/\s+/g, " ")).join("\n\n"),

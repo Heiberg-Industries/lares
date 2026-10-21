@@ -1,13 +1,13 @@
-// Run the studio on a brief. UNGATED — `studio` is a plain `write` in her grants and
-// `autonomous` in her autonomy block (agent.json).
+// Run the studio on a brief. UNGATED — `studio` is a plain `write` in the agent's grants and
+// `autonomous` in its autonomy block (agent.json).
 //
-// IT WAS GATED FOR ONE DAY, AND THE CARD IS WHY IT ISN'T. The port shipped this behind a bare
-// `always()` approval on the ticket's stated intent that "a studio run is an expensive
+// IT WAS GATED FOR ONE DAY, AND THE CARD IS WHY IT ISN'T. It first shipped behind a bare
+// `always()` approval on the intent that "a studio run is an expensive
 // multi-model pipeline, so a confirmation is proportionate". Seeing the first live card
-// settled it the other way (the owner, 2026-08-24): the gate had no decision content. He is the
-// only principal who can reach her, he had asked for the run in the message directly above,
-// and the card asked whether he meant it. Nothing destructive was being prevented — the worst
-// case is spend, not damage. It also contradicted the first rule of her persona ("Run first —
+// settled it the other way (the owner's call): the gate had no decision content. The owner is the
+// only principal who can reach the agent, had asked for the run in the message directly above,
+// and the card asked whether they meant it. Nothing destructive was being prevented — the worst
+// case is spend, not damage. It also contradicted the first rule of the persona ("Run first —
 // don't gatekeep. A terse brief is not a reason to stall") and, sitting next to `vault_write`,
 // it devalued the one gate that does guard something: a gate in front of the harmless teaches
 // you to tap without reading.
@@ -26,7 +26,7 @@
 // `read` would understate it.
 //
 // Ported from `services/agent-runtime/lib/adapters/hands/studio.ts`. There is no studio
-// SERVICE to call — the pipeline runs here, from `lib/studio/` (Task 4), wiring consensus/llm/store
+// SERVICE to call — the pipeline runs here, from `lib/studio/`, wiring consensus/llm/store
 // in-process from the files in that directory.
 //
 // NOTHING IS READ AT MODULE SCOPE. `makeAtlasConsensus()` resolves `ATLAS_PATH` lazily, on
@@ -70,7 +70,7 @@ export default defineTool({
     // keeps ten paid model calls unreachable from any future non-Slack route. It also supplies
     // the `principal` recorded below.
     //
-    // W7A-s6 — `assertApproval` also checks the card this call answered, through the same
+    // `assertApproval` also checks the card this call answered, through the same
     // ledger every gated tool does. There is no card here (this tool is UNGATED), so
     // `assertApprovedCall` always finds no row and passes — the addition is for uniformity with
     // every other tool that re-checks the approver, not because this one has anything to check.
@@ -90,7 +90,7 @@ export default defineTool({
     // `.catch(console.error)`): a database hiccup must not cost the owner the spread the model
     // has already been paid to produce. `ensureStudioTables` is idempotent and the table
     // already exists — `DATABASE_URL` still points at `lares_state`, so this is the SAME
-    // `studio_runs` table the old the creative agent has been writing to, and her history carries.
+    // `studio_runs` table the old agent-runtime wrote to, and the history carries.
     try {
       const db = getPool();
       await ensureStudioTables(db);
@@ -106,7 +106,7 @@ export default defineTool({
     }
 
     // The RENDERED spread, never the raw StudioRun. The grounding line it carries is the only
-    // Atlas ground truth the narrating model gets; hand it JSON instead and she guesses.
+    // Atlas ground truth the narrating model gets; hand it JSON instead and it guesses.
     return renderSpread(run);
   },
 });

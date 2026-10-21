@@ -1,4 +1,4 @@
-// WHICH AREAS OF THE VAULT THIS SESSION MAY OPEN (ADR-0017 rule 1, W5C-s3).
+// WHICH AREAS OF THE VAULT THIS SESSION MAY OPEN (ADR-0017 rule 1).
 //
 // The note tools take an `area` and refuse one they were not given. This is what they ask. It
 // reads the SAME per-session definition the tool list itself resolved from (`lib/definition.ts`'s
@@ -25,14 +25,14 @@ export async function vaultAreasForTurn(
   return grantedVaultAreas(loaded.definition);
 }
 
-/** The areas this role's WRITE tool serves. One: the shared store `atlas_write` was bound to
- *  before W5C-s4 renamed it. It is a separate list from the granted areas on purpose — a future
+/** The areas this role's WRITE tool serves. One: the shared store the write tool was bound to
+ *  before it became area-aware. It is a separate list from the granted areas on purpose — a future
  *  grant must not silently hand this role's single write tool a second store, the way it would
  *  if the write authority were simply "everything granted". */
 const WRITABLE_AREAS = ["shared"] as const satisfies readonly VaultArea[];
 
 /**
- * WHICH AREAS THIS SESSION MAY WRITE (W5C-s4). The granted areas, intersected with the one this
+ * WHICH AREAS THIS SESSION MAY WRITE. The granted areas, intersected with the one this
  * role's write tool serves. Both halves must agree: a declaration that stopped granting the
  * shared store would close the door on the next session, and a declaration that granted every
  * area would still not open a second one.

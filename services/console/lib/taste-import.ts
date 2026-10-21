@@ -3,7 +3,7 @@
 // The first version of this import only ever added or overwrote. That is wrong in three ways a
 // curated store cannot afford:
 //
-//   - a place the owner REMOVED from his Google list stayed in the store forever, and the trip planner kept
+//   - a place the owner REMOVED from their Google list stayed in the store forever, and the trip planner kept
 //     recommending it;
 //   - a re-upload of the raw Takeout export (no coordinates — Google stopped putting them in)
 //     would have wiped the pins a browser-resolved upload had already established;

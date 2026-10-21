@@ -11,7 +11,7 @@ import declaration from "../agent.json";
 
 describe("the catalogue index", () => {
   it("names every tool's real capability — a new tool without one fails here", () => {
-    // Ruling R2: an always-present tool has no capability to name. `capabilityOfTool` returns
+    // An always-present tool has no capability to name. `capabilityOfTool` returns
     // undefined for it by design, so it is exempt here and carries ALWAYS_PRESENT_CAPABILITY.
     for (const [name, entry] of Object.entries(CATALOGUE)) {
       if (ALWAYS_PRESENT.includes(name)) {
@@ -22,7 +22,7 @@ describe("the catalogue index", () => {
     }
   });
 
-  // W5C-s5/s6 — the second narrowing `vault` needs. `capabilityOfTool` above no longer separates
+  // The second narrowing `vault` needs. `capabilityOfTool` above no longer separates
   // the personal store from the shared one from the standing facts: all three answer `vault`.
   // `areaOfTool` is what does, and it is what `grantedToolNames` refuses a tool on, so it gets
   // the same both-directions check the capability does.
@@ -58,15 +58,14 @@ describe("the catalogue index", () => {
   });
 });
 
-/** The areas this role's committed `agent.json` grants, and the vault tools it was
- *  offered the day before the merge — literals, read out of the tree at W5C-s4. */
+/** The areas this role's committed `agent.json` grants, and the vault tools it is
+ *  offered — literals, not recomputed from the code under test. */
 const GRANTED_AREAS: readonly string[] = ["shared"];
 const VAULT_TOOLS_BEFORE = ["vault_list", "vault_read", "vault_search", "vault_write"];
 
-// THE COMMIT'S WHOLE CLAIM, FOR THIS ROLE (W5C-s5/s6): one capability doc and one grant replaced
-// three, and NOBODY'S TOOL LIST CHANGED. Asserted against the committed declaration and the real
-// pool, as a literal set read out of the tree before the merge — not recomputed from the code
-// this test is watching.
+// THE CLAIM, FOR THIS ROLE: one capability doc and one grant replaced the earlier per-store ones,
+// and the tool list did not change. Asserted against the committed declaration and the
+// real pool, as a literal set — not recomputed from the code this test is watching.
 describe("the vault tools this role is offered", () => {
   const offered = grantedToolNames(CATALOGUE, parseDefinition(declaration));
   const vaultTools = offered.filter((n) => CATALOGUE[n]!.capability === "vault");

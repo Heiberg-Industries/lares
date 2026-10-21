@@ -77,6 +77,6 @@ describe("the settings list", () => {
     expect(SETTING_NAMES.has("GATEWAY_MASTER_KEY_FILE")).toBe(true);
     expect(SETTING_NAMES.has("LARES_DOMAIN")).toBe(true);
     expect(settingByName("MODEL_PROVIDER_KEY_FILE")!.secret).toBe(false); // the path, not the value
-    expect(settingByName("DATABASE_PASSWORD_FILE")!.readers).toContain("box"); // F2's fix, now also true of box's own reader, not only the three roles
+    expect(settingByName("DATABASE_PASSWORD_FILE")!.readers).toContain("box"); // box has its own reader, not only the three roles
   });
 });

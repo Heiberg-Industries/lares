@@ -3,7 +3,7 @@
 // gets a `type:`, the two legacy type values migrate into the shared vocabulary, and legacy
 // bare `canonical_sources` become `repo:`-prefixed.
 //
-// It is a MECHANICAL field change, so there is no 👍 gate (spec §4.2): nothing here is
+// It is a MECHANICAL field change, so there is no 👍 gate: nothing here is
 // drafted, every value is computed from the file's own path and contents, and no note BODY
 // is touched. One commit, so the migration reads as one event in the store's history.
 //

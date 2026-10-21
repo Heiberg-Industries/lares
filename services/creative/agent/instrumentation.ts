@@ -1,16 +1,15 @@
 /**
  * Telemetry — eve's OpenTelemetry export, pointed at Langfuse.
  *
- * Ported from `services/chief-of-staff/agent/instrumentation.ts`, NOT from travel agent's. The two
- * differ in exactly one line that matters here: chief-of-staff's calls `registerApprovalSummary()`
- * and the travel agent's does not (he has no gated tools). The creative agent has TWO — `vault_write` and
- * `studio_ideate` — and Task 5 added their card formatters to
+ * Ported from `services/chief-of-staff/agent/instrumentation.ts`. An agent with no gated tools would
+ * leave out one line that matters here, `registerApprovalSummary()`. The creative agent has TWO
+ * gated tools, `vault_write` and `studio_ideate`, and their card formatters live in
  * `@lares/agent-kit/src/approval-summary.ts`, where they stay INERT until something makes
- * that call. Without it her approval card reads `Approve tool call: vault_write` with the
+ * that call. Without it the approval card reads `Approve tool call: vault_write` with the
  * note path buried in a collapsed JSON block, and that card is the last thing the owner reads
  * before authorising a write into the Atlas.
  *
- * `lib/langfuse-otel.ts` is deliberately NOT copied into this service — moved it into
+ * `lib/langfuse-otel.ts` is deliberately NOT copied into this service — it lives in
  * the shared package, so it is imported below.
  *
  * eve auto-discovers this file and runs `setup` at server startup, before any agent code.
@@ -25,8 +24,8 @@
  * model calls (6 proposers + 3 critics + 1 director), so these traces are also the only
  * place the real per-run cost shape is visible.
  *
- * WHERE TO LOOK: her spans land in the installation's Langfuse project under
- * `resourceAttributes["service.name"] = creative agent` (alongside chief-of-staff's and travel agent's).
+ * WHERE TO LOOK: its spans land in the installation's Langfuse project under
+ * `resourceAttributes["service.name"] = creative agent` (alongside chief-of-staff's).
  * That is NOT the project a Claude session's Langfuse MCP connector is bound to — two
  * sessions have already concluded "traces never land" from an empty MCP query against the
  * other project. Query from inside the box; see
@@ -73,8 +72,8 @@ export default defineInstrumentation({
     registerApprovalSummary();
     // : files eve does not inline reach the model as text or a plain sentence, not a bare path.
     installAttachmentHydration();
-    //  step 1: tell the console who this agent is. Only where a database exists (never at `eve build`).
-    //  step 2: the console must show what this agent IS RUNNING ON, not what its image
+    // Tell the console who this agent is. Only where a database exists (never at `eve build`).
+    // The console must show what this agent IS RUNNING ON, not what its image
     // was built with. That is the resolved DEFINITION — the mounted folder where one exists, the
     // committed declaration where it does not. `BOOT`, not a session id: eve documents
     // instrumentation's `setup` as a non-ALS callback with no session context, and what the
@@ -88,9 +87,9 @@ export default defineInstrumentation({
     //.
     if (boot) {
       void Promise.resolve(boot)
-        //  step 2, Task 7: her tools are a POOL now, picked from at session start, so the
+        // The tools are a POOL, picked from at session start, so the
         // compiled manifest lists the resolver and none of its entries. The console would show
-        // three tools where she has nine unless the granted names are handed over here —
+        // three tools where the agent has nine unless the granted names are handed over here —
         // computed from the SAME definition that is being registered, by the same function the
         // resolver uses, so the row cannot claim a tool the model was not given.
         .then(({ loaded }) =>
@@ -131,8 +130,8 @@ export default defineInstrumentation({
 
   // Full prompts and completions ride to Langfuse. That is the point — a spread without its
   // prompts cannot answer "did the six lenses actually diverge, or did they all say the same
-  // thing". Everything she reads is the owner's own business material (the Atlas) and Langfuse
-  // is the EU region; revisit both if she is ever pointed at someone else's data.
+  // thing". Everything the agent reads is the owner's own business material (the Atlas) and Langfuse
+  // is the EU region; revisit both if the agent is ever pointed at someone else's data.
   //
   // eve 0.60.1 still honours these two keys on `defineInstrumentation`'s own config — the
   // 0.60.0 removal (`assertNoRemovedContentOptions`, dist/src/tracing/otel-declaration.js)

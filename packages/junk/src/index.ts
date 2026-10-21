@@ -1,8 +1,8 @@
 /**
  * Junk / automated-sender classification — shared across Lares services.
  *
- * Extracted per ADR-0007 (docs/decisions/0007-shared-ts-packages-github-packages.md),
- * Task 5. Before this package, the same email-shape heuristics existed as three
+ * Extracted per ADR-0007 (docs/decisions/0007-shared-ts-packages-github-packages.md).
+ * Before this package, the same email-shape heuristics existed as three
  * drifting copies: an earlier relationship-tool module (original, since removed),
  * services/agent-runtime/lib/commercial/junk.ts (a ported copy with additions),
  * and services/agent-runtime/lib/adapters/junk-sender.ts (a separately-evolved

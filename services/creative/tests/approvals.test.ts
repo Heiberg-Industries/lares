@@ -112,7 +112,7 @@ describe("channelForAuthenticator — one channel, and nothing else resolves", (
   it("resolves only eve's Slack authenticator", () => {
     expect(channelForAuthenticator(SLACK_AUTH)).toBe("slack");
     // Verified against eve's bundled dist rather than guessed: a wrong literal here would make
-    // every approval refuse, which is safe but silently breaks her only write path.
+    // every approval refuse, which is safe but silently breaks the agent's only write path.
     for (const other of ["telegram-webhook", "http-basic", "", undefined]) {
       expect(channelForAuthenticator(other), String(other)).toBeUndefined();
     }

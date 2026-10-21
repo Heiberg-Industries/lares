@@ -49,7 +49,7 @@ export function LadderSwitch({ enabled }: { enabled: boolean }) {
     <div className="card lares-control-card">
       <label className="lares-checkbox-row">
         <input type="checkbox" checked={on} disabled={pending} onChange={(e) => toggle(e.target.checked)} />
-        {/* Both states are STATED (review fix): a bare "Escalation ladder" beside an unchecked box
+        {/* Both states are STATED: a bare "Escalation ladder" beside an unchecked box
             reads as a label whose value failed to render, not as a switch that is off. */}
         <span>Escalation ladder — {on ? "ON" : "OFF"}</span>
         <Msg msg={msg} />

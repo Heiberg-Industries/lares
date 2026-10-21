@@ -3,7 +3,7 @@
  *
  * `lib/studio/pipeline.ts` is a verbatim port, so these tests do not re-prove the algorithm
  * the old runtime's suite already proves (`services/agent-runtime/tests/studio-pipeline.test.ts`
- * and friends). They pin the four things the CUTOVER can break and that Task 5 wires against:
+ * and friends). They pin the four things the CUTOVER can break and that the tool wires against:
  * the run shape it renders and stores, the grounding string it must relay, and the two ends of
  * the fail-soft behaviour — the one case that throws and the one that degrades.
  *
@@ -38,7 +38,7 @@ function fakeLlm(prompt: string): Promise<string> {
 }
 
 describe("runStudioPipeline (ported)", () => {
-  /** The whole contract Task 5's tool renders and stores: outliers + exactly one baseline,
+  /** The whole contract the tool renders and stores: outliers + exactly one baseline,
    *  with the critic's scores carried onto the items. If the port dropped a stage, this fails. */
   it("returns surviving outliers plus exactly one baseline, scores carried through", async () => {
     const run = await runStudioPipeline("three wedges for another-product", {
@@ -59,10 +59,10 @@ describe("runStudioPipeline (ported)", () => {
 
   /**
    * Grounding travels on `StudioRun.consensus` — a plain string — and NOWHERE else. That
-   * string is the only evidence `renderSpread` has when it decides whether to tell the owner she
-   * found Atlas context, which is what her persona's "relay, don't guess" rule depends on. The
+   * string is the only evidence `renderSpread` has when it decides whether to tell the owner it
+   * found Atlas context, which is what the persona's "relay, don't guess" rule depends on. The
    * brief tested this by diffing two whole runs; asserting the field itself is what actually
-   * matters, and it says which field Task 5 must not drop when it persists the run.
+   * matters, and it says which field the tool must not drop when it persists the run.
    */
   it("carries the consensus string onto the run verbatim, grounded or not", async () => {
     const deps = { llm: fakeLlm, lenses: LENSES, critics: 1 };
@@ -81,7 +81,7 @@ describe("runStudioPipeline (ported)", () => {
    * The pipeline's ONE hard throw (`pipeline.ts:42`). The brief asserted the opposite — that
    * junk from the LLM resolves — which is false for the all-proposers-failed case. Pinned so a
    * future "make it fail-soft everywhere" edit has to be a deliberate decision: an empty spread
-   * presented as a result would be worse than an error, because she would appear to have
+   * presented as a result would be worse than an error, because the agent would appear to have
    * thought and come back with nothing.
    */
   it("throws when EVERY proposer fails — an empty spread is not a result", async () => {
@@ -100,7 +100,7 @@ describe("runStudioPipeline (ported)", () => {
   });
 
   /**
-   * The valuable half of the degradation story: one malformed model reply must not cost her the
+   * The valuable half of the degradation story: one malformed model reply must not cost the
    * run. Critics and the director both return junk, so the critics fall back to neutral scores
    * and the director falls back to the deterministic novelty pick — and the spread STILL ends
    * with exactly one baseline, verified against `pipeline.ts:107` (the baseline is pushed
@@ -132,8 +132,8 @@ describe("runStudioPipeline (ported)", () => {
   });
 
   /**
-   * What one run COSTS, when the caller omits `lenses`/`critics` — which is exactly how Task 5's
-   * tool will call it. Six proposer calls plus three critic calls plus one director call = ten
+   * What one run COSTS, when the caller omits `lenses`/`critics` — which is exactly how the
+   * tool calls it. Six proposer calls plus three critic calls plus one director call = ten
    * paid model calls per brief. Pinned because that number is a budget fact, and because it
    * proves `DEFAULT_LENSES` survived the port and is actually reached.
    */

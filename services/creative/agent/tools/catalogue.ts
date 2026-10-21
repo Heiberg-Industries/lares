@@ -2,7 +2,7 @@
 //
 // `session.started`, never `turn.started`: the tool list is part of what the prompt cache keys
 // on, and changing it mid-session re-bills the whole conversation. A grant change therefore
-// reaches the agent at its NEXT conversation — which the builder says out loud (spec Part 3).
+// reaches the agent at its NEXT conversation — which the builder says out loud (ADR-0015).
 //
 // EVERY CALLBACK BELOW CARRIES A DURABLE DESCRIPTOR, AND THAT IS NOT OPTIONAL (eve 0.59.0+).
 // eve refuses a dynamic tool whose `execute`, approval policy or live (zod) `inputSchema` it
@@ -15,13 +15,13 @@
 // dynamic-tool-transform.js` requires `arguments[0].type === "ObjectExpression"`), and the
 // literal below is cast `as never` for the typing reason the `CatalogueToolValue` docblock gives;
 // it also never sees a callback reached through a conditional spread, which is how an approval
-// gets here. So each phase is stamped BY HAND, with the same closure the old inline code relied
+// gets here. So each phase is stamped explicitly, with the same closure the old inline code relied
 // on: `{ name }`, one plain string, re-reading the module-level CATALOGUE when it runs.
 // See node_modules/eve/docs/guides/dynamic-capabilities.md, "Create dynamic tools in a package".
 //
-// THE APPROVAL IS COPIED ACROSS, AND THAT LINE IS LOAD-BEARING. Task 1 measured that a
+// THE APPROVAL IS COPIED ACROSS, AND THAT LINE IS LOAD-BEARING. Measurement showed that a
 // resolver-emitted tool REPLACES an authored `agent/tools/<name>.ts` completely — description,
-// executor and approval (the eve 0.32 dynamic-seams research, Q1). Omit the
+// executor and approval (eve 0.32). Omit the
 // spread below and `vault_write`, the creative agent's one gated tool, commits and pushes to the Atlas
 // with no card. eve's own `DynamicToolEntry` docstring claims approval is "only honored for
 // step-scoped dynamic tools"; that comment is stale for 0.32 — `dynamic-tool-lifecycle.js`
@@ -86,7 +86,7 @@ export default defineDynamic({
                 schema: (closure) => valueOf(closure.name).inputSchema as Record<string, unknown>,
               }),
               // Untouched: the approval is whatever the tool itself authored, which since
-              // step 1 is the permissions board bound to that tool's own name, decided per call.
+              // the permissions board bound to that tool's own name, decided per call.
               // Wrapped, never replaced — the call below IS the authored policy, same arguments,
               // same answer; the wrapper exists only so eve can find it again after a restart.
               ...(tool.approval !== undefined

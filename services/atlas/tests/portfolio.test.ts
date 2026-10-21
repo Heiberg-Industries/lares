@@ -30,7 +30,7 @@ describe("cardFor", () => {
     });
   });
 
-  it("carries the confidentiality flag from the note BODY, where Part A put it", () => {
+  it("carries the confidentiality flag from the note BODY, where the seeded notes put it", () => {
     const c = cardFor("_projects/harbor.md", note({
       brand: "harbor", status: "exploration", one_liner: "A hospitality concept.",
       body: "## What it is\n\n**Confidential — do not surface publicly.**\n\nHarbor is…\n",
@@ -86,7 +86,7 @@ describe("cardFor", () => {
   });
 
   it("STILL does not read the phrase across a CRLF paragraph break", () => {
-    // The case that stops this fix from simply reintroducing round 2's defect under CRLF:
+    // The case that stops this fix from simply reintroducing the paragraph-bridging defect under CRLF:
     // collapsing whitespace more aggressively to catch the CRLF wrap must not also let the
     // paragraph boundary itself dissolve when it's CRLF-terminated.
     const c = cardFor("_projects/example.md", note({

@@ -1,17 +1,16 @@
-// Save a note to one area of the Vault — for this role, the shared area. GATED WRITE: `atlas` is
-// `write-with-confirm` in her grants and `gated` in her autonomy block (agent.json), so this is
-// the one tool of hers that changes the business knowledge store, and the approval card is the
+// Save a note to one area of the Vault — for this role, the shared area. GATED WRITE: `vault` is
+// `write-with-confirm` in the agent's grants and `gated` in its autonomy block (agent.json), so this is
+// the one tool that changes the business knowledge store, and the approval card is the
 // last thing between the model and a durable, pushed commit.
 //
-// W5C-s4: renamed from `atlas_write`, and given the same required `area` input and the same
-// injected authority W5C-s3 gave the reads. THE GATE MOVED WITH THE CAPABILITY, ON PURPOSE, AT
-// W5C-s5/s6: `approvalFor("vault_write")` names this tool to the same board policy, and
+// It takes a required `area` input and the same injected authority as the reads. THE GATE
+// MOVED WITH THE CAPABILITY, ON PURPOSE: `approvalFor("vault_write")` names this tool to the same board policy, and
 // `capabilityOfTool` now answers `vault` (the tool moved into `CAPABILITY_DOCS["vault"].tools`
-// via `VAULT_SHARED_TOOLS`). The controller's area-is-the-action ruling (W5C-s6b) is what keeps
+// via `VAULT_SHARED_TOOLS`). The rule that the area is the action keeps
 // that safe: no per-action key is passed here either, but `boardApproval`/`approvalFor` derive
 // one from the tool's own area (`areaOfTool("vault_write")` — "shared"), so the ratchet row read
-// is `(agent, "vault", "shared")` — 1:1 with the old `(agent, "atlas", "")` row, which box 077
-// re-keys to exactly that. A rename that had left the row keyed on the bare capability would
+// is `(agent, "vault", "shared")` — 1:1 with the old `(agent, "atlas", "")` row, which a
+// migration re-keys to exactly that. A rename that had left the row keyed on the bare capability would
 // have merged this lane with every other vault write's.
 //
 // NEVER WIDEN. `vaultWriteAreasForTurn` is the granted areas intersected with the one area this
@@ -19,12 +18,12 @@
 // guarantee being bound to `storeRoot("atlas")` at construction used to give, now enforced
 // against the declaration as well as against the code.
 //
-// PARITY WITH THE OLD HAND, DELIBERATELY (fix round 1, controller ruling). This ports
-// `services/agent-runtime/lib/adapters/hands/atlas.ts:35-42`: the model supplies
+// PARITY WITH THE OLD WRITE TOOL, DELIBERATELY. This ports the old
+// agent-runtime atlas write tool: the model supplies
 // `{title, body, tags?}` and the PATH IS DERIVED — it is never an input. An earlier draft took
-// a store-relative `path` from the model, which would have let her overwrite any note in the
+// a store-relative `path` from the model, which would have let the agent overwrite any note in the
 // store, including hand-written brand notes. That is a capability widening, and this is a port:
-// the ticket asks for the old behaviour plus an approval card, not a broader write.
+// the goal is the old behaviour plus an approval card, not a broader write.
 //
 // TRAVERSAL IS UNREPRESENTABLE, NOT MERELY REFUSED. `inboxNotePath` maps every character
 // outside [a-z0-9] to a hyphen, so `../../etc/passwd` becomes `_inbox/etc-passwd.md` and
@@ -83,11 +82,11 @@ export default defineTool({
     return commitNote({
       vaultRoot: storeRootForArea(area),
       path: inboxNotePath(title),
-      // Normalised, not passed through. The old hand forced `type` and defaulted `tags`
-      // (hands/atlas.ts:39), and stamped `source`/`owner` from the agent name. Without the
-      // normalisation every note she writes carries whatever frontmatter the model invented,
-      // and the store stops being queryable by type; without the provenance, every note she
-      // has ever saved is indistinguishable from one the owner wrote by hand.
+      // Normalised, not passed through. The old tool forced `type` and defaulted `tags`,
+      // and stamped `source`/`owner` from the agent name. Without the
+      // normalisation every note the agent writes carries whatever frontmatter the model invented,
+      // and the store stops being queryable by type; without the provenance, every note the
+      // agent has ever saved is indistinguishable from one the owner wrote manually.
       frontmatter: {
         title,
         type: "note",

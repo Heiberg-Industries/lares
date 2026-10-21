@@ -1,5 +1,5 @@
 // The guard against the defect no type can catch: a composition root wired to a
-// wrong-but-PRESENT value. notion-sync Phase 4 shipped that three times — each one passed
+// wrong-but-PRESENT value. the notion-sync package shipped that more than once — each one passed
 // typecheck and the full suite, and each one quietly read the wrong store.
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";

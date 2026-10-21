@@ -3,15 +3,15 @@ import { useState } from "react";
 import type { ConsumerRow } from "../lib/signals";
 
 /**
- * . The spine's two delivery kill switches.
+ * The spine's two delivery kill switches.
  *
  * They existed in the database from the first migration, with `selfRegisterConsumers` creating
  * them on every boot "so the future console lists them as toggles" — and had no surface at all, so
- * turning off automatic ticket filing meant opening the database by hand. Console first: every knob
+ * turning off automatic ticket filing meant editing the database directly. Console first: every knob
  * gets a surface, and every switch says in words what it does, because "linear: off" tells an owner
  * nothing about whether their alerts still arrive.
  *
- * Unstyled, like JsonEditor — working agreement 2026-08-31.
+ * Unstyled, like JsonEditor.
  */
 const WHAT: Record<ConsumerRow["name"], string> = {
   slack: "Off = no cards, replies or green edits are posted anywhere. Signals are still recorded and still shown on Recent, and Linear still files. For muting an incident — reach for a rule below to fix one bad channel.",

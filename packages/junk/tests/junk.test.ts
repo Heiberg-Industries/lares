@@ -12,7 +12,7 @@
  *
  * Merged from an earlier cleanup test (isJunkEmail) and
  * services/agent-runtime/tests/junk-sender.test.ts (classifySender) per
- * ADR-0007 Task 5 — this is now the canonical home for both.
+ * ADR-0007 — this is now the canonical home for both.
  */
 
 import { describe, it, expect } from "vitest";

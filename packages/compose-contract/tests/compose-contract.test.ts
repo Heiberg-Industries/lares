@@ -141,7 +141,7 @@ describe("labeledContext", () => {
   // whose absence carries no meaning (no radar articles this week). It is wrong for one
   // the reader is entitled to expect every day: a section that silently vanishes reads
   // as "no new information", and a model with the previous day's version still in its
-  // session refills it. That is the 2026-08-06 brief, exactly.
+  // session refills it. That is the failing brief, exactly.
   it("renders an explicit 'nothing' body when the block opts in with emptyText", () => {
     const out = labeledContext([
       { label: "Notion proposals closed", content: "", emptyText: "none" },
@@ -254,7 +254,7 @@ describe("labeledContext — thirdParty flag", () => {
 });
 
 // ── An absent block means NOTHING, not "no news" ──────────────────────────────
-// The mirror of W4b. That clause bans claiming a store is EMPTY without querying it;
+// The mirror of the unqueried-store clause. That clause bans claiming a store is EMPTY without querying it;
 // this one bans claiming its CONTENTS without being handed them. Same lie, other
 // direction, and this is the one that actually fired: the brief asserted two pending
 // proposals from a block that was not in its input at all.
@@ -287,9 +287,9 @@ describe("absentBlockClause — a missing block is not a memory prompt", () => {
     expect(c).not.toMatch(/missing entirely means the same thing/i);
   });
 
-  // The brief does NOT hand over today's events — it sends her to call the calendar tool,
+  // The brief does NOT hand over today's events — it sends the agent to call the calendar tool,
   // and groundingClause({ toolResults: true }) admits what comes back. A clause saying the
-  // blocks are the complete record, full stop, would tell her to omit the calendar.
+  // blocks are the complete record, full stop, would tell the agent to omit the calendar.
   it("admits tool results alongside the blocks, so it cannot silence the calendar", () => {
     const c = absentBlockClause();
     expect(c).toMatch(/alongside whatever your own tools returned/i);

@@ -261,8 +261,8 @@ export async function decideNote(args: DecideNoteArgs): Promise<DriftDecision> {
   // A refusal is a DIFFERENT fact from "the draft turned out identical" and must read
   // differently: reporting the identical-draft reason for a refusal (as an earlier version
   // did, by sentinelling with `currentBody` and letting the bodyHash comparison below treat
-  // it as a no-op) is an outright false statement about what happened, and Task 9 surfaces
-  // this reason directly to the owner.
+  // it as a no-op) is an outright false statement about what happened, and the sync job
+  // surfaces this reason directly to the owner.
   const rendered = renderBody(draft, args.note.body, args.notePath);
   if (!rendered.ok) {
     return { action: "skip", reason: `could not safely rewrite ${args.notePath}: ${rendered.reason}` };

@@ -7,7 +7,7 @@
 // derivation. @lares/agent-kit/forget-ledger re-exports this module for role services, the same
 // way it re-exports @lares/vault-format/origin.
 //
-// ONE RULE FOR THE KEY (W5I-s7): `owner` is always the identity register's canonical id
+// ONE RULE FOR THE KEY: `owner` is always the identity register's canonical id
 // (`users.id`, services/box/sql/001_baseline.sql) — never a channel-native spelling (a
 // Slack/Telegram id, an email address) and never empty. Every WRITER (chief-of-staff's
 // `forget`/`remember`, services/chief-of-staff/catalogue/forget.ts and catalogue/remember.ts) and
@@ -20,8 +20,8 @@
 // (the register allows any id), and it cannot catch a value that merely DISAGREES with the
 // register (e.g. an installation's fail-soft
 // configured owner key drifting from the register's own id) — that is a live-agreement question,
-// not a shape question, and chief-of-staff's `checkOwnerKeyAgreement` (W5I-s5b,
-// services/chief-of-staff/lib/identity-client.ts) is what catches THAT, once per process, and
+// not a shape question, and chief-of-staff's `checkOwnerKeyAgreement`
+// (services/chief-of-staff/lib/identity-client.ts) is what catches THAT, once per process, and
 // opens a repair rather than silently filing memory under the wrong name.
 //
 // OLD ROWS CAN NEVER BE RE-KEYED. `match_hash` is a one-way hash of the owner string, the kind
@@ -205,7 +205,7 @@ export async function wasPathForgotten(
   return wasForgotten(db, { owner: q.owner, kind: "note", words: q.path });
 }
 
-/** Undoes `recordForgotten` for an exact match. The one caller today is `remember` (W5B-s3): when
+/** Undoes `recordForgotten` for an exact match. The one caller today is `remember`: when
  *  the owner has been told a fact was forgotten and says to keep it anyway, the ledger row for
  *  those exact words is removed in the SAME transaction that writes the fact back — so the
  *  ledger can never go on contradicting a standing fact that now says the opposite. A caller

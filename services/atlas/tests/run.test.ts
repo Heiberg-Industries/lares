@@ -350,9 +350,9 @@ describe("runTick — pass order", () => {
       .filter((m) => /flagged/i.test(m));
     expect(healthPings.length).toBe(1);
 
-    // Task 15: a source-health transition must carry key: "source-health" — that is what
+    // A source-health transition must carry key: "source-health" — that is what
     // makes notify send severity "warn" (data-quality/warn has a spine route; the "info" it
-    // shipped as before this task never did, which is how the first live source-health alert vanished).
+    // used to ship as never did, so the alert vanished).
     const healthCalls = [...deps1.notifyCalls, ...deps2.notifyCalls]
       .filter((c) => /flagged/i.test(c.message));
     expect(healthCalls).toHaveLength(1);

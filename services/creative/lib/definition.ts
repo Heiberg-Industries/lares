@@ -1,6 +1,6 @@
-// THIS agent's definition, resolved once PER SESSION (agent-definitions spec, Part 3).
+// THIS agent's definition, resolved once PER SESSION (ADR-0015).
 //
-// WHY PER SESSION AND NOT PER PROCESS. The spec's Part 3 table resolves instructions, model,
+// WHY PER SESSION AND NOT PER PROCESS. ADR-0015 resolves instructions, model,
 // tools and skills at SESSION START — the model now on the session's first STEP, which eve 0.60
 // made the earliest scope that can carry a constructed provider rather than a routable model id
 // (packages/agent-kit/src/definition-model.ts); it is still once per conversation, before any
@@ -9,7 +9,7 @@
 // restarted. A process-lifetime memo quietly broke that: `resolveDefinition` is not itself a
 // read cache (it re-reads the folder on every call — the "cache" in its name is the Postgres
 // last-valid row), so memoising its promise forever meant a hand edit reached the agent only at
-// the next CONTAINER, which is the frozen-agent problem this whole step exists to end.
+// the next CONTAINER, which is the frozen-agent problem per-session resolution exists to end.
 //
 // WHY A MEMO AT ALL. Four consumers read this — the instructions resolver, the model resolver,
 // the approval fallback and the registry — and re-reading the folder per consumer would let two
@@ -31,7 +31,7 @@
 // .output/server/ — two levels below the app root, and the workspace path above it would miss
 // packages/ entirely. cwd is the app root by construction: eve spawns the built server with
 // `cwd: resolve(appRoot)` (node_modules/eve/dist/.../start-production-server.js), and
-// `registerAgent` has read the compiled manifest off cwd since step 1. Under vitest,
+// `registerAgent` has read the compiled manifest off cwd since the first version. Under vitest,
 // cwd is this package's root for the same reason.
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -42,7 +42,7 @@ import { deployedToolsFor } from "@lares/agent-kit/persona";
 import manifest from "../agent.json";
 
 /** The role template ships in the image: the builder does `COPY packages/agent-kit
- *  packages/agent-kit` (templates/ is not in .dockerignore) and the overlay's runtime stage
+ *  packages/agent-kit` (templates/ is not in .dockerignore) and the runtime stage
  *  does `COPY --from=build /app /app`, so /app/packages/agent-kit/templates/creative/role.md
  *  is present beside the app. No Dockerfile change was needed for this. */
 const ROLE_TEMPLATE = "creative";
@@ -103,7 +103,7 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
   // the alias it pinned and never reads again. So the exposure is a window of one step between
   // those two reads, plus the approval fallback, which is the only consumer that reads later in
   // the session. Accepted deliberately over
-  // an unbounded map (step 2 review round 2).
+  // an unbounded map (a deliberate trade-off).
   while (pinned.size > MAX_PINNED) {
     const oldest = pinned.keys().next();
     if (oldest.done === true) break;
@@ -119,7 +119,7 @@ export function thisAgent(sessionId: string | undefined): Promise<Resolved> {
 async function resolveFresh(): Promise<Resolved> {
   const serviceDir = process.cwd();
   return resolveDefinition({
-    // RULING R11 (2026-09-16): the agent's identity is an INPUT, never inferred from a file that
+    // The agent's identity is an INPUT, never inferred from a file that
     // may be corrupt. The keeper sets LARES_AGENT_NAME beside LARES_DEFINITION_DIR; with no folder
     // mounted this is the service's own committed name, which is what every test and every
     // `eve build` sees. Without it, a folder of unparseable bytes has no identity to attribute a

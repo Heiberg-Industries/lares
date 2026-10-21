@@ -1,4 +1,4 @@
-// W5I-s7 — the forget ledger is keyed on the register's id, and a test says so.
+// The forget ledger is keyed on the register's id, and a test says so.
 //
 // Three things this file proves, none of which need a real Postgres (see
 // packages/agent-kit/tests/forget-ledger.test.ts for the DB-backed coverage):
@@ -11,7 +11,7 @@
 //      dependency-free and neither role service's code can be imported here.
 //   3. A row written under one owner spelling is invisible to a read under a DIFFERENT spelling —
 //      the concrete shape of "old rows can never be re-keyed" (this module's header), and why
-//      chief-of-staff's `checkOwnerKeyAgreement` (W5I-s5b) exists: it is the only thing that
+//      chief-of-staff's `checkOwnerKeyAgreement` exists: it is the only thing that
 //      notices a drift BEFORE more rows accumulate under the wrong key, because nothing here (or
 //      anywhere) can fix a row already written.
 import { describe, expect, it } from "vitest";
@@ -119,7 +119,7 @@ describe("the contract: a chief-of-staff write and a notion-sync read must key t
 
     // chief-of-staff's write path (catalogue/forget.ts / catalogue/remember.ts): CANONICAL_USER_ID
     // — the fail-soft configured owner key. Modelled here as agreeing with the register, which is
-    // the invariant `checkOwnerKeyAgreement` (W5I-s5b) exists to enforce at runtime.
+    // the invariant `checkOwnerKeyAgreement` exists to enforce at runtime.
     const chiefOfStaffWriteOwner = register.id;
 
     // notion-sync's read path (lib/path-owner.ts's ownerOfPath): a live `SELECT id FROM
@@ -162,7 +162,7 @@ describe("old rows written under a legacy spelling can never be re-keyed", () =>
 
     // The row from before the fix is not found: `match_hash` was derived from `legacySpelling`,
     // and the words that produced it were never stored, so it cannot be recomputed under
-    // `registerId`. This is exactly why `checkOwnerKeyAgreement` (W5I-s5b) opens a repair the
+    // `registerId`. This is exactly why `checkOwnerKeyAgreement` opens a repair the
     // moment it sees the configured key disagree with the register — it is the only thing that
     // can stop MORE rows from accumulating under the wrong key; it cannot recover this one.
     const foundUnderNewKey = await wasForgotten(ledger, {

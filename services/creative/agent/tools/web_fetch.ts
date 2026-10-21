@@ -2,7 +2,7 @@
 //
 // The creative agent is SEALED — `agent.json` says `{"egress":{"sealed":true}}`, and on the box that is
 // enforced by nftables, not by politeness: outbound traffic is denied except to the explicit
-// allowlist (the LiteLLM gateway, the box's Postgres). She cannot fetch a URL. Keeping the
+// allowlist (the LiteLLM gateway, the box's Postgres). The agent cannot fetch a URL. Keeping the
 // tool would advertise a capability the network layer refuses.
 //
 // That is worse than it sounds, because a blocked call does not look like "blocked" — it
@@ -11,7 +11,7 @@
 // that could not work, got an environment error mid-answer, and had to recover in front of
 // the user.
 //
-// Her grounding comes from the Atlas via the studio, which is the only source she is supposed
+// Grounding comes from the Atlas via the studio, which is the only source the agent is supposed
 // to cite anyway.
 //
 // eve resolves this by FILENAME. A typo does NOT fail `eve build` — verified on eve 0.32: a

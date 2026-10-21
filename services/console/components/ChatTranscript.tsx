@@ -3,7 +3,7 @@ import { SafeMarkdown } from "./SafeMarkdown";
 import { approvalArguments, type ApprovalField } from "../lib/approval-text";
 
 /**
- * W8B-s3 — the transcript is a PURE function of its props: given the same `messages`, `status`,
+ * The transcript is a PURE function of its props: given the same `messages`, `status`,
  * `error`, `expired` and `answering`, it always renders the same markup, with nothing read from
  * the network, the DOM, or time. That is what makes it testable with `renderToStaticMarkup` and no
  * browser (tests/chat-transcript.test.tsx), and it is also the whole of this page's safety story:
@@ -18,8 +18,8 @@ import { approvalArguments, type ApprovalField } from "../lib/approval-text";
  * tool's PROPOSED arguments, which are model-written, so they are rendered as text, never as
  * Markdown, and nothing else.
  *
- * W8B-s5 — a pending approval is now a real card with real buttons, because until this slice the
- * only doors that could answer one were Slack and Telegram, and a fresh installation has neither.
+ * A pending approval is a real card with real buttons, because the only other doors that can
+ * answer one are Slack and Telegram, and a fresh installation has neither.
  * What the card must SHOW is the whole of its value: it is the last thing a person reads before an
  * irreversible action, and a card that hides a recipient invites a faster tap. See
  * `approvalCardFields` for exactly what is shown, and why it is not `detailsForApproval`.
@@ -46,7 +46,7 @@ export interface ChatTranscriptProps {
 const UNSUPPORTED_PART = "— something this page cannot show yet —";
 
 /** 24 hours, the same lifetime `APPROVAL_TTL_MS` enforces on the agent side
- *  (`packages/agent-kit/src/approval-ledger.ts`, W7A-s5). MIRRORED rather than imported, for the
+ *  (`packages/agent-kit/src/approval-ledger.ts`). MIRRORED rather than imported, for the
  *  same reason every other mirror in this console exists: that module opens a database pool and
  *  cannot be bundled for a browser. `tests/engine-drift.test.ts` fails if the two disagree. */
 export const APPROVAL_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -93,7 +93,7 @@ function shortened(fields: readonly ApprovalField[]): { fields: ApprovalField[];
  * card built on it would show those sixteen a title and no arguments whatsoever. Rendering
  * `action.input` shows a SUPERSET of what the Slack and Telegram cards show — every recipient,
  * every guest, the whole draft, and every other field — for every tool, including ones written
- * after this file. The input is on the wire in full (W8B-s4 measured it), so nothing had to be
+ * after this file. The input is on the wire in full, so nothing had to be
  * added to the proxy's allow-lists to get it here.
  *
  * Rules kept from the kit's formatters, because they are the ones that matter:

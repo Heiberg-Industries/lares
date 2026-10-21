@@ -107,7 +107,7 @@ describe("getBoardRows", () => {
     expect(rows.find((r) => r.capability === "remind")!.lockedTools).toEqual([]);
   });
 
-  // W5C-s8 — THE AREA IS THE ACTION. One `vault` grant is three lanes on the board, because the
+  // THE AREA IS THE ACTION. One `vault` grant is three lanes on the board, because the
   // approval check reads `(agent, "vault", <area>)` per tool. One row for the capability would put
   // a dial on screen that sets a key nothing reads, and would silently merge three decisions.
   const librarian = {
@@ -214,7 +214,7 @@ describe("getBoardRows", () => {
     expect(theirs.evidence.asked).toBe(0);
   });
 
-  // W7B-s2 — what the OWNER answered (approval_asks, box 086), beside what the policy decided
+  // What the OWNER answered (approval_asks), beside what the policy decided
   // (evidence, above). `readApprovalCounts` issues its own "FROM approval_asks" query.
   it("shows what the owner answered, per capability, beside what the policy decided", async () => {
     listAgentsMock.mockResolvedValue([{
@@ -242,7 +242,7 @@ describe("getBoardRows", () => {
     expect((await getBoardRows())[0]!.answers.rate).toBeNull();
   });
 
-  // W7B-s3 — "this could act on its own": a SUGGESTION, never applied. `couldGraduate` is wiring
+  // "This could act on its own": a SUGGESTION, never applied. `couldGraduate` is wiring
   // over `@lares/agent-kit/approval-stats`'s own `couldActOnItsOwn` — the arithmetic is that
   // module's test's job, not this one's.
   it("marks a row couldGraduate when one of its tools has a clean, long-enough history", async () => {

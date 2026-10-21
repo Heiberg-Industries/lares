@@ -1,22 +1,21 @@
 // One list says what every setting the engine reads is for, and what breaks without it.
 //
-// Written against `.claude/plans/2026-09-20-prelaunch-wave-8.md` (W8A-s1). The plan's own read
-// of the code found ~137 names in two layers: ~113 read as a
+// A read of the code found ~137 names in two layers: ~113 read as a
 // literal `process.env.NAME` / `env["NAME"]`, and at least 24 more reached only through a
 // helper that takes the name as a string (`readSecret(name)`, `readSecret(`${name}_FILE`)`,
 // `keyFromEnv(varName)`, a computed `LARES_${channel}_PRINCIPAL`) or read by something other
 // than this repository's TypeScript (a shell script, the `git` binary, the Node runtime's own
 // timezone handling). This file declares both layers as one list.
 //
-// THIS SLICE (W8A-s1) ONLY WRITES THE LIST DOWN. It does not change how any service reads its
+// THIS FILE ONLY WRITES THE LIST DOWN. It does not change how any service reads its
 // environment, and it does not widen what is fatal to start without — `requiredFor` here is
 // exactly the seven names `images/agent-runtime/start.sh` already refuses on, for the three
 // role readers, plus `CONSOLE_SESSION_SECRET` (throws in production). `CONSOLE_ALLOWED_EMAILS`
 // also throws in production, but the code never merely "starts or doesn't" on it — outside
-// production it silently DEGRADES to one installation's own address (contradiction item 5) —
+// production it silently DEGRADES to one installation's own address —
 // so it is declared with that fallback and left out of `requiredFor`, matching this file's own
-// invariant that a required setting has no fallback. Widening `requiredFor` is a later slice's
-// job, done with evidence.
+// invariant that a required setting has no fallback. Widening `requiredFor` is a separate
+// change, done with evidence.
 //
 // NOT DECLARED (deliberately) — three names that are doc-comment EXAMPLES, never a real
 // setting: `X_KEY_FILE` (`packages/agent-kit/src/integration-secret-lint.ts`), and
@@ -25,7 +24,7 @@
 // OUT OF SCOPE (deliberately) — every name read only inside `packages/board-evals`
 // (`SEAM_GRANTS`, `BOARD_LEVELS`, `BOARD_LOG`, `BOARD_SKEW`, `BOARD_EVENTS`, `PROOF_MODEL_LOG`):
 // that package IS the eval/probe harness end to end, not a shipped installation surface, which
-// is the same reason the plan's own count is over "non-test, non-eval source".
+// is why the count is over "non-test, non-eval source".
 
 /** Which part of an installation reads a setting. A name may be read by several. */
 export type SettingReader =
@@ -46,7 +45,7 @@ export type SettingSource =
   | "installer" // the install command writes it and the owner never sees it
   | "owner" // the wizard asks for it
   | "integration" // only set when that integration is switched on
-  | "legacy"; // a persona- or installation-named spelling wave 9 removes
+  | "legacy"; // a persona- or installation-named spelling slated for removal
 
 export interface SettingDef {
   /** The environment variable name, exactly as the code reads it. */
@@ -169,9 +168,8 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["packages/agent-kit/src/persona/denylist.ts:33"],
   },
   {
-    // Added by 8F/F8, NOT by F6 as that slice's plan expected: `tests/settings-scan.test.ts`
-    // fails the moment engine code READS an undeclared name, so a slice that introduces a read
-    // must declare it in the same change — it cannot be deferred to a later slice.
+    // `tests/settings-scan.test.ts` fails the moment engine code READS an undeclared name, so a
+    // change that introduces a read must declare it in the same change — it cannot be deferred.
     name: "GATEWAY_LANE",
     readers: ["agent-kit", "chief-of-staff", "creative"],
     source: "owner",
@@ -225,21 +223,21 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["services/console/lib/auth.ts:12", "services/console/lib/account-oauth-state.ts:18"],
   },
   {
-    // W8C-s2b(b): a mounted file wins over the plain env value, through the console's own
+    // A mounted file wins over the plain env value, through the console's own
     // readSecret (services/console/lib/secrets.ts) — but only where readSecret can safely be
     // used. lib/account-oauth-state.ts is Node-only and reads it that way. lib/auth.ts's
     // getSecret() does NOT: it is reachable from middleware.ts, which Next compiles for the
     // Edge Runtime, and readSecret's `node:fs` import fails that build outright (confirmed with
     // `next build --webpack`, see the comment on lib/auth.ts's getSecret()). So this file
     // currently changes only the OAuth `state` round-trip's secret, not the session cookie's —
-    // an honest partial fix, not the whole of ruling (b).
+    // an honest partial fix.
     name: "CONSOLE_SESSION_SECRET_FILE",
     readers: ["console"],
     source: "installer",
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "The add-account OAuth `state` round-trip falls back to the plain CONSOLE_SESSION_SECRET value (or, if that is also unset, a fixed publicly known one outside production). The console's session cookie is unaffected either way — lib/auth.ts does not read this name.",
+    breaksWithout: "The add-account OAuth `state` round-trip falls back to the plain CONSOLE_SESSION_SECRET value (or, if that is also unset, a fixed publicly known one outside production). In the console image the file is also required: images/console-runtime/start.sh refuses to start without it and reads it into CONSOLE_SESSION_SECRET, the session cookie's key.",
     readAt: ["services/console/lib/account-oauth-state.ts:18", "services/console/lib/secrets.ts:7"],
   },
   {
@@ -371,7 +369,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "A managed incarnation's web-chat approver list resolves empty, so an approval answered from the console is refused as coming from nobody trusted — which is the behaviour before W8B-s5, and fail-closed. The keeper writes it from the owner address on a door or email claim; an installation with no claim at all has no console approver.",
+    breaksWithout: "A managed incarnation's web-chat approver list resolves empty, so an approval answered from the console is refused as coming from nobody trusted — which is the behaviour before the managed approver list existed, and fail-closed. The keeper writes it from the owner address on a door or email claim; an installation with no claim at all has no console approver.",
     readAt: ["services/chief-of-staff/lib/principals.ts (templated LARES_${channel}_PRINCIPAL)", "services/keeper/lib/compose-agents.ts"],
   },
   {
@@ -435,7 +433,7 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["packages/agent-kit/src/langfuse-otel.ts:83"],
   },
   {
-    // Missed by W8A-s1; found by the W8A-s2 scan. packages/agent-kit/src/langfuse-otel.ts:82.
+    // Found by the settings scan after the first list was written. packages/agent-kit/src/langfuse-otel.ts:82.
     name: "LANGFUSE_HOST",
     readers: ["agent-kit"],
     source: "installer",
@@ -1495,7 +1493,7 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["services/chief-of-staff/Dockerfile:28", "packages/agent-kit/tests/no-telemetry.test.ts:26"],
   },
 
-  // ── The neutral stack's own containers — the model gateway and the edge proxy (8F) ────────
+  // ── The neutral stack's own containers — the model gateway and the edge proxy ────────
   {
     name: "LARES_CONFIGURED_MODEL_ALIAS",
     readers: ["console"],

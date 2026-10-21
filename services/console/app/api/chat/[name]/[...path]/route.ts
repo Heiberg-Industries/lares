@@ -1,6 +1,6 @@
 /**
  * `/api/chat/<agent>/eve/v1/...` — the same-origin prefix eve's browser client is pointed at
- * (`useEveAgent({ host: "/api/chat/<agent>" })`, W8B-s3).
+ * (`useEveAgent({ host: "/api/chat/<agent>" })`).
  *
  * Every decision lives in `lib/chat-proxy.ts`; this file only supplies the three things it needs
  * from the runtime: the session, the pool and the mounted secret. It is NOT exempted in

@@ -14,7 +14,7 @@
  * that admits nobody when unset or blank.
  *
  * NOT tested here, deliberately: a 401 from the live relay URL for an unsigned POST. That
- * needs her container answering, so it is a Task 7 deliverable.
+ * needs the agent's container answering, so it belongs to a live deploy check.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";

@@ -56,7 +56,7 @@ describe("reading the filter off the query string", () => {
   });
 
   it("takes the first value when a key repeats", () => {
-    expect(readFilters({ city: ["Oslo", "Bergen"] }).city).toBe("Oslo");
+    expect(readFilters({ city: ["Berlin", "Hamburg"] }).city).toBe("Berlin");
   });
 
   it("does not count sorting as filtering — sorting hides nothing", () => {

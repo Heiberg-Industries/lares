@@ -2,9 +2,9 @@
 # Built by GitHub Actions on linux/amd64. NEVER built on the box.
 #
 # ONE IMAGE, TWO SCHEDULED JOBS — AND NOTHING ELSE, EVER. This image carries the box's
-# cron-shaped jobs: notion-sync (hourly Notion ↔ vault) and atlas-sync (daily Atlas Part B).
+# cron-shaped jobs: notion-sync (hourly Notion ↔ vault) and atlas-sync (daily Atlas sync).
 # Both are brand-neutral, both tick in-process under `restart: unless-stopped`, both take a DB
-# and a Notion token, and neither is an agent. THE RULE (decided 2026-09-04): this
+# and a Notion token, and neither is an agent. THE RULE: this
 # image never carries an agent, a persona, a door or a route. A job of a different shape gets
 # its own Dockerfile — the escape hatch is a second image, not a bigger one. The old
 # lares-agent-runtime image died of the opposite habit ("one image, many bins" with no rule
@@ -25,10 +25,8 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 # pnpm patches (patchedDependencies in the root package.json) — pnpm install fails outright
 # if a referenced patch file is missing from the context (memory: every service image).
 COPY patches patches
-# EXACTLY the workspace closure of `@lares/notion-sync...` + `@lares/atlas...` (measured in
-#  Task 1, re-measured for Task 2 after Task 1 dropped notion-sync's agent-runtime
-# dependency — that took packages/compose-contract out of the closure with it, since it was
-# only ever pulled in transitively). A filtered install fails on a workspace dep the lockfile
+# EXACTLY the workspace closure of `@lares/notion-sync...` + `@lares/atlas...` (measured; packages/compose-contract is
+# not in it, since it was only ever pulled in transitively by a dependency notion-sync dropped). A filtered install fails on a workspace dep the lockfile
 # names and the context lacks — so a new workspace dependency of either job must be added HERE
 # too.
 COPY services/notion-sync/package.json     services/notion-sync/package.json

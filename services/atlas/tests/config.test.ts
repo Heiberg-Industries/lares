@@ -112,7 +112,7 @@ describe("readSpineToken (item 4)", () => {
   it("a configured file that cannot be read is a deploy error, not silence", () => {
     expect(() => readSpineToken({ SIGNAL_SPINE_TOKEN_FILE: "/run/secrets/missing" }, () => { throw new Error("ENOENT"); })).toThrow(/\/run\/secrets\/missing/);
   });
-  it("a configured file that reads blank is REFUSED, not treated as unset — never falls back to the plain env var (fix round 1)", () => {
+  it("a configured file that reads blank is REFUSED, not treated as unset — never falls back to the plain env var", () => {
     expect(() =>
       readSpineToken({ SIGNAL_SPINE_TOKEN_FILE: "/run/secrets/blank", SIGNAL_SPINE_TOKEN: "env" }, () => "   \n"),
     ).toThrow(/\/run\/secrets\/blank/);

@@ -1,9 +1,9 @@
-// One plain sentence per missing setting (W8A-s3).
+// One plain sentence per missing setting.
 //
-// `settings.ts` (W8A-s1) says what a setting is FOR and what breaks without it. Nobody yet turns
+// `settings.ts` says what a setting is FOR and what breaks without it. Nobody yet turns
 // that into something a non-developer owner can read when the installation will not start. This
 // file is that translation, and nothing else: no process.env, no fs, no I/O at module scope, so
-// the SAME function can be called at container startup (W8A-s4) and by `lares doctor` (W8A-s6)
+// the SAME function can be called at container startup and by `lares doctor`
 // with no real environment and no real files in either case.
 //
 // A `*_FILE` setting names a PATH, never a value (`SettingDef.secret` is false for every `_FILE`

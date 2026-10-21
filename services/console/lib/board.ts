@@ -1,4 +1,4 @@
-// The permissions board (agent-definitions spec, Part 4): per agent × granted integration — the effective
+// The permissions board (per agent × granted integration — the effective
 // level and where it came from, the tools that always ask (and why), and the evidence from the approval
 // check's own record. A change made here reaches the agent at its next action (the check caches 30 s).
 import {
@@ -20,7 +20,7 @@ function lockOf(tool: string): { tool: string; reason: string } | null {
 }
 
 /**
- * W5C-s8 — THE AREA IS THE ACTION. `vault` replaced `brain`, `atlas` and `memory`, and the
+ * THE AREA IS THE ACTION. `vault` replaced `brain`, `atlas` and `memory`, and the
  * approval check reads a vault tool's level under `(agent, "vault", <the tool's area>)`, never the
  * capability-wide `action = ''` row. So one `vault` grant is one board ROW PER GRANTED AREA: a
  * single row would put a dial on screen that writes a key nothing reads, and would merge three

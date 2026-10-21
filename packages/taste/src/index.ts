@@ -16,8 +16,8 @@
 // Why frontmatter is hand-rolled rather than a YAML dependency: same reason the Atlas does it
 // (`services/atlas/lib/frontmatter.ts`) — a YAML round-trip rewrites quoting and key order on
 // every write, turning a no-op into a diff. Here the stakes are lower (the console rewrites whole
-// files) but the store is ALSO hand-editable by the owner, and a parser that quietly reformats his
-// file is a parser that loses his intent.
+// files) but the store is ALSO hand-editable by the owner, and a parser that quietly reformats the owner's
+// file is a parser that loses that intent.
 
 export const TASTE_TYPES = ["place", "track", "playlist", "dish", "note"] as const;
 export type TasteType = (typeof TASTE_TYPES)[number];
@@ -188,9 +188,9 @@ function requireName(found: string | undefined): string {
  *
  * The asymmetry is about what the field costs when it is wrong. A bad `lat` would send the trip planner to
  * the wrong side of a city, so it must stop the file. A bad `imported_at` — a date the owner typed
- * by hand into a file he is allowed to hand-edit — drives one cosmetic badge in the browse view.
+ * by hand into a file the owner is allowed to hand-edit — drives one cosmetic badge in the browse view.
  * Throwing would make the whole entry unreadable, which in the trip planner's reader means the PLACE
- * disappears from his recommendations. Losing a badge is the smaller loss by a wide margin.
+ * disappears from the owner's recommendations. Losing a badge is the smaller loss by a wide margin.
  */
 function parseStamp(text: string | undefined): string | undefined {
   if (text === undefined || text.trim() === "") return undefined;

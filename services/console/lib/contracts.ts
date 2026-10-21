@@ -28,7 +28,7 @@ export interface BoardRowDTO {
   displayName: string;
   capability: string;
   /** The ratchet key's third column. "" for every capability whose level is capability-wide; for
-   *  `vault` it is the AREA (W5C-s8 — the area is the action), so one grant is three rows. */
+   *  `vault` it is the AREA (the area is the action), so one grant is three rows. */
   action: string;
   /** What to call that action on screen ("Shared notes"), or null when there is none to name. */
   actionLabel: string | null;
@@ -43,7 +43,7 @@ export interface BoardRowDTO {
    *  has answered a card yet, never a percentage of nothing. */
   answers: { approved: number; cancelled: number; neverAnswered: number; rate: number | null };
   /** True when at least one of this row's tools has a clean, long-enough history and could be
-   *  suggested for "act on its own" (`couldActOnItsOwn`, owner decision B4). A SUGGESTION ONLY:
+   *  suggested for "act on its own" (`couldActOnItsOwn`). A SUGGESTION ONLY:
    *  nothing reads this to change a level — the owner moves the dial by hand. */
   couldGraduate: boolean;
 }

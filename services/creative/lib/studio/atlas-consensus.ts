@@ -13,15 +13,15 @@
  * adapting happens HERE, at the call site — `consensus.ts` is never edited, so it stays a
  * verbatim port and stays injectable for tests.
  *
- * Why this is its own exported factory rather than three lines inside Task 5's tool: it makes
+ * Why this is its own exported factory rather than three lines inside the tool: it makes
  * the seam unit-testable against a real temp directory (see `tests/studio-consensus.test.ts`)
- * instead of only reachable through a tool that needs a model and a database. Task 5's tool is
+ * instead of only reachable through a tool that needs a model and a database. The tool is
  * then a one-liner: `const consensus = makeAtlasConsensus();`.
  *
  * MODULE SCOPE IS CLEAN. `storeRoot("atlas")` throws `StorePathNotConfiguredError` when
  * `ATLAS_PATH` is unset, and `eve build` runs with no env and no secrets — so the root is
  * resolved lazily, on each call of the returned function, never at module load and not even
- * inside `makeAtlasConsensus()` itself. That means Task 5 may safely call this factory at the
+ * inside `makeAtlasConsensus()` itself. That means a tool may safely call this factory at the
  * top level of a tool module.
  *
  * ATLAS ONLY. Nothing here may reach `storeRoot("brain")` or `VAULT_PATH`.
@@ -30,20 +30,19 @@
  * `makeBrainConsensus` wraps its search in `.catch(() => [])` (consensus.ts:50), so ANY error
  * raised inside `search` comes back out as "nothing matched" — the `(no prior material found…)`
  * sentinel — and `renderSpread` then tells the owner, in a perfectly reasonable voice, that no
- * Atlas note matched his brief. Three different situations would otherwise hide behind that one
+ * Atlas note matched the owner's brief. Three different situations would otherwise hide behind that one
  * sentence, so the two that are FAULTS are raised here, before delegating, where the ported
  * module's catch cannot reach them:
  *
  *   - `ATLAS_PATH` UNSET → `StorePathNotConfiguredError`. A deploy fault. (The old runtime
- *     defaulted the path to `/srv/atlas`, so it could never notice. Task 7 must set `ATLAS_PATH`
- *     in compose — there is deliberately no default here.)
+ *     defaulted the path to `/srv/atlas`, so it could never notice. Compose must set `ATLAS_PATH` — there is deliberately no default here.)
  *   - `ATLAS_PATH` SET but the store is SICK — the directory is missing, is not a directory, or
  *     contains no markdown at all → `StoreUnhealthyError`, raised by the explicit `listNotes`
  *     health check below. An unmounted or stale volume is a fault even when the deploy is
  *     perfect, and it is the failure class by name: a confident "I found nothing" over a
  *     store that was never readable is worse than an error, because nobody investigates it.
  *   - The store is HEALTHY and the brief simply matches nothing → the sentinel, unchanged. This
- *     is a real answer about a real Atlas, and her persona's job is to relay it.
+ *     is a real answer about a real Atlas, and the persona's job is to relay it.
  *
  * That split is possible because the kit draws the same line: `listNotes` throws
  * `StoreUnhealthyError` for a missing/unreadable/markdown-free root, while `searchNotes` on a

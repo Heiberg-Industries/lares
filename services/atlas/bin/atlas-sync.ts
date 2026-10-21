@@ -57,7 +57,7 @@ const notify = makeSignalNotify({ url: spineUrl, token: spineToken });
  * IPs, which is why they are allow-listed by domain rather than by address. Node's built-in
  * fetch ignores proxy environment variables entirely, so setting EGRESS_PROXY_URL without
  * this function reaches nothing: every repo: and notion: source resolves `failed`, and the
- * store simply stops refreshing. Caught by `--doctor` on the first deploy, 2026-08-12.
+ * store simply stops refreshing. Caught by `--doctor` on the first deploy.
  *
  * Deliberately NOT applied to the model gateway. That is a stable address the firewall
  * allows directly, and squid's allow-list does not include it — routing it through the proxy
@@ -180,7 +180,7 @@ try {
         // restart, so returning here produces an endless restart loop that buries the box's
         // logs — and worse, makes `docker compose exec` a race against the next restart,
         // which is how every operator command in the runbook is run. Observed on the first
-        // deploy, 2026-08-12.
+        // deploy.
         //
         // Parking is an idle TIMER, not `await new Promise(() => {})`. That was the second
         // attempt and it fails in a way worth recording: Node detects a top-level await that

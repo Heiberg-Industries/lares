@@ -3,12 +3,12 @@
 // English" whatever their agent is set up to speak.
 //
 // It writes the SESSION's state and nothing else. The definition on the box is untouched
-// (agent-definitions spec, Part 3), which is why this tool has no approval: it changes nothing
+// (ADR-0015), which is why this tool has no approval: it changes nothing
 // outside the conversation it is spoken in.
 //
 // `defineState` (eve/context, node_modules/eve/docs/guides/state.md), not `ctx.session.state` —
 // eve 0.32 keys durable per-session memory by the slot's NAME, not by which module declared it
-// or which bundle it runs in (Task 1, Q4), so this tool's handle and the instructions resolver's
+// or which bundle it runs in (measured on eve 0.32), so this tool's handle and the instructions resolver's
 // handle in ab-language.ts read and write the same slot despite being compiled separately.
 import { defineState } from "eve/context";
 import { defineTool } from "eve/tools";

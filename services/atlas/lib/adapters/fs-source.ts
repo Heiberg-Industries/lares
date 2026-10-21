@@ -4,7 +4,7 @@
 // Two roots and one implementation because the stores differ only in where they are
 // mounted; distinct ids because the composition root asserts the four readers are four
 // DIFFERENT things (a root that wires the same reader twice typechecks and passes every
-// unit test — the notion-sync Phase 4 composition-root defect, three times in one phase).
+// unit test — a composition-root defect that has happened before in the notion-sync package).
 import { readFileSync, statSync, realpathSync } from "node:fs";
 import { join, resolve as resolvePath } from "node:path";
 import type { SourceRef } from "../sources.js";

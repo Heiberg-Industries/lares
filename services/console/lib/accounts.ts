@@ -27,14 +27,14 @@ export function consolePrincipal(): string {
  *  every Google power the fleet uses. calendar.events is NOT optional: calendar.readonly alone
  *  makes Google reject writes with ACCESS_TOKEN_SCOPE_INSUFFICIENT, and a stored refresh token
  *  never gains scopes on its own, so a console-enrolled mailbox that omits it silently loses
- *  calendar writes until it is re-consented. (It was omitted here until 2026-08-05.) */
+ *  calendar writes until it is re-consented. (It was once omitted here.) */
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar.readonly",
   "https://www.googleapis.com/auth/calendar.events",
-  //  batch 6 (the owner, 2026-09-14): read-only Drive, so the chief of staff can open a Docs/Sheets/Slides
-  // link he sends. A token enrolled before this lacks it until re-consented once.
+  // Read-only Drive, so the chief of staff can open a Docs/Sheets/Slides
+  // link the owner sends. A token enrolled before this lacks it until re-consented once.
   "https://www.googleapis.com/auth/drive.readonly",
 ];
 
@@ -42,7 +42,7 @@ export const GOOGLE_SCOPES = [
  *  someone else running Lares registers their own client in their own Workspace and nothing about
  *  the owner's setup is in the code. `_CONSOLE` is the login client, not a mailbox client, and
  *  `_FILE` is readSecret's own suffix (GOOGLE_CLIENT_ID_FILE means "read the id from this path",
- *  as agent-box/compose.yaml:717 does for the travel agent) — without excluding it, the discovery regex's
+ *  as a compose file can do for any agent) — without excluding it, the discovery regex's
  *  optional `(_FILE)?` group falls back to matching "FILE" itself as an org id. */
 export function googleOrgs(): GoogleOrg[] {
   const ids = new Set<string>();

@@ -27,7 +27,7 @@ export function tasteRoot(): string {
 
 /** One file on disk. `entry` is null when the file could not be parsed — an unreadable file must
  *  show up in the browse view (where it can be deleted) rather than crashing the page or, worse,
- *  silently vanishing from a list the owner is using to decide what he has. */
+ *  silently vanishing from a list the owner is using to decide what to keep. */
 export interface StoredEntry {
   domain: TasteDomain;
   file: string;
@@ -161,7 +161,7 @@ export function deleteEntry(domain: TasteDomain, file: string): boolean {
 }
 
 /**
- * Freeform pasted text → list items. The owner pastes whatever he has: a bulleted list, a numbered
+ * Freeform pasted text → list items. The owner pastes whatever they have: a bulleted list, a numbered
  * one, or bare lines out of a note. All three are the same list, so all three parse the same.
  */
 export function parsePastedLines(text: string): string[] {

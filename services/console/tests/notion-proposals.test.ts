@@ -55,7 +55,7 @@ describe("toProposalDTO", () => {
     });
   });
 
-  // Phase 4: the card states what each button will do, and the two kinds do
+  // The card states what each button will do, and the two kinds do
   // different things — an update's Reject reverts the Notion page, a create's
   // changes nothing anywhere. Dropping `kind` here would leave the card stating
   // the update's consequence for every row in a mixed queue.
@@ -132,7 +132,7 @@ describe("getNotionProposalsView", () => {
 // guarded UPDATE rather than a read-then-write. That is not a refactor for tidiness: the
 // old shape raced the sync engine's hourly apply pass and could leave a 'rejected' row
 // with resolved_at already stamped, which getRejectedUnexecuted never picks up — so a
-// rejection the owner made would silently never revert his Notion page. These tests pin the
+// rejection the owner made would silently never revert the owner's Notion page. These tests pin the
 // single-statement shape, because losing it reintroduces that.
 describe("applyProposalAction", () => {
   function openRow(id: string, vaultPath: string, state: string) {

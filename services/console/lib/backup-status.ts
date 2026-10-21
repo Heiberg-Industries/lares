@@ -1,8 +1,7 @@
 /**
  *  — the read layer behind `/backup`.
  *
- * Decision 2 of the per-installation backup and restore design (settled
- * 2026-09-04): the console owns "protected / not protected" because Lares is for non-technical
+ * Design decision: the console owns "protected / not protected" because Lares is for non-technical
  * owners, not the command line. This file reads the one table the box's nightly check and monthly
  * restore rehearsal write to (`sql/001_baseline.sql`: rows `verify` and `drill`) and turns it
  * into a verdict a non-developer can act on — never the other way around; the console only reads.

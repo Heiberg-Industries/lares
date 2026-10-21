@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 
-// W8B-s3 — see services/console/build/downlevel-using-loader.cjs's header for why this exists,
+// See services/console/build/downlevel-using-loader.cjs's header for why this exists,
 // and delete both when it says to.
 const downlevelUsingLoader = fileURLToPath(new URL("./build/downlevel-using-loader.cjs", import.meta.url));
 

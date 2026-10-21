@@ -3,7 +3,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
-    // Same cap chief-of-staff and the travel agent run under, set here from the start rather than after
+    // Same cap chief-of-staff runs under, set here rather than added after
     // the first timeout. Vitest 2's default pool is "forks", one worker per CPU core (10 on
     // this box); once the studio port lands its container-backed tests, an uncapped run
     // starts up to ten disposable Postgres containers at once and the resulting
