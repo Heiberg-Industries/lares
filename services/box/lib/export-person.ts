@@ -499,8 +499,16 @@ async function selectFor(
   entry: ScopedTable,
   person: PersonIdentity,
 ): Promise<Array<Record<string, unknown>>> {
+  // Explicit financial projection: no ticket, credential fingerprint, identity suppression,
+  // authority reference/hash, request hash, native coordinates or other members' metadata.
+  const budgetColumns: Readonly<Record<string,string>> = {
+    budget_accounts:"id,kind,state,reason,policy_generation,active_window_id",
+    budget_windows:"id,account_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision,created_at",
+    budget_gateway_bindings:"id,member_account_id,state,maximum_liability,created_at",
+    budget_attempts:"id,member_account_id,member_window_id,binding_id,state,reserved_amount,actual_amount,highest_observed_liability,member_cap_snapshot,created_at,expires_at,admitted_at,conflict_reason",
+  };
   const { rows } = await db.query<Record<string, unknown>>(
-    `SELECT * FROM ${entry.table} WHERE ${matchClause(entry)}`,
+    `SELECT ${budgetColumns[entry.table] ?? '*'} FROM ${entry.table} WHERE ${matchClause(entry)}`,
     [spellingsFor(person, entry.idKind!)],
   );
   return rows;

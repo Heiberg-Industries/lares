@@ -30,11 +30,13 @@ const APPROVAL_SESSION_FILENAME = "006_approval_session.sql";
 const MEMBER_IDENTITY_FILENAME = "007_member_identity_sessions.sql";
 const CONNECTED_ACCOUNTS_FILENAME = "008_connected_accounts.sql";
 const ACCOUNT_CREDENTIALS_FILENAME = "012_connected_account_credentials.sql";
+const BUDGET_FILENAME = "011_budget_admission.sql";
 const CONSOLE_AUTHORITY_FILENAME = "013_console_turn_authority.sql";
 
 /** Every table the baseline creates, plus the ledger. The list is written out so that a table the old
  *  history had and the baseline lost (outside_tool_pins once did) fails here, not on a fresh install. */
 const EXPECTED_TABLES = [
+  "budget_accounts", "budget_windows", "budget_gateway_bindings", "budget_attempts",
   "personal_actions",
   "personal_action_calls",
   "agent_avatars",
@@ -150,6 +152,7 @@ describe("the baseline on a fresh database", () => {
         INSERT INTO reminders(agent,owner,due_at,payload,created_by) VALUES('fixture-agent','upgrade-owner',now()+interval '1 day','{}','upgrade-owner');`);
       const upgrade=await runMigrations(pool,SQL);
       expect(upgrade.refused).toEqual([]);
+      expect(upgrade.applied).toContain(BUDGET_FILENAME);
       expect(upgrade.applied).toContain("009_vault_areas.sql");expect(upgrade.applied).toContain("019_personal_actions.sql");expect(upgrade.applied).toContain("020_vault_resource_grants.sql");expect(upgrade.applied).toContain("021_personal_action_acceptance.sql");
       expect((await pool.query("SELECT display_name,status FROM users WHERE id='upgrade-owner'")).rows).toEqual([{display_name:'Upgrade owner',status:'active'}]);
       expect((await pool.query("SELECT 1 FROM reminders WHERE owner='upgrade-owner'")).rowCount).toBe(1);
@@ -169,11 +172,11 @@ describe("the baseline on a fresh database", () => {
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
-      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
+      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", BUDGET_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'");
       expect(rows[0].n).toBeGreaterThan(50);
       const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");

@@ -82,6 +82,7 @@ export interface EraseReport {
  * failure (tests/erase-person-db.test.ts), never a silently skipped table.
  */
 export type EraseHandling =
+  | "retire-and-redact-budget-liability"
   | "delete-by-person-column"
   | "replace-name-in-audit-row"
   | "register-goes-last"
@@ -174,6 +175,7 @@ export const ERASE_OUTSTANDING: readonly string[] = [
 /** What the erase does with one inventory entry, derived from the entry's own fields wherever
  *  that is possible. Exported so the test can prove the inventory and this file agree. */
 export function eraseHandlingFor(entry: ScopedTable): EraseHandling | null {
+  if (["budget_accounts", "budget_windows", "budget_gateway_bindings", "budget_attempts"].includes(entry.table)) return "retire-and-redact-budget-liability";
   if (entry.scope === "member") {
     if ((REGISTER_TABLES as readonly string[]).includes(entry.table)) return "register-goes-last";
     if (entry.idKind === "actor") return "replace-name-in-audit-row";
@@ -577,6 +579,16 @@ async function memberStep(
     `SELECT count(*)::int AS n FROM ${entry.table} WHERE ${where}`,
     [spellings],
   );
+
+  if (eraseHandlingFor(entry) === "retire-and-redact-budget-liability") {
+    // The account entry is first in the inventory. One ordered DB operation retires all
+    // authority before redacting any member link; the following entries remain explicit
+    // in the plan/report, rather than treating financial person data as operational.
+    return {plan:{table:entry.table,scope:entry.scope,rows,how:"member metadata erased; financial liability and replay suppression retained"},rows,
+      write:entry.table === "budget_accounts"
+        ? {sql:"SELECT budget_retire_member($1,true)",params:[person.id]}
+        : {sql:`UPDATE ${entry.table} SET live_member_id=NULL WHERE ${where}`,params:[spellings]}};
+  }
 
   if (entry.idKind === "actor") {
     const sets = personColumnsOf(entry)

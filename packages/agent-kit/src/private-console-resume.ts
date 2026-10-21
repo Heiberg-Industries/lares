@@ -3,7 +3,7 @@ import {currentMember} from './member-store.js';
  * is the existing immutable personal mail proposal. Source-history guards remain independent. */
 import { payloadFingerprint } from './approval-ledger.js';
 import { PERSONAL_MAIL_SEND_TOOL,personalActionForRequest,personalMailPayloadSchema } from './personal-action-store.js';
-import { authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type AuthorityDatabase,type ConsoleAuthorityContext } from './console-turn-authority.js';
+import { authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type AuthorityDatabase,type ConsoleAuthorityContext,type ConsoleBindingInput } from './console-turn-authority.js';
 import { managedIdentity } from './door-authority.js';
 export const PRIVATE_RESUME_REFUSED='Private approval continuation is unavailable or changed';
 const refuse=():never=>{throw new Error(PRIVATE_RESUME_REFUSED);};
@@ -18,15 +18,26 @@ export async function requirePrivateConsoleResume(ctx:ConsoleAuthorityContext,ph
   options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv;callId?:string;toolName?:string;input?:unknown}={}){
   const auth=privateResolverAdmission(ctx.session?.auth?.current),initial=consoleAdmission(ctx.session?.auth?.initiator),own=managedIdentity(options.env);
   if(!auth||!initial||initial.purpose!=='human'||auth.memberId!==initial.memberId||!own||!ctx.session?.id)refuse();
+  return requireResumeReference({binding:{agent:own!.name,incarnation:own!.incarnation,sessionId:ctx.session!.id!,memberId:auth!.memberId,admissionNonce:initial!.admissionNonce},requestId:auth!.requestId,optionId:auth!.optionId},phase,options);
+}
+/** Server-only replay of provenanced immutable prepared authority. The caller must load this
+ * reference from a row created after authenticated requirePrivateConsoleResume succeeds.
+ * Parsing client JSON, or knowing these coordinates, never establishes that provenance. */
+export async function requirePersistedPrivateConsoleModelResume(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'},options:{db:AuthorityDatabase;env?:NodeJS.ProcessEnv}){
+  return requireResumeReference(reference,'model',options);
+}
+async function requireResumeReference(reference:{binding:ConsoleBindingInput;requestId:string;optionId:'approve'|'cancel'},phase:'surface'|'response'|'model'|'action',
+  options:{db?:AuthorityDatabase;env?:NodeJS.ProcessEnv;callId?:string;toolName?:string;input?:unknown}){
+  const own=managedIdentity(options.env),auth={memberId:reference.binding.memberId,requestId:reference.requestId,optionId:reference.optionId};
+  if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(auth.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
     const member=await currentMember(db as never,auth!.memberId);if(!member)refuse();
     await db.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
     const locked=await currentMember(db as never,auth!.memberId,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)refuse();
-    const read=()=>personalActionForRequest(db,{requestId:auth!.requestId,memberId:auth!.memberId,agentId:own!.name,sessionId:ctx.session!.id!});
+    const read=()=>personalActionForRequest(db,{requestId:auth!.requestId,memberId:auth!.memberId,agentId:own!.name,sessionId:reference.binding.sessionId});
     const before=await read(),s=before.reference.selection;
     if(!before.reference.policyHash||s.incarnation!==own!.incarnation)refuse();
-    const binding={agent:own!.name,incarnation:own!.incarnation,sessionId:ctx.session!.id!,memberId:auth!.memberId,admissionNonce:initial!.admissionNonce};
-    await requireConsoleSessionBinding(binding,db,options.env);
+    const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const current=await read(); // DB-clock freshness after grant/binding lock waits.
     if(auth!.optionId==='approve'&&!current.alive)refuse();
     if(phase==='model'||phase==='action'){

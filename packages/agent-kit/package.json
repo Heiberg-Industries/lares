@@ -11,6 +11,7 @@
     }
   },
   "exports": {
+    "./budget-admission-store": "./src/budget-admission-store.ts",
     "./vault-area-store": "./src/vault-area-store.ts",
     "./personal-action-store": "./src/personal-action-store.ts",
     "./grant-store": "./src/grant-store.ts",
