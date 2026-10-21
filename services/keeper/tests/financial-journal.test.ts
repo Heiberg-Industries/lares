@@ -108,3 +108,9 @@ it('rejects raw identities and authentication fields in financial atom schemas',
   for(const field of ['memberId','email','authorityReference','ticket','prompt','rawProviderBody'])expect(()=>FINANCIAL_ATOM_SCHEMA.parse({...grant,[field]:'private'})).toThrow();
   expect(()=>financialJournalFrame({version:1,sequence:1,operationId:grant.attemptId,previousDigest:'0'.repeat(64),kind:'proposal',atoms:Array(129).fill(grant)})).toThrow();
 });
+it('requires policy generation in account projections and records provisioning as a journal operation',async()=>{
+  const f=fixture(),j=open(f),account={kind:'account' as const,id:'11111111-1111-4111-8111-111111111111',installationAccountId:'11111111-1111-4111-8111-111111111111',accountKind:'installation' as const,state:'closed' as const,reason:'unreconciled' as const,activeWindowId:null,installationCap:'10',policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:null,providerSuppressionHashes:[]};
+  expect(()=>FINANCIAL_ATOM_SCHEMA.parse({...account})).not.toThrow();
+  const {policyGeneration:_,...missing}=account;expect(()=>FINANCIAL_ATOM_SCHEMA.parse(missing)).toThrow();
+  await expect(j.operation('provision',async operationId=>{j.propose(operationId,[account]);j.committed(operationId);return 'closed';})).resolves.toBe('closed');
+});

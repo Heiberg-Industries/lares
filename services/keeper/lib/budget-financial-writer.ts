@@ -64,7 +64,7 @@ export async function collectFinancialAtoms(db:SourceDatabase,changes:readonly B
   }
   for(const id of [...accounts].sort()){
     const a=(await db.query('SELECT * FROM budget_accounts WHERE id=$1',[id])).rows[0];if(!a)throw new Error('Financial account unavailable');if(a.active_window_id)windows.add(a.active_window_id);
-    add({kind:'account',id:a.id,installationAccountId:a.installation_account_id,accountKind:a.kind,state:a.state,reason:a.reason,activeWindowId:a.active_window_id,installationCap:a.installation_cap===null?null:canonicalBudgetMoney(a.installation_cap),selectedEndpointHash:a.selected_endpoint,endpointGeneration:a.endpoint_generation,recoveryEpochHash:a.recovery_epoch===null?null:hash(a.recovery_epoch),canonicalSuppressionHash:a.canonical_suppression_hash,providerSuppressionHashes:a.provider_suppression_hashes});
+    add({kind:'account',id:a.id,installationAccountId:a.installation_account_id,accountKind:a.kind,state:a.state,reason:a.reason,activeWindowId:a.active_window_id,installationCap:a.installation_cap===null?null:canonicalBudgetMoney(a.installation_cap),policyGeneration:String(a.policy_generation),selectedEndpointHash:a.selected_endpoint,endpointGeneration:String(a.endpoint_generation),recoveryEpochHash:a.recovery_epoch===null?null:hash(a.recovery_epoch),canonicalSuppressionHash:a.canonical_suppression_hash,providerSuppressionHashes:a.provider_suppression_hashes});
   }
   for(const id of [...windows].sort()){
     const w=(await db.query(`SELECT *,${utc('starts_at')} AS starts_utc,${utc('ends_at')} AS ends_utc FROM budget_windows WHERE id=$1`,[id])).rows[0];if(!w)throw new Error('Financial window unavailable');

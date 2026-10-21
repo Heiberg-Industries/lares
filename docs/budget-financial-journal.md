@@ -133,6 +133,32 @@ destroys the borrowed connection, freezes custody and exposes no financial resul
 Failure of journal/control durability after financial COMMIT retains database
 liability/checkpoint and returns no permit or ticket.
 
+## Closed account and monthly-window provisioning
+
+The root-only `budget-financial.ts provision-accounts --host` command accepts a
+bounded JSON plan on standard input: one canonical positive `installationCap` and
+one to sixteen unique `memberIds`. The host socket passes it to Keeper's
+host-only action; this command has no direct-database fallback. Keeper opens the
+`provision` journal operation before the transaction checks out its one database
+client.
+
+Provisioning locks each selected member's organisation, active user record,
+persisted provider identity rows and existing monthly spend-cap policy in stable
+order. It derives suppression digests from the protected journal key and refuses
+missing or changed identity state, cross-organisation requests, provider overlap,
+tombstones, invalid policies and existing accounts that are not closed and
+unreconciled. It creates or reuses one installation account and one member
+account per selected member, then creates or reuses exactly one UTC-month window
+per account. Repeating the same plan reuses the current accounts and windows. An
+installation-cap change updates the closed installation account without changing
+an immutable current-month window; a later UTC month gets new zero-liability
+windows while old windows and attempts remain intact.
+
+Every provisioned account remains `closed` with reason `unreconciled`; endpoint
+and recovery fields remain empty. Provisioning does not create gateway bindings,
+open accounts, reconcile liability, or enable spending. The bounded response
+contains only state, reason and counts, never member or provider identities.
+
 ## Permanent freeze before restore
 
 `restore.sh` inspects binding without opening custody on dry-run. No binding and

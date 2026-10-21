@@ -56,7 +56,7 @@ export interface BudgetGatewaySettlement {
   credentialGeneration:string;grantHash:string;pricingProfile:unknown;
 }
 export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied'|'unavailable';reason:string};
-export type BudgetFinancialOperation='prepare'|'admit'|'grant'|'unknown'|'settle';
+export type BudgetFinancialOperation='prepare'|'provision'|'admit'|'grant'|'unknown'|'settle';
 export interface BudgetFinancialWriter {
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T>;
 }
