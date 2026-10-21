@@ -113,6 +113,10 @@ jobs:
         if: matrix.name == 'box'
         run: python3 -B services/box/tests/rotate-restored-gateway-key.test.py
 
+      - name: Check gateway admission wire contract offline
+        if: matrix.name == 'box'
+        run: python3 -B services/box/tests/gateway-admission.test.py
+
   typecheck:
     name: workspace typecheck
     runs-on: ubuntu-latest

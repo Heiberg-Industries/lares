@@ -8,7 +8,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY patches/ ./patches/
 COPY packages/ ./packages/
 COPY services/ ./services/
-COPY images/gateway-runtime/start.sh ./images/gateway-runtime/start.sh
+COPY images/gateway-runtime/ ./images/gateway-runtime/
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter @lares/keeper... --filter @lares/agent-box...
 RUN pnpm --filter @lares/agent-kit build
 

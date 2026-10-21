@@ -292,6 +292,15 @@ export function isBudgetExceeded(err: unknown): boolean {
   return true;
 }
 
+/** Authenticated admission could not be established. This does not claim a cap was spent.
+ * The adapter authors a terminal 400; keep native budget_exceeded recognition separate. */
+export const BUDGET_ADMISSION_REFUSED_TYPE = "budget_admission_refused";
+export const BUDGET_ADMISSION_REFUSED_TEXT = "I could not verify permission to spend. Please check the gateway setup.";
+export function isBudgetAdmissionRefused(err: unknown): boolean {
+  const signals = collectSignals(err);
+  return signals.types.includes(BUDGET_ADMISSION_REFUSED_TYPE) && signals.statuses.every(status => status === 400);
+}
+
 // ── The door's answer ───────────────────────────────────────────────────────────────────
 
 /**
@@ -400,6 +409,7 @@ export function respondToTurnFailed(
   data: FailureEventData,
   options: FailureResponseOptions,
 ): FailureResponse {
+  if (isBudgetAdmissionRefused(data)) return { kind: "budget-refusal", text: BUDGET_ADMISSION_REFUSED_TEXT };
   if (isBudgetExceeded(data)) return { kind: "budget-refusal", text: options.refusalText };
   return { kind: "default", text: defaultTurnFailedText(data, options.dialect) };
 }
@@ -416,6 +426,7 @@ export function respondToSessionFailed(
   data: FailureEventData,
   options: FailureResponseOptions,
 ): FailureResponse {
+  if (isBudgetAdmissionRefused(data)) return { kind: "silent" };
   if (isBudgetExceeded(data)) return { kind: "silent" };
   return { kind: "default", text: defaultSessionFailedText(data, options.dialect) };
 }

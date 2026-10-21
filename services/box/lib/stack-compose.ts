@@ -142,6 +142,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       volumes: [
         `${opts.gatewayConfigFile}:/etc/litellm/config.yaml:ro`,
         `${opts.gatewayStartScript}:${startScriptInContainer}:ro`,
+        `${opts.gatewayStartScript}.admission_contract.py:/opt/lares-gateway/admission_contract.py:ro`,
+        `${opts.gatewayStartScript}.lares_gateway.py:/opt/lares-gateway/lares_gateway.py:ro`,
+        `${opts.gatewayConfigFile}.profile.json:/etc/litellm/profile.json:ro`,
       ],
       // THE ENGINE SHIPS NO GATEWAY IMAGE, AND MAY NOT. The obvious way to give LiteLLM our
       // start script is a thin image FROM the official one — and that is ruled out: the
@@ -182,6 +185,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         // LiteLLM documents this as an env-only switch (not a config.yaml key): loading its
         // bundled cost map instead of fetching one over the network at start.
         LITELLM_LOCAL_MODEL_COST_MAP: "True",
+        LARES_GATEWAY_PROFILE_FILE: "/etc/litellm/profile.json",
+        // Admission URL/service key/endpoint identity are deliberately NOT provisioned.
+        // Until an operator supplies the real authority, this runtime fails closed.
         // `images/gateway-runtime/start.sh` reads both files and exports their contents as the
         // two `os.environ/…` names the LiteLLM config refers to. It refuses to start at all
         // (`: "${MODEL_PROVIDER_KEY_FILE:?…}"`) unless both names are set here, so these are

@@ -47,6 +47,15 @@ jobs:
       - name: Exercise compiled runtime, mounted persona and gateway selection across restart
         if: matrix.role == 'chief-of-staff'
         run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
+      - name: Prove guarded gateway ingress and physical dispatch in pinned upstream image
+        if: matrix.role == 'chief-of-staff'
+        run: python3 -B services/keeper/tests/gateway-admission-image.probe.py lares-runtime:test "$RUNNER_TEMP/gateway-admission-proof.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.role == 'chief-of-staff'
+        with:
+          name: gateway-admission-compatibility-proof
+          path: ${{ runner.temp }}/gateway-admission-proof.json
+          if-no-files-found: error
       # creative carries a `tests/agent-declaration.test.ts`
       # framework_tools/tool-truth block that is `skipIf` on a compiled manifest under a
       # gitignored `.output/` — the ONE thing that can prove a disable-sentinel or a
