@@ -2,6 +2,7 @@
 Description=Verify the Lares off-box backup and report its health
 Wants=network-online.target
 After=network-online.target docker.service
+RequiresMountsFor=/srv/lares /srv/taste /srv/vault /var/lib/lares-vault-git
 
 [Service]
 Type=oneshot

@@ -98,6 +98,15 @@ def proxy_pid():
 try:
     report['image_id'] = cmd('docker', 'image', 'inspect', image, '--format', '{{.Id}}')
     report['client_image_id'] = cmd('docker', 'image', 'inspect', client_image, '--format', '{{.Id}}')
+    # The server-only storage CLI must resolve its workspace exports as the fixed runtime uid.
+    storage_help = cmd('docker', 'run', '--rm', '--network', 'none', '--read-only',
+                       '--user', '10001:10001', '--cap-drop', 'ALL',
+                       '--security-opt', 'no-new-privileges:true',
+                       '--tmpfs', '/tmp:uid=10001,gid=10001,mode=1770',
+                       '--entrypoint', '/app/services/box/node_modules/.bin/tsx',
+                       client_image, '/app/services/box/bin/vault-storage.ts', '--help')
+    check('Vault storage CLI resolves server exports as runtime user without a database',
+          'vault-storage preview|apply|' in storage_help)
     report['squid_version'] = cmd('docker', 'run', '--rm', '--network', 'none',
                                 '--entrypoint', 'squid', image, '-v')
     version = re.search(r'Version (\d+)\.(\d+)', report['squid_version'])

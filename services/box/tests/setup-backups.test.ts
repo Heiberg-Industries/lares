@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const ENGINE_IMAGE = `example.invalid/keeper@sha256:${"a".repeat(64)}`;
 const here = dirname(fileURLToPath(import.meta.url));
 const OPS = join(here, "..", "ops");
 const SCRIPT = join(OPS, "setup-backups.sh");
@@ -35,7 +36,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
     timeout: 20_000,
     input: opts.input ?? "",
     env: {
-      PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state,
+      LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state,
       PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10", ...opts.env,
     },
   });
@@ -81,7 +82,7 @@ beforeEach(() => {
   writeFileSync(join(prefix, pwFile), "correct horse battery staple\n"); chmodSync(join(prefix, pwFile), 0o400);
 
   stub("id", "echo 0");
-  for (const n of ["age", "curl"]) stub(n);
+  for (const n of ["age", "curl", "chown"]) stub(n);
   stub("systemctl", `if [ "$1" = start ] && case " \${FAIL_UNITS:-} " in *" $2 "*) true ;; *) false ;; esac; then exit 1; fi; exit 0`);
   // stat -c %d <path>: the prefix is device 1, everything else device 2, unless STAT_SAME is set.
   // stat -c %a <path>: the real mode, read with python (macOS stat has no -c).
@@ -452,7 +453,7 @@ describe("units that point at the wrong place are corrected", () => {
     writeFileSync(unit, readFileSync(unit, "utf8").replace("/opt/lares/backup.sh", "/opt/agent-box/backup.sh").replace("/etc/lares/backup.env", "/etc/agent-box/backup.env"));
     const r = spawnSync("/bin/bash", [join(copy, "setup-backups.sh"), "--prefix", prefix, ...base(), "--skip-first-run"], {
       encoding: "utf8", timeout: 20_000,
-      env: { PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "open" },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "open" },
     });
     expect(r.status).toBe(0);
     const installed = readFileSync(join(prefix, "etc/systemd/system/lares-backup.service"), "utf8");
@@ -466,7 +467,7 @@ describe("install.sh --backups", () => {
   it("hands over to setup-backups.sh with the other arguments", () => {
     const r = spawnSync("/bin/bash", [join(OPS, "install.sh"), "--backups", "--prefix", prefix, ...base(), "--dry-run"], {
       encoding: "utf8", timeout: 20_000,
-      env: { PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10" },
+      env: { LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:/usr/bin:/bin`, STUB_LOG: log, HOME: dir, STATE: state, PREFIX_FOR_STAT: prefix, RESTIC_MODE: "absent10" },
     });
     expect(r.status).toBe(0);
     expect(r.stdout).toContain("dry run");

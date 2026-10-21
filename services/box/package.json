@@ -24,6 +24,7 @@
     "first-owner": "tsx bin/first-owner.ts",
     "first-organisation": "tsx bin/first-organisation.ts",
     "installation-settings": "tsx bin/installation-settings.ts",
+    "vault-storage": "tsx bin/vault-storage.ts",
     "render-stack": "tsx bin/render-stack.ts",
     "render-keeper-config": "tsx bin/render-keeper-config.ts",
     "export-person": "tsx bin/export-person.ts",
@@ -31,6 +32,7 @@
     "update-record": "tsx bin/update-record.ts"
   },
   "dependencies": {
+    "@lares/agent-kit": "workspace:*",
     "@lares/vault-format": "workspace:^",
     "pg": "^8.23.1"
   },

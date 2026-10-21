@@ -97,17 +97,26 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("what install.sh asks the engine image to run", () => {
-  it("runs all six helpers in the named image, in the same order as before", () => {
+  it("prepares only exact new store directories, keeps /srv unmounted and retains an incomplete plan on apply failure", () => {
+    const r=run(["--release",releaseFile],{LARES_ENGINE_IMAGE:ENGINE_IMAGE,STUB_VAULT_FAIL:"apply"});
+    expect(r.code).toBe(78);expect(r.stderr).toMatch(/pending plan/);expect(existsSync(join(prefix,"srv/lares/installation/vault-storage.pending.json"))).toBe(true);expect(existsSync(join(prefix,"srv/lares/installation/vault-storage.json"))).toBe(false);
+    const runs=engineRuns().filter(l=>programOf(l)==="vault-storage.ts");expect(runs).toHaveLength(2);
+    for(const line of runs){expect(line).toContain("--user 10001:10001");expect(line).not.toContain(`-v ${prefix}/srv:${prefix}/srv`);}
+    expect(runs[1]).toContain(`/srv/vault/private/`);expect(runs[1]).toContain(`/srv/vault/shared/`);expect(runs[1]).toContain(`/var/lib/lares-vault-git/`);expect(calls()).not.toMatch(/compose\.lares-keeper\.yaml up/);
+  });
+
+
+  it("runs owner enrollment, storage provisioning and keeper rendering in order", () => {
     ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const runs = engineRuns();
     expect(runs.map(programOf)).toEqual([
       "render-stack.ts", "migrate.ts", "installation-settings.ts", "first-owner.ts",
-      "first-organisation.ts", "render-keeper-config.ts",
+      "first-organisation.ts", "vault-storage.ts", "vault-storage.ts", "vault-storage.ts", "render-keeper-config.ts",
     ]);
     for (const line of runs) {
       expect(line).toContain(ENGINE_IMAGE);
       // The sandbox: host network, root inside, read-only filesystem, no capabilities, no Docker socket.
-      expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
+      expect(line).toContain(`--network host --user ${programOf(line) === "vault-storage.ts" ? "10001:10001" : "0:0"} --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges`);
       expect(line).not.toContain("docker.sock");
       expect(line).toContain("--entrypoint /app/services/box/node_modules/.bin/tsx");
     }
@@ -147,9 +156,9 @@ describe("what install.sh asks the engine image to run", () => {
     expect(render).toContain(`-v ${releaseFile}:${releaseFile}:ro`);
   });
 
-  it("mounts the installation's deadline calendar for the renderers only when it exists", () => {
+  it("mounts the new installation inventory and preserves the optional deadline calendar mount", () => {
     ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
-    expect(engineRuns().join("\n")).not.toMatch(/ -v \S*srv\/lares\/installation/);
+    expect(engineRuns().filter(l => /render-keeper/.test(l)).join("\n")).toContain(`-v ${prefix}/srv/lares/installation:${prefix}/srv/lares/installation:ro`);
     const installation = join(prefix, "srv", "lares", "installation");
     mkdirSync(installation, { recursive: true });
     writeFileSync(join(installation, "deadline-calendar.json"), "{}\n");
@@ -248,7 +257,7 @@ describe("the renderers, run for real through the translated call", () => {
       .toBe(readFileSync(join(BOX, "..", "..", "images", "gateway-runtime", "start.sh"), "utf8"));
     // The same run went through the engine image for every helper, and the renderer was given
     // the folder keeper.json lives in (it reads the previous file there and writes beside it).
-    expect(engineRuns()).toHaveLength(6);
+    expect(engineRuns()).toHaveLength(9);
     const keeperRun = engineRuns().find((l) => l.includes("render-keeper-config"))!;
     expect(keeperRun).toContain(`-v ${join(prefix, "etc", "lares")}:${join(prefix, "etc", "lares")} `);
   });

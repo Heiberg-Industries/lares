@@ -1,0 +1,52 @@
+import { afterEach, beforeEach, expect, it } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { requireVaultRecoveryTooling, VAULT_RECOVERY_SCRIPTS, VAULT_RECOVERY_UNITS } from '../lib/vault-storage.js';
+let root: string, prefix: string, bin: string, log: string;
+const image = 'example.invalid/keeper@sha256:' + 'a'.repeat(64), script = resolve('ops/refresh-recovery.sh');
+const env = () => ({ ...process.env, LARES_ENGINE_IMAGE: image, PATH: bin + ':' + process.env.PATH, STUB_LOG: log });
+const refresh = (...args: string[]) => spawnSync('bash', [script, '--prefix', prefix, ...args], { encoding: 'utf8', env: env() });
+beforeEach(() => { root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-recovery-refresh-'))); prefix = join(root, 'root'); bin = join(root, 'bin'); mkdirSync(bin); mkdirSync(join(prefix, 'opt/lares'), { recursive: true }); mkdirSync(join(prefix, 'etc/lares'), { recursive: true }); log = join(root, 'systemctl.log'); writeFileSync(log, ''); writeFileSync(join(bin, 'systemctl'), '#!/bin/sh\nprintf "%s\\n" "$*" >> "$STUB_LOG"\n', { mode: 0o755 }); });
+afterEach(() => rmSync(root, { recursive: true, force: true }));
+it('refreshes an rc12-style installed service, preserves destination and timer state, and executes the installed program', () => {
+    const backupEnv = join(prefix, 'etc/lares/backup.env');
+    writeFileSync(backupEnv, "RESTIC_REPOSITORY='sftp:backup@example.invalid:/backup'\n", { mode: 0o400 });
+    const before = readFileSync(backupEnv);
+    writeFileSync(join(prefix, 'opt/lares/backup.sh'), '#!/bin/sh\necho old-backup\n');
+    expect(refresh().status).toBe(0);
+    expect(readFileSync(backupEnv)).toEqual(before);
+    expect(readFileSync(log, 'utf8')).toBe('daemon-reload\n');
+    expect(() => requireVaultRecoveryTooling({ prefix, rootUid: process.getuid!() })).not.toThrow();
+    for (const name of [...VAULT_RECOVERY_SCRIPTS, ...VAULT_RECOVERY_UNITS])
+        expect(existsSync(join(prefix, name.endsWith('.service') || name.endsWith('.timer') ? 'etc/systemd/system' : 'opt/lares', name))).toBe(true);
+    const unit = readFileSync(join(prefix, 'etc/systemd/system/lares-backup.service'), 'utf8');
+    expect(unit).toContain('ExecStart=/opt/lares/backup.sh');
+    expect(unit).toContain('/srv/vault /var/lib/lares-vault-git');
+    mkdirSync(join(prefix, 'srv/vault'), { recursive: true });
+    const installed = spawnSync('bash', [join(prefix, 'opt/lares/backup.sh')], { encoding: 'utf8', env: { ...env(), LARES_PREFIX: prefix, AGENT_BOX_BACKUP_ENV: backupEnv } });
+    expect(installed.status).not.toBe(0);
+    expect(installed.stderr).toContain('incomplete or conflicting managed storage');
+    expect(installed.stdout).not.toContain('old-backup');
+});
+it('does not rewrite identical installed files or claim protection without a destination', () => {
+    const first = refresh();
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain('backups remain off');
+    const file = join(prefix, 'opt/lares/backup.sh'), before = statSync(file).mtimeMs;
+    expect(refresh().status).toBe(0);
+    expect(statSync(file).mtimeMs).toBe(before);
+    expect(refresh('--check').status).toBe(0);
+});
+it('refuses linked destinations and leaves all earlier programs unchanged', () => {
+    expect(refresh().status).toBe(0);
+    const file = join(prefix, 'opt/lares/export.sh'), outside = join(root, 'outside');
+    writeFileSync(outside, 'canary');
+    rmSync(file);
+    symlinkSync(outside, file);
+    const backup = readFileSync(join(prefix, 'opt/lares/backup.sh'));
+    expect(refresh().status).not.toBe(0);
+    expect(readFileSync(outside, 'utf8')).toBe('canary');
+    expect(readFileSync(join(prefix, 'opt/lares/backup.sh'))).toEqual(backup);
+});

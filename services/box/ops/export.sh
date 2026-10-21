@@ -60,6 +60,25 @@ ENGINE_VERSION="${LARES_ENGINE_VERSION:-unknown}"
 
 SECRET_ROOTS="/etc/agent-box /etc/lares /run/secrets"
 
+
+# A provisioned Vault is one inventory plus both fixed storage roots, never optional pieces.
+VAULT_STORAGE_PRESENT=0
+VAULT_STORAGE_PATHS=()
+vault_storage_unlock() { :; }
+VAULT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault-storage.sh"
+if [ -r "$VAULT_HELPER" ]; then
+  . "$VAULT_HELPER"
+  vault_storage_load "${LARES_PREFIX:-}" || exit 1
+elif [ -e "${LARES_PREFIX:-}/srv/vault" ] || [ -e "${LARES_PREFIX:-}/var/lib/lares-vault-git" ] || [ -e "${LARES_PREFIX:-}/srv/lares/installation/vault-storage.json" ]; then
+  echo 'vault storage: recovery helper missing; refusing an incomplete operation' >&2; exit 1
+fi
+
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
+  for path in "${VAULT_STORAGE_PATHS[@]}" "${LARES_PREFIX:-}/srv/lares/installation"; do
+    case " $EXPORT_DATA_PATHS " in *" $path "*) ;; *) EXPORT_DATA_PATHS="$EXPORT_DATA_PATHS $path" ;; esac
+  done
+fi
+
 # --- hard refusals -----------------------------------------------------------------------
 # Applied to every configured path (the vaults, the data directories, and the export
 # destination itself) before any dump or bundle work starts, so a bad configuration
@@ -115,6 +134,7 @@ WORKDIR=""
 TEMP_ARCHIVE=""
 cleanup() {
   local rc=$?
+  vault_storage_unlock
   [ -z "$TEMP_ARCHIVE" ] || rm -f "$TEMP_ARCHIVE"
   [ -z "$WORKDIR" ] || rm -rf "$WORKDIR"
   exit "$rc"
@@ -124,6 +144,8 @@ trap cleanup EXIT INT TERM
 [ -d "$EXPORT_WORKDIR_ROOT" ] || { echo "export: working directory root '$EXPORT_WORKDIR_ROOT' does not exist" >&2; exit 1; }
 WORKDIR=$(mktemp -d "$EXPORT_WORKDIR_ROOT/lares-export.XXXXXX")
 echo "export: working in $WORKDIR" >&2
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify-files; vault_storage_lock; vault_storage_load "${LARES_PREFIX:-}"; fi
+if declare -F vault_storage_verify >/dev/null; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify; fi
 
 # --- 1. Postgres: roles + every database, through the db container -----------------------
 # Exactly backup.sh:49-94's technique, copied rather than shared: read the database
@@ -177,7 +199,7 @@ for data in $EXPORT_DATA_PATHS; do
   [ -e "$data" ] || { echo "export: data path '$data' does not exist — refusing an incomplete export" >&2; exit 1; }
   check_no_nested_secrets "$data"
   name=$(basename "$data")
-  tar -C "$(dirname "$data")" -cf "$WORKDIR/${name}.tar" "$name"
+  tar --exclude='*/.git/lares-vault.lock' -C "$(dirname "$data")" -cf "$WORKDIR/${name}.tar" "$name"
 done
 
 # --- 4. Manifest: engine version, date, and per-file name/size/sha256 -----------------------
