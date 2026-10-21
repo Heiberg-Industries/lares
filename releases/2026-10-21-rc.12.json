@@ -1,0 +1,24 @@
+{
+  "release": "2026-10-21-rc.12",
+  "images": {
+    "db": "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b",
+    "console": "ghcr.io/heiberg-industries/lares-engine-console@sha256:4cb1f24ef5248aec81443522cfd50388142c99b6e1f6d3822075b5dc20b44d7d",
+    "lares-gateway": "ghcr.io/berriai/litellm@sha256:fc0e36a0965e4ffe75bc509b3a1085f5d6c6b78b16efa2ffbb525e122e51f83b",
+    "caddy": "docker.io/library/caddy@sha256:f2a1290d0463aad60660d4ec134943f183ee2a5f6c3eb7bf32dd984f2f020772",
+    "lares-keeper": "ghcr.io/heiberg-industries/lares-engine-keeper@sha256:649027a5df1e1f6d202e277d36770dd7e0b10a37d2cef2f67f3056963b04494e",
+    "lares-egress-proxy": "ghcr.io/heiberg-industries/lares-engine-egress-proxy@sha256:121dd444ee92f5815e10784d98528ad313d3664d1774ab5cc7625b23cd6a2e6a",
+    "lares-firewall-helper": "ghcr.io/heiberg-industries/lares-engine-firewall-helper@sha256:2b34b732503f3071136d95d6418a5f429c096032bc9997fe18fb787a98807ab8",
+    "chief-of-staff": "ghcr.io/heiberg-industries/lares-engine-chief-of-staff-runtime@sha256:38eef47f1fdd5429d0f8876ef806f9f903852cad05249e3efdc81c86f4ba6cf8",
+    "creative": "ghcr.io/heiberg-industries/lares-engine-creative-runtime@sha256:064c710e0f0c110bd9536908dfd725862577cf2bae1245756421e62409b6f98c",
+    "sync-jobs": "ghcr.io/heiberg-industries/lares-sync-jobs@sha256:7615905b73487c4e4f46f5207b393155ea7d643a2f0d658154e4d1a677efb8b4"
+  },
+  "migrations": {
+    "box": "006_approval_session.sql",
+    "chiefOfStaff": "006-eve-workflow-beta32-to-beta42-upgrade.sql"
+  },
+  "breaking": [
+    "Two new database files, 005_model_steps.sql (token counts for each model call, kept on the server) and 006_approval_session.sql (which conversation an approval card belongs to, so a revised draft can withdraw the older card). The update applies them and they are safe to run twice; a rollback does not undo them, so to go back past them restore the backup the update took.",
+    "A server installed from a copy of the repository switches once to get-lares.sh and the lares command, as described in docs/releases/rc.12-notes.md. The switch does not take a backup of its own and cannot be undone with lares rollback; take and check a backup first.",
+    "Typing approve in chat no longer approves a tool card; only the button or the console does."
+  ]
+}
