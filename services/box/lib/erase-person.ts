@@ -143,6 +143,7 @@ const PATH_KEYED_SYNC_COLUMNS: Readonly<Record<string, string>> = {
  * many words "do not key an erase on person_id" (it names the third-party recipient).
  */
 const EXTRA_PERSON_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  resource_grants: ["principal_member_id"],
   // "requested_by_user_id also names a person — the requester — and is a second thing an erase
   //  must consider."
   cross_member_reads: ["requested_by_user_id"],

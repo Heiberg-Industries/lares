@@ -11,6 +11,7 @@
     }
   },
   "exports": {
+    "./grant-store": "./src/grant-store.ts",
     "./telegram-markdown": "./src/telegram-markdown.ts",
     "./schedule-gate": "./src/schedule-gate.ts",
     "./schedule-switch": "./src/schedule-switch.ts",

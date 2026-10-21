@@ -1,3 +1,6 @@
+import { AgentAccess } from "../../../components/AgentAccess";
+import { agentAccess } from "../../../lib/agent-access";
+import { members } from "../../../lib/auth";
 import { requireConsolePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
 import { Notice, PageHeader } from "@lares/ui/patterns";
@@ -16,7 +19,7 @@ export default async function AgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
-  await requireConsolePage();
+  const actor = await requireConsolePage();
   const { name } = await params;
   let agents;
   try {
@@ -64,7 +67,10 @@ export default async function AgentPage({
           notes: await fallbackNotes(name),
         }
       : undefined;
+  const access = await agentAccess.agentAccess(actor.id,name);
+  const directory = await members.listMembers(actor.id);
   return (
+    <>
     <AgentDetail
       routing={routing}
       outsideTools={outsideTools}
@@ -92,5 +98,7 @@ export default async function AgentPage({
           : { available: false }
       }
     />
+    {definition.status === "fulfilled" && definition.value.initial && <AgentAccess name={name} hash={definition.value.initial.hash} access={access} members={directory.filter(entry=>entry.member.status==='active').map(entry=>({id:entry.member.id,displayName:entry.displayName}))}/>}
+    </>
   );
 }
