@@ -246,10 +246,17 @@ const SEED_ROWS: SeedRow[] = [
     [FIXTURE_OWNER]),
 
   // Financial evidence is member-scoped but survives erasure with its person metadata removed.
-  row("budget_accounts", "live_member_id", FIXTURE_OWNER,
-    `WITH installation AS (INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id) VALUES('a1111111-1111-4111-8111-111111111111','fixture-installation','installation','a1111111-1111-4111-8111-111111111111') RETURNING id)
-     INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,canonical_suppression_hash,provider_suppression_hashes)
-       VALUES('a2222222-2222-4222-8222-222222222222','fixture-installation','member','a1111111-1111-4111-8111-111111111111',$1,repeat('d',64),ARRAY[repeat('e',64)])`,[FIXTURE_OWNER]),
+  {
+    table: "budget_accounts", column: "live_member_id", value: FIXTURE_OWNER,
+    insert: async (pool) => {
+      // The member guard must see its installation account in an earlier statement.
+      // A sibling data-changing CTE shares the outer statement's snapshot.
+      await pool.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id)
+        VALUES('a1111111-1111-4111-8111-111111111111','fixture-installation','installation','a1111111-1111-4111-8111-111111111111')`);
+      await pool.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,canonical_suppression_hash,provider_suppression_hashes)
+        VALUES('a2222222-2222-4222-8222-222222222222','fixture-installation','member','a1111111-1111-4111-8111-111111111111',$1,repeat('d',64),ARRAY[repeat('e',64)])`, [FIXTURE_OWNER]);
+    },
+  },
   row("budget_windows", "live_member_id", FIXTURE_OWNER,
     `WITH installation_window AS (INSERT INTO budget_windows(id,account_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision)
        VALUES('a6666666-6666-4666-8666-666666666666','a1111111-1111-4111-8111-111111111111',now(),now()+interval '1 day',0,1,0) RETURNING id)
