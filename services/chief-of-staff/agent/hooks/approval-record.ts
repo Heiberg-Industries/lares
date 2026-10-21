@@ -11,7 +11,8 @@ import { makeApprovalRecord } from "@lares/agent-kit/approval-record-hook";
 export { makeApprovalRecord };
 export type { ApprovalRecordDeps } from "@lares/agent-kit/approval-record-hook";
 
-const live = makeApprovalRecord();
+import {personalSendInputRequested,personalSendInputResolved} from '../../lib/personal-send-approval.js';
+const live = makeApprovalRecord({personalRequested:(r,c)=>personalSendInputRequested(r,c as never),personalResolved:(r,o,c)=>personalSendInputResolved(r,o,c as never)});
 
 
 export default defineHook({

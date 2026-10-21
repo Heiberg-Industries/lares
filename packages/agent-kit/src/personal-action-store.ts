@@ -20,21 +20,21 @@ const MAX_ENVELOPE_BYTES = MAX_CIPHERTEXT_LENGTH / 4 * 3 - 12 - 16;
 const id = z.string().min(1).max(512).refine(s => !/[\x00-\x1f\x7f]/.test(s));
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const header = z.string().max(998).refine(s => Buffer.byteLength(s,'utf8')<=998 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(s));
-const mailSchema = z.strictObject({
+export const personalMailPayloadSchema = z.strictObject({
   to: z.array(z.email().max(254).refine(s => !/[\x00-\x20\x7f]/.test(s))).min(1).max(50),
   subject: header,
   body: z.string().max(100_000).refine(s => Buffer.byteLength(s,'utf8')<=100_000 && !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/.test(s)),
 });
-export type PersonalMailPayload = z.infer<typeof mailSchema>;
+export type PersonalMailPayload = z.infer<typeof personalMailPayloadSchema>;
 const selectionSchema = z.strictObject({ actorMemberId: id, agentId: id, incarnation: z.uuid(),
   sessionId: id, originalTurnId: id, originalCallId: id, accountId: id,
   accountGeneration: z.number().int().nonnegative(), resourceBindingId: id, connectorId: id,
   kind: z.literal('mail.send') });
 export type PersonalActionSelection = z.infer<typeof selectionSchema>;
-const prepareSchema = selectionSchema.extend({ payload: mailSchema });
+const prepareSchema = selectionSchema.extend({ payload: personalMailPayloadSchema });
 export type TrustedPersonalActionEnvelope = z.infer<typeof prepareSchema>;
 const approvalReferenceSchema = z.strictObject({ actionId: z.uuid(), payloadHash: hash,
-  approvalCallId: id, requestId: id, resolvedByMemberId: id, selection: selectionSchema });
+  approvalCallId: id, requestId: id, resolvedByMemberId: id, policyHash: hash.optional(), selection: selectionSchema });
 export type PersonalActionApprovedReference = z.infer<typeof approvalReferenceSchema>;
 const receiptId = z.string().min(1).max(256).regex(/^[A-Za-z0-9._:@/+=-]+$/);
 const receiptSchema = z.discriminatedUnion('state', [
@@ -73,14 +73,14 @@ function originalHash(s:PersonalActionSelection):string {
     .map(v=>`${[...v].length}:${v}`).join('')).digest('hex');
 }
 /** The ledger descriptor contains identifiers and a hash, never plaintext or custody coordinates. */
-export function personalActionApprovalDescriptor(action:PersonalActionOutcome, s:PersonalActionSelection) {
-  return {purpose:PURPOSE,version:1,actionId:action.actionId,payloadHash:action.payloadHash,
+export function personalActionApprovalDescriptor(action:PersonalActionOutcome, s:PersonalActionSelection, policyHash?:string) {
+  return {...(policyHash===undefined?{}:{policyHash:hash.parse(policyHash)}),purpose:PURPOSE,version:1,actionId:action.actionId,payloadHash:action.payloadHash,
     selection:selectionSchema.parse(s),expiresAt:action.expiresAt};
 }
 // Only a live winning claim can mint these process-local opaque values. Durable replay cannot.
 declare const claimBrand:unique symbol;
 export type PersonalActionClaimPermit = Readonly<{[claimBrand]:true}>;
-interface PermitData { row:Row; payload:PersonalMailPayload; consumed:boolean }
+interface PermitData { row:Row; payload:PersonalMailPayload; consumed:boolean; policyHash?:string }
 
 export class PgPersonalActionStore {
   private readonly permits=new WeakMap<object,PermitData>();
@@ -98,7 +98,7 @@ export class PgPersonalActionStore {
   private payload(r:Row):PersonalMailPayload {
     try {
       const sealed=z.strictObject({purpose:z.literal(PURPOSE),version:z.literal(1),actionId:z.uuid(),
-        selection:selectionSchema,payload:mailSchema}).parse(JSON.parse(this.crypto.decrypt(r.payload_ciphertext)));
+        selection:selectionSchema,payload:personalMailPayloadSchema}).parse(JSON.parse(this.crypto.decrypt(r.payload_ciphertext)));
       if (r.payload_version!==1 || sealed.actionId!==r.id || !same(sealed.selection,selection(r)) ||
           payloadFingerprint(r.kind,sealed.payload)!==r.payload_hash) refuse();
       return sealed.payload;
@@ -133,12 +133,13 @@ export class PgPersonalActionStore {
       return outcome(rows[0]);
     });
   }
-  private async approval(db:PoolClient,r:Row,callId:string,requestId:string,approvedBy?:string):Promise<void> {
+  private async approval(db:PoolClient,r:Row,callId:string,requestId:string,approvedBy?:string,link=false,policyHash?:string):Promise<void> {
     const {rows}=await db.query(`SELECT * FROM approval_asks WHERE call_id=$1 FOR UPDATE`,[callId]);
     const a=rows[0];
-    if(!a||a.request_id!==requestId||a.tool!==PERSONAL_MAIL_SEND_TOOL||a.agent!==r.agent||
+    if(!a||(!(link&&a.request_id===null)&&a.request_id!==requestId)||a.tool!==PERSONAL_MAIL_SEND_TOOL||a.agent!==r.agent||
       a.acting_member_id!==r.actor_member_id||a.session_id!==r.session_id||a.payload_hash!==r.payload_hash||
-      !same(a.original_authority,personalActionApprovalDescriptor(outcome(r),selection(r)))) refuse();
+      !same(a.original_authority,personalActionApprovalDescriptor(outcome(r),selection(r),a.original_authority?.policyHash))) refuse();
+    if(policyHash!==undefined&&a.original_authority?.policyHash!==policyHash)refuse();
     if(approvedBy!==undefined&&(approvedBy!==r.actor_member_id||a.resolved_by_member_id!==approvedBy||a.outcome!=='approved'||!a.answered_at)) refuse();
     // Exact reservation expiry AND the existing ledger TTL use the DB clock after lock waits.
     const alive=await db.query('SELECT $1::timestamptz>clock_timestamp() AND $2::timestamptz+($3*interval \'1 millisecond\')>clock_timestamp() AS alive',
@@ -150,10 +151,30 @@ export class PgPersonalActionStore {
     return this.transaction(async db=>{
       const r=await this.row(db,a.actionId,a.actorMemberId);
       if(r.state!=='awaiting_approval'&&!(r.state==='awaiting_dispatch'&&r.approval_call_id===a.approvalCallId&&r.approval_request_id===a.requestId)) refuse();
-      await this.approval(db,r,a.approvalCallId,a.requestId);
+      await this.approval(db,r,a.approvalCallId,a.requestId,undefined,true);
+      await db.query('UPDATE approval_asks SET request_id=$2 WHERE call_id=$1 AND (request_id IS NULL OR request_id=$2)',[a.approvalCallId,a.requestId]);
       const {rows}=await db.query<Row>(`UPDATE personal_actions SET approval_call_id=$2,approval_request_id=$3,state='awaiting_dispatch' WHERE id=$1 RETURNING *`,[r.id,a.approvalCallId,a.requestId]);
       return outcome(rows[0]);
     });
+  }
+  /** Trusted human preparation only. The proposal is durable before the framework gets a card. */
+  async reserveApproval(actionId:string,actorMemberId:string,turnSequence:number,policyHash?:string):Promise<void> {
+    await this.transaction(async db=>{
+      const r=await this.row(db,actionId,actorMemberId);
+      if(r.state!=='awaiting_approval')refuse();
+      const descriptor=personalActionApprovalDescriptor(outcome(r),selection(r),policyHash);
+      await db.query(`INSERT INTO approval_asks(call_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,turn_sequence)
+        VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8) ON CONFLICT DO NOTHING`,
+        [r.original_call_id,r.agent,PERSONAL_MAIL_SEND_TOOL,r.payload_hash,JSON.stringify(descriptor),r.actor_member_id,r.session_id,turnSequence]);
+      const a=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1 FOR UPDATE',[r.original_call_id])).rows[0];
+      if(!a||a.request_id!==null||a.outcome!==null||a.payload_hash!==r.payload_hash||!same(a.original_authority,descriptor))refuse();
+    });
+  }
+  /** Plaintext is returned only to trusted server code already protecting current own-account
+   * authority on this client. Never use as a model-facing lookup or return custody material. */
+  async proposalInTransaction(actorMemberId:string,actionId:string,db:PoolClient) {
+    const r=await this.row(db,actionId,actorMemberId);
+    return {outcome:outcome(r),selection:selection(r),payload:this.payload(r)};
   }
   async claimAction(input:PersonalActionApprovedReference):Promise<{outcome:PersonalActionOutcome;permit?:PersonalActionClaimPermit}> {
     const a=approvalReferenceSchema.parse(input);
@@ -166,7 +187,7 @@ export class PgPersonalActionStore {
         const {rows}=await db.query<Row>("UPDATE personal_actions SET state='expired' WHERE id=$1 RETURNING *",[r.id]);
         return {row:rows[0]};
       }
-      await this.approval(db,r,a.approvalCallId,a.requestId,a.resolvedByMemberId);
+      await this.approval(db,r,a.approvalCallId,a.requestId,a.resolvedByMemberId,false,a.policyHash);
       const payload=this.payload(r),attempt=randomUUID();
       const {rows}=await db.query<Row>(`UPDATE personal_actions SET state='claimed',attempt_id=$2,claimed_at=clock_timestamp()
         WHERE id=$1 AND state='awaiting_dispatch' AND expires_at>clock_timestamp()
@@ -177,7 +198,7 @@ export class PgPersonalActionStore {
     });
     if(!result.payload) return {outcome:outcome(result.row)};
     const permit=Object.freeze({}) as PersonalActionClaimPermit;
-    this.permits.set(permit,{row:result.row,payload:result.payload,consumed:false});
+    this.permits.set(permit,{row:result.row,payload:result.payload,consumed:false,policyHash:a.policyHash});
     return {outcome:outcome(result.row),permit};
   }
   /** Future executor only, AFTER fresh dispatch-authority validation. This does not validate
@@ -193,7 +214,7 @@ export class PgPersonalActionStore {
     const r=await this.row(db,p.row.id,p.row.actor_member_id);
     if(r.state!=='claimed'||r.attempt_id!==p.row.attempt_id||!same(selection(r),selection(p.row))||
       r.payload_hash!==p.row.payload_hash||!same(this.payload(r),p.payload)) refuse();
-    await this.approval(db,r,p.row.approval_call_id!,p.row.approval_request_id!,p.row.actor_member_id);
+    await this.approval(db,r,p.row.approval_call_id!,p.row.approval_request_id!,p.row.actor_member_id,false,p.policyHash);
   }
   private settlement(permit:PersonalActionClaimPermit,input:PersonalActionReceipt):(db:PoolClient)=>Promise<PersonalActionOutcome> {
     const receipt=receiptSchema.parse(input),p=this.permits.get(permit); if(!p) refuse();
@@ -215,6 +236,19 @@ export class PgPersonalActionStore {
    * leaves the durable claim nonretryable; never return this snapshot as proof of settlement. */
   async recordOutcomeInTransaction(permit:PersonalActionClaimPermit,input:PersonalActionReceipt,db:PoolClient):Promise<PersonalActionOutcome> {
     return this.settlement(permit,input)(db);
+  }
+  async cancelApprovalRequest(actorMemberId:string,requestId:string,terminal:'cancelled'|'ignored'|'invalid'):Promise<PersonalActionOutcome>{
+    return this.transaction(async db=>{
+      if(!await currentMember(db,actorMemberId))refuse();
+      const first=(await db.query<Row>('SELECT * FROM personal_actions WHERE approval_request_id=$1 AND actor_member_id=$2 FOR UPDATE',[requestId,actorMemberId])).rows[0];
+      if(!first)refuse();
+      const current=await personalActionForRequest(db,{requestId,memberId:actorMemberId,agentId:first.agent,sessionId:first.session_id});
+      if(!['awaiting_approval','awaiting_dispatch','cancelled'].includes(current.outcome.state))refuse();
+      if(current.approvalOutcome!==null&&!['approved',terminal].includes(current.approvalOutcome))refuse();
+      const {rows}=await db.query<Row>("UPDATE personal_actions SET state='cancelled' WHERE id=$1 RETURNING *",[first.id]);
+      await db.query(`UPDATE approval_asks SET outcome=$2,answered_at=COALESCE(answered_at,clock_timestamp()) WHERE request_id=$1`,[requestId,terminal]);
+      return outcome(rows[0]);
+    });
   }
   async readOutcome(actorMemberId:string,actionId:string):Promise<PersonalActionOutcome> {
     return this.transaction(async db=>{
@@ -244,4 +278,20 @@ export class PgPersonalActionStore {
     const r=await this.pool.query('DELETE FROM personal_actions WHERE actor_member_id=$1 AND created_at<$2',[actorMemberId,cutoff]);
     return r.rowCount??0;
   }
+}
+
+/** Resolve an EXISTING exact request, locking action before approval. This authenticates nobody;
+ * callers separately verify the actual responder and current private binding. No plaintext. */
+export async function personalActionForRequest(db:{query(sql:string,values?:unknown[]):Promise<{rows:any[]}>},input:{requestId:string;memberId:string;agentId:string;sessionId:string}) {
+  const r=(await db.query(`SELECT * FROM personal_actions WHERE approval_request_id=$1 AND actor_member_id=$2
+    AND agent=$3 AND session_id=$4 FOR UPDATE`,[input.requestId,input.memberId,input.agentId,input.sessionId])).rows[0] as Row|undefined;
+  if(!r)refuse();
+  const a=(await db.query('SELECT * FROM approval_asks WHERE call_id=$1 FOR UPDATE',[r.original_call_id])).rows[0];
+  if(!a||r.approval_call_id!==r.original_call_id||a.request_id!==input.requestId||a.tool!==PERSONAL_MAIL_SEND_TOOL||a.agent!==r.agent||
+    a.acting_member_id!==r.actor_member_id||a.session_id!==r.session_id||a.payload_hash!==r.payload_hash||
+    !same(a.original_authority,personalActionApprovalDescriptor(outcome(r),selection(r),a.original_authority?.policyHash)))refuse();
+  const alive=(await db.query(`SELECT $1::timestamptz>clock_timestamp() AND $2::timestamptz+($3*interval '1 millisecond')>clock_timestamp() AS alive`,[r.expires_at,a.asked_at,APPROVAL_TTL_MS])).rows[0]?.alive===true;
+  return {reference:{actionId:r.id,payloadHash:r.payload_hash,approvalCallId:r.original_call_id,requestId:input.requestId,
+    resolvedByMemberId:r.actor_member_id,policyHash:a.original_authority?.policyHash as string|undefined,selection:selection(r)} satisfies PersonalActionApprovedReference,
+    outcome:outcome(r),approvalOutcome:a.outcome as string|null,resolvedByMemberId:a.resolved_by_member_id as string|null,alive};
 }

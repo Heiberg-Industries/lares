@@ -1,6 +1,7 @@
 /** Real PostgreSQL authority, custody, immutable action and receipt; fake provider only.
  * Resolver contexts below are SYNTHETIC caller fixtures, not the installed Eve resolver.
  * Exact approval-response admission, catalogue enablement and model continuation are separate. */
+vi.mock('@lares/agent-kit/google-auth',async original=>({...await original<typeof import('@lares/agent-kit/google-auth')>(),readTokenEncKey:()=> '1'.repeat(64)}));
 import { beforeAll,beforeEach,afterAll,describe,it,expect,vi } from 'vitest';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { readFileSync,readdirSync } from 'node:fs';
@@ -8,10 +9,15 @@ import { Pool } from 'pg';
 import { PgAccountStore,type TrustedAccountAdapter } from '@lares/agent-kit/account-store';
 import { PgMemberStore } from '@lares/agent-kit/member-store';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
-import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
+import {assertPrivateConsoleRequest} from '@lares/agent-kit/private-console-envelope';
+import { bindConsoleSession,consoleRouteAdmission } from '@lares/agent-kit/console-turn-authority';
 import { PgPersonalActionStore,personalActionApprovalDescriptor,PERSONAL_MAIL_SEND_TOOL,type PersonalActionApprovedReference } from '@lares/agent-kit/personal-action-store';
 import { encryptSecret,decryptSecret } from '@lares/agent-box/lib/crypto.js';
-import { executeApprovedPersonalSend,type PersonalSendRuntime } from '../lib/personal-send.js';
+import {getPool,closePool} from '@lares/agent-kit/db';
+import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall} from '../lib/personal-send-approval.js';
+import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
+import {readPersonalResource} from '../lib/personal-reads.js';
+import { executeApprovedPersonalSend,requirePersonalSendPolicy,type PersonalSendRuntime } from '../lib/personal-send.js';
 import { quiet } from './helpers/quiet-pool.js';
 const incarnation='11111111-1111-4111-8111-111111111111',nonce='a'.repeat(43),key='1'.repeat(64);
 const env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:'member-a'};
@@ -24,8 +30,9 @@ const runtime:PersonalSendRuntime={open:async(selection,credential,signal,rotate
   opens();await hold?.();signal.throwIfAborted();await rotate(encryptSecret('rotated-refresh',key));
   return {adapter:{send:async payload=>{sends(payload);return {state:'accepted',providerStatus:202};}}};
 }};
+const resolverAuth=(requestId:string,option='approve',member='member-a')=>({authenticator:'lares-console',attributes:{lares_resolver_member_id:member,lares_resume_request_id:requestId,lares_resume_option:option,lares_purpose:'resolver'}});
 const context=(ref:PersonalActionApprovedReference,purpose='resolver',member='member-a')=>({callId:ref.selection.originalCallId,
-  session:{id:'wrun_send',turn:{id:'resolver-turn',sequence:1},auth:{current:auth(purpose,member),initiator:auth()}}});
+  session:{id:'wrun_send',turn:{id:'resolver-turn',sequence:1},auth:{current:purpose==='resolver'?resolverAuth(ref.requestId,'approve',member):auth(purpose,member),initiator:auth()}}});
 async function connected(member='member-a'){
  const adapter:TrustedAccountAdapter={connectorId:'microsoft',verifyAccount:async()=>({issuer:'https://login.microsoftonline.com/fixture/v2.0',subject:member,label:'Own account'}),
    verifyResource:async()=>({resourceKind:'mailbox',externalId:member,providerLabel:'Own mailbox'})};
@@ -35,24 +42,26 @@ async function connected(member='member-a'){
  }},['mailbox']);
  const [resource]=await accounts.listResources(member,account.id,account.generation);return {account,resource};
 }
+async function policyHash(){const db=await pool.connect();try{await db.query('BEGIN');const value=await requirePersonalSendPolicy(db,'helper',incarnation,'member-a');await db.query('COMMIT');return value;}finally{db.release();}}
 async function ready(approvalLifetimeMs=86_400_000,existing?:Awaited<ReturnType<typeof connected>>){
  const own=existing??await connected(),selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId:'wrun_send',originalTurnId:'original-turn',
    originalCallId:`call-${++call}`,accountId:own.account.id,accountGeneration:own.account.generation,resourceBindingId:own.resource.id,connectorId:'microsoft',kind:'mail.send' as const};
+ const capturedPolicy=await policyHash();
  const payload={to:['recipient@example.invalid'],subject:'Exact subject',body:'Exact body'},action=await actions.prepareAction({...selection,payload}),requestId=`request-${call}`;
  await pool.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at,asked_at)
    VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a','wrun_send','approved',clock_timestamp(),clock_timestamp()-interval '24 hours'+($6*interval '1 millisecond'))`,
-   [selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection)),approvalLifetimeMs]);
+   [selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,capturedPolicy)),approvalLifetimeMs]);
  await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
- return {own,payload,ref:{actionId:action.actionId,payloadHash:action.payloadHash,approvalCallId:selection.originalCallId,requestId,resolvedByMemberId:'member-a',selection} satisfies PersonalActionApprovedReference};
+ return {own,payload,ref:{actionId:action.actionId,payloadHash:action.payloadHash,approvalCallId:selection.originalCallId,requestId,resolvedByMemberId:'member-a',policyHash:capturedPolicy,selection} satisfies PersonalActionApprovedReference};
 }
 const execute=(ref:PersonalActionApprovedReference,extra:Partial<Parameters<typeof executeApprovedPersonalSend>[2]>={})=>executeApprovedPersonalSend(context(ref),ref,{pool,actions,runtime,env,...extra});
 const stored=async(id:string)=>(await pool.query('SELECT * FROM personal_actions WHERE id=$1',[id])).rows[0];
 beforeAll(async()=>{
- container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
+ container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();vi.stubEnv('DATABASE_URL',container.getConnectionUri());for(const [k,v]of Object.entries(env))vi.stubEnv(k,v);quiet(getPool());pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
  const sql=new URL('../../box/sql/',import.meta.url);for(const name of readdirSync(sql).filter(n=>n.endsWith('.sql')).sort())await pool.query(readFileSync(new URL(name,sql),'utf8'));
  accounts=new PgAccountStore(pool);actions=new PgPersonalActionStore(pool,crypto);
 },120_000);
-afterAll(async()=>{await pool?.end();await container?.stop();});
+afterAll(async()=>{await closePool();await pool?.end();await container?.stop();vi.unstubAllEnvs();});
 beforeEach(async()=>{
  await pool.query('DELETE FROM personal_actions; DELETE FROM approval_asks; DELETE FROM console_session_bindings; DELETE FROM connected_accounts; DELETE FROM oauth_tokens; DELETE FROM agent_resources; DELETE FROM agent_definitions; DELETE FROM ratchet');
  await pool.query(`INSERT INTO orgs(id,display_name) VALUES('fixture-org','Fixture') ON CONFLICT DO NOTHING;
@@ -184,5 +193,78 @@ describe('personal mail current authority executor',()=>{
    for(const receipt of [{state:'accepted',providerStatus:200},{state:'accepted',providerStatus:202,providerReceiptId:''},{state:'accepted',providerStatus:202,raw:'private'}])
      await expect(pool.query("UPDATE personal_actions SET state='accepted',receipt=$2::jsonb,completed_at=clock_timestamp() WHERE id=$1",[next.ref.actionId,JSON.stringify(receipt)])).rejects.toThrow();
    expect(claim.permit).toBeDefined();
+ });
+});
+
+async function proposed(){
+ const own=await connected(),input={selection:{accountId:own.account.id,generation:own.account.generation,resourceBindingId:own.resource.id},to:['recipient@example.invalid'],subject:'Exact review',body:'Whole body'},callId=`human-${++call}`;
+ const human={callId,toolInput:input,approvedTools:new Set([PERSONAL_MAIL_SEND_TOOL]),session:{id:'wrun_send',turn:{id:'original-human',sequence:0},auth:{current:auth(),initiator:auth()}}};
+ expect(await personalSendApprovalRequest(human)).toBe('user-approval');
+ const row=(await pool.query('SELECT * FROM personal_actions WHERE original_call_id=$1',[callId])).rows[0];
+ expect(row.state).toBe('awaiting_approval');expect((await pool.query('SELECT request_id FROM approval_asks WHERE call_id=$1',[callId])).rows[0].request_id).toBeNull();
+ const requestId=`framework-${call}`;await personalSendInputRequested({requestId,callId,input},human);
+ const resume={callId,toolInput:input,approvedTools:new Set([PERSONAL_MAIL_SEND_TOOL]),session:{id:'wrun_send',turn:{id:'resolver-only',sequence:1},auth:{current:resolverAuth(requestId),initiator:auth()}}};
+ const response={request:{requestId,callId,toolName:PERSONAL_MAIL_SEND_TOOL,toolInput:input},responder:resume.session.auth.current,session:{id:'wrun_send',initiator:auth()}};
+ return {own,input,callId,requestId,row,resume,response};
+}
+describe('exact personal approval lifecycle through authenticated resolver references',()=>{
+ it('admits one exact raw response into resolver-only attributes without human authority',async()=>{
+  const p=await proposed();
+  const request=()=>new Request('http://runtime.invalid/eve/v1/session/wrun_send',{method:'POST',headers:{'x-lares-member-id':'member-a','x-lares-admission':nonce,'x-lares-purpose':'resolver'},body:JSON.stringify({inputResponses:[{requestId:p.requestId,optionId:'approve'}]})});
+  await expect(consoleRouteAdmission(request(),pool,env)).rejects.toThrow();
+  const exact=request();await assertPrivateConsoleRequest(exact);
+  expect(await consoleRouteAdmission(exact,pool,env)).toEqual(resolverAuth(p.requestId).attributes);
+  await expect(consoleRouteAdmission(exact.clone(),pool,env)).rejects.toThrow();
+ });
+ it('prepares before a card, authenticates the actual response, revalidates SDK policy and returns the original action only',async()=>{
+  const p=await proposed();await expect(requirePrivateConsoleResume(p.resume,'model')).rejects.toThrow();
+  expect(await personalSendApprovalResponse(p.response)).toEqual({status:'allowed'});
+  expect(await personalSendApprovalRequest(p.resume)).toBe('user-approval');
+  expect((await requirePersonalSendCall(p.resume,p.input)).reference.actionId).toBe(p.row.id);
+  expect((await requirePrivateConsoleResume(p.resume,'model')).reference.requestId).toBe(p.requestId);
+  expect(p.resume.session.auth.current.attributes).not.toHaveProperty('lares_member_id');
+  expect(p.resume.session.auth.current.attributes).not.toHaveProperty('lares_admission_nonce');
+ });
+ it.each(['member','request','call','session','payload','selection'] as const)('refuses changed response %s before recording approval',async changed=>{
+  const p=await proposed(),response=structuredClone(p.response);
+  if(changed==='member')response.responder=resolverAuth(p.requestId,'approve','member-b');
+  if(changed==='request')response.request.requestId='other';if(changed==='call')response.request.callId='other';if(changed==='session')response.session.id='other';
+  if(changed==='payload')response.request.toolInput.body='Changed';if(changed==='selection')response.request.toolInput.selection.generation++;
+  await expect(personalSendApprovalResponse(response)).rejects.toThrow();
+  expect((await pool.query('SELECT outcome FROM approval_asks WHERE call_id=$1',[p.callId])).rows[0].outcome).toBeNull();expect(sends).not.toHaveBeenCalled();
+ });
+ it.each(['deny-restore','absent-never-absent'] as const)('invalidates an enabled pending approval after %s board history',async change=>{
+  if(change==='deny-restore')await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','gated','fixture')");
+  const p=await proposed();
+  if(change==='deny-restore'){
+   await pool.query("UPDATE ratchet SET level='never' WHERE agent='helper'");await pool.query("UPDATE ratchet SET level='gated' WHERE agent='helper'");
+  }else{
+   await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','never','fixture')");await pool.query("DELETE FROM ratchet WHERE agent='helper'");
+  }
+  await expect(personalSendApprovalResponse(p.response)).rejects.toThrow();
+  expect(await personalSendApprovalRequest(p.resume)).toBe('denied');expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+ });
+ it('refuses restored board policy after response approval and after claim before provider open',async()=>{
+  const p=await proposed();await personalSendApprovalResponse(p.response);
+  const ref=(await requirePersonalSendCall(p.resume,p.input)).reference;
+  const claim=actions.claimAction.bind(actions);vi.spyOn(actions,'claimAction').mockImplementationOnce(async input=>{
+   const result=await claim(input);
+   await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','never','fixture')");await pool.query("DELETE FROM ratchet WHERE agent='helper'");return result;
+  });
+  expect((await execute(ref)).state).toBe('not_dispatched');expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+ });
+ it('cancels exactly the unclaimed proposal and permits only its bounded model response',async()=>{
+  const p=await proposed();p.resume.session.auth.current=resolverAuth(p.requestId,'cancel');
+  expect(await personalSendInputResolved(p.requestId,'cancelled',p.resume)).toBe(true);
+  expect((await stored(p.row.id)).state).toBe('cancelled');await requirePrivateConsoleResume(p.resume,'model');
+  await expect(requirePersonalSendCall(p.resume,p.input)).rejects.toThrow();
+  expect(await personalSendApprovalRequest({...p.resume,callId:'cancel-second'})).toBe('denied');await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+ });
+ it('never treats inherited approvedTools or a previous ledger row as a new call/read/draft instruction',async()=>{
+  const p=await proposed();await personalSendApprovalResponse(p.response);
+  expect(await personalSendApprovalRequest({...p.resume,callId:'second-call'})).toBe('denied');
+  await expect(requirePersonalSendCall({...p.resume,callId:'second-call'},p.input)).rejects.toThrow();
+  await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();
+  expect((await pool.query('SELECT count(*)::int AS n FROM personal_actions')).rows[0].n).toBe(1);expect(sends).not.toHaveBeenCalled();
  });
 });

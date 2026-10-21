@@ -1,3 +1,6 @@
+import {currentMember} from './member-store.js';
+import {verifiedPrivateConsoleResponse} from './private-console-envelope.js';
+import {personalActionForRequest} from './personal-action-store.js';
 /** Trusted server admission only. No model-facing input can supply these coordinates.
  * This bounded runtime supports explicitly authorised members in singleton private console audiences.
  * Native channels and approval resumes do not inherit this authority.
@@ -171,6 +174,18 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
     if (body.message !== undefined && body.inputResponses !== undefined) denied();
     const expected = body.inputResponses !== undefined ? (purpose!.startsWith('legacy-') ? 'legacy-resolver' : 'resolver') : 'human';
     if (purpose !== expected) denied();
+  }
+  if(purpose==='resolver'){
+    const answer=verifiedPrivateConsoleResponse(request);
+    await authorityTransaction(db,async client=>{
+      const member=await currentMember(client as never,memberId!);if(!member)denied();
+      await client.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
+      const locked=await currentMember(client as never,memberId!,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)denied();
+      const current=await personalActionForRequest(client,{requestId:answer.requestId,memberId:memberId!,agentId:own!.name,sessionId:sessionId!});
+      if(current.reference.selection.incarnation!==own!.incarnation||(answer.optionId==='approve'&&!current.alive))denied();
+      await requireConsoleSessionBinding(tuple,client,env);
+    });
+    return {lares_resolver_member_id:memberId!,lares_purpose:'resolver',lares_resume_request_id:answer.requestId,lares_resume_option:answer.optionId};
   }
   return purpose!.startsWith('legacy-')
     ? {lares_resolver_member_id:memberId!,lares_purpose:purpose!}

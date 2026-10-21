@@ -1,3 +1,4 @@
+import {personalSendApprovalRequest,personalSendApprovalResponse,requirePersonalSendCall} from './personal-send-approval.js';
 import { assertPrivateConsoleTool } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
   requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
@@ -198,6 +199,7 @@ export async function assertApproval(
 /** Preserve the authored native policy; bound console calls additionally require exact authority. */
 export async function catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  if(name==='personal_mailbox_send')return personalSendApprovalRequest(ctx as never);
   if (!isExactApprovalContext(ctx)) {
     await guardConsoleToolContext(ctx);
     return (authored as (ctx:unknown)=>unknown)(ctx);
@@ -214,11 +216,13 @@ export async function catalogueApprovalRequest(name: string, ctx: unknown, autho
 }
 export async function catalogueApprovalResponse(name: string, ctx: unknown): Promise<unknown> {
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  if(name==='personal_mailbox_send')return personalSendApprovalResponse(ctx as never);
   if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
   return approveExactResponse(ctx as ExactResponseContext,{adapter:deadlineApprovalAdapter});
 }
 export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
   assertPrivateConsoleTool(ctx,"chief-of-staff",name);
+  if(name==='personal_mailbox_send'){await requirePersonalSendCall(ctx as never,input);return;}
   if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
     await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:deadlineApprovalAdapter});
     return;

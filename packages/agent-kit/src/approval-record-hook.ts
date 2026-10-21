@@ -51,6 +51,8 @@ function warn(where: string, err: unknown): void {
 }
 
 export interface ApprovalRecordDeps {
+  personalRequested?: (request:{requestId:string;callId:string;input:unknown},ctx:unknown)=>Promise<void>;
+  personalResolved?: (requestId:string,outcome:string,ctx:unknown)=>Promise<boolean>;
   record?: (a: { requestId: string; callId: string; agent: string; tool: string; payloadHash: string }) => void;
   answer?: (a: { requestId: string; outcome: AskOutcome }) => void;
 }
@@ -92,6 +94,10 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         const callId = r.action?.callId;
         const toolName = r.action?.toolName;
         if (typeof requestId !== "string" || typeof callId !== "string" || typeof toolName !== "string") continue;
+        if(toolName==='personal_mailbox_send'){
+          if(!deps.personalRequested)throw new Error('Personal approval handler unavailable');
+          await deps.personalRequested({requestId,callId,input:r.action?.input},ctx);continue;
+        }
         if (hasConsoleTurnAuthorityTag(ctx)) {
           await attachExactApproval({requestId,callId,tool:toolName,input:r.action?.input});
           continue;
@@ -123,6 +129,7 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         if (typeof requestId !== "string" || typeof r.outcome !== "string") continue;
         const outcome = OUTCOME_MAP[r.outcome];
         if (outcome === undefined) continue;
+        if(await deps.personalResolved?.(requestId,outcome,ctx))continue;
         if (hasConsoleTurnAuthorityTag(ctx)) {
           await settleExactInput(requestId,outcome);
           continue;
