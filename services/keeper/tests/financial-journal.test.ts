@@ -37,7 +37,8 @@ it.each([false,true])('reserves record capacity before work and keeps its final 
   let called=false;await expect(j.operation('admit',async()=>{called=true;})).rejects.toThrow('capacity');expect(called).toBe(false);
   j.close();expect(f.records()).toHaveLength(JOURNAL_MAX_RECORDS);
   const full=readFileSync(path);expect(()=>f.open()).toThrow('unavailable');expect(readFileSync(path)).toEqual(full);
-});
+// Each case validates the full 8192-record history repeatedly; allow bounded CI headroom.
+},30_000);
 it('does not release an active barrier or rearm it after a callback failure',async()=>{
   const f=fixture(),j=open(f);let resume!:()=>void;const paused=new Promise<void>(resolve=>{resume=resolve;});
   const running=j.operation('admit',async()=>{await paused;throw new Error('synthetic crash');});
