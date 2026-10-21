@@ -2,6 +2,7 @@ import {z} from 'zod';
 import {registerAction} from '../lib/actions.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
+import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
 import { PgCredentialStore } from "../lib/credential-store.js";
@@ -62,6 +63,10 @@ async function main(): Promise<void> {
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await financialJournal.freezeForRestore();return {frozen:true};
         }});
+        registerAction({name:'budget.provision-accounts',hostOnly:true,input:budgetAccountProvisionPlanSchema,secretFields:['memberIds'],run:async input=>{
+            if(!financialJournal)throw new Error('Financial custody is not configured');
+            return provisionBudgetAccounts(budgetPool,financialJournal,input);
+        },successDetail:result=>`closed unreconciled accounts provisioned for ${result.members} members`});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,

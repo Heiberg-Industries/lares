@@ -11,7 +11,7 @@ const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().uuid(),uint=z.string
 const money=z.string().refine(v=>{try{return canonicalBudgetMoney(v)===v;}catch{return false;}});
 const instant=z.iso.datetime({precision:6}),zero='0'.repeat(64);
 export const FINANCIAL_ATOM_SCHEMA=z.discriminatedUnion('kind',[
-  z.object({kind:z.literal('account'),id,installationAccountId:id,accountKind:z.enum(['installation','member']),state:z.enum(['closed','open','frozen','retired']),reason:z.enum(['unreconciled','approved','policy_changed','member_removed','member_erased','receipt_conflict','over_reservation','recovery_mismatch']),activeWindowId:id.nullable(),installationCap:money.nullable(),selectedEndpointHash:hash.nullable(),endpointGeneration:uint,recoveryEpochHash:hash.nullable(),canonicalSuppressionHash:hash.nullable(),providerSuppressionHashes:z.array(hash).max(64)}).strict(),
+  z.object({kind:z.literal('account'),id,installationAccountId:id,accountKind:z.enum(['installation','member']),state:z.enum(['closed','open','frozen','retired']),reason:z.enum(['unreconciled','approved','policy_changed','member_removed','member_erased','receipt_conflict','over_reservation','recovery_mismatch']),activeWindowId:id.nullable(),installationCap:money.nullable(),policyGeneration:uint,selectedEndpointHash:hash.nullable(),endpointGeneration:uint,recoveryEpochHash:hash.nullable(),canonicalSuppressionHash:hash.nullable(),providerSuppressionHashes:z.array(hash).max(64)}).strict(),
   z.object({kind:z.literal('window'),id,accountId:id,startsAt:instant,endsAt:instant,openingLiability:money,openingCap:money,policyRevision:uint}).strict(),
   z.object({kind:z.literal('binding'),id,installationAccountId:id,memberAccountId:id,endpointHash:hash,credentialGeneration:uint,profileHash:hash,maximumLiability:money,pricingProfile:gatewayPricingSchema.nullable(),state:z.enum(['active','revoked'])}).strict(),
   z.object({kind:z.literal('attempt'),id,installationAccountId:id,memberAccountId:id,bindingId:id,installationWindowId:id,memberWindowId:id,endpointHash:hash,credentialGeneration:uint,installationPolicyGeneration:uint,memberPolicyGeneration:uint,endpointGeneration:uint,recoveryEpochHash:hash,requestHash:hash,profileHash:hash,invocationHash:hash.nullable(),reservedAmount:money,installationCapSnapshot:money,memberCapSnapshot:money,createdAt:instant,expiresAt:instant,admittedAt:instant.nullable(),state:z.enum(['prepared','admitted','unknown','settled','conflict','retired']),actualAmount:money.nullable(),settlementHash:hash.nullable(),conflictReason:z.enum(['receipt_conflict','over_reservation']).nullable(),conflictHash:hash.nullable(),highestObservedLiability:money}).strict(),
@@ -27,7 +27,7 @@ export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
-const operation=z.enum(['prepare','admit','grant','unknown','settle']);
+const operation=z.enum(['prepare','provision','admit','grant','unknown','settle']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),
@@ -190,6 +190,12 @@ export class HostFinancialJournal {
   }
   propose(operationId:string,atoms:readonly FinancialAtom[]):FinancialJournalProposal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
+    // A bounded oversize proposal is known before any bytes are appended. Keep it a
+    // clean transaction abort, rather than treating a size limit as uncertain custody.
+    const record=FINANCIAL_JOURNAL_RECORD_SCHEMA.parse({version:1,sequence:this.sequence,operationId,previousDigest:this.head,kind:'proposal',atoms:[...atoms]});
+    const sum=digest(gatewayCanonical(record));
+    if(Buffer.concat([gatewayCanonical({record,digest:sum}),Buffer.from('\n')]).length>JOURNAL_MAX_RECORD_BYTES)
+      throw new Error('Financial proposal exceeds journal record limit');
     const frame=this.append({kind:'proposal',atoms:[...atoms]},operationId);this.pending.proposal=frame.digest;
     return {journalId:this.journalId,operationId,sequence:frame.sequence,digest:frame.digest};
   }
