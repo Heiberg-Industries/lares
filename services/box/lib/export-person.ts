@@ -161,6 +161,7 @@ export const SECRET_COLUMN_PATTERN =
  */
 const ALWAYS_WITHHELD: Readonly<Record<string, readonly string[]>> = {
   oauth_tokens: ["refresh_token_enc"],
+  connected_account_credentials: ["oauth_token_id"],
 };
 
 /** Never an output directory: a secrets mount or the system's own configuration. */
