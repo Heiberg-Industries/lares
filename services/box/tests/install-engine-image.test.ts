@@ -8,7 +8,7 @@
 //   (b) the docker stub TRANSLATES the call (tests/helpers/engine-docker.ts) into this
 //       checkout's real tsx, so the rendered compose.yaml and keeper.json are real files.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync, copyFileSync,
 } from "node:fs";
@@ -44,20 +44,23 @@ function stub(name: string, body = "exit 0", runner: "pnpm" | "tsx" = "pnpm") {
 const answers = ["lares.example.invalid", "owner@example.invalid", "A Name", "sk-disposable-fixture-only"].join("\n") + "\n";
 
 function run(args: string[], env: Record<string, string> = {}, input = answers) {
-  try {
-    const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", ...args], {
-      input,
-      encoding: "utf8",
-      env: {
-        PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-        STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env,
-      },
-    });
-    return { code: 0, stdout, stderr: "" };
-  } catch (e) {
-    const err = e as { status: number; stdout: string; stderr: string };
-    return { code: err.status, stdout: err.stdout ?? "", stderr: err.stderr ?? "" };
-  }
+  // spawnSync keeps stderr on success as well as on failure, so a failed assertion can show it.
+  const r = spawnSync("/bin/bash", [SCRIPT, "--yes", ...args], {
+    input,
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+      STUB_LOG: log, LARES_PREFIX: prefix, HOME: dir, ...env,
+    },
+  });
+  return { code: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
+/** Run the installer and require success; a failure shows the installer's own stderr. */
+function ok(r: ReturnType<typeof run>) {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
 }
 
 const calls = () => readFileSync(log, "utf8");
@@ -90,8 +93,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("what install.sh asks the engine image to run", () => {
   it("runs all six helpers in the named image, in the same order as before", () => {
-    const r = run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
-    expect(r.code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const runs = engineRuns();
     expect(runs.map(programOf)).toEqual([
       "render-stack.ts", "migrate.ts", "installation-settings.ts", "first-owner.ts",
@@ -107,7 +109,7 @@ describe("what install.sh asks the engine image to run", () => {
   });
 
   it("hands the database password over as a file, never as a value", () => {
-    run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const secrets = join(prefix, "etc", "lares", "secrets");
     const dbRuns = engineRuns().filter((l) => /migrate|installation-settings|first-owner|first-organisation/.test(programOf(l)));
     expect(dbRuns).toHaveLength(4);
@@ -126,7 +128,7 @@ describe("what install.sh asks the engine image to run", () => {
   });
 
   it("mounts only paths under --prefix (plus the secrets read-only), each at the same path inside", () => {
-    run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const mounts = engineRuns().flatMap((l) => [...l.matchAll(/ -v (\S+)/g)].map((m) => m[1]!));
     expect(mounts.length).toBeGreaterThan(0);
     for (const m of mounts) {
@@ -141,13 +143,13 @@ describe("what install.sh asks the engine image to run", () => {
   });
 
   it("mounts the installation's deadline calendar for the renderers only when it exists", () => {
-    run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     expect(engineRuns().join("\n")).not.toMatch(/ -v \S*srv\/lares\/installation/);
     const installation = join(prefix, "srv", "lares", "installation");
     mkdirSync(installation, { recursive: true });
     writeFileSync(join(installation, "deadline-calendar.json"), "{}\n");
     writeFileSync(log, "");
-    run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     for (const line of engineRuns().filter((l) => /render-/.test(l))) {
       expect(line).toContain(`-v ${installation}:${installation}:ro`);
     }
@@ -156,8 +158,7 @@ describe("what install.sh asks the engine image to run", () => {
   it("falls back to doctor in the engine image only when no lares-doctor is on PATH", () => {
     rmSync(join(binDir, "lares-doctor"));
     // Not a stub on PATH: the model check must reach the engine image.
-    const r = run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
-    expect(r.code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const doctor = engineRuns().find((l) => programOf(l) === "doctor.ts");
     expect(doctor, "the model check never reached the engine image").toBeDefined();
     expect(doctor).toContain("--test-model --model-only");
@@ -166,7 +167,7 @@ describe("what install.sh asks the engine image to run", () => {
   });
 
   it("keeps a lares-doctor on PATH ahead of the engine image", () => {
-    run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     expect(engineRuns().map(programOf)).not.toContain("doctor.ts");
     expect(calls()).toMatch(/^lares-doctor --test-model/m);
   });
@@ -190,18 +191,18 @@ describe("which engine image is used", () => {
 
   it("prefers LARES_ENGINE_IMAGE, then the engine-image file, then the release file", () => {
     writeFileSync(join(boxDir, "engine-image"), `${FROM_FILE}\n`);
-    expect(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir, LARES_ENGINE_IMAGE: OTHER }).code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir, LARES_ENGINE_IMAGE: OTHER }));
     expect(new Set(images())).toEqual(new Set([OTHER]));
 
     writeFileSync(log, "");
     rmSync(join(prefix), { recursive: true, force: true }); mkdirSync(prefix);
-    expect(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir }).code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir }));
     expect(new Set(images())).toEqual(new Set([FROM_FILE]));
 
     writeFileSync(log, "");
     rmSync(join(prefix), { recursive: true, force: true }); mkdirSync(prefix);
     rmSync(join(boxDir, "engine-image"));
-    expect(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir }).code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_BOX_DIR: boxDir }));
     expect(new Set(images())).toEqual(new Set([D("keeper")]));
   });
 
@@ -224,8 +225,7 @@ describe("which engine image is used", () => {
   });
 
   it("finds the image in the release file alone, with nothing else configured", () => {
-    const r = run(["--dry-run", "--release", releaseFile]);
-    expect(r.code).toBe(0);
+    ok(run(["--dry-run", "--release", releaseFile]));
     expect(calls()).toContain(`image inspect ${D("keeper")}`);
   });
 });
@@ -233,8 +233,7 @@ describe("which engine image is used", () => {
 describe("the renderers, run for real through the translated call", () => {
   it("writes a real compose.yaml and keeper.json, and installs the gateway start script from /app", () => {
     stub("docker", "exit 0", "tsx");
-    const r = run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE });
-    expect(r.code).toBe(0);
+    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const compose = readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8");
     expect(compose).toContain(D("console"));
     expect(compose).toContain(D("caddy"));

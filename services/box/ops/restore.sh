@@ -489,7 +489,7 @@ if [ -n "${LARES_WORKFLOW_VOLUMES:-}" ]; then
   say "  $step. This restore does not bring back the retained file volumes named in backup.env (${LARES_WORKFLOW_VOLUMES}); the snapshot carries them, but copying them back is still a manual job."
 fi
 step=$((step + 1))
-say "  $step. Check: sign in at https://$RESTORED_DOMAIN/; send one chat message to an agent and read the reply; open the Backup page and confirm the next backup is scheduled (run install.sh --backups again if it is not)."
+say "  $step. Check: sign in at https://$RESTORED_DOMAIN/; send one chat message to an agent and read the reply; open the Backup page and confirm the next backup is scheduled (run lares backups again if it is not)."
 say ""
 say "Still unproven until it has been done on a real second server: the saved sign-ins decrypting with the restored key, a chat door answering, and a full agent conversation."
 exit "$EX_OK"

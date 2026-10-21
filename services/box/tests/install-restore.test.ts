@@ -41,6 +41,12 @@ function stub(name: string, body = "exit 0") {
   chmodSync(p, 0o755);
 }
 
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function run(args: string[], env: Record<string, string> = {}) {
   try {
     const stdout = execFileSync("/bin/bash", [SCRIPT, ...args], {
@@ -168,7 +174,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
 
   it("a dry run never shows the start-fresh/restore menu", () => {
     const r = run(["--dry-run"], { LARES_ASSUME_YES: "" });
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).not.toMatch(/start fresh, or check|check a backup archive/i);
   });
 
@@ -187,7 +193,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
     const archive = join(dir, "export.tar");
     writeGenuineArchive(archive);
     const r = run(["--restore", archive, "--dry-run", "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/globals\.sql/);
     expect(r.stdout).toMatch(/bundle/);
     expect(r.stdout).toMatch(/not been rehearsed/i);
@@ -204,7 +210,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
     const archive = join(dir, "export.tar");
     writeGenuineArchive(archive);
     const r = run(["--restore", archive, "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/2 database/i);
     expect(r.stdout).toMatch(/1 vault/i);
     expect(r.stdout).toMatch(/1 data directory/i);
@@ -305,7 +311,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
 
   it("start fresh (--yes, no --restore) falls straight through into the installer, unchanged", () => {
     const r = run(["--dry-run", "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/found no existing installation/i);
     expect(readdirSync(prefix)).toEqual([]);
   });
@@ -313,7 +319,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
   it("an existing installation is never offered screen one — it repairs, and says so", () => {
     mkdirSync(join(prefix, "srv", "lares"), { recursive: true });
     const r = run(["--dry-run", "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/update it in place/i);
     expect(r.stdout).not.toMatch(/start(ing)? fresh/i);
   });
@@ -321,7 +327,7 @@ describe("screen one: start fresh, or restore from a backup", () => {
   it("extraction for the check happens outside $PREFIX, and nothing is written into it", () => {
     const archive = join(dir, "export.tar");
     writeGenuineArchive(archive);
-    run(["--restore", archive, "--yes"]);
+    okRun(run(["--restore", archive, "--yes"]));
     expect(readdirSync(prefix)).toEqual([]);
   });
 });

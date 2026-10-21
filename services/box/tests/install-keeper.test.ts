@@ -378,7 +378,7 @@ describe("the keeper the installer configures and starts", () => {
       writeFileSync(join(dir, "elsewhere.json"), "[]");
       symlinkSync(join(dir, "elsewhere.json"), calendar());
       const r = install();
-      expect(r.code).toBe(0);
+      expect(r.code, r.stderr).toBe(0);
       expect(r.stdout + r.stderr).toMatch(/not a plain file/);
       expect(readKeeperConfig().lifecycle.defaultBindings["chief-of-staff"].mounts).toEqual([]);
     });

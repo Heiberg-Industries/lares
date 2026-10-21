@@ -61,6 +61,12 @@ function stub(name: string, body = "exit 0") {
   chmodSync(p, 0o755);
 }
 
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function run(args: string[], env: Record<string, string> = {}, opts: { giveModelKey?: boolean } = {}) {
   try {
     // The installer asks its four questions right after the secrets. These tests
@@ -147,7 +153,7 @@ describe("the secrets the installer generates", () => {
     // A completed run now also renders the stack file and brings it up before the
     // database step, from the release fixture every run here is given — so nothing has to be
     // placed under $PREFIX by hand any more.
-    expect(run(["--yes"]).code).toBe(0);
+    okRun(run(["--yes"]));
     // `model-provider-key` is the one file here the installer did not generate: the owner gave it.
     expect(readdirSync(secretsDir).filter((n) => n !== "model-provider-key").sort()).toEqual(EXPECTED);
     const asked = readFileSync(log, "utf8").split("\n");
@@ -175,14 +181,14 @@ describe("the secrets the installer generates", () => {
     // See the fixture note on the test above — this needs a full run to succeed too.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
-    expect(run(["--yes"]).code).toBe(0);
+    okRun(run(["--yes"]));
     const asked = readFileSync(log, "utf8").split("\n").filter((l) => l.length > 0);
     expect(asked.filter((l) => l.startsWith("groupadd "))).toEqual([]);
     expect(asked.filter((l) => l.startsWith("getent ") && !l.startsWith("getent hosts "))).toEqual([]);
   });
 
   it("gives the token encryption key the exact shape the code demands", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     const key = readFileSync(join(secretsDir, "token-enc-key"), "utf8").trim();
     // services/box/lib/crypto.ts keyBuf/keyFromEnv and services/console/lib/accounts.ts
     // tokenEncKeyHex — "must be a 64-char hex string".
@@ -190,7 +196,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("gives every other secret the shape its own reader can use", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     const read = (n: string) => readFileSync(join(secretsDir, n), "utf8").trim();
     // base64url: safe inside an HTTP Basic credential (no colon), a URL, and a shell value.
     for (const name of ["console-session-secret", "database-password", "eve-route-password"]) {
@@ -206,10 +212,10 @@ describe("the secrets the installer generates", () => {
     // See the fixture note above — this needs two full runs to succeed.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
-    expect(run(["--yes"]).code).toBe(0);
+    okRun(run(["--yes"]));
     const before = generatedValues();
     const mtimes = before.map((s) => statSync(join(secretsDir, s.name), { bigint: true }).mtimeNs);
-    expect(run(["--yes"]).code).toBe(0);
+    okRun(run(["--yes"]));
     // Byte-identical, and not even touched: regenerating token-enc-key would make every saved
     // sign-in unreadable, and regenerating database-password would lock the agents out.
     for (const [i, s] of before.entries()) {
@@ -223,7 +229,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("says which secrets it left alone rather than silently skipping them", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     const r = run(["--yes"]);
     expect(r.stdout).toMatch(/already/i);
     expect(r.stdout).toContain("token-enc-key");
@@ -232,7 +238,7 @@ describe("the secrets the installer generates", () => {
   it("does not leave a half-written secret behind to be reused", () => {
     mkdirSync(secretsDir, { recursive: true });
     writeFileSync(join(secretsDir, "token-enc-key.partial"), "");
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     expect(readdirSync(secretsDir).filter((f) => f.endsWith(".partial"))).toEqual([]);
     expect(readFileSync(join(secretsDir, "token-enc-key"), "utf8").trim()).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -252,7 +258,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("a secret never becomes an argument to anything", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     const calls = readFileSync(log, "utf8");
     expect(calls).not.toMatch(/--password|--secret|-p\s+\S{20,}/);
     // Every logged argv is a path, a mode or an owner — nothing long and random.
@@ -260,13 +266,13 @@ describe("the secrets the installer generates", () => {
   });
 
   it("takes its entropy from the operating system, not from a tool that may not be there", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     expect(readFileSync(log, "utf8")).not.toMatch(/^openssl /m);
   });
 
   it("names what it would create on a dry run, and creates nothing", () => {
     const r = run(["--dry-run", "--yes"]);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     for (const name of EXPECTED) expect(r.stdout, name).toContain(name);
     expect(r.stdout).toMatch(/would/i);
     expect(existsSync(secretsDir)).toBe(false);
@@ -274,7 +280,7 @@ describe("the secrets the installer generates", () => {
   });
 
   it("on a dry run over an existing installation, says which already exist and touches none", () => {
-    run(["--yes"]);
+    okRun(run(["--yes"]));
     const before = generatedValues();
     const r = run(["--dry-run", "--yes"]);
     expect(r.stdout).toMatch(/already/i);

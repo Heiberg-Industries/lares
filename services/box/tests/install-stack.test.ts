@@ -61,6 +61,12 @@ const answers = ["lares.example.invalid", "owner@example.invalid", "A Name", "sk
 /** Every run bakes in `--yes` (screen one is not what this file is about) and, unless the case
  *  is about the flag itself, `--release <fixture>`. The real PATH is kept on the end so the
  *  release read and the render run under the real `node`, exactly as they will on a box. */
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function run(args: string[], input = answers, env: Record<string, string> = {}, cwd = process.cwd()) {
   try {
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", ...args], {
@@ -172,7 +178,7 @@ describe("the stack the installer brings up", () => {
     const callerDir = join(here, "..", "..", "..");
     const fromCaller = relative(callerDir, releaseFile);
     expect(fromCaller).not.toMatch(/^\//);
-    expect(run(["--release", fromCaller], answers, {}, callerDir).code).toBe(0);
+    okRun(run(["--release", fromCaller], answers, {}, callerDir));
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.image).toBe(D("console"));
@@ -183,20 +189,20 @@ describe("the stack the installer brings up", () => {
 
   it("mounts the deadline calendar into the console when the installation has one, and keeps it on a re-run", () => {
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     let doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.environment.DEADLINE_CALENDAR_FILE).toBeUndefined();
     const calendar = join(prefix, "srv", "lares", "installation", "deadline-calendar.json");
     mkdirSync(dirname(calendar), { recursive: true });
     writeFileSync(calendar, '{"jurisdiction":"Example","rules":[]}');
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.console.volumes).toContain(`${calendar}:/srv/lares/installation/deadline-calendar.json:ro`);
     expect(doc.services.console.environment.DEADLINE_CALENDAR_FILE).toBe("/srv/lares/installation/deadline-calendar.json");
   });
 
   it("writes the release's own stack file where run_database looks for it", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     expect(doc.services.db.image).toBe(D("db"));
@@ -211,7 +217,7 @@ describe("the stack the installer brings up", () => {
   });
 
   it("installs the committed Caddyfile at the path the compose file mounts", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const composeFile = join(prefix, "opt", "lares", "compose.yaml");
     const doc = parse(readFileSync(composeFile, "utf8")) as any;
     const mounted = String(doc.services.caddy.volumes[0]).split(":")[0]!;
@@ -227,7 +233,7 @@ describe("the stack the installer brings up", () => {
   // all — the path the volume mounts it at and the path the entrypoint executes — and they are
   // asserted against each other here, out of the file the installer actually wrote.
   it("installs the committed gateway start script where the compose entrypoint executes it", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const doc = parse(readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8")) as any;
     expect(doc.services.console.environment.AGENT_OWNER_USER_ID).toBe("owner");
     const gateway = doc.services["lares-gateway"];
@@ -245,13 +251,13 @@ describe("the stack the installer brings up", () => {
   // file, so a mode only install.sh set would be invisible here — bin/render-stack.ts chmods it
   // itself, exactly as it does the gateway config, which is what makes this assertion real.
   it("leaves the installed start script executable, not merely readable", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const mode = statSync(join(prefix, "etc", "lares", "gateway-start.sh")).mode & 0o777;
     expect(mode, `the installed start script is mode ${mode.toString(8)}, not 0755`).toBe(0o755);
   });
 
   it("brings the whole stack up, not only the database", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     expect(calls()).toMatch(/docker compose -f \S+compose\.yaml up -d\s*$/m);
   });
 
@@ -261,7 +267,7 @@ describe("the stack the installer brings up", () => {
   // own config renderer takes (services/box/lib/gateway-config.ts): LARES_MODEL_ALIAS and the
   // new LARES_MODEL, both written into $INSTALL_ENV by write_installation_env.
   it("writes the gateway's own configuration, naming the alias and model this installation settled on", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const gatewayConfig = join(prefix, "etc", "lares", "litellm-config.yaml");
     expect(existsSync(gatewayConfig)).toBe(true);
     const installEnv = readFileSync(join(prefix, "etc", "lares", "installation.env"), "utf8");
@@ -285,7 +291,7 @@ describe("the stack the installer brings up", () => {
   // never serves, and the model check blames the key. Nothing here is secret — the provider key
   // is an `os.environ/…` reference, never a value.
   it("leaves the gateway's configuration readable by an unprivileged LiteLLM, not only by root", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const mode = statSync(join(prefix, "etc", "lares", "litellm-config.yaml")).mode & 0o777;
     expect(
       mode & 0o004,
@@ -300,7 +306,7 @@ describe("the stack the installer brings up", () => {
   // gateway never sees. render-stack writes both files inside one call, logged here as one
   // `pnpm … render-stack` line, so pinning that line against the stub log is pinning the write.
   it("writes the gateway's own configuration before the stack comes up", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const rendered = at(/pnpm .*render-stack/);
     const up = at(/docker compose -f \S+compose\.yaml up -d/);
     expect(rendered, "render-stack was never called").toBeGreaterThan(-1);
@@ -317,7 +323,7 @@ describe("the stack the installer brings up", () => {
   // gateway by its compose service name, so it can only answer once the stack is up. A right
   // value checked too early is not something any other installer test can see.
   it("tests the model key only after the gateway it calls is running", () => {
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const up = at(/docker compose -f \S+compose\.yaml up -d/);
     const check = at(/lares-doctor .*--test-model/);
     expect(up, "the stack was never brought up").toBeGreaterThan(-1);
@@ -335,7 +341,7 @@ describe("the stack the installer brings up", () => {
     // F4's config sets general_settings.master_key, so LiteLLM authenticates callers against
     // its master key or a DB-backed virtual key — never the Anthropic provider key. Before any
     // per-agent key has been minted, the master key is the only credential it will accept.
-    expect(run(["--release", releaseFile]).code).toBe(0);
+    okRun(run(["--release", releaseFile]));
     const line = calls().split("\n").find((l) => l.includes("--test-model"))!;
     expect(line).toContain("gateway-master-key");
     expect(line).not.toContain("model-provider-key");

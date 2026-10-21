@@ -399,9 +399,7 @@ Optional: back up agent definitions to a private Git repository. It is off by de
 
 ## 9. Backups and the restore drill
 
-The base install does not switch backups on; `lares backups` does. (The installer's last message
-may still name `install.sh --backups`; it hands over to the same thing, but `lares backups` is the
-command to use.) Do not rely on the installation for data you need to keep until backups are
+The base install does not switch backups on; `lares backups` does. Do not rely on the installation for data you need to keep until backups are
 switched on and proven.
 
 One command does it. Before you run it:

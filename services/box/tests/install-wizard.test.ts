@@ -47,6 +47,12 @@ function stub(name: string, body = "exit 0") {
 
 /** Like install-secrets.test.ts's `run`, but delivers `input` on stdin — a person's typed
  *  answers, one per line, exactly as execFileSync's own `input` option feeds a child process. */
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
     // `--release` is load-bearing: a fresh install given none refuses with
@@ -108,7 +114,7 @@ describe("what the installer asks", () => {
   });
 
   it("writes the answers where the console and the agents will read them", () => {
-    runWithStdin(["--yes"], answers);
+    okRun(runWithStdin(["--yes"], answers));
     const env = readFileSync(installEnv, "utf8");
     expect(env).toContain("CONSOLE_ALLOWED_EMAILS=owner@example.invalid");
     expect(env).toContain("LARES_OWNER_ID=owner");
@@ -131,16 +137,16 @@ describe("what the installer asks", () => {
       "\u001bsk-malformed", "sk-disposable-fixture-only",
     ].join("\n") + "\n";
     const r = runWithStdin(["--yes"], input);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/no whitespace or control characters/);
     expect(readFileSync(join(secretsDir, "model-provider-key"), "utf8"))
       .toBe("sk-disposable-fixture-only\n");
   });
 
   it("does not ask again on a re-run", () => {
-    runWithStdin(["--yes"], answers);
+    okRun(runWithStdin(["--yes"], answers));
     const second = runWithStdin(["--yes"], "");
-    expect(second.code).toBe(0);
+    expect(second.code, second.stderr).toBe(0);
     expect(second.stdout.split("\n").filter((l) => l.trim().endsWith("?")).length).toBe(0);
   });
 
@@ -154,7 +160,7 @@ describe("what the installer asks", () => {
   });
 
   it("never assumes one person — the allow-list is a list, and the file says so", () => {
-    runWithStdin(["--yes"], answers);
+    okRun(runWithStdin(["--yes"], answers));
     expect(readFileSync(installEnv, "utf8")).toMatch(/# .*comma-separated/i);
   });
 
@@ -162,7 +168,7 @@ describe("what the installer asks", () => {
 
   it("does not ask or write anything on a dry run", () => {
     const r = runWithStdin(["--dry-run", "--yes"], "");
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout.split("\n").filter((l) => l.trim().endsWith("?")).length).toBe(0);
     expect(existsSync(installEnv)).toBe(false);
     expect(existsSync(join(secretsDir, "model-provider-key"))).toBe(false);
@@ -188,7 +194,7 @@ describe("what the installer asks", () => {
   });
 
   it("never puts the model key on a command line or lets any called command see it", () => {
-    runWithStdin(["--yes"], answers);
+    okRun(runWithStdin(["--yes"], answers));
     const calls = readFileSync(log, "utf8");
     expect(calls).not.toContain("sk-disposable-fixture-only");
   });
@@ -200,7 +206,7 @@ describe("what the installer asks", () => {
       ["--yes", "--model-key-file", keyFile],
       ["lares.example.invalid", "owner@example.invalid", "A Name"].join("\n") + "\n",
     );
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).not.toMatch(/paste your/i);
     expect(readFileSync(join(secretsDir, "model-provider-key"), "utf8").trim())
       .toBe("sk-disposable-fixture-only");
@@ -218,7 +224,7 @@ describe("what the installer asks", () => {
       ["--yes"],
       ["lares.example.invalid", "owner@example.invalid", longName, "second try name", "sk-x"].join("\n") + "\n",
     );
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(readFileSync(installEnv, "utf8")).toContain("second try name");
   });
 
@@ -230,7 +236,7 @@ describe("what the installer asks", () => {
       ["--yes"],
       ["lares.example.invalid", "owner@example.invalid", hostileName, "sk-disposable-fixture-only"].join("\n") + "\n",
     );
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     // Never executed while THIS script processed it.
     expect(existsSync(pwned1)).toBe(false);
     expect(existsSync(pwned2)).toBe(false);
