@@ -1,10 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 vi.mock("../lib/db", () => ({ pool: { query: vi.fn() } }));
 vi.mock("../lib/agents", () => ({ listAgents: vi.fn() }));
-vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: vi.fn() }));
 import { pool } from "../lib/db";
 import { listAgents } from "../lib/agents";
-import { listTokens } from "@lares/agent-box/lib/oauth-tokens.js";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { ConnectionsTable } from "../components/ConnectionsTable";
@@ -264,7 +262,6 @@ describe("connection read failures through the rendered table", () => {
     vi.mocked(listAgents).mockResolvedValue(agents.map((agent) => ({
       ...agent, name: "assistant", displayName: "Assistant",
     })));
-    vi.mocked(listTokens).mockResolvedValue([]);
     vi.mocked(pool.query).mockResolvedValue({ rows: [] } as never);
     vi.stubEnv("GOOGLE_CLIENT_ID_ACME", "client");
     vi.stubEnv("GOOGLE_CLIENT_SECRET_ACME", "secret");
@@ -287,15 +284,15 @@ describe("connection read failures through the rendered table", () => {
     });
     const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
     expect(html).toContain("client configured, no mailbox");
-    expect(html).toContain("Connect a Google account");
+    expect(html).toContain("Manage your personal Google accounts");
     expect(html).not.toContain("unavailable");
   });
 
   it("keeps client, grant and successful usage facts when account reads fail", async () => {
-    vi.mocked(listTokens).mockRejectedValue(new Error("private credential token SQL"));
-    vi.mocked(pool.query).mockResolvedValue({ rows: [
-      { capability: "twenty", argsSummary: "looked up a contact", at: new Date("2026-10-08T10:00:00Z") },
-    ] } as never);
+    vi.mocked(pool.query).mockImplementation(async (sql: unknown) => {
+      if (String(sql).includes("FROM oauth_tokens")) throw new Error("private credential token SQL");
+      return { rows: [{ capability: "twenty", argsSummary: "looked up a contact", at: new Date("2026-10-08T10:00:00Z") }] } as never;
+    });
     const rows = await getConnectionRows();
     expect(googleRow(rows)).toMatchObject({
       status: "unavailable", detail: "client configured · accounts unavailable",
@@ -312,8 +309,10 @@ describe("connection read failures through the rendered table", () => {
   });
 
   it("preserves enrollment, removal controls and grants when usage reads fail", async () => {
-    vi.mocked(listTokens).mockResolvedValue([storedAccount]);
-    vi.mocked(pool.query).mockRejectedValue(new Error("private audit SQL"));
+    vi.mocked(pool.query).mockImplementation(async (sql: unknown) => {
+      if (String(sql).includes("FROM oauth_tokens")) return { rows: [storedAccount] } as never;
+      throw new Error("private audit SQL");
+    });
     const rows = await getConnectionRows();
     expect(googleRow(rows)).toMatchObject({
       status: "enrolled", accountsUnavailable: false, usageUnavailable: true,
@@ -333,8 +332,9 @@ describe("connection read failures through the rendered table", () => {
   });
 
   it("shows both unavailable sections without claiming accounts are missing", async () => {
-    vi.mocked(listTokens).mockRejectedValue(new Error("private account error"));
-    vi.mocked(pool.query).mockRejectedValue(new Error("private usage error"));
+    vi.mocked(pool.query).mockImplementation(async (sql: unknown) => {
+      throw new Error(String(sql).includes("FROM oauth_tokens") ? "private account error" : "private usage error");
+    });
     const rows = await getConnectionRows();
     const html = renderToStaticMarkup(createElement(ConnectionsTable, { rows }));
     expect(html).toContain("Accounts unavailable");
