@@ -237,7 +237,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "The add-account OAuth `state` round-trip falls back to the plain CONSOLE_SESSION_SECRET value (or, if that is also unset, a fixed publicly known one outside production). The console's session cookie is unaffected either way — lib/auth.ts does not read this name.",
+    breaksWithout: "The add-account OAuth `state` round-trip falls back to the plain CONSOLE_SESSION_SECRET value (or, if that is also unset, a fixed publicly known one outside production). In the console image the file is also required: images/console-runtime/start.sh refuses to start without it and reads it into CONSOLE_SESSION_SECRET, the session cookie's key.",
     readAt: ["services/console/lib/account-oauth-state.ts:18", "services/console/lib/secrets.ts:7"],
   },
   {
