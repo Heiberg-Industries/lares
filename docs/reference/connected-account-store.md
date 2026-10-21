@@ -161,3 +161,61 @@ local JSON files. It invokes the actual tools and prints only counts/booleans, n
 identity contents. Run it explicitly after arranging a current private console turn and the
 matching runtime client. Its existence and simulated-provider/database tests are not live
 provider proof.
+
+## Internal provider-neutral private reads
+
+The chief-of-staff internal `readPersonalResource` entry point accepts an exact personal
+selection and one operation: `mailWindow`, `readMail`, or `calendarWindow`. Window operations
+accept ISO timestamps covering at most 31 days and a limit of 1–100. They return bounded items
+and an explicit `truncated` flag; they never follow a provider's next-page URL. Gmail's native
+raw query API remains separate. No Graph query, arbitrary URL, send, draft, event mutation,
+background job, brief publication or new catalogue tool is exposed by this layer.
+
+Both adapters execute inside the current original human's singleton private console turn,
+using the selected account generation, resource kind and exact associated credential under
+locks. Current authority is rechecked on the same transaction connection. Google uses only its
+exact mounted personal client, calls Gmail `users.me`, rechecks each window candidate's
+`internalDate`, and supplies the selected calendar ID to the Calendar SDK. Calendar windows
+include overlapping events. A missing applicable Google read scope or client refuses.
+
+Microsoft requires an explicitly supplied trusted server DATA configuration with a fixed work
+tenant, client and encryption key. There is no environment, owner, email, console-login-client
+or other-account fallback. This change does not mount that configuration in deployed runtimes;
+without a future trusted runtime wrapper, Microsoft reads refuse. Google calendar client
+mounting also remains separate from this internal API. Existing Gmail catalogue tools continue
+to enable only their previously documented Gmail operations.
+
+The Microsoft adapter pins discovery, token and signing-key endpoints, uses maintained
+`openid-client` refresh, and requests the original stored scope set without `.default`.
+An explicit refreshed scope response must match the stored normalized set, including all three
+DATA read scopes. Access tokens stay opaque. A refresh ID token is optional; if present, its
+signature is validated by the library and contradictory work identity is refused. The same
+access token must then return the exact stored object ID and `Member` from Graph `/me` before
+any resource read. Mail uses `/me/messages`; calendar uses only
+`/me/calendars/<selected-id>/calendarView`, never `/users/<email>` or an inferred shared calendar.
+Resource IDs are encoded as one path segment. The official Graph SDK uses only authentication
+and HTTP middleware, with no telemetry, retries or redirect following. A trusted dispatcher
+can carry its requests through the runtime's sealed egress proxy.
+
+Discovery, refresh, signing-key checks, identity and resource requests share one 15-second
+abort signal. Provider requests settle before account locks are released. New refresh tokens
+are encrypted and written to the exact current custody association inside that transaction,
+with comparisons against previous ciphertext and scopes; renewal does not advance account
+generation. A later read failure rolls back that local update. Microsoft documents that
+[issuing a new refresh token does not revoke the previous token](https://learn.microsoft.com/en-us/entra/identity-platform/refresh-tokens),
+so rollback retains the prior token rather than silently committing a failed read's rotation.
+Provider revocation can still invalidate either token; there is no automatic retry or recovery
+by another account. Live behaviour remains to be checked during the first technical-user pilot.
+
+Read messages have bounded body pages and truthful unknown sender history. The internal result
+still contains private third-party text: future callers must quote it and apply third-party
+turn taint before model exposure, and must not publish private results across audiences.
+Missing optional provider fields become explicit unknowns; malformed required IDs/times/body
+refuse. Calendar reads can include the selected owner's confidential events. This layer does
+not establish permission to publish them.
+
+`services/chief-of-staff/tests/live/personal-provider-reads.live.mts` is the committed manual
+read-only probe for these response assumptions. It prints counts and booleans only and may
+rotate local encrypted custody. It requires a current trusted private turn and exact selections;
+Microsoft additionally requires existing provisioned DATA files. It has not been run as part
+of this source change. Offline SDK/database tests are not live Microsoft acceptance.

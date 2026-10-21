@@ -35,6 +35,7 @@ COPY pnpm-workspace.yaml pnpm-lock.yaml package.json ./
 # outright if a referenced patch file is missing from the context.
 COPY patches patches
 COPY services/chief-of-staff/package.json services/chief-of-staff/package.json
+COPY services/box/package.json services/box/package.json
 COPY packages/junk/package.json     packages/junk/package.json
 COPY packages/compose-contract/package.json packages/compose-contract/package.json
 # Full source, not just the manifest — @lares/agent-kit now ships an eve extension
@@ -64,6 +65,8 @@ COPY packages/vault-format packages/vault-format
 RUN pnpm install --frozen-lockfile --filter lares-chief-of-staff...
 
 COPY services/chief-of-staff services/chief-of-staff
+# Private Microsoft reads reuse the existing encrypted OAuth custody format.
+COPY services/box/lib/crypto.ts services/box/lib/crypto.ts
 COPY packages/junk         packages/junk
 COPY packages/compose-contract packages/compose-contract
 

@@ -4,7 +4,7 @@ import { Pool, type PoolClient } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { PgAccountStore, AccountAccessError, type TrustedAccountAdapter } from '../../../packages/agent-kit/src/account-store.js';
-import { AccountCredentialError } from '../../../packages/agent-kit/src/account-credentials.js';
+import { AccountCredentialError, rotateAccountCredential } from '../../../packages/agent-kit/src/account-credentials.js';
 import { storeToken, deleteToken, writeVerifiedAccountToken, LegacyCredentialQuarantinedError, getDecryptedRefreshToken, listDecryptedRefreshTokens } from '../lib/oauth-tokens.js';
 import { PgMemberStore, currentSession } from '../../../packages/agent-kit/src/member-store.js';
 import { encryptSecret, decryptSecret } from '../lib/crypto.js';
@@ -328,4 +328,33 @@ describe('verified writer and permanent legacy quarantine', () => {
     expect(await store.listResources('member-a', account.id, account.generation)).toHaveLength(1);
   });
 
+});
+
+
+describe('exact locked credential rotation',()=>{
+  it('updates only the associated ciphertext without advancing generation',async()=>{
+    const {account,selection}=await connected();
+    await writer('member-b','other@example.invalid').persist(db as unknown as PoolClient);
+    const before=await ciphertext();
+    await store.withPersonalResourceCredential('member-a',selection,'mailbox',async({account:selected},credential,transaction)=>{
+      await rotateAccountCredential(transaction,{id:selected.id,ownerMemberId:'member-a',connectorId:'google',generation:selected.generation},credential,encryptSecret('rotated',key));
+    });
+    expect((await store.list('member-a'))[0].generation).toBe(account.generation);
+    const after=await ciphertext();expect(after.filter((row,i)=>row.refresh_token_enc!==before[i].refresh_token_enc)).toHaveLength(1);
+    expect(after.map(r=>decryptSecret(r.refresh_token_enc,key)).sort()).toEqual(['fixture-refresh','rotated']);
+  });
+  it('rolls rotation back if later provider work fails',async()=>{
+    const {selection}=await connected(),before=await ciphertext();
+    await expect(store.withPersonalResourceCredential('member-a',selection,'mailbox',async({account},credential,transaction)=>{
+      await rotateAccountCredential(transaction,{id:account.id,ownerMemberId:'member-a',connectorId:'google',generation:account.generation},credential,encryptSecret('rotated',key));
+      throw new Error('provider read failed');
+    })).rejects.toThrow();expect(await ciphertext()).toEqual(before);
+  });
+  it.each(['owner','generation','connector','ciphertext','scopes'] as const)('refuses a stale/wrong %s with no mutation',async changed=>{
+    const {selection}=await connected(),before=await ciphertext();
+    await expect(store.withPersonalResourceCredential('member-a',selection,'mailbox',async({account},credential,transaction)=>{
+      const owner={id:account.id,ownerMemberId:changed==='owner'?'member-b':'member-a',connectorId:changed==='connector'?'microsoft':'google',generation:account.generation+(changed==='generation'?1:0)};
+      await rotateAccountCredential(transaction,owner,{refreshTokenEnc:changed==='ciphertext'?'stale':credential.refreshTokenEnc,scopes:changed==='scopes'?['other']:credential.scopes},encryptSecret('rotated',key));
+    })).rejects.toThrow(AccountCredentialError);expect(await ciphertext()).toEqual(before);
+  });
 });
