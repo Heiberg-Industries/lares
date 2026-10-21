@@ -182,13 +182,13 @@ describe("standing facts in the briefs", () => {
     describe(name, () => {
       it("carries his facts as a labeled block, with the id he would name to forget one", () => {
         const prompt = build(facts);
-        expect(prompt).toContain("## Standing facts — his words");
+        expect(prompt).toContain("## Standing facts — the owner's words");
         expect(prompt).toContain("[7] jeg tar alltid bussen til Eksempelbyen (travel)");
       });
 
       it("tells her to apply them without being asked — the whole point of storing them", () => {
         expect(normalizeWhitespace(build(facts))).toContain(
-          "Apply these without being asked; they are his words.",
+          "Apply these without being asked; they are the owner's words.",
         );
       });
 
@@ -415,7 +415,7 @@ describe("the briefs forbid `remember` and `forget` by name", () => {
           ? "Do not call `remember`, `forget` or `deadline_add`"
           : "Do not call `remember` or `forget`",
       );
-      expect(text).toContain("a standing fact is only ever his own words");
+      expect(text).toContain("a standing fact is only ever the owner's own words");
     });
   }
 
@@ -437,7 +437,7 @@ describe("'memory' in the organisation clause is not the standing-facts block", 
     const clause = normalizeWhitespace(organisationLookupClause().join("\n"));
     expect(clause).toContain("never fill the gap from memory");
     expect(clause).toContain('"Memory" there means your own recollection of the company');
-    expect(clause).toContain("His standing facts are not that");
+    expect(clause).toContain("The owner's standing facts are not that");
   });
 });
 

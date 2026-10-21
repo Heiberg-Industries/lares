@@ -141,7 +141,7 @@ export function followupApproval(deps: FollowupApprovalDeps) {
 export default defineTool({
   description:
     "Send a meeting follow-up email (summary + action items) to the meeting's participants. " +
-    "Requires the owner's approval unless he has switched this meeting series to auto-send.",
+    "Requires the owner's approval unless the owner has switched this meeting series to auto-send.",
   inputSchema: z.object({
     notionPageId: z.string(),
     /** The calendar recurring-event id or a derived title/day key. "" is never auto-approvable. */

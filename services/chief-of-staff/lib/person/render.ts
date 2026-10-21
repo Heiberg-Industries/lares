@@ -6,10 +6,13 @@
 // in memory and flattened here would have bought nothing.
 import { SEARCH_WINDOW_DAYS } from "./types.js";
 import type { MailItem, MeetingItem, PersonDossier, TranscriptItem } from "./gather.js";
-import type { OrgFacts } from "./org.js";
+import type { OrgFacts, OrgStore } from "./org.js";
 import type { SourceResult } from "./types.js";
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
+
+/** The Vault area each note store is, as the model sees it: the `area` the vault tools take. */
+const ORG_STORE_AREA: Record<OrgStore, string> = { brain: "private", atlas: "shared" };
 
 /**
  * One line per source: found / nothing / COULD NOT READ / not searchable this way. Never two
@@ -66,14 +69,14 @@ function organisationSection(r: SourceResult<OrgFacts>): string[] {
     ...(crm
       ? [`- CRM: ${crm.name}${crm.domain ? ` (${crm.domain})` : ""}${crm.orgNumber ? `, org no ${crm.orgNumber}` : ""}`]
       : []),
-    ...notes.map((n) => `- ${n.store}: ${n.path}`),
+    ...notes.map((n) => `- ${ORG_STORE_AREA[n.store]}: ${n.path}`),
   ];
   if (lines.length === 0) return [];
   return [
     `ORGANISATION — ${label}:`,
     ...lines,
-    "These are NOTES, not findings: paths into the Brain and Atlas, matched on the company name",
-    "and the mail domain. Read the note (Brain or Atlas, per the marker) before you rely on it,",
+    "These are NOTES, not findings: paths into the Vault's private and shared areas, matched on the",
+    "company name and the mail domain. Read the note (in the area the marker names) before you rely on it,",
     "and say only what the note you actually read says. Never restate a path as a fact, and never",
     "infer a relationship from a filename.",
     "",
@@ -112,8 +115,8 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
       "",
       d.resolution.question,
       "",
-      "Ask him which one. Do NOT pick one and do NOT merge them — their histories are different people's histories.",
-      "If he says they are the same person — a job change gives one human two addresses — call",
+      "Ask the owner which one. Do NOT pick one and do NOT merge them — their histories are different people's histories.",
+      "If the owner says they are the same person — a job change gives one human two addresses — call",
       "`person.lookup` again with `emails` set to both addresses, and you will get one combined view.",
     ].join("\n");
   }
@@ -147,7 +150,7 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
       : !absenceEstablished
         ? `NOTHING COULD BE ASKED IN THIS FORM — ${unaskable.join(", ")} cannot answer a query of this ` +
           `shape at all. "No record" is NOT established: no source was actually searched. Say what you ` +
-          `could not ask and why, and ask him for something you CAN search on (a name).`
+          `could not ask and why, and ask the owner for something you CAN search on (a name).`
         : unaskable.length === 0
           ? "No record in the CRM."
           : `No record in ${answered.join(" or ")}. ` +
@@ -159,14 +162,14 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
     // in one tool result, and the model gets to pick.
     const tail = absenceEstablished
       ? [
-          "Say plainly that there is no record, then offer him ready-made lookup links to open himself",
+          "Say plainly that there is no record, then offer the owner ready-made lookup links to open themselves",
           "(a LinkedIn people search, a web search for the name plus company, the company site).",
-          "If he pastes a link back, read it with `read_url.fetch`.",
+          "If the owner pastes a link back, read it with `read_url.fetch`.",
         ]
       : [
           "Do NOT say there is no record — you did not establish that. Say what you could not check, and why.",
-          "You can still offer him ready-made lookup links to open himself (a LinkedIn people search, a web",
-          "search for the name plus company, the company site). If he pastes a link back, read it with `read_url.fetch`.",
+          "You can still offer the owner ready-made lookup links to open themselves (a LinkedIn people search, a web",
+          "search for the name plus company, the company site). If the owner pastes a link back, read it with `read_url.fetch`.",
         ];
 
     // the one thing that CAN be known about a first-contact address: who they write
@@ -209,7 +212,7 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
     out.push(
       `MATCHED LOOSELY: you asked for "${d.resolution.matchedLoosely.asked}" and this is the record for ` +
       `"${d.resolution.matchedLoosely.matched}" — the only one that matched. Say so in one clause ` +
-      `("matched ${d.resolution.matchedLoosely.matched} from your ${d.resolution.matchedLoosely.asked}") so he can correct you.`,
+      `("matched ${d.resolution.matchedLoosely.matched} from your ${d.resolution.matchedLoosely.asked}") so the owner can correct you.`,
     );
   }
 
@@ -222,19 +225,19 @@ export function renderDossier(d: PersonDossier, opts: { bounded?: boolean } = {}
       `ALSO FOUND, NOT MERGED: ${d.resolution.setAside.length} other record(s) named ` +
       `${p.displayName} with no address on file — ` +
       `${d.resolution.setAside.map((s) => s.source).join(", ")}. ` +
-      `Answered about the ${p.source} record. Mention this in one clause so he knows a choice was made.`,
+      `Answered about the ${p.source} record. Mention this in one clause so the owner knows a choice was made.`,
     );
   }
   out.push("");
 
   out.push(
     d.anchor
-      ? `Last engagement: ${day(d.anchor.at)} (${d.anchor.kind}). Everything under NEW SINCE is what he has not seen.`
+      ? `Last engagement: ${day(d.anchor.at)} (${d.anchor.kind}). Everything under NEW SINCE is what the owner has not seen.`
       // Scoped to the window, not to all of history: nothing was searched beyond it, so
       // "the owner does not know them" is an assertion about the relationship that this lookup
       // never established. Someone the owner last met nine months ago lands here.
       : "No prior engagement found in the window searched (see the windows below) — give the full picture, " +
-        "but say it as 'nothing in that period', never as 'he has never dealt with them'.",
+        "but say it as 'nothing in that period', never as 'the owner has never dealt with them'.",
   );
   out.push("");
 

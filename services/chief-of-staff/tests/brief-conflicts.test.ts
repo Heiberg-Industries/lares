@@ -200,7 +200,7 @@ describe("a strong resolution adds the evidence line and the third-party notice"
     const text = withEvidence.join(" ");
     expect(text).toContain("do not decide which one is right");
     expect(text).toContain("offer to remove the stale entry through its approval card");
-    expect(text).toContain("wait for his answer");
+    expect(text).toContain("wait for the owner's answer");
     expect(text).toContain("never delete it yourself");
   });
 });

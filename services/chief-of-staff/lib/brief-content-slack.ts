@@ -551,7 +551,7 @@ export interface SlackScanResult {
 export async function scanSlackThreadsWithOwnActivity(deps: SlackSourceDeps, opts: SlackScanOptions): Promise<SlackScanResult> {
   if (!opts.ownUserId) {
     throw new Error(
-      "cannot tell which Slack messages are his: ownUserId is empty — every conversation would " +
+      "cannot tell which Slack messages are the owner's: ownUserId is empty — every conversation would " +
         "read as unanswered, and every DM would become an obligation",
     );
   }

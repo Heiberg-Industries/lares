@@ -301,7 +301,7 @@ describe("creative agent extension tools resolve under the declaration", () => {
 
 describe("creative agent declaration ↔ authored tools", () => {
   it(
-    "has exactly the five authored tools this port gives her, by name",
+    "has exactly the five authored tools this port gives the agent, by name",
     async () => {
       // By NAME, not by count (see the header). The five are the agent's whole surface: one gated
       // studio run, three ungated Atlas reads, one gated Atlas write. A sixth file, a rename,

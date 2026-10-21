@@ -85,8 +85,8 @@ export function buildWeeklySummaryPrompt(prefs: Pick<PreferenceRow, "text">[], l
     // a model might otherwise decide to promote into standing facts in the owner's voice.
     "This is a REPORT, not an action: take no action and propose nothing this turn — no emails,",
     "no drafts, no calendar changes, no reminders, no notes, no 👍 confirmation cards. Do not",
-    "call `remember` or `forget` — he has said nothing on this turn, and a standing fact is only",
-    "ever his own words.",
+    "call `remember` or `forget` — the owner has said nothing on this turn, and a standing fact is only",
+    "ever the owner's own words.",
   ].join("\n");
 }
 

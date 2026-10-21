@@ -56,7 +56,7 @@ import { currentTaint, turnKeyFrom, urlReadThisTurn } from "./origin-taint.js";
  */
 export const TAINTED_FETCH_REASON =
   "this turn has already read words the owner did not write, so opening a link out of it is a " +
-  "decision he makes, not a read";
+  "decision the owner makes, not a read";
 
 /**
  * The approval policy for a fetch: ask once this turn has read somebody else's words.

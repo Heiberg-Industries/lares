@@ -603,15 +603,15 @@ export interface NightBeforeMeeting {
 export type EventKind =
   /** A place the owner SLEEPS. Never presence: check-in is usually late evening. */
   | "lodging"
-  /** A journey — a flight, a train. Where he MOVES, and only during it. */
+  /** A journey — a flight, a train. Where the owner MOVES, and only during it. */
   | "transport"
   /** Out of office / a working-location marker. A statement about availability, not a venue. */
   | "out-of-office"
-  /** People on it, and nowhere to be — he takes it from wherever he already is. */
+  /** People on it, and nowhere to be — the owner takes it from wherever they already are. */
   | "remote-call"
-  /** A real venue he has to get to. */
+  /** A real venue the owner has to get to. */
   | "in-person"
-  /** Time he set aside: nobody on it, nowhere named. */
+  /** Time the owner set aside: nobody on it, nowhere named. */
   | "block";
 
 /** The kinds that are CONTEXT, never a commitment and never a whereabouts claim. */
@@ -623,8 +623,8 @@ export function isTravelContext(kind: EventKind): boolean {
 
 /** How the travel-context block names each kind, so the model never has to infer it. */
 const TRAVEL_CONTEXT_LABEL: Record<string, string> = {
-  "lodging": "lodging — where he sleeps",
-  "transport": "transport — where he moves",
+  "lodging": "lodging — where the owner sleeps",
+  "transport": "transport — where the owner moves",
   // ONE kind covers two different eventTypes (`outOfOffice` and
   // `workingLocation`), and a working location is a statement about where the owner IS, not an
   // absence. The label therefore names both rather than asserting the wrong one of them; the
@@ -752,7 +752,7 @@ export function commitmentLine(m: NightBeforeMeeting, tz: string): string {
         : "";
   const who = m.participants.length > 0
     ? `\n  participants: ${m.participants.join(", ")}`
-    : "\n  participants: none on the invitation — a block he set aside, not a call to prepare people for";
+    : "\n  participants: none on the invitation — a block the owner set aside, not a call to prepare people for";
   return `- ${when} — ${m.title}${where}${who}`;
 }
 
@@ -803,7 +803,7 @@ export function travelContextBlock(
 ): string {
   return labeledContext([{
     label: "Travel context",
-    note: "where he sleeps or moves, never where he is now",
+    note: "where the owner sleeps or moves, never where they are now",
     content: travel.map((m) => travelContextLine(m, tz)).join("\n"),
     thirdParty: true,
   }]);
@@ -820,15 +820,15 @@ export function eventKindClauses(
     // The Travel context block is anchored to the day this brief covers, which at 20:00 is
     // TOMORROW. A hotel booking or a flight is a reservation, never evidence of where the owner is.
     lines.push(
-      "The Travel context block in this brief is where he sleeps or moves, never where he is now —",
-      "a hotel booking or a flight in it is not evidence of his whereabouts, so never say he is",
+      "The Travel context block in this brief is where the owner sleeps or moves, never where they are",
+      "now — a hotel booking or a flight in it is not evidence of their whereabouts, so never say they are",
       "based at, at, or in any of it.",
       "",
     );
   }
   if (commitments.some((m) => m.kind === "remote-call")) {
     lines.push(
-      "A commitment marked (remote) has no venue — he takes it from wherever he already is, so",
+      "A commitment marked (remote) has no venue — the owner takes it from wherever they already are, so",
       "it is never a place to travel to and never clashes with getting to something else.",
       "",
     );
@@ -956,10 +956,10 @@ const TRANSIT_BAN: readonly string[] = [
  * assumption out loud, or decline to make it.
  */
 const ORIGIN_HONESTY: readonly string[] = [
-  "Say in plain words where you assumed the journey starts — \"the 14:05 from Oslo S, if he's in",
-  "town\" — so the assumption is his to correct. If you cannot actually say where he will be, say",
-  "THAT and look nothing up: a wrong origin still returns a real departure from a real platform,",
-  "which reads as detail rather than as the guess it is.",
+  "Say in plain words where you assumed the journey starts — \"the 14:05 from the central station, if",
+  "they're in town\" — so the assumption is the owner's to correct. If you cannot actually say where",
+  "they will be, say THAT and look nothing up: a wrong origin still returns a real departure from a",
+  "real platform, which reads as detail rather than as the guess it is.",
   "",
 ];
 
@@ -1001,7 +1001,7 @@ export function transitClause(
 
   const today = day === "today";
   return [
-    "Getting there — these commitments have a real venue and a time he has to be at it:",
+    "Getting there — these commitments have a real venue and a time the owner has to be at it:",
     // The venue is free text off Google Calendar and may carry a newline;
     // unflattened it splits this row in two and `— arriveBy …` reads as a second commitment.
     ...candidates.map(
@@ -1009,13 +1009,13 @@ export function transitClause(
     ),
     "",
     today
-      ? "For one of those whose venue is in a DIFFERENT TOWN from where he already is, call"
-      : "For one of those whose venue is in a DIFFERENT TOWN from where he will be tomorrow, call",
+      ? "For one of those whose venue is in a DIFFERENT TOWN from where the owner already is, call"
+      : "For one of those whose venue is in a DIFFERENT TOWN from where the owner will be tomorrow, call",
     "`agent-kit__transit_plan` — `to` that venue, `from` where the journey would really begin, and",
-    "`arriveBy` set to the exact value on its line — then say which departure gets him there: the",
+    "`arriveBy` set to the exact value on its line — then say which departure gets them there: the",
     "time, where it leaves from, the platform when Entur gives one, and when it arrives. At most",
     "ONE lookup per commitment listed, and none at all for a venue in the town" +
-      (today ? " he is already in." : " he will already be in."),
+      (today ? " the owner is already in." : " the owner will already be in."),
     "When the venue line does not say which town it is in, the lookup is how you find out — what",
     "comes back names the locality it resolved to; do not decide the town from the name of the",
     "place.",
@@ -1023,8 +1023,8 @@ export function transitClause(
     ...(today
       ? []
       : [
-          "This pass is about TOMORROW, so the journey starts wherever he will be TOMORROW MORNING —",
-          "which is a different question from where he is tonight on exactly the nights it matters" +
+          "This pass is about TOMORROW, so the journey starts wherever the owner will be TOMORROW MORNING —",
+          "which is a different question from where they are tonight on exactly the nights it matters" +
             ", and nothing in this brief establishes it.",
           "",
         ]),
@@ -1035,7 +1035,7 @@ export function transitClause(
     // warning about a hotel that is not there.
     ...(travel.some((m) => m.kind === "lodging")
       ? [
-          "A lodging row from the CALENDAR is not evidence of where he is, so never pass a",
+          "A lodging row from the CALENDAR is not evidence of where the owner is, so never pass a",
           "calendar lodging row as the journey's origin.",
           "",
         ]
@@ -1061,8 +1061,8 @@ export function transitClause(
  */
 export function standingFactsBlock(facts: readonly StandingFact[]): string {
   return labeledContext([{
-    label: "Standing facts — his words",
-    note: "things he has told you once; they hold until he says otherwise",
+    label: "Standing facts — the owner's words",
+    note: "things the owner has told you once; they hold until the owner says otherwise",
     content: facts.map(standingFactLine).join("\n"),
   }]);
 }
@@ -1072,7 +1072,7 @@ export function standingFactsBlock(facts: readonly StandingFact[]): string {
 export function standingFactsClause(facts: readonly StandingFact[]): string[] {
   if (facts.length === 0) return [];
   return [
-    "Apply these without being asked; they are his words.",
+    "Apply these without being asked; they are the owner's words.",
     "",
   ];
 }
@@ -1108,8 +1108,8 @@ export function organisationLookupClause(): string[] {
     // things, and this same prompt carries both. Without this sentence a literal reader takes
     // "never fill the gap from memory" as an instruction to suppress the owner's standing facts when
     // writing about a company, which is the opposite of what either clause asks for.
-    "\"Memory\" there means your own recollection of the company. His standing facts are not that:",
-    "they are his own words, and they apply here like everywhere else.",
+    "\"Memory\" there means your own recollection of the company. The owner's standing facts are not that:",
+    "they are the owner's own words, and they apply here like everywhere else.",
     "",
   ];
 }
@@ -1433,7 +1433,7 @@ export function conflictsClause(conflicts: readonly ResolvedConflict[]): string[
       ? [
           "Where a row above already names a cancellation mail, you may say so and offer to " +
             "remove the stale entry through its approval card — never delete it yourself, and " +
-            "wait for his answer before doing anything else.",
+            "wait for the owner's answer before doing anything else.",
         ]
       : []),
     "",

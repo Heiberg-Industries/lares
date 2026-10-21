@@ -84,7 +84,7 @@ describe("creative agent instructions", () => {
     expect(i("# Creative — voice")).toBeGreaterThan(i("# Creative — role"));
   });
 
-  it("names both capabilities the declaration grants, and nothing she does not hold", () => {
+  it("names both capabilities the declaration grants, and nothing the agent does not hold", () => {
     // The retired persona named exactly one tool, by hand, and named it wrongly. Generation
     // makes the persona's tool list and the declaration the same list by construction.
     const granted = parseManifest(manifest).grants.filter((g) => g.scope !== "none");
@@ -107,7 +107,7 @@ describe("creative agent instructions", () => {
     expect(vaultBullet, "claims the owner's private area").not.toMatch(/\bprivate\b/);
   });
 
-  it("says she CANNOT search the web — she disables eve's web_search with a sentinel", () => {
+  it("says the agent CANNOT search the web — it disables eve's web_search with a sentinel", () => {
     // The reason `framework_tools` exists at all: the
     // sentence is generated per agent from the declaration. This agent's is empty, and
     // agent/tools/web_search.ts is a disable sentinel, so this is the true half of the pair.
@@ -116,13 +116,13 @@ describe("creative agent instructions", () => {
     expect(environment).not.toMatch(/I can search the web with the framework's web search tool/);
   });
 
-  it("the generated environment states the sandbox posture, the seal and her one door", () => {
+  it("the generated environment states the sandbox posture, the seal and the agent's one door", () => {
     expect(environment).toMatch(/no shell/i);
     expect(environment).toMatch(/sealed/i);
     expect(environment).toMatch(/^Doors: none configured\.$/mu);
   });
 
-  it("still carries the behaviours that ARE her", () => {
+  it("still carries the behaviours that ARE the agent's", () => {
     // The four the retired hash test named, retargeted at the assembled text — so a deliberate
     // edit that drops one fails with a message saying what was lost, not merely that two files
     // differ. Each is asserted in the section that now owns it, which is itself the check that
@@ -151,7 +151,7 @@ describe("creative agent instructions", () => {
     expect(role).not.toMatch(/Test Owner|Lares/u);
   });
 
-  it("the role keeps the two rules that decide what she DOES with a studio run", () => {
+  it("the role keeps the two rules that decide what the agent DOES with a studio run", () => {
     // These are the substance of "curation, never a single answer", and neither has a named
     // guard elsewhere. The drift test above would catch their removal, but only as
     // "two files differ" — these say which rule was lost.

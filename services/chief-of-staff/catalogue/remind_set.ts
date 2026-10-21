@@ -43,7 +43,7 @@ export default defineTool({
     "slack or telegram for delivery; `threadRef` is optional and defaults to the owner's " +
     "standing address on that door. The result carries `dueAtLocal` — confirm THAT back to " +
     "the owner verbatim, never the relative words they used (\"tomorrow\"), so a wrong date is " +
-    "visible to him immediately instead of agreeing with him and storing something else.",
+    "visible to them immediately instead of agreeing with them and storing something else.",
   inputSchema: z.object({
     message: z.string(),
     dueAt: z.string(),

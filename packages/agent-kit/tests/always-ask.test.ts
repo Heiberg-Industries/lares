@@ -129,7 +129,7 @@ describe("RECIPIENTS_OF", () => {
     });
 
     // One `to` entry can no longer hide a second recipient or inject a header.
-    describe("C1 — strict single-address parsing", () => {
+    describe("strict single-address parsing", () => {
       it("rejects a second display-named address hidden after the first", () => {
         expect(RECIPIENTS_OF["gmail_send"]!({ to: ["Alice <alice@example.com>, Bob <bob@evil.example>"] })).toBeNull();
       });

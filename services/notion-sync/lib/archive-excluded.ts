@@ -91,7 +91,7 @@ export interface ArchiveExcludedResult {
 }
 
 /** The one frozen_reason every row this command orphans gets — stated once, not per call site. */
-export const EXCLUDED_REASON = "out of desk scope — transcripts are Notion-primary (Phase 4)";
+export const EXCLUDED_REASON = "out of scope — transcripts are kept in Notion";
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

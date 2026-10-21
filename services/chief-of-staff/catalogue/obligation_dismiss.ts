@@ -19,10 +19,10 @@ import { dismissObligation, ensureObligationsTableOnce } from "../lib/obligation
 export default defineTool({
   description:
     "Close an item on the obligation radar — someone waiting on a reply from the owner — because " +
-    "he told you it's handled, sent, not owed, or to drop it. Pass the thread's id. This never " +
-    "sends anything and never touches mail; it only stops that thread from being shown to him " +
-    "again. If you are not sure which thread he means, ask rather than guessing — dismissing " +
-    "the wrong one silently hides something he still owes.",
+    "the owner told you it's handled, sent, not owed, or to drop it. Pass the thread's id. This never " +
+    "sends anything and never touches mail; it only stops that thread from being shown to them " +
+    "again. If you are not sure which thread they mean, ask rather than guessing — dismissing " +
+    "the wrong one silently hides something the owner still owes.",
   inputSchema: z.object({ threadId: z.string() }),
   async execute({ threadId }) {
     const pool = getPool();

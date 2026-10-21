@@ -235,7 +235,7 @@ export function checkQuality(dir: string): QualityFinding[] {
         id,
         rule: "tier",
         message:
-          `"${id}" claims tier "gold", but wave 6 defines no gold rules yet ` +
+          `"${id}" claims tier "gold", but no gold rules are defined yet ` +
           `— a gold claim cannot be backed and is refused.`,
       });
       continue;

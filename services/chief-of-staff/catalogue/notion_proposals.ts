@@ -10,13 +10,13 @@ import { approveConsequence, getOpenProposals, rejectConsequence } from "../lib/
 export default defineTool({
   description:
     "List the open Notion→vault proposals: edits the owner made to a Notion doc page that are " +
-    "waiting on his approval before they are written to the Brain vault. Each shows an id, " +
+    "waiting on the owner's approval before they are written to the private area of the Vault. Each shows an id, " +
     "the vault file, a diff, and its own approve/reject consequence sentence — quote those " +
     "sentences verbatim rather than describing the effect yourself, they are NOT the same " +
     "for every proposal. Entries with kind 'create' are different: that file does not exist " +
     "in the vault yet and Notion is asking to add it, so there is no 'before' side and " +
-    "rejecting one changes nothing anywhere. Use this whenever he asks what is waiting, what " +
-    "changed in Notion, or refers to an edit he made there — and ALWAYS before calling " +
+    "rejecting one changes nothing anywhere. Use this whenever the owner asks what is waiting, what " +
+    "changed in Notion, or refers to an edit they made there — and ALWAYS before calling " +
     "notion_resolve_proposal, so you act on a current id/vaultPath pair rather than one from " +
     "earlier in the conversation.",
   inputSchema: z.object({}),

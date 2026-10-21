@@ -103,7 +103,7 @@ export function buildRouteProposalPrompt(p: RouteProposal): string {
     "technical detail.",
     "",
     toolLine,
-    "That tool is gated (`approval: always()`), so calling it renders his 👍/👎 approval",
+    "That tool is gated (`approval: always()`), so calling it renders the owner's 👍/👎 approval",
     "card directly under your sentence — do not wait for a reply first, the tool call itself",
     "is the ask.",
     "",

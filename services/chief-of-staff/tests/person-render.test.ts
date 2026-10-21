@@ -226,8 +226,8 @@ describe("renderDossier — the Organisation section", () => {
   it("names every hit with its store and its path, and the CRM company on the domain", () => {
     const text = renderDossier(fixture);
     expect(text).toContain("ORGANISATION — Northwind Audio — partner.example:");
-    expect(text).toContain("- brain: companies/northwind-audio.md");
-    expect(text).toContain("- atlas: ventures/acme/northwind-pilot.md");
+    expect(text).toContain("- private: companies/northwind-audio.md");
+    expect(text).toContain("- shared: ventures/acme/northwind-pilot.md");
     expect(text).toContain("- CRM: Northwind Audio AS (partner.example), org no 999");
     expect(text).toContain("- organisation: read OK");
   });
@@ -235,7 +235,7 @@ describe("renderDossier — the Organisation section", () => {
   it("says the hits are notes to READ, not facts to restate", () => {
     const text = renderDossier(fixture);
     expect(text).toContain("These are NOTES, not findings");
-    expect(text).toContain("Read the note (Brain or Atlas, per the marker) before you rely on it");
+    expect(text).toContain("Read the note (in the area the marker names) before you rely on it");
     expect(text).toContain("Never restate a path as a fact");
   });
 
@@ -274,7 +274,7 @@ describe("renderDossier — the Organisation section", () => {
 
   it("unbounded still includes it — the difference is the caller, not the dossier", () => {
     expect(renderDossier(fixture)).toContain("ORGANISATION — Northwind Audio — partner.example:");
-    expect(renderDossier(fixture)).toContain("- brain: companies/northwind-audio.md");
+    expect(renderDossier(fixture)).toContain("- private: companies/northwind-audio.md");
   });
 
   it("a store that could not be read is COULD NOT READ, never 'nothing found'", () => {
@@ -346,7 +346,7 @@ describe("renderDossier — UNKNOWN person, KNOWN organisation", () => {
     expect(text).toContain("You do know their ORGANISATION, though");
     expect(text).toContain("that is NOT the same as no prior");
     expect(text).toContain("ORGANISATION — atbridgeco.example:");
-    expect(text).toContain("- brain: tools/bridgeco-tracker-bridge.md");
+    expect(text).toContain("- private: tools/bridgeco-tracker-bridge.md");
     expect(text).toContain("- organisation: read OK");
   });
 

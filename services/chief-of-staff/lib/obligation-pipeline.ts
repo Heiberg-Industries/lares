@@ -195,7 +195,7 @@ export async function gatherOpenObligations(deps: GatherObligationsDeps, now: Da
   const mine = await deps.myAddresses();
   if (mine.length === 0) {
     throw new Error(
-      "cannot tell which mail is his: the identity registry returned no addresses for the owner — " +
+      "cannot tell which mail is the owner's: the identity registry returned no addresses for the owner — " +
       "an empty registry would read as 'nobody is waiting on a reply'",
     );
   }

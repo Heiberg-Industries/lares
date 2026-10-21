@@ -540,7 +540,7 @@ function timezoneTraps(events: readonly CalendarEvent[], ctx: ConflictContext): 
       events: [refOf(e)],
       explanation:
         `"${titleOf(e)}" is booked for ${localBooked.time.slice(0, 5)} ${eventZone} time, which is ` +
-        `${localThere.time.slice(0, 5)} on ${localThere.date} where he is that day (${there}).`,
+        `${localThere.time.slice(0, 5)} on ${localThere.date} where the owner is that day (${there}).`,
     });
   }
   return out;

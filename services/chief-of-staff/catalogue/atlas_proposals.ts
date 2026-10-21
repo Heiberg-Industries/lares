@@ -13,7 +13,7 @@ export default defineTool({
     "List the open Atlas proposals: a venture note whose narrative the Atlas sync job has " +
     "re-derived from its canonical sources, waiting on the owner's approval before it is " +
     "written and pushed. Each shows an id, the note path, a diff, and the approve/reject " +
-    "consequence sentence — quote it verbatim. Use this whenever he asks what Atlas note " +
+    "consequence sentence — quote it verbatim. Use this whenever the owner asks what Atlas note " +
     "changes are waiting, and ALWAYS before calling atlas_resolve_proposal, so you act on a " +
     "current id/notePath pair rather than one from earlier in the conversation.",
   inputSchema: z.object({}),

@@ -19,8 +19,8 @@ function dayFirstDate(iso: string): string {
 export default defineTool({
   description:
     "Close a deadline as DONE because the owner told you it's filed, paid, or otherwise " +
-    "handled. Requires his approval — a wrong close on a real filing ends in a penalty. Pass what " +
-    "evidences the close (what was filed, when, or simply that he said so). A row already " +
+    "handled. Requires the owner's approval — a wrong close on a real filing ends in a penalty. Pass what " +
+    "evidences the close (what was filed, when, or simply that the owner said so). A row already " +
     "closed, or an unknown id, updates nothing — the result says so rather than claiming " +
     "success. A recurring deadline mints its next occurrence automatically; the result names " +
     "it, so confirm THAT date back to the owner rather than assuming the series continues " +

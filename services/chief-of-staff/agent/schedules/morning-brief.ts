@@ -322,7 +322,7 @@ function buildSlackObligationSource(
         throw new Error(
           `morning-brief: expected exactly one Slack alias on file for the owner (user_aliases, ` +
           `system='slack'), found ${slackAliases.length} — refusing to guess which one authenticates ` +
-          "the enrolled token; a mismatched id would misclassify his own messages as the " +
+          "the enrolled token; a mismatched id would misclassify the owner's own messages as the " +
           "counterparty's and manufacture obligations",
         );
       }
@@ -486,7 +486,7 @@ export function buildMorningPrompt(
   // inside a flagged block, the owner-side wording stays in the heading's label and note.
   const meetingLines = labeledContext([{
     label: "Today's calendar",
-    note: "meetings, and the blocks he set aside",
+    note: "meetings, and the blocks the owner set aside",
     // GOTCHA — `commitments.map(commitmentLine)` would pass the array INDEX as
     // `commitmentLine`'s second argument (`tz`) now that it takes one; wrapped in an arrow so
     // every row gets the real `tz` instead of a number.
@@ -565,7 +565,7 @@ export function buildMorningPrompt(
 
   // A saved page's title is the page author's text: flagged block, as above.
   const pickLines = labeledContext([{
-    label: "Recently entered the Brain",
+    label: "Recently added to the Vault",
     note: "reading, not events or meetings",
     content: content.picks.map((p: IngestedPick) => `- ${p.title}${p.url ? ` — ${p.url}` : ""}`).join("\n"),
     emptyText: "(none)",
@@ -574,7 +574,7 @@ export function buildMorningPrompt(
 
   return [
     "[scheduled turn — the morning brief. This is not a message from a person; it is your cue",
-    "to show him what's on his plate today.]",
+    "to show the owner what's on their plate today.]",
     "",
     meetingLines,
     "",
@@ -596,16 +596,16 @@ export function buildMorningPrompt(
     ...(factsSection ? [factsSection, ""] : []),
     "For anyone in the obligations list you have not already looked up recently, call",
     "person_lookup (pass their email) before writing about them. An entry with no participants",
-    "needs no lookup — name it as what his day holds and move on; never guess who might be there.",
+    "needs no lookup — name it as what the owner's day holds and move on; never guess who might be there.",
     "",
     // — the ONE sentence about what an UNKNOWN lookup that still carries an ORGANISATION
     // section means. From lib/brief-content.ts so the two briefs cannot disagree; unconditional,
     // because whether a lookup comes back that way is only knowable at turn time.
     ...organisationLookupClause(),
-    "Write him one short message: what's on his plate today, as a PRIORITISED list, most",
-    "pressing first. Order it by what actually constrains him — a fixed point he has to be at",
-    "or prepare for outranks a reply he owes, which outranks anything from the reading. Where an",
-    "obligation is owed to someone he is seeing today, say so on that line; that pairing is the",
+    "Write the owner one short message: what's on their plate today, as a PRIORITISED list, most",
+    "pressing first. Order it by what actually constrains them — a fixed point they have to be at",
+    "or prepare for outranks a reply they owe, which outranks anything from the reading. Where an",
+    "obligation is owed to someone they are seeing today, say so on that line; that pairing is the",
     "most useful thing this message can carry. Give times for the fixed points so the shape of",
     "the day is legible at a glance.",
     "",
@@ -664,9 +664,9 @@ export function buildMorningPrompt(
     // prompt hands the model the exact call to make. Those are choices for the OWNER, not instructions
     // to the brief; the tool refuses this turn too, and now says so here as well.
     "REPORT ONLY this turn: no emails, no drafts, no calendar changes, no reminders, no notes,",
-    "no 👍 confirmation cards. Do not call `remember`, `forget` or `deadline_add` — he has said",
-    "nothing on this turn; the add/ignore choices printed on a deadline line are HIS to make, not",
-    "yours, and a standing fact is only ever his own words.",
+    "no 👍 confirmation cards. Do not call `remember`, `forget` or `deadline_add` — the owner has said",
+    "nothing on this turn; the add/ignore choices printed on a deadline line are the OWNER'S to make, not",
+    "yours, and a standing fact is only ever the owner's own words.",
   ].join("\n");
 }
 

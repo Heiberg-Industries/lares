@@ -62,7 +62,7 @@ export function buildRePingPrompt(batch: Obligation[]): string {
   return [
     "[scheduled turn — a dropped-ball nudge. This is not a message from a person.]",
     "",
-    "Someone has messaged him AGAIN about something he never answered. Tell him, in two lines,",
+    "Someone has messaged the owner AGAIN about something left unanswered. Tell the owner, in two lines,",
     "who and what — no preamble, no list formatting for a single item, no proposals.",
     "",
     "TONE: Write to inform, not to prove checking happened. Never state that nothing is outstanding.",

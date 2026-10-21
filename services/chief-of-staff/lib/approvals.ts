@@ -119,7 +119,7 @@ export function humanTurnRefusal(
       : `this turn is running as ${[current.authenticator ?? "unknown-channel", current.userId]
           .filter((p): p is string => typeof p === "string" && p.length > 0)
           .join(":")}`;
-  return `${lead} But ${saw}, not as him — there is nothing he said on this turn. Nothing changed.`;
+  return `${lead} But ${saw}, not as the owner — there is nothing the owner said on this turn. Nothing changed.`;
 }
 
 /**
