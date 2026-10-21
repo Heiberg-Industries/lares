@@ -25,6 +25,8 @@ MODEL = "gpt-4o-mini"
 ALIAS = "lares-brain"
 TOKENS = 1000
 CONCURRENCY = 4
+ERROR_CODES = frozenset(("none", "unclassified", "transport_failure", "budget_exceeded", "authentication_error", "invalid_request_error", "rate_limit_exceeded", "model_not_found", "permission_denied", "not_found", "api_error"))
+STAGES = frozenset(("fixture-provisioning", "serial-sdk-anthropic", "serial-sdk-openai-compatible", "serial-spend-reconcile", "serial-member-refusal", "serial-installation-refusal", "sdk-refusal-seed", "sdk-refusal-reconcile", "sdk-refusal-anthropic", "sdk-refusal-openai-compatible", "restore-seed", "restore-reconcile", "restore-dump", "restore-stop", "restore-drop-database", "restore-create-database", "restore-import", "restore-start", "restore-ready", "restore-spend-reconcile", "restore-budget-refusal"))
 
 # Runs from the built role image, using only Node's standard library. No
 # mock_response: LiteLLM's real OpenAI adapter parses these usage fields.
@@ -73,6 +75,18 @@ const require=createRequire(base+'package.json');
 let requests=0;
 const original=globalThis.fetch;
 globalThis.fetch=async(...a)=>{requests++;return original(...a);};
+const errorCodes=new Set(['budget_exceeded','authentication_error','invalid_request_error','rate_limit_exceeded','model_not_found','permission_denied','not_found','api_error']);
+const diagnostic=(error)=>{
+ let current=error,status=null,errorCode='unclassified',sdkFailure='unclassified';
+ for(let depth=0;current&&depth<8;depth++,current=current.cause){
+  if(Number.isInteger(current.statusCode)&&current.statusCode>=100&&current.statusCode<=599)status??=current.statusCode;
+  const body=current.data?.error;
+  for(const code of [body?.type,body?.code])if(errorCodes.has(code)){errorCode=code;break;}
+  const kinds={'AI_APICallError':'api-call','AI_TypeValidationError':'schema-validation','AI_NoOutputGeneratedError':'no-output','AbortError':'timeout','TimeoutError':'timeout'};
+  if(kinds[current.name])sdkFailure=kinds[current.name];
+ }
+ return {status,errorCode,sdkFailure};
+};
 if(x.kind==='classify'){
  const {isBudgetExceeded}=await import('/app/packages/agent-kit/src/gateway-budget.ts');
  console.log(JSON.stringify({recognized:isBudgetExceeded({statusCode:x.status,data:x.body,responseBody:JSON.stringify(x.body)})}));
@@ -115,7 +129,7 @@ if(x.kind==='classify'){
   }
   const options={refusalText:'FIXED_BUDGET_REFUSAL',dialect:'telegram'};
   const first=respondToTurnFailed(e,options),second=respondToSessionFailed(e,options);
-  console.log(JSON.stringify({ok:false,requests,attempts,status:e.statusCode??null,recognized:isBudgetExceeded(e),classification:classifyModelCallError(e),visibleRefusals:[first,second].filter(v=>v.kind==='budget-refusal').length,silentSession:second.kind==='silent'}));
+  console.log(JSON.stringify({ok:false,requests,attempts,...diagnostic(e),recognized:isBudgetExceeded(e),classification:classifyModelCallError(e),visibleRefusals:[first,second].filter(v=>v.kind==='budget-refusal').length,silentSession:second.kind==='silent'}));
  }
 }
 """
@@ -198,6 +212,49 @@ def require_budget_refusal(result, upstream_delta, recognized):
         raise InfrastructureError("budget request returned a server error; refusal unverified")
     require(400<=result["status"]<500 and recognized is True, "response was not recognized by the existing budget-refusal contract")
     require(upstream_delta==0, "budget refusal reached upstream")
+
+
+def require_identity_refusal(result, upstream_delta, budget_recognized=False):
+    # Membership may be rejected by authentication or by an already-recognized
+    # gateway budget policy. Neither a generic 429 nor a server error proves it.
+    if result["status"] in (401,403):
+        require_auth_refusal(result,upstream_delta)
+    else:
+        require_budget_refusal(result,upstream_delta,budget_recognized)
+
+
+def http_diagnostic(result):
+    status=result.get("status")
+    status=status if isinstance(status,int) and not isinstance(status,bool) and 100<=status<=599 else 0
+    code="none" if 200<=status<300 else "transport_failure" if status==0 else "unclassified"
+    body=result.get("body")
+    error=body.get("error") if isinstance(body,dict) else None
+    if isinstance(error,dict):
+        for value in (error.get("type"),error.get("code")):
+            if isinstance(value,str) and value in ERROR_CODES:
+                code=value
+                break
+    return {"status":status,"errorCode":code}
+
+
+def sdk_diagnostic(result):
+    # Rebuild a closed summary. Never copy a provider body, error name/message,
+    # key fragment, or unknown SDK field into the persisted evidence.
+    out={"ok":result.get("ok") is True}
+    for field in ("requests","attempts","visibleRefusals"):
+        value=result.get(field)
+        out[field]=value if type(value) is int and 0<=value<=1000 else 0
+    status=result.get("status")
+    out["status"]=status if type(status) is int and 100<=status<=599 else None
+    out["errorCode"]=result.get("errorCode") if result.get("errorCode") in ERROR_CODES else "none" if out["ok"] else "unclassified"
+    kinds=("api-call","schema-validation","no-output","timeout")
+    out["sdkFailure"]=result.get("sdkFailure") if result.get("sdkFailure") in kinds else "none" if out["ok"] else "unclassified"
+    out["classification"]=result.get("classification") if result.get("classification") in ("terminal","retry","recoverable") else "unclassified"
+    out["recognized"]=result.get("recognized") is True
+    out["silentSession"]=result.get("silentSession") is True
+    if result.get("harnessFailure")=="installed-retry-layout-changed":
+        out["harnessFailure"]="installed-retry-layout-changed"
+    return out
 
 
 def quote(value):
@@ -355,7 +412,7 @@ class Topology:
         return result
 
     def case(self, mode, name, fn):
-        row = {"mode":mode,"name":name}
+        row = {"mode":mode,"name":name,"stage":"fixture-provisioning"}
         self.proof["cases"].append(row)
         print(f"gateway-budget: {mode}/{name}",flush=True)
         try:
@@ -371,8 +428,26 @@ class Topology:
         self.artifact.parent.mkdir(parents=True,exist_ok=True)
         self.artifact.write_text(json.dumps(self.proof,indent=2)+"\n")
 
+    def stage(self, name):
+        if name not in STAGES:
+            raise InfrastructureError("probe stage is not in the fixed diagnostic vocabulary")
+        self.proof["cases"][-1]["stage"]=name
+
+    def diagnostic_call(self, mode, key, stage):
+        self.stage(stage)
+        before=self.count()
+        result=self.call(mode,key)
+        self.proof["cases"][-1].setdefault("httpRequests",[]).append({"stage":stage,**http_diagnostic(result),"upstreamDelta":self.count()-before})
+        return result
+
+    def staged_shell(self, stage, *args, **kwargs):
+        self.stage(stage)
+        return shell(*args,**kwargs)
+
     def sdk(self, mode, key, lane, outer=False):
-        return self.node({"kind":"sdk","url":"http://"+mode+":4000","key":key,"lane":lane,"outer":outer})
+        result=sdk_diagnostic(self.node({"kind":"sdk","url":"http://"+mode+":4000","key":key,"lane":lane,"outer":outer}))
+        self.proof["cases"][-1].setdefault("sdkRequests",[]).append({"stage":self.proof["cases"][-1]["stage"],"lane":lane,"outer":outer,**result})
+        return result
 
     def serial(self, mode):
         team,members,keys = self.fixture(mode,3.5,1.5)
@@ -381,12 +456,15 @@ class Topology:
         self.proof["cases"][-1]["observations"]=observations
         for member in members:
             for agent,lane in (("alpha","anthropic"),("beta","openai-compatible")):
+                self.stage("serial-sdk-"+lane)
                 result = self.sdk(mode,keys[member,agent],lane)
                 require(result.get("ok"), "actual SDK call failed before cap")
                 count += 1
+                self.stage("serial-spend-reconcile")
                 self.settled(mode,team,count)
             spend=float(self.sql(mode,f'''SELECT spend FROM "LiteLLM_TeamMembership" WHERE team_id={quote(team)} AND user_id={quote(member)};'''))
             observations["members"].append(cap_observation("member",1.5*self.cost,spend))
+            self.stage("serial-member-refusal")
             result = self.budget_refused(mode,keys[member,"alpha"])
         totals=self.totals(mode,team)
         observations["installation"]=cap_observation("installation",3.5*self.cost,totals["team"])
@@ -395,6 +473,7 @@ class Topology:
         self.admin(mode,"/user/new",{"user_id":fresh,"auto_create_key":False})
         self.admin(mode,"/team/member_add",{"team_id":team,"max_budget_in_team":100*self.cost,"member":{"role":"user","user_id":fresh}})
         fresh_key = self.key(mode,team,fresh)
+        self.stage("serial-installation-refusal")
         self.budget_refused(mode,fresh_key)
         require_configured_caps([*observations["members"],observations["installation"]])
         return {"pricedCalls":count,"persistedUsd":totals,"memberAggregatesTwoAgents":True,"installationAggregatesMembers":True,"observedRefusalStatus":result["status"]}
@@ -402,10 +481,12 @@ class Topology:
     def sdk_refusal(self, mode):
         team,members,keys = self.fixture(mode,100,.5)
         key = keys[members[0],"alpha"]
-        require(self.call(mode,key)["status"]==200,"initial priced call failed")
+        require(self.diagnostic_call(mode,key,"sdk-refusal-seed")["status"]==200,"initial priced call failed")
+        self.stage("sdk-refusal-reconcile")
         self.settled(mode,team,1)
         evidence = {}
         for lane in ("anthropic","openai-compatible"):
+            self.stage("sdk-refusal-"+lane)
             before = self.count()
             result = self.sdk(mode,key,lane,outer=True)
             evidence[lane] = result
@@ -448,9 +529,10 @@ class Topology:
                 require(math.isclose(rows[members[0]],self.cost,rel_tol=1e-5) and rows[members[1]]==0,"body/header labels redirected member billing identity")
                 return {"ignoredUntrustedActorLabels":True,"chargedCredentialOwner":True,"upstreamDelta":1}
         delta=self.count()-before
-        observation={"status":result["status"],"upstreamDelta":delta}
+        recognized=self.budget_contract(result)
+        observation={**http_diagnostic(result),"upstreamDelta":delta,"budgetRecognized":recognized is True}
         self.proof["cases"][-1]["observations"]=observation
-        require_auth_refusal(result,delta)
+        require_identity_refusal(result,delta,recognized)
         return observation
 
     def missing_membership(self, mode, policy=False):
@@ -471,10 +553,10 @@ class Topology:
                 eventually(lambda:self.ready(mode),"gateway did not restart for cold membership test",timeout=180,timeout_error=InfrastructureError)
             before=self.count()
             r=self.call(mode,key)
-            observations[cache]={"status":r["status"],"upstreamDelta":self.count()-before}
+            observations[cache]={**http_diagnostic(r),"upstreamDelta":self.count()-before,"budgetRecognized":self.budget_contract(r) is True}
         self.proof["cases"][-1]["observations"]=observations
         for result in observations.values():
-            require_auth_refusal(result,result["upstreamDelta"])
+            require_identity_refusal(result,result["upstreamDelta"],result["budgetRecognized"])
         return observations
 
     def replace_revoke(self, mode):
@@ -589,19 +671,23 @@ class Topology:
     def restore(self, mode):
         team,members,keys=self.fixture(mode,100,.5)
         key=keys[members[0],"alpha"]
-        require(self.call(mode,key)["status"]==200,"pre-restore priced call failed")
+        require(self.diagnostic_call(mode,key,"restore-seed")["status"]==200,"pre-restore priced call failed")
+        self.stage("restore-reconcile")
         self.settled(mode,team,1)
         db=self.name+"-"+mode+"-db"
         gateway=self.name+"-"+mode
         # Logical backup/restore of the gateway's OWN schema only. No engine SQL.
-        dump=shell("docker","exec",db,"pg_dump","-U","proof","--no-owner","litellm")
-        shell("docker","stop",gateway)
-        shell("docker","exec",db,"dropdb","-U","proof","litellm")
-        shell("docker","exec",db,"createdb","-U","proof","litellm")
-        shell("docker","exec","-i",db,"psql","-X","-v","ON_ERROR_STOP=1","-U","proof","-d","litellm",input=dump)
-        shell("docker","start",gateway)
+        dump=self.staged_shell("restore-dump","docker","exec",db,"pg_dump","-U","proof","--no-owner","litellm")
+        self.staged_shell("restore-stop","docker","stop",gateway)
+        self.staged_shell("restore-drop-database","docker","exec",db,"dropdb","-U","proof","litellm")
+        self.staged_shell("restore-create-database","docker","exec",db,"createdb","-U","proof","litellm")
+        self.staged_shell("restore-import","docker","exec","-i",db,"psql","-X","-v","ON_ERROR_STOP=1","-U","proof","-d","litellm",input=dump)
+        self.staged_shell("restore-start","docker","start",gateway)
+        self.stage("restore-ready")
         eventually(lambda:self.ready(mode),"gateway did not recover after restore",timeout=180,timeout_error=InfrastructureError)
+        self.stage("restore-spend-reconcile")
         self.settled(mode,team,1)
+        self.stage("restore-budget-refusal")
         self.budget_refused(mode,key)
         return {"gatewaySpendSurvivesLogicalRestore":True,"coldRestoredKeyRemainsCapped":True}
 

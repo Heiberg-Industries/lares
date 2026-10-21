@@ -75,6 +75,76 @@ class BudgetProofGuards(unittest.TestCase):
         with self.assertRaises(probe.ProbeError):
             probe.require_auth_refusal({"status": 401}, 1)
 
+    def test_missing_identity_accepts_only_verified_zero_upstream_refusal(self):
+        probe.require_identity_refusal({"status":429},0,budget_recognized=True)
+        probe.require_identity_refusal({"status":401},0)
+        for status,delta,recognized in ((429,0,False),(429,1,True),(200,1,False),(404,0,False),(500,0,False)):
+            with self.subTest(status=status,delta=delta),self.assertRaises(probe.ProbeError):
+                probe.require_identity_refusal({"status":status},delta,recognized)
+
+    def test_initial_sdk_failure_is_preserved_without_raw_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            topology.node=Mock(return_value={"ok":False,"requests":1,"attempts":1,"status":400,"errorCode":"invalid_request_error","sdkFailure":"api-call","message":"sk-private-value","body":{"key":"sk-private-value"}})
+
+            def initial_sdk():
+                topology.stage("serial-sdk-anthropic")
+                result=topology.sdk("fixture","fixture-key","anthropic")
+                probe.require(result["ok"],"actual SDK call failed before cap")
+
+            topology.case("fixture","serial",initial_sdk)
+            row=topology.proof["cases"][-1]
+            self.assertEqual(row["status"],"FAIL")
+            self.assertEqual(row["stage"],"serial-sdk-anthropic")
+            self.assertEqual(row["sdkRequests"][0]["status"],400)
+            self.assertEqual(row["sdkRequests"][0]["errorCode"],"invalid_request_error")
+            self.assertNotIn("sk-private-value",topology.artifact.read_text())
+
+    def test_seed_http_failure_is_preserved_without_response_body(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            topology.count=Mock(return_value=0)
+            topology.call=Mock(return_value={"status":429,"body":{"error":{"type":"budget_exceeded","message":"sk-private-value"}}})
+
+            def seed():
+                result=topology.diagnostic_call("fixture","fixture-key","sdk-refusal-seed")
+                probe.require(result["status"]==200,"initial priced call failed")
+
+            topology.case("fixture","seed",seed)
+            row=topology.proof["cases"][-1]
+            self.assertEqual(row["stage"],"sdk-refusal-seed")
+            self.assertEqual(row["httpRequests"][0],{"stage":"sdk-refusal-seed","status":429,"errorCode":"budget_exceeded","upstreamDelta":0})
+            self.assertNotIn("sk-private-value",topology.artifact.read_text())
+
+    def test_unknown_diagnostic_codes_and_names_are_not_copied(self):
+        summary=probe.http_diagnostic({"status":400,"body":{"error":{"type":"sk-private-value","code":"arbitrary provider text"}}})
+        self.assertEqual(summary,{"status":400,"errorCode":"unclassified"})
+        sdk=probe.sdk_diagnostic({"ok":False,"status":400,"errorCode":"sk-private-value","sdkFailure":"arbitrary name","message":"sk-private-value"})
+        self.assertEqual(sdk["errorCode"],"unclassified")
+        self.assertEqual(sdk["sdkFailure"],"unclassified")
+        self.assertNotIn("sk-private-value",str(sdk))
+
+    def test_restore_command_failure_records_exact_fixed_stage(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            topology.name="fixture"
+            topology.fixture=Mock(return_value=("team",["member"],{("member","alpha"):"fixture-key"}))
+            topology.count=Mock(return_value=0)
+            topology.call=Mock(return_value={"status":200,"body":{}})
+            topology.settled=Mock(return_value={})
+
+            def command(*args,**kwargs):
+                if "dropdb" in args:
+                    raise probe.InfrastructureError("disposable command failed (raw diagnostics withheld)")
+                return "fixture dump"
+
+            with patch.object(probe,"shell",side_effect=command):
+                topology.case("fixture","restore",lambda:topology.restore("fixture"))
+            row=topology.proof["cases"][-1]
+            self.assertEqual(row["status"],"FAIL")
+            self.assertEqual(row["stage"],"restore-drop-database")
+            self.assertEqual(row["failureKind"],"harness-or-api-compatibility")
+
     def test_unknown_member_server_error_is_not_a_safe_rejection(self):
         for status in (0, 500, 503):
             with self.subTest(status=status), self.assertRaises(probe.InfrastructureError):
