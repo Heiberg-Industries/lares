@@ -176,6 +176,17 @@ describe('all-data import reconciliation', () => {
       expect(importInventoryReconciled(r)).toBe(c === 'conversations');
     }
   });
+  it('accounts for every archived conversation even without an active destination', () => {
+    const r = receipt();
+    r.manifest.inventory.conversations!.disposition = 'archive-only';
+    r.manifest.inventory.conversations!.count = 100;
+    expect(importInventoryReconciled(r)).toBe(false);
+    r.manifest.inventory.conversations!.count = 0;
+    r.manifest.mappings.push({ category: 'conversations', sourceId: 'old', destinationId: null, provenance: 'archive' });
+    expect(importInventoryReconciled(r)).toBe(false);
+    r.manifest.inventory.conversations!.count = 1;
+    expect(importInventoryReconciled(r)).toBe(true);
+  });
   it('blocks missing/unresolved/duplicate mappings and reconnects', () => {
     const r = receipt(); r.manifest.inventory.members!.count = 1;
     expect(importInventoryReconciled(r)).toBe(false);

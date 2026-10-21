@@ -189,7 +189,7 @@ export function importInventoryReconciled(receipt: unknown): boolean {
   if (new Set(keys).size !== keys.length) return false;
   const destinations = m.mappings.filter(x => x.destinationId !== null).map(x => JSON.stringify([x.category, x.destinationId]));
   if (new Set(destinations).size !== destinations.length) return false;
-  return IMPORT_CATEGORIES.every(c => (c === 'conversations' && m.inventory[c].disposition === 'archive-only') ||
+  return IMPORT_CATEGORIES.every(c =>
     m.mappings.filter(x => x.category === c).length === m.inventory[c].count) &&
     IMPORT_CATEGORIES.every(c => m.inventory[c].disposition === 'preserved' ||
     (c === 'conversations' && m.inventory[c].disposition === 'archive-only')) &&
