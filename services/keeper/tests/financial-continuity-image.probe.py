@@ -39,7 +39,14 @@ import{{consoleSourceTransaction}}from'/app/packages/agent-kit/src/console-sourc
 import{{budgetAccountProvisionPlanSchema}}from'{base}budget-account-provisioning.ts';
 import{{registerAction}}from'{base}actions.ts';
 import{{serve}}from'{base}socket-server.ts';
+import{{PgBudgetAdmissionStore,budgetIdentitySuppression,canonicalBudgetMoney}}from'/app/packages/agent-kit/src/budget-admission-store.ts';
+import{{captureModelInvocation,runModelInvocation}}from'/app/packages/agent-kit/src/model-invocation.ts';
+import{{bindConsoleSession}}from'/app/packages/agent-kit/src/console-turn-authority.ts';
+import{{PgGrantStore}}from'/app/packages/agent-kit/src/grant-store.ts';
+import{{GatewayBudgetAuthority}}from'{base}gateway-budget.ts';
+import{{GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature}}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';
 import{{readFileSync,writeFileSync}}from'node:fs';
+import{{createHash,randomUUID}}from'node:crypto';
 const pool=new Pool({{host:'proof-db',database:{json.dumps(database)},user:'proof',password:'disposable-proof-only',max:1,connectionTimeoutMillis:1500}});
 async function main(){{try{{{code}}}finally{{await pool.end();}}}}void main().catch(e=>{{console.error(e);process.exitCode=1;}});"""
     return command('docker', 'run', '--rm', '--network', name, '--mount',
@@ -57,8 +64,8 @@ try:
     for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
         sql(migration.read_text())
     # Each scenario uses the real empty migrated schema, not guessed fixture tables.
-    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE provisionproof TEMPLATE proof;')
-    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash'), ('provisionproof', 'provision')]:
+    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE provisionproof TEMPLATE proof; CREATE DATABASE gatewayproof TEMPLATE proof;')
+    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash'), ('provisionproof', 'provision'), ('gatewayproof', 'gateway')]:
         assert run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{directory}',db);}}finally{{db.release();}}console.log('prepared');", database) == 'prepared'
     # Actual killed prepared writer: no caller explicitly freezes it before death.
     holder = f"import{{HostFinancialJournal}}from'{base}financial-journal.ts';const j=HostFinancialJournal.openExisting('/proof/crash',{{requirePrepared:true}});console.log('locked');setInterval(()=>{{}},1000);"
@@ -139,6 +146,51 @@ try{
 }finally{try{await rolloverJournal.drainForShutdown();}finally{rolloverJournal.close();}}
 console.log(JSON.stringify({fresh:true,exactRetry:true,members:2,policyGeneration:true,sameMonthCapChange:true,actualRootCliHostSocket:true,utcRollover:true}));"""
     print(run(provision, 'provisionproof'))
+    # Actual signed gateway requests drive admission, grant and settlement through the
+    # prepared Keeper journal and the same one-connection PostgreSQL pool.
+    gateway = r"""const journal=HostFinancialJournal.openExisting('/proof/gateway',{requirePrepared:true});
+try{
+const hash=value=>createHash('sha256').update(value).digest('hex'),env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:'11111111-1111-4111-8111-111111111111',AGENT_OWNER_USER_ID:'member-a'};
+const memberNonce=createHash('sha256').update('member-a:gateway-proof').digest('base64url'),sessionId='gateway-proof';
+const auth={authenticator:'lares-console',attributes:{lares_member_id:'member-a',lares_admission_nonce:memberNonce,lares_purpose:'human'}};
+const context={session:{id:sessionId,turn:{id:'turn-1',sequence:0},auth:{current:auth,initiator:auth}}};
+const grants=new PgGrantStore(pool),incarnation=env.LARES_AGENT_INCARNATION,endpoint=hash('endpoint'),profile=hash('profile'),fingerprint=hash('key');
+await pool.query("INSERT INTO orgs(id,display_name) VALUES('org','Example')");
+await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('member-a','A','org','owner','active')");
+await pool.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES('member-a',NULL,1)");
+await pool.query("INSERT INTO agent_definitions(name,definition,hash) VALUES('helper','{\"grants\":[]}','fixture')");
+await pool.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending) VALUES('helper','127.0.0.2','helper','owned',$1,$1,'ready',false)",[incarnation]);
+const adopted=await grants.adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture'},{designatedOwnerMemberId:'member-a'});
+await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:adopted.accessRevision,grants:[{principal:{kind:'organisation',id:'org'},permission:'use',expiresAt:null}]});
+await bindConsoleSession({agent:'helper',incarnation,memberId:'member-a',admissionNonce:memberNonce,sessionId},pool,env);
+const installation=randomUUID(),member=randomUUID(),installationWindow=randomUUID(),memberWindow=randomUUID(),binding=randomUUID();
+const suppression=budgetIdentitySuppression(Buffer.alloc(32,1),{canonicalMemberId:'member-a',providers:[{issuer:'https://issuer.invalid',subject:'member-a',tenantId:'tenant'}]});
+await pool.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,installation_cap,selected_endpoint,recovery_epoch) VALUES($1,'installation','installation',$1,1,$2,'epoch-1')",[installation,endpoint]);
+await pool.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,NULL,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[installationWindow,installation]);
+await pool.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[installation,installationWindow]);
+await pool.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,'member-a','org',$3,$4)",[member,installation,suppression.canonicalSuppressionHash,suppression.providerSuppressionHashes]);
+await pool.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,'member-a',clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[memberWindow,member]);
+await pool.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[member,memberWindow]);
+const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
+await pool.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,'member-a',$4,0,$5,'helper',$6,'standard',$7,0.1,$8::jsonb,'active')",[binding,installation,member,endpoint,fingerprint,incarnation,profile,JSON.stringify(pricing)]);
+const store=new PgBudgetAdmissionStore(pool,env),requestHash=hash('request'),invocation=captureModelInvocation({type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}},context.session,'standard');
+const ticket=await runModelInvocation(invocation,()=>store.prepareIntent({bindingId:binding,requestHash,profileHash:profile}));
+const key=Buffer.alloc(32,9),witness={observe:async()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled'})};
+const authority=new GatewayBudgetAuthority(pool,key,new JournalBudgetFinancialWriter(journal),witness);
+const document={version:1,nonce:hash('nonce'),ticket,requestHash,profileHash:profile,endpointHash:endpoint,keyFingerprint:fingerprint,purposeAlias:'standard'},raw=gatewayCanonical(document);
+const admitted=await authority.handle(GATEWAY_ADMIT_PATH,gatewaySignature(key,'request',GATEWAY_ADMIT_PATH,raw),raw);
+if(admitted.status!==200||!verifyGatewaySignature(key,admitted.headers['x-lares-signature'],'response',GATEWAY_ADMIT_PATH,admitted.body))throw Error('signed gateway admission failed');
+const grant=JSON.parse(admitted.body.toString()),settlement={version:1,nonce:grant.nonce,requestHash:grant.requestHash,profileHash:grant.profileHash,endpointHash:grant.endpointHash,keyFingerprint:grant.keyFingerprint,purposeAlias:grant.purposeAlias,attemptId:grant.attemptId,bindingId:grant.bindingId,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens:100,cacheReadTokens:40,cacheWriteTokens:0}};
+settlement.receiptHash=gatewayHash(gatewayCanonical(settlement));const terminal=gatewayCanonical(settlement),reply=await authority.handle(GATEWAY_SETTLE_PATH,gatewaySignature(key,'request',GATEWAY_SETTLE_PATH,terminal),terminal);
+if(reply.status!==200||JSON.parse(reply.body.toString()).state!=='settled')throw Error('signed gateway settlement failed');
+const frames=readFileSync('/proof/gateway/journal.jsonl','utf8').trimEnd().split('\n').map(line=>JSON.parse(line)),records=frames.map(frame=>frame.record),proposals=frames.filter(frame=>frame.record.kind==='proposal');
+if(JSON.stringify(records.filter(record=>record.kind==='begin').map(record=>record.operation))!==JSON.stringify(['admit','grant','settle'])||proposals.length!==3||records.filter(record=>record.kind==='commit').length!==3)throw Error('gateway journal operations incomplete');
+for(const frame of proposals){const record=frame.record,row=(await pool.query('SELECT journal_id,proposal_sequence::text,proposal_digest FROM budget_financial_checkpoints WHERE operation_id=$1',[record.operationId])).rows[0];if(!row||row.journal_id!==records.find(value=>value.kind==='control').control.journalId||row.proposal_sequence!==String(record.sequence)||row.proposal_digest!==frame.digest)throw Error('gateway journal checkpoint mismatch');}
+for(const frame of proposals){for(const atom of frame.record.atoms.filter(value=>value.kind==='account')){const generation=(await pool.query('SELECT policy_generation::text FROM budget_accounts WHERE id=$1',[atom.id])).rows[0]?.policy_generation;if(atom.policyGeneration!==generation)throw Error('journal account policy generation mismatch');}}
+const attempt=(await pool.query('SELECT state,actual_amount FROM budget_attempts WHERE id=$1',[grant.attemptId])).rows[0];if(attempt.state!=='settled'||canonicalBudgetMoney(String(attempt.actual_amount))!=='0.0098')throw Error('gateway source state mismatch');
+console.log('gateway journaled');
+}finally{await journal.drainForShutdown();journal.close();}"""
+    assert run(gateway, 'gatewayproof') == 'gateway journaled'
     # Actual pool max=1: start check, checkpoint and pre-COMMIT check must use the owner.
     clean = """const j=HostFinancialJournal.openExisting('/proof/restart',{requirePrepared:true});
 const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}

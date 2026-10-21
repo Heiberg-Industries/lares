@@ -99,7 +99,7 @@ async function main(): Promise<void> {
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
-        stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(budgetPool,config.gatewayBudget?.serviceKeyFile)}));
+        stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(budgetPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();

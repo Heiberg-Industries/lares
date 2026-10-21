@@ -5,8 +5,9 @@ import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,type FinancialAtom} from './f
 import {verifyFinancialContinuity} from './financial-continuity.js';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const utc=(column:string)=>`to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
-/** Inactive constructor adapter. Only keeper custody can supply the journal; no runtime or
- * production factory currently supplies one. It never checks out a second pool client. */
+/** Keeper-owned adapter. The production gateway authority receives this prepared journal;
+ * no runtime or configuration switch can supply an alternate writer. It never checks out a
+ * second pool client. */
 export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   constructor(private journal:HostFinancialJournal){}
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T> {
