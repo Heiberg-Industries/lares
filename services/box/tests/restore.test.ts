@@ -51,7 +51,7 @@ function ledger(...names: string[]) {
 
 /** System tools the script needs, linked into the stub directory so PATH holds nothing else. */
 const SYSTEM_TOOLS = ["bash", "sh", "env", "cat", "sed", "grep", "awk", "tr", "head", "tail", "sort", "ls", "basename", "dirname",
-  "mkdir", "cp", "rm", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep"];
+  "mkdir", "cp", "rm", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3"];
 function linkSystemTools() {
   for (const t of SYSTEM_TOOLS) {
     const found = spawnSync("/bin/sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).stdout.trim();

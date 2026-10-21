@@ -1554,6 +1554,59 @@ run_first_organisation() {
   fi
 }
 
+# Managed stores are provisioned only after current owner/org enrollment. Recovery programs
+# are refreshed first; incomplete storage stops installation before the keeper can start.
+run_vault_storage() {
+  local prefix="${PREFIX%/}" install_dir="$PREFIX/srv/lares/installation" plan verified roots
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local -a envs=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password" --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" --env "PGDATABASE=$db_name" --env "PGUSER=$db_user")
+  if [ "$DRY" = 1 ]; then say 'would refresh recovery tooling, validate the current owner and initialize explicit private/shared stores; runtime Vault tools remain disabled';return 0;fi
+  roots=$(python3 - "$PREFIX" <<'PYVAULT'
+import json,os,stat,sys
+prefix=sys.argv[1].rstrip('/')
+for logical in ['/srv/vault','/var/lib/lares-vault-git','/srv/lares/installation']:
+ path=prefix+logical
+ while path and path!='/':
+  if os.path.lexists(path) and stat.S_ISLNK(os.lstat(path).st_mode):raise SystemExit('vault storage: symbolic-link storage path refused')
+  if prefix and path==prefix:break
+  path=os.path.dirname(path)
+file=prefix+'/etc/lares/keeper.json';roots=[]
+if os.path.exists(file):
+ try:value=json.load(open(file)).get('lifecycle',{})
+ except (ValueError,AttributeError):raise SystemExit('vault storage: keeper configuration is not valid JSON; no store was initialized')
+ for group in ['bindings','defaultBindings']:
+  for binding in value.get(group,{}).values():
+   roots.extend(m['source'] for m in binding.get('mounts',[]))
+for root in roots:
+ for managed in [prefix+'/srv/vault',prefix+'/var/lib/lares-vault-git']:
+  if root==managed or root.startswith(managed+'/') or managed.startswith(root.rstrip('/')+'/'):raise SystemExit('vault storage: legacy runtime mount overlaps new guarded storage')
+print(json.dumps(roots))
+PYVAULT
+  ) || die 'Vault storage paths conflict with existing data or legacy mounts; nothing was initialized.' "$EX_REFUSED"
+  local -a preview_mounts=(--runtime-user --ro "$SECRETS_DIR" --env "LARES_VAULT_LEGACY_ROOTS=$roots")
+  [ ! -d "$install_dir" ] || preview_mounts+=(--ro "$install_dir")
+  [ ! -e "$PREFIX/srv/vault" ] || preview_mounts+=(--ro "$PREFIX/srv/vault")
+  [ ! -e "$PREFIX/var/lib/lares-vault-git" ] || preview_mounts+=(--ro "$PREFIX/var/lib/lares-vault-git")
+  plan=$(engine_run "${preview_mounts[@]}" "${envs[@]}" bin/vault-storage.ts preview --prefix "$prefix" --owner "$OWNER_ID") || die 'Vault storage preview refused; review the existing owner, paths and pending plan.' "$EX_REFUSED"
+  LARES_ENGINE_IMAGE="$ENGINE_IMAGE" bash "$HERE/refresh-recovery.sh" --prefix "$PREFIX" || die 'Recovery tooling could not be refreshed; no new Vault store was initialized.' "$EX_REFUSED"
+  . "$HERE/vault-storage.sh"
+  vault_storage_prepare "$PREFIX" "$plan" || die 'Vault storage preparation refused; retain the pending plan and retry after reviewing it.' "$EX_REFUSED"
+  local -a apply_mounts=(--runtime-user --ro "$SECRETS_DIR" --ro "$install_dir" --env "LARES_VAULT_LEGACY_ROOTS=$roots")
+  local path
+  while IFS= read -r path; do [ -z "$path" ] || apply_mounts+=(--rw "$path");done < <(python3 - "$prefix" "$plan" <<'PYVAULT'
+import json,sys
+prefix=sys.argv[1];inv=json.loads(sys.argv[2])
+for a in inv['areas']:print(prefix+'/srv/'+a['relativePath']);print(prefix+a['origin'])
+PYVAULT
+  )
+  for path in backup.sh export.sh restore.sh backup-verify.sh restore-drill.sh setup-backups.sh vault-storage.sh engine-run.sh refresh-recovery.sh vault-recovery.json vault-recovery-engine-image;do apply_mounts+=(--ro "$PREFIX/opt/lares/$path");done
+  for path in lares-backup.service lares-backup.timer lares-backup-verify.service lares-backup-verify.timer lares-restore-drill.service lares-restore-drill.timer;do apply_mounts+=(--ro "$PREFIX/etc/systemd/system/$path");done
+  engine_run "${apply_mounts[@]}" "${envs[@]}" bin/vault-storage.ts apply --prefix "$prefix" --owner "$OWNER_ID" >/dev/null || die 'Vault initialization did not complete; its exact pending plan is retained and the keeper was not started.' "$EX_REFUSED"
+  verified=$(engine_run "${apply_mounts[@]}" "${envs[@]}" bin/vault-storage.ts verify-plan --prefix "$prefix") || die 'Vault verification failed; the pending plan remains incomplete and the keeper was not started.' "$EX_REFUSED"
+  vault_storage_publish "$PREFIX" "$verified" || die 'Vault inventory publication failed; retry the same plan before starting the keeper.' "$EX_REFUSED"
+  say 'private/shared Vault repositories verified; runtime tools and mounts remain disabled. Taste is unchanged.'
+}
+
 # --- 12. the keeper is configured and started, from the same release ---------------
 # WHAT THIS STEP IS. The keeper is the only thing in the fleet allowed to start, stop or
 # reconfigure an agent. It boots from ONE file, $PREFIX/etc/lares/keeper.json, whose shape is
@@ -1754,6 +1807,7 @@ else
   run_installation_settings
   run_first_owner
   run_first_organisation
+  run_vault_storage
   run_keeper
   run_finish
 fi

@@ -109,6 +109,7 @@ done
 
 PREFIX="${PREFIX_ARG:-${LARES_PREFIX:-/}}"
 # P: where a logical path (/etc/lares/...) really lives, given the prefix.
+export LARES_PREFIX="${PREFIX%/}"
 P() { printf '%s%s' "${PREFIX%/}" "$1"; }
 
 if [ -z "$SNAPSHOT" ]; then
@@ -144,18 +145,23 @@ fi
 # --- scratch folder and its trap ------------------------------------------------------------
 SCRATCH=""
 SCRATCH_ROOT=""
+VAULT_SNAPSHOT_DB=""
+PRESERVE_SCRATCH=0
+VAULT_TARGET_PRESENT=0
+vault_storage_unlock() { :; }
 # Removes only the folder THIS run made, and only when it is under the configured scratch
 # root: a trap that runs on every exit path is exactly where a wrong variable turns into rm -rf.
 remove_scratch() {
   [ -n "$SCRATCH" ] && [ -n "$SCRATCH_ROOT" ] || return 0
   [ "$SCRATCH" != "/" ] || return 0
   [ -d "$SCRATCH" ] || return 0
+  if [ "$PRESERVE_SCRATCH" = 1 ]; then echo "restore: incomplete restore staging retained privately at $SCRATCH; services remain stopped" >&2;return 0;fi
   case "$SCRATCH" in
     "$SCRATCH_ROOT"/restore-snapshot.*) rm -rf "$SCRATCH" ;;
     *) echo "restore: not removing '$SCRATCH': it is not under $SCRATCH_ROOT" >&2 ;;
   esac
 }
-cleanup() { local rc=$?; remove_scratch; exit "$rc"; }
+cleanup() { local rc=$?; vault_storage_unlock; if [ -n "$VAULT_SNAPSHOT_DB" ];then dc exec -T db dropdb -U "$DB_USER" --if-exists "$VAULT_SNAPSHOT_DB" </dev/null >/dev/null 2>&1 || true;fi; remove_scratch; exit "$rc"; }
 trap cleanup EXIT INT TERM
 
 # --- 1. this must be a finished current-layout install ----------------------------------------
@@ -165,8 +171,8 @@ trap cleanup EXIT INT TERM
 [ -f "$ENV_FILE" ] || die "/etc/lares/backup.env is missing, and it names the backup repository to restore from. Copy it from the decrypted bundle (with /etc/lares/restic-password). Nothing was changed." "$EX_REFUSED"
 
 missing=""
-ENGINE_TOOLS="restic docker pnpm"
-[ "$ENGINE_MODE" = image ] && ENGINE_TOOLS="restic docker"
+ENGINE_TOOLS="restic docker pnpm python3"
+[ "$ENGINE_MODE" = image ] && ENGINE_TOOLS="restic docker python3"
 for tool in $ENGINE_TOOLS; do
   command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
 done
@@ -254,6 +260,16 @@ if [ -f "$AGENTS_COMPOSE" ]; then
   [ -z "$RUNNING" ] || die "an agent container is running on this server. A restore only goes onto a fresh install with no agents. Nothing was changed." "$EX_REFUSED"
 fi
 
+# A fresh install may already own two initialized empty Vault repositories. Refuse
+# meaningful content; preserve the verified bootstrap in staging until the restore verifies.
+if [ -r "$HERE/vault-storage.sh" ]; then
+  . "$HERE/vault-storage.sh"
+  vault_storage_load "${PREFIX%/}" || die 'target Vault storage is incomplete; finish or reconcile its pending plan before restore preparation' "$EX_REFUSED"
+  VAULT_TARGET_PRESENT="$VAULT_STORAGE_PRESENT"
+  if [ "$VAULT_TARGET_PRESENT" = 1 ];then vault_storage_verify "${PREFIX%/}" "$DB_NAME" verify-files >/dev/null || die 'target Vault repository identity did not verify' "$EX_REFUSED"; vault_storage_lock || die 'target Vault repositories are busy' "$EX_REFUSED";fi
+  vault_storage_verify "${PREFIX%/}" "$DB_NAME" verify-empty >/dev/null || die 'restore preparation requires untouched empty target Vault stores with matching database identity; export existing notes first' "$EX_REFUSED"
+fi
+
 # --- 5. room for the scratch copy -----------------------------------------------------------------------
 if [ ! -d "$SCRATCH_ROOT" ] || [ ! -w "$SCRATCH_ROOT" ]; then
   die "the scratch folder $SCRATCH_ROOT does not exist or cannot be written. Set RESTORE_SCRATCH_ROOT (or DRILL_SCRATCH_ROOT) to a disk-backed folder with room for the whole snapshot. Nothing was changed." "$EX_REFUSED"
@@ -273,7 +289,7 @@ RESTORE_ARGS=("$SNAPSHOT")
 say "reading snapshot $SNAPSHOT from the backup repository into a private scratch folder (removed when this ends). This can take a while."
 if ! "${RESTIC[@]}" restore "${RESTORE_ARGS[@]}" --target "$SCRATCH" \
      --include "$REQUIRED_PATH" --include /srv/lares/agents --include /srv/lares/retired \
-     --include /srv/lares/installation --include /srv/taste </dev/null; then
+     --include /srv/lares/installation --include /srv/taste --include /srv/vault --include /var/lib/lares-vault-git </dev/null; then
   die "restic could not restore snapshot '$SNAPSHOT' (its message is above). Check the snapshot id, the network and the repository password. Nothing on this server was changed." "$EX_REFUSED"
 fi
 
@@ -324,6 +340,23 @@ if [ "${#AGENT_NAMES[@]}" -gt 0 ] && { [ ! -d "$SECRETS_DIR" ] || [ -z "$(ls -A 
 fi
 [ -r "$ETC_LARES/secrets/database-password" ] || die "$ETC_LARES/secrets/database-password is missing, so the migration step could not sign in. Copy etc/lares/secrets/ from the decrypted bundle and run install.sh. Nothing was changed." "$EX_REFUSED"
 
+# Validate complete incoming files first. The owner/area comparison uses the actual
+# restored snapshot database, never current grants or a guessed COPY-text parser.
+VAULT_INCOMING_PRESENT=0
+if [ -r "$HERE/vault-storage.sh" ];then
+  vault_storage_load "$SCRATCH" || die 'snapshot Vault inventory or either storage root is missing or conflicting' "$EX_REFUSED"
+  VAULT_INCOMING_PRESENT="$VAULT_STORAGE_PRESENT"
+  vault_storage_verify "$SCRATCH" "$DB_NAME" verify-files >/dev/null || die 'snapshot Vault Git integrity or local origin pairing failed' "$EX_REFUSED"
+  if [ "$VAULT_INCOMING_PRESENT" = 1 ] || [ -r "$OPT_LARES/vault-recovery-engine-image" ];then
+    VAULT_SNAPSHOT_DB="drill_vault_restore_$$"
+    dc exec -T db createdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'cannot create the private snapshot verification database' "$EX_REFUSED"
+    dc exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U "$DB_USER" -d "$VAULT_SNAPSHOT_DB" < "$DUMP_DIR/$DB_NAME.dump" || die 'snapshot database could not be verified before restoration' "$EX_REFUSED"
+    vault_storage_verify "$SCRATCH" "$VAULT_SNAPSHOT_DB" verify-snapshot >/dev/null || die 'snapshot Vault metadata, ownership and stored markers disagree' "$EX_REFUSED"
+    dc exec -T db dropdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'snapshot verification database could not be removed' "$EX_REFUSED"
+    VAULT_SNAPSHOT_DB=""
+  fi
+fi
+
 say "the snapshot is usable: ${#DUMPS[@]} database dump(s), ${#AGENT_NAMES[@]} agent folder(s), newest database change $SNAP_NEWEST."
 
 # --- 8. dry run stops here ----------------------------------------------------------------------------
@@ -362,6 +395,12 @@ docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" stop </dev/null || 
 CHANGED="the keeper is stopped"
 dc stop console caddy lares-gateway </dev/null || midway "Could not stop console, caddy and the gateway."
 CHANGED="the keeper, console, caddy and gateway are stopped"
+if [ "$VAULT_TARGET_PRESENT" = 1 ];then
+  PRESERVE_SCRATCH=1
+  vault_storage_stage_empty "${PREFIX%/}" "$SCRATCH" || midway 'Could not stage the exact empty target Vault stores.'
+  vault_storage_unlock
+  CHANGED="$CHANGED; exact empty target Vault stores retained in private staging"
+fi
 
 restore_database() { # restore_database <name> <already-exists: 0|1>
   local db="$1" existing="$2"
@@ -422,6 +461,15 @@ copy_folder "$SCRATCH/srv/lares/agents" "$SRV_LARES/agents" agents
 copy_folder "$SCRATCH/srv/lares/retired" "$SRV_LARES/retired" retired
 copy_folder "$SCRATCH/srv/taste" "$TASTE_DIR" taste
 copy_folder "$SCRATCH/srv/lares/installation" "$SRV_LARES/installation" installation
+if [ "$VAULT_INCOMING_PRESENT" = 1 ];then
+  copy_folder "$SCRATCH/srv/vault" "$(P /srv/vault)" 'managed Vault working'
+  copy_folder "$SCRATCH/var/lib/lares-vault-git" "$(P /var/lib/lares-vault-git)" 'managed Vault Git history'
+fi
+if [ -r "$HERE/vault-storage.sh" ];then
+  vault_storage_load "${PREFIX%/}" || midway 'Restored Vault inventory is incomplete.'
+  vault_storage_verify "${PREFIX%/}" "$DB_NAME" verify >/dev/null || midway 'Restored Vault database, files, ownership or Git pairing did not verify.'
+fi
+PRESERVE_SCRATCH=0
 
 say "starting the base stack, then the keeper"
 dc up -d </dev/null || midway "Could not start the base stack."

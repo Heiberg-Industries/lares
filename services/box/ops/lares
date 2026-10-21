@@ -104,20 +104,13 @@ cmd_update() {
     exit "$code"
   fi
 
+  # Confirm the installed recovery programs before marking the release current.
+  bash "$new/services/box/ops/refresh-recovery.sh" --prefix "$PREFIX" --check
+
   if [ -n "$on" ] && [ "$on" != "$name" ]; then ln -sfn "releases/$on" "$ROOT/previous"; fi
   ln -sfn "releases/$name" "$CUR"
   printf 'lares: now on %s.\n' "$name"
 
-  # setup-backups.sh copied the backup scripts into /opt/lares once; an update does not replace them.
-  local f stale=""
-  for f in backup.sh backup-verify.sh restore-drill.sh; do
-    if [ -f "$ROOT/$f" ] && [ -f "$new/services/box/ops/$f" ] && ! cmp -s "$ROOT/$f" "$new/services/box/ops/$f"; then
-      stale="$stale $f"
-    fi
-  done
-  if [ -n "$stale" ]; then
-    printf 'lares: the backup scripts in %s are older than this release'"'"'s:%s. They were left as they are; see the release notes for how to refresh them.\n' "$ROOT" "$stale"
-  fi
 }
 
 cmd_rollback() {
