@@ -159,8 +159,8 @@ revision on every fresh session. An old runtime cannot create an active binding 
 A prompt refresh cannot approve old broad history: the person must start a new conversation.
 Current binding/access freshness is checked at dynamic surface resolution, model selection and
 both provider execution modes; durable tool callbacks independently refuse unsafe source names.
-Admission is still designated-owner-only. These source boundaries do not claim deployed gateway
-privacy, member admission or complete two-member runtime acceptance.
+The first bounded surface revision kept admission designated-owner-only. Its source boundaries
+alone did not establish deployed gateway privacy or complete two-member runtime acceptance.
 
 ## Bounded member private conversations
 
@@ -193,3 +193,6 @@ The offline `packages/board-evals/scripts/member-private-chat-proof.mjs` builds 
 sources with a synthetic model/provider, uses real migrated PostgreSQL and the real console
 proxy, and checks member/capability/history boundaries. It is runtime source proof, not live
 provider acceptance or deployment evidence.
+
+Revocation refuses later requests and model/provider starts. It cannot recall content already
+delivered to a browser or undo a call that began before revocation committed.
