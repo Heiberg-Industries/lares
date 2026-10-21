@@ -13,6 +13,10 @@ import { cutoffFor, readRetentionMonths, EARLIEST_SANE_CLOCK, PRUNE_FLOOR_DAYS }
 
 export const PERSONAL_MAIL_SEND_TOOL = 'personal_mailbox_send';
 const PURPOSE = 'lares.personal-action.v1';
+const MAX_CIPHERTEXT_LENGTH = 262_144; // SQL019's storage bound, in base64 characters.
+// Existing agent-box encryptSecret format: base64(12-byte IV + UTF-8 plaintext + 16-byte tag).
+// Budget the serialized envelope, including JSON escaping, before encryption or database work.
+const MAX_ENVELOPE_BYTES = MAX_CIPHERTEXT_LENGTH / 4 * 3 - 12 - 16;
 const id = z.string().min(1).max(512).refine(s => !/[\x00-\x1f\x7f]/.test(s));
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 const header = z.string().max(998).refine(s => Buffer.byteLength(s,'utf8')<=998 && !/[\p{Cc}\p{Zl}\p{Zp}]/u.test(s));
@@ -100,6 +104,9 @@ export class PgPersonalActionStore {
   }
   async prepareAction(input:TrustedPersonalActionEnvelope):Promise<PersonalActionOutcome> {
     const {payload,...s}=prepareSchema.parse(input); s.incarnation=s.incarnation.toLowerCase();
+    const actionId=randomUUID();
+    const envelope=JSON.stringify({purpose:PURPOSE,version:1,actionId,selection:s,payload});
+    if(Buffer.byteLength(envelope,'utf8')>MAX_ENVELOPE_BYTES) refuse();
     const original=originalHash(s), fingerprint=payloadFingerprint(s.kind,payload);
     return this.transaction(async db=>{
       // Serialise preparation even when no action row exists; tombstones survive content erasure.
@@ -112,8 +119,8 @@ export class PgPersonalActionStore {
         return outcome(r);
       }
       if((await db.query('SELECT 1 FROM personal_action_calls WHERE original_call_hash=$1',[original])).rowCount) refuse();
-      const actionId=randomUUID();
-      const ciphertext=this.crypto.encrypt(JSON.stringify({purpose:PURPOSE,version:1,actionId,selection:s,payload}));
+      const ciphertext=this.crypto.encrypt(envelope);
+      if(typeof ciphertext!=='string'||ciphertext.length<1||ciphertext.length>MAX_CIPHERTEXT_LENGTH) refuse();
       const {rows}=await db.query<Row>(`INSERT INTO personal_actions(id,payload_version,actor_member_id,agent,incarnation,
         session_id,original_turn_id,original_call_id,original_call_hash,account_id,account_generation,resource_binding_id,
         connector_id,kind,payload_hash,payload_ciphertext,created_at,expires_at)
@@ -179,6 +186,9 @@ export class PgPersonalActionStore {
   }
   async recordOutcome(permit:PersonalActionClaimPermit,input:PersonalActionReceipt):Promise<PersonalActionOutcome> {
     const receipt=receiptSchema.parse(input),p=this.permits.get(permit); if(!p) refuse();
+    // Starting settlement permanently ends dispatch eligibility, even if connection, rollback or
+    // COMMIT acknowledgement fails. Receipt recording can still be retried with this same permit.
+    p.consumed=true;
     const result=await this.transaction(async db=>{
       const r=await this.row(db,p.row.id,p.row.actor_member_id);
       if(r.attempt_id!==p.row.attempt_id) refuse();
@@ -187,7 +197,6 @@ export class PgPersonalActionStore {
         WHERE id=$1 AND state='claimed' AND attempt_id=$4 RETURNING *`,[r.id,receipt.state,JSON.stringify(receipt),r.attempt_id]);
       if(!rows[0]) refuse(); return outcome(rows[0]);
     });
-    p.consumed=true;
     return result;
   }
   async readOutcome(actorMemberId:string,actionId:string):Promise<PersonalActionOutcome> {
