@@ -30,4 +30,19 @@ LARES_DATABASE_PASSWORD=$(cat "$DATABASE_PASSWORD_FILE")
 DATABASE_URL="postgresql://${PGUSER}:${LARES_DATABASE_PASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}"
 export DATABASE_URL
 LARES_DATABASE_PASSWORD=
-exec litellm --config /etc/litellm/config.yaml
+: "${LARES_GATEWAY_ADMISSION_URL:?LARES_GATEWAY_ADMISSION_URL required}"
+: "${LARES_GATEWAY_SERVICE_KEY_FILE:?LARES_GATEWAY_SERVICE_KEY_FILE required}"
+: "${LARES_GATEWAY_ENDPOINT_HASH:?LARES_GATEWAY_ENDPOINT_HASH required}"
+: "${LARES_GATEWAY_PROFILE_FILE:?LARES_GATEWAY_PROFILE_FILE required}"
+CONFIG_FILE_PATH=/etc/litellm/config.yaml
+export CONFIG_FILE_PATH
+LITELLM_RUST=False
+DISABLE_AIOHTTP_TRANSPORT=True
+export LITELLM_RUST DISABLE_AIOHTTP_TRANSPORT
+PYTHONPATH=/opt/lares-gateway
+export PYTHONPATH
+# The native CLI owns database/schema bootstrap; direct ASGI startup does not.
+# Validate first, so missing admission authority never starts an unguarded server.
+python /opt/lares-gateway/lares_gateway.py --check
+litellm --config "$CONFIG_FILE_PATH" --skip_server_startup --enforce_prisma_migration_check
+exec python /opt/lares-gateway/lares_gateway.py

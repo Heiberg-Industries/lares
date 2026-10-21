@@ -30,6 +30,9 @@ beforeEach(() => {
     `#!/bin/sh\nprintf 'LARES_MODEL_PROVIDER_KEY=%s\\n' "$LARES_MODEL_PROVIDER_KEY" >> "${log}"\nprintf 'LARES_GATEWAY_MASTER_KEY=%s\\n' "$LARES_GATEWAY_MASTER_KEY" >> "${log}"\nprintf 'args=%s\\n' "$*" >> "${log}"\n`,
   );
   chmodSync(litellm, 0o755);
+  const python = join(binDir, "python");
+  writeFileSync(python, `#!/bin/sh\nprintf 'python=%s\\n' "$*" >> "${log}"\n`);
+  chmodSync(python, 0o755);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -45,6 +48,10 @@ function run(env: Record<string, string>) {
         PGPORT: "5432",
         PGDATABASE: "litellm",
         PGUSER: "lares",
+        LARES_GATEWAY_ADMISSION_URL: "https://admission.example.invalid",
+        LARES_GATEWAY_SERVICE_KEY_FILE: "/run/secrets/admission-service-key",
+        LARES_GATEWAY_ENDPOINT_HASH: "0".repeat(64),
+        LARES_GATEWAY_PROFILE_FILE: "/etc/litellm/profile.json",
         ...env,
       },
     });
@@ -62,7 +69,9 @@ describe("the gateway runtime's start script", () => {
     const contents = readFileSync(log, "utf8");
     expect(contents).toContain("LARES_MODEL_PROVIDER_KEY=sk-fixture-provider-only");
     expect(contents).toContain("LARES_GATEWAY_MASTER_KEY=sk-fixture-master-only");
-    expect(contents).toContain("args=--config /etc/litellm/config.yaml");
+    expect(contents).toContain("args=--config /etc/litellm/config.yaml --skip_server_startup --enforce_prisma_migration_check");
+    expect(contents.indexOf("python=/opt/lares-gateway/lares_gateway.py --check")).toBeLessThan(contents.indexOf("args=--config"));
+    expect(contents.lastIndexOf("python=/opt/lares-gateway/lares_gateway.py")).toBeGreaterThan(contents.indexOf("args=--config"));
   });
 
   it("constructs LiteLLM's database URL from a password file, never Compose or argv", () => {
@@ -113,5 +122,11 @@ describe("the gateway runtime's start script", () => {
 
   it("is POSIX sh", () => {
     expect(() => execFileSync("/bin/sh", ["-n", SCRIPT])).not.toThrow();
+  });
+
+  it("starts nothing when admission authority is missing", () => {
+    const r = run({MODEL_PROVIDER_KEY_FILE: providerKeyFile, GATEWAY_MASTER_KEY_FILE: masterKeyFile, LARES_GATEWAY_ADMISSION_URL: ""});
+    expect(r.code).not.toBe(0);
+    expect(r.stderr).toContain("LARES_GATEWAY_ADMISSION_URL");
   });
 });

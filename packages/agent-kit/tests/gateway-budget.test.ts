@@ -24,6 +24,8 @@ import {
   defaultSessionFailedText,
   defaultTurnFailedText,
   isBudgetExceeded,
+  isBudgetAdmissionRefused,
+  BUDGET_ADMISSION_REFUSED_TEXT,
   respondToSessionFailed,
   respondToTurnFailed,
 } from "../src/gateway-budget.js";
@@ -42,6 +44,24 @@ const LIVE_REFUSAL_BODY = {
 } as const;
 
 const LIVE_REFUSAL_BODY_TEXT = JSON.stringify(LIVE_REFUSAL_BODY);
+
+describe("the authored admission refusal", () => {
+  const body = {error: {type: "budget_admission_refused", message: "fixed", code: "budget_admission_refused"}};
+  it("recognizes raw/SDK/event shapes without claiming an exhausted cap", () => {
+    for (const error of [body, aiSdkApiCallError(body), {details: {upstreamType: "budget_admission_refused", statusCode: 400}}]) {
+      expect(isBudgetAdmissionRefused(error)).toBe(true);
+      expect(isBudgetExceeded(error)).toBe(false);
+    }
+    for (const status of [401, 429, 500]) expect(isBudgetAdmissionRefused(aiSdkApiCallError(body, status))).toBe(false);
+    expect(isBudgetAdmissionRefused({message: "budget_admission_refused"})).toBe(false);
+  });
+  it("answers once with setup guidance, then suppresses the paired session failure", () => {
+    const event = {details: {upstreamType: "budget_admission_refused", statusCode: 400}};
+    const options = {refusalText: "exhausted", dialect: "telegram" as const};
+    expect(respondToTurnFailed(event, options)).toEqual({kind:"budget-refusal",text:BUDGET_ADMISSION_REFUSED_TEXT});
+    expect(respondToSessionFailed(event, options)).toEqual({kind:"silent"});
+  });
+});
 
 /**
  * SHAPED — the same refusal on current LiteLLM, whose source sets HTTP 429 and

@@ -1,8 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { parse } from "yaml";
-import { renderGatewayConfig } from "../lib/gateway-config.js";
+import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
+import { DEFAULT_MAX_OUTPUT_TOKENS } from "@lares/agent-kit/definition-model";
 
 describe("the generated LiteLLM config", () => {
+  it("pins the real admission hook, disables automatic alternatives and reuses the output cap", () => {
+    const options = {alias:"lares-brain",providerModel:"openai/gpt-4o-mini"};
+    const doc = parse(renderGatewayConfig(options));
+    expect(doc.litellm_settings.callbacks).toEqual(["lares_gateway.gateway_hook"]);
+    expect(doc.litellm_settings.use_chat_completions_url_for_anthropic_messages).toBe(true);
+    expect(doc.router_settings).toEqual({num_retries:0,fallbacks:[],context_window_fallbacks:[],content_policy_fallbacks:[]});
+    expect(gatewayAdmissionProfile(options).maxOutputTokens).toBe(DEFAULT_MAX_OUTPUT_TOKENS);
+    expect(() => gatewayAdmissionProfile({...options,providerBaseUrl:"http://provider.invalid/v1"})).toThrow(/HTTPS/);
+  });
   it("serves the four chat purposes under the alias's prefix, all on the one model, and no literal key", () => {
     const doc = parse(renderGatewayConfig({ alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" })) as any;
     const entry = doc.model_list[0];

@@ -21,7 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { renderStackCompose } from "../lib/stack-compose.js";
-import { renderGatewayConfig } from "../lib/gateway-config.js";
+import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
  *  a flag parser here would be one more place for the two to disagree about a name. `alias` and
@@ -93,8 +93,11 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // name with nothing written, rather than bringing up a gateway whose entrypoint is a
   // directory Docker invented at the mount source.
   let gatewayStartText: string;
+  const gatewayModules: Record<string, string> = {};
   try {
     gatewayStartText = readFileSync(COMMITTED_GATEWAY_START, "utf8");
+    for (const name of ["admission_contract.py", "lares_gateway.py"])
+      gatewayModules[name] = readFileSync(join(dirname(COMMITTED_GATEWAY_START), name), "utf8");
   } catch {
     throw new Error(
       `The gateway's start script is missing from this engine (${COMMITTED_GATEWAY_START}). ` +
@@ -156,6 +159,10 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // it too (as it does the compose file and the Caddyfile), but the program that writes a file
   // is the one that should guarantee its mode — this one is also runnable by hand.
   chmodSync(gatewayConfigFile, 0o644);
+  const profilePath = `${gatewayConfigFile}.profile.json`;
+  writeFileSync(`${profilePath}.partial`, JSON.stringify(gatewayAdmissionProfile({alias: at("alias"), providerModel: at("providerModel")})), {mode: 0o644});
+  renameSync(`${profilePath}.partial`, profilePath);
+  chmodSync(profilePath, 0o644);
 
   // THE GATEWAY'S ENTRYPOINT, INSTALLED RATHER THAN BAKED INTO AN IMAGE. Nothing in this
   // repository builds a gateway image and nothing may — the official LiteLLM image carries its
@@ -174,6 +181,12 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   writeFileSync(gatewayStartTmp, gatewayStartText, { mode: 0o755 });
   renameSync(gatewayStartTmp, gatewayStartScript);
   chmodSync(gatewayStartScript, 0o755);
+  for (const [name, contents] of Object.entries(gatewayModules)) {
+    const destination = `${gatewayStartScript}.${name}`;
+    writeFileSync(`${destination}.partial`, contents, {mode: 0o644});
+    renameSync(`${destination}.partial`, destination);
+    chmodSync(destination, 0o644);
+  }
   return 0;
 }
 
