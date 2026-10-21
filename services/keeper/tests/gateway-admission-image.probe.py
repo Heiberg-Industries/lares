@@ -5,10 +5,13 @@ the wire/client/native-auth integration, not production admission/prices/recover
 Native-budget diagnostics remain a separate, unchanged experiment.
 """
 import concurrent.futures
+import base64
 import hashlib
 import json
 import os
 import pathlib
+import re
+import selectors
 import secrets
 import shutil
 import subprocess
@@ -16,6 +19,7 @@ import sys
 import tempfile
 import time
 import uuid
+from urllib.parse import quote
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 ASSETS = REPO / "images/gateway-runtime"
@@ -150,6 +154,50 @@ def require(condition, message):
     if not condition: raise RuntimeError(message)
 
 
+def bounded_capture(*args, maximum=16384, seconds=10):
+    """CI diagnostics only: bound bytes/time before any output enters an artifact."""
+    process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.STDOUT)
+    captured=bytearray();truncated=False;deadline=time.monotonic()+seconds
+    try:
+        with selectors.DefaultSelector() as ready:
+            ready.register(process.stdout,selectors.EVENT_READ)
+            while time.monotonic()<deadline:
+                if not ready.select(max(0,deadline-time.monotonic())):truncated=True;break
+                chunk=os.read(process.stdout.fileno(),min(4096,maximum+1-len(captured)))
+                if not chunk:break
+                captured.extend(chunk)
+                if len(captured)>maximum:truncated=True;break
+            else:truncated=True
+    finally:
+        if process.poll() is None:process.kill()
+        try:process.wait(timeout=2)
+        except subprocess.TimeoutExpired:process.kill();process.wait(timeout=2)
+        process.stdout.close()
+    if truncated:
+        # Never retain a sliced secret/URL at the end of an overlong line.
+        captured=captured[:maximum].rsplit(b"\n",1)[0] if b"\n" in captured[:maximum] else b""
+        captured+=b"\n[diagnostic output truncated]"
+    return captured.decode("utf8",errors="replace")
+
+
+def sanitize_diagnostic(value, secrets_to_hide):
+    for secret in secrets_to_hide:
+        representations={secret.hex(),secret.hex().upper(),str(secret),repr(secret),str(list(secret))}
+        for encoded in (base64.b64encode(secret).decode(),base64.urlsafe_b64encode(secret).decode()):representations.update((encoded,encoded.rstrip("=")))
+        try:
+            decoded=secret.decode("utf8")
+            representations.update((decoded,quote(decoded,safe=""),json.dumps(decoded)[1:-1]))
+        except UnicodeError:pass
+        representations.update(json.dumps(candidate)[1:-1] for candidate in list(representations))
+        for candidate in sorted(representations,key=len,reverse=True):
+            if candidate:value=value.replace(candidate,"[redacted fixture secret]")
+    value=re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]","",value)
+    value=re.sub(r"(?i)\b(?:https?|postgres(?:ql)?|redis)://[^\s\"'<>]+","[redacted URL]",value)
+    value=re.sub(r"(?i)\b(?:bearer\s+[^\s\"'<>]+|sk-[A-Za-z0-9_-]+|(?:authorization|x-api-key|api_key|password|secret|token)[\"']?\s*[:=]\s*[\"']?(?:bearer\s+)?[^\s,}\"']+)","[redacted credential]",value)
+    value=re.sub(r"\b[A-Za-z0-9_+/=-]{32,}\b","[redacted token-like value]",value)
+    return "".join(char for char in value if char in "\n\t" or ord(char)>=32)[:16384]
+
+
 class Proof:
     def __init__(self, role_image, output):
         require(os.environ.get("CI") == "true", "Image proof runs only in disposable CI")
@@ -160,6 +208,7 @@ class Proof:
         self.containers = []
         self.artifact = {"scope":"pinned-image adapter compatibility; no production authority or price/recovery acceptance", "cases":[]}
         self.master = "sk-" + secrets.token_urlsafe(32)
+        self.disposable_secrets=[self.master.encode()]
 
     def run(self, suffix, image, arguments, command_args):
         name = self.name + "-" + suffix
@@ -198,7 +247,9 @@ class Proof:
             image=self.manifest["images"][role];require("@sha256:" in image,"Image is not digest pinned");command("docker","pull",image,timeout=300)
         for filename,value in {"master":self.master,"provider":"sk-fixture-provider","password":secrets.token_urlsafe(32)}.items():
             (self.root/filename).write_text(value);(self.root/filename).chmod(0o600)
+            self.disposable_secrets.append(value.encode())
         (self.root/"service-key").write_bytes(secrets.token_bytes(32));(self.root/"service-key").chmod(0o600)
+        self.disposable_secrets.append((self.root/"service-key").read_bytes())
         command("openssl","req","-x509","-newkey","rsa:2048","-nodes","-keyout",str(self.root/"tls-key.pem"),"-out",str(self.root/"ca.pem"),"-days","1","-subj","/CN=fixture","-addext","subjectAltName=DNS:fixture")
         (self.root/"fixture.py").write_text(FIXTURE)
         mount=["--mount",f"type=bind,src={self.root},dst=/fixture,readonly"]
@@ -226,15 +277,34 @@ class Proof:
         for k,v in env.items():arguments += ["-e",k+"="+v]
         name=self.run(suffix,self.manifest["images"]["lares-gateway"],arguments,["/opt/lares-gateway/start.sh"])
         url="http://"+suffix+":4000"
-        if broken:
-            self.wait(lambda:command("docker","inspect","--format","{{.State.Running}}",name)=="false","Broken runtime started",30)
-            require(command("docker","inspect","--format","{{.State.ExitCode}}",name)!="0","Broken runtime exited successfully")
-            return None
-        self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Guarded gateway did not become ready",180)
+        try:
+            if broken:
+                self.wait(lambda:command("docker","inspect","--format","{{.State.Running}}",name)=="false","Broken runtime started",30)
+                expected=2 if broken=="authority" else 78
+                require(command("docker","inspect","--format","{{.State.ExitCode}}",name)==str(expected),"Broken runtime did not explicitly refuse configuration")
+                logs=bounded_capture("docker","logs","--tail","40",name)
+                marker="LARES_GATEWAY_ADMISSION_URL required" if broken=="authority" else "lares: gateway admission configuration is missing or invalid"
+                require(marker in logs,"Broken runtime failed before configuration validation")
+                return None
+            self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Guarded gateway did not become ready",180)
+        except Exception:
+            self.startup_diagnostic(name,suffix)
+            raise
         meta=json.loads(command("docker","exec",name,"python","-c","import importlib.metadata,json,hashlib,pathlib;print(json.dumps({'versions':{p:importlib.metadata.version(p) for p in ['litellm','openai','httpx','prisma']},'adapterSha256':hashlib.sha256(pathlib.Path('/opt/lares-gateway/lares_gateway.py').read_bytes()).hexdigest()}))"))
         self.artifact.setdefault("images",{})[provider]={"upstreamDigest":self.manifest["images"]["lares-gateway"],**meta}
         require(meta["versions"]["litellm"]=="1.101.6","Wrong LiteLLM version")
         return url
+
+    def startup_diagnostic(self,name,label):
+        record={"case":label}
+        try:
+            template='{"running":{{json .State.Running}},"exitCode":{{json .State.ExitCode}},"error":{{json .State.Error}},"imageUser":{{json .Config.User}},"workingDirectory":{{json .Config.WorkingDir}}}'
+            record["state"]=json.loads(bounded_capture("docker","inspect","--format",template,name,maximum=4096))
+            record["logs"]=bounded_capture("docker","logs","--tail","40",name)
+        except Exception:record["diagnosticUnavailable"]=True
+        # Never inspect the container environment or include an unsanitized log/error.
+        safe=sanitize_diagnostic(json.dumps(record),self.disposable_secrets)
+        self.artifact.setdefault("startupDiagnostics",[]).append(safe)
 
     def admin(self,url,path,body):
         result=self.client({"url":url,"path":path,"body":body,"key":self.master})
@@ -247,6 +317,7 @@ class Proof:
         self.admin(url,"/user/new",{"user_id":member,"max_budget":100,"auto_create_key":False})
         self.admin(url,"/team/member_add",{"team_id":team,"max_budget_in_team":100,"member":{"role":"user","user_id":member}})
         result=self.admin(url,"/key/generate",{"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
+        self.disposable_secrets.append(result["key"].encode())
         return result["key"],team,member
 
     def sdk(self,url,key,lane,**opts):
@@ -373,9 +444,13 @@ class Proof:
     def execute(self):
         try:
             self.setup()
+            # A working native bootstrap must be established before negative cases;
+            # a universal import/permission failure cannot count as six good refusals.
+            openai_url=self.start_gateway("openai")
+            self.artifact["cases"].append({"name":"startup-valid-native-bootstrap","passed":True})
             for broken in ("hook","duplicate","callback","authority","profile","service-key"): self.case("startup-refuses-"+broken,lambda broken=broken:self.start_gateway("openai",broken))
             for provider in ("openai","anthropic"):
-                url=self.start_gateway(provider);key,team,member=self.provision(url)
+                url=openai_url if provider=="openai" else self.start_gateway(provider);key,team,member=self.provision(url)
                 self.exercise(provider,url,key,team,member)
                 name=self.name+"-gateway-"+provider;command("docker","restart",name)
                 self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Restart did not restore native runtime",120)

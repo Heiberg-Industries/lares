@@ -217,6 +217,7 @@ class Runtime:
     def __init__(self):
         self.profile, self.config, self.endpoint, self.gate_url, self.key = load_files()
         self.callback_ids = None
+        self.validation_stage = "not-started"
 
     async def rpc(self, path, document):
         raw = canonical(document)
@@ -238,29 +239,39 @@ class Runtime:
         except Exception: raise Refused() from None
 
     def check_runtime(self, startup=False):
+        self.validation_stage = "runtime-imports"
         from litellm.proxy import proxy_server
         from litellm.proxy.hooks import PROXY_HOOKS, get_proxy_hook
         from litellm._service_logger import ServiceLogging
         from litellm.rust_bridge.configuration import rust_enabled
         # Reject unreviewed background/config/provider paths. The fixed generated config
         # does not turn any of them on; check the loaded runtime too, not YAML alone.
+        self.validation_stage = "runtime-flags"
         if rust_enabled() or litellm.cache is not None or not litellm.disable_aiohttp_transport or not litellm.use_chat_completions_url_for_anthropic_messages: raise Refused()
+        self.validation_stage = "callback-registry"
         allowed_types = {get_proxy_hook(name) for name in PROXY_HOOKS} | {ServiceLogging, type(gateway_hook)}
         callbacks = litellm.callbacks
         if not isinstance(callbacks, list) or sum(c is gateway_hook for c in callbacks) != 1 or any(type(c) not in allowed_types for c in callbacks): raise Refused()
         ids = tuple(id(c) for c in callbacks)
+        self.validation_stage = "callback-identity"
         if startup: self.callback_ids = ids
         elif ids != self.callback_ids: raise Refused()
         router = proxy_server.llm_router
+        self.validation_stage = "router-aliases"
         if router is None or set(router.model_names) != set(self.profile.document["aliases"]) or router.default_deployment is not None: raise Refused()
         for alias in self.profile.document["aliases"]:
+            self.validation_stage = "router-deployment-count"
             deployments = router.get_model_list(model_name=alias) or []
             if len(deployments) != 1: raise Refused()
             params = deployments[0]["litellm_params"]
             p = self.profile.document
+            self.validation_stage = "router-target"
             if params.get("model") != p["provider"] + "/" + p["model"] or params.get("api_base") != p["providerBaseUrl"]: raise Refused()
+            self.validation_stage = "router-retries"
             if params.get("num_retries") != 0 or params.get("max_retries") != 0: raise Refused()
+        self.validation_stage = "native-auth"
         if proxy_server.store_model_in_db or proxy_server.user_custom_auth is not None: raise Refused()
+        self.validation_stage = "complete"
 
     def check_destination(self, outgoing):
         p = self.profile.document
@@ -400,7 +411,7 @@ class GatewayApp:
                 if message["type"] == "lifespan.startup.complete":
                     try: runtime.check_runtime(startup=True)
                     except Exception:
-                        await send({"type": "lifespan.startup.failed", "message": "Gateway admission runtime validation failed"})
+                        await send({"type": "lifespan.startup.failed", "message": "Gateway admission runtime validation failed: " + runtime.validation_stage})
                         return
                 await send(message)
             await self.native(scope, receive, lifespan_send)
@@ -471,7 +482,9 @@ def main():
     global runtime
     try:
         runtime = Runtime()
-        if "--check" in sys.argv: return
+        if "--check" in sys.argv:
+            print("lares: gateway admission preflight passed")
+            return
         from litellm.proxy.proxy_server import app
         import uvicorn
         uvicorn.run(GatewayApp(app), host="0.0.0.0", port=4000, workers=1, access_log=False)

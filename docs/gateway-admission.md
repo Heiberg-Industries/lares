@@ -140,3 +140,18 @@ The manual `keeper and neutral runtime images` CI workflow runs
 image against isolated HTTPS fixtures. Passing source tests alone is not evidence
 that the pinned image's hooks, clients or stream handling work. Neither probe
 proves production price liability, durable account provisioning or restore safety.
+
+The manually guarded live probe is
+`services/keeper/tests/live/gateway-provider-usage.live.py` (**UNRUN**). After separate
+approval to spend, an operator selects one `stream` or `nonstream` mode, an existing
+reviewed profile, its exact provider/model, a protected provider key file and an
+explicit output limit of at most 32 tokens. `--help` is safe without credentials.
+The probe requires `I_UNDERSTAND_THIS_SPENDS_MONEY=1` and makes one tiny synthetic
+request directly to that profile's HTTPS provider endpoint, with standard TLS,
+no redirects and no retries. It feeds the actual bytes through the same
+`WireEvidence` parser and reports only format/mode/success and a digest of validated
+terminal counts. A parent process kills and reaps the guarded worker after 152
+seconds, including DNS, trickled HTTP framing and cleanup. Errors, compressed or ambiguous responses fail without printing
+URLs, credentials, prompts or response bodies. This is the live counterpart to the
+provider response fixtures; it does not prove gateway enforcement or replace the
+pinned-image integration proof. It is never run automatically or as part of CI.

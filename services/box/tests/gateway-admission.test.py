@@ -14,6 +14,8 @@ import uuid
 import hashlib
 import subprocess
 import tempfile
+import os
+import base64
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
@@ -142,6 +144,48 @@ class EmbeddedFixtureTests(unittest.TestCase):
         script="import{createHash}from'node:crypto';const path='/v1/messages';const init={body:Buffer.from("+json.dumps(list(raw))+")};console.log(createHash('sha256')"+expression+".digest('hex'));"
         result=subprocess.run(["node","--input-type=module","-e",script],text=True,capture_output=True,check=True).stdout.strip()
         self.assertEqual(result,request_hash("POST","/v1/messages",raw))
+
+    def test_live_usage_probe_help_and_spending_guard_are_offline(self):
+        path=ROOT / "services/keeper/tests/live/gateway-provider-usage.live.py"
+        compile(path.read_text(),str(path),"exec")
+        help_result=subprocess.run([sys.executable,"-B",str(path),"--help"],text=True,capture_output=True,check=True)
+        self.assertIn("--max-output-tokens",help_result.stdout)
+        arguments=["--profile","/nonexistent/probe-private-profile","--key-file","/nonexistent/probe-private-key","--provider","anthropic","--model","probe-private-model","--mode","stream","--max-output-tokens","8"]
+        environment={**os.environ,"I_UNDERSTAND_THIS_SPENDS_MONEY":"0"}
+        result=subprocess.run([sys.executable,"-B",str(path),*arguments],env=environment,text=True,capture_output=True)
+        self.assertEqual(result.returncode,1)
+        self.assertEqual(result.stdout,"")
+        self.assertEqual(result.stderr,"FAIL: probe refused or terminal provider usage was not verified.\n")
+        invalid=subprocess.run([sys.executable,"-B",str(path),*arguments,"--provider","private-invalid-value"],env=environment,text=True,capture_output=True)
+        self.assertEqual(invalid.returncode,2)
+        self.assertNotIn("private-invalid-value",invalid.stderr)
+
+    def test_live_usage_worker_has_an_absolute_process_deadline(self):
+        path=ROOT / "services/keeper/tests/live/gateway-provider-usage.live.py"
+        spec=importlib.util.spec_from_file_location("live_usage_probe",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        started=time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            module.bounded_worker([sys.executable,"-c","import time; time.sleep(60)"],.05)
+        self.assertLess(time.monotonic()-started,2)
+
+    def test_ci_startup_diagnostics_are_bounded_and_redacted(self):
+        path=ROOT / "services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("admission_image_probe",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        secret=b"sk-fixture-password-PRIVATE"
+        service=bytes(range(32))
+        representations=[secret.decode(),secret.hex(),repr(secret),base64.b64encode(secret).decode(),base64.urlsafe_b64encode(secret).decode().rstrip("="),repr(service),service.hex()]
+        raw=json.dumps({"log":"\n".join(representations)+" https://user:PRIVATE@example.invalid/path Authorization: Bearer PRIVATE"})
+        clean=module.sanitize_diagnostic(raw,[secret,service])
+        self.assertNotIn("PRIVATE",clean);self.assertNotIn("example.invalid",clean)
+        for representation in representations:self.assertNotIn(json.dumps(representation)[1:-1],clean)
+        self.assertNotIn("PRIVATE",module.sanitize_diagnostic('{"token":"PRIVATE"}',[]))
+        bounded=module.bounded_capture(sys.executable,"-c","print('safe-line');print('x'*10000)",maximum=80,seconds=1)
+        self.assertIn("safe-line",bounded);self.assertIn("truncated",bounded);self.assertLess(len(bounded),160)
+        started=time.monotonic()
+        module.bounded_capture(sys.executable,"-c","import time;time.sleep(60)",seconds=.05)
+        self.assertLess(time.monotonic()-started,2)
 
     def test_only_exact_terminal_openai_stream_settles(self):
         done = {"id":"completion_fixture","choices":[{"index":0,"finish_reason":"stop"}]}
