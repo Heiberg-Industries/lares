@@ -1,3 +1,4 @@
+import { taintTurn, turnKeyFrom } from "../../src/origin-taint.js";
 import { assertPrivateConsoleTool } from "../../src/private-console-surface.js";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -35,6 +36,9 @@ export function createSignalsRecentTool(deps: SignalsRecentDeps) {
     }),
     async execute(query, ctx) {
       assertPrivateConsoleTool(ctx, "creative", "agent-kit__signals_recent");
+      // Provider errors may contain outside text too; mark before attempting the read.
+      const key = turnKeyFrom(ctx);
+      if (key) taintTurn(key, "third_party");
       try {
         const rows = await deps.recent(query);
         return { cards: rows.map(signalCard) };

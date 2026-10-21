@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createSignalsRecentTool } from "../extension/tools/signals_recent.js";
 import { makeSignalsClient, SignalsNotConfiguredError, SignalsUnavailableError, type SignalRow } from "../src/signals-client.js";
+
+import { clearTurn, currentTaint } from "../src/origin-taint.js";
 
 const CTX = {} as never;
 const signal: SignalRow = {
@@ -34,4 +36,16 @@ describe("signals_recent tool", () => {
     expect(result.cards).toEqual([]);
     expect(result.unavailable).toMatch(/No signal source is configured/);
   });
+});
+
+it("taints provider labels and unavailable responses but refuses private reads before source access", async () => {
+  const key={sessionId:"signals-taint",turnId:"one"};
+  const ctx={session:{id:key.sessionId,turn:{id:key.turnId}}} as never;
+  const recent=vi.fn(async()=>[signal]);const tool=createSignalsRecentTool({recent});
+  clearTurn(key);await tool.execute({limit:50},ctx);expect(currentTaint(key)).toBe("third_party");
+  clearTurn(key);recent.mockResolvedValueOnce([]);await tool.execute({limit:50},ctx);expect(currentTaint(key)).toBe("third_party");
+  clearTurn(key);recent.mockRejectedValueOnce(new Error("unavailable"));await tool.execute({limit:50},ctx);expect(currentTaint(key)).toBe("third_party");
+  clearTurn(key);recent.mockClear();
+  await expect(tool.execute({limit:50},{session:{auth:{current:{attributes:{lares_member_id:"member"}}}}} as never)).rejects.toThrow("Conversation authority");
+  expect(recent).not.toHaveBeenCalled();expect(currentTaint(key)).toBeUndefined();
 });

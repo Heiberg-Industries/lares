@@ -161,3 +161,35 @@ Current binding/access freshness is checked at dynamic surface resolution, model
 both provider execution modes; durable tool callbacks independently refuse unsafe source names.
 Admission is still designated-owner-only. These source boundaries do not claim deployed gateway
 privacy, member admission or complete two-member runtime acceptance.
+
+## Bounded member private conversations
+
+Active members with current agent `use` authority may start singleton private console
+conversations. Administrative console pages remain designated-owner-only. The chat listing
+contains only authorised ready agent identity; it includes no sharing configuration, owner
+inbox, connections, tools, skills, avatar versions or conversation counts. Browser recovery
+uses an opaque member id with its original case and a protocol-versioned storage key.
+
+Strict HTTP authentication uses that stable member id as Eve's principal, so operation-id
+retry deduplication is also per member. The raw text-only envelope is validated before Eve
+parses it. A request-specific immutable message receipt then checks the same parsed text in
+`onMessage`, after Eve consumes the request body. No raw body or credential is retained in
+that receipt. Native channel authentication remains separate.
+
+SQL018 advances the private surface capture to revision 2 and retires pre-invalidation
+history. Personal account status/generation changes retire every private session belonging
+to that account's member. Explicit healthy reconnect advances generation; ordinary encrypted
+refresh-token rotation does not. New account insertion does not retire unrelated context.
+Restored account access requires a fresh conversation and fresh resource selection. The
+previous history cannot be copied into the new session as a recovery mechanism.
+
+The bounded surface exposes only the role's authorised personal mailbox reads plus local
+session controls. Questions can be answered in plain text. Structured question-card
+continuation is not exposed by the current browser UI; resolver identities are not promoted
+into human model authority to support it. The private proxy excludes Eve's administrative
+`info` endpoint, whose compiled metadata is broader than this surface.
+
+The offline `packages/board-evals/scripts/member-private-chat-proof.mjs` builds actual role
+sources with a synthetic model/provider, uses real migrated PostgreSQL and the real console
+proxy, and checks member/capability/history boundaries. It is runtime source proof, not live
+provider acceptance or deployment evidence.

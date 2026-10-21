@@ -1,3 +1,5 @@
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
+import type { Member } from '@lares/agent-kit/authority-contract';
 // The agents on this box, as they registered themselves at start. This reads the registry rather than a
 // folder, so it lists only agents that actually run.
 import { pool } from "./db";
@@ -54,4 +56,25 @@ export async function listAgents(options: { strict?: boolean } = {}): Promise<Ag
     tools: r.tools,
     startedAt: new Date(r.started_at).toISOString(),
   }));
+}
+
+/** Private chat exposes only authorised agent identity, never the owner console's configuration. */
+export interface PrivateChatAgent { name: string; displayName: string; role: string }
+export async function listPrivateChatAgents(member: Member): Promise<PrivateChatAgent[]> {
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    const visible = await new PgGrantStore(pool).listVisible(member.id, 'agent', { db });
+    const names = visible.filter(resource => resource.permissions.includes('use')).map(resource => resource.resource.id);
+    if (!names.length) { await db.query('COMMIT'); return []; }
+    const { rows } = await db.query<{ name: string; display_name: string; role: string }>(`SELECT r.name,g.display_name,r.applied_definition->>'role' AS role
+      FROM agent_resources r JOIN agent_definitions d ON d.name=r.name JOIN agent_registry g ON g.name=r.name
+      WHERE r.name=ANY($1::text[]) AND r.state='ready' AND NOT r.pending AND d.status='valid'
+      AND r.runtime_control_token=r.ownership_token AND r.applied_definition->>'role' IN ('chief-of-staff','creative') ORDER BY r.name`, [names]);
+    await db.query('COMMIT');
+    return rows.map(row => ({ name: row.name, displayName: row.display_name, role: ROLE_LABELS[row.role] ?? 'Agent' }));
+  } catch (error) {
+    await db.query('ROLLBACK');
+    throw error;
+  } finally { db.release(); }
 }

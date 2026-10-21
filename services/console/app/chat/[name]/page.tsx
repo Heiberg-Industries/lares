@@ -1,50 +1,15 @@
-import { requireConsolePage } from "../../../lib/auth";
-import { listAgents } from "../../../lib/agents";
+import { requireMember } from "../../../lib/auth";
+import { listPrivateChatAgents } from "../../../lib/agents";
+import { requireConsoleAgentUse } from "@lares/agent-kit/console-turn-authority";
+import { pool } from "../../../lib/db";
 import { Chat } from "../../../components/Chat";
-import { creationNotices } from "../../../lib/first-conversation";
-import { verify } from "../../../lib/auth";
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import { InboxPanel } from "../../../components/InboxPanel";
-import { getInboxMessage, markInboxRead, readInbox, replySeed } from "../../../lib/web-inbox";
-
+import { notFound } from "next/navigation";
 export const dynamic = "force-dynamic";
-
-export default async function ChatAgentPage({
-  params,
-  searchParams,
-}: {
-  params: Promise<{ name: string }>;
-  searchParams: Promise<{ created?: string; backup?: string; reply?: string }>;
-}) {
-  await requireConsolePage();
+export default async function ChatAgentPage({ params }: { params: Promise<{ name: string }> }) {
+  const member = await requireMember();
   const { name } = await params;
-  const owner = await verify((await cookies()).get("lares_session")?.value);
-  if (!owner) redirect("/api/auth/login");
-  const agents = await listAgents();
-  const query = await searchParams;
-  const notice = creationNotices(query);
-  // "Reply" on a web-chat message: the chat starts from that message, and the message counts as read.
-  const replied = query.reply ? await getInboxMessage(name, Number(query.reply)) : null;
-  if (replied && !replied.read) await markInboxRead(name, replied.id).catch(() => {});
-  const { unread, earlier } = await readInbox(name, { earlier: 5 });
-  return (
-    <>
-      {notice.ready && <p role="status">{notice.ready}</p>}
-      {notice.backup && <p role="alert">{notice.backup}</p>}
-      <Chat
-        name={name}
-        owner={owner}
-        fresh={notice.ready !== null}
-        {...(replied ? { seed: replySeed(replied) } : {})}
-        inbox={<InboxPanel agent={name} initial={unread} earlier={earlier} />}
-        agents={agents.map(({ name, displayName, role, avatarVersion }) => ({
-          name,
-          displayName,
-          role,
-          avatarVersion,
-        }))}
-      />
-    </>
-  );
+  try { await requireConsoleAgentUse(name, member.id, pool); } catch { notFound(); }
+  const agents = await listPrivateChatAgents(member);
+  if (!agents.some(agent => agent.name === name)) notFound();
+  return <Chat name={name} memberId={member.id} agents={agents} />;
 }

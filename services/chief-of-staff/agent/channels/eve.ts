@@ -1,4 +1,4 @@
-import { assertPrivateConsoleRequest } from "@lares/agent-kit/private-console-envelope";
+import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage } from "@lares/agent-kit/private-console-envelope";
 import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
@@ -131,7 +131,9 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
         if (request.headers.has("x-lares-member-id") || request.headers.has("x-lares-admission") || request.headers.has("x-lares-purpose")) await assertPrivateConsoleRequest(request);
         const attributes = await consoleRouteAdmission(request);
         if (!attributes) return legacy;
-        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR, attributes: { ...legacy.attributes, ...attributes } };
+        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR,
+          ...(attributes.lares_member_id ? {principalId:attributes.lares_member_id,principalType:'user' as const}:{}),
+          attributes: { ...legacy.attributes, ...attributes } };
       } catch { return null; }
     }
   }
@@ -139,10 +141,10 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
 };
 
 export default eveChannel({
-  onMessage: async (ctx) => {
+  onMessage: async (ctx, message) => {
     const caller = ctx.eve.caller;
     const tagged = caller?.attributes?.lares_member_id !== undefined;
-    if (tagged) await assertPrivateConsoleRequest(ctx.eve.request);
+    if (tagged) assertVerifiedPrivateConsoleMessage(ctx.eve.request, message);
     if (tagged && consoleAdmission(caller)?.purpose !== "human") throw new Error("Conversation authority is not available");
     return { auth: caller };
   },

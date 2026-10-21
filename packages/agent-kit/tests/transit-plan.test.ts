@@ -19,6 +19,7 @@
 import { describe, it, expect, vi } from "vitest";
 
 import transitPlan, { createTransitPlanTool, type EnturClient } from "../extension/tools/transit_plan.js";
+import { clearTurn, currentTaint } from "../src/origin-taint.js";
 import { makeEntur, EnturPlaceNotFoundError, EnturUnavailableError } from "../src/entur-client.js";
 import type { PlanArgs, ResolvedPlace, TripPattern } from "../src/entur-client.js";
 
@@ -460,4 +461,19 @@ describe("transit_plan — ONE deadline over all three requests", () => {
     await toolFor(entur).execute({ from: "Oslo S", to: "Bjørnvik" }, CTX);
     expect(process.getActiveResourcesInfo().filter((r) => r === "Timeout").length).toBe(before);
   });
+});
+
+it("taints journey metadata and actual provider error text but not validation or private refusals", async () => {
+  const key={sessionId:"transit-taint",turnId:"one"};
+  const ctx={session:{id:key.sessionId,turn:{id:key.turnId}}} as never;
+  const entur=fakeEntur({"Oslo S":OSLO_S,Bjørnvik:BJORNVIK});const tool=toolFor(entur);
+  clearTurn(key);await tool.execute({from:"Oslo S",to:"Bjørnvik"},ctx);expect(currentTaint(key)).toBe("third_party");
+  clearTurn(key);await tool.execute({from:"Oslo S",to:"Bjørnvik",departAfter:"one",arriveBy:"two"},ctx);expect(currentTaint(key)).toBeUndefined();
+  const canary="PROVIDER_ERROR_TEXT_CANARY";
+  const broken=toolFor(makeEntur({fetch:async()=>new Response(canary,{status:503})}));
+  await expect(broken.execute({from:"Oslo S",to:"Bjørnvik"},ctx)).rejects.toThrow(canary);expect(currentTaint(key)).toBe("third_party");
+  clearTurn(key);
+  const deps={entur:vi.fn(()=>entur)};
+  await expect(createTransitPlanTool(deps).execute({from:"Oslo S",to:"Bjørnvik"},{session:{auth:{current:{attributes:{lares_member_id:"member"}}}}} as never)).rejects.toThrow("Conversation authority");
+  expect(deps.entur).not.toHaveBeenCalled();expect(currentTaint(key)).toBeUndefined();
 });

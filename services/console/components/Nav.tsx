@@ -38,7 +38,7 @@ const tools = [
   { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },
   { href: "/taste", label: "Preferences", Icon: Bookmark },
 ];
-export function Nav() {
+export function Nav({owner}:{owner:boolean}) {
   const pathname = usePathname();
   const theme = useConsoleTheme();
   const [open, setOpen] = useState(false);
@@ -68,22 +68,24 @@ export function Nav() {
     >
       <Icon aria-hidden="true" />
       {label}
-      {href === "/chat" && <InboxDot />}
+      {owner && href === "/chat" && <InboxDot />}
     </Link>
   );
   const contents = (
     <>
-      <Link className={styles.brand} href="/" onClick={() => setOpen(false)}>
+      <Link className={styles.brand} href={owner?"/":"/chat"} onClick={() => setOpen(false)}>
         <Mark />
         lares
       </Link>
       <nav aria-label="Console navigation" className={styles.navItems}>
-        {main.map(item)}
-        <p className={styles.groupLabel}>Tools</p>
-        {tools.map(item)}
+        {owner?main.map(item):[
+          {href:'/chat',label:'Chat',Icon:MessageSquareText},
+          {href:'/membership',label:'Membership',Icon:UsersRound},
+        ].map(item)}
+        {owner && <><p className={styles.groupLabel}>Tools</p>{tools.map(item)}</>}
       </nav>
       <div className={styles.bottom}>
-        {item({ href: "/settings", label: "Settings", Icon: Settings2 })}
+        {owner && item({ href: "/settings", label: "Settings", Icon: Settings2 })}
         <form action="/api/auth/logout" method="post">
           <button type="submit" className={`${styles.navItem} ${styles.signOut}`}>
             <LogOut aria-hidden="true" />
@@ -99,7 +101,7 @@ export function Nav() {
     <>
       <aside className={styles.sidebar}>{contents}</aside>
       <div className={styles.mobileBar}>
-        <Link className={styles.brand} href="/">
+        <Link className={styles.brand} href={owner?"/":"/chat"}>
           <Mark />
           lares
         </Link>

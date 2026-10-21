@@ -142,15 +142,15 @@ describe('explicit account credential custody', () => {
     expect((await db.query('SELECT id FROM connected_resource_bindings WHERE connected_account_id=$1',[account.id])).rows).toEqual([{ id: resource.id }]);
     await expect(store.withPersonalResourceCredential('member-a', selection, 'mailbox', vi.fn())).rejects.toThrow(AccountAccessError);
   });
-  it('rejects stale updates before token writing and preserves generation on routine rotation', async () => {
+  it('rejects stale updates and advances generation on explicit verified healthy reconnect', async () => {
     const { account, selection } = await connected();
     const old = await ticket(account);
     const rotated = await trusted().renew('member-a', old, null, writer('member-a', undefined, undefined, 'rotated'));
-    expect(rotated.generation).toBe(account.generation);
+    expect(rotated.generation).toBe(account.generation+1);
     const stale = writer();
     await expect(trusted().renew('member-a', old, null, stale)).rejects.toThrow(AccountAccessError);
     expect(stale.persist).not.toHaveBeenCalled();
-    await expect(store.withPersonalResourceCredential('member-a', selection, 'mailbox', async () => true)).resolves.toBe(true);
+    await expect(store.withPersonalResourceCredential('member-a', {...selection,generation:rotated.generation}, 'mailbox', async () => true)).resolves.toBe(true);
   });
   it.each(['revoked', 'needs_reconsent', 'error'] as const)('%s stops credentials until explicit verified reconnect', async status => {
     const { account, selection } = await connected();
@@ -213,15 +213,16 @@ describe('verified writer and permanent legacy quarantine', () => {
     const account=await trusted().createPersonalAccount('member-a',null,verifiedWriter());
     const before=await credentials();
     adapter.verifyAccount=vi.fn(async()=>({...identity,label:'renamed@example.invalid'}));
-    await trusted().renew('member-a',await ticket(account),null,verifiedWriter('renamed@example.invalid','renamed-refresh'));
-    expect(await credentials()).toEqual(before);
+    const renewed=await trusted().renew('member-a',await ticket(account),null,verifiedWriter('renamed@example.invalid','renamed-refresh'));
+    const current=before.map(row=>({...row,account_generation:renewed.generation}));
+    expect(await credentials()).toEqual(current);
     const stored=(await db.query('SELECT * FROM oauth_tokens')).rows[0];
     expect(stored.id).toBe(before[0].oauth_token_id); expect(stored.email_address).toBe('renamed@example.invalid');
     expect(decryptSecret(stored.refresh_token_enc,key)).toBe('renamed-refresh');
     await storeToken(db,key,{principal:'member-a',provider:'google',orgId:'fixture-org',emailAddress:'collision@example.invalid',scopes:[],refreshToken:'legacy'});
     const snapshot=await ciphertext(), view=await store.read('member-a',account.id);
     await expect(trusted().renew('member-a',await ticket(view),null,verifiedWriter('collision@example.invalid'))).rejects.toMatchObject({code:'23505'});
-    expect(await ciphertext()).toEqual(snapshot); expect(await store.read('member-a',account.id)).toEqual(view); expect(await credentials()).toEqual(before);
+    expect(await ciphertext()).toEqual(snapshot); expect(await store.read('member-a',account.id)).toEqual(view); expect(await credentials()).toEqual(current);
   });
   it('commits verified resources and custody together, refusing an unverified old primary resource atomically', async () => {
     adapter.verifyResource=vi.fn(async(_account,evidence)=>({resourceKind:String(evidence),externalId:`own-${evidence}`,providerLabel:'Own resource'}));
