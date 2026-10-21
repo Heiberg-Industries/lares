@@ -57,6 +57,8 @@ import { google } from "googleapis";
 import {
   GoogleConfigError,
   buildOAuth2Client,
+  decryptSecret,
+  readTokenEncKey,
   getMostRecentRefreshToken,
   listDecryptedRefreshTokens,
   readSecretFile,
@@ -128,6 +130,22 @@ export interface GmailMessagesClient {
  *  its own — only an authenticated client that an agent still has to turn into one. */
 function buildAuthedGmail(cfg: GoogleOrgConfig, refreshToken: string): GmailApi {
   return google.gmail({ version: "v1", auth: buildOAuth2Client(cfg, refreshToken) });
+}
+
+/** Exact server-held credential only: no token lookup, mailbox/email selection or default.
+ * The transport deadline covers refresh as well as Gmail; retries cannot extend the lock.
+ * This narrow client never leaves the account store's locked callback.
+ */
+export function personalGmailReader(credential: { refreshTokenEnc: string; orgId: string }, signal: AbortSignal): Pick<GmailClient, "search" | "read"> {
+  const cfg = orgConfig(credential.orgId);
+  const refreshToken = decryptSecret(credential.refreshTokenEnc, readTokenEncKey());
+  const auth = buildOAuth2Client(cfg, refreshToken);
+  auth.transporter.defaults = { ...auth.transporter.defaults, signal, timeout: 15_000, retry: false };
+  const api = testGmailApiFactory
+    ? testGmailApiFactory(cfg, refreshToken)
+    : google.gmail({ version: "v1", auth, signal, timeout: 15_000, retry: false });
+  const client = makeGmailClient(wrapGmailApi(api));
+  return { read: client.read, search: client.search };
 }
 
 /** Injectable for tests only — swaps the real googleapis client factory for a stub so

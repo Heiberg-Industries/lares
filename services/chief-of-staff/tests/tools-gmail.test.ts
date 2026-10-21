@@ -91,6 +91,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   process.env["DATABASE_URL"] = container.getConnectionUri();
   await quiet(getPool()).query(readFileSync(join(import.meta.dirname, "../../box/sql/001_baseline.sql"), "utf8"));
+  await getPool().query("CREATE TABLE connected_account_credentials (oauth_token_id uuid PRIMARY KEY)");
 }, 120_000);
 
 afterAll(async () => {
