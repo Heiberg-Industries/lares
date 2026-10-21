@@ -539,6 +539,18 @@ export const SETTINGS: readonly SettingDef[] = [
     readAt: ["services/box/lib/crypto.ts:32", "services/console/lib/accounts.ts:121"],
   },
 
+  // Personal client metadata contains canonical org IDs and fixed container paths, never values.
+  {
+    name: "LARES_PERSONAL_GOOGLE_CLIENTS",
+    readers: ["chief-of-staff"],
+    source: "installer",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Personal Gmail read and search refuse without the keeper-generated client-to-file mapping; unrelated capabilities can still start.",
+    readAt: ["services/chief-of-staff/lib/google-orgs.ts:95", "services/keeper/lib/compose-agents.ts:167"],
+  },
+
   // ── The managed Google email flow (keeper-written) ────────────────────────────────────────
   {
     name: "LARES_EMAIL_PRINCIPAL",
