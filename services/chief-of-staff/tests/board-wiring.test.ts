@@ -37,7 +37,10 @@ const src = (f: string) => readFileSync(paths.get(f)!, "utf8");
 // (`asksAfterUntrustedText`), which asks only after the turn has already read somebody else's
 // words. There is no capability dial that could express "ask only then", so this one is decided
 // per call from the turn's own history rather than from a row.
-const OWN_POLICY = new Set(["meeting_followup_send.ts", "read_url.ts"]);
+// Personal mail checks the current board inside its exact encrypted-action policy and always
+// raises its full review card. Pin the real catalogue callback below, rather than accepting a
+// generic approvalFor gate that has no immutable action/resolver contract.
+const OWN_POLICY = new Set(["meeting_followup_send.ts", "read_url.ts", "personal_mailbox_send.ts"]);
 
 describe("board wiring", () => {
   it("no tool carries a bare always() any more", () => {
@@ -57,6 +60,14 @@ describe("board wiring", () => {
       .filter((t) => TOOL_CATEGORIES[t] !== undefined && mustAlwaysAsk(t).ask)
       .filter((t) => !src(`${t}.ts`).includes(`approvalFor("${t}")`));
     expect(missing).toEqual([]);
+  });
+  it("personal mail uses its exact-action always-ask policy as the real catalogue gate", async () => {
+    const { default: tool } = await import("../catalogue/personal_mailbox_send.js");
+    const { personalSendApprovalRequest, personalSendInputSchema } = await import("../lib/personal-send-approval.js");
+    expect(mustAlwaysAsk("personal_mailbox_send").ask).toBe(true);
+    expect(typeof personalSendApprovalRequest).toBe("function");
+    expect(tool.approval).toBe(personalSendApprovalRequest);
+    expect(tool.inputSchema).toBe(personalSendInputSchema);
   });
   it("the kit's three vault writes are on the board like every other gated tool", () => {
     for (const t of ["agent-kit__vault_write", "agent-kit__vault_file", "agent-kit__vault_drop"]) {

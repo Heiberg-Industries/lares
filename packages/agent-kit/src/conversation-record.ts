@@ -15,7 +15,7 @@
  * constraint was dropped, not that the reader should guess).
  */
 import type { Pool } from "pg";
-import { isOrigin, type Origin } from "@lares/agent-kit/origin";
+import { isOrigin, type Origin } from "./origin.js";
 
 export interface ConversationEntry {
   id: string; // uuid

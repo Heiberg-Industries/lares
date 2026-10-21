@@ -1,6 +1,6 @@
 import type { EveMessage, EveMessagePart, EveMessageInputRequest, UseEveAgentStatus } from "eve/react";
 import { SafeMarkdown } from "./SafeMarkdown";
-import { approvalArguments, type ApprovalField } from "../lib/approval-text";
+import { approvalArguments,personalSendCardFields,type PersonalSendCard, type ApprovalField } from "../lib/approval-text";
 
 /**
  * The transcript is a PURE function of its props: given the same `messages`, `status`,
@@ -41,6 +41,7 @@ export interface ChatTranscriptProps {
   readonly onAnswer?: (requestId: string, optionId: string) => void;
   /** The agent's display name, shown above its replies. Falls back to "Agent" when absent. */
   readonly agentName?: string;
+  readonly personalSendCards?:Readonly<Record<string,PersonalSendCard|null>>;
 }
 
 const UNSUPPORTED_PART = "— something this page cannot show yet —";
@@ -173,7 +174,9 @@ function ApprovalCard({
   expired,
   answering,
   onAnswer,
+  personalCard,
 }: {
+  personalCard?:PersonalSendCard|null;
   part: Extract<EveMessagePart, { type: "dynamic-tool" }>;
   request: EveMessageInputRequest;
   expired: boolean;
@@ -184,8 +187,9 @@ function ApprovalCard({
   // A live button only when the card is still open, has not expired, nothing else is in flight,
   // and this transcript was given somewhere to send the answer. Every one of those is a reason a
   // button would do nothing, and a button that does nothing is worse than a sentence.
+  const personal=part.toolName==='personal_mailbox_send';
   const live = settled === null && !expired && onAnswer !== undefined && answering === null;
-  const body = approvalCardFields(part.input);
+  const body = personal?{fields:personalCard?personalSendCardFields(personalCard):[],notice:personalCard?null:'Full mail review is unavailable. You can cancel this proposal.'}:approvalCardFields(part.input);
   return (
     <div style={cardStyle}>
       <p className="mono" style={{ fontSize: 11, letterSpacing: ".04em", color: "var(--warn)", margin: "0 0 6px" }}>
@@ -218,8 +222,8 @@ function ApprovalCard({
             <button
               key={option.id}
               type="button"
-              disabled={!live}
-              onClick={live && onAnswer ? () => onAnswer(request.requestId, option.id) : undefined}
+              disabled={!live||(personal&&!personalCard&&option.id==='approve')}
+              onClick={live && (!personal||personalCard||option.id==='cancel') && onAnswer ? () => onAnswer(request.requestId, option.id) : undefined}
               className="mono"
               style={{
                 padding: "6px 14px",
@@ -244,6 +248,7 @@ function ApprovalCard({
 }
 
 interface CardState {
+  personalSendCards?:Readonly<Record<string,PersonalSendCard|null>>;
   readonly expired: ReadonlySet<string>;
   readonly answering: string | null;
   readonly onAnswer?: (requestId: string, optionId: string) => void;
@@ -275,6 +280,7 @@ function renderPart(part: EveMessagePart, key: number, cards: CardState, role: E
         expired={cards.expired.has(request.requestId)}
         answering={cards.answering}
         onAnswer={cards.onAnswer}
+        personalCard={cards.personalSendCards?.[request.requestId]}
       />
     );
   }
@@ -311,8 +317,8 @@ function TranscriptMessage({ message, cards, agentName }: { message: EveMessage;
 
 const NONE: ReadonlySet<string> = new Set();
 
-export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer, agentName }: ChatTranscriptProps) {
-  const cards: CardState = { expired, answering, ...(onAnswer === undefined ? {} : { onAnswer }) };
+export function ChatTranscript({ messages, status, error, expired = NONE, answering = null, onAnswer, agentName,personalSendCards }: ChatTranscriptProps) {
+  const cards: CardState = { expired, answering,personalSendCards, ...(onAnswer === undefined ? {} : { onAnswer }) };
   return (
     <div>
       {messages.length === 0 ? (
