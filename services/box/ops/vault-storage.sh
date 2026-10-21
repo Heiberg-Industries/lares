@@ -56,11 +56,15 @@ try:
   marker=work+'/.lares-vault-area.json';regular(marker)
   wanted={'version':1,'areaId':area['areaId'],'backingStoreId':inv['backing']['id'],'relativePath':relative,'kind':area['kind'],'owner':area['owner']}
   if json.load(open(marker))!=wanted: raise ValueError()
+  allowed_repositories={work,work+'/.git',bare}
   for tree in [work,bare]:
    for base,dirs,files in os.walk(tree,followlinks=False):
+    present=lambda name:os.path.lexists(os.path.join(base,name))
+    bare_repository=present('HEAD') and present('objects') and (present('refs') or present('packed-refs') or present('config'))
+    if (present('.git') and base+'/.git' not in allowed_repositories) or (bare_repository and base not in allowed_repositories):raise ValueError()
     for name in dirs+files:
      st=os.lstat(os.path.join(base,name))
-     if stat.S_ISLNK(st.st_mode) or not(stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)): raise ValueError()
+     if stat.S_ISLNK(st.st_mode) or not(stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)) or (stat.S_ISREG(st.st_mode) and st.st_nlink!=1): raise ValueError()
   if os.path.lexists(work+'/.git/objects/info/alternates') or os.path.lexists(bare+'/objects/info/alternates'): raise ValueError()
   print('R\t'+work)
  if set(os.listdir(p('/srv/vault')))-{'private','shared'}: raise ValueError()

@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { createHash } from 'node:crypto';
+import { createHash,randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -200,4 +200,21 @@ it('refuses a redirected pending working repository before touching the redirect
  const inv=await plan();await expect(applyVaultStorage(pool,'owner',{...options(),onBoundary:s=>{if(s==='git-working')throw new Error('interrupted');}})).rejects.toThrow('interrupted');
  const root=join(prefix,'srv',inv.areas[0].relativePath),outside=join(prefix,'outside');mkdirSync(outside);git(root,'config','core.worktree',outside);
  await expect(previewVaultStorage(pool,'owner',options())).rejects.toThrow(/redirect/);await expect(applyVaultStorage(pool,'owner',options())).rejects.toThrow(/redirect/);expect(git(root,'config','core.worktree')).toBe(outside);expect(existsSync(join(outside,'.lares-vault-area.json'))).toBe(false);expect((await pool.query('SELECT * FROM vault_backing_stores')).rowCount).toBe(0);
+});
+
+it('refuses every unknown retained backing and area rather than omitting it from recovery',async()=>{
+ const inv=await plan();await applyVaultStorage(pool,'owner',options());shell('vault_storage_publish',inv);const store=new PgVaultStore(pool),authority={designatedOwnerMemberId:'owner'},otherBacking=randomUUID(),otherArea=randomUUID();
+ await store.provisionBacking('owner',{id:otherBacking,kind:'git'},authority);
+ await expect(verifyVaultStorage(pool,options())).rejects.toThrow(/fully inventoried/);
+ await store.provisionArea('owner',{id:otherArea,kind:'private',owner:{kind:'member',id:'second'},backingStoreId:otherBacking,relativePath:'retained/second'},authority);await store.retireBacking('owner',otherBacking,authority);
+ await expect(verifyVaultStorage(pool,options())).rejects.toThrow(/fully inventoried/);await expect(applyVaultStorage(pool,'owner',options())).rejects.toThrow(/fully inventoried/);
+ expect((await pool.query('SELECT status FROM vault_backing_stores WHERE id=$1',[otherBacking])).rows[0].status).toBe('retired');expect((await pool.query('SELECT id FROM vault_areas WHERE id=$1',[otherArea])).rowCount).toBe(1);
+});
+it('proves current use and edit without adding installation writes or resetting existing grants',async()=>{
+ const inv=await plan();await applyVaultStorage(pool,'owner',options());
+ for(const area of inv.areas){expect(git(join(prefix,'srv',area.relativePath),'rev-list','--count','--all')).toBe('1');expect(git(join(prefix,area.origin),'rev-list','--count','--all')).toBe('1');}
+ shell('vault_storage_publish',inv);const shared=inv.areas[1],store=new PgVaultStore(pool),revision=Number((await pool.query('SELECT revision FROM vault_areas WHERE id=$1',[shared.areaId])).rows[0].revision);
+ await store.configureAccess('owner',{areaId:shared.areaId,expectedRevision:revision,grants:[{principal:{kind:'member',id:'owner'},permission:'use',expiresAt:null}]},{designatedOwnerMemberId:'owner'});
+ const grants=(await pool.query('SELECT * FROM resource_grants ORDER BY id')).rows;await expect(applyVaultStorage(pool,'owner',options())).rejects.toThrow(/use and edit/);expect((await pool.query('SELECT * FROM resource_grants ORDER BY id')).rows).toEqual(grants);
+ for(const area of inv.areas)expect(git(join(prefix,'srv',area.relativePath),'rev-list','--count','--all')).toBe('1');
 });

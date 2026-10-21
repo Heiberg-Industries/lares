@@ -140,20 +140,23 @@ function allowedRoots(inv: VaultStorageInventory, options: VaultStorageFiles, pa
             throw new VaultStorageError('unclassified content under the managed working root');
     }
 }
-function noRedirects(root: string): void {
+function noRedirects(root: string, allowedRepositories: ReadonlySet<string>): void {
     directory(root);
+    const present = (name:string) => existsSync(join(root,name));
+    if ((present('.git') && !allowedRepositories.has(join(root,'.git'))) || ((present('HEAD') && present('objects') && (present('refs') || present('packed-refs') || present('config'))) && !allowedRepositories.has(root)))
+        throw new VaultStorageError();
     for (const name of readdirSync(root)) {
         const path = join(root, name), st = lstatSync(path);
-        if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()))
+        if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()) || (st.isFile() && st.nlink !== 1))
             throw new VaultStorageError();
         if (st.isDirectory())
-            noRedirects(path);
+            noRedirects(path, allowedRepositories);
     }
 }
 function repoFiles(inv: VaultStorageInventory, a: ManagedVaultArea, options: VaultStorageFiles): void {
     const root = work(a, options), bare = physical(a.origin, options);
-    noRedirects(root);
-    noRedirects(bare);
+    noRedirects(root,new Set([root,join(root,'.git')]));
+    noRedirects(bare,new Set([bare]));
     directory(join(root, '.git'));
     regular(join(root, VAULT_AREA_MARKER));
     if (options.runtimeUid !== undefined && [root, bare].some(path => lstatSync(path).uid !== options.runtimeUid))
@@ -202,7 +205,9 @@ export async function verifyVaultStorageMetadata(db: Pick<PoolClient, 'query'>, 
     const backing = (await db.query('SELECT id,organisation_id,kind,status FROM vault_backing_stores WHERE id=$1', [inv.backing.id])).rows[0];
     if (!backing || backing.organisation_id !== inv.organisationId || backing.kind !== 'git' || (active && backing.status !== 'active'))
         throw new VaultStorageError();
-    const rows = (await db.query('SELECT * FROM vault_areas WHERE backing_store_id=$1 ORDER BY id', [inv.backing.id])).rows;
+    const backings = (await db.query('SELECT id FROM vault_backing_stores ORDER BY id')).rows;
+    if(backings.length !== 1 || backings[0].id !== inv.backing.id)throw new VaultStorageError('retained backing stores are not fully inventoried');
+    const rows = (await db.query('SELECT * FROM vault_areas ORDER BY id')).rows;
     if (rows.length !== inv.areas.length)
         throw new VaultStorageError('database and storage inventory contain different areas');
     for (const a of inv.areas) {
@@ -211,12 +216,37 @@ export async function verifyVaultStorageMetadata(db: Pick<PoolClient, 'query'>, 
             throw new VaultStorageError('database ownership and stored markers disagree');
     }
 }
+/** Replacement is narrower than backup: preserve every unfamiliar Git-internal path. */
+function assertInitializationInternals(repo:string,gitDir:string,working:boolean):void {
+    const directories=new Set(['branches','hooks','info','objects','objects/info','objects/pack','refs','refs/heads','refs/tags']);
+    const files=new Set(['HEAD','config','description','info/exclude',receiptName,'refs/heads/main']);
+    const samples=['applypatch-msg','commit-msg','fsmonitor-watchman','post-update','pre-applypatch','pre-commit','pre-merge-commit','pre-push','pre-rebase','pre-receive','prepare-commit-msg','push-to-checkout','sendemail-validate','update'];
+    for(const name of samples)files.add('hooks/'+name+'.sample');
+    if(working){
+        for(const path of ['refs/remotes','refs/remotes/origin','logs','logs/refs','logs/refs/heads','logs/refs/remotes','logs/refs/remotes/origin'])directories.add(path);
+        for(const path of ['index','COMMIT_EDITMSG','refs/remotes/origin/main','logs/HEAD','logs/refs/heads/main','logs/refs/remotes/origin/main','lares-vault.lock'])files.add(path);
+    }
+    for(const line of git(repo,['rev-list','--objects','--all']).split('\n')){
+        const hash=line.split(' ')[0];if(!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(hash))throw new VaultStorageError();
+        directories.add('objects/'+hash.slice(0,2));files.add('objects/'+hash.slice(0,2)+'/'+hash.slice(2));
+    }
+    const walk=(folder:string,relative=''):void=>{
+        for(const entry of readdirSync(folder,{withFileTypes:true})){
+            const path=relative?relative+'/'+entry.name:entry.name;
+            if(entry.isDirectory()){if(!directories.has(path))throw new VaultStorageError('restore preparation found unknown repository paths; preserve and reconcile them first');walk(join(folder,entry.name),path);}
+            else if(!files.has(path)&&!/^objects\/pack\/pack-(?:[a-f0-9]{40}|[a-f0-9]{64})\.(?:pack|idx|rev)$/.test(path))throw new VaultStorageError('restore preparation found unknown repository paths; preserve and reconcile them first');
+        }
+    };
+    walk(gitDir);
+}
 export function assertEmptyVaultStorage(inv: VaultStorageInventory, options: VaultStorageFiles = {}): void {
     verifyVaultStorageFiles(inv, options);
     for (const a of inv.areas) {
         const root = work(a, options), bare = physical(a.origin, options);
         if (readdirSync(root).sort().join() !== ['.git', VAULT_AREA_MARKER].sort().join() || git(root, ['status', '--porcelain', '--untracked-files=all']) || git(root, ['rev-list', '--count', '--all']) !== '1' || git(root, ['ls-tree', '-r', '--name-only', 'HEAD']) !== VAULT_AREA_MARKER)
             throw new VaultStorageError('restore preparation requires untouched empty managed stores; export existing notes first');
+        assertInitializationInternals(root,join(root,'.git'),true);
+        assertInitializationInternals(bare,bare,false);
         for (const repo of [root, bare]) {
             const refs = git(repo, ['for-each-ref', '--format=%(refname)']).split('\n').filter(Boolean);
             if (refs.sort().join() !== (repo === root ? ['refs/heads/main', 'refs/remotes/origin/main'] : ['refs/heads/main']).sort().join() || git(repo, ['fsck', '--full', '--no-reflogs', '--unreachable']) !== '')
@@ -280,7 +310,7 @@ function preflightArea(inv: VaultStorageInventory, a: ManagedVaultArea, options:
         }
         if (!same(readJson(receiptFile), receipt(inv, a)))
             throw new VaultStorageError('pending plan identity differs from existing artifacts');
-        noRedirects(path);
+        noRedirects(path,new Set(isBare ? [path] : [path,gitDir]));
         if (existsSync(join(gitDir, 'objects/info/alternates')))
             throw new VaultStorageError();
         if (!isBare && existsSync(join(path, VAULT_AREA_MARKER)) && !same(vaultAreaInitializationSchema.parse(readJson(join(path, VAULT_AREA_MARKER))), marker(inv, a)))
@@ -448,6 +478,7 @@ export async function applyVaultStorage(pool: Pick<Pool, 'connect'>, memberId: s
         for (const a of inv.areas) {
             const row = (await db.query('SELECT revision FROM vault_areas WHERE id=$1', [a.areaId])).rows[0];
             const ctx = { memberId: member.id, areaId: a.areaId, expectedRevision: Number(row.revision), db };
+            for(const permission of ['use','edit'] as const)if(!await store.vaultAreaBinding(member.id,{areaId:a.areaId,expectedRevision:ctx.expectedRevision,permission},{db,requiredBackingKind:'git'}))throw new VaultStorageError('current use and edit authority is required');
             await files.list(ctx);
             await files.search(ctx, 'initialization-verification');
         }

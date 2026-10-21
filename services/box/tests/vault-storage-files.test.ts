@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { assertEmptyVaultStorage, parseVaultStorageInventory, requireVaultRecoveryTooling, verifyVaultStorageFiles, VAULT_RECOVERY_SCRIPTS, VAULT_RECOVERY_UNITS, VAULT_STORAGE_INVENTORY, type VaultStorageInventory } from '../lib/vault-storage.js';
 let prefix: string, inventory: VaultStorageInventory;
 const git = (path: string, ...args: string[]) => execFileSync('git', ['--literal-pathspecs', '-C', path, ...args], { encoding: 'utf8', stdio: 'pipe' }).trim();
@@ -101,7 +101,7 @@ it('refuses extra refs, marker mismatch, missing store, and unknown paths', () =
 it('preserves a durable local commit awaiting push and refuses diverged bare history', () => {
     files();
     const a = inventory.areas[0], root = join(prefix, 'srv', a.relativePath), bare = join(prefix, a.origin), peer = join(prefix, 'peer');
-    execFileSync('git', ['clone', '--quiet', bare, peer]);
+    execFileSync('git', ['clone', '--quiet', '--no-hardlinks', bare, peer]);
     git(peer, 'config', 'user.name', 'Lares Vault');
     git(peer, 'config', 'user.email', 'vault@localhost');
     writeFileSync(join(root, 'local.md'), 'durable local canary');
@@ -128,4 +128,32 @@ it('releases only the canonical locks this snapshot owns',()=>{
  execFileSync('bash',['-c','. "$1"; vault_storage_load "$2"; vault_storage_lock; printf foreign > "$3"; vault_storage_unlock','_',resolve('ops/vault-storage.sh'),prefix,first],{stdio:'pipe'});
  expect(readFileSync(first,'utf8')).toBe('foreign');
  expect(()=>readFileSync(join(prefix,'srv',inventory.areas[1].relativePath,'.git/lares-vault.lock'))).toThrow();
+});
+
+function expectBothVerifiersToRefuse(){
+ expect(()=>verifyVaultStorageFiles(inventory,{prefix})).toThrow();
+ const result=spawnSync('bash',['-c','. "$1"; vault_storage_load "$2"','_',resolve('ops/vault-storage.sh'),prefix],{encoding:'utf8'});
+ expect(result.status).not.toBe(0);expect(result.stderr).toContain('incomplete or conflicting managed storage');
+}
+it.each(['working','bare'])('refuses a hardlinked retained file in the %s repository without changing its outside canary',(kind)=>{
+ files();const area=inventory.areas[0],outside=join(prefix,'outside-canary.md'),base=kind==='working'?join(prefix,'srv',area.relativePath):join(prefix,area.origin);
+ writeFileSync(outside,'outside retained canary');linkSync(outside,join(base,'untracked.md'));expectBothVerifiersToRefuse();expect(readFileSync(outside,'utf8')).toBe('outside retained canary');
+});
+it.each(['ordinary','bare','configless','packed-configless','marker-only'])('refuses a nested %s Git boundary in both recovery verifiers',(kind)=>{
+ files();const root=join(prefix,'srv',inventory.areas[0].relativePath),nested=join(root,'nested');
+ if(kind==='marker-only')mkdirSync(join(nested,'.git'),{recursive:true});
+ else if(kind==='ordinary')execFileSync('git',['init','--quiet',nested]);
+ else{execFileSync('git',['init','--quiet','--bare',nested]);if(kind!=='bare')rmSync(join(nested,'config'));if(kind==='packed-configless'){rmSync(join(nested,'refs'),{recursive:true});writeFileSync(join(nested,'packed-refs'),'# pack-refs with: peeled fully-peeled sorted\n');}}
+ expectBothVerifiersToRefuse();expect(statSync(nested).isDirectory()).toBe(true);
+});
+
+it.each(['working','bare'])('preserves unknown %s Git-internal content and refuses automatic empty-store replacement',(kind)=>{
+ files();const area=inventory.areas[0],gitDir=kind==='working'?join(prefix,'srv',area.relativePath,'.git'):join(prefix,area.origin),canary=join(gitDir,'retained-canary.txt');writeFileSync(canary,'unknown retained content');
+ expect(()=>verifyVaultStorageFiles(inventory,{prefix})).not.toThrow();
+ expect(()=>assertEmptyVaultStorage(inventory,{prefix})).toThrow(/restore preparation found unknown repository paths/);expect(readFileSync(canary,'utf8')).toBe('unknown retained content');
+ const snapshot=spawnSync('bash',['-c','. "$1"; vault_storage_load "$2"','_',resolve('ops/vault-storage.sh'),prefix],{encoding:'utf8'});expect(snapshot.status).toBe(0);
+});
+
+it('refuses an empty ordinary-repository marker directly inside the authorized bare repository',()=>{
+ files();mkdirSync(join(prefix,inventory.areas[0].origin,'.git'));expectBothVerifiersToRefuse();
 });
