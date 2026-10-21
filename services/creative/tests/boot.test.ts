@@ -1,13 +1,10 @@
 /**
- * The Task-1 gate, in test form: the app is a real eve app, it routes through the LiteLLM
+ * The boot gate, in test form: the app is a real eve app, it routes through the LiteLLM
  * gateway rather than a bare model-id string, and its agent declaration is valid.
  *
- * Task 1 kept the agent.json checks here too, explicitly as a holding position: there were no
- * tools and no extension yet, so a full `tests/agent-declaration.test.ts` had no capability→tool
- * map and no class-vs-scope cross-check to run. Task 5 gave it both, so those checks MOVED to
- * that file rather than being duplicated — including the two this file used to carry alone
- * (the persona path resolving, and the boot model matching the declared one), which now sit
- * beside the conformance checks they belong with.
+ * The agent.json conformance checks live in `tests/agent-declaration.test.ts`, which has the
+ * capability→tool map and the class-vs-scope cross-check they need — including the persona path
+ * resolving and the boot model matching the declared one.
  */
 import { describe, it, expect, vi } from "vitest";
 

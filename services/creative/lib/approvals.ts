@@ -3,7 +3,7 @@
  *
  * Ported from `services/chief-of-staff/lib/approvals.ts` and narrowed to the creative agent's one channel —
  * see `lib/principals.ts` for the full list of what was dropped and why. The one structural
- * difference from chief-of-staff's copy: her `declaredApprover` fallback (for a Telegram
+ * difference from chief-of-staff's copy: the `declaredApprover` fallback (for a Telegram
  * card rendered in a schedule-opened session) is GONE, because the module it came from is gone
  * and because nothing in this service can reach it. The creative agent has no schedules, and on Slack
  * the clicker supplies the session auth, so `auth.current` is populated on exactly the path
@@ -114,10 +114,10 @@ export function assertApprover(
 }
 
 /**
- * The one call a gated tool makes before it acts (W7A-s6): WHO answered (unchanged,
+ * The one call a gated tool makes before it acts: WHO answered (unchanged,
  * unconditional — `assertApprover` first, exactly as every call site had it), then WHICH CARD
  * they answered — the same arguments, and not a stale one (`assertApprovedCall`,
- * `@lares/agent-kit/approval-ledger`, W7A-s5). Never a replacement for `assertApprover`: a
+ * `@lares/agent-kit/approval-ledger`). Never a replacement for `assertApprover`: a
  * missing call id or a missing row PASSES here (evidence never fails an action — see that
  * module's header). This service records its cards and their answers in `approval_asks` through
  * `agent/hooks/approval-record.ts` and `agent/hooks/approval-supersede.ts`, so a gated call here
@@ -129,8 +129,8 @@ export function assertApprover(
  * whose optional field was never supplied would mismatch the hash the card was shown with and
  * refuse a call nothing actually changed about.
  *
- * DEVIATION FROM THE PLAN'S SNIPPET: `ctx`'s type drops the plan's
- * `& Record<string, unknown>` — eve's real `ToolContext` (what every call site actually
+ * NOTE ON THE TYPE: `ctx`'s type deliberately has no
+ * `& Record<string, unknown>` intersection — eve's real `ToolContext` (what every call site actually
  * passes) has no index signature, so that intersection does not compile against it
  * (`tsc`: "Index signature for type 'string' is missing in type 'ToolContext'"). `{ session?:
  * { auth?: SessionAuthLike | null } }` alone is exactly what every existing call site's

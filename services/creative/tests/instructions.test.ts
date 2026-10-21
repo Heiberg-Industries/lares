@@ -1,14 +1,13 @@
-// lares-split hook 30: neutral fixture — installation-only assertions retargeted; see the lares split plan.
-// `agent/instructions.md` is an ASSEMBLED artefact, not a hand-written one (Phase 3).
+// `agent/instructions.md` is an ASSEMBLED artefact, not a hand-written one.
 //
 // `pnpm run assemble` turns three inputs — this service's own `agent.json`, the SHARED `creative`
 // role template, and this service's own `agent/voice.md` — into the persona eve boots from, and
 // `pnpm build` runs it before `eve build`.
 //
 // It replaces a 40-line file that shipped BYTE-IDENTICAL to
-// `services/agent-runtime/agents/the creative agent/persona.md` — this file used to hash both and compare.
-// The copy was faithful and still wrong in one place: the persona told her to run "the
-// `studio.ideate` tool", which is the RETIRED runtime's hand name. Her eve tool is
+// the retired runtime's persona file — this file used to hash both and compare.
+// The copy was faithful and still wrong in one place: the persona told the agent to run "the
+// `studio.ideate` tool", which is the RETIRED runtime's name for it. The eve tool is
 // `studio_ideate`. A hand-written tool name in a persona is exactly the drift the generated
 // "where I run" section exists to end, and generation fixed it here without anyone noticing it
 // was broken. So the hash test is gone and two guards stand in its place: the drift check below
@@ -68,8 +67,8 @@ describe("creative agent instructions", () => {
       displayName: "Creative",
       // The fourth input: which tools this agent actually ships. A capability doc's `tools` is
       // the fleet-wide union, so without this the section names tools that are not here — the
-      // `atlas` doc alone would hand her `atlas_proposals` and `atlas_resolve_proposal`, neither
-      // of which she has a file for. Derived from the agent folder by the same function the
+      // `atlas` doc alone would hand the agent `atlas_proposals` and `atlas_resolve_proposal`, neither
+      // of which has a file here. Derived from the agent folder by the same function the
       // assemble script calls, so this test and the build cannot disagree about it.
       deployedTools: deployedToolsFor(agentDir),
     });
@@ -91,13 +90,13 @@ describe("creative agent instructions", () => {
     const granted = parseManifest(manifest).grants.filter((g) => g.scope !== "none");
     expect(granted.length).toBe(2);
     for (const g of granted) expect(environment, `ungenerated capability: ${g.capability}`).toContain(`**${g.capability}**`);
-    // The capability she pointedly does NOT grant — the absences
+    // The capability the agent pointedly does NOT grant — the absences
     // tests/agent-declaration.test.ts proves disable all eleven extension tools.
     for (const absent of ["transit"]) {
       expect(environment, `names an ungranted capability: ${absent}`).not.toContain(`**${absent}**`);
     }
-    // Under the Vault rename "brain" is no longer a capability name to check for — she is
-    // granted `vault` (for the `shared` area), so the check that matters now is that her one
+    // Under the Vault rename "brain" is no longer a capability name to check for — the agent is
+    // granted `vault` (for the `shared` area), so the check that matters now is that its one
     // vault bullet never claims the `private` area: an ideation agent inside the owner's own
     // personal notes is the one that matters.
     const vaultStart = environment.indexOf("- **vault**");
@@ -109,8 +108,8 @@ describe("creative agent instructions", () => {
   });
 
   it("says she CANNOT search the web — she disables eve's web_search with a sentinel", () => {
-    // The mirror of the travel agent's assertion, and the reason `framework_tools` exists at all: the
-    // sentence is generated per agent from the declaration. Hers is empty, and
+    // The reason `framework_tools` exists at all: the
+    // sentence is generated per agent from the declaration. This agent's is empty, and
     // agent/tools/web_search.ts is a disable sentinel, so this is the true half of the pair.
     expect(parseManifest(manifest).framework_tools).toEqual([]);
     expect(environment).toMatch(/I cannot search the web/);
@@ -129,44 +128,44 @@ describe("creative agent instructions", () => {
     // differ. Each is asserted in the section that now owns it, which is itself the check that
     // the split went the right way.
 
-    // Her role. Everything else reads as instructions to a generic assistant without it.
+    // The agent's role. Everything else reads as instructions to a generic assistant without it.
     expect(role).toContain("creative director");
     // The don't-gatekeep default: run the studio on a terse brief with a stated assumption
     // rather than interrogating first.
     expect(role).toContain("Run first");
     // The anti-hardcoded-list rule, in full rather than a bare word that would survive almost
-    // any mangling. A hardcoded brand list previously made her confident about three ventures
+    // any mangling. A hardcoded brand list previously made the agent confident about three ventures
     // and blank about the rest. The store is named generically in the role — "the Atlas" was the
     // installation's word for it and could not travel into a shared template.
     expect(role).toContain("Assume every venture has a note in the business knowledge store");
     expect(role).not.toMatch(/\bAtlas\b/u);
-    // The rename fact. Without it she treats old-name material as a different venture from
+    // The rename fact. Without it the agent treats old-name material as a different venture from
     // its renamed successor, and there is nowhere else in the service that knows this. It is a fact about the
-    // owner's own ventures, so it lives in the voice overlay — a shared role template naming it
+    // owner's own ventures, so it lives in the installation's voice.md — a shared role template naming it
     // would fail the genericness lint, which is precisely why the split puts it here.
     // The other owner-specific fact from the same paragraph, and the one that is easiest to lose
-    // silently: without it she looks for a note that does not exist.
+    // silently: without it the agent looks for a note that does not exist.
     // (Both owner facts — the venture rename and the engine-project exception — live in the
-    // installation's voice.md, the overlay's since the lares split; the engine's is neutral.)
+    // installation's voice.md; the engine's is neutral.)
     // ...and none of the owner's world leaked into the engine text.
     expect(role).not.toMatch(/Test Owner|Lares/u);
   });
 
   it("the role keeps the two rules that decide what she DOES with a studio run", () => {
-    // These are the substance of "curation, never a single answer", and neither had a named
-    // guard until this review. The drift test above would catch their removal, but only as
+    // These are the substance of "curation, never a single answer", and neither has a named
+    // guard elsewhere. The drift test above would catch their removal, but only as
     // "two files differ" — these say which rule was lost.
 
-    // Curating is presenting the WHOLE spread. Without this she quietly becomes a picker: she
+    // Curating is presenting the WHOLE spread. Without this the agent quietly becomes a picker: it
     // summarises the run, drops the weird outliers, and hands back one favourite — which is the
     // single failure mode the whole role exists to prevent.
     expect(role).toContain("I present the tool result **verbatim**");
     expect(role).toContain("summarise, reorder, drop items, or pick a favourite");
 
-    // She cannot see the store search — the studio does it. So her only honest source on
-    // whether the store had context is the run's own grounding line. Lose this and she starts
-    // reporting an empty store from her own inference, over proposers that DID ground on a
-    // brand note she never saw.
+    // The agent cannot see the store search — the studio does it. So its only honest source on
+    // whether the store had context is the run's own grounding line. Lose this and it starts
+    // reporting an empty store from its own inference, over proposers that DID ground on a
+    // brand note it never saw.
     expect(role).toContain('Never claim the store "came up empty" unless the grounding line says so');
   });
 

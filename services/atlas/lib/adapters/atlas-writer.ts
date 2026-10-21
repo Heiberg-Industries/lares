@@ -41,7 +41,7 @@ const SKIP_DIRS = new Set([".git", ".locks", "node_modules"]);
  * so is any non-ASCII byte (`core.quotePath` defaults to true). Reading that output with
  * `line.slice(3)` gets back the quoted string, which then never matches the unquoted path
  * this writer actually wrote to disk — a genuinely new file gets misclassified "invisible to
- * git" and thrown as if it were gitignored (review round 3, IMPORTANT). This is exactly the
+ * git" and thrown as if it were gitignored. This is exactly the
  * class of defect this write boundary keeps producing: a guard that's correct for the paths
  * someone happened to test and silently wrong for the rest. `-z` is the machine-readable
  * form — NUL-terminated, and it NEVER quotes or escapes — and this is machine-reading it.
@@ -83,13 +83,12 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
    * Three checks, in order: (1) an Atlas-relative path must not be absolute — `join()` would
    * otherwise fold `/etc/evil.md` INSIDE the root as a string, only to have it fail later at
    * `git add -- /etc/evil.md`, whose pathspec is the raw relPath, not the joined one, leaving
-   * a written-but-uncommitted file behind (review round 1, MINOR 6); (2) the target's
-   * DIRECTORY must realpath inside the root — this is what catches a symlinked directory
-   * (review round 1's original guard); (3) the target FILE ITSELF, once it exists, must also
+   * a written-but-uncommitted file behind; (2) the target's
+   * DIRECTORY must realpath inside the root — this is what catches a symlinked directory;
+   * (3) the target FILE ITSELF, once it exists, must also
    * realpath inside the root — a symlinked directory is not the only escape route, a plain
-   * symlinked FILE is another, and realpathing only the dirname can never see it (review
-   * round 1, CRITICAL 1: a note that IS a symlink defeated containment entirely, on both the
-   * read and the write side). A target that doesn't exist yet has no realpath, which is fine
+   * symlinked FILE is another, and realpathing only the dirname can never see it (a note that
+   * IS a symlink defeats containment entirely, on both the read and the write side). A target that doesn't exist yet has no realpath, which is fine
    * either way: it will be created inside a directory already proven real and contained, so
    * it cannot itself be a pre-existing link.
    */
@@ -121,8 +120,7 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
       const abs = join(dir, entry);
       // lstat, not stat: a SYMLINKED directory must not be descended into (it can point
       // anywhere at all), and lstat is what tells a real directory and a symlink-to-a-
-      // directory apart — stat follows the link and would see the latter as the former
-      // (review round 1, MINOR 7).
+      // directory apart — stat follows the link and would see the latter as the former.
       if (lstatSync(abs).isDirectory()) walk(abs, acc);
       else if (entry.endsWith(".md")) acc.push(relative(root, abs));
     }
@@ -144,18 +142,16 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
     },
 
     async writeNotes(files, message) {
-      // An empty batch must do NOTHING — not even ask git what's dirty (review round 2, the
-      // new IMPORTANT this round's IMPORTANT-2 fix introduced). `git status --porcelain --`
+      // An empty batch must do NOTHING — not even ask git what's dirty. `git status --porcelain --`
       // with NO pathspec after `--` means "the whole tree", not "these zero paths": every
       // guard below assumes the pathspec scopes to files THIS BATCH is answerable for, and an
       // unscoped status/add/commit reports and then commits whatever ANYONE ELSE has staged —
-      // both a commit for a change this service never made (the churn defect the whole plan
-      // exists to prevent) and the exact IMPORTANT-3 hijack that pathspec was added to close,
-      // reopened through the one door it didn't cover.
+      // both a commit for a change this service never made (the churn this job exists to
+      // prevent) and the hijack the pathspec on the commit below closes, reopened through
+      // the one door it doesn't cover.
       if (files.length === 0) return { committed: false, pushed: false };
 
-      // Validate every path in the batch BEFORE writing anything (review round 1, IMPORTANT
-      // 2, part one): resolving `abs` eagerly for the whole batch means a bad path anywhere
+      // Validate every path in the batch BEFORE writing anything: resolving `abs` eagerly for the whole batch means a bad path anywhere
       // in it aborts before any file — including an earlier, perfectly good one — is ever
       // written. The old per-file-inside-the-loop check let a good file land on disk with no
       // commit to show for it, orphaned by a LATER path's failure.
@@ -176,8 +172,7 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
         touched.push(f.path);
       }
 
-      // ...but "no write needed" is NOT the same claim as "no commit needed" (review round 1,
-      // IMPORTANT 2, part two): a PRIOR run can have written these exact bytes to disk and
+      // ...but "no write needed" is NOT the same claim as "no commit needed": a PRIOR run can have written these exact bytes to disk and
       // then failed before `git commit` — the hook rejected it, the disk filled, whatever —
       // leaving the working tree byte-identical to what we'd write again while HEAD never
       // moved. Comparing memory to disk alone would call that "nothing to do" and lose the
@@ -188,8 +183,8 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
       const dirtyPaths = new Set(parsePorcelainZPaths(status));
 
       // A file we just wrote bytes to but that git reports NO change for is a contradiction,
-      // not a no-op — almost certainly `.gitignore` (the Atlas has none today, but the next
-      // caller, Task 9's sync job, will hand this batches routinely). Silently returning
+      // not a no-op — almost certainly `.gitignore` (the Atlas has none today, but the sync
+      // job hands this batches routinely). Silently returning
       // `{committed: false}` here would tell the caller nothing happened when something did:
       // the bytes are on disk and will never be committed or pushed unless someone notices.
       const invisible = touched.filter((p) => !dirtyPaths.has(p));
@@ -204,7 +199,7 @@ export function makeAtlasWriter(opts: AtlasWriterOptions): AtlasWriter {
       if (dirtyPaths.size === 0) return { committed: false, pushed: false };
 
       run("git", ["add", "--", ...paths], root);
-      // Scoped with `-- <paths>`, not a bare commit (review round 1, IMPORTANT 3): the
+      // Scoped with `-- <paths>`, not a bare commit: the
       // working tree of this batch's own paths is the ONLY thing it is answerable for.
       // Without the pathspec, `git commit` sweeps up anything else already staged in the
       // shared clone — a human's in-progress edit, a concurrent writer's half-finished

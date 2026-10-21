@@ -87,7 +87,7 @@ describe("mechanicalRefresh", () => {
   });
 
   // Counts fence-marker lines tolerantly (a leading BOM or trailing \r stays PART of the
-  // rendered line — this task's fix only makes DETECTION tolerant, it never rewrites bytes
+  // rendered line — the fix only makes DETECTION tolerant, it never rewrites bytes
   // elsewhere in the file — so a plain `/^---$/` line match would undercount a BOM'd fence).
   const fenceLineCount = (raw: string) =>
     raw.split("\n").filter((l) => l.replace(/^﻿/, "").replace(/\r$/, "") === "---").length;
@@ -111,7 +111,7 @@ describe("mechanicalRefresh", () => {
     // Same failure mode, different cause: a note whose opening fence line ends `\r\n` does
     // not match a bare `"---\n"` check either. (The closing fence here stays LF-terminated —
     // full CRLF-throughout parsing is a pre-existing, separate limit of `frontmatterEnd` in
-    // frontmatter.ts, out of this task's scope; this test isolates exactly the opening-fence
+    // frontmatter.ts, out of scope here; this test isolates exactly the opening-fence
     // detection this fix targets.)
     const crlfRaw = "---\r\nbrand: acme\r\nstatus: active\r\n---\n\nBody.\n";
     const out = mechanicalRefresh({ path: "_projects/acme.md", raw: crlfRaw, today: "2026-08-12" });

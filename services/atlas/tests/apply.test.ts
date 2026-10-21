@@ -150,7 +150,7 @@ A human edited this by hand, after approving the original draft.
     expect(await resolvedAtOf(id)).not.toBeNull();
     expect(w.files[NOTE_PATH]).toBe(changedRaw);
     expect(deps.notifications.join("\n")).toMatch(/changed after you approved/i);
-    // Task 15: a stale-approval supersede is routine, not source-health — it stays
+    // A stale-approval supersede is routine, not source-health — it stays
     // data-quality/info (no key), unlike the source-health transition notice in run.ts.
     expect(deps.notifyCalls.find((c) => /changed after you approved/i.test(c.message))?.opts).toBeUndefined();
   });

@@ -26,6 +26,6 @@ export function okfTypeFor(atlasRelPath: string): "venture" | "index" | "referen
   if (p === "_entities.md" || p === "schema.md") return "reference";
   throw new Error(
     `atlas: no OKF type is defined for "${atlasRelPath}". Add it to okfTypeFor (and to the ` +
-    "vocabulary table in the Part B plan) rather than letting it into the bundle untyped.",
+    "OKF vocabulary table) rather than letting it into the bundle untyped.",
   );
 }

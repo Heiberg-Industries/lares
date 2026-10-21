@@ -2,13 +2,13 @@
 //
 // Same reason as `web_fetch`, one step further out: `web_search` has no local executor at all
 // — the model PROVIDER runs it (Exa by default for AI Gateway models). The creative agent's calls go
-// through the self-hosted LiteLLM gateway, not the Vercel AI Gateway, and she is sealed, so
-// there is no provider-side search path for her. The tool would be advertised and never work.
+// through the self-hosted LiteLLM gateway, not the Vercel AI Gateway, and the agent is sealed, so
+// there is no provider-side search path for it. The tool would be advertised and never work.
 //
-// It is also the wrong shape for what she does. Her value is outlier ideas grounded in what
+// It is also the wrong shape for what the agent does. Its value is outlier ideas grounded in what
 // the portfolio actually knows — the Atlas, searched by the studio, relayed with its grounding
-// line. Web results would give her a second, ungrounded source to blend in silently, and
-// "relay, don't guess" is the one rule in her persona written to stop exactly that.
+// line. Web results would give it a second, ungrounded source to blend in silently, and
+// "relay, don't guess" is the one rule in the persona written to stop exactly that.
 //
 // eve resolves this by FILENAME. A typo does NOT fail `eve build` — verified on eve 0.32: a
 // bogus `agent/tools/bahs.ts` compiled clean (0 errors, 0 warnings) and landed in the

@@ -1,6 +1,6 @@
 // services/atlas/tests/helpers/fake-writer.ts
 // A fake AtlasWriter over an in-memory file map, for tests that exercise a caller of
-// AtlasWriter (migrate-okf today; Task 9's tests need the same fake) without shelling out to
+// AtlasWriter (migrate-okf and the sync job's tests) without shelling out to
 // real git. Extracted here rather than defined inline in each test file so the two don't
 // drift.
 import type { AtlasWriter } from "../../lib/adapters/atlas-writer.js";

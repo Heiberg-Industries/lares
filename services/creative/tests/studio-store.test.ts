@@ -1,12 +1,12 @@
 /**
- * `lib/studio/store.ts` — the run-history writer Task 5 calls after every spread.
+ * `lib/studio/store.ts` — the run-history writer the tool calls after every spread.
  *
  * These use a recording fake pool, and that is a deliberate limit: per the lesson a fake
  * that never executes SQL cannot prove the statement is VALID Postgres. It is not trying to.
  * What it proves is the two things the PORT could have broken — that the inlined `MiniPool`
  * type still accepts a pool-shaped object without the old runtime's `heartbeat.ts`, and that the
  * insert still writes the same four columns into the same unqualified `studio_runs` table that
- * the old the creative agent has been writing to on `lares_state`. The statement itself is unchanged from
+ * the old agent-runtime wrote to on `lares_state`. The statement itself is unchanged from
  * a table that already exists and is already in daily use, so the remaining risk is the wiring,
  * which is what is checked here. A container test would earn its place the day the SQL changes.
  */
@@ -37,7 +37,7 @@ const run: StudioRun = {
 
 describe("studio store (ported)", () => {
   /** Idempotent by construction — it runs on every startup, and on the box the table already
-   *  exists because old the creative agent created it. `IF NOT EXISTS` is why no hand-applied DDL is
+   *  exists because the old agent-runtime created it. `IF NOT EXISTS` is why no hand-applied DDL is
    *  needed for this table (unlike sql/001-eve-workflow.sql, which does need applying). */
   it("ensureStudioTables issues an idempotent, UNQUALIFIED create", async () => {
     const db = fakeDb();
@@ -46,12 +46,12 @@ describe("studio store (ported)", () => {
     expect(db.calls).toHaveLength(1);
     expect(db.calls[0]!.sql).toMatch(/CREATE TABLE IF NOT EXISTS studio_runs/);
     // No schema prefix: the table lands in whatever database DATABASE_URL points at, which the
-    // port keeps on lares_state so her run history carries across the cutover.
+    // port keeps on lares_state so the run history carries across the cutover.
     expect(db.calls[0]!.sql).not.toMatch(/studio_runs\s*\./);
     expect(db.calls[0]!.sql).not.toMatch(/\w+\.studio_runs/);
   });
 
-  /** The row Task 5 will write. `spread` must be serialised — handing the array straight to pg
+  /** The row the tool writes. `spread` must be serialised — handing the array straight to pg
    *  writes a Postgres array literal into a jsonb column and fails at runtime, not at compile. */
   it("recordRun writes brief, consensus, serialised spread and principal, returning the id", async () => {
     const db = fakeDb();

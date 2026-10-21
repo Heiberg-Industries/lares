@@ -1,14 +1,13 @@
 /**
- *  item 2 — a capped turn says so on the creative agent's Slack door.
+ * A capped turn says so on the creative agent's Slack door.
  *
- * She is the likeliest agent to meet this: `the creative agent` may carry a small daily spend cap.
+ * This agent may carry a small daily spend cap, so it is the likeliest to meet this.
  *
  * Two things are pinned, and the second is the one that historically breaks: supplying
  * `events["turn.failed"]` REPLACES eve's default handler, so an ORDINARY failure must still
  * produce the default's exact text.
  *
- * The budget fixture's body is verbatim from the live probe in the spend-caps runbook
- * ("Transcript — run 2026-09-01, against the live gateway", call 6); the eve event wrapper
+ * The budget fixture's body is verbatim from a live probe against the gateway; the eve event wrapper
  * around it is shaped from eve 0.32.0's `dist/src/harness/tool-loop.js`, with a placeholder
  * errorId.
  */

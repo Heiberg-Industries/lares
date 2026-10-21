@@ -1,9 +1,7 @@
-// lares-split hook 30: neutral fixture — installation-only assertions retargeted; see the lares split plan.
 /**
- * creative agent's agent declaration (Task 5) — the conformance test for `agent.json`.
+ * creative agent's agent declaration — the conformance test for `agent.json`.
  *
- * Ported from `services/travel/tests/agent-declaration.test.ts`, which is the
- * template. Three of its checks exist because nowhere else in the codebase can run them:
+ * Three of its checks exist because nowhere else in the codebase can run them:
  *
  *  1. `assertDeclarationIntegrity` is OPT-IN — the kit cannot force a call, so without a caller
  *     it enforces nothing. It is called for real from `agent/agent.ts` AND from
@@ -15,31 +13,25 @@
  *     tools are visible at once. The per-tool half — a gated tool under a grant that is NOT
  *     write-with-confirm, i.e. a declaration understating the agent's power — IS the kit's
  *     `assertClassMatchesScope`, but the kit only ever sees extension tools; this file runs it
- *     across her five LOCAL tools too, which nothing else enforces.
- *  3. The twelve extension tools resolving DISABLED under her manifest. She grants none of
- *     `brain` or `transit`, and for her the `brain` half is the load-bearing one: a
- *     Brain write reaching an ideation agent would put her inside the owner's personal vault,
+ *     across the agent's LOCAL tools too, which nothing else enforces.
+ *  3. The twelve extension tools resolving DISABLED under its manifest. It grants none of
+ *     `brain` or `transit`, and here the `brain` half is the load-bearing one: a
+ *     Brain write reaching an ideation agent would put it inside the owner's personal vault,
  *     which this service must never touch.
  *
- * TWO DIFFERENCES FROM THE TRAVEL AGENT'S VERSION, both deliberate:
+ * TWO DELIBERATE CHOICES:
  *
- *  - His asserts a hardcoded authored-tool COUNT (18), taken from the baseline off his
- *    deployed container. The creative agent has no deployed eve baseline yet, so a count would be a
- *    number invented in this file and then asserted against itself. Her real set is asserted
- *    by NAME instead, which is strictly stronger: it catches a rename, not merely an addition.
- *  - He has a second file, `tests/agent-kit-tools-disabled.test.ts`, that overlaps the third
- *    block below. The creative agent has ONE file. The overlap is near-total — both assert "one override
- *    file per contributed tool, and every one resolves to a sentinel" — and the single thing
- *    his second file does that his first does not is anchor the comparison on the extension's
- *    SOURCE directory (`packages/agent-kit/extension/tools/`) rather than on the built
- *    `@lares/agent-kit/tools` barrel. That distinction is worth keeping (a stale `dist/` would
- *    otherwise make both sides of a barrel-only comparison agree), so it is folded in below as
- *    one extra assertion rather than as a second file with its own header, imports and
- *    directory walk. Two files that must be edited together, and whose relationship needs a
- *    paragraph to explain, are a worse guard than one file that checks both anchors.
+ *  - The authored set is asserted by NAME, not by a hardcoded tool COUNT. A count would be a
+ *    number invented in this file and then asserted against itself; a name list is strictly
+ *    stronger: it catches a rename, not merely an addition.
+ *  - One file checks the extension-tool overrides from both anchors: the extension's SOURCE
+ *    directory (`packages/agent-kit/extension/tools/`) and the built `@lares/agent-kit/tools`
+ *    barrel. Both matter (a stale `dist/` would otherwise make both sides of a barrel-only
+ *    comparison agree), and two files that must be edited together are a worse guard than one
+ *    file that checks both anchors.
  *
- * CAPABILITY_TOOLS below is deliberately written here and not in the kit (Ruling 2):
- * a full capability→tool registry for the whole fleet is Phase-2 work, and a half-registry in
+ * CAPABILITY_TOOLS below is deliberately written here and not in the kit: a full
+ * capability→tool registry for the whole fleet does not exist, and a half-registry in
  * the shared package would be a second, non-authoritative copy of the truth.
  */
 import { describe, it, expect, vi } from "vitest";
@@ -61,7 +53,7 @@ import { assertNoUngatedWrites } from "@lares/agent-kit/write-shape-lint";
 // otherwise mount un-resolved, governed by no agent.json at all. (was the
 // eleventh-tool case: it turned this assertion red in all three agents at once, as designed.)
 import * as kitTools from "@lares/agent-kit/tools";
-//  step 2, Task 7: what a session is actually given out of the `catalogue/` pool. Imported
+// What a session is actually given out of the `catalogue/` pool. Imported
 // rather than re-listed so this file cannot drift from the resolver it is checking.
 import { grantedToolNames } from "@lares/agent-kit/catalogue";
 import { parseDefinition } from "@lares/agent-kit/definition";
@@ -99,30 +91,28 @@ const EXTENSION_TOOLS: Record<string, () => Promise<{ default: unknown }>> = {
  *  under it. That is why `vault_search` carrying no approval under a `write-with-confirm` grant
  *  is correct rather than a mismatch.
  *
- *  W5C-s3 folded the three `atlas_*` reads into the one area-taking set, and W5C-s5/s6 folded
- *  the capability itself into `vault`. What used to be said by the capability NAME — which store
- *  these four touch — is said by the grant's `areas` now, which is `["shared"]` and nothing
+ *  The reads and the write are one area-taking set under the single `vault` capability. Which
+ *  store these four touch is said by the grant's `areas`, which is `["shared"]` and nothing
  *  else. So the guarantee below, that this role never reaches the personal store, is enforced
- *  twice against her declaration: the session seam never offers her a private-area tool
+ *  twice against the declaration: the session seam never offers a private-area tool
  *  (`grantedToolNames`), and the tools themselves refuse the area (`lib/vault-areas.ts`).
  *
- *  Note what is NOT here: the private area. She is an ideation agent grounded on
- *  the business store; she has no business in the owner's personal vault.
+ *  Note what is NOT here: the private area. This is an ideation agent grounded on
+ *  the business store; it has no business in the owner's personal vault.
  *  That omission is the whole mechanism by which the ten extension tools disappear. */
 const CAPABILITY_TOOLS: Record<string, readonly string[]> = {
   studio: ["studio_ideate"],
   vault: ["vault_search", "vault_read", "vault_list", "vault_write"],
 };
 
-/** `set_language` (step 2, Task 6) is deliberately absent from `CAPABILITY_TOOLS`: it is
+/** `set_language` is deliberately absent from `CAPABILITY_TOOLS`: it is
  *  ALWAYS present, carries no grant and is not a capability — an owner must always be able to
  *  switch a conversation's language whatever the agent's declaration says. It is exempted BY
  *  NAME below, everywhere this file otherwise demands "every authored tool maps to a
- *  capability" — the same shape Ruling R2 (2026-09-16 SDD ledger) records for the plan's later
- *  catalogue move. */
+ *  capability" — the same shape the catalogue gives it. */
 const ALWAYS_PRESENT_TOOLS = new Set(["set_language"]);
 
-/** Her real authored surface, by name. Deliberately a NAME list and not a count — see this
+/** The agent's real authored surface, by name. Deliberately a NAME list and not a count — see this
  *  file's header. A rename, an addition, or a deletion all land here. */
 const AUTHORED_TOOLS = [
   "vault_write",
@@ -135,7 +125,7 @@ const AUTHORED_TOOLS = [
 
 /** Load every authored tool in the `catalogue/` pool, keyed by slug.
  *
- *  THE DIRECTORY MOVED, THE CHECK DID NOT (step 2, Task 7 — ADR-0015 rule 3). Her tools
+ *  THE DIRECTORY MOVED, THE CHECK DID NOT (ADR-0015 rule 3). The tools
  *  used to be files under agent/tools/ and were therefore always present; they are now a POOL that
  *  agent/tools/catalogue.ts picks from at session start against the resolved definition. What is
  *  left under agent/tools/ is the eight `disableTool()` sentinels plus that one resolver, which is
@@ -149,11 +139,11 @@ const AUTHORED_TOOLS = [
  *  A disable sentinel is dropped because of what it IS, not because of its name — so the day
  *  one of the eight framework disables stops being a sentinel it arrives here as an authored
  *  tool and the checks below turn red. That is the guard that matters: `agent/tools/bash.ts`
- *  edited back into eve's real `bash` would hand her unsandboxed shell inside a container with
+ *  edited back into eve's real `bash` would hand the agent an unsandboxed shell inside a container with
  *  the Atlas mounted.
  *
- *  The travel agent's version of this loader carries a second, name-based skip for framework defaults he
- *  RE-ENABLES with an authored file (`web_search`). The creative agent re-enables none — her three
+ *  This loader has no name-based skip for framework defaults re-enabled with an authored file
+ *  (such as `web_search`). The creative agent re-enables none — its three
  *  surviving defaults (`ask_question`, `todo`, `load_skill`) have no file under `agent/tools/`
  *  at all, enabled by absence, and `tests/tool-harness.test.ts` guards that trio — so the skip
  *  is deliberately absent rather than present-and-empty. Whoever re-enables a default here
@@ -186,10 +176,9 @@ describe("creative agent agent.json", () => {
     // adapters/loader.ts — so "agent/instructions.md" resolves to
     // services/creative/agent/instructions.md.
     //
-    // Until Phase 3 Task 10 this field pointed OUT of the service, at
-    // ../agent-runtime/agents/the creative agent/persona.md, and tests/instructions.test.ts hashed the two
-    // files to prove the shipped copy had not drifted from that canonical one. There is no copy
-    // any more: instructions.md is ASSEMBLED from agent.json + the shared `creative` role
+    // This field used to point OUT of the service, at the old agent-runtime's persona file, and
+    // tests/instructions.test.ts hashed the two to prove the shipped copy had not drifted. There is
+    // no copy any more: instructions.md is ASSEMBLED from agent.json + the shared `creative` role
     // template + agent/voice.md, so `persona` names a file this service owns and builds, and the
     // drift guard is the assembler comparison in that same test file.
     const personaPath = resolve(dirname(resolve(import.meta.dirname, "../agent.json")), declaration.persona);
@@ -204,11 +193,10 @@ describe("creative agent agent.json", () => {
   });
 
   it("scopes `vault` write-with-confirm and `studio` a plain write — one gate, and it means something", () => {
-    // Both capabilities were write-with-confirm for one day (controller Ruling 1, on the
-    // ticket's stated intent that an expensive run deserves a confirmation). The owner's call on
-    // 2026-08-24, after seeing the first live card, moved `studio` down: the gate had no
-    // decision content — he is the only principal who can reach her and had asked for the run
-    // in the message directly above — and it devalued the `vault_write` gate beside it.
+    // Both capabilities were first write-with-confirm, on the intent that an expensive run
+    // deserves a confirmation. After seeing the first live card the owner moved `studio` down:
+    // the gate had no decision content — the owner is the only principal who can reach the agent
+    // and had asked for the run in the message directly above — and it devalued the `vault_write` gate beside it.
     //
     // The scope, not just the autonomy dial, is what carries that. Under the ported governance
     // semantics (@lares/agent-kit/manifest's header, from agent-runtime's governance/decide.ts)
@@ -219,15 +207,15 @@ describe("creative agent agent.json", () => {
     // in either direction.
     expect(grantFor(declaration, "studio")?.scope).toBe("write");
     expect(grantFor(declaration, "vault")?.scope).toBe("write-with-confirm");
-    // W5C-s6: and the areas are what the capability name used to carry — the shared store only.
+    // And the areas are what the capability name used to carry — the shared store only.
     expect(grantFor(declaration, "vault")?.areas).toEqual(["shared"]);
     // The template ships every grant `gated`; walking `studio` to autonomous is an installation's
-    // own later decision (the creative agent's, 2026-08-24 — see templates/creative/README.md).
+    // own later decision (see templates/creative/README.md).
     expect(declaration.autonomy).toEqual({ studio: "gated", vault: "gated" });
   });
 
   it("is resolved from the definition at one scope only — the step", async () => {
-    //  step 2: `model` is a dynamic resolver — the definition picks the model per
+    // `model` is a dynamic resolver — the definition picks the model per
     // conversation, and there is no compiled fallback carrying a build-time alias any more
     // (eve 0.33.0 removed it). Since eve 0.60 the only scope that may return a constructed
     // provider is `step.started`; `session.started` and `turn.started` are resolved durably and
@@ -253,11 +241,11 @@ describe("creative agent extension tools resolve under the declaration", () => {
     // glance. Every assertion below this one is downstream of these three absences.
     //
     // `transit` is the one that makes the creative agent's role in this proof visible. chief-of-staff
-    // and the travel agent BOTH grant it, so the byte-identical `transit_plan.ts` resolves live in
-    // both of them; she is the only agent left where it is still a sentinel, which is what
-    // keeps the "the declaration, not the code, is the difference" claim falsifiable. An
+    // grants it, so the byte-identical `transit_plan.ts` resolves live there; here it is a
+    // sentinel, which is what keeps the "the declaration, not the code, is the difference" claim
+    // falsifiable. An
     // ideation agent has no business planning the owner's train journeys.
-    // W5C-s6: the personal store is no longer a capability to withhold, it is an AREA — so the
+    // The personal store is not a capability to withhold, it is an AREA — so the
     // same guarantee is now stated on the grant this role DOES hold, which is a finer check
     // than the absent-capability one it replaces.
     expect(grantFor(declaration, "vault", "private")).toBeUndefined();
@@ -267,10 +255,9 @@ describe("creative agent extension tools resolve under the declaration", () => {
     expect(isGranted(declaration, "transit")).toBe(false);
   });
 
-  // The whole point of : these twelve files are IDENTICAL to chief-of-staff's and
-  // travel agent's — `diff -r` across all three directories is empty. In chief-of-staff every one of
-  // them resolves to a live tool, and in the travel agent one of them does (`transit_plan`,
-  // which he grants); here every one must be a disable sentinel. A green test in chief-of-staff's
+  // The whole point: these twelve files are IDENTICAL to chief-of-staff's —
+  // `diff -r` across the directories is empty. In chief-of-staff the granted ones resolve to a
+  // live tool; here every one must be a disable sentinel. A green test in chief-of-staff's
   // matching block plus a green test here is the proof that the DECLARATION, not the code, is
   // what differs between the agents.
   for (const [slug, load] of Object.entries(EXTENSION_TOOLS)) {
@@ -289,9 +276,8 @@ describe("creative agent extension tools resolve under the declaration", () => {
     // TWO ANCHORS, because they can disagree. `@lares/agent-kit/tools` is the BUILT barrel
     // (`dist/tools/index.mjs`, produced by `eve extension build`); `extension/tools/*.ts` is
     // the SOURCE eve actually mounts. A stale dist would let a barrel-only comparison pass
-    // while an unoverridden tool mounted for real. This is the assertion travel agent keeps in a
-    // separate file (tests/agent-kit-tools-disabled.test.ts) — see this file's header for why
-    // it is folded in here instead.
+    // while an unoverridden tool mounted for real. See this file's header for why both
+    // anchors are checked here.
     const contributed = Object.keys(kitTools).sort();
     const dir = join(import.meta.dirname, "..", "agent", "extensions", "agent-kit", "tools");
     const overrideFiles = readdirSync(dir)
@@ -317,7 +303,7 @@ describe("creative agent declaration ↔ authored tools", () => {
   it(
     "has exactly the five authored tools this port gives her, by name",
     async () => {
-      // By NAME, not by count (see the header). The five are her whole surface: one gated
+      // By NAME, not by count (see the header). The five are the agent's whole surface: one gated
       // studio run, three ungated Atlas reads, one gated Atlas write. A sixth file, a rename,
       // or one of the eight framework disables being edited back into a real tool all land
       // here first.
@@ -361,7 +347,7 @@ describe("creative agent declaration ↔ authored tools", () => {
       // view at once, which is why it cannot live in the kit's per-tool resolver. The
       // complementary per-tool half is the test immediately below.
       //
-      // Unlike the travel agent's, this loop actually RUNS — `atlas` is write-with-confirm — and it is
+      // This loop actually RUNS — `vault` is write-with-confirm — and it is
       // the check that would have caught the pre-port `studio: read` declaration from the other
       // side: a `read` scope would have been skipped by the `continue` below while
       // `studio_ideate` still carried `always()`, and the per-tool check beneath would then
@@ -369,10 +355,10 @@ describe("creative agent declaration ↔ authored tools", () => {
       // design, which is why the derivation below pins the gated set absolutely rather than
       // leaning on this loop alone.
       const local = await loadLocalTools();
-      // Local tools only: `CAPABILITY_TOOLS` maps none of the ten extension tools, because she
-      // grants neither capability that would make one of them live. The travel agent's version carries an
-      // extension-tool fallback here; for her it could not execute, so it is left out until a
-      // task actually maps an extension tool to one of her capabilities.
+      // Local tools only: `CAPABILITY_TOOLS` maps none of the ten extension tools, because the agent
+      // grants neither capability that would make one of them live. An extension-tool fallback
+      // could not execute here, so it is left out until an extension tool is mapped to one of
+      // its capabilities.
       const approvalOf = (slug: string): unknown => {
         const tool = local.get(slug);
         if (!tool) throw new Error(`no authored tool file for "${slug}"`);
@@ -393,7 +379,7 @@ describe("creative agent declaration ↔ authored tools", () => {
       // assertion that bites if `approval: always()` is ever re-added to `studio_ideate`
       // without moving `studio` back to write-with-confirm — and, because it is an exact set
       // equality rather than a `some`, it also bites if the gate is re-added WITH the scope
-      // change. Re-gating her studio is a decision, not a refactor; it must edit this line.
+      // change. Re-gating the studio is a decision, not a refactor; it must edit this line.
       const gated = [...local].filter(([, tool]) => tool.approval !== undefined).map(([slug]) => slug).sort();
       expect(gated, "exactly one gated tool: the Atlas write, which commits and pushes").toEqual(["vault_write"]);
       const ungated = [...local].filter(([, tool]) => tool.approval === undefined).map(([slug]) => slug).sort();
@@ -416,7 +402,7 @@ describe("creative agent declaration ↔ authored tools", () => {
       //
       // The kit's `assertClassMatchesScope` already enforces this at BUILD time — but only over
       // the ten extension tools, because those are the only ones `resolveExtensionTool` ever
-      // sees, and here all ten are disabled so it never runs at all. Her five are local;
+      // sees, and here all ten are disabled so it never runs at all. The five are local;
       // nothing enforces it but this test.
       //
       // There is deliberately NO exemption list. If this goes red, the tool is not the problem
@@ -444,8 +430,8 @@ describe("creative agent declaration ↔ authored tools", () => {
   it("ships no write-shaped tool under a read grant", () => {
     // The other half of the check above. `assertClassMatchesScope` catches a tool that CARRIES
     // an approval gate under a grant that is not write-with-confirm — a declaration understating
-    // the agent. This catches the case left standing and the 2026-09-01 sweep
-    // re-confirmed (the engine security sweep, layer 4): a tool with NO
+    // the agent. This catches the case left standing and an earlier security sweep
+    // re-confirmed: a tool with NO
     // gate whose code mutates anyway, under a grant of `read`. The sweep found no live instance
     // and said plainly that nothing would catch the next one. This is that catch.
     //
@@ -471,30 +457,29 @@ describe("creative agent declaration ↔ authored tools", () => {
 });
 
 // ---------------------------------------------------------------------------
-// framework_tools ↔ what `eve build` actually compiled (Phase 3, Task 9)
+// framework_tools ↔ what `eve build` actually compiled
 // ---------------------------------------------------------------------------
 //
 // `framework_tools` names eve's OWN built-ins this agent keeps enabled. They are not
 // capabilities and not grants — `agent.json` does not govern them; an agent enables one by
 // authoring `agent/tools/<name>.ts` and disables it with a `disableTool()` sentinel. The field
 // exists only so the GENERATED "where I run" section can tell the truth about web search, which
-// differs across the fleet: the travel agent keeps `web_search` enabled, the chief of staff and the creative agent disable it. Left to itself that is a hand-set
-// flag, and a hand-set flag about a capability is exactly what produced the 2026-08-14 Wave-1
-// bug. So it is asserted against the compiled manifest `eve build` writes, which is eve's own
+// can differ between agents. Left to itself that is a hand-set
+// flag, and a hand-set flag about a capability drifts. So it is asserted against the compiled manifest `eve build` writes, which is eve's own
 // answer rather than ours.
 //
 // The compiled manifest is a build artefact under .output/ (gitignored), so this is skipped
 // rather than failed when there is no build to check — visibly, as a named skip, never as a
 // silent pass. `pnpm build` before `pnpm test` is what makes it run.
 // Read once for both checks below. `tools` is the compiled AUTHORED tool list — the same array
-// the plan's baselines count.
+// the baselines count.
 //
-// eve 0.60.1 (W2-s8b): `webSearchProvider`/`disabledFrameworkTools` are GONE — neither name
+// eve 0.60.1: `webSearchProvider`/`disabledFrameworkTools` are GONE — neither name
 // appears anywhere in the installed package any more. Confirmed empirically too: they were
 // always `undefined`/`[]` even with disable sentinels present, which made the check below pass
 // VACUOUSLY for the creative agent (framework_tools correctly omits web_search, and the always-`false`
 // computation from the dead fields agreed by coincidence — it would have stayed silently wrong
-// had she ever declared web_search). A disabled framework tool now shows up only as a
+// had the agent ever declared web_search). A disabled framework tool now shows up only as a
 // `kind: "disabled"` audit entry in `sourceComposition`, never in `tools` — the same unified
 // model every other framework tool (task_cancel, glob, grep) already uses. So "is web_search
 // live" is read off `tools` directly, like everything else.
@@ -526,15 +511,14 @@ describe("creative agent framework_tools matches the compiled manifest", () => {
 // are not capabilities (the `framework_tools` field and its own conformance test above are how
 // those are told the truth about).
 //
-// `set_language` (step 2, Task 6) joins it for the same reason from a different origin:
+// `set_language` joins it for the same reason from a different origin:
 // it is OURS, not eve's, but it is likewise ALWAYS present, carries no grant and is not a
 // capability — the generated section correctly says nothing about it, and the model is told
 // about it by its own tool description, not by this text. See ALWAYS_PRESENT_TOOLS above.
 //
-// `ask_question`, `todo` and `load_skill` join it under W2-s8b, once a real build first ran this
-// check (before eve 0.60.1 the branch's CI blocker meant `.output` never existed, so this whole
-// describe block was always skipped, never actually exercised). All three are eve's own framework
-// built-ins the creative agent keeps with no sentinel of her own — see tests/tool-harness.test.ts's header
+// `ask_question`, `todo` and `load_skill` join it: before eve 0.60.1 a CI blocker meant `.output` never existed, so this whole
+// describe block was always skipped, never actually exercised. All three are eve's own framework
+// built-ins the creative agent keeps with no sentinel of its own — see tests/tool-harness.test.ts's header
 // for why each stays enabled — so none of them belong in a capability doc.
 const FRAMEWORK_BUILTIN_TOOLS: ReadonlySet<string> = new Set<string>([
   "set_language",
@@ -543,7 +527,7 @@ const FRAMEWORK_BUILTIN_TOOLS: ReadonlySet<string> = new Set<string>([
   "load_skill",
 ]);
 
-// The post-build truth check for the same section (Phase 3, Task 9 review). The
+// The post-build truth check for the same section. The
 // assembler filters each capability doc's fleet-wide tool union down to the FILES this agent
 // ships, which is cheap and runs inside the build — but a file can be present and still not
 // ship: a `disableTool()` sentinel, or an extension tool the declaration's own scope check
@@ -562,7 +546,7 @@ describe("creative agent instructions.md names only tools the build compiled", (
     const next = rest.search(/^# .+ — /mu);
     return next < 0 ? rest : rest.slice(0, next);
   })();
-  // WHAT "COMPILED" MEANS AFTER step 2 (Task 7). eve records a dynamic resolver, never its
+  // WHAT "COMPILED" MEANS AFTER the catalogue move. eve records a dynamic resolver, never its
   // entries — `dynamicTools: [{ slug: "catalogue" }]` and `tools: []` — because deciding the
   // entries at session start is the whole point of the move. So the authoritative post-build tool
   // set is what eve compiled statically PLUS what this declaration grants out of the pool,
@@ -587,7 +571,7 @@ describe("creative agent instructions.md names only tools the build compiled", (
     },
   );
 
-  // THE OTHER DIRECTION (whole-branch review, Important #2). The assertion above catches
+  // THE OTHER DIRECTION The assertion above catches
   // over-claiming only — a persona naming a tool that isn't there. The under-claim is the worse
   // half and the one that actually shipped: `commercial_who_to_contact` was compiled, callable,
   // and named nowhere, because a skill has no capability doc and the skills block printed no

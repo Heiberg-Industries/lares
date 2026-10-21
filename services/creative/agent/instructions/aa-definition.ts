@@ -1,4 +1,4 @@
-// The assembled persona, resolved at SESSION START (agent-definitions spec, Part 3).
+// The assembled persona, resolved at SESSION START (ADR-0015).
 //
 // `aa-` because eve reads this directory's entries in filename order
 // (node_modules/eve/docs/instructions.mdx). The persona must come before the clock and the
@@ -13,8 +13,8 @@
 // `assemble:check` compares against, and this resolver is the only thing that reaches the model.
 //
 // `session.started`, NOT `turn.started`. The system prompt is what the prompt cache keys on;
-// rebuilding it every turn would re-bill the whole conversation on every message. The $250
-// retry-loop incident (2026-08-14/15) is why this is a rule and not a tuning choice.
+// rebuilding it every turn would re-bill the whole conversation on every message. An
+// expensive retry-loop incident is why this is a rule and not a tuning choice.
 import { readFileSync } from "node:fs";
 
 import { defineDynamic, defineInstructions } from "eve/instructions";

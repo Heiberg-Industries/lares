@@ -1,30 +1,29 @@
 /**
  * The creative agent — the ideation agent, on eve.
  *
- * DATABASE WIRING (the highest-risk detail in this service; decided in Task 1, applied in
- * Task 7). Two connection strings, deliberately pointed at two different databases:
+ * DATABASE WIRING (the highest-risk detail in this service). Two connection strings, deliberately pointed at two different databases:
  *
- *   WORKFLOW_POSTGRES_URL = postgres://lares@db:5432/lares_agent_creative ← HER OWN database
+ *   WORKFLOW_POSTGRES_URL = postgres://lares@db:5432/lares_agent_creative ← the agent's own database
  *   DATABASE_URL = postgres://lares@db:5432/lares_state ← the shared one
  *
- * Her own workflow database, because `@workflow/world-postgres@5.0.0-beta.32` offers no
+ * Its own workflow database, because `@workflow/world-postgres@5.0.0-beta.32` offers no
  * schema override at all: the schema names `workflow` and `workflow_drizzle` are string
  * literals inside the package (`dist/drizzle/schema.d.ts` and `dist/cli.js`), and its
  * `jobPrefix`/`namespace` options prefix graphile LISTEN topics only, never tables. So a
  * second eve app on the same database is a second eve app on the SAME session store and the
- * SAME graphile queue. That is not theoretical: on 2026-08-17 exactly that arrangement made
- * The chief of staff answer a conversation the owner was having with the travel agent, and
+ * SAME graphile queue. That is not theoretical: exactly that arrangement once made
+ * one agent answer a conversation the owner was having with another, and
  * `services/box/compose.yaml` has carried the resulting standing rule ever since —
  * *"RULE FOR EVERY FUTURE EVE APP ON THIS BOX: its own workflow database, always."*
  *
  * `DATABASE_URL` staying on `lares_state` is the deliberate other half, and it is a feature,
- * not an oversight: `getPool()` (@lares/agent-kit/db) reads DATABASE_URL, so her domain
- * tables remain the ones she already has. Her `studio_runs` table stays the SAME table the
- * old agent-runtime the creative agent has been writing to, and her run history carries across the
+ * not an oversight: `getPool()` (@lares/agent-kit/db) reads DATABASE_URL, so the agent's
+ * domain tables remain the ones it already has. The `studio_runs` table stays the SAME table the
+ * old agent-runtime wrote to, and the run history carries across the
  * cutover instead of forking into an empty copy.
  *
  * All of that isolation is env-level, in compose. Nothing is passed here: `world` is the bare
- * package string, exactly as chief-of-staff's and travel agent's are.
+ * package string, exactly as chief-of-staff's is.
  */
 import { defineAgent } from "eve";
 import { definitionModel, resolveDefinitionForModel } from "@lares/agent-kit/definition-model";
@@ -39,15 +38,15 @@ import manifest from "../agent.json";
 // `assertDeclarationIntegrity` is opt-in — the kit cannot force a call, so if nobody makes
 // one the declaration enforces nothing and a broken agent.json fails only the test suite,
 // never the build. This is that call, and it lives HERE rather than in an extension the way
-// travel agent's does (agent/extensions/agent-kit/extension.ts) because the creative agent has no
-// extension until Task 5. What matters is that `eve build` evaluates this module once per
+// other agents' do (agent/extensions/agent-kit/extension.ts) because the creative agent has no
+// extension that makes it. What matters is that `eve build` evaluates this module once per
 // build, so a duplicate grant, an unknown capability, an autonomy level over an ungranted
 // capability, or an empty persona fails the BUILD rather than surfacing mid-session.
 //
 // The return value is the PARSED manifest. Nothing reads it any more — since eve 0.60 removed
 // `defineDynamic({ fallback })` there is no build-time model id to anchor, and the alias comes
 // from the definition the resolver reads per conversation. The CALL still has to happen: if
-// Task 5 adds an extension that calls this too, a second call is harmless — it is a pure
+// an extension ever calls this too, a second call is harmless — it is a pure
 // validation of the same frozen JSON — but the call must not LEAVE this file while it is the
 // only one, or the build-time gate goes with it.
 assertDeclarationIntegrity(manifest);
@@ -57,7 +56,7 @@ assertDeclarationIntegrity(manifest);
 export default defineAgent({
   // The model comes from the definition rather than a literal here, so the declaration is the
   // single place an agent's model is stated. AGENT_MODEL still wins at runtime.
-  //  step 2: the model is resolved from the definition per CONVERSATION, not frozen into
+  // The model is resolved from the definition per CONVERSATION, not frozen into
   // the image — the resolver is what a definition's model change actually reaches, at the NEXT
   // conversation, never mid-session, because prompt caches are per model. That promise is real
   // and not aspirational: the alias is pinned per SESSION, so an edit on the box is picked up by

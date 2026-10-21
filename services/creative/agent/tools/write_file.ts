@@ -1,14 +1,14 @@
 // Removes eve's built-in `write_file` tool from the harness.
 //
 // The creative agent has exactly one way to write anything down: propose an Atlas note and wait for
-// The owner's 👍. `agent.json` says so — `{"capability":"vault","scope":"write-with-confirm",
+// the owner's 👍. `agent.json` says so — `{"capability":"vault","scope":"write-with-confirm",
 // "areas":["shared"]}` with `autonomy.vault: "gated"` — and the authored `vault_*` tools
-// (Task 5's `atlas_*`, renamed under W5C-s3/s4) are what enforce it.
+// are what enforce it.
 //
 // A raw `write_file` is the same capability with the gate missing: it writes wherever it is
 // pointed, needs no approval, and is not sandboxed here, so it could put a file into the
-// Atlas mount that never passed through the confirm class the declaration promises. Her
-// persona's "you may propose saving it to the Atlas … it waits for his 👍" would then be a
+// Atlas mount that never passed through the confirm class the declaration promises. The
+// persona's "you may propose saving it to the Atlas … it waits for them to tap Approve" would then be a
 // description of one path out of two.
 //
 // eve resolves this by FILENAME. A typo does NOT fail `eve build` — verified on eve 0.32: a

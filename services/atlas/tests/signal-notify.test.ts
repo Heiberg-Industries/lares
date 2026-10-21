@@ -4,9 +4,9 @@
 // fetch — the bin script itself wires config and live network calls at import time and
 // cannot be imported by a test.
 //
-// Task 15: every atlas signal shipped as data-quality/info, and the spine's route table has
-// no row for that pair — every atlas signal was silently dropped, which is how the first
-// live tick's source-health alert was lost. `opts.key === "source-health"` is what
+// Atlas signals used to ship as data-quality/info, and the spine's route table has
+// no row for that pair, so every atlas signal was silently dropped (including the
+// source-health alert). `opts.key === "source-health"` is what
 // upgrades a notice to data-quality/warn (which DOES have a route); everything else stays
 // info via the v2 catch-all.
 import { createHash } from "node:crypto";
@@ -53,7 +53,7 @@ describe("makeSignalNotify", () => {
     }
   });
 
-  it("POSTs the spine's real /ingest schema with Bearer auth, unchanged from before this task", async () => {
+  it("POSTs the spine's real /ingest schema with Bearer auth", async () => {
     const fetchImpl = vi.fn(async () => new Response("{}", { status: 200 }));
     const notify = makeSignalNotify({
       url: "https://spine.example",

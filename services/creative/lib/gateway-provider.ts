@@ -4,9 +4,9 @@
  * identity, lazy/no-build-time secret reads).
  *
  * The creative agent uses the SHARED `/run/secrets/gateway-key`, the same file chief-of-staff reads — not a
- * key of her own the way the travel agent has `the travel agent-eve-gateway-key`. That is deliberate for the
- * port: old the creative agent ran on the agent-runtime image with the fleet's shared gateway key, and
- * giving her a budget-capped key of her own (the shape) is a separate decision with a
+ * key of its own. That is deliberate for the
+ * port: the creative agent used to run on the agent-runtime image with the fleet's shared gateway key, and
+ * giving it a budget-capped key of its own is a separate decision with a
  * LiteLLM-side change behind it, not something to smuggle in with a framework move.
  * Overridable at runtime via GATEWAY_KEY_FILE regardless.
  */

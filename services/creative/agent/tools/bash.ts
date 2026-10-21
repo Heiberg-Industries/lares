@@ -1,14 +1,13 @@
 // Removes eve's built-in `bash` tool from the harness.
 //
-// The creative agent's whole job is a brief in and a spread of ideas out: she calls the studio, relays
+// The creative agent's whole job is a brief in and a spread of ideas out: it calls the studio, relays
 // its grounding line, presents the result verbatim, and proposes an Atlas write for whatever
-// The owner keeps. Not one step of that is a shell command.
+// the owner keeps. Not one step of that is a shell command.
 //
 // The cost of leaving it on is not hypothetical. `bash` is not sandboxed here (`sandbox:
 // null`), so it runs against the container's real filesystem — including `/run/secrets`,
-// where the LiteLLM gateway key lives, and the Atlas mount, which she is supposed to reach
-// only through the store-relative `atlas_*` tools. Disabled BEFORE her own tools exist
-// (Task 5), so there is never a build in which she has a shell on a box with an Atlas mount.
+// where the LiteLLM gateway key lives, and the Atlas mount, which it is supposed to reach
+// only through the store-relative `atlas_*` tools. Disabled from the start, so there is never a build in which the agent has a shell on a box with an Atlas mount.
 //
 // eve resolves this by FILENAME. A typo does NOT fail `eve build` — verified on eve 0.32: a
 // bogus `agent/tools/bahs.ts` compiled clean (0 errors, 0 warnings) and landed in the

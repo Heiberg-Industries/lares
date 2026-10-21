@@ -13,7 +13,7 @@
  * moves to `lares_agent_creative`).
  *
  * Consequence, stated so nobody rediscovers it during the cutover: this is the SAME
- * `studio_runs` table the old agent-runtime the creative agent already writes to. Her run history
+ * `studio_runs` table the old agent-runtime wrote to. The run history
  * carries across the cutover instead of forking into a second, empty table. The table
  * therefore already exists on the box, and `ensureStudioTables` is idempotent, so no manual
  * DDL is needed for it — unlike `sql/001-eve-workflow.sql`, which does need applying by hand
@@ -34,7 +34,7 @@ export interface MiniPool { query(sql: string, params?: unknown[]): Promise<{ ro
  * Type-level proof that the inlined interface above still accepts the real thing — `getPool()`
  * from `@lares/agent-kit/db` returns a `pg.Pool`. `import type` is erased, so this costs nothing
  * at runtime and nothing in the bundle; it exists so `pnpm typecheck` fails HERE, next to the
- * interface, rather than inside Task 5's tool if a `pg` upgrade ever changes `query`'s shape.
+ * interface, rather than inside the tool if a `pg` upgrade ever changes `query`'s shape.
  */
 type Assert<T extends true> = T;
 type _PoolSatisfiesMiniPool = Assert<Pool extends MiniPool ? true : false>;
