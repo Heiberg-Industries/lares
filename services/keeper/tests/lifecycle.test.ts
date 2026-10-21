@@ -10,7 +10,7 @@ import { WorkflowStorage } from '../lib/workflow-storage.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
-import { initialCredentialRecord } from '../lib/credential-state.js';
+import { credentialRecordSchema, initialCredentialRecord } from '../lib/credential-state.js';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
 let pg:StartedPostgreSqlContainer,pool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
 const definition:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/agent.json'),'utf8')),name:'bookkeeper',role:'creative',doors:[],grants:[]};
@@ -730,7 +730,11 @@ it('reconciles explicit neutral grants, retains applied mounts during pending ch
  await l.reconcile('bookkeeper',chief);
  expect(current().environment.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE).toBe('/run/secrets/personal-microsoft-client-id');
  expect(current().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeDefined();
- const before=current();l.setCredentialState(async()=>({...initialCredentialRecord(),effectiveRevision:null,activationIntent:{targetRevision:null}}));
+ const before=current();
+ const disconnecting=credentialRecordSchema.parse({...initialCredentialRecord(),phase:'disconnecting',
+  operation:{id:'11111111-1111-4111-8111-111111111111',kind:'disconnect'},effectiveRevision:null,
+  activationIntent:{previousRevision:null,targetRevision:null,inventoryRevision:'a'.repeat(64),prepared:true,finishing:false}});
+ l.setCredentialState(async()=>disconnecting);
  await l.credentialPreflight(['bookkeeper']);await l.reconcileCredential('bookkeeper',null);
  expect(current().secrets).toEqual(before.secrets);
  for(const file of Object.values(ms).filter(file=>file!==ms.tokenKeyFile)) {

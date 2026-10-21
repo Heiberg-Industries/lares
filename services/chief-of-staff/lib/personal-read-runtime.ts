@@ -11,9 +11,9 @@ export function requirePersonalReadProxy(): string {
     return u.href;
   }catch{throw new PersonalReadError();}
 }
-function mounted(variable:string,name:string,max:number):string {
+function mounted(source:string|undefined,name:string,max:number):string {
   const path=`/run/secrets/${name}`;
-  if(process.env[variable]!==path)throw new PersonalReadError();
+  if(source!==path)throw new PersonalReadError();
   const st=lstatSync(path);
   if(!st.isFile() || st.isSymbolicLink() || st.nlink!==1 || st.size===0 || st.size>max)throw new PersonalReadError();
   const value=readFileSync(path,'utf8').trim();
@@ -25,13 +25,13 @@ export const mountedPersonalReadRuntime:PersonalReadRuntime = {
   microsoft() {
     const proxy=requirePersonalReadProxy();
     const settings=microsoftReadSettingsSchema.parse({
-      tenantId:mounted('LARES_PERSONAL_MICROSOFT_TENANT_ID_FILE','personal-microsoft-tenant-id',128),
-      clientId:mounted('LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE','personal-microsoft-client-id',256),
-      clientSecret:mounted('LARES_PERSONAL_MICROSOFT_CLIENT_SECRET_FILE','personal-microsoft-client-secret',8192),
-      tokenKeyHex:mounted('LARES_PERSONAL_MICROSOFT_TOKEN_KEY_FILE','personal-microsoft-token-key',128),
+      tenantId:mounted(process.env.LARES_PERSONAL_MICROSOFT_TENANT_ID_FILE,'personal-microsoft-tenant-id',128),
+      clientId:mounted(process.env.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE,'personal-microsoft-client-id',256),
+      clientSecret:mounted(process.env.LARES_PERSONAL_MICROSOFT_CLIENT_SECRET_FILE,'personal-microsoft-client-secret',8192),
+      tokenKeyHex:mounted(process.env.LARES_PERSONAL_MICROSOFT_TOKEN_KEY_FILE,'personal-microsoft-token-key',128),
     });
     if(process.env.TOKEN_ENC_KEY_FILE!==undefined &&
-      mounted('TOKEN_ENC_KEY_FILE','google-token-key',128)!==settings.tokenKeyHex)throw new PersonalReadError();
+      mounted(process.env.TOKEN_ENC_KEY_FILE,'google-token-key',128)!==settings.tokenKeyHex)throw new PersonalReadError();
     const dispatcher=new ProxyAgent({uri:proxy,proxyTunnel:true});
     return {settings,dispatcher,close:()=>dispatcher.close()};
   },
