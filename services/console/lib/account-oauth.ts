@@ -1,10 +1,11 @@
 /** Google data consent is separate from console sign-in, with its own callback and client. */
 import * as oidc from "openid-client";
 import { google } from "googleapis";
-import { GOOGLE_SCOPES, googleOrgClientConfig } from "./accounts";
+import { googleOrgClientConfig } from "./accounts";
 import { consoleRedirect } from "./console-oidc";
 import { accountSessionHash, type AccountFlow } from "./account-oauth-state";
 import type { AccountUpdate, TrustedAccountAdapter } from "@lares/agent-kit/account-store";
+import { personalConsentPower, googlePersonalConsentScopes, validateGooglePersonalScopes, type PersonalConsentPower } from "@lares/agent-kit/personal-consent";
 
 const ISSUER = "https://accounts.google.com";
 export function consoleOrigin(): string { return new URL(consoleRedirect()).origin; }
@@ -22,13 +23,14 @@ async function configuration(org: string, expectedClientId?: string) {
   oidc.enableNonRepudiationChecks(config);
   return { config, settings };
 }
-export async function startAccountConsent(args: { memberId: string; session: string; org: string; loginHint?: string; update?: AccountUpdate }) {
+export async function startAccountConsent(args: { memberId: string; session: string; org: string; loginHint?: string; power?: PersonalConsentPower; update?: AccountUpdate }) {
+  const power = personalConsentPower(args.power === undefined ? "read" : args.power);
   const { config, settings } = await configuration(args.org);
-  const common = { provider: "google" as const, memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
+  const common = { power, provider: "google" as const, memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
     clientId: settings.clientId, state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier() };
   const flow: AccountFlow = args.update ? { ...common, intent: "reconnect", update: { ...args.update } } : { ...common, intent: "new" };
   const url = oidc.buildAuthorizationUrl(config, { redirect_uri: accountRedirect(), response_type: "code",
-    scope: GOOGLE_SCOPES.join(" "), access_type: "offline", prompt: "consent", state: flow.state, nonce: flow.nonce,
+    scope: googlePersonalConsentScopes(power).join(" "), access_type: "offline", prompt: "consent", state: flow.state, nonce: flow.nonce,
     code_challenge: await oidc.calculatePKCECodeChallenge(flow.verifier), code_challenge_method: "S256",
     ...(args.loginHint ? { login_hint: args.loginHint } : {}) });
   return { flow, url };
@@ -36,6 +38,7 @@ export async function startAccountConsent(args: { memberId: string; session: str
 /** All resources are read through the same verified grant. No provider email links a member. */
 export async function finishAccountConsent(url: URL, flow: AccountFlow) {
   if (flow.provider !== "google") throw new Error("Consent provider refused");
+  personalConsentPower(flow.power);
   const { config, settings } = await configuration(flow.org, flow.clientId);
   const tokens = await oidc.authorizationCodeGrant(config, url, { pkceCodeVerifier: flow.verifier,
     expectedState: flow.state, expectedNonce: flow.nonce, idTokenExpected: true });
@@ -43,7 +46,7 @@ export async function finishAccountConsent(url: URL, flow: AccountFlow) {
   if (!claims || claims.iss !== ISSUER || typeof claims.sub !== "string" || !claims.sub) throw new Error("Provider identity refused");
   if (!tokens.refresh_token || !tokens.access_token || typeof tokens.scope !== "string") throw new Error("Consent incomplete");
   const scopes = tokens.scope.split(/\s+/).filter(Boolean);
-  if (GOOGLE_SCOPES.some(scope => !scopes.includes(scope))) throw new Error("Consent scopes incomplete");
+  validateGooglePersonalScopes(scopes, flow.power);
   const auth = new google.auth.OAuth2(settings.clientId, settings.clientSecret, accountRedirect());
   auth.setCredentials({ access_token: tokens.access_token, refresh_token: tokens.refresh_token });
   const mailbox = await google.gmail({ version: "v1", auth }).users.getProfile({ userId: "me" });

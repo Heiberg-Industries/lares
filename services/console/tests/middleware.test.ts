@@ -18,7 +18,7 @@ function request(path: string, method = "POST", from: string | null = origin, he
 afterEach(() => vi.unstubAllEnvs());
 
 describe("console mutation origin boundary", () => {
-  it.each(["/api/notion-proposals", "/api/credentials/notion", "/api/accounts/google/start", "/api/chat/example/eve/v1/session/one", "/agents/example/edit"])("allows authenticated public-origin requests behind the proxy: %s", async path => {
+  it.each(["/api/notion-proposals", "/api/credentials/notion", "/api/accounts/google/start", "/api/accounts/microsoft/start", "/api/chat/example/eve/v1/session/one", "/agents/example/edit"])("allows authenticated public-origin requests behind the proxy: %s", async path => {
     const middleware = await guard();
     expect((await middleware(request(path))).headers.get("x-middleware-next")).toBe("1");
 
@@ -83,4 +83,12 @@ it.each(["/api/authentication", "/api/auth/login/extra", "/api/auth/callback/ext
   const middleware = await guard();
   const response = await middleware(request(path, "GET", null, { cookie: "" }));
   expect(response.status).toBe(307);
+});
+
+it.each(["google", "microsoft"])("refuses cross-origin mail-send consent for %s before the start route", async provider => {
+  const middleware = await guard();
+  const req = new NextRequest(`http://container:3000/api/accounts/${provider}/start`, { method: "POST",
+    headers: { cookie: `lares_session=${"x".repeat(43)}`, origin: "https://attacker.example.test", "content-type": "application/x-www-form-urlencoded" },
+    body: "intent=new&power=read%2Bmail-send" });
+  expect((await middleware(req)).status).toBe(403);
 });
