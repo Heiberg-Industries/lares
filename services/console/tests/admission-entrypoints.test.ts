@@ -65,8 +65,8 @@ describe("all console member entry points guard before reading data", () => {
         expect(source).toContain('signedInEmail: async () => verify((await cookies()).get("lares_session")?.value)');
         const proxy = syntax(new URL("../lib/chat-proxy.ts", import.meta.url).pathname);
         const fn = functions(proxy).find(fn => fn.name?.text === "forwardChat")!;
-        expect(fn.body!.statements[0].getText(proxy)).toContain("await deps.signedInEmail()");
-        expect(fn.body!.statements[1].getText(proxy)).toMatch(/if \(!member\).*refuse\(401/s);
+        expect(fn.body!.statements[0].getText(proxy)).toContain("await deps.signedInMember()");
+        expect(fn.body!.statements[1].getText(proxy)).toMatch(/if \(!stableMember\).*refuse\(401/s);
       });
       continue;
     }
