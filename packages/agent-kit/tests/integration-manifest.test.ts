@@ -71,6 +71,6 @@ describe("the integration manifest", () => {
 
   it("loads a directory, skips underscored fixtures, and refuses a folder whose name is not its id", () => {
     const loaded = loadIntegrationManifests(join(ROOT, "integrations"));
-    expect(loaded.map((m) => m.id).sort()).toEqual(["google", "notion", "slack"]);
+    expect(loaded.map((m) => m.id).sort()).toEqual(["google", "microsoft", "notion", "slack"]);
   });
 });

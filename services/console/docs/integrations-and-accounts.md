@@ -1,7 +1,7 @@
 # Connections and accounts (console)
 
 The **Your membership** page (`/membership`) lets every admitted member connect, reconnect
-and disconnect their own personal Google accounts. The installation-wide **Connections** page
+and disconnect their own personal Google or Microsoft work accounts. The installation-wide **Connections** page
 (`/integrations`) remains owner-only. Its legacy mailbox list includes only the configured owner
 principal's unassociated credentials, never other members' associated personal accounts.
 
@@ -46,6 +46,51 @@ removal, including revoked, failed and reconsent accounts. A default/list legacy
 any associated row refuses the ambiguous selection rather than falling back to an older token.
 Unassociated legacy credentials retain their old behavior. No email match automatically adopts
 stored credentials or changes the installed owner configuration.
+
+## Personal Microsoft work consent
+
+Data consent uses one explicitly configured work tenant and one installation-owned data client.
+Configure `MICROSOFT_TENANT_ID_DATA_FILE`, `MICROSOFT_CLIENT_ID_DATA_FILE` and
+`MICROSOFT_CLIENT_SECRET_DATA_FILE` to mounted installation-local files (the corresponding bare
+settings are also accepted by the existing file-first reader). Neutral suggested file names are
+`microsoft-data-tenant-id`, `microsoft-data-client-id`, `microsoft-data-client-secret`.
+These are separate from the `*_CONSOLE` sign-in client. Register
+`https://<console-host>/api/accounts/microsoft/callback` on the DATA client. The fixed tenant must be
+an organisational UUID; common, organisations-wide and consumer authorities are refused.
+The internal custody alias `microsoft` is server-owned client configuration, never a member's
+organisation claim or an email-domain rule. A later runtime adapter must compare stored issuer and
+tenant against current data-client configuration before resolving credentials.
+
+This slice requests `openid offline_access User.Read Mail.Read Calendars.Read`, with no send or
+write permission. The returned grant must contain the three Graph read permissions, a refresh
+token and a signature/audience/issuer/nonce-validated ID token. The encrypted consent cookie also
+binds provider, tenant and client, and a Google cookie cannot complete Microsoft consent or vice
+versa. The exact opaque console session is locked and rechecked inside the final account/token
+transaction, including after asynchronous provider calls. Existing account/resource lifecycle
+checks also apply to reconnect; a different account or changed resources refuses the transaction.
+
+Microsoft account identity is the fixed tenant issuer, tenant UUID and validated `oid` object ID.
+The client-scoped sign-in `sub` and all addresses are never account identity or member-linking
+proof. The same delegated grant reads [`/me`](https://learn.microsoft.com/en-us/graph/api/user-get?view=graph-rest-1.0)
+and requires its object ID to equal `oid` with `userType: Member`, then reads
+[`/me/mailFolders/inbox`](https://learn.microsoft.com/en-us/graph/api/mailfolder-get?view=graph-rest-1.0)
+to verify an actual available own mailbox, and
+[`/me/calendar`](https://learn.microsoft.com/en-us/graph/api/calendar-get?view=graph-rest-1.0)
+for the signed-in user's default calendar. A stable ID and default flag are required. The trusted
+`/me` path establishes which account is targeted; the calendar owner's email is not ownership
+proof. Mailbox binding uses the object ID and calendar binding uses the returned calendar ID.
+The three reads share a fifteen-second deadline; SDK telemetry, retry and redirect middleware are excluded. No arbitrary user, mailbox or calendar path is accepted. Consumer/personal Outlook, guest accounts
+and shared mailboxes are unavailable. A missing mailbox, refused scopes or tenant admin consent
+requirement fails closed with neutral UI text; no raw Graph response reaches the page.
+
+Credentials use the existing encrypted custody and remain permanently quarantined from legacy
+credential lookup. Disconnect invalidates local account access; the member revokes the external
+Microsoft grant in their account settings separately. No MSAL cache, refresh execution, runtime
+mount, Graph tool or write action is added here. The UI truthfully reports agent use pending
+integration. The committed opt-in probe `tests/live/microsoft-account-consent.live.mts` exercises
+actual consent and all three read-only provider response checks without storing credentials.
+It has **not been run**: controlled tenant/account acceptance is deferred to the first technical
+user's guided pilot. Offline tests do not establish provider acceptance.
 
 ## Current integration boundary and manual verification
 

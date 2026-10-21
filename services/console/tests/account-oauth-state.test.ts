@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { accountSessionHash, openAccountFlow, sealAccountFlow, type AccountFlow } from "../lib/account-oauth-state";
-const flow: AccountFlow = { intent: "new", memberId: "member-a", sessionHash: accountSessionHash("opaque-session"),
+const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("opaque-session"),
   org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
 beforeEach(() => { process.env.CONSOLE_SESSION_SECRET = "test-consent-secret"; });
 describe("member account flow cookie", () => {
@@ -25,4 +25,11 @@ describe("member account flow cookie", () => {
     delete process.env.CONSOLE_SESSION_SECRET;
     await expect(sealAccountFlow(flow)).rejects.toThrow(/not configured/);
   });
+});
+
+it("strictly binds provider and work tenant in the authenticated cookie", async () => {
+ const microsoft: AccountFlow = { ...flow, provider: "microsoft", tenantId: "11111111-2222-4333-8444-555555555555" };
+ expect(await openAccountFlow(await sealAccountFlow(microsoft))).toEqual(microsoft);
+ for (const changed of [{ provider: undefined }, { provider: "other" }, { provider: "microsoft" }, { provider: "google", tenantId: microsoft.tenantId }, { provider: "microsoft", tenantId: "consumers" }])
+   await expect(sealAccountFlow({ ...flow, ...changed } as never)).rejects.toThrow();
 });
