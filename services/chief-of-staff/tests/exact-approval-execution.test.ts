@@ -252,60 +252,38 @@ describe('exact private approval execution',()=>{
   try{await expect(dismissExactDeadline(getPool(),context('resolver'),input)).rejects.toThrow();await stillOpen();}
   finally{await getPool().query('ALTER TABLE approval_asks_off RENAME TO approval_asks');}
  });
- it('cold processes rebind persisted Eve descriptors, authorize the actual responder, then execute the exact call',async()=>{
+ it('cold replay refuses a persisted deadline descriptor removed from the private catalogue',async()=>{
   const {ContextContainer}=await import(`${eveDist}context/container.js`);
   const keys=await import(`${eveDist}context/keys.js`);
-  const {dispatchDynamicToolEvent,replayDynamicSessionTools}=await import(`${eveDist}context/dynamic-tool-lifecycle.js`);
-  const ctx=new ContextContainer();ctx.set(keys.StaticModelReferenceKey,null);ctx.set(keys.SessionIdKey,'wrun_exact');ctx.set(keys.AuthKey,auth());ctx.set(keys.InitiatorAuthKey,auth());
+  const {dispatchDynamicToolEvent}=await import(`${eveDist}context/dynamic-tool-lifecycle.js`);
+  // Persist an actual native descriptor, then attempt to replay it as private history.
+  const ctx=new ContextContainer();ctx.set(keys.StaticModelReferenceKey,null);ctx.set(keys.SessionIdKey,'wrun_exact');
   const resolvers=[{slug:'catalogue',eventNames:['session.started'],events:resolver.events}];
   await dispatchDynamicToolEvent({ctx,resolvers,event:{type:'session.started',data:{}},messages:[]});
   const metadata=ctx.get(keys.SessionDynamicToolMetadataKey).filter((m:any)=>m.name==='deadline_dismiss');
-  const tool=replayDynamicSessionTools(metadata,resolvers,'wrun_exact')[0];
-  expect(await tool.approval.request(context())).toBe('user-approval');
-  const request={kind:'tool-approval',requestId:'request-1',prompt:'Dismiss filing',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],action:{kind:'tool-call',callId:'call-1',toolName:'deadline_dismiss',input}};
-  await makeApprovalRecord()['input.requested']({data:{requests:[request]}},context());
-  const payload={metadata:JSON.parse(JSON.stringify(metadata)),context:context('resolver'),input,
-   session:{state:{'eve.runtime.pendingInputBatches':[{requests:[request],responseMessages:[],responseAuthRequiredRequestIds:['request-1']}]}},
-   stepInput:{attributedInputResponses:[{auth:auth('resolver'),response:{requestId:'request-1',optionId:'approve'}}]}};
-  const child=(mode:string)=>new Promise<any>((resolve,reject)=>{
-   const p=spawn(process.execPath,['--import','tsx',fileURLToPath(new URL('./helpers/exact-approval-process.mts',import.meta.url)),mode],{
+  expect(metadata).toHaveLength(1);
+  const payload={metadata:JSON.parse(JSON.stringify(metadata)),context:context('resolver'),input};
+  const result=await new Promise<any>((resolve,reject)=>{
+   const p=spawn(process.execPath,['--import','tsx',fileURLToPath(new URL('./helpers/exact-approval-process.mts',import.meta.url)),'refuse'],{
     cwd:process.cwd(),env:{PATH:process.env.PATH,DATABASE_URL:process.env.DATABASE_URL,...env,EVE_TELEMETRY_DISABLED:'1'},stdio:['pipe','pipe','pipe']});
    let out='',err='';p.stdout.on('data',b=>out+=b);p.stderr.on('data',b=>err+=b);p.on('error',reject);
-   p.on('close',code=>code===0?resolve(JSON.parse(out)):reject(new Error(`Cold ${mode} exited ${code}: ${err} ${out}`)));
+   p.on('close',code=>code===0?resolve(JSON.parse(out)):reject(new Error(`Cold refusal exited ${code}: ${err} ${out}`)));
    p.stdin.end(JSON.stringify(payload));
   });
-  const responseProcess=await child('response');await stillOpen();
-  const executeProcess=await child('execute');
-  expect(responseProcess.pid).not.toBe(executeProcess.pid);expect(responseProcess.pid).not.toBe(process.pid);
-  expect((await getPool().query('SELECT status FROM deadlines WHERE id=$1',[input.id])).rows[0].status).toBe('dismissed');
+  expect(result).toMatchObject({refused:true});expect(result.pid).not.toBe(process.pid);await stillOpen();
  },30_000);
- it('the actual durable role tool survives callback rebinding and Eve authorizes before execution',async()=>{
-  const tools=await (resolver.events['session.started'] as any)({},context());const tool=tools.deadline_dismiss;
+ it('omits private deadlines and refuses reconstructed native approval and execution callbacks',async()=>{
+  const tools=await (resolver.events['session.started'] as any)({},context());
+  expect(tools.deadline_dismiss).toBeUndefined();expect(tools.set_language).toBeUndefined();expect(tools.remember).toBeUndefined();
+  const native=await (resolver.events['session.started'] as any)({}, {session:{id:'wrun_exact'}});
+  const tool=native.deadline_dismiss;
   const {validateDurableDynamicToolCallbacks}=await import(`${eveDist}context/dynamic-tool-lifecycle.js`);
   const owner={sessionId:'wrun_exact',scope:'session',resolverSlug:'catalogue',entryKey:'deadline_dismiss',name:'deadline_dismiss'};
   const callbacks=validateDurableDynamicToolCallbacks('deadline_dismiss',tool,owner);
-  expect(callbacks.approvalRequest).toBeDefined();expect(callbacks.approvalResponse).toBeDefined();
-  expect(await tool.approval.request(context())).toBe('user-approval');
-  const request={kind:'tool-approval',requestId:'request-1',prompt:'Dismiss filing',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],action:{kind:'tool-call',callId:'call-1',toolName:'deadline_dismiss',input}};
-  await makeApprovalRecord()['input.requested']({data:{requests:[request]}},context());
-  // Simulate loss of all framework callback bindings, then let the actual resolver rebind them.
-  const {clearDurableDynamicCallbacks}=await import(`${eveDist}tools/durable-callbacks.js`);clearDurableDynamicCallbacks('wrun_exact');
-  const rebound=(await (resolver.events['session.started'] as any)({},context('resolver'))).deadline_dismiss;
-  validateDurableDynamicToolCallbacks('deadline_dismiss',rebound,owner);
-  const {ContextContainer,contextStorage}=await import(`${eveDist}context/container.js`);
-  const {coordinateApprovalDelivery}=await import(`${eveDist}harness/approval-delivery-coordinator.js`);
-  const {getApprovalAuditState}=await import(`${eveDist}harness/approval-candidates.js`);
-  const container=new ContextContainer();container.set({name:'eve.session'},{sessionId:'wrun_exact',auth:context('resolver').session.auth,turn:context('resolver').session.turn});
-  let session={state:{'eve.runtime.pendingInputBatches':[{requests:[request],responseMessages:[],responseAuthRequiredRequestIds:['request-1']}]}};
-  let stepInput:any={attributedInputResponses:[{auth:auth('resolver'),response:{requestId:'request-1',optionId:'approve'}}]};
-  for(let n=0;n<4;n++){
-   const r=await contextStorage.run(container,()=>coordinateApprovalDelivery({session,stepInput,tools:new Map([['deadline_dismiss',rebound]])}));session=r.session;stepInput=r.stepInput;
-  }
-  expect(getApprovalAuditState(session.state).settlements).toMatchObject([{outcome:'allowed',requestId:'request-1'}]);
-  expect((await getPool().query("SELECT outcome,resolved_by_member_id FROM approval_asks WHERE call_id='call-1'")).rows[0]).toEqual({outcome:'approved',resolved_by_member_id:'member-a'});
-  expect(await rebound.execute(input,context('resolver'))).toMatchObject({dismissed:true});
-  await expect(tools.set_language.execute({language:'en'},context('resolver'))).rejects.toThrow();
-  await expect(tools.remember.execute({fact:'Must not be written'},context('resolver'))).rejects.toThrow();
-  await expect(rebound.execute({...input,reason:'Another'},context('resolver'))).rejects.toThrow();
+  expect(callbacks.approvalRequest).toBeDefined();expect(callbacks.execute).toBeDefined();
+  await expect(tool.approval.request(context())).rejects.toThrow('Conversation authority');
+  await expect(tool.execute(input,context())).rejects.toThrow('Conversation authority');
+  await expect(tool.execute(input,context('resolver'))).rejects.toThrow('Conversation authority');
+  await stillOpen();
  });
 });
