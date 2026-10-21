@@ -52,6 +52,12 @@ function stub(name: string, body = "exit 0") {
 
 /** Same shape as install-model-test.test.ts's runWithStdin: every call bakes in `--yes` — this
  *  file is about the database step alone, never screen one's own fresh-or-restore prompt. */
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
     // `--release` is load-bearing: a fresh install given none refuses with
@@ -108,7 +114,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("the database the installer creates", () => {
   it("creates the database, then applies every migration through the runner", () => {
     stub("pnpm", 'printf "%s %s\\n" "pnpm" "$*" >> "$STUB_LOG"; exit 0');
-    runWithStdin([], answers);
+    okRun(runWithStdin([], answers));
     const calls = readFileSync(log, "utf8");
     expect(calls).toMatch(/docker .*compose .*up -d .*db/);
     expect(calls).toContain("CREATE DATABASE litellm;");
@@ -146,12 +152,12 @@ describe("the database the installer creates", () => {
 
   it("treats a dry run's exit 2 as work to do, not as a failure", () => {
     stub("pnpm", 'if printf "%s" "$*" | grep -q -- --dry-run; then exit 2; fi; exit 0');
-    expect(runWithStdin(["--dry-run"], answers).code).toBe(0);
+    okRun(runWithStdin(["--dry-run"], answers));
   });
 
   it("never passes the database password as an argument", () => {
     stub("pnpm", "exit 0");
-    runWithStdin([], answers);
+    okRun(runWithStdin([], answers));
     const password = readFileSync(join(prefix, "etc/lares/secrets/database-password"), "utf8").trim();
     expect(readFileSync(log, "utf8")).not.toContain(password);
   });
@@ -183,10 +189,10 @@ describe("the database the installer creates", () => {
 
   it("is safe to run twice: the second run applies nothing and says so", () => {
     stub("pnpm", "exit 0");
-    runWithStdin([], answers);
+    okRun(runWithStdin([], answers));
     writeFileSync(log, "");
     const second = runWithStdin([], "");
-    expect(second.code).toBe(0);
+    expect(second.code, second.stderr).toBe(0);
     expect(readFileSync(log, "utf8")).not.toMatch(/CREATE DATABASE/);
   });
 

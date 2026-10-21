@@ -49,6 +49,12 @@ function stub(name: string, body = "exit 0") {
  *  after the four questions — never about screen one's own fresh-or-restore prompt, which this
  *  script would otherwise ask first (and, over a piped, non-tty stdin, refuse for lack of an
  *  answer) on every single case below. */
+/** An installer run must have succeeded; the failure message carries the installer's own stderr. */
+function okRun<T extends { code: number | null; stderr: string }>(r: T): T {
+  expect(r.code, `install.sh exited ${r.code}; stderr:\n${r.stderr}`).toBe(0);
+  return r;
+}
+
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
     // `--release` is load-bearing: a fresh install given none refuses with
@@ -99,7 +105,7 @@ describe("proving the model key before going further", () => {
   it("asks the model one real question and reports that it answered", () => {
     stub("lares-doctor", 'printf "%s\\n" "the model answered"; exit 0');
     const r = runWithStdin([], answers);
-    expect(r.code).toBe(0);
+    expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toMatch(/the model answered/);
     expect(readFileSync(log, "utf8")).toMatch(/lares-doctor .*--test-model/);
   });
@@ -115,13 +121,13 @@ describe("proving the model key before going further", () => {
 
   it("never puts the key on a command line", () => {
     stub("lares-doctor", "exit 0");
-    runWithStdin([], answers);
+    okRun(runWithStdin([], answers));
     expect(readFileSync(log, "utf8")).not.toContain("sk-disposable-fixture-only");
   });
 
   it("skips the call entirely on a dry run", () => {
     stub("lares-doctor", "exit 0");
-    runWithStdin(["--dry-run"], answers);
+    okRun(runWithStdin(["--dry-run"], answers));
     expect(readFileSync(log, "utf8")).not.toMatch(/--test-model/);
   });
 });
