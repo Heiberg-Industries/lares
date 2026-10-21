@@ -15,6 +15,7 @@
     "@lares/notion-sync": "workspace:^",
     "@lares/taste": "workspace:^",
     "@lares/ui": "workspace:*",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
     "eve": "0.60.1",
     "googleapis": "^183.0.0",
     "jose": "^6.2.12",
@@ -26,6 +27,7 @@
     "openid-client": "6.8.8"
   },
   "devDependencies": {
+    "@microsoft/microsoft-graph-types": "^2.40.0",
     "@tailwindcss/postcss": "4.3.3",
     "@testing-library/react": "16.3.3",
     "@testing-library/user-event": "14.6.7",

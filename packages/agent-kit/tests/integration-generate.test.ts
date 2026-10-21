@@ -96,7 +96,7 @@ describe("the generated connections module", () => {
     expect(connectionsByCapability.studio).toEqual(["gateway:shared"]);
     expect(connectionsByCapability.commercial).toEqual(["twenty", "gateway:shared"]);
     expect([...connections.keys()].sort()).toEqual(
-      ["gateway", "google", "karakeep", "notion",
+      ["gateway", "google", "karakeep", "microsoft", "notion",
        "readability", "signals", "slack", "telegram", "twenty"],
     );
   });
@@ -164,4 +164,12 @@ describe("the generated integration-secrets module", () => {
     };
     expect(() => integrationSecretBindings(escape)).toThrow(/not a plain lowercase name/);
   });
+});
+
+it("declares Microsoft consent metadata without widening runtime mounts or capability grants", () => {
+ const row = installation.connections.find(c => c.id === "microsoft");
+ expect(row?.custody).toBe("console");
+ expect(row?.instances[0]?.secretEnv).toBeUndefined();
+ expect(Object.values(installation.capabilities).flat()).not.toContain("microsoft");
+ expect(Object.keys(INTEGRATION_SECRET_FILES).some(key => key.startsWith("MICROSOFT_"))).toBe(false);
 });

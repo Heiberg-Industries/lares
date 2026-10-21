@@ -20,3 +20,10 @@ it('renders unavailable and neutral flash text without claiming an empty list or
  const html=renderToStaticMarkup(await MembershipPage({searchParams:Promise.resolve({error:'PRIVATE PROVIDER RESPONSE'})}));
  expect(html).toContain('Personal accounts unavailable');expect(html).not.toContain('No personal accounts');expect(html).not.toContain('PRIVATE');expect(html).not.toContain('name="intent"');
 });
+
+it('renders Microsoft account controls and escapes provider labels without exposing raw flash text',async()=>{
+ m.list.mockResolvedValue([{id:'ms-account',connectorId:'microsoft',providerAccount:{label:'<script>secret</script>'},generation:2,status:'ok'}]);
+ const html=renderToStaticMarkup(await MembershipPage({searchParams:Promise.resolve({added:'PRIVATE RAW RESPONSE'})}));
+ expect(html).toContain('/api/accounts/microsoft/start'); expect(html).toContain('Reconnect Microsoft account');
+ expect(html).toContain('Connect Microsoft work account'); expect(html).toContain('&lt;script&gt;'); expect(html).not.toContain('<script>secret</script>'); expect(html).not.toContain('PRIVATE RAW');
+});
