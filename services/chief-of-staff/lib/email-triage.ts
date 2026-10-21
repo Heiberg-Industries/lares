@@ -26,7 +26,7 @@ import { gatewayComplete } from "./llm-complete.js";
 import { detectLanguage, buildVoiceBlock, pickModel } from "./voice.js";
 import { buildReplyPrompt, type ReplyExample } from "./reply-prompt.js";
 import { selectExemplars } from "./voice-learn.js";
-import { replyRecipients } from "./reply-recipients.js";
+import { replyRecipients, ownerRecipientPosition, otherToNames, PRIVATE_REPLY_NOTE } from "./reply-recipients.js";
 import { labeledContext } from "@lares/compose-contract";
 import { twentyLookup } from "../catalogue/twenty_lookup.js";
 import { detectProposedWindow, type ProposedWindow } from "./proposed-time.js";
@@ -51,7 +51,7 @@ export type TriageResult =
   | { outcome: "fyi"; reason?: "mailing-list"; from: string; subject: string }
   | { outcome: "drafted"; from: string; subject: string; account: string; context?: Record<string, ContextStatus>;
       /** The Gmail draft just created (sql/001_baseline.sql remembers it so its recipients can be changed later). */
-      draftId?: string; threadId?: string }
+      draftId?: string; threadId?: string; draftNote?: string }
   | { outcome: "draft-pending"; from: string; subject: string; account: string };
 
 export interface EmailTriageDeps {
@@ -264,15 +264,19 @@ export async function triageOneMessage(
   // Deterministic sender pre-filter— never draft a reply to a newsletter.
   if (classifySender(from) === "automated") return { outcome: "automated", reason: "automated-sender", from, subject };
 
+  const selfEmails = [...(deps.selfEmails ?? []), account];
+  const ownerPosition = ownerRecipientPosition(msg, selfEmails);
   const raw = (await gatewayComplete(
     `Classify this inbound email as one of: needs_reply | fyi | automated.\n` +
     `"automated" = newsletters, no-reply, receipts, notifications. "fyi" = a human message that needs no reply. ` +
     `"needs_reply" = a human who expects a response.\n` +
     `Newsletters and mailing-list mail are "fyi" even when they ask questions or come from a named person. ` +
     `Mail whose only possible reply would be a request to be removed from a list is "fyi" too.\n` +
+    `When Owner recipient position is cc, use needs_reply ONLY if the message asks the owner by name or clearly expects the owner to answer; a question directed to another To recipient is fyi. ` +
+    `When it is bcc_or_list, never assume the owner should answer just because the message asks a question; use needs_reply only for a clear expectation of a private answer from the owner. ` +
     `Answer with ONLY that one word — no explanation.\n\n` +
     // The mail is somebody else's text: only ever inside a flagged block, never in prose.
-    labeledContext([{ label: "Email to classify", content: `From: ${from}\nSubject: ${subject}\n${body}`, thirdParty: true }]),
+    labeledContext([{ label: "Email to classify", content: `Owner recipient position: ${ownerPosition}\nOwner name: ${deps.ownerName ?? "unknown"}\nOther To names: ${otherToNames(msg, selfEmails).join(", ") || "none available"}\nFrom: ${from}\nSubject: ${subject}\n${body}`, thirdParty: true }]),
     { maxOutputTokens: 16 },
   )).toLowerCase();
   const matched = raw.match(/needs_reply|automated|fyi/);
@@ -280,6 +284,9 @@ export async function triageOneMessage(
   if (triage !== "needs_reply") {
     return triage === "automated" ? { outcome: "automated", reason: "model", from, subject } : { outcome: "fyi", from, subject };
   }
+
+  const recipients = replyRecipients(msg, selfEmails);
+  if (recipients.to.length === 0) return { outcome: "fyi", from, subject };
 
   // Per-thread dedup FIRST — a second inbound message on an already-drafted thread advances
   // as draft-pending (still worth a reminder ping) rather than drafting again.
@@ -397,9 +404,11 @@ export async function triageOneMessage(
     `email-triage: context for ${msg.id} (${addr}): ${Object.entries(context).map(([k, v]) => `${k}=${v}`).join(", ")}`,
   );
 
-  const closing = signatureHtml
+  const closing = (ownerPosition === "bcc_or_list"
+    ? "This is a private reply to the sender alone. Address only the sender; do not address or refer to the other recipients as participants in this reply. "
+    : "") + (signatureHtml
     ? `Do NOT write any closing line or sign-off (no "Mvh", no name) — the mailbox signature is appended automatically after your text. End with your final sentence.`
-    : `End with a short, warm closing and your first name only (e.g. "Best, <first name>"). Do NOT invent a phone number, links, or a full signature block.`;
+    : `End with a short, warm closing and your first name only (e.g. "Best, <first name>"). Do NOT invent a phone number, links, or a full signature block.`);
 
   // the one reply prompt both drafters share (lib/reply-prompt.ts) — examples first,
   // no brevity rule, contract verbatim, exact return-format line.
@@ -412,9 +421,7 @@ export async function triageOneMessage(
   );
   const { subject: replySubject, body: replyBody } = splitDraft(draft, subject);
 
-  // Everyone on the original — sender first, other To recipients, Cc kept — minus
-  // the member's own addresses. The owner edits the list in Gmail or by telling the chief of staff.
-  const recipients = replyRecipients(msg, deps.selfEmails ?? [account]);
+  // Visible owners reply to everyone; hidden/absent owners get a private sender-only draft.
   const created = await deps.gmail.draft({
     account, from: account, to: recipients.to, cc: recipients.cc, subject: replySubject, bodyText: replyBody, threadId,
     ...(origMessageId ? { inReplyTo: origMessageId } : {}),
@@ -422,14 +429,15 @@ export async function triageOneMessage(
     ...(signatureHtml ? { signatureHtml } : {}),
   });
 
-  return { outcome: "drafted", from, subject: replySubject, account, context , draftId: created.gmailDraftId, threadId: created.gmailThreadId || threadId };
+  return { outcome: "drafted", from, subject: replySubject, account, context , draftId: created.gmailDraftId, threadId: created.gmailThreadId || threadId,
+    ...(ownerPosition === "bcc_or_list" ? { draftNote: PRIVATE_REPLY_NOTE } : {}) };
 }
 
 /** Sends the informational Slack ping for a completed triage — matches the old workflow's
  *  wording, split out so the schedule can call it after recordOutcome. */
 export function notifyTextFor(result: TriageResult): string | null {
   if (result.outcome === "drafted") {
-    return `✍️ Drafted a reply to ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.`;
+    return `✍️ Drafted a reply to ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.${result.draftNote ? ` ${result.draftNote}` : ""}`;
   }
   if (result.outcome === "draft-pending") {
     return `✍️ Draft already pending for ${result.from} re "${result.subject}" in ${result.account} — review in Gmail.`;
