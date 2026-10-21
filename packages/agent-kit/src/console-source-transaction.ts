@@ -12,6 +12,8 @@ export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gate
 export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
 export interface SourceTransactionBoundary {readonly kind:'source-transaction-boundary'}
 interface BoundaryHooks {
+  started?(db:SourceDatabase):Promise<void>;
+  readyToCommit?(db:SourceDatabase):Promise<void>;
   beforeCommit(db:SourceDatabase,changes:readonly BudgetFinancialChange[]):Promise<void>;
   settled(outcome:SourceTransactionOutcome):Promise<void>;
 }
@@ -92,8 +94,15 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
     outcome='unknown';
     if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();originalOpen=true;
     try{
+      if(selected?.hooks.started)await selected.hooks.started(db);
       result=await work(db);await checkConsoleSourceDeadlines(db);
-      if(!state.retire.size&&selected){await selected.hooks.beforeCommit(db,[...financialChanges.get(db)!.values()]);await checkConsoleSourceDeadlines(db);}
+      if(!state.retire.size&&selected){
+        await selected.hooks.beforeCommit(db,[...financialChanges.get(db)!.values()]);await checkConsoleSourceDeadlines(db);
+        if(selected.hooks.readyToCommit)await selected.hooks.readyToCommit(db);
+        // Continuity observations can wait too: expiry still selects the revoke-only
+        // branch below, never a late financial COMMIT after those observations.
+        await checkConsoleSourceDeadlines(db);
+      }
     }catch(e){error=e;failed=true;}
     if(state.retire.size){
       await rollback();

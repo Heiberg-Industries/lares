@@ -359,10 +359,34 @@ fi
 
 say "the snapshot is usable: ${#DUMPS[@]} database dump(s), ${#AGENT_NAMES[@]} agent folder(s), newest database change $SNAP_NEWEST."
 
+# Custody is not part of a database backup. Missing prepared custody must never look like
+# an unprepared legacy install. Read-only, including on --dry-run; no journal file is opened.
+FINANCIAL_PREPARED=$(python3 - "$KEEPER_JSON" "$(P /var/lib/lares/budget-financial)" <<'PYFINANCIAL'
+import json, os, sys
+try:
+    config = json.load(open(sys.argv[1]))
+    if 'budgetFinancial' in config:
+        if config['budgetFinancial'] != {'directory': '/var/lib/lares/budget-financial'}:
+            raise ValueError('invalid financial binding')
+        if not os.path.isdir(sys.argv[2]) or os.path.islink(sys.argv[2]):
+            raise ValueError('prepared custody is missing')
+        print('1')
+    else:
+        if os.path.lexists(sys.argv[2]):
+            raise ValueError('unbound custody needs recovery')
+        print('0')
+except Exception:
+    sys.exit(1)
+PYFINANCIAL
+) || die 'financial custody is missing, unsafe or unbound; recovery is required before restore. Nothing was changed.' "$EX_REFUSED"
+if [ "$FINANCIAL_PREPARED" = 0 ];then
+  say 'financial custody is not configured (legacy inactive path)'
+fi
+
 # --- 8. dry run stops here ----------------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
   say "dry run: nothing on this server was changed. With these answers I would:"
-  say "  1. stop the keeper, then console, caddy and the model gateway (the database stays up)"
+  say "  1. permanently freeze any prepared financial custody, then stop the keeper, console, caddy and the model gateway (the database stays up)"
   say "  2. drop, recreate and restore these databases from the snapshot: ${DUMPS[*]}"
   say "  3. apply any newer database changes (pnpm -C services/box migrate)"
   say "  4. copy the agents, retired, taste and installation folders from the snapshot, keeping owners and modes"
@@ -389,6 +413,24 @@ midway() { # midway <what failed>
 }
 # valid_name: the last guard in front of any database command.
 valid_name() { printf '%s' "$1" | grep -Eq '^[a-z0-9_]+$'; }
+
+# A host-only action stops admission synchronously, drains the current owner boundedly,
+# fsyncs a permanent freeze under the lifetime kernel lock, then acknowledges. If the keeper
+# is unavailable, the host command must acquire that SAME lock; contention stops restore.
+if [ "$FINANCIAL_PREPARED" = 1 ];then
+  say 'permanently freezing prepared financial custody before stopping any service'
+  if ! docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" exec -T lares-keeper \
+    /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
+    if [ "$ENGINE_MODE" = image ];then
+      engine_run --ro "$KEEPER_JSON" --rw "$(P /var/lib/lares)" ../keeper/bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
+        || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+    else
+      pnpm -C "$BOX_DIR/../keeper" exec tsx bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
+        || die 'financial freeze was not durably acknowledged; no service was stopped and no database was replaced' "$EX_REFUSED"
+    fi
+  fi
+  CHANGED='financial custody is permanently frozen'
+fi
 
 say "stopping the keeper, then console, caddy and the model gateway (the database stays up)"
 docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" stop </dev/null || midway "Could not stop the keeper."
@@ -471,10 +513,23 @@ if [ -r "$HERE/vault-storage.sh" ];then
 fi
 PRESERVE_SCRATCH=0
 
-say "starting the base stack, then the keeper"
+if [ "$FINANCIAL_PREPARED" = 1 ];then
+  say 'starting the base stack and requesting keeper start; prepared financial custody remains frozen'
+else
+  say "starting the base stack, then the keeper"
+fi
 dc up -d </dev/null || midway "Could not start the base stack."
 CHANGED="$CHANGED; base stack started"
 docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" up -d </dev/null || midway "Could not start the keeper."
+if [ "$FINANCIAL_PREPARED" = 1 ];then
+  CHANGED="$CHANGED; keeper start requested (financial recovery required)"
+  say "restored snapshot $SNAPSHOT: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s)."
+  say 'Financial recovery is required. Protected custody remains permanently frozen; keeper startup refuses that custody.'
+  say 'A detached compose start does not prove keeper, runtime or spending readiness. Keep agents stopped.'
+  say 'Owner-directed reconciliation must preserve unknown liabilities and suppression, then invalidate restored console, resume and job authority before any fresh caps, keys or profiles.'
+  say 'This release does not implement that reconciliation. Do not remove custody files, rerun fresh preparation or apply agents to bypass recovery.'
+  exit "$EX_OK"
+fi
 CHANGED="$CHANGED; keeper started"
 
 # --- 11. what is left for you -------------------------------------------------------------------------------

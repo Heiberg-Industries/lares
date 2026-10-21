@@ -1,3 +1,7 @@
+import {z} from 'zod';
+import {registerAction} from '../lib/actions.js';
+import {HostFinancialJournal} from '../lib/financial-journal.js';
+import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
 import { Credentials, registerCredentialActions } from "../lib/credentials.js";
 import { CredentialFiles } from "../lib/credential-files.js";
 import { PgCredentialStore } from "../lib/credential-store.js";
@@ -46,7 +50,18 @@ async function main(): Promise<void> {
     };
     const context = { actor: "host", audit: auditor(pool) };
     const stops: Array<() => Promise<void>> = [];
+    let financialJournal:HostFinancialJournal|undefined;
     try {
+        if(config.budgetFinancial){
+            financialJournal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
+            // The startup observer is owned/released before sockets become reachable.
+            const db=await budgetPool.connect();
+            try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
+        }
+        registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
+            if(!financialJournal)throw new Error('Financial custody is not configured');
+            await financialJournal.freezeForRestore();return {frozen:true};
+        }});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
@@ -90,6 +105,7 @@ async function main(): Promise<void> {
         await pool.end();
         await budgetPool.end();
         await admin?.end();
+        financialJournal?.close();
         throw new Error("keeper: startup failed");
     }
     let stopping = false;
@@ -97,11 +113,15 @@ async function main(): Promise<void> {
         if (stopping)
             return;
         stopping = true;
+        // Stops admission synchronously before waiting for any socket/pool shutdown.
+        const drained=financialJournal?.drainForShutdown();
         for (const stop of stops)
             await stop();
         await pool.end();
         await budgetPool.end();
         await admin?.end();
+        await drained;
+        financialJournal?.close();
     };
     for (const signal of ["SIGTERM", "SIGINT"] as const)
         process.once(signal, () => {

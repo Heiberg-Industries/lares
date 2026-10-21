@@ -2,6 +2,7 @@ import {createHash} from 'node:crypto';
 import {canonicalBudgetMoney,type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,type FinancialAtom} from './financial-journal.js';
+import {verifyFinancialContinuity} from './financial-continuity.js';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const utc=(column:string)=>`to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
 /** Inactive constructor adapter. Only keeper custody can supply the journal; no runtime or
@@ -12,6 +13,8 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
     return this.journal.operation(operation,async operationId=>{
       let settled=false,proposed=false;
       const boundary=sourceTransactionBoundary({
+        started:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db);},
+        readyToCommit:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db,true);},
         beforeCommit:async(db,changes)=>{
           const atoms=await collectFinancialAtoms(db,changes);
           const proposal=this.journal.propose(operationId,atoms);proposed=true;
@@ -32,7 +35,7 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         const result=await work(boundary);
         if(!settled)throw new Error('Financial transaction did not durably settle');
         return result;
-      }finally{if(!settled)this.journal.freeze();}
+      }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
     });
   }
 }

@@ -18,6 +18,7 @@
 //      `--env-file` carries the whole set and `docker compose` has nothing left to guess.
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
+import {financialCustodyConfigSchema} from "../../keeper/lib/config.js";
 import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
 import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -114,6 +115,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   }
 
   const config = renderKeeperConfig(manifest, {
+    ...(previous.budgetFinancial?{previousBudgetFinancial:previous.budgetFinancial}:{}),
     project: at("project"),
     network: at("network"),
     subnet: at("subnet"),
@@ -190,7 +192,7 @@ function isLink(path: string): boolean {
 
 /** What the keeper.json already on this host holds that the installer does not decide: the
  *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
-function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean } {
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean;budgetFinancial?:KeeperConfig["budgetFinancial"] } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -206,9 +208,12 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
       `${path} is not valid JSON, so the provider settings in it cannot be carried over. Nothing was written and the file is untouched. Repair it, or move it aside if you accept losing those settings, then run the installer again.`,
     );
   }
+  const financial=(parsed as {budgetFinancial?:unknown}|null)?.budgetFinancial;
+  const budgetFinancial=financial===undefined?undefined:financialCustodyConfigSchema.parse(financial);
   const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: unknown } } } | null)
     ?.lifecycle?.runtime;
   return {
+    ...(budgetFinancial?{budgetFinancial}:{}),
     ...(runtime?.microsoft ? { microsoft: runtime.microsoft } : {}),
     ...(runtime?.google ? { google: runtime.google } : {}),
     ...(typeof runtime?.schedulesLive === "boolean" ? { schedulesLive: runtime.schedulesLive } : {}),

@@ -271,3 +271,25 @@ it("renderer rejects ambiguous or malformed administrator emails before writing 
     // The unreadable release would throw if validation happened after writing began.
   }
 });
+
+describe('optional prepared financial custody',()=>{
+  const binding={directory:'/var/lib/lares/budget-financial'} as const;
+  it('starts unbound and preserves only an explicitly supplied prior binding',()=>{
+    expect(renderKeeperConfig(MANIFEST,OPTS).budgetFinancial).toBeUndefined();
+    const config=renderKeeperConfig(MANIFEST,{...OPTS,previousBudgetFinancial:binding});
+    expect(config.budgetFinancial).toEqual(binding);expect(loadAsKeeperWould(config).budgetFinancial).toEqual(binding);
+  });
+  it('preserves prepared binding across a real renderer rerun and refuses invalid prior binding before writing',()=>{
+    const f=mkdtempSync(join(tmpdir(),'keeper-financial-rerun-'));dirs.push(f);
+    const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
+    writeFileSync(release,JSON.stringify(MANIFEST));
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares','lares_state','fixture-owner','owner@example.invalid','lares.example.com',''];
+    writeFileSync(live,JSON.stringify({...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding}));
+    expect(renderConfigCommand(args,()=>{})).toBe(0);expect(JSON.parse(readFileSync(out,'utf8')).budgetFinancial).toEqual(binding);
+    const before=readFileSync(out),beforeEnv=readFileSync(env);
+    for(const budgetFinancial of [null,{directory:'/etc/lares/budget-financial'},{...binding,reset:true}]){
+      writeFileSync(live,JSON.stringify({...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial}));
+      expect(()=>renderConfigCommand(args,()=>{})).toThrow();expect(readFileSync(out)).toEqual(before);expect(readFileSync(env)).toEqual(beforeEnv);
+    }
+  });
+});

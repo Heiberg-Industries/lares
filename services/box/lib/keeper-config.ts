@@ -84,6 +84,7 @@ export interface KeeperConfigOptions {
   readonly ownerHomeTz?: string;
   /** The schedules master switch of an earlier keeper.json, kept across installer runs. */
   readonly previousSchedulesLive?: boolean;
+  readonly previousBudgetFinancial?: KeeperConfig["budgetFinancial"];
 }
 
 /** Refuses (throws `ReleaseManifestInvalid`, re-thrown from `imageFor`) when the release names
@@ -105,6 +106,7 @@ export function renderKeeperConfig(
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
+    ...(opts.previousBudgetFinancial?{budgetFinancial:opts.previousBudgetFinancial}:{}),
     // Definitions resolved at runtime on neutral engine images (ADR-0015). "overlay" is the
     // older per-agent-image machinery; a fresh install is never that.
     mode: "rendered",

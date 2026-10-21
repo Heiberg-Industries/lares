@@ -5,8 +5,10 @@ import { z } from "zod";
 import { lifecycleSchema } from "./lifecycle-config.js";
 import { credentialConfigSchema } from "./credential-state.js";
 const absolute = z.string().refine(isAbsolute, "must be an absolute path");
+export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial')}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
+  budgetFinancial: financialCustodyConfigSchema.optional(),
   credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),
   // Optional protected gateway service key only. No recovery bypass or console copy.

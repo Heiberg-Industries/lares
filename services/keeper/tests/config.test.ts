@@ -111,3 +111,11 @@ it('loads digit-leading canonical Google orgs while preserving exact legacy keys
   for(const org of ['123','1acme','0','1'.repeat(32)])expect(load({[org]:client}).clients).toEqual({[org]:client});
   for(const org of ['1ac-me','1_acme','ACME','../acme','1'.repeat(33)])expect(()=>load({[org]:client})).toThrow('invalid configuration');
 });
+
+it('keeps financial custody optional and only accepts its dedicated backup-excluded path',()=>{
+  const f=fixture(),budgetFinancial={directory:'/var/lib/lares/budget-financial'};
+  writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial}));expect(loadKeeperConfig(f.file).budgetFinancial).toEqual(budgetFinancial);
+  for(const invalid of [{directory:'/etc/lares/budget-financial'},{directory:'/srv/lares/budget-financial'},{directory:budgetFinancial.directory,reset:true},{directory:budgetFinancial.directory,enabled:true}]){
+    writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial:invalid}));expect(()=>loadKeeperConfig(f.file)).toThrow('budgetFinancial');
+  }
+});
