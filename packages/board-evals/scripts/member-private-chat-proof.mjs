@@ -20,6 +20,7 @@ import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {loadDefinition} from '@lares/agent-kit/definition';
 import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
 import {run} from './proof-harness.mjs';
+import {compactionHookSource,gatewayModelSource,startGatewayFixture} from './gateway-invocation-fixture.mjs';
 const repo=resolve(fileURLToPath(new URL('../../../',import.meta.url)));
 const root=mkdtempSync(join(tmpdir(),'lares-member-chat-proof-'));
 const password='disposable-fixture-only',incarnation='11111111-1111-4111-8111-111111111111';
@@ -27,12 +28,15 @@ const key='1'.repeat(64),owner='proof-owner',a='Member-A',b='member-a',outsider=
 const canaries={owner:'OWNER_PRIVATE_CANARY',a:'MEMBER_A_INPUT_CANARY',b:'MEMBER_B_INPUT_CANARY'};
 let container,db,child,logs='',port;
 const withSend=process.env.PRIVATE_CHAT_PROOF_SEND==='1';
+const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
+let gateway;
+const observedSteps=new Set();
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise(done=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>done(p));});});
 function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',Buffer.from(key,'hex'),iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()]).toString('base64');}
 function hashOutput(path){const h=createHash('sha256');for(const file of readdirSync(join(path,'.output'),{recursive:true,withFileTypes:true}).filter(d=>d.isFile()).map(d=>join(d.parentPath,d.name)).sort()){h.update(relative(path,file));h.update(readFileSync(file));}return h.digest('hex');}
-function modelSource(role){return `
+function modelSource(role){const source = `
 import {mockModel} from 'eve/evals';
 import {appendFileSync} from 'node:fs';
 ${role==='chief-of-staff'?`import {mountedPersonalSendRuntime} from './personal-send.js';
@@ -60,7 +64,7 @@ export const gatewayModel=(_alias:string)=>scripted;
 export const gatewayUrl=()=>{throw new Error('No live gateway in proof');};
 export const gatewayKey=()=>{throw new Error('No live gateway in proof');};
 export const IDENTITY_ENCODING_HEADERS={'Accept-Encoding':'identity'};
-`;}
+`;return gatewayLane?gatewayModelSource(source):source;}
 async function stop(){if(!child)return;const process=child;child=undefined;if(process.exitCode!==null||process.signalCode!==null)return;try{globalThis.process.kill(-process.pid,'SIGKILL');}catch{try{process.kill('SIGKILL');}catch{}}await new Promise(resolve=>process.once('close',resolve));}
 async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<600;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not become healthy within60s (pid='+child.pid+', exit='+child.exitCode+', signal='+child.signalCode+'): '+logs.slice(-4000));}
 async function makeRole(role){
@@ -72,6 +76,9 @@ async function makeRole(role){
  const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
+ if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');
+   const hook=join(cwd,'agent/hooks/model-invocation.ts');writeFileSync(hook,compactionHookSource(readFileSync(hook,'utf8')));
+ }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
  const inherited=Object.fromEntries(['PATH','HOME','TMPDIR'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
  const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`};
@@ -81,6 +88,7 @@ async function makeRole(role){
  env.DATABASE_URL=container.getConnectionUri();
  const workflowName=role==='creative'?'proof_creative_workflow':'proof_chief_workflow';
  await db.query(`CREATE DATABASE ${workflowName}`);const workflowUrl=new URL(container.getConnectionUri());workflowUrl.pathname='/'+workflowName;env.WORKFLOW_POSTGRES_URL=workflowUrl.href;
+ if(gatewayLane)Object.assign(env,{GATEWAY_LANE:gatewayLane,GATEWAY_URL:gateway.url,PROOF_GATEWAY_KEY:join(root,'gateway-key'),PROOF_COMPACTION_LOG:modelLog+'.compaction'});
  const workflowDb=new Pool({connectionString:workflowUrl.href});try{await workflowDb.query(readFileSync(join(repo,'services',role,'sql/001-eve-workflow.sql'),'utf8'));}finally{await workflowDb.end();}
  const loaded=await loadDefinition({serviceDir:cwd,env});
  const address=role==='creative'?'10.0.0.8':'10.0.0.7';
@@ -100,16 +108,67 @@ const terminal=new Set(['session.completed','session.failed','session.waiting'])
 async function stream(app,member,session){const lines=[];for(let retry=0;retry<80;retry++){
  const response=await request(app,member,'GET',`eve/v1/session/${session.id}/stream?streamControlVersion=1&startIndex=${session.index}&includeTailIndex=1`,undefined,session.cookie);
  if(!response.ok){if([404,409,425,500,502,503,504].includes(response.status)){await sleep(100);continue;}throw new Error('stream '+response.status+' '+await response.text());}
- const raw=await response.text();for(const line of raw.split('\n').filter(Boolean)){const event=JSON.parse(line);lines.push(line);session.index++;if(terminal.has(event.type)){assert.notEqual(event.type,'session.failed',raw);return lines.join('\n');}}
+ const raw=await response.text();for(const line of raw.split('\n').filter(Boolean)){const event=JSON.parse(line);lines.push(line);session.index++;if(event.type==='step.started')observedSteps.add(JSON.stringify([session.id,event.data.turnId,event.data.sequence,event.data.stepIndex]));if(terminal.has(event.type)){assert.notEqual(event.type,'session.failed',raw);return lines.join('\n');}}
  await sleep(100);
  }throw new Error('Turn never completed '+logs.slice(-1800));}
 async function send(app,member,session,message){const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{message},session.cookie);assert.ok(response.ok,'continue '+response.status+' '+await response.clone().text());return stream(app,member,session);}
 const models=app=>readFileSync(app.modelLog,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
 async function denyOld(app,member,session){const before=models(app).length,providers=readFileSync(app.providerLog,'utf8');for(const [method,path,body]of [['POST',`eve/v1/session/${session.id}`,{message:'reuse old private context'}],['GET',`eve/v1/session/${session.id}/stream`,undefined],['POST',`eve/v1/session/${session.id}/compact`,{}]]){const response=await request(app,member,method,path,body,session.cookie);assert.equal(response.ok,false,`${path} revived`);}await sleep(100);assert.equal(models(app).length,before);assert.equal(readFileSync(app.providerLog,'utf8'),providers);}
+function assertGatewayScopes(app){
+  gateway.assertHealthy();
+  const scopes=()=>readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  for(const scope of scopes()){
+    assert.equal(scope.alias,'fixture-brain');assert.equal(scope.event.type,'step.started');
+    assert.ok(observedSteps.has(JSON.stringify([scope.session.id,scope.event.data.turnId,scope.event.data.sequence,scope.event.data.stepIndex])),'Scope did not capture actual emitted coordinates');
+    assert.equal(scope.session.auth.initiator.attributes.lares_purpose,'human');
+    assert.ok(['human','resolver'].includes(scope.session.auth.current.attributes.lares_purpose));
+  }
+  if(app.name==='proof-chief'&&withSend)for(const option of ['approve','cancel'])assert.ok(scopes().some(s=>s.session.auth.current.attributes.lares_purpose==='resolver'&&s.session.auth.current.attributes.lares_resume_option===option&&s.event.data.turnId===''),'Exact '+option+' resume did not preserve actual blank turn and resolver auth');
+  assert.equal(scopes().length,gateway.calls.filter(c=>c.role===app.name.replace(/^proof-/, '').replace(/^chief$/, 'chief-of-staff')).length,'Scoped model calls and actual HTTP requests differ');
+}
+async function proveGatewayInvocation(app){
+  assertGatewayScopes(app);
+  const manual=await create(app,a,'Before manual compaction');await stream(app,a,manual);
+  const beforeManual=gateway.calls.length,manualLogOffset=logs.length;
+  const response=await request(app,a,'POST',`eve/v1/session/${manual.id}/compact`,{},manual.cookie);assert.ok(response.ok);
+  await stream(app,a,manual);await sleep(50);assert.equal(gateway.calls.length,beforeManual,'Manual compaction dispatched HTTP');
+  const manualLogs=logs.slice(manualLogOffset);
+  assert.ok(manualLogs.includes('manual session compaction failed'),'Manual compaction did not report its failure');
+  const manualCause=manualLogs.includes('Model compaction requires a fresh trusted invocation')?'authored-hook':manualLogs.includes('Dynamic model selection is required before model-dependent work begins')?'no-current-model-selection':null;
+  assert.ok(manualCause,'Manual compaction failed outside the proven refusal paths');
+  console.log(app.name+': manual compaction zero HTTP; exact cause '+manualCause+(manualCause==='no-current-model-selection'?' (before authored hook)':''));
+  for(const failure of ['TRANSIENT_ERROR','STREAM_TRANSIENT_ERROR','EMPTY_RESPONSE','UNSUPPORTED_TOOL']){
+    const logOffset=logs.length;
+    const before=gateway.calls.length,attempt=await create(app,a,failure);
+    const transcript=await stream(app,a,attempt).catch(error=>String(error));
+    await sleep(200);assert.equal(gateway.calls.length,before+1,failure+' dispatched duplicate HTTP');
+    assert.ok(transcript.includes('failed')||transcript.includes('error')||transcript.includes('fresh trusted'),failure+' did not visibly fail');
+    const recovery={STREAM_TRANSIENT_ERROR:'model call failed transiently',EMPTY_RESPONSE:'empty model response; reissuing',UNSUPPORTED_TOOL:'disabling unsupported provider tool(s)'}[failure];
+    if(recovery)assert.ok(logs.slice(logOffset).includes(recovery),failure+' did not exercise actual Eve recovery');
+  }
+  const long=await create(app,a,'Before automatic compaction');await stream(app,a,long);
+  let denied=false;
+  for(let i=0;i<6;i++){
+    const before=gateway.calls.length;
+    const receiptOffset=readFileSync(app.modelLog+'.compaction','utf8').length;
+    const transcript=await send(app,a,long,'LONG '+String(i)+' '+('x'.repeat(240000))).catch(error=>String(error));
+    if(gateway.calls.length===before){
+      const receipts=readFileSync(app.modelLog+'.compaction','utf8').slice(receiptOffset).trim().split('\n').filter(Boolean).map(JSON.parse);
+      assert.ok(receipts.length>0,'Automatic refusal did not reach awaited compaction hook');
+      assert.ok(receipts.every(r=>r.sessionId===long.id&&r.event.type==='compaction.requested'&&r.error==='Model compaction requires a fresh trusted invocation'),'Compaction receipt did not identify this actual attempt and exact refusal');
+      assert.ok(transcript.includes('session.failed'),'Authored compaction refusal did not terminally stop the workflow');
+      denied=true;break;
+    }
+    assert.equal(gateway.calls.length,before+1,'Long turn dispatched duplicate HTTP');
+  }
+  assert.ok(denied,'Automatic compaction scenario never reached its awaited refusal hook');
+  assertGatewayScopes(app);console.log(app.name+': '+gatewayLane+' actual event/session scopes, cold fresh turn, exact resume, retry/recovery single dispatch and manual/automatic compaction zero HTTP PASS (no durable crash-replay claim)');
+}
 try{
  mkdirSync(join(root,'packages'),{recursive:true});symlinkSync(join(repo,'packages/agent-kit'),join(root,'packages/agent-kit'));symlinkSync(join(repo,'node_modules'),join(root,'node_modules'));mkdirSync(join(root,'vault'));writeFileSync(join(root,'vault/owner.md'),canaries.owner);writeFileSync(join(root,'password'),password);
  for(const [name,value]of [['google-token-key',key],['personal-google-proof-id','fixture-client'],['personal-google-proof-secret','fixture-secret']])writeFileSync(join(root,name),value);
  writeFileSync(join(root,'mounts.mjs'),`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const read=fs.readFileSync;const allowed=new Set(['google-token-key','personal-google-proof-id','personal-google-proof-secret']);fs.readFileSync=function(path,...args){if(typeof path==='string'&&path.startsWith('/run/secrets/')&&allowed.has(path.slice(13)))return read(${JSON.stringify(root)}+'/'+path.slice(13),...args);return read(path,...args);};syncBuiltinESMExports();`);
+ if(gatewayLane){writeFileSync(join(root,'gateway-key'),'fixture-gateway-key');gateway=await startGatewayFixture(root,gatewayLane);}
  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();db=new Pool({connectionString:container.getConnectionUri()});
  for(const name of readdirSync(join(repo,'services/box/sql')).filter(n=>/^\d{3}.*sql$/.test(n)).sort())await db.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
  await db.query("INSERT INTO orgs(id,display_name) VALUES('proof-org','Proof')");
@@ -181,7 +240,11 @@ try{
     console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
   }
   const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  const beforeCold=gatewayLane?readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id):[];
   await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
+  if(gatewayLane){const after=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id);assert.ok(after.at(-1).event.data.sequence>Math.max(...beforeCold.map(s=>s.event.data.sequence)),'Cold fresh human turn reused previous sequence');assert.ok(after.at(-1).event.data.turnId,'Cold fresh human turn did not retain actual nonempty turn');}
+
+  if(gatewayLane)await proveGatewayInvocation(app);
   const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
   const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
   const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));
@@ -195,6 +258,7 @@ try{
   if(generationPending){const refused=await request(app,a,'POST',`eve/v1/session/${renewedSession.id}`,{inputResponses:[{requestId:generationPending.request_id,optionId:'approve'}]},renewedSession.cookie);assert.equal(refused.ok,false);assert.equal(sendProof.sendCount(),generationCalls);assert.equal(models(app).length,generationModels);console.log('chief-of-staff: pending account generation approval refused before model/provider PASS');}
   const departure=await create(app,b,'Before removal');await stream(app,b,departure);await memberStore.removeMember(owner,b);await denyOld(app,b,departure);await db.query("UPDATE users SET status='active' WHERE id=$1",[b]);const rejoined=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:b},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(b,rejoined.token);await denyOld(app,b,departure);
   const oldInc=await create(app,a,'Before incarnation change');await stream(app,a,oldInc);await db.query("UPDATE agent_resources SET ownership_token='22222222-2222-4222-8222-222222222222',runtime_control_token='22222222-2222-4222-8222-222222222222' WHERE name=$1",[app.name]);await denyOld(app,a,oldInc);
+  if(gatewayLane)assertGatewayScopes(app);
   const projection=await db.query('SELECT (SELECT count(*) FROM model_steps)::int AS models,(SELECT count(*) FROM conversation_entries)::int AS entries');assert.deepEqual(projection.rows[0],{models:0,entries:0});assert.equal(readFileSync(join(root,'vault/owner.md'),'utf8'),canaries.owner);
   assert.ok(!logs.includes(canaries.owner)&&!logs.includes(canaries.a)&&!logs.includes(canaries.b));
   snapshots.push({role,modelCalls:models(app).length,providerCalls:readFileSync(app.providerLog,'utf8').trim().split('\n').filter(Boolean).length,compiledHash:outputHash});
@@ -205,4 +269,4 @@ try{
 }catch(error){writeFileSync(join(root,'server.log'),logs);console.error(logs.slice(-6000));throw error;}finally{await stop();
  // Eve's session sandboxes outlive its server. Remove only exact synthetic session labels.
  for(const id of ownedSessionIds){try{const ids=execFileSync('docker',['ps','-aq','--filter','label=eve.sandbox=1','--filter',`label=eve.sandbox.tag.sessionId=${id}`],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(ids.length){assert.ok(ids.every(value=>/^[a-f0-9]{12,64}$/.test(value)));execFileSync('docker',['rm','-f',...ids],{stdio:'ignore'});}}catch{console.warn('Synthetic sandbox cleanup needs attention for '+id);}}
- await db?.end();await container?.stop();if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}
+ await gateway?.close();await db?.end();await container?.stop();if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}

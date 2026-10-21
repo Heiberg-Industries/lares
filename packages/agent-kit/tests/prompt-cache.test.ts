@@ -1,3 +1,4 @@
+import { captureModelInvocation, runModelInvocation } from '../src/model-invocation.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,7 +193,7 @@ describe("through gatewayModel(), two turns of one session", () => {
     const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
     const clocks = ["Now: 2026-10-15 09:14", "Now: 2026-10-15 09:31"];
     for (const [i, clock] of clocks.entries()) {
-      await generateText({ model: gatewayModel("lares-brain"), system: eveSystemFor(clock), messages: eveMessagesFor(i + 1), tools: eveTools() });
+      await runModelInvocation(captureModelInvocation({ type: 'step.started', data: { turnId: `turn-${i}`, sequence: i, stepIndex: 0 } }, { id: 'session', auth: { current: null, initiator: null } }, 'lares-brain'), () => generateText({ model: gatewayModel("lares-brain"), system: eveSystemFor(clock), messages: eveMessagesFor(i + 1), tools: eveTools() }));
     }
 
     const [first, second] = bodies as [Body, Body];
@@ -217,7 +218,7 @@ describe("through gatewayModel(), two turns of one session", () => {
     process.env["GATEWAY_LANE"] = "openai-compatible";
     fakeFetch(CHAT_REPLY);
     const { gatewayModel } = createGatewayProvider({ defaultKeyFile: keyPath });
-    await generateText({ model: gatewayModel("lares-brain"), system: eveSystemFor("Now: 09:14"), messages: eveMessagesFor(1) });
+    await runModelInvocation(captureModelInvocation({ type: 'step.started', data: { turnId: 'turn', sequence: 0, stepIndex: 0 } }, { id: 'session', auth: { current: null, initiator: null } }, 'lares-brain'), () => generateText({ model: gatewayModel("lares-brain"), system: eveSystemFor("Now: 09:14"), messages: eveMessagesFor(1) }));
 
     const [body] = bodies as [Body];
     expect(JSON.stringify(body)).not.toContain(PROMPT_CACHE_BOUNDARY);

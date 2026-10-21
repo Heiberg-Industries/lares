@@ -45,14 +45,14 @@ describe("agent definition", () => {
     const model = (await import("../agent/agent.js")).default.model as {
       events: { "step.started": (event: unknown, ctx: unknown) => Promise<{ model: { modelId?: string }; modelContextWindowTokens: number }> };
     };
-    const first = await model.events["step.started"](undefined, { session: { id: "creative-agent-model-test" } });
+    const first = await model.events["step.started"]({ type: "step.started", data: { turnId: "creative-agent-model-test-turn", sequence: 0, stepIndex: 0 } }, { session: { id: "creative-agent-model-test", auth: { current: null, initiator: null } } });
     expect(first.model).not.toBeTypeOf("string");
     expect(first.modelContextWindowTokens).toBe(200_000);
     // The env override still wins, and this file clears no environment — so the expected value
     // has to account for it, or the case goes red on any machine exporting AGENT_MODEL
     // (the owner's included).
     expect(first.model.modelId).toBe(process.env["AGENT_MODEL"] ?? declaration.model);
-    const second = await model.events["step.started"](undefined, { session: { id: "creative-agent-model-test" } });
+    const second = await model.events["step.started"]({ type: "step.started", data: { turnId: "creative-agent-model-test-turn", sequence: 0, stepIndex: 1 } }, { session: { id: "creative-agent-model-test", auth: { current: null, initiator: null } } });
     expect(second.model.modelId).toBe(first.model.modelId);
   });
 

@@ -13,6 +13,7 @@ import {verifyPrivateConsoleSession,markPrivateConsoleSurface,assertPrivateConso
 import {definitionModel} from '../src/definition-model.js';
 import {defineDurableCallback,defineDurableSchema,defineDynamic,defineTool} from 'eve/tools';
 import {z} from 'zod';
+const stepEvent=(turnId:string,stepIndex=0)=>({type:'step.started',data:{turnId,sequence:0,stepIndex}});
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(member='member-a')=>({authenticator:'lares-console',principalType:'user',principalId:member,attributes:{lares_member_id:member,lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}});
 const ctx=()=>({session:{id:'private-test',auth:{current:auth(),initiator:auth()}}});
@@ -45,15 +46,17 @@ for(const method of ['doGenerate','doStream'] as const){
    markPrivateConsoleSurface();
    const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
    const resolver=definitionModel({resolveAlias:async()=> 'private-alias',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
-   const selection=await resolver.events['step.started']!({},c as never);
+   const selection=await resolver.events['step.started']!(stepEvent('surface-'+method),c as never);
    // Later resolver failure cannot authorize an already-constructed provider.
    fake.binding.mockRejectedValue(new Error('revoked'));
-   await expect(resolver.events['step.started']!({},c as never)).rejects.toThrow('revoked');
+   await expect(resolver.events['step.started']!(stepEvent('surface-'+method,1),c as never)).rejects.toThrow('revoked');
    await expect(selection.model[method]({prompt:[]})).rejects.toThrow('revoked');expect(call).not.toHaveBeenCalled();
    fake.binding.mockResolvedValue({});
+   await expect(selection.model[method]({prompt:[]})).rejects.toThrow('fresh trusted model invocation');
+   const fresh=await resolver.events['step.started']!(stepEvent('surface-'+method,2),c as never);
    // The provider closes over the original coordinates, not this mutable resolver object.
    c.session.auth.current=auth('member-b');
-   await expect(selection.model[method]({prompt:[]})).rejects.toThrow('PROVIDER REACHED');
+   await expect(fresh.model[method]({prompt:[]})).rejects.toThrow('PROVIDER REACHED');
    expect(fake.binding.mock.calls.at(-1)?.[0].memberId).toBe('member-a');
   });
  });
@@ -61,7 +64,7 @@ for(const method of ['doGenerate','doStream'] as const){
   const storage=new ContextContainer();storage.set(keys.SessionDynamicInstructionsKey,{old:[{role:'system',content:'OWNER_CANARY'}]});
   await contextStorage.run(storage,async()=>{
    const call=vi.fn();const resolver=definitionModel({resolveAlias:async()=>{throw new Error('prompt resolver failed');},provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
-   await expect(resolver.events['step.started']!({},ctx() as never)).rejects.toThrow('Conversation authority');expect(call).not.toHaveBeenCalled();
+   await expect(resolver.events['step.started']!(stepEvent('cold-'+method),ctx() as never)).rejects.toThrow('Conversation authority');expect(call).not.toHaveBeenCalled();
   });
  });
 }

@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
+import * as privateSurface from '../src/private-console-surface.js';
+import { currentModelInvocation } from '../src/model-invocation.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS, guardDefinitionModel, resolveDefinitionForModel, assertModelDefinitionReady, pinSessionGatewayAlias, sessionGatewayModel, definitionModel } from '../src/definition-model.js';
 
+const event = { type: 'step.started', data: { turnId: 'turn-one', sequence: 0, stepIndex: 0 } };
+const session = (id: string) => ({ id, auth: { current: null, initiator: null } });
 const state = vi.hoisted(() => ({ values: new Map<string, unknown>(), reads: 0 }));
 vi.mock('eve/context', () => ({ defineState: (key: string, initial: () => unknown) => ({
   get: () => { state.reads++; return state.values.has(key) ? state.values.get(key) : initial(); },
@@ -89,8 +93,8 @@ describe('the agent model resolver', () => {
     const resolveAlias = vi.fn(async (_sessionId: string | undefined) => 'tenant-brain');
     const provider = vi.fn((alias: string) => new MockLanguageModelV3({ modelId: alias }));
     const step = stepOf(definitionModel({ resolveAlias, provider }));
-    const first = await step(undefined, { session: { id: 'session-one' } } as never);
-    const second = await step(undefined, { session: { id: 'session-one' } } as never);
+    const first = await step(event, { session: session('session-one') } as never);
+    const second = await step(event, { session: session('session-one') } as never);
     // ONE read for the conversation — the contract `session.started` used to carry.
     expect(resolveAlias.mock.calls).toEqual([['session-one']]);
     // ...and every step still rebuilds the provider from the pinned alias, because eve keeps a
@@ -101,16 +105,45 @@ describe('the agent model resolver', () => {
     expect(second.modelContextWindowTokens).toBe(200_000);
   });
 
+  it('uses the captured session and actual step event when resolver inputs change during verification', async () => {
+    let release!: () => void;
+    const verification = new Promise<void>(resolve => { release = resolve; });
+    const verify = vi.spyOn(privateSurface, 'verifyPrivateConsoleModel').mockImplementation(() => verification);
+    try {
+      const context = { session: session('original-session') };
+      const originalEvent = { type: 'step.started', data: { turnId: 'original-turn', sequence: 2, stepIndex: 3 } };
+      const resolveAlias = vi.fn(async (_id: string | undefined) => 'fixture-brain');
+      const providerCall = vi.fn(async () => {
+        expect(currentModelInvocation()).toMatchObject({
+          session: { id: 'original-session' },
+          event: { type: 'step.started', data: { turnId: 'original-turn', sequence: 2, stepIndex: 3 } },
+        });
+        throw new Error('captured provider reached');
+      });
+      const step = stepOf(definitionModel({ resolveAlias, provider: () => new MockLanguageModelV3({ doGenerate: providerCall }) }));
+      const selected = step(originalEvent, context as never);
+      context.session.id = 'changed-session';
+      originalEvent.data.turnId = 'changed-turn';
+      originalEvent.data.sequence = 5;
+      release();
+      const selection = await selected;
+      expect(resolveAlias).toHaveBeenCalledExactlyOnceWith('original-session');
+      expect(verify).toHaveBeenCalledWith({ session: session('original-session') });
+      await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('captured provider reached');
+      expect(providerCall).toHaveBeenCalledTimes(1);
+    } finally { verify.mockRestore(); }
+  });
+
   it('fails the step when the definition cannot be read, instead of selecting something else', async () => {
     const provider = vi.fn((alias: string) => new MockLanguageModelV3({ modelId: alias }));
     const step = stepOf(definitionModel({ resolveAlias: async () => { throw new Error('definition unreadable'); }, provider }));
-    await expect(step(undefined, { session: { id: 'session-two' } } as never)).rejects.toThrow('definition unreadable');
+    await expect(step(event, { session: session('session-two') } as never)).rejects.toThrow('definition unreadable');
     expect(provider).not.toHaveBeenCalled();
   });
 
   it('fails the step rather than pin an empty alias', async () => {
     const step = stepOf(definitionModel({ resolveAlias: async () => '  ', provider: (alias) => new MockLanguageModelV3({ modelId: alias }) }));
-    await expect(step(undefined, { session: { id: 'session-three' } } as never)).rejects.toThrow('Session gateway alias is missing');
+    await expect(step(event, { session: session('session-three') } as never)).rejects.toThrow('Session gateway alias is missing');
   });
 
   it('still refuses at the provider boundary when no definition was resolved for the session', async () => {
@@ -122,7 +155,7 @@ describe('the agent model resolver', () => {
       resolveAlias: async () => 'tenant-brain',
       provider: () => new MockLanguageModelV3({ doGenerate: call, doStream: call }),
     }));
-    const selection = await step(undefined, { session: { id: 'session-four' } } as never);
+    const selection = await step(event, { session: session('session-four') } as never);
     await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('No valid session definition');
     expect(call).not.toHaveBeenCalled();
   });

@@ -1,12 +1,20 @@
 import { verifyPrivateConsoleModel } from './private-console-surface.js';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { defineState } from 'eve/context';
-import { defineDynamic } from 'eve/tools';
+import { defineDynamic, type DynamicResolveContext } from 'eve/tools';
+export { currentModelInvocation } from './model-invocation.js';
+import { captureModelInvocation, runModelInvocation, type ModelInvocation } from './model-invocation.js';
 
 // A durable session marker, not a process-wide success flag. A repair on disk after a failed
 // resolver must not let that already-misconfigured turn run with its neutral compiled prompt.
 const ready = defineState<boolean>('lares.definition-model-ready', () => false);
 const gatewayAlias = defineState<string | null>('lares.session-gateway-alias', () => null);
+
+export const SESSION_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
+export const MODEL_COMPACTION_REFUSED = 'Model compaction requires a fresh trusted invocation';
+/** Registered as an awaited compaction.requested hook by each role. Compaction has no
+ * fresh purpose-bound invocation yet; refuse before either summary or main HTTP work. */
+export function refuseModelCompaction(): never { throw new Error(MODEL_COMPACTION_REFUSED); }
 
 /** Persist only the alias, never a provider object or credential. Bare dynamic IDs are
  * routed by Eve through Vercel, so the actual provider is selected at step scope below. */
@@ -18,10 +26,10 @@ export function pinSessionGatewayAlias(alias: string): null {
 
 /** Reconstruct the provider for the already-pinned alias; never reread the definition
  * mid-conversation. Eve permits live LanguageModel objects only at step scope. */
-export function sessionGatewayModel(provider: (alias: string) => LanguageModel, verifyAuthority: () => Promise<unknown> = async () => {}): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
+export function sessionGatewayModel(provider: (alias: string) => LanguageModel, verifyAuthority: () => Promise<unknown> = async () => {}, invocation?: ModelInvocation): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
   const alias = gatewayAlias.get();
   if (!alias) throw new Error('Session gateway alias is not pinned');
-  return { model: guardDefinitionModel(provider(alias), async () => { await assertModelDefinitionReady(); await verifyAuthority(); }), modelContextWindowTokens: 200_000 };
+  return { model: guardDefinitionModel(provider(alias), async () => { await assertModelDefinitionReady(); await verifyAuthority(); }, invocation), modelContextWindowTokens: SESSION_MODEL_CONTEXT_WINDOW_TOKENS };
 }
 
 /**
@@ -54,16 +62,18 @@ export function definitionModel(input: {
   return defineDynamic({
     events: {
       'step.started': async (
-        _event: unknown,
-        ctx?: { readonly session?: { readonly id?: string } },
+        event: unknown,
+        ctx?: DynamicResolveContext,
       ): Promise<{ model: Exclude<LanguageModel, string>; modelContextWindowTokens: number }> => {
-        // The public resolver context contains auth and session id, not turn coordinates.
-        // Copy it before closing over it: a later turn must not change a model's authority.
+        // Capture the authenticated session before awaiting: later resolver work must not
+        // change the authority closed over by this selected model.
         const authorityContext = structuredClone({ session: ctx?.session });
+        const stepEvent = structuredClone(event);
         const verifyAuthority = () => verifyPrivateConsoleModel(authorityContext);
         await verifyAuthority();
-        if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(ctx?.session?.id));
-        return sessionGatewayModel(input.provider, verifyAuthority);
+        if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(authorityContext.session?.id));
+        const invocation = captureModelInvocation(stepEvent, authorityContext.session, gatewayAlias.get()!);
+        return sessionGatewayModel(input.provider, verifyAuthority, invocation);
       },
     },
   });
@@ -100,6 +110,7 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 16_384;
 export function guardDefinitionModel(
   model: LanguageModel,
   resolveReady: () => Promise<unknown> = assertModelDefinitionReady,
+  invocation?: ModelInvocation,
 ): Exclude<LanguageModel, string> {
   if (typeof model === 'string') throw new Error('Definition fallback requires a provider model object');
   return wrapLanguageModel({
@@ -107,8 +118,14 @@ export function guardDefinitionModel(
     middleware: {
       transformParams: async ({ params }) =>
         params.maxOutputTokens === undefined ? { ...params, maxOutputTokens: DEFAULT_MAX_OUTPUT_TOKENS } : params,
-      wrapGenerate: async ({ doGenerate }) => { await resolveReady(); return doGenerate(); },
-      wrapStream: async ({ doStream }) => { await resolveReady(); return doStream(); },
+      wrapGenerate: async ({ doGenerate }) => {
+        const call = async () => { await resolveReady(); return doGenerate(); };
+        return invocation ? runModelInvocation(invocation, call) : call();
+      },
+      wrapStream: async ({ doStream }) => {
+        const call = async () => { await resolveReady(); return doStream(); };
+        return invocation ? runModelInvocation(invocation, call) : call();
+      },
     },
   });
 }

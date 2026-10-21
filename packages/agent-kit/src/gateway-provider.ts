@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { claimModelDispatch } from "./model-invocation.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
@@ -18,9 +19,10 @@ import { reshapeJsonBody, shapeAnthropicBody, stripBoundaryFromChatBody } from "
  * default, while `GATEWAY_KEY_FILE` still overrides it at runtime for every agent alike.
  *
  * When one of those caps actually bites, the gateway answers HTTP 400 with
- * `error.type: "budget_exceeded"`. Nothing in THIS file reacts to that — the fetch seams
- * below stay a plain pass-through on purpose (see `./gateway-budget.ts`'s header for why
- * throwing here would change which failure events eve emits). Recognition and the door's
+ * `error.type: "budget_exceeded"`. Responses still pass through without rewriting their
+ * errors. Before any physical request, a fresh trusted model invocation must claim its
+ * single dispatch; unscoped one-shot and background callers refuse until their adapters
+ * exist. Recognition of the gateway response and the door's
  * fixed one-sentence answer live in `./gateway-budget.ts` (`isBudgetExceeded`,
  * `GatewayBudgetExceededError`, `respondToTurnFailed`).
  */
@@ -158,10 +160,12 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
    *  bearing history; this is what once broke every model call through the old route.
    *  Also moves the system prompt's cache breakpoint to the end of the session-stable part
    *  (`./prompt-cache.ts`); a body without the boundary marker passes through untouched. */
-  const identityEncodingFetch: typeof globalThis.fetch = (input, init) => {
+  const identityEncodingFetch: typeof globalThis.fetch = async (input, init) => {
     const headers = new Headers(init?.headers);
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
-    return globalThis.fetch(input, { ...reshapeJsonBody(init, shapeAnthropicBody), headers });
+    const request = { ...reshapeJsonBody(init, shapeAnthropicBody), headers };
+    claimModelDispatch();
+    return globalThis.fetch(input, { ...request, redirect: "error" });
   };
 
   /** Builds a model on the anthropic lane — always via the LiteLLM gateway, and always through
@@ -213,7 +217,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
    *  any `headers` carrying it) is never passed to createOpenAICompatible() at all —
    *  Authorization is injected here instead, read fresh on every real request, the same
    *  place IDENTITY_ENCODING_HEADERS is already injected for the Accept-Encoding workaround.
-   *  `async` on purpose (unlike identityEncodingFetch above, which never throws): gatewayKey()
+   *  `async` on purpose: gatewayKey()
    *  throws synchronously on a missing file, and fetch's own contract is to report failure as
    *  a rejected promise, not a synchronous throw — matching how the AI SDK (and this file's own
    *  live probes) actually call it. */
@@ -222,7 +226,9 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
     headers.set("Authorization", `Bearer ${gatewayKey()}`);
     // This lane cannot carry `cache_control`; only the boundary marker is removed (`./prompt-cache.ts`).
-    return globalThis.fetch(input, { ...reshapeJsonBody(init, stripBoundaryFromChatBody), headers });
+    const request = { ...reshapeJsonBody(init, stripBoundaryFromChatBody), headers };
+    claimModelDispatch();
+    return globalThis.fetch(input, { ...request, redirect: "error" });
   };
 
   /** Builds a model on the openai-compatible lane — same gateway, same /v1 base URL, the

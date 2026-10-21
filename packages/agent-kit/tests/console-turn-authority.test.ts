@@ -299,10 +299,14 @@ it('a real revoked binding stops a cached model before either fake provider exec
  await contextStorage.run(new ContextContainer(),async()=>{
   markPrivateConsoleSurface();const call=vi.fn(async()=>{throw new Error('PROVIDER REACHED');});
   const resolver=definitionModel({resolveAlias:async()=> 'synthetic-model',provider:()=>new MockLanguageModelV3({doGenerate:call,doStream:call})});
-  const selection=await resolver.events['step.started']!({},ctx() as never);
+  const event=(stepIndex:number)=>({type:'step.started',data:{turnId:'revoked-model-turn',sequence:0,stepIndex}});
+  const selections=[await resolver.events['step.started']!(event(0),ctx() as never),await resolver.events['step.started']!(event(1),ctx() as never)];
   await db.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE session_id=$1',[tuple.sessionId]);
-  await expect(resolver.events['step.started']!({},ctx() as never)).rejects.toThrow('Conversation authority');
-  for(const method of ['doGenerate','doStream'] as const)await expect(selection.model[method]({prompt:[]})).rejects.toThrow('Conversation authority');
+  await expect(resolver.events['step.started']!(event(2),ctx() as never)).rejects.toThrow('Conversation authority');
+  for(const [index,method] of (['doGenerate','doStream'] as const).entries()){
+   await expect(selections[index].model[method]({prompt:[]})).rejects.toThrow('Conversation authority');
+   await expect(selections[index].model[method]({prompt:[]})).rejects.toThrow('fresh trusted model invocation');
+  }
   expect(call).not.toHaveBeenCalled();
  });
 });

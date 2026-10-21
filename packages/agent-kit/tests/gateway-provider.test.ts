@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { captureModelInvocation, runModelInvocation } from "../src/model-invocation.js";
 import { createGatewayProvider } from "../src/gateway-provider.js";
+
+const scoped = <T>(call: () => Promise<T>) => runModelInvocation(captureModelInvocation(
+  { type: "step.started", data: { turnId: randomUUID(), sequence: 0, stepIndex: 0 } },
+  { id: "session-fixture", auth: { current: null, initiator: null } }, "fixture-brain"), call);
 
 // Unlike the old per-agent module (one module-scope cache shared by the whole test file,
 // which needed vi.resetModules() + a dynamic import to isolate tests from each other), each
@@ -60,10 +66,10 @@ describe("createGatewayProvider", () => {
       return Promise.resolve(new Response("{}", { status: 200 }));
     });
     try {
-      await model.config.fetch!("https://gw.example.test/v1/messages", {
+      await scoped(() => model.config.fetch!("https://gw.example.test/v1/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-      });
+      }));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -83,10 +89,10 @@ describe("createGatewayProvider", () => {
       return Promise.resolve(new Response("{}", { status: 200 }));
     });
     try {
-      await model.config.fetch!("https://gw.example.test/v1/messages", {
+      await scoped(() => model.config.fetch!("https://gw.example.test/v1/messages", {
         method: "POST",
         headers: { "content-type": "application/json" },
-      });
+      }));
     } finally {
       vi.unstubAllGlobals();
     }
@@ -234,10 +240,10 @@ describe("createGatewayProvider", () => {
         return Promise.resolve(new Response("{}", { status: 200 }));
       });
       try {
-        await model.config.fetch!("https://gw.example.test/v1/chat/completions", {
+        await scoped(() => model.config.fetch!("https://gw.example.test/v1/chat/completions", {
           method: "POST",
           headers: { "content-type": "application/json" },
-        });
+        }));
       } finally {
         vi.unstubAllGlobals();
       }

@@ -86,14 +86,14 @@ describe("chief-of-staff agent config", () => {
     const model = agent.model as {
       events: { "step.started": (event: unknown, ctx: unknown) => Promise<{ model: { modelId?: string }; modelContextWindowTokens: number }> };
     };
-    const first = await model.events["step.started"](undefined, { session: { id: "agent-a-model-test" } });
+    const first = await model.events["step.started"]({ type: "step.started", data: { turnId: "agent-a-model-test-turn", sequence: 0, stepIndex: 0 } }, { session: { id: "agent-a-model-test", auth: { current: null, initiator: null } } });
     expect(first.model).not.toBeTypeOf("string");
     expect(first.modelContextWindowTokens).toBe(200_000);
     // The env override still wins, and `beforeEach` clears it — but this is spelled out rather
     // than assumed, so the case cannot go red on a machine that exports AGENT_MODEL.
     expect(first.model.modelId).toBe(process.env["AGENT_MODEL"] ?? declaration.model);
     // ...and a second step reuses the pin: same alias, no second read of the definition folder.
-    const second = await model.events["step.started"](undefined, { session: { id: "agent-a-model-test" } });
+    const second = await model.events["step.started"]({ type: "step.started", data: { turnId: "agent-a-model-test-turn", sequence: 0, stepIndex: 1 } }, { session: { id: "agent-a-model-test", auth: { current: null, initiator: null } } });
     expect(second.model.modelId).toBe(first.model.modelId);
   });
 });
