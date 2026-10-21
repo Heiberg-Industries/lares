@@ -42,8 +42,10 @@ export async function requirePersonalSendPolicy(db:PoolClient,agent:string,incar
   if(definition.name!==agent||!scopeAtLeast(grantFor(definition,'personal_mailbox')?.scope??'none','write-with-confirm'))throw new PersonalSendError();
   const policy=await db.query('SELECT allowed_capabilities FROM org_member_policy WHERE user_id=$1 FOR SHARE',[member]);
   if(!policy.rows[0]||(policy.rows[0].allowed_capabilities!==null&&!policy.rows[0].allowed_capabilities.includes('personal_mailbox')))throw new PersonalSendError();
+  const definitionAutonomy=autonomyOf(definition,'personal_mailbox');
+  if(definitionAutonomy==='never')throw new PersonalSendError();
   const board=await db.query("SELECT action,level FROM ratchet WHERE agent=$1 AND capability='personal_mailbox' AND action IN ('','send') FOR SHARE",[agent]);
-  const level=board.rows.find(r=>r.action==='send')?.level??board.rows.find(r=>r.action==='')?.level??autonomyOf(definition,'personal_mailbox');
+  const level=board.rows.find(r=>r.action==='send')?.level??board.rows.find(r=>r.action==='')?.level??definitionAutonomy;
   if(!['gated','autonomous'].includes(level))throw new PersonalSendError();
 }
 function caller(ctx:ConsoleAuthorityContext,ref:PersonalActionApprovedReference,env:NodeJS.ProcessEnv) {

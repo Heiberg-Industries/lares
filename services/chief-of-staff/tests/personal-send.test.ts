@@ -92,6 +92,25 @@ describe('personal mail current authority executor',()=>{
    if(change==='resource')await pool.query('DELETE FROM connected_resource_bindings');
    expect((await execute(ref)).state).toBe('not_dispatched');expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
  });
+ it.each([['','gated'],['','autonomous'],['send','gated'],['send','autonomous']])('definition never overrides permissive board action=%j level=%s after approval',async(action,level)=>{
+   const {ref}=await ready();
+   await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox',$1,$2,'fixture')",[action,level]);
+   await pool.query("UPDATE agent_resources SET applied_definition=$1 WHERE name='helper'",[{...def,autonomy:{personal_mailbox:'never'}}]);
+   expect((await execute(ref)).state).toBe('not_dispatched');expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();
+   expect((await stored(ref.actionId)).state).toBe('not_dispatched');
+ });
+ it('refuses a definition changed to never after the durable claim, despite a permissive send board',async()=>{
+   const {ref}=await ready();
+   await pool.query("INSERT INTO ratchet(agent,capability,action,level,updated_by) VALUES('helper','personal_mailbox','send','autonomous','fixture')");
+   const claim=actions.claimAction.bind(actions);
+   const replacement=vi.spyOn(actions,'claimAction').mockImplementationOnce(async input=>{
+     const claimed=await claim(input);expect(claimed.permit).toBeDefined();
+     await pool.query("UPDATE agent_resources SET applied_definition=$1 WHERE name='helper'",[{...def,autonomy:{personal_mailbox:'never'}}]);
+     return claimed;
+   });
+   try{expect((await execute(ref)).state).toBe('not_dispatched');}finally{replacement.mockRestore();}
+   expect(opens).not.toHaveBeenCalled();expect(sends).not.toHaveBeenCalled();expect((await stored(ref.actionId)).state).toBe('not_dispatched');
+ });
  it('does not treat resolver-only identity as a fresh human binding or executable resume',async()=>{
    const {ref}=await ready(),ctx=context(ref);
    ctx.session.auth.current={authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_purpose:'resolver'}} as never;
