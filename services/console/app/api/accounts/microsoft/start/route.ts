@@ -7,6 +7,7 @@ import { pool } from "../../../../../lib/db";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
 import { callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
 import { microsoftDataSettings, startMicrosoftAccountConsent } from "../../../../../lib/microsoft-account-oauth";
+import { personalConsentPower } from "@lares/agent-kit/personal-consent";
 export const runtime = "nodejs";
 async function handlePOST(req: Request): Promise<Response> {
   const jar = await cookies(), session = jar.get("lares_session")?.value;
@@ -21,6 +22,9 @@ async function handlePOST(req: Request): Promise<Response> {
   try {
     const form = await req.formData(), intent = form.get("intent");
     if (form.has("agent") || (intent !== "new" && intent !== "reconnect")) return fail();
+    const powers = form.getAll("power");
+    if (powers.length > 1) return fail();
+    const power = personalConsentPower(powers[0] ?? "read");
     let update;
     if (intent === "reconnect") {
       const id = form.get("accountId"), rawGeneration = form.get("generation");
@@ -30,7 +34,7 @@ async function handlePOST(req: Request): Promise<Response> {
       const account = await store.read(member.id, id), settings = microsoftDataSettings();
       if (account.connectorId !== "microsoft" || account.providerAccount.issuer !== settings.issuer || account.providerAccount.tenantId !== settings.tenantId) return fail();
     }
-    const { flow, url } = await startMicrosoftAccountConsent({ memberId: member.id, session, update });
+    const { flow, url } = await startMicrosoftAccountConsent({ memberId: member.id, session, power, update });
     const response = NextResponse.redirect(url, { status: 303 });
     response.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow), { httpOnly: true, sameSite: "lax",
       secure: origin.startsWith("https:"), path: "/api/accounts/microsoft", maxAge: ACCOUNT_FLOW_MAX_AGE });

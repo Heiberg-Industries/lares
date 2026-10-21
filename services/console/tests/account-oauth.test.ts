@@ -4,11 +4,12 @@ const api = vi.hoisted(() => ({ profile: vi.fn(), calendar: vi.fn(), setCredenti
 vi.mock("googleapis", () => ({ google: { auth: { OAuth2: class { setCredentials = api.setCredentials; } },
   gmail: () => ({ users: { getProfile: api.profile } }), calendar: () => ({ calendarList: { get: api.calendar } }) } }));
 vi.mock("../lib/db", () => ({ pool: {} }));
+import { GOOGLE_PERSONAL_READ_SCOPES, googlePersonalConsentScopes } from "@lares/agent-kit/personal-consent";
 import { GOOGLE_SCOPES } from "../lib/accounts";
 import { startAccountConsent, finishAccountConsent, callbackRedirect } from "../lib/account-oauth";
 import { accountSessionHash, type AccountFlow } from "../lib/account-oauth-state";
 const issuer = "https://accounts.google.com";
-const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
+const flow: AccountFlow = { power: "read", provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
 let claims: Record<string, unknown>, response: Record<string, unknown>, badSignature: boolean;
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -41,7 +42,8 @@ describe("Google account consent against local simulated provider", () => {
     expect(result.flow).toMatchObject({ memberId: "member-a", sessionHash: accountSessionHash("session"), clientId: "data-client", intent: "new" });
     expect(result.url.searchParams.get("client_id")).toBe("data-client");
     expect(result.url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/api/accounts/google/callback");
-    expect(result.url.searchParams.get("scope")).toContain("openid");
+    expect(result.url.searchParams.get("scope")).toBe(GOOGLE_PERSONAL_READ_SCOPES.join(" "));
+    expect(result.flow.power).toBe("read");
     expect(result.url.searchParams.get("code_challenge_method")).toBe("S256");
     for (const key of ["nonce", "state", "code_challenge"]) expect(result.url.searchParams.get(key)).toBeTruthy();
   });
@@ -66,4 +68,25 @@ describe("Google account consent against local simulated provider", () => {
     await expect(finishAccountConsent(callback(), flow)).rejects.toThrow();
   });
   it("returns to member page with encoded neutral flash text", () => { expect(callbackRedirect("https://console.example", { added: "Saved consent" })).toBe("https://console.example/membership?added=Saved+consent"); });
+});
+
+it("requests the closed send profile only after explicit selection", async () => {
+  const result = await startAccountConsent({ memberId: "member-a", session: "session", org: "example", power: "read+mail-send" });
+  expect(result.flow.power).toBe("read+mail-send");
+  expect(result.url.searchParams.get("scope")).toBe(googlePersonalConsentScopes("read+mail-send").join(" "));
+  expect(result.url.searchParams.get("scope")).not.toMatch(/compose|calendar.events|drive/);
+});
+it("accepts minimal personal read consent without email/profile/legacy permissions", async () => {
+  response = { scope: GOOGLE_PERSONAL_READ_SCOPES.join(" ") };
+  await expect(finishAccountConsent(callback(), flow)).resolves.toBeDefined();
+  await expect(finishAccountConsent(callback(), { ...flow, power: "read+mail-send" })).rejects.toThrow(/incomplete/);
+});
+it.each(["https://www.googleapis.com/auth/gmail.send", "https://www.googleapis.com/auth/gmail.compose", "https://www.googleapis.com/auth/gmail.modify", "https://mail.google.com/"])("accepts verified known send-capable scope %s without assigning engine authority", async scope => {
+  response = { scope: [...GOOGLE_PERSONAL_READ_SCOPES, scope].join(" ") };
+  const result = await finishAccountConsent(callback(), { ...flow, power: "read+mail-send" });
+  expect(result.material.scopes).toContain(scope); expect(result).not.toHaveProperty("authority");
+});
+it("refuses unknown Google scope before resource verification", async () => {
+  response = { scope: [...GOOGLE_PERSONAL_READ_SCOPES, "https://www.googleapis.com/auth/drive"].join(" ") };
+  await expect(finishAccountConsent(callback(), flow)).rejects.toThrow(); expect(api.profile).not.toHaveBeenCalled();
 });

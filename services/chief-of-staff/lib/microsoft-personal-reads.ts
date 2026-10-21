@@ -1,4 +1,5 @@
 /** Server-only delegated DATA client. No environment, email, actor, or owner fallback. */
+import { normalizeMicrosoftPersonalScopes } from '@lares/agent-kit/personal-consent';
 import * as oidc from 'openid-client';
 import { Client, AuthenticationHandler, HTTPMessageHandler, GraphError } from '@microsoft/microsoft-graph-client';
 import type { User, Message, Event, Recipient } from '@microsoft/microsoft-graph-types';
@@ -18,13 +19,8 @@ export function validateMicrosoftIdentity(settings:MicrosoftReadSettings, identi
   if(identity.issuer!==`https://login.microsoftonline.com/${settings.tenantId}/v2.0` ||
     identity.tenantId!==settings.tenantId || !uuid.test(identity.subject)) throw new PersonalReadError();
 }
-const normalize=(scopes:readonly string[])=>[...new Set(scopes.map(s=>s.replace(/^https:\/\/graph\.microsoft\.com\//,'')))].sort();
 export function microsoftReadScopes(scopes:readonly string[]) {
-  if(scopes.length>7 || scopes.some(s=>typeof s!=='string'||s.length>128))throw new PersonalReadError();
-  const normalized=normalize(scopes);
-  if(['User.Read','Mail.Read','Calendars.Read'].some(s=>!normalized.includes(s)) ||
-    normalized.some(s=>!['openid','offline_access','profile','email','User.Read','Mail.Read','Calendars.Read'].includes(s)))throw new PersonalReadError();
-  return normalized;
+  try { return normalizeMicrosoftPersonalScopes(scopes); } catch { throw new PersonalReadError(); }
 }
 function address(recipient:Recipient|undefined|null):string|null {
   const value=recipient?.emailAddress?.address;
