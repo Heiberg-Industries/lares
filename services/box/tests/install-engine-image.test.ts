@@ -41,6 +41,11 @@ function stub(name: string, body = "exit 0", runner: "pnpm" | "tsx" = "pnpm") {
   chmodSync(p, 0o755);
 }
 
+// Read a piped psql's SQL as the real one does: install.sh runs `printf 'CREATE DATABASE …' |
+// docker compose exec -T db psql …` under pipefail, so a stub that exits without reading lets the
+// printf die of SIGPIPE whenever it loses the race (only under load), and the install stops.
+const READS_PIPED_PSQL = 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0';
+
 const answers = ["lares.example.invalid", "owner@example.invalid", "A Name", "sk-disposable-fixture-only"].join("\n") + "\n";
 
 function run(args: string[], env: Record<string, string> = {}, input = answers) {
@@ -76,7 +81,7 @@ beforeEach(() => {
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, release());
   for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl", "lares-doctor"]) stub(name);
   // (a): the docker stub logs the engine's `docker run`, and lets the placeholder pnpm answer.
-  stub("docker");
+  stub("docker", READS_PIPED_PSQL);
   stub("pnpm",
     `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; ` +
     `render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac\nexit 0`);
@@ -232,7 +237,7 @@ describe("which engine image is used", () => {
 
 describe("the renderers, run for real through the translated call", () => {
   it("writes a real compose.yaml and keeper.json, and installs the gateway start script from /app", () => {
-    stub("docker", "exit 0", "tsx");
+    stub("docker", READS_PIPED_PSQL, "tsx");
     ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const compose = readFileSync(join(prefix, "opt", "lares", "compose.yaml"), "utf8");
     expect(compose).toContain(D("console"));
