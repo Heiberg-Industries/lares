@@ -290,8 +290,11 @@ export async function personalActionForRequest(db:{query(sql:string,values?:unkn
   if(!a||r.approval_call_id!==r.original_call_id||a.request_id!==input.requestId||a.tool!==PERSONAL_MAIL_SEND_TOOL||a.agent!==r.agent||
     a.acting_member_id!==r.actor_member_id||a.session_id!==r.session_id||a.payload_hash!==r.payload_hash||
     !same(a.original_authority,personalActionApprovalDescriptor(outcome(r),selection(r),a.original_authority?.policyHash)))refuse();
-  const alive=(await db.query(`SELECT $1::timestamptz>clock_timestamp() AND $2::timestamptz+($3*interval '1 millisecond')>clock_timestamp() AS alive`,[r.expires_at,a.asked_at,APPROVAL_TTL_MS])).rows[0]?.alive===true;
+  // Preserve the exact database precision for transitions that may wait after these locks.
+  const validity=(await db.query(`SELECT valid_until::text,valid_until>clock_timestamp() AS alive FROM
+    (SELECT LEAST(p.expires_at,a.asked_at+($2*interval '1 millisecond')) AS valid_until FROM personal_actions p JOIN approval_asks a ON a.call_id=p.original_call_id WHERE p.id=$1) deadline`,[r.id,APPROVAL_TTL_MS])).rows[0];
+  const alive=validity?.alive===true;
   return {reference:{actionId:r.id,payloadHash:r.payload_hash,approvalCallId:r.original_call_id,requestId:input.requestId,
     resolvedByMemberId:r.actor_member_id,policyHash:a.original_authority?.policyHash as string|undefined,selection:selection(r)} satisfies PersonalActionApprovedReference,
-    outcome:outcome(r),approvalOutcome:a.outcome as string|null,resolvedByMemberId:a.resolved_by_member_id as string|null,alive};
+    outcome:outcome(r),approvalOutcome:a.outcome as string|null,resolvedByMemberId:a.resolved_by_member_id as string|null,alive,validUntil:validity.valid_until as string};
 }

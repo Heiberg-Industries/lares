@@ -245,6 +245,30 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO org_member_policy (user_id) VALUES ($1)`,
     [FIXTURE_OWNER]),
 
+  // Financial evidence is member-scoped but survives erasure with its person metadata removed.
+  {
+    table: "budget_accounts", column: "live_member_id", value: FIXTURE_OWNER,
+    insert: async (pool) => {
+      // The member guard must see its installation account in an earlier statement.
+      // A sibling data-changing CTE shares the outer statement's snapshot.
+      await pool.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id)
+        VALUES('a1111111-1111-4111-8111-111111111111','fixture-installation','installation','a1111111-1111-4111-8111-111111111111')`);
+      await pool.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,canonical_suppression_hash,provider_suppression_hashes)
+        VALUES('a2222222-2222-4222-8222-222222222222','fixture-installation','member','a1111111-1111-4111-8111-111111111111',$1,repeat('d',64),ARRAY[repeat('e',64)])`, [FIXTURE_OWNER]);
+    },
+  },
+  row("budget_windows", "live_member_id", FIXTURE_OWNER,
+    `WITH installation_window AS (INSERT INTO budget_windows(id,account_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision)
+       VALUES('a6666666-6666-4666-8666-666666666666','a1111111-1111-4111-8111-111111111111',now(),now()+interval '1 day',0,1,0) RETURNING id)
+     INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision)
+       VALUES('a3333333-3333-4333-8333-333333333333','a2222222-2222-4222-8222-222222222222',$1,now(),now()+interval '1 day',0,1,0)`,[FIXTURE_OWNER]),
+  row("budget_gateway_bindings", "live_member_id", FIXTURE_OWNER,
+    `INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,profile_hash,maximum_liability)
+       VALUES('a4444444-4444-4444-8444-444444444444','a1111111-1111-4111-8111-111111111111','a2222222-2222-4222-8222-222222222222',$1,repeat('a',64),0,repeat('b',64),'fixture-agent',repeat('c',64),0.1)`,[FIXTURE_OWNER]),
+  row("budget_attempts", "live_member_id", FIXTURE_OWNER,
+    `INSERT INTO budget_attempts(id,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,endpoint_generation,recovery_epoch,request_hash,authority_hash,authority_reference,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,created_at,expires_at)
+       SELECT 'a5555555-5555-4555-8555-555555555555',repeat('f',64),'a1111111-1111-4111-8111-111111111111','a2222222-2222-4222-8222-222222222222','a4444444-4444-4444-8444-444444444444',$1,'a6666666-6666-4666-8666-666666666666','a3333333-3333-4333-8333-333333333333',repeat('a',64),0,0,0,0,'fixture-epoch',repeat('1',64),repeat('2',64),'{"sessionId":"fixture-private"}',repeat('c',64),0.1,1,1,t,t+interval '30 seconds' FROM(SELECT clock_timestamp() AS t)c`,[FIXTURE_OWNER]),
+
   // ── 001_baseline.sql ───────────────────────────────────────────────────────────────────
   row("proactivity_settings", "owner", FIXTURE_OWNER,
     `INSERT INTO proactivity_settings (owner, agent, door) VALUES ($1, 'fixture-agent', 'slack')`,

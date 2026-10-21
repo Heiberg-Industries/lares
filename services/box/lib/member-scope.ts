@@ -135,6 +135,10 @@ const BOX = "services/box/sql";
 const DREAM_STORE = "services/chief-of-staff/lib/dream/store.ts (runtime DDL)";
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
+  { table: "budget_accounts", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Retire authority and erase member metadata, retaining numeric liability and keyed canonical/provider replay suppression. Installation accounts name no person." },
+  { table: "budget_windows", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Erase the member link; retain immutable financial windows so old liabilities cannot reset." },
+  { table: "budget_gateway_bindings", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Revoke and redact member, agent, provider coordinates and credential fingerprint; retain opaque binding identity for late verified settlement." },
+  { table: "budget_attempts", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Retain numeric liabilities and replay suppression; erase member and raw authority/session/place references. Unknown use never becomes a refund." },
   { table: "vault_areas", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/009_vault_areas.sql`, reason: "Member-owned area metadata is retained as a retired identity; organisation-owned rows contain no person. Content erasure requires the later storage consumer." },
   { table: "vault_backing_stores", scope: "operational", createdBy: `${BOX}/009_vault_areas.sql`, reason: "Opaque backing identity, organisation and lifecycle; no filesystem or person data." },
   { table: "personal_actions", scope: "member", column: "actor_member_id", idKind: "registry", createdBy: `${BOX}/019_personal_actions.sql`, reason: "Encrypted payload and receipt are private member data; erase content but retain original-call suppression." },

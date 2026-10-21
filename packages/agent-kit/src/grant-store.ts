@@ -59,7 +59,7 @@ export class PgGrantStore {
   private async access(db:Db,name:string,lock=false):Promise<AccessRow|undefined> {
     const {rows}=await db.query<AccessRow>(`SELECT ${accessColumns} FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.agent_name=$1${lock?' FOR UPDATE OF a,d':''}`,[name]);return rows[0];
   }
-  private async evaluate(db:Db,member:Member,row:AccessRow,permission:Permission):Promise<boolean> {
+  private async evaluate(db:Db,member:Member,row:AccessRow,permission:Permission,captureExpiry?:(validUntil:string|null)=>void):Promise<boolean> {
     if(row.organisation_id!==member.organisationId||row.status!=='valid')return false;
     const owner=await currentMember(db,row.owner_member_id,{lock:'share'});
     if(!owner||owner.organisationId!==row.organisation_id||!await this.policyAllows(db,owner,row.definition))return false;
@@ -69,12 +69,13 @@ export class PgGrantStore {
     if(!definition.rowCount)return false;
     const current=await db.query('SELECT 1 FROM agent_access WHERE agent_name=$1 AND revision=$2 FOR SHARE',[row.agent_name,row.revision]);
     if(!current.rowCount)return false;
-    if(row.owner_member_id===member.id)return true;
-    const {rowCount}=await db.query(`SELECT 1 FROM resource_grants WHERE resource_kind='agent' AND resource_id=$1
+    if(row.owner_member_id===member.id){captureExpiry?.(null);return true;}
+    const {rows}=await db.query<{valid_until:string|null}>(`SELECT expires_at::text AS valid_until FROM resource_grants WHERE resource_kind='agent' AND resource_id=$1
       AND permission=$2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp())
       AND (principal_member_id=$3 OR ($4::boolean AND principal_organisation_id=$5)) LIMIT 1 FOR SHARE`,
     [row.agent_name,permission,member.id,member.role!=='restricted',member.organisationId]);
-    return !!rowCount;
+    if(!rows[0])return false;
+    captureExpiry?.(rows[0].valid_until);return true;
   }
   async can(memberId:string,resource:{kind:string;id:string},permission:string,options:{expectedRevision?:number;db?:Db}={}):Promise<boolean> {
     if(!['agent','vault-area'].includes(resource.kind)||!['use','edit'].includes(permission))return false;
@@ -91,11 +92,17 @@ export class PgGrantStore {
   }
   /** Trusted admission capture. The caller keeps its transaction open through binding/use. */
   async captureUse(memberId:string,agentName:string,options:{expectedRevision?:number;db?:Db}={}):Promise<number|undefined> {
+    return (await this.captureUseWithExpiry(memberId,agentName,options))?.accessRevision;
+  }
+  /** Exact deadline of the winning grant locked by the common evaluator. Keep this caller
+   * transaction open; later transitions must compare the deadline with the database clock.
+   * Ownership and non-expiring grants have no time deadline. */
+  async captureUseWithExpiry(memberId:string,agentName:string,options:{expectedRevision?:number;db?:Db}={}):Promise<{accessRevision:number;validUntil:string|null}|undefined> {
     return this.transaction(options.db,async db=>{
       let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof GrantStoreError)return undefined;throw e;}
-      const row=await this.access(db,agentName);
-      if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision)||!await this.evaluate(db,member,row,'use'))return undefined;
-      return Number(row.revision);
+      const row=await this.access(db,agentName);let validUntil:string|null=null;
+      if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision)||!await this.evaluate(db,member,row,'use',expiry=>{validUntil=expiry;}))return undefined;
+      return {accessRevision:Number(row.revision),validUntil};
     });
   }
   async listVisible(memberId:string,kind:string,options:{db?:Db}={}):Promise<VisibleResource[]> {
