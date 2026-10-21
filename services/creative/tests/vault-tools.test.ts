@@ -129,7 +129,7 @@ describe("the reads are UNGATED and read the shared area", () => {
   });
 
   it("list returns the store-relative index", async () => {
-    const listed = (await vaultList.execute({ area: "shared" }, ctx(slackAuth(OWNER)))) as { notes: string[]; files: number };
+    const listed = (await vaultList.execute({ area: "shared" }, ctx(null))) as { notes: string[]; files: number };
     expect(listed.notes).toEqual(["ventures/org-two.md"]);
     expect(listed.files).toBe(1);
   });

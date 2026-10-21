@@ -14,7 +14,7 @@ function awaits(node: ts.Node | undefined, names: Set<string>): boolean {
   if (ts.isAwaitExpression(node) && ts.isCallExpression(node.expression) && ts.isIdentifier(node.expression.expression) && names.has(node.expression.expression.text)) return true;
   let found = false; node.forEachChild(child => { if (awaits(child, names)) found = true; }); return found;
 }
-const guards = new Set(["verify", "requireConsolePage", "requireConsoleMember", "requireMember", "credentialActor"]);
+const guards = new Set(["verify", "requireConsolePage", "requireConsoleMember", "requireMember", "credentialActor", "sessionMember"]);
 function localGuards(source: ts.SourceFile) {
   const result = new Set(guards);
   for (const fn of functions(source)) {
@@ -65,8 +65,23 @@ describe("all console member entry points guard before reading data", () => {
         expect(source).toContain('signedInEmail: async () => verify((await cookies()).get("lares_session")?.value)');
         const proxy = syntax(new URL("../lib/chat-proxy.ts", import.meta.url).pathname);
         const fn = functions(proxy).find(fn => fn.name?.text === "forwardChat")!;
-        expect(fn.body!.statements[0].getText(proxy)).toContain("await deps.signedInEmail()");
-        expect(fn.body!.statements[1].getText(proxy)).toMatch(/if \(!member\).*refuse\(401/s);
+        expect(fn.body!.statements[0].getText(proxy)).toContain("await deps.signedInMember()");
+        expect(fn.body!.statements[1].getText(proxy)).toMatch(/if \(!stableMember\).*refuse\(401/s);
+      });
+      continue;
+    }
+    if (path === "api/accounts/google/start/route.ts" || path === "api/accounts/google/callback/route.ts") {
+      it(`consent ${path} checks the current session before account or provider work`, () => {
+        const source = readFileSync(file, "utf8");
+        const admission = source.indexOf("await sessionMember(session)");
+        expect(admission).toBeGreaterThan(0);
+        const refusal = path.includes("/start/") ? source.indexOf("if (!member || !session)") : source.indexOf("if (!session || !member || !flow");
+        expect(refusal).toBeGreaterThan(admission);
+        for (const operation of ["new PgAccountStore(", "await store.beginUpdate(", "await finishAccountConsent(", "await startAccountConsent("]) {
+          const position = source.indexOf(operation);
+          if (position !== -1) expect(position, operation).toBeGreaterThan(refusal);
+        }
+        expect(source).toMatch(/export const (?:GET|POST) = withConsoleAdmission\(/);
       });
       continue;
     }
