@@ -55,6 +55,11 @@ describe("member-scope inventory", () => {
     }
   });
 
+  it("exports and erases encrypted action content by its actor, retaining only replay suppression", () => {
+    expect(scopeOf("personal_actions")).toMatchObject({scope:"member",column:"actor_member_id",idKind:"registry"});
+    expect(scopeOf("personal_action_calls")).toMatchObject({scope:"operational"});
+  });
+
   it("records the tables that are NOT created by a numbered migration, so nobody thinks they are covered", () => {
     for (const t of ["dream_observations", "dream_preferences"]) {
       expect(scopeOf(t), t).toMatchObject({ createdBy: "services/chief-of-staff/lib/dream/store.ts (runtime DDL)" });
