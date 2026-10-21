@@ -1,3 +1,4 @@
+import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
 import {
@@ -114,19 +115,32 @@ function withConsoleMember(sessionAuth: DoorSessionAuth, supplied: string | null
  *  (`dist/src/channel/forwarded-principal.js`'s `resolveForwardedPrincipal`). So a browser cannot
  *  smuggle an identity through the body the console passes along, and the console does not have to
  *  parse that body to stop it. */
-export const basicFromSecretFile: AuthFn<Request> = (request) => {
+export const basicFromSecretFile: AuthFn<Request> = async (request) => {
   const password = routePassword();
   for (const username of ACCEPTED_USERNAMES) {
     const result = verifyHttpBasic(request.headers.get("authorization"), {
       username,
       password,
     });
-    if (result.ok) return withConsoleMember(result.sessionAuth, request.headers.get(MEMBER_HEADER));
+    if (result.ok) {
+      const legacy = withConsoleMember(result.sessionAuth, request.headers.get(MEMBER_HEADER));
+      try {
+        const attributes = await consoleRouteAdmission(request);
+        if (!attributes) return legacy;
+        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR, attributes: { ...legacy.attributes, ...attributes } };
+      } catch { return null; }
+    }
   }
   return null;
 };
 
 export default eveChannel({
+  onMessage: async (ctx) => {
+    const caller = ctx.eve.caller;
+    const tagged = caller?.attributes?.lares_member_id !== undefined;
+    if (tagged && consoleAdmission(caller)?.purpose !== "human") throw new Error("Conversation authority is not available");
+    return { auth: caller };
+  },
   auth: [
     // Open on localhost for `eve dev` and the REPL; inert under `eve start`.
     localDev(),

@@ -1,3 +1,4 @@
+import { consoleResolverOnly, guardConsoleToolContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
  *
@@ -109,6 +110,7 @@ export function humanTurnRefusal(
   lead: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
+  if (consoleResolverOnly(auth?.current)) return `${lead} This turn answers an approval; it contains no new human instruction. Nothing changed.`;
   const current = principalFromAuth(auth?.current);
   if (current.absent !== true && isAllowedPrincipal(current.authenticator, current.userId, env)) {
     return null;
@@ -180,6 +182,7 @@ export async function assertApproval(
   toolName: string,
   input: unknown,
 ): Promise<void> {
+  await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
 }

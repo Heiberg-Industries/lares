@@ -1,3 +1,7 @@
+import { randomBytes } from "node:crypto";
+import { bindConsoleSession, requireConsoleSessionBinding,
+  CONSOLE_MEMBER_ID_HEADER, CONSOLE_ADMISSION_HEADER, CONSOLE_PURPOSE_HEADER } from "@lares/agent-kit/console-turn-authority";
+import type { Member } from "@lares/agent-kit/authority-contract";
 /**
  * The console's half of web chat: one signed-in browser, one agent's own HTTP door.
  *
@@ -116,6 +120,7 @@ export interface ChatDeps {
   routePassword(): string | undefined;
   /** The signed-in console member, or null. Checked before anything else happens. */
   signedInEmail(): Promise<string | null>;
+  signedInMember(): Promise<Member | null>;
 }
 
 function refuse(status: number, message: string): Response {
@@ -181,6 +186,8 @@ export function vouchedAddress(row: Record<string, unknown> | undefined): string
 export async function forwardChat(request: Request, name: string, path: string, deps: ChatDeps): Promise<Response> {
   // 1. Signed in, or nothing happens at all. The address is kept: it is both the gate and, from
   //    the identity this request is carried out under.
+  const stableMember = await deps.signedInMember();
+  if (!stableMember) return refuse(401, "Sign in to the console to talk to an agent.");
   const member = await deps.signedInEmail();
   if (!member) return refuse(401, "Sign in to the console to talk to an agent.");
   if (member.length > MEMBER_MAX || !MEMBER_SHAPE.test(member)) {
@@ -222,7 +229,7 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // Eve authenticates the route password, not the person who owns a session. A browser may
     // continue a session only with the cookie this proxy issued when that session was created.
     const sessionId = /^eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(path)?.[1];
-    if (sessionId && !hasChatSessionCapability(request.headers.get("cookie"), password, member, name, rows[0]!.incarnation as string, sessionId)) {
+    if (sessionId && !hasChatSessionCapability(request.headers.get("cookie"), password, stableMember.id, name, rows[0]!.incarnation as string, sessionId)) {
       return refuse(403, "This conversation is not available to this signed-in member.");
     }
 
@@ -231,6 +238,14 @@ export async function forwardChat(request: Request, name: string, path: string, 
     }
     const body = isStream || request.method === "GET" ? undefined : await bounded(request.body, MAX_REQUEST_BYTES, signal);
 
+    const tuple = sessionId ? await requireConsoleSessionBinding({agent:name,incarnation:rows[0]!.incarnation as string,sessionId,memberId:stableMember.id},deps) : undefined;
+    const nonce = tuple?.admissionNonce ?? randomBytes(32).toString("base64url");
+    let purpose = isStream || request.method === "GET" ? "read" : /\/(cancel|clear|compact|reset)$/.test(path) ? "control" : "human";
+    if (body && body.length > 0 && purpose === "human") {
+      const payload = JSON.parse(new TextDecoder().decode(body)) as {message?:unknown;inputResponses?:unknown};
+      if (payload.message !== undefined && payload.inputResponses !== undefined) return refuse(400,"Send a message or an approval answer separately.");
+      if (payload.inputResponses !== undefined) purpose = "resolver";
+    }
     const headers = new Headers();
     for (const key of REQUEST_HEADERS) {
       const value = request.headers.get(key);
@@ -241,6 +256,12 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // Whatever the browser sent under this name was already dropped, because the loop only ever
     // copies the three names in REQUEST_HEADERS.
     headers.set(MEMBER_HEADER, member);
+    // Health/info never carry member authority.
+    if (path === "eve/v1/session" || sessionId) {
+      headers.set(CONSOLE_MEMBER_ID_HEADER, stableMember.id);
+      headers.set(CONSOLE_ADMISSION_HEADER, nonce);
+      headers.set(CONSOLE_PURPOSE_HEADER, purpose);
+    }
 
     const search = new URLSearchParams();
     for (const [key, shape] of Object.entries(QUERY)) {
@@ -267,7 +288,8 @@ export async function forwardChat(request: Request, name: string, path: string, 
       if (!validChatSessionId(createdSessionId)) {
         return refuse(502, "The agent did not return a usable conversation ID.");
       }
-      out.set("set-cookie", chatSessionCapabilityCookie(request, password, member, name, rows[0]!.incarnation as string, createdSessionId));
+      await bindConsoleSession({agent:name,incarnation:rows[0]!.incarnation as string,sessionId:createdSessionId,memberId:stableMember.id,admissionNonce:nonce},deps);
+      out.set("set-cookie", chatSessionCapabilityCookie(request, password, stableMember.id, name, rows[0]!.incarnation as string, createdSessionId));
     }
     if (!out.has("content-type")) out.set("content-type", "application/octet-stream");
     // The body is passed through, never read: what eve streams, the browser gets as it arrives.

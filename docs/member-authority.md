@@ -129,3 +129,39 @@ or mailbox credentials. It prints no token or provider payload. For explicit boo
 preparation only, `OIDC_PROBE_SHOW_IDENTITY=1` prints the secret-free exact identity object;
 keep that output private. Microsoft live execution remains deferred until the owner requests
 it. Neither the existence of the probe nor local simulated-provider tests proves live success.
+
+
+## Private console turn authority
+
+`013_console_turn_authority.sql` adds an immutable, durable binding for each console session:
+agent, runtime incarnation, Eve session id, server-generated admission nonce, stable member id,
+private place and singleton audience revision. It does not use the prunable
+`agent_conversations` projection as authority. Exact repeated binding is safe; changing its
+member, nonce, place or audience refuses. Reset retires it; clear and compaction retain it.
+
+The console forwards stable identity separately from its legacy approval email header. Every
+session-addressed request rechecks current membership and runtime incarnation, including
+streams, approval-only replies and controls. Browser-supplied authority headers are discarded.
+Both role services bind first-message creation from an authored `session.started` hook, which
+Eve awaits before dynamic capabilities; message-free creation is bound from the proxy's returned
+session id before issuing the browser capability. Capability signatures use the exact stable
+member id.
+
+`@lares/agent-kit/console-turn-authority` exports `requireConsoleTurnAuthority(ctx)` for trusted
+server consumers. It requires current human-message authentication, agreement with the original
+admission tuple, current designated-owner membership and a current managed runtime. It returns
+stable actor and speaker ids, the private place/audience and session/turn ids. Policy revision
+1 identifies this admission contract; it is not a fingerprint of the permission board's full
+policy. No model input can select a member or audience. Native channels, jobs, unknown sessions
+and approval resolvers cannot acquire this authority by borrowing the session initiator.
+
+All four Vault read factories validate tagged console calls before store access; filtered
+read/search/backlink calls use that stable member as their reader. Plain note listings and
+aggregate counts still have legacy scope limits. Both role catalogues check authority before
+execution and request-time approval policy evaluation, retaining Eve's durable descriptors.
+Approval-only resumes of bound console sessions fail closed until original-action authority
+is durably stored. The Waiting page keeps native Slack/Telegram ownership checks and transports
+a separate stable resolver identity without inventing a private console binding.
+
+This remains a designated-owner console slice. It does not enable second-member access to
+unscoped screens, provide complete audience filtering or claim multi-user release acceptance.
