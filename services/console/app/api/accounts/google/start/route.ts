@@ -7,6 +7,7 @@ import { pool } from "../../../../../lib/db";
 import { googleOrgClientConfig, googleOrgs, orgDomains, resolveOrgForEmail } from "../../../../../lib/accounts";
 import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
 import { startAccountConsent, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
+import { personalConsentPower } from "@lares/agent-kit/personal-consent";
 export const runtime = "nodejs";
 async function handlePOST(req: Request): Promise<Response> {
   const jar = await cookies();
@@ -29,6 +30,9 @@ async function handlePOST(req: Request): Promise<Response> {
     }
     const intent = form.get("intent");
     if (intent !== "new" && intent !== "reconnect") return fail();
+    const powers = form.getAll("power");
+    if (powers.length > 1) return fail();
+    const power = personalConsentPower(powers[0] ?? "read");
     let org: string;
     let update;
     const store = new PgAccountStore(pool);
@@ -51,7 +55,7 @@ async function handlePOST(req: Request): Promise<Response> {
       org = resolved.org;
     }
     if (!googleOrgClientConfig(org)) return fail();
-    const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, update,
+    const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, power, update,
       ...(intent === "new" ? { loginHint: String(form.get("email")).trim() } : {}) });
     const response = NextResponse.redirect(url, { status: 303 });
     response.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow), { httpOnly: true, sameSite: "lax",

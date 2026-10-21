@@ -67,7 +67,7 @@ async function claimedFixture() {
   const claim=await store.claimAction({actionId,payloadHash,approvalCallId:'approval-call',requestId:'request',
     resolvedByMemberId:selection.actorMemberId,selection});
   expect(claim.permit).toBeDefined();
-  return {store,permit:claim.permit!,query,connect,setFailure:(next:typeof failure)=>{failure=next;},
+  return {store,permit:claim.permit!,client,query,connect,setFailure:(next:typeof failure)=>{failure=next;},
     pauseConnection:()=>{
       let resume!:()=>void;
       holdConnection=new Promise<void>(resolve=>{resume=resolve;});
@@ -154,5 +154,30 @@ describe('personal action serialized storage budget without PostgreSQL',()=>{
     const f=preparationFixture();await f.store.prepareAction(s);
     expect(f.ciphertexts[0].length).toBeLessThan(262_144);
     expect(JSON.parse(crypto.decrypt(f.ciphertexts[0])).payload.body).toBe(s.payload.body);
+  });
+});
+
+
+describe('caller-owned personal action transaction',()=>{
+  it('revalidates action then approval and does not acquire another connection',async()=>{
+    const f=await claimedFixture(),before=f.connect.mock.calls.length;f.query.mockClear();
+    await f.store.validateClaimInTransaction(f.permit,f.client as never);
+    expect(f.connect).toHaveBeenCalledTimes(before);
+    expect(f.query.mock.calls[0][0]).toContain('FROM personal_actions');
+    expect(f.query.mock.calls[1][0]).toContain('FROM approval_asks');
+    await f.store.recordOutcomeInTransaction(f.permit,{state:'accepted',providerStatus:202},f.client as never);
+    expect(f.connect).toHaveBeenCalledTimes(before);
+    expect(()=>f.store.consumeClaimPermit(f.permit)).toThrow();
+    await expect(f.store.validateClaimInTransaction(f.permit,f.client as never)).rejects.toThrow();
+  });
+  it('burns the caller-owned permit synchronously even if settlement fails',async()=>{
+    const f=await claimedFixture();f.setFailure('receipt');
+    const recording=f.store.recordOutcomeInTransaction(f.permit,notDispatched,f.client as never);
+    expect(()=>f.store.consumeClaimPermit(f.permit)).toThrow();await expect(recording).rejects.toThrow();
+  });
+  it.each([{state:'accepted',providerStatus:200},{state:'accepted'},{state:'accepted',providerStatus:202,providerReceiptId:''},
+    {state:'accepted',providerStatus:202,body:'private'}])('refuses an invalid or non-closed receipt %s',async receipt=>{
+    const f=await claimedFixture();await expect(f.store.recordOutcome(f.permit,receipt as never)).rejects.toThrow();
+    expect(f.store.consumeClaimPermit(f.permit).payload.body).toBe('Body');
   });
 });

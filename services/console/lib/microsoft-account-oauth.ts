@@ -6,16 +6,16 @@ import type { AccountUpdate, TrustedAccountAdapter } from "@lares/agent-kit/acco
 import { readSecret } from "./secrets";
 import { consoleOrigin } from "./account-oauth";
 import { accountSessionHash, type AccountFlow } from "./account-oauth-state";
+import { personalConsentPower, MICROSOFT_PERSONAL_READ_SCOPES, microsoftPersonalConsentScopes, normalizeMicrosoftPersonalScopes, type PersonalConsentPower } from "@lares/agent-kit/personal-consent";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CONSUMER_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad";
 /** One server-owned client alias in this bounded slice. It is never a member organisation. */
 export const MICROSOFT_DATA_ORG = "microsoft";
-export const MICROSOFT_DATA_SCOPES = ["openid", "offline_access", "User.Read", "Mail.Read", "Calendars.Read"] as const;
+export const MICROSOFT_DATA_SCOPES = MICROSOFT_PERSONAL_READ_SCOPES;
 export class MicrosoftConsentReadError extends Error {
   constructor(readonly kind: "timeout" | "denied" | "rate-limited" | "unavailable") { super(`Microsoft consent resource verification ${kind}`); }
 }
-const DATA_SCOPES = ["User.Read", "Mail.Read", "Calendars.Read"] as const;
 export function microsoftDataSettings() {
   const tenantId = readSecret("MICROSOFT_TENANT_ID_DATA")?.trim().toLowerCase();
   const clientId = readSecret("MICROSOFT_CLIENT_ID_DATA")?.trim();
@@ -31,19 +31,21 @@ async function configuration(flow?: AccountFlow) {
   oidc.enableNonRepudiationChecks(config);
   return { config, settings };
 }
-export async function startMicrosoftAccountConsent(args: { memberId: string; session: string; update?: AccountUpdate }) {
+export async function startMicrosoftAccountConsent(args: { memberId: string; session: string; power?: PersonalConsentPower; update?: AccountUpdate }) {
+  const power = personalConsentPower(args.power === undefined ? "read" : args.power);
   const { config, settings } = await configuration();
-  const common = { provider: "microsoft" as const, tenantId: settings.tenantId, org: MICROSOFT_DATA_ORG,
+  const common = { power, provider: "microsoft" as const, tenantId: settings.tenantId, org: MICROSOFT_DATA_ORG,
     memberId: args.memberId, sessionHash: accountSessionHash(args.session), clientId: settings.clientId,
     state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier() };
   const flow: AccountFlow = args.update ? { ...common, intent: "reconnect", update: { ...args.update } } : { ...common, intent: "new" };
   const url = oidc.buildAuthorizationUrl(config, { redirect_uri: microsoftAccountRedirect(), response_type: "code",
-    scope: MICROSOFT_DATA_SCOPES.join(" "), prompt: "consent", state: flow.state, nonce: flow.nonce,
+    scope: microsoftPersonalConsentScopes(power).join(" "), prompt: "consent", state: flow.state, nonce: flow.nonce,
     code_challenge: await oidc.calculatePKCECodeChallenge(flow.verifier), code_challenge_method: "S256" });
   return { flow, url };
 }
 /** All three fixed /me paths use one delegated access token. No owner email proves ownership. */
 export async function finishMicrosoftAccountConsent(url: URL, flow: AccountFlow) {
+  personalConsentPower(flow.power);
   const { config, settings } = await configuration(flow);
   const tokens = await oidc.authorizationCodeGrant(config, url, { pkceCodeVerifier: flow.verifier,
     expectedState: flow.state, expectedNonce: flow.nonce, idTokenExpected: true });
@@ -52,8 +54,7 @@ export async function finishMicrosoftAccountConsent(url: URL, flow: AccountFlow)
     || claims.idp === "live.com" || claims.idp === `https://sts.windows.net/${CONSUMER_TENANT}/`) throw new Error("Microsoft work identity refused");
   if (!tokens.refresh_token || !tokens.access_token || typeof tokens.scope !== "string") throw new Error("Consent incomplete");
   const scopes = tokens.scope.split(/\s+/).filter(Boolean);
-  const granted = scopes.map(scope => scope.replace(/^https:\/\/graph\.microsoft\.com\//, ""));
-  if (DATA_SCOPES.some(scope => !granted.includes(scope)) || granted.some(scope => ![...MICROSOFT_DATA_SCOPES, "profile", "email"].includes(scope))) throw new Error("Consent scopes incomplete");
+  normalizeMicrosoftPersonalScopes(scopes, flow.power);
   const accessToken = tokens.access_token;
   // Keep the official SDK's authentication and transport, excluding telemetry, retries and
   // redirect middleware. Consent verification is bounded and never follows a provider redirect.
