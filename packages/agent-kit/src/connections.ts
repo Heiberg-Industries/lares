@@ -49,6 +49,14 @@ export interface ConsumerDef {
 
 const defs: ConnectionDef[] = [
   {
+    // Consent only: one fixed work DATA client, separate from console sign-in.
+    // No runtime capabilities or secretEnv entries: keeper does not mount this credential.
+    id: "microsoft",
+    label: "Microsoft work data consent (agent use pending)",
+    custody: "console",
+    instances: [{ id: "main", label: "Work data client", secrets: ["microsoft-data-tenant-id", "microsoft-data-client-id", "microsoft-data-client-secret"] }],
+  },
+  {
     id: "google",
     label: "Google (Gmail + Calendar)",
     custody: "console",

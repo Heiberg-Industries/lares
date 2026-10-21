@@ -170,6 +170,12 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   MICROSOFT_CLIENT_SECRET_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
   MICROSOFT_TENANT_ID_CONSOLE: "required(name) through readSecret(name) in services/console/lib/console-oidc.ts",
   MICROSOFT_TENANT_ID_CONSOLE_FILE: "readSecret's templated *_FILE half in services/console/lib/console-oidc.ts",
+  MICROSOFT_TENANT_ID_DATA: "readSecret helper in services/console/lib/microsoft-account-oauth.ts",
+  MICROSOFT_CLIENT_ID_DATA: "readSecret helper in services/console/lib/microsoft-account-oauth.ts",
+  MICROSOFT_CLIENT_SECRET_DATA: "readSecret helper in services/console/lib/microsoft-account-oauth.ts",
+  MICROSOFT_TENANT_ID_DATA_FILE: "readSecret templated file half in services/console/lib/microsoft-account-oauth.ts",
+  MICROSOFT_CLIENT_ID_DATA_FILE: "readSecret templated file half in services/console/lib/microsoft-account-oauth.ts",
+  MICROSOFT_CLIENT_SECRET_DATA_FILE: "readSecret templated file half in services/console/lib/microsoft-account-oauth.ts",
   CONSOLE_ALLOWED_EMAILS: "ENV_VAR_FOR.console in role principals; no longer read by console admission",
   // services/keeper/lib/compose-agents.ts's `environment` object literal WRITES these as
   // property keys for the AGENT container the keeper renders — nothing in this repository's

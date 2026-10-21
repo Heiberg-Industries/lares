@@ -364,6 +364,9 @@ importers:
       '@lares/ui':
         specifier: workspace:*
         version: link:../../packages/ui
+      '@microsoft/microsoft-graph-client':
+        specifier: ^3.0.7
+        version: 3.0.7
       eve:
         specifier: 0.60.1
         version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
@@ -392,6 +395,9 @@ importers:
         specifier: 0.35.5
         version: 0.35.5(@types/node@24.13.3)
     devDependencies:
+      '@microsoft/microsoft-graph-types':
+        specifier: ^2.40.0
+        version: 2.43.1
       '@tailwindcss/postcss':
         specifier: 4.3.3
         version: 4.3.3
@@ -1097,6 +1103,27 @@ packages:
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
+
+  '@microsoft/microsoft-graph-client@3.0.7':
+    resolution: {integrity: sha512-/AazAV/F+HK4LIywF9C+NYHcJo038zEnWkteilcxC1FM/uK/4NVGDKGrxx7nNq1ybspAroRKT4I1FHfxQzxkUw==}
+    engines: {node: '>=12.0.0'}
+    peerDependencies:
+      '@azure/identity': '*'
+      '@azure/msal-browser': '*'
+      buffer: '*'
+      stream-browserify: '*'
+    peerDependenciesMeta:
+      '@azure/identity':
+        optional: true
+      '@azure/msal-browser':
+        optional: true
+      buffer:
+        optional: true
+      stream-browserify:
+        optional: true
+
+  '@microsoft/microsoft-graph-types@2.43.1':
+    resolution: {integrity: sha512-7r3FiJYW2qTWnl+Li8GV5MzJqPiJp27hvY98kH5V/ZMzGuIOkcJqOfIpusoIQrskLDfYk5kFT8AjpeW713qcIg==}
 
   '@mixmark-io/domino@2.2.0':
     resolution: {integrity: sha512-Y28PR25bHXUg88kCV7nivXrP2Nj2RueZ3/l/jdx6J9f8J4nsEGcgX0Qe6lt7Pa+J79+kPiJU3LguR6O/6zrLOw==}
@@ -5186,6 +5213,13 @@ snapshots:
       debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
+
+  '@microsoft/microsoft-graph-client@3.0.7':
+    dependencies:
+      '@babel/runtime': 7.29.7
+      tslib: 2.8.1
+
+  '@microsoft/microsoft-graph-types@2.43.1': {}
 
   '@mixmark-io/domino@2.2.0': {}
 
