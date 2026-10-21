@@ -1,9 +1,10 @@
 # Personal connected-account persistence
 
 `PgAccountStore` stores member-owned connected-account and selected-resource metadata. It
-uses the shared `ConnectedAccountView` and `ResourceBinding` shapes. It does not store or
-resolve credentials, connect a provider, enable console routes, or claim complete multi-user
-isolation. Existing encrypted OAuth and keeper custody remain unchanged. Legacy OAuth rows
+uses the shared `ConnectedAccountView` and `ResourceBinding` shapes. It does not connect a
+provider, enable console routes, or claim complete multi-user isolation. A server-only
+association can link an explicitly verified account to its existing encrypted OAuth row.
+Existing encrypted OAuth and keeper custody remain unchanged. Legacy OAuth rows
 are never adopted by matching an email or display label.
 
 A trusted server adapter supplies account and resource verifiers through `forTrustedAdapter`.
@@ -50,3 +51,32 @@ SQL008 is additive and can be reapplied. Both tables carry registry member IDs f
 erasure, with foreign keys preventing a binding from crossing account owners. Removing a member
 makes API access unavailable; deleting their registry row cascades these metadata records.
 No provider-backed proof or runtime deployment is supplied by these database tests.
+
+SQL012 adds `connected_account_credentials`, a server-only association to existing OAuth
+custody. It stores no token value. Composite foreign keys require the exact canonical member
+and connector on both sides. No alias, email or display label selects a credential, and legacy
+rows remain unassociated. Account views and resource resolution never include custody row IDs.
+
+A trusted account lifecycle caller may supply an `OAuthCredentialCommit.persist(db)` callback
+to create, renew or reviewed replacement. Use the existing OAuth writer with the supplied
+transaction; return only its exact token row ID. The account transition, credential write and
+association commit together or all roll back. In particular, a same-email upsert that collides
+with another identity's association rolls back rather than corrupting its old credentials.
+Replacement must use a new custody row; an alias collision may require a new consent flow and
+must refuse rather than reuse the old account's row. Ordinary token rotation for the same
+verified account can retain its row and authority generation.
+
+`resolvePersonalResource` returns a current secret-free account/resource snapshot after active
+membership, ownership, account status, generation and resource-kind checks. A snapshot alone
+must not authorize later credential resolution. `withPersonalResourceCredential` repeats those
+checks and requires a matching generation-bound credential association in the same transaction.
+Its trusted server callback receives the existing encrypted credential material while member,
+account, resource, association and custody locks are held. Never return that material to a
+model, log or client, and never hold these locks while waiting for human approval.
+
+Revocation/reconsent/failure leaves historical associations intact but invalidates their
+generation. Reconnecting with metadata alone does not reactivate credentials; an explicit
+verified credential commit is required. Deleting the token row removes its association and
+future resolution refuses. Removing a member refuses resolution immediately. Company resources
+still refuse. Runtime turn admission, grant/audience checks, exact-action approvals and Google
+callback/tool integration remain follow-up work; this storage slice supplies none of that proof.
