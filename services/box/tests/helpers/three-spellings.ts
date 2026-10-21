@@ -87,11 +87,11 @@ const SEED_ROWS: SeedRow[] = [
   // Personal connected-account metadata; account rows precede their selected resources.
   row("connected_accounts", "owner_member_id", FIXTURE_OWNER,
     `INSERT INTO connected_accounts (id, owner_member_id, connector_id, provider_issuer, provider_subject, provider_label, status)
-     VALUES ('fixture-account-1', $1, 'example', 'https://provider.example', 'fixture-account-1', 'Fixture account', 'ok')`,
+     VALUES ('fixture-account-1', $1, 'google', 'https://provider.example', 'fixture-account-1', 'Fixture account', 'ok')`,
     [FIXTURE_OWNER]),
   row("connected_accounts", "owner_member_id", FIXTURE_SECOND,
     `INSERT INTO connected_accounts (id, owner_member_id, connector_id, provider_issuer, provider_subject, provider_label, status)
-     VALUES ('fixture-account-2', $1, 'example', 'https://provider.example', 'fixture-account-2', 'Fixture account', 'ok')`,
+     VALUES ('fixture-account-2', $1, 'google', 'https://provider.example', 'fixture-account-2', 'Fixture account', 'ok')`,
     [FIXTURE_SECOND]),
   row("connected_resource_bindings", "owner_member_id", FIXTURE_OWNER,
     `INSERT INTO connected_resource_bindings (id, owner_member_id, connected_account_id, resource_kind, external_id, provider_label)
@@ -141,6 +141,15 @@ const SEED_ROWS: SeedRow[] = [
   row("oauth_tokens", "principal", FIXTURE_SECOND,
     `INSERT INTO oauth_tokens (principal, provider, org_id, email_address, refresh_token_enc)
      VALUES ($1, 'google', 'fixture-org', 'second@fixture.test', 'fixture-encrypted-blob-2')`,
+    [FIXTURE_SECOND]),
+
+  row("connected_account_credentials", "owner_member_id", FIXTURE_OWNER,
+    `INSERT INTO connected_account_credentials (account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
+     SELECT 'fixture-account-1',$1,'google',0,id FROM oauth_tokens WHERE principal=$1 AND provider='google'`,
+    [FIXTURE_OWNER]),
+  row("connected_account_credentials", "owner_member_id", FIXTURE_SECOND,
+    `INSERT INTO connected_account_credentials (account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
+     SELECT 'fixture-account-2',$1,'google',0,id FROM oauth_tokens WHERE principal=$1 AND provider='google'`,
     [FIXTURE_SECOND]),
 
   // ── 001_baseline.sql — also fires ratchet_audit_trg, see the no-op entry below ─────────────
