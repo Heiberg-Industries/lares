@@ -41,9 +41,10 @@ export default defineTool({
     if (!input.threadId || !input.inReplyTo) throw new Error("A reply draft needs both threadId and inReplyTo so its original recipients can be checked.");
     const self = [...await listAliases(getPool(), configuredOwnerId(), "email"),
       ...await listEnrolledMailboxes(process.env["GOOGLE_PRINCIPAL_ID"])];
-    const thread = await gmail.readThread(input.threadId);
     const key = turnKeyFrom(context);
+    // Provider failures may carry outside text too, so mark the turn before the read.
     if (key) taintTurn(key, "third_party");
+    const thread = await gmail.readThread(input.threadId);
     const original = thread.find((message) => message.messageId === input.inReplyTo);
     if (!original) throw new Error("The original message could not be found in this thread; no reply draft was created.");
     if (ownerRecipientPosition(original, self) !== "bcc_or_list") return gmail.draft(input);

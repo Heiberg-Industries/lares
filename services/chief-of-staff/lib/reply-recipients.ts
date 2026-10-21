@@ -1,12 +1,21 @@
 /** Replies include the sender, other To recipients and Cc only when an owner alias is
  * visible in To/Cc. Otherwise the draft stays private to the sender. Own addresses and
  * malformed entries are removed; comparisons are case-insensitive and de-duplicated. */
+/** Parse exactly one mailbox. Unquoted display names cannot contain address separators;
+ * quoted display names may contain commas. Never pass an unvalidated raw header through. */
+function singleMailbox(entry: string): { address: string; formatted: string } | null {
+  if (/[\x00-\x1f\x7f]/.test(entry)) return null;
+  const text = entry.trim();
+  const named = /^("(?:[^"\\]|\\.)*"|[^"<>,@;:]*)\s*<([^<>\s]+)>$/.exec(text);
+  const address = (named ? named[2]! : text).trim().toLowerCase();
+  if (!/^[^\s<>@,;:"\\]+@[^\s<>@,;:"\\]+\.[^\s<>@,;:"\\]+$/.test(address)) return null;
+  const name = named?.[1]?.trim();
+  return { address, formatted: name ? `${name} <${address}>` : address };
+}
+
 /** A single mailbox, lower-cased; malformed or multi-address entries return empty. */
 export function bareAddress(entry: string): string {
-  if (/[\r\n]/.test(entry)) return "";
-  const m = /^(?:[^<>]*)<([^<>\s]+@[^<>\s]+)>$/.exec(entry.trim());
-  const address = (m ? m[1]! : entry).trim().toLowerCase();
-  return /^[^\s<>@,;:]+@[^\s<>@,;:]+\.[^\s<>@,;:]+$/.test(address) ? address : "";
+  return singleMailbox(entry)?.address ?? "";
 }
 
 export type OwnerRecipientPosition = "to" | "cc" | "bcc_or_list";
@@ -44,10 +53,10 @@ export function replyRecipients(
   const take = (entries: readonly string[]): string[] => {
     const out: string[] = [];
     for (const e of entries) {
-      const addr = bareAddress(e);
-      if (addr === "" || mine.has(addr) || seen.has(addr)) continue;
-      seen.add(addr);
-      out.push(e.trim());
+      const mailbox = singleMailbox(e);
+      if (!mailbox || mine.has(mailbox.address) || seen.has(mailbox.address)) continue;
+      seen.add(mailbox.address);
+      out.push(mailbox.formatted);
     }
     return out;
   };

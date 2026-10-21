@@ -68,3 +68,29 @@ describe("owner recipient safety", () => {
     expect(otherToNames({ to: [self[0]!, "Taylor <t@example.com>", "bare@example.com", "broken"] }, self)).toEqual(["Taylor"]);
   });
 });
+
+
+describe("single mailbox parsing", () => {
+  const malformed = [
+    "extra@example.com, Sender <sender@example.com>",
+    "extra@example.com Sender <sender@example.com>",
+    "extra@example.com, Owner <owner@owner.example>",
+    "extra@example.com Owner <owner@owner.example>",
+    "Sender <sender@example.com>\u0000",
+  ];
+  it.each(malformed)("rejects a malformed From without producing any recipient: %s", (from) => {
+    expect(bareAddress(from)).toBe("");
+    expect(replyRecipients({ from, to: ["other@example.com"], cc: [] }, self)).toEqual({ to: [], cc: [] });
+  });
+  it.each(malformed)("does not accept a malformed To/Cc entry as owner presence: %s", (entry) => {
+    expect(ownerRecipientPosition({ to: [entry], cc: [] }, self)).toBe("bcc_or_list");
+    expect(ownerRecipientPosition({ to: [], cc: [entry] }, self)).toBe("bcc_or_list");
+    expect(ownerRecipientPosition({ to: [self[0]!], cc: [] }, [entry])).toBe("bcc_or_list");
+  });
+  it("preserves a legitimate quoted display comma while emitting one canonical mailbox", () => {
+    const original = { from: '\"Example, Sender\" <SENDER@EXAMPLE.COM>', to: ['\"Example, Owner\" <OWNER@OWNER.EXAMPLE>'], cc: [] };
+    expect(ownerRecipientPosition(original, self)).toBe("to");
+    expect(replyRecipients(original, self)).toEqual({ to: ['\"Example, Sender\" <sender@example.com>'], cc: [] });
+    expect(replyRecipients({ ...original, to: [] }, self)).toEqual({ to: ['\"Example, Sender\" <sender@example.com>'], cc: [] });
+  });
+});

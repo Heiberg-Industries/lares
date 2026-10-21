@@ -257,12 +257,13 @@ function catalogueToolNames(...serviceDirParts: string[]): string[] {
  * blanket coverage — in `tests/origin-taint-hook.test.ts`), to taint the turn when they bring
  * back outside text. Argument-aware tools (`calendar_list_events`, `person_lookup`) are listed once here; which argument/branch earns the taint is the behavioural
  * tests' job, not this list's. Shared signal/journey executors are covered by the kit's
- * signals-recent.test.ts and transit-plan.test.ts.
+ * signals-recent.test.ts and transit-plan.test.ts; reply-draft reads in gmail-draft-safety.test.ts.
  */
 const TAINTS: Record<string, ReadonlySet<string>> = {
   "chief-of-staff": new Set<string>([
     ...TAINTING_TOOLS.keys(), // gmail_read, gmail_search, read_url — the hook's own blanket coverage
     "gmail_accounts", // self-taints provider-supplied account/mailbox labels
+    "gmail_draft", // reply drafts self-taint before thread reads, including failures; gmail-draft-safety.test.ts
     "calendar_list_events", // self-taints on calendarId/account
     "person_lookup", // self-taints when the mail source finds something
     "calendar_conflicts", // self-taints unconditionally — reads beyond the primary calendar by design
@@ -312,7 +313,6 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     echo_note: "appends to a local log nothing reads — the approval-gate proof tool",
     facts_list: "the owner's own standing facts, origin-restricted to 'owner' at the table's CHECK constraint",
     forget: "internal store write",
-    gmail_draft: "write — drafts nothing the model didn't compose itself",
     gmail_draft_recipients: "rewrites only To/Cc headers on the AGENT's own existing draft; returns only the new recipient list",
     gmail_send: "write — sends only what the model itself composed",
     gmail_signature: "the owner's own configured signature, not third-party text",
