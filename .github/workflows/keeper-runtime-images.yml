@@ -104,6 +104,8 @@ jobs:
         run: scripts/scan-image.sh lares-keeper:test "$RUNNER_TEMP/image-scans/keeper"
       - name: Verify keeper runtime imports without starting sockets or migrations
         run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
+      - name: Prove financial journal custody with the actual Linux kernel and final keeper image
+        run: python3 services/keeper/tests/financial-journal-image.probe.py lares-keeper:test
 
       - name: Verify the box tooling loads and the engine unpacks
         run: |

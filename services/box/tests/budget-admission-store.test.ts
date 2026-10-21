@@ -1,6 +1,6 @@
 import {parseDefinition,hashOf,type LoadedDefinition} from '../../../packages/agent-kit/src/definition.js';
 import {PgVaultStore} from '../../../packages/agent-kit/src/vault-area-store.js';
-import {beforeAll,beforeEach,afterAll,describe,it,expect} from 'vitest';
+import {beforeAll,beforeEach,afterAll,afterEach,describe,it,expect} from 'vitest';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {execFile} from 'node:child_process';
@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {captureModelInvocation,runModelInvocation} from '../../../packages/agent-kit/src/model-invocation.js';
 import type {ConsoleAuthorityContext} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import type {BudgetRequestReference} from '../../../packages/agent-kit/src/budget-admission-store.js';
-import {readFileSync,readdirSync,mkdtempSync,rmSync} from 'node:fs';
+import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync} from 'node:fs';
 import {randomUUID,createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -25,6 +25,11 @@ import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
+import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary} from '../../../packages/agent-kit/src/console-source-transaction.js';
+import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/console-turn-authority.js';
+import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
+import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
+import {journalFixture} from '../../keeper/tests/helpers/financial-journal.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -140,7 +145,7 @@ beforeEach(async()=>{
   // Destructive cleanup is confined to this owned, disposable container. Never accept an
   // environment connection string or run this through production store helpers.
   expect((await db.query('SELECT marker,current_database() AS database FROM budget_test_owner')).rows).toEqual([{marker:fixtureOwner,database:'test'}]);
-  await db.query('TRUNCATE users,orgs,agent_definitions,agent_resources,personal_action_calls,dream_observations,dream_preferences RESTART IDENTITY CASCADE');
+  await db.query('TRUNCATE users,orgs,agent_definitions,agent_resources,personal_action_calls,dream_observations,dream_preferences,budget_financial_checkpoints RESTART IDENTITY CASCADE');
   await db.query(`INSERT INTO orgs(id,display_name) VALUES('org','Example');
     INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('member-a','A','org','owner','active'),('member-b','B','org','owner','active');
     INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES('member-a',NULL,1),('member-b',NULL,1);`);
@@ -317,6 +322,135 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT * FROM budget_gateway_grants')).rows).toEqual(before);
     for(const text of ["UPDATE budget_gateway_grants SET grant_hash=repeat('a',64)",'DELETE FROM budget_gateway_grants',"UPDATE budget_gateway_bindings SET pricing_profile='{}'"])await expect(db.query(text)).rejects.toThrow('immutable');
     expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');
+  });
+});
+describe('inactive journal-owned financial transactions on real PostgreSQL',()=>{
+  let files:ReturnType<typeof journalFixture>,journal:HostFinancialJournal,writer:JournalBudgetFinancialWriter,selected:PgBudgetAdmissionStore;
+  let faultKind:'proposal'|'commit'|undefined,delayProposal=false;
+  beforeEach(()=>{
+    faultKind=undefined;delayProposal=false;
+    files=journalFixture({sync:fd=>{
+      fsyncSync(fd);const kind=files.records().at(-1)?.record.kind;
+      if(kind===faultKind)throw new Error('synthetic fsync failure');
+      if(delayProposal&&kind==='proposal')Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,400);
+    }});
+    journal=files.open();writer=new JournalBudgetFinancialWriter(journal);selected=new PgBudgetAdmissionStore(db,env(),30_000,writer);
+  });
+  afterEach(()=>{faultKind=undefined;journal.close();rmSync(files.directory,{recursive:true,force:true});});
+  const preparedOwned=()=>prepared('member-a','helper',selected);
+  function loseAck(command:'BEGIN'|'COMMIT'|'ROLLBACK'){
+    let releasedBroken:unknown;
+    db.once('release',error=>{releasedBroken=error;});
+    // Fault the ACTUAL checked-out PoolClient. Ownership and pool-one behavior remain
+    // real; no fake pool/client is lent to the transaction owner.
+    db.once('acquire',client=>{
+      const original=client.query;
+      client.query=(async function(this:typeof client,...args:any[]){
+        const result=await (original as any).apply(this,args);
+        if(args[0]===command){client.query=original;throw new Error('synthetic lost acknowledgement');}
+        return result;
+      }) as typeof client.query;
+    });
+    return ()=>releasedBroken;
+  }
+  async function expiringFinancialWrite(){
+    const p=await prepared(),attempt=(await db.query('SELECT id FROM budget_attempts WHERE ticket_hash=$1',[h(p.ticket)])).rows[0].id;
+    const c=context(),reference={agent:'helper',incarnation,sessionId:c.session.id,memberId:'member-a',admissionNonce:nonce('member-a')};
+    delayProposal=true;
+    await writer.run('admit',boundary=>consoleSourceTransaction(db,async client=>{
+      await requireConsoleSessionBinding(reference,client,env());
+      const deadline=(await client.query("SELECT(clock_timestamp()+interval '300 milliseconds')::text deadline")).rows[0].deadline;
+      retainConsoleSourceDeadline(client,reference,deadline);
+      await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);
+      return 'must never escape';
+    },boundary));
+  }
+  it('journals actual store prepare/admit/grant/unknown/settle atoms and matching same-TX checkpoints',async()=>{
+    const p=await preparedOwned(),a=await selected.admit(p.ticket,p.observation,recovery());expect(a.state).toBe('allowed');if(a.state!=='allowed')throw new Error('denied');
+    const consumed=consumeDispatchPermit(a.permit)!;expect(await selected.recordGatewayGrant(consumed,h('opaque-grant'))).toBe(true);
+    await selected.markUnknown(a.attemptId);
+    expect(await selected.settle({attemptId:a.attemptId,bindingId:p.bindingId,requestHash:p.observation.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',receiptHash:h('opaque-receipt'),actualAmount:'0.05',kind:'terminal-usage'})).toBe('settled');
+    const records=files.records(),proposals=records.filter(f=>f.record.kind==='proposal'),commits=records.filter(f=>f.record.kind==='commit');expect(proposals).toHaveLength(5);expect(commits).toHaveLength(5);
+    for(const p of proposals){
+      const row=(await db.query('SELECT * FROM budget_financial_checkpoints WHERE operation_id=$1',[p.record.operationId])).rows[0];
+      expect(row).toMatchObject({journal_id:files.journalId,proposal_sequence:String(p.record.sequence),proposal_digest:p.digest});
+    }
+    const serialized=JSON.stringify(records);expect(serialized).not.toMatch(/member-a|helper|authority_reference|authority_hash|ticket_hash|admission_nonce|native_user|native_team|key_fingerprint|purpose_alias|session-/);
+    expect(proposals.at(-1).record.atoms).toEqual(expect.arrayContaining([expect.objectContaining({kind:'attempt',state:'settled',actualAmount:'0.05'}),expect.objectContaining({kind:'grant',grantHash:h('opaque-grant')}),expect.objectContaining({kind:'binding',pricingProfile:pricing}),expect.objectContaining({kind:'account',canonicalSuppressionHash:expect.stringMatching(/^[a-f0-9]{64}$/)})]));
+  });
+  it('aborts only after acknowledged rollback and remains usable for a later operation',async()=>{
+    const p=await prepared(),attempt=(await db.query('SELECT id FROM budget_attempts')).rows[0].id;
+    await expect(writer.run('admit',boundary=>consoleSourceTransaction(db,async client=>{
+      await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);throw new Error('ordinary work failure');
+    },boundary))).rejects.toThrow('ordinary work failure');
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'rollback-acknowledged',proposalDigest:null});
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+  });
+  it('rechecks source expiry after proposal fsync/checkpoint, rolls back finances and commits only revocation',async()=>{
+    await expect(expiringFinancialWrite()).rejects.toThrow('Conversation authority');
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toEqual([]);
+    expect((await db.query("SELECT revoked_at IS NOT NULL revoked FROM console_session_bindings WHERE member_id='member-a' AND agent='helper'")).rows[0].revoked).toBe(true);
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'source-retirement-acknowledged',proposalDigest:expect.stringMatching(/^[a-f0-9]{64}$/)});
+    expect(files.records().some(f=>f.record.kind==='commit')).toBe(false);
+  });
+  it('keeps an unacknowledged financial COMMIT frozen, never returning a permit',async()=>{
+    const p=await prepared(),broken=loseAck('COMMIT');
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');expect(broken()).toBeTruthy();
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('admitted');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toHaveLength(1);
+    expect(files.records().at(-1).record.kind).toBe('proposal');await expect(selected.markUnknown((await db.query('SELECT id FROM budget_attempts')).rows[0].id)).rejects.toThrow('closed');
+    journal.close();expect(()=>files.open()).toThrow('unavailable');
+  });
+  it('does not turn an uncertain BEGIN into a known abort after cleanup',async()=>{
+    const p=await prepared(),broken=loseAck('BEGIN');expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
+    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect(files.records().at(-1).record.kind).toBe('begin');
+    journal.close();expect(()=>files.open()).toThrow('unavailable');
+  });
+  it('records a known not-started abort when the actual pool refuses checkout',async()=>{
+    const p=await prepared(),closedPool=quiet(new Pool({connectionString:container.getConnectionUri(),max:1}));await closedPool.end();
+    const unavailable=new PgBudgetAdmissionStore(closedPool,env(),30_000,writer);expect((await unavailable.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
+    expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'not-started',proposalDigest:null});
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+  });
+  it('does not call a later cleanup ROLLBACK proof that the earlier lost rollback was acknowledged',async()=>{
+    const p=await prepared(),attempt=(await db.query('SELECT id FROM budget_attempts')).rows[0].id,broken=loseAck('ROLLBACK');
+    await expect(writer.run('admit',boundary=>consoleSourceTransaction(db,async client=>{
+      await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);throw new Error('work failure');
+    },boundary))).rejects.toThrow();
+    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect(files.records().at(-1).record.kind).toBe('begin');
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
+  });
+  it('a lost revoke-only COMMIT never finishes the financial proposal',async()=>{
+    // expiringFinancialWrite first prepares outside the adapted transaction. Arm the
+    // actual client fault only once its original financial UPDATE starts.
+    const originalRun=writer.run.bind(writer);
+    writer.run=(async(operation,work)=>{loseAck('COMMIT');return originalRun(operation,work);}) as typeof writer.run;
+    await expect(expiringFinancialWrite()).rejects.toThrow('could not be confirmed');
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toEqual([]);
+    expect(files.records().at(-1).record.kind).toBe('proposal');expect(files.records().some(f=>f.record.kind==='commit'||f.record.kind==='abort')).toBe(false);
+    journal.close();expect(()=>files.open()).toThrow('unavailable');
+  });
+  it.each(['proposal','commit'] as const)('exposes no result after %s fsync failure',async phase=>{
+    const p=await prepared();faultKind=phase;
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');faultKind=undefined;
+    const row=(await db.query('SELECT state FROM budget_attempts')).rows[0];expect(row.state).toBe(phase==='commit'?'admitted':'prepared');
+    expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toHaveLength(phase==='commit'?1:0);
+    journal.close();expect(()=>files.open()).toThrow('unavailable');
+  });
+  it('rejects a missing checkpoint integration before commit and preserves a durable abort',async()=>{
+    const p=await prepared();await db.query('ALTER TABLE budget_financial_checkpoints ADD CONSTRAINT financial_test_reject CHECK(false)');
+    try{expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');}finally{await db.query('ALTER TABLE budget_financial_checkpoints DROP CONSTRAINT financial_test_reject');}
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect(files.records().at(-1).record).toMatchObject({kind:'abort',reason:'rollback-acknowledged'});
+    expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+  });
+  it('takes its barrier before pool checkout and rejects nesting rather than borrowing another owner',async()=>{
+    let resume!:()=>void;const paused=new Promise<void>(resolve=>{resume=resolve;});let checkedOut=0;const observe=()=>{checkedOut++;};db.on('acquire',observe);
+    const running=writer.run('unknown',async boundary=>{await paused;return consoleSourceTransaction(db,async client=>{
+      await expect(writer.run('unknown',async()=>undefined)).rejects.toThrow('busy');
+      await expect(consoleSourceTransaction(client,async()=>undefined,sourceTransactionBoundary({beforeCommit:async()=>{},settled:async()=>{}}))).rejects.toThrow();
+      return 42;
+    },boundary);});
+    try{await expect(selected.markUnknown(randomUUID())).rejects.toThrow('busy');expect(checkedOut).toBe(0);expect(()=>journal.close()).toThrow('still owns');resume();expect(await running).toBe(42);expect(checkedOut).toBe(1);}
+    finally{resume();await running.catch(()=>{});db.off('acquire',observe);}
   });
 });
 describe('inactive budget admission on real PostgreSQL',()=>{

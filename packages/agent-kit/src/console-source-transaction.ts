@@ -7,6 +7,26 @@ const REFUSED='Conversation authority is not available';
 export class SourceAuthorityDenied extends Error {constructor(){super(REFUSED);}}
 export class SourceAuthorityUnavailable extends Error {constructor(){super('Conversation authority could not be confirmed');}}
 interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>}
+export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'unknown';
+export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gateway_bindings'|'budget_attempts'|'budget_gateway_grants';
+export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
+export interface SourceTransactionBoundary {readonly kind:'source-transaction-boundary'}
+interface BoundaryHooks {
+  beforeCommit(db:SourceDatabase,changes:readonly BudgetFinancialChange[]):Promise<void>;
+  settled(outcome:SourceTransactionOutcome):Promise<void>;
+}
+const boundaries=new WeakMap<object,{hooks:BoundaryHooks;used:boolean}>();
+const financialChanges=new WeakMap<object,Map<string,BudgetFinancialChange>>();
+/** Trusted server-only one-use owner context. JSON or a borrowed client cannot create it. */
+export function sourceTransactionBoundary(hooks:BoundaryHooks):SourceTransactionBoundary {
+  const boundary=Object.freeze({kind:'source-transaction-boundary' as const});boundaries.set(boundary,{hooks,used:false});return boundary;
+}
+/** Only adapted financial writes are recorded here. This is not an active database guard;
+ * the production gateway remains closed until every writer and privilege is integrated. */
+export function noteBudgetFinancialChange(db:SourceDatabase,table:BudgetFinancialTable,id:string):void {
+  if(!owners.has(db))throw new Error(REFUSED);
+  const changes=financialChanges.get(db);if(changes)changes.set(`${table}:${id}`,{table,id});
+}
 const owners=new WeakMap<object,Owner>();
 const key=(b:SourceBinding)=>JSON.stringify([b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce]);
 function owner(db:SourceDatabase):Owner {const value=owners.get(db);if(!value)throw new Error(REFUSED);return value;}
@@ -54,29 +74,59 @@ export async function checkConsoleSourceDeadlines(db:SourceDatabase):Promise<str
   // PostgreSQL retains sub-millisecond precision when choosing the earliest deadline.
   return (await db.query('SELECT min(deadline)::text AS deadline FROM unnest($1::timestamptz[]) deadline',[[...state.deadlines.values()].map(v=>v.deadline)])).rows[0].deadline;
 }
-export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db:SourceDatabase)=>Promise<T>):Promise<T>{
-  if(owners.has(source))return work(source);
+export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db:SourceDatabase)=>Promise<T>,boundary?:SourceTransactionBoundary):Promise<T>{
+  if(owners.has(source)){if(boundary)throw new Error(REFUSED);return work(source);}
   if(!('connect' in source)||'release' in source)throw new Error(REFUSED);
-  const db=await (source as SourcePool).connect(),state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map()};
-  owners.set(db,state);
-  let result:T|undefined,error:unknown,failed=false,broken=false;
+  const selected=boundary?boundaries.get(boundary):undefined;
+  if(boundary&&(!selected||selected.used))throw new Error(REFUSED);
+  if(selected)selected.used=true;
+  let db:(SourceDatabase&{release(error?:boolean):void})|undefined;
+  const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map()};
+  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false;
+  const rollback=async()=>{
+    try{if((await db!.query('ROLLBACK')).command!=='ROLLBACK')throw new Error(REFUSED);originalOpen=false;outcome='rollback-acknowledged';}
+    catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
+  };
   try{
-    await db.query('BEGIN');
-    try{result=await work(db);await checkConsoleSourceDeadlines(db);}catch(e){error=e;failed=true;}
+    db=await (source as SourcePool).connect();owners.set(db,state);if(selected)financialChanges.set(db,new Map());
+    outcome='unknown';
+    if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();originalOpen=true;
+    try{
+      result=await work(db);await checkConsoleSourceDeadlines(db);
+      if(!state.retire.size&&selected){await selected.hooks.beforeCommit(db,[...financialChanges.get(db)!.values()]);await checkConsoleSourceDeadlines(db);}
+    }catch(e){error=e;failed=true;}
     if(state.retire.size){
-      await db.query('ROLLBACK');
+      await rollback();
       // Only exact revoke-only updates survive, on this same checked-out client.
       try{
-        await db.query('BEGIN');
+        outcome='unknown';
+        if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();compensationOpen=true;
         for(const b of state.retire.values())await db.query(`UPDATE console_session_bindings SET revoked_at=COALESCE(revoked_at,clock_timestamp())
           WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3 AND member_id=$4 AND admission_nonce=$5`,[b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce]);
-        if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();
-      }catch{broken=true;await db.query('ROLLBACK').catch(()=>undefined);throw new SourceAuthorityUnavailable();}
+      }catch{
+        if(compensationOpen){try{if((await db.query('ROLLBACK')).command!=='ROLLBACK')throw new Error(REFUSED);compensationOpen=false;outcome='source-retirement-rolled-back';}catch{broken=true;outcome='unknown';}}
+        else{broken=true;outcome='unknown';}
+        throw new SourceAuthorityUnavailable();
+      }
+      // A lost compensation COMMIT acknowledgement is permanently unknown, even if
+      // a later cleanup ROLLBACK succeeds. It cannot complete a financial proposal.
+      try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();compensationOpen=false;outcome='source-retirement-acknowledged';}
+      catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
       throw new SourceAuthorityDenied();
     }
-    if(failed){await db.query('ROLLBACK');throw error;}
-    try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();}catch{broken=true;throw new SourceAuthorityUnavailable();}
+    if(failed){await rollback();throw error;}
+    try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();originalOpen=false;outcome='commit-acknowledged';}
+    catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
     return result as T;
-  }catch(e){await db.query('ROLLBACK').catch(()=>undefined);throw e;}
-  finally{owners.delete(db);db.release(broken);}
+  }catch(e){
+    if(db&&(originalOpen||compensationOpen||outcome==='unknown')){
+      // Cleanup never converts an earlier unknown COMMIT/BEGIN/ROLLBACK into known abort.
+      await db.query('ROLLBACK').catch(()=>{broken=true;});
+      if(outcome==='unknown')broken=true;
+    }
+    throw e;
+  }finally{
+    if(db){owners.delete(db);financialChanges.delete(db);db.release(broken);}
+    if(selected){try{await selected.hooks.settled(outcome);}catch{throw new SourceAuthorityUnavailable();}}
+  }
 }
