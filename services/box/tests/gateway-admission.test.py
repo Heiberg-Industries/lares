@@ -435,6 +435,50 @@ class EmbeddedFixtureTests(unittest.TestCase):
         module.bounded_capture(sys.executable,"-c","import time;time.sleep(60)",seconds=.05)
         self.assertLess(time.monotonic()-started,2)
 
+    def test_image_probe_case_diagnostics_are_fixed_bounded_and_keep_zero_vs_multiple_counts(self):
+        path=ROOT / "services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("case_diagnostic_probe",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        proof=module.Proof.__new__(module.Proof);proof.artifact={"cases":[]};proof.current_case=None
+        before={"upstream":0,"routes":{"chat":0,"messages":0,"other":0},"traps":0,"gates":0,"receipts":[]}
+        sdk={"ok":False,"requests":2,"admission":False,"budget":True,"classification":"terminal",
+            "error":"PRIVATE_ERROR","prompt":"PRIVATE_PROMPT","body":"PRIVATE_BODY","hash":"PRIVATE_HASH"}
+        def failed_case(name,after,checks,started):
+            def run():
+                self.assertEqual(proof.current_case["name"],name)
+                proof.case_evidence(before,after,result=sdk,checks=checks,started=started,route="chat")
+                raise RuntimeError("fixed test failure")
+            with self.assertRaisesRegex(RuntimeError,"fixed test failure"):proof.case(name,run)
+        failed_case("openai-anthropic-one-shot-zero",before,
+            {"physicalExactlyOne":False,"noTrap":True,"gateExactlyOne":False,"noSettlement":True},time.monotonic()-200)
+        multiple={"upstream":2,"routes":{"chat":2,"messages":0,"other":0},"traps":1,"gates":2,"receipts":[{},{}]}
+        failed_case("openai-anthropic-one-shot-multiple",multiple,
+            {"physicalExactlyOne":False,"noTrap":False,"gateExactlyOne":False,"noSettlement":False},time.monotonic())
+        zero,many=proof.artifact["cases"]
+        self.assertFalse(zero["passed"]);self.assertFalse(many["passed"])
+        self.assertEqual(zero["diagnostics"]["counts"]["upstreamBefore"],0)
+        self.assertEqual(zero["diagnostics"]["counts"]["upstreamAfter"],0)
+        self.assertEqual(many["diagnostics"]["counts"]["upstreamAfter"],2)
+        self.assertEqual(many["diagnostics"]["counts"]["trapsAfter"],1)
+        self.assertEqual(many["diagnostics"]["counts"]["gatesAfter"],2)
+        self.assertEqual(many["diagnostics"]["counts"]["settlementsAfter"],2)
+        self.assertEqual(many["diagnostics"]["predicates"],{"physicalExactlyOne":False,"noTrap":False,"gateExactlyOne":False,"noSettlement":False})
+        self.assertEqual(zero["diagnostics"]["sdk"],{"ok":False,"requestCount":2,"admission":False,"budget":True,"classification":"terminal"})
+        self.assertEqual(zero["diagnostics"]["elapsedMs"],120000)
+        encoded=json.dumps(proof.artifact)
+        for secret in ("PRIVATE_ERROR","PRIVATE_PROMPT","PRIVATE_BODY","PRIVATE_HASH"):
+            self.assertNotIn(secret,encoded)
+
+    def test_image_probe_cooldown_idle_wait_makes_no_fixture_calls(self):
+        path=ROOT / "services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("cooldown_idle_probe",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        proof=module.Proof.__new__(module.Proof);proof.cooldown_idle_seconds=6
+        fixture_calls=[];waits=[];proof.control=lambda:fixture_calls.append("control")
+        with mock.patch.object(module.time,"sleep",side_effect=waits.append): proof.idle_after_one_shot()
+        self.assertEqual(waits,[6])
+        self.assertEqual(fixture_calls,[])
+
     def test_first_startup_failure_survives_shutdown_and_requires_both_ci_flags(self):
         source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
         names={"STARTUP_STATE_FILE","STARTUP_FAILURE_FILE","STARTUP_PHASES","STARTUP_STAGES"}

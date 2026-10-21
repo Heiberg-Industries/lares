@@ -30,6 +30,8 @@ from admission_contract import Profile, canonical
 
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+CASE_CLASSIFICATIONS = frozenset(("retry", "recoverable", "terminal"))
+CASE_PREDICATES = frozenset(("sdkSuccessful", "sdkFailed", "sdkRequestCountOne", "admissionRefused", "notAdmissionRefused", "budgetExceeded", "notBudgetExceeded", "terminalClassification", "physicalExactlyOne", "noPhysicalRequest", "noTrap", "expectedRouteExactlyOne", "otherRoutesUnchanged", "gateExactlyOne", "noGateRequest", "settlementExactlyOne", "noSettlement", "receiptExactlyOne", "observationExactlyOne"))
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -261,6 +263,8 @@ class Proof:
         self.name = "lares-admission-" + uuid.uuid4().hex[:10]
         self.containers = []
         self.artifact = {"scope":"pinned-image adapter compatibility; no production authority or price/recovery acceptance", "cases":[]}
+        self.current_case = None
+        self.cooldown_idle_seconds = None
         self.master = "sk-" + secrets.token_urlsafe(32)
         self.disposable_secrets=[self.master.encode()]
 
@@ -344,9 +348,11 @@ class Proof:
         except Exception:
             self.startup_diagnostic(name,suffix)
             raise
-        meta=json.loads(command("docker","exec",name,"python","-c","import importlib.metadata,json,hashlib,pathlib;print(json.dumps({'versions':{p:importlib.metadata.version(p) for p in ['litellm','openai','httpx','prisma']},'adapterSha256':hashlib.sha256(pathlib.Path('/opt/lares-gateway/lares_gateway.py').read_bytes()).hexdigest()}))"))
+        meta=json.loads(command("docker","exec",name,"python","-c","import importlib.metadata,json,hashlib,pathlib;from litellm.constants import DEFAULT_COOLDOWN_TIME_SECONDS;print(json.dumps({'versions':{p:importlib.metadata.version(p) for p in ['litellm','openai','httpx','prisma']},'adapterSha256':hashlib.sha256(pathlib.Path('/opt/lares-gateway/lares_gateway.py').read_bytes()).hexdigest(),'cooldownSeconds':DEFAULT_COOLDOWN_TIME_SECONDS}))"))
         self.artifact.setdefault("images",{})[provider]={"upstreamDigest":self.manifest["images"]["lares-gateway"],**meta}
         require(meta["versions"]["litellm"]=="1.101.6","Wrong LiteLLM version")
+        require(type(meta["cooldownSeconds"]) is int and meta["cooldownSeconds"]==5,"Unexpected pinned gateway cooldown default")
+        self.cooldown_idle_seconds=meta["cooldownSeconds"]+1
         return url
 
     def startup_diagnostic(self,name,label):
@@ -400,24 +406,129 @@ class Proof:
         require(receipt["kind"]=="terminal-usage" and receipt["format"]==provider and receipt["usage"]=={"inputTokens":12,"outputTokens":4,"cacheReadTokens":0,"cacheWriteTokens":0},"Terminal receipt usage/format differs from actual provider")
 
     def case(self,name,fn):
-        fn();self.artifact["cases"].append({"name":name,"passed":True})
+        record={"name":name,"passed":False}
+        self.artifact["cases"].append(record)
+        self.current_case=record
+        try:
+            fn()
+            record["passed"]=True
+        finally:
+            self.current_case=None
+
+    def idle_after_one_shot(self):
+        """Let the pinned router's default deployment cooldown expire between cases."""
+        if type(self.cooldown_idle_seconds) is int and 1 <= self.cooldown_idle_seconds <= 10:
+            time.sleep(self.cooldown_idle_seconds)
+
+    @staticmethod
+    def diagnostic_count(value):
+        return value if type(value) is int and 0 <= value <= 1_000_000 else None
+
+    def diagnostic_route_count(self,document,route):
+        routes=document.get("routes") if type(document) is dict else None
+        return self.diagnostic_count(routes.get(route)) if type(routes) is dict else None
+
+    def diagnostic_delta(self,before,after,key,route=None):
+        def value(document):
+            if type(document) is not dict:return None
+            if route is not None:
+                routes=document.get("routes")
+                item=routes.get(route) if type(routes) is dict else None
+            elif key in ("settlements","observations","allows"):
+                rows=document.get({"settlements":"receipts","observations":"observations","allows":"allows"}[key])
+                item=len(rows) if type(rows) is list else None
+            else:item=document.get(key)
+            return self.diagnostic_count(item)
+        left,right=value(before),value(after)
+        return right-left if left is not None and right is not None else None
+
+    def diagnostic_matching_receipt_delta(self,before,after,fingerprint):
+        def value(document):
+            rows=document.get("receipts") if type(document) is dict else None
+            if type(rows) is not list:return None
+            return self.diagnostic_count(sum(type(row) is dict and row.get("keyFingerprint")==fingerprint for row in rows))
+        left,right=value(before),value(after)
+        return right-left if left is not None and right is not None else None
+
+    def case_evidence(self,before,after,*,result=None,checks=None,started=None,route=None):
+        """Store only fixed counters, booleans, enum values and elapsed time."""
+        if self.current_case is None:return
+        def count(document,key):
+            return self.diagnostic_count(document.get(key)) if type(document) is dict else None
+        def route_count(document,key):
+            return self.diagnostic_route_count(document,key)
+        def row_count(document,key):
+            rows=document.get(key) if type(document) is dict else None
+            return self.diagnostic_count(len(rows)) if type(rows) is list else None
+        def settlements(document):
+            receipts=document.get("receipts") if type(document) is dict else None
+            return self.diagnostic_count(len(receipts)) if type(receipts) is list else None
+        evidence={"counts":{
+            "upstreamBefore":count(before,"upstream"),"upstreamAfter":count(after,"upstream"),
+            "chatBefore":route_count(before,"chat"),"chatAfter":route_count(after,"chat"),
+            "messagesBefore":route_count(before,"messages"),"messagesAfter":route_count(after,"messages"),
+            "otherBefore":route_count(before,"other"),"otherAfter":route_count(after,"other"),
+            "trapsBefore":count(before,"traps"),"trapsAfter":count(after,"traps"),
+            "gatesBefore":count(before,"gates"),"gatesAfter":count(after,"gates"),
+            "observationsBefore":row_count(before,"observations"),"observationsAfter":row_count(after,"observations"),
+            "allowsBefore":row_count(before,"allows"),"allowsAfter":row_count(after,"allows"),
+            "settlementsBefore":settlements(before),"settlementsAfter":settlements(after)}}
+        if route in ("chat","messages","other"):
+            evidence["expectedRoute"]=route
+            evidence["counts"]["expectedRouteBefore"]=route_count(before,route)
+            evidence["counts"]["expectedRouteAfter"]=route_count(after,route)
+        if type(result) is dict:
+            classification=result.get("classification")
+            evidence["sdk"]={
+                "ok":result.get("ok") if type(result.get("ok")) is bool else None,
+                "requestCount":self.diagnostic_count(result.get("requests")),
+                "admission":result.get("admission") if type(result.get("admission")) is bool else None,
+                "budget":result.get("budget") if type(result.get("budget")) is bool else None,
+                "classification":classification if type(classification) is str and classification in CASE_CLASSIFICATIONS else "unknown"}
+        if type(checks) is dict:
+            evidence["predicates"]={key:value for key,value in checks.items() if key in CASE_PREDICATES and type(value) is bool}
+        if type(started) in (int,float):
+            evidence["elapsedMs"]=min(120_000,max(0,int((time.monotonic()-started)*1000)))
+        self.current_case["diagnostics"]=evidence
 
     def exercise(self,provider,url,key,team,member):
         for lane in ("anthropic","openai-compatible"):
             for stream in (False,True):
                 def success():
                     self.control(mode="normal")
-                    before=self.control();result=self.sdk(url,key,lane,stream=stream);after=self.control()
+                    before=self.control();started=time.monotonic();result=self.sdk(url,key,lane,stream=stream);after=self.control()
+                    route="chat" if provider=="openai" else "messages"
+                    sdk=result if type(result) is dict else {}
+                    checks={
+                        "sdkSuccessful":sdk.get("ok") is True,"sdkRequestCountOne":sdk.get("requests")==1,
+                        "physicalExactlyOne":self.diagnostic_delta(before,after,"upstream")==1,
+                        "expectedRouteExactlyOne":self.diagnostic_delta(before,after,"routes",route)==1,
+                        "otherRoutesUnchanged":all(self.diagnostic_delta(before,after,"routes",name)==(0 if name!=route else 1) for name in ("chat","messages","other")) and self.diagnostic_route_count(after,"other")==0,
+                        "noTrap":self.diagnostic_count(after.get("traps"))==0,
+                        "gateExactlyOne":self.diagnostic_delta(before,after,"gates")==1,
+                        "settlementExactlyOne":self.diagnostic_delta(before,after,"settlements")==1,
+                        "receiptExactlyOne":self.diagnostic_matching_receipt_delta(before,after,hashlib.sha256(key.encode()).hexdigest())==1,
+                        "observationExactlyOne":self.diagnostic_delta(before,after,"observations")==1}
+                    self.case_evidence(before,after,result=result,checks=checks,started=started,route=route)
                     require(result["ok"] and result["requests"]==1,"Actual SDK lane did not complete")
                     require(after["upstream"]-before["upstream"]==1,"SDK produced more than one upstream request")
-                    route="chat" if provider=="openai" else "messages"
                     require(after["routes"][route]-before["routes"][route]==1 and after["routes"]["other"]==0,"SDK reached unexpected provider route")
                     require(after["observations"][-1]["requestHash"]==result["hash"],"Final shaped raw request hash differs")
                     self.receipt(before,after,result,key,provider)
                 self.case(provider+"-"+lane+("-stream" if stream else "-text"),success)
             for mode in ("deny","unsigned","mismatch","gate_hang","gate_close"):
                 def refusal():
-                    self.control(mode=mode);before=self.control();result=self.sdk(url,key,lane);after=self.control()
+                    self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane);after=self.control()
+                    sdk=result if type(result) is dict else {}
+                    checks={"sdkFailed":sdk.get("ok") is False,"sdkRequestCountOne":sdk.get("requests")==1,
+                        "admissionRefused":sdk.get("admission") is True,"notAdmissionRefused":sdk.get("admission") is False,
+                        "budgetExceeded":sdk.get("budget") is True,"notBudgetExceeded":sdk.get("budget") is False,
+                        "terminalClassification":sdk.get("classification")=="terminal",
+                        "noPhysicalRequest":self.diagnostic_delta(before,after,"upstream")==0,
+                        "noTrap":self.diagnostic_delta(before,after,"traps")==0,
+                        "gateExactlyOne":self.diagnostic_delta(before,after,"gates")==1,
+                        "noSettlement":self.diagnostic_delta(before,after,"settlements")==0}
+                    self.case_evidence(before,after,result=result,checks=checks,started=started)
                     require(not result["ok"] and result["admission"] and not result["budget"] and result["classification"]=="terminal" and result["requests"]==1,"Authored refusal is not terminal/legible in actual SDK")
                     require(result["turn"]["kind"]=="budget-refusal" and result["session"]["kind"]=="silent","Refusal was not emitted once")
                     require(after["upstream"]==before["upstream"],"Gate refusal reached upstream")
@@ -425,15 +536,33 @@ class Proof:
             for mode in ("429","500","redirect","disconnect","reformat","signature","timeout"):
                 def one_shot():
                     self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane,timeout=35000 if mode=="timeout" else 10000);after=self.control()
+                    route="chat" if provider=="openai" else "messages"
+                    sdk=result if type(result) is dict else {}
+                    checks={"sdkFailed":sdk.get("ok") is False,"physicalExactlyOne":self.diagnostic_delta(before,after,"upstream")==1,
+                        "sdkRequestCountOne":sdk.get("requests")==1,
+                        "expectedRouteExactlyOne":self.diagnostic_delta(before,after,"routes",route)==1,
+                        "otherRoutesUnchanged":all(self.diagnostic_delta(before,after,"routes",name)==(0 if name!=route else 1) for name in ("chat","messages","other")) and self.diagnostic_route_count(after,"other")==0,
+                        "noTrap":self.diagnostic_count(after.get("traps"))==0,
+                        "gateExactlyOne":self.diagnostic_delta(before,after,"gates")==1,
+                        "noSettlement":self.diagnostic_delta(before,after,"settlements")==0}
+                    self.case_evidence(before,after,result=result,checks=checks,started=started,route=route)
                     require(not result["ok"],"Error fixture unexpectedly succeeded")
                     require(after["upstream"]-before["upstream"]==1 and after["traps"]==0,"Provider retry/redirect escaped guard")
                     if mode=="timeout":require(29<=time.monotonic()-started<34,"Physical header deadline was not enforced")
+                    self.idle_after_one_shot()
                 self.case(provider+"-"+lane+"-one-shot-"+mode,one_shot)
             for mode in ("missing-finish","malformed-usage","partial","late-content","mixed-id","compressed"):
                 for streaming in (False,True):
                     if not streaming and mode in ("partial","late-content","mixed-id"): continue
                     def uncertain():
-                        self.control(mode=mode);before=self.control();self.sdk(url,key,lane,stream=streaming);after=self.control()
+                        self.control(mode=mode);before=self.control();started=time.monotonic();result=self.sdk(url,key,lane,stream=streaming);after=self.control()
+                        route="chat" if provider=="openai" else "messages"
+                        checks={"physicalExactlyOne":self.diagnostic_delta(before,after,"upstream")==1,
+                            "sdkRequestCountOne":(result if type(result) is dict else {}).get("requests")==1,
+                            "expectedRouteExactlyOne":self.diagnostic_delta(before,after,"routes",route)==1,
+                            "noTrap":self.diagnostic_delta(before,after,"traps")==0,
+                            "noSettlement":self.diagnostic_delta(before,after,"settlements")==0}
+                        self.case_evidence(before,after,result=result,checks=checks,started=started,route=route)
                         require(after["upstream"]-before["upstream"]==1,"Malformed terminal fixture retried")
                         require(len(after["receipts"])==len(before["receipts"]),"Uncertain provider usage reduced reservation")
                     self.case(provider+"-"+lane+"-reserve-"+mode+("-stream" if streaming else "-text"),uncertain)
