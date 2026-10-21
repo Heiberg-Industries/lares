@@ -256,7 +256,8 @@ function catalogueToolNames(...serviceDirParts: string[]): string[] {
  * Tools proven, by a behavioural test in this file (or — for the chief-of-staff hook's own
  * blanket coverage — in `tests/origin-taint-hook.test.ts`), to taint the turn when they bring
  * back outside text. Argument-aware tools (`calendar_list_events`, `person_lookup`) are listed once here; which argument/branch earns the taint is the behavioural
- * tests' job, not this list's.
+ * tests' job, not this list's. Shared signal/journey executors are covered by the kit's
+ * signals-recent.test.ts and transit-plan.test.ts.
  */
 const TAINTS: Record<string, ReadonlySet<string>> = {
   "chief-of-staff": new Set<string>([
@@ -265,8 +266,10 @@ const TAINTS: Record<string, ReadonlySet<string>> = {
     "calendar_list_events", // self-taints on calendarId/account
     "person_lookup", // self-taints when the mail source finds something
     "calendar_conflicts", // self-taints unconditionally — reads beyond the primary calendar by design
+    "agent-kit__signals_recent", // shared executor taints provider signal labels
+    "agent-kit__transit_plan", // shared executor taints journey/place metadata
   ]),
-  creative: new Set<string>(),
+  creative: new Set<string>(["agent-kit__signals_recent", "agent-kit__transit_plan"]),
 };
 
 /**
@@ -284,8 +287,6 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     "agent-kit__vault_drop": "gated vault DELETE — a write, returns only what was deleted",
     "agent-kit__vault_file": "gated vault write — a write, echoes only what was written",
     "agent-kit__vault_write": "gated vault write — a write, echoes only what was written",
-    "agent-kit__signals_recent": "the owner's own persisted operational-signal spine",
-    "agent-kit__transit_plan": "structured journey/route data, not freeform prose",
     // One set of note tools, told which area. Both areas they can open are the
     // installation's own — the owner's private store and the business's shared one — so the
     // classification is the same whichever the model names, and the three `atlas_*` reads this
