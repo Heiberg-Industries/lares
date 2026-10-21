@@ -32,7 +32,7 @@ export default defineTool({
     "meetings, what they actually said in meeting transcripts, and their company. Pass `email` " +
     "when you have it — it is exact; `name` otherwise. Use this for ANY question about a person " +
     "('what's the deal with Per', 'who is this', 'should I chase them') instead of calling " +
-    "twenty/network/gmail/calendar/brain separately.\n" +
+    "twenty/network/gmail/calendar/vault separately.\n" +
     "Read the result carefully: it names the LAST ENGAGEMENT and splits everything into NEW SINCE " +
     "and EARLIER — lead with what is new, and only give the full history when there is little else. " +
     "It also lists every source it consulted, and the time windows it searched — 'nothing found' " +
