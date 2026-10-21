@@ -11,6 +11,7 @@
     }
   },
   "exports": {
+    "./vault-files": "./src/vault-files.ts",
     "./vault-area-store": "./src/vault-area-store.ts",
     "./personal-action-store": "./src/personal-action-store.ts",
     "./grant-store": "./src/grant-store.ts",

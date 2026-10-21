@@ -152,7 +152,7 @@ export const vaultAreaBindingSchema = z.strictObject({
 });
 export type VaultAreaBinding = z.infer<typeof vaultAreaBindingSchema>;
 export const vaultWriteBindingSchema = z.strictObject({
-  areaId: id, relativePath, expectedContentRevision: hash, accessRevision: revision,
+  areaId: id, relativePath, expectedContentRevision: hash.nullable(), accessRevision: revision,
   approvedOrigin: z.enum(ORIGIN_CLASSES), authority: turnAuthoritySchema,
 });
 export type VaultWriteBinding = z.infer<typeof vaultWriteBindingSchema>;
