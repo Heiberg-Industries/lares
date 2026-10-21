@@ -619,3 +619,96 @@ it('holds an agent change\'s seal until the startup re-apply is done, so an olde
   expect(events).toEqual(['startup-check','apply-nft','parse-squid','parse-nft','apply-nft','reload-squid']);
  }finally{firewall.mockRestore();log.mockRestore();}
 });
+
+function personalGoogleFixture() {
+ const tokenKeyFile=join(root,'secrets/personal-google-key');writeFileSync(tokenKeyFile,'fixture-key');
+ const clients=Object.fromEntries(['acme','second'].map(org=>{
+  const clientIdFile=join(root,`secrets/${org}-id`),clientSecretFile=join(root,`secrets/${org}-secret`);
+  writeFileSync(clientIdFile,`${org}-id-value`);writeFileSync(clientSecretFile,`${org}-secret-value`);
+  return [org,{clientIdFile,clientSecretFile}];
+ }));
+ config.runtime.google={tokenKeyFile,clients};
+ return config.runtime.google;
+}
+const personalChief=()=>({...definition,role:'chief-of-staff',grants:[{capability:'gmail',scope:'read'}],autonomy:{}});
+it('mounts personal clients without any email door, claim, legacy principal or OAuth token selection',async()=>{
+ const google=personalGoogleFixture(),chief=personalChief(),provisioned:string[]=[];
+ const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,path=>{provisioned.push(path);},()=>{});
+ await l.create('bookkeeper',chief);
+ const doc=parse(readFileSync(config.composeFile,'utf8')),env=doc.services['lares-bookkeeper'].environment;
+ expect(Object.keys(JSON.parse(env.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme','second']);
+ expect(env.TOKEN_ENC_KEY_FILE).toBe('/run/secrets/google-token-key');
+ expect(env.GOOGLE_PRINCIPAL_ID).toBeUndefined();expect(env.LARES_EMAIL_ORG).toBeUndefined();
+ for(const file of [google.tokenKeyFile,...Object.values(google.clients).flatMap(c=>[c.clientIdFile,c.clientSecretFile])])expect(provisioned).toContain(file);
+ expect(JSON.stringify(env)).not.toMatch(/value|personal-google-key/);
+});
+it('applies Gmail mount additions/removals only on explicit reconciliation and preserves other pending agents applied setup',async()=>{
+ personalGoogleFixture();
+ const base={...definition,role:'chief-of-staff',grants:[],autonomy:{}},chief=personalChief();
+ const l=lifecycle();await l.create('bookkeeper',base);
+ const current=()=>parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'].environment.LARES_PERSONAL_GOOGLE_CLIENTS;
+ expect(current()).toBeUndefined();
+ await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='bookkeeper'",[JSON.stringify(chief)]);
+ expect((await l.saved('bookkeeper',chief)).pending).toBe(true);
+ const other={...definition,name:'other'};config.runtime.gatewayKeys.other=config.runtime.gatewayKeys.bookkeeper!;
+ await pool.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('other',$1,'fixture','valid')",[JSON.stringify(other)]);
+ await l.create('other',other);expect(current()).toBeUndefined();
+ await l.reconcile('bookkeeper',chief);expect(current()).toBeDefined();
+ await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='bookkeeper'",[JSON.stringify(base)]);
+ expect((await l.saved('bookkeeper',base)).pending).toBe(true);
+ await l.reconcile('other',other);expect(current()).toBeDefined();
+ await l.reconcile('bookkeeper',base);expect(current()).toBeUndefined();
+});
+it('preflights all personal files before a definition save without affecting unrelated agents',async()=>{
+ const google=personalGoogleFixture(),l=lifecycle();
+ rmSync(google.clients.acme!.clientSecretFile);
+ await expect(l.create('bookkeeper',definition)).resolves.toMatchObject({healthy:true});
+ const before=readFileSync(config.composeFile,'utf8');events=[];
+ await expect(l.prepare('bookkeeper',personalChief(),false)).rejects.toThrow('Google runtime files unavailable');
+ expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
+ const noGmail={...personalChief(),autonomy:{gmail:'never'}};
+ await expect(l.prepare('bookkeeper',noGmail,false)).resolves.toBeUndefined();
+});
+it('credential preflight and rollback reconciliation preserve the applied personal client files',async()=>{
+ const google=personalGoogleFixture(),chief=personalChief(),l=lifecycle();
+ writeFileSync(config.runtime.passwordFile,'fixture-db');writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'fixture-gateway');
+ await l.create('bookkeeper',chief);
+ const before=parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ // This is the same path used for managed credential rollback, using applied definitions.
+ const state:any={...initialCredentialRecord(),effectiveRevision:null,activationIntent:{targetRevision:null}};
+ l.setCredentialState(async()=>state);
+ await l.credentialPreflight(['bookkeeper']);await l.reconcileCredential('bookkeeper',null);
+ const after=parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ expect(after.environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBe(before.environment.LARES_PERSONAL_GOOGLE_CLIENTS);
+ expect(after.secrets).toEqual(before.secrets);
+ for(const file of [google.tokenKeyFile,...Object.values(google.clients).flatMap(c=>[c.clientIdFile,c.clientSecretFile])]) {
+  const content=readFileSync(file,'utf8');rmSync(file);events=[];
+  await expect(l.credentialPreflight(['bookkeeper'])).rejects.toThrow();expect(events).toEqual([]);
+  writeFileSync(file,content);
+ }
+});
+it('preserves an all-legacy native email client and adds only canonical personal clients in mixed config',async()=>{
+ const fixture=personalGoogleFixture(),legacy=fixture.clients.acme!,chief=personalChief(),l=lifecycle();
+ config.runtime.google={principal:'legacy-member',tokenKeyFile:fixture.tokenKeyFile,clients:{old_tenant:legacy}};
+ await l.create('bookkeeper',chief);
+ const row=await l.storage.row('bookkeeper');
+ const service=()=>parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ expect(service().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeUndefined();
+ try {
+  await pool.query("INSERT INTO users(id,display_name) VALUES('legacy-member','Fixture')");
+  await pool.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc) VALUES('legacy-member','google','old_tenant','legacy@example.invalid','fixture')");
+  await pool.query(`INSERT INTO agent_door_connections(agent,kind,incarnation,revision,owner_email,principal,org,mailbox)
+    VALUES('bookkeeper','email',$1,$1,'owner@example.invalid','legacy-member','old_tenant','legacy@example.invalid')`,[row.ownership_token]);
+  const withEmail={...chief,doors:[{kind:'email',enabled:true}]};
+  await l.reconcile('bookkeeper',withEmail);
+  expect(service().environment.LARES_EMAIL_ORG).toBe('old_tenant');
+  expect(service().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeUndefined();
+  config.runtime.google.clients.acme=fixture.clients.acme!;
+  await l.reconcile('bookkeeper',withEmail);
+  expect(service().environment.LARES_EMAIL_ORG).toBe('old_tenant');
+  expect(Object.keys(JSON.parse(service().environment.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme']);
+  expect(service().secrets.filter((s:any)=>s.target==='google-token-key')).toHaveLength(1);
+ } finally {
+  await pool.query("DELETE FROM agent_door_connections WHERE agent='bookkeeper'; DELETE FROM oauth_tokens WHERE principal='legacy-member'; DELETE FROM users WHERE id='legacy-member'");
+ }
+});

@@ -5,6 +5,7 @@ import { stringify } from 'yaml';
 import { gatewayModels } from './gateway-keys.js';
 import { DOOR_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
 import { outsideSecretName, outsideSecretTarget } from '@lares/agent-kit/outside-tools';
+import { googleSecretFiles, personalGoogleSchema, type PersonalGoogleConfig } from './personal-google.js';
 import { bindingsFor, INTEGRATION_SECRET_FILES, type RuntimeBindings } from './runtime-bindings.js';
 export const DIGEST = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 export function agentName(name: string): string { if (!/^[a-z][a-z0-9-]{1,30}$/.test(name))
@@ -21,6 +22,7 @@ export interface AgentContainer {
     notionRevision?: string | null;
     bindings?: RuntimeBindings;
     email?: {principal:string;org:string;mailbox:string;revision:string;owner:string;tokenKeyFile:string;clientIdFile:string;clientSecretFile:string};
+    personalGoogle?: PersonalGoogleConfig;
     claims?: {kind:'slack'|'telegram';principal:string;revision:string;owner:string}[];
     /** The one member who may approve in the console: the owner of the earliest claim. Computed once, never by overwriting. */
     consoleOwner?: string;
@@ -116,7 +118,16 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             source: string;
             target: string;
         }[] = [];
-        const secret = (key: string, file: string, target: string) => { secrets[key] = { file: absolute(file) }; mounts.push({ source: key, target }); };
+        const targets = new Map<string, string>();
+        const secret = (key: string, file: string, target: string) => {
+            absolute(file);
+            if (targets.has(target)) {
+                if (targets.get(target) !== file) throw new Error('Conflicting runtime secret sources');
+                return;
+            }
+            targets.set(target, file);
+            secrets[key] = { file }; mounts.push({ source: key, target });
+        };
         for (const [key,file] of Object.entries(bindings?.secrets ?? {})) {
             const target = INTEGRATION_SECRET_FILES[key as keyof typeof INTEGRATION_SECRET_FILES];
             secret(`${a.name}-integration-${target}`, file!, target);
@@ -136,6 +147,24 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             for (const [key,file,target] of [['TOKEN_ENC_KEY_FILE',e.tokenKeyFile,'google-token-key'],['LARES_GOOGLE_CLIENT_ID_FILE',e.clientIdFile,'google-client-id'],['LARES_GOOGLE_CLIENT_SECRET_FILE',e.clientSecretFile,'google-client-secret']]) {
                 secret(`${a.name}-${target}`,file,target);environment[key]=`/run/secrets/${target}`;
             }
+        }
+        // Personal mailbox credentials use only this root-configured registry, independently
+        // of the legacy email-door principal and selected organisation.
+        googleSecretFiles(a); // Reject an ambiguous shared token key before publishing anything.
+        if (a.personalGoogle) {
+            if (a.role !== 'chief-of-staff') throw new Error('Role has no personal Gmail reader');
+            const config = personalGoogleSchema.parse(a.personalGoogle);
+            const clients: Record<string, {clientIdFile: string; clientSecretFile: string}> = {};
+            for (const org of Object.keys(config.clients).sort()) {
+                const client = config.clients[org]!;
+                const id = `personal-google-${org}-id`, key = `personal-google-${org}-secret`;
+                secret(`${a.name}-${id}`, client.clientIdFile, id);
+                secret(`${a.name}-${key}`, client.clientSecretFile, key);
+                clients[org] = { clientIdFile: `/run/secrets/${id}`, clientSecretFile: `/run/secrets/${key}` };
+            }
+            secret(`${a.name}-google-token-key`, config.tokenKeyFile, 'google-token-key');
+            environment.TOKEN_ENC_KEY_FILE = '/run/secrets/google-token-key';
+            environment.LARES_PERSONAL_GOOGLE_CLIENTS = JSON.stringify(clients);
         }
         secret(`${a.name}-gateway-key`, r.gatewayKeyFile, 'gateway-key');
         if (bindings?.ownerId) {
