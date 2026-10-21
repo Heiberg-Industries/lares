@@ -1,0 +1,91 @@
+# ADR 0023 — Member authority and conversation audiences
+
+**Date:** 2026-10-21
+**Status:** Accepted (contract groundwork; runtime integration pending)
+**Amends:** ADR-0015, ADR-0017 and ADR-0020 by specifying future authority boundaries
+
+## Context
+
+An agent's grants alone cannot decide what it may reveal in a conversation with several
+people. The engine needs shared terms for the member an action serves, the human who actually
+spoke, the audience receiving results, and the account and resource involved. These terms must
+also survive scheduled work and approval pauses. Existing identity resolution and approval
+ledger evidence remain separate; neither is replaced by a second authentication engine.
+
+## Decision
+
+1. `@lares/agent-kit/authority-contract` exports strict, transport-independent schemas and
+   inferred types. Unknown fields are refused, including nested credential fields. These
+   are secret-free metadata contracts: no credential references, custody paths, tokens or raw
+   provider payloads belong in them. Labels and reasons must contain display-safe metadata;
+   shape validation cannot detect secrets placed inside an otherwise valid string.
+2. A member has a stable identity, organisation, existing `OrgRole`, and lifecycle status.
+   Provider identity is issuer plus subject and tenant where relevant. Email equality never
+   links identities. Console sign-in and connected-account consent are separate. New members
+   and company accounts begin draft-and-ask. Only the authorised company account manager may
+   expand company automation; personal automation may be expanded only by that member.
+3. A turn records its acting member separately from its authentic human speaker. Jobs act
+   for their owner and have no human speaker. Approval resumes retain the original actor;
+   the resolver is separate. Resumed jobs retain their job and run identifiers and null
+   speaker. A null actor is limited to unknown-speaker place-only access. It never grants
+   organisation or private-source access. Trusted admission must verify these identities;
+   parsing an object does not verify who supplied it.
+4. An audience is known, nonempty, and contains verified members or externally scoped
+   platform/workspace/subject identities. Unknown membership or unresolved stale authority
+   refuses access. The pure reader comparison requires the whole audience to fit within
+   current readers and, for published material, the readers captured at publication. Missing
+   readers refuse. A widened audience or changed place starts a fresh session. Results,
+   counts, histories and artifacts must all follow this boundary without revealing that an
+   inaccessible source exists. Place outsiders see only that place's eligible conversation
+   and area. Revision freshness is resolved by trusted consumers, never inferred from parsing.
+5. Ownership is explicit and separate from grants, agent stewardship/editing, account
+   management and credential custody. Organisation membership grants exclude restricted
+   members. Owner or administrative status does not inherit private credentials or data.
+   Agent reach intersects its grants, the acting member's authority and the audience; there
+   are no implicit company-wide editors.
+6. Accounts and resource bindings use stable identifiers. Company resources require explicit
+   bindings; labels confer no authority. Account selection rechecks generation and grants
+   before resolving credentials. Receipts contain only neutral identity, action, account,
+   resource, provider receipt and approval or automation provenance metadata.
+7. Exact-action approvals bind actor, agent, call, audience revision, account generation,
+   optional resource/brand/template, action and payload hash, policy revision and expiry.
+   Missing identities or changed payload, account, resource, template or authority refuse,
+   as do expired or revoked approvals. Own-account approval requires its member; company
+   approval requires current approve authority. Engine always-ask rules still win. Existing
+   ledger evidence proves neither current authorization nor exactly-once execution.
+8. Jobs bind owner, delivery audience, account generations, template/scope hashes and
+   authority reference. Each execution needs a fresh session and current authority. Removed
+   owners, changed scope/template, revoked grants/accounts, reconsent, import or pending
+   adoption stop execution. Adoption explicitly renews authority. Imported jobs require
+   disabled pending-adoption state; imported approvals and actions remain disabled too.
+   Shared delivery is not company authentication.
+9. Budget attribution identifies installation, member, agent, place, optional paired job/run
+   and one selected gateway endpoint. Denied and unavailable are explicit outcomes. Missing
+   attribution or unavailable enforcement cannot fall back to another route. Shapes do not
+   prove enforcement at the gateway; a controlled live probe remains required.
+10. Vault bindings name the area, kind, owner/resource, backing store, relative path and
+    access revision. Writes additionally bind content revision, origin and turn authority;
+    changed files refuse. Access-derived mounts preserve one logical taste home, with no
+    private directory fallback from agent ownership and no second people's store. Frontmatter
+    cannot change ownership or access. Existing origin vocabulary is reused.
+11. Import v1 inventories every declared application category, including zero-count safety,
+    sync, settings and suppression categories, with counts/checksums and stable identity and
+    provenance mappings. Contacts, source links and retained domain records (including CRM,
+    Tracks and calendar/mail cache records) have explicit inventory categories. Only conversation usability may fall back to a recoverable archive.
+    Every other omission or unresolved mapping blocks an actual move. Reconciliation checks
+    category completeness, counts and unique mappings; it cannot verify archive contents or
+    checksums without storage integration. Ordinary exports contain no secrets; protected
+    transfer/reconnect inventory is separate metadata. Reconnect remains outstanding until
+    resolved. Import never infers company sharing.
+
+## Consequences
+
+Consumers can share reviewed wire shapes without copying authority rules. Pure audience and
+inventory comparisons are useful building blocks, not permission decisions. The category
+inventory is versioned; additional application categories require an explicit contract revision.
+
+This change integrates no runtime path, changes no database and supplies no runnable
+multi-user isolation guarantee. Admission adapters, current membership/grant/revision checks,
+source filtering, approval execution, gateway enforcement, storage/import verification and
+controlled two-member acceptance remain future work. No third-party response handling is
+introduced and no provider-backed proof is claimed.

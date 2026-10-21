@@ -96,6 +96,7 @@
     },
     "./readability-client": "./src/readability-client.ts",
     "./identity": "./src/identity.ts",
+    "./authority-contract": "./src/authority-contract.ts",
     "./cross-member": "./src/cross-member.ts",
     "./ratchet-store": "./src/ratchet-store.ts",
     "./connections": "./src/connections.ts",
