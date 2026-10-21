@@ -99,8 +99,9 @@ export class PgAccountStore {
       return { accountId, generation, lifecycleRevision: r.lifecycle_revision };
     });
   }
-  async setStatus(memberId: string, expected: AccountUpdate,
+  async setStatus(memberId: string, input: AccountUpdate,
     status: 'needs_reconsent' | 'revoked' | 'error'): Promise<ConnectedAccountView> {
+    const expected = updateSchema.parse(input);
     const reasons = { needs_reconsent: 'consent-required', revoked: 'revoked-by-member', error: 'provider-unavailable' } as const;
     if (!Object.hasOwn(reasons, status)) throw new AccountAccessError();
     return this.transaction(memberId, async db => {

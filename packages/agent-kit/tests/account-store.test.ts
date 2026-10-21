@@ -134,6 +134,43 @@ describe('personal connected accounts', () => {
     await expect(store.setStatus('member-a', old, 'error')).rejects.toThrow(AccountAccessError);
     expect((await store.read('member-a', a.id)).generation).toBe(a.generation);
   });
+  it('snapshots status-change account and revision before waiting for a database connection', async () => {
+    const a = await create();
+    const original = await ticket(a);
+    adapter.verifyAccount = vi.fn(async () => ({ ...identity, subject: 'other-account' }));
+    const b = await create();
+    const stopped = await store.setStatus('member-a', await ticket(b), 'revoked');
+    const restored = await trusted().renew('member-a', await ticket(stopped), null);
+    const other = await ticket(restored);
+    const waitingPool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
+    const occupied = await waitingPool.connect();
+    const waitingStore = new PgAccountStore(waitingPool);
+    const pending = waitingStore.setStatus('member-a', original, 'revoked');
+    Object.assign(original, other);
+    occupied.release();
+    try {
+      const result = await pending;
+      expect(result.id).toBe(a.id);
+      expect(result.status).toBe('revoked');
+      expect(await store.read('member-a', b.id)).toEqual(restored);
+    } finally { await waitingPool.end(); }
+  });
+  it('cannot refresh a stale status-change revision by mutating its ticket during a database wait', async () => {
+    const a = await create();
+    const stale = await ticket(a);
+    await trusted().renew('member-a', stale, null);
+    const fresh = await ticket(a);
+    const waitingPool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
+    const occupied = await waitingPool.connect();
+    const waitingStore = new PgAccountStore(waitingPool);
+    const pending = waitingStore.setStatus('member-a', stale, 'revoked');
+    Object.assign(stale, fresh);
+    occupied.release();
+    try {
+      await expect(pending).rejects.toThrow(AccountAccessError);
+      expect((await store.read('member-a', a.id)).status).toBe('ok');
+    } finally { await waitingPool.end(); }
+  });
   it('serializes competing reviewed replacements and keeps the losing transition out', async () => {
     const a = await create();
     const old = await ticket(a);
