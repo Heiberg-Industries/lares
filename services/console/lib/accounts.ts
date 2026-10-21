@@ -11,7 +11,7 @@ import type { GoogleAccountDTO, GoogleOrg } from "./contracts";
 /**
  * The principal the console reads and writes `oauth_tokens` rows under.
  *
- * Box 085 (`services/box/sql/001_baseline.sql`, ruling D4) renamed
+ * The baseline migration (`services/box/sql/001_baseline.sql`) renamed
  * every legacy principal spelling onto the identity register's id, so the DEFAULT here is the
  * owner key this console already uses for every other person-keyed row (`ownerId()`, the same
  * rule as the fleet's own `services/chief-of-staff/lib/principals.ts`) rather than a hard-coded

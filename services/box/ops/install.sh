@@ -17,7 +17,7 @@
 # NO SUDO ANYWHERE. This refuses when it is not already root; it never re-executes
 # itself with elevated privilege behind your back.
 #
-# OWNER DECISION C7 (a starting point, not a measurement): the memory and disk floors
+# OWNER DECISION (a starting point, not a measurement): the memory and disk floors
 # below are the smallest numbers that leave room for Postgres, a gateway at its vendor
 # floor and one agent — nothing in this repository has measured the running fleet, so
 # both numbers live in ONE place each (LARES_MIN_MEMORY_MB, LARES_MIN_DISK_MB) and every
@@ -612,7 +612,7 @@ if [ "$DRY_RUN" -eq 0 ]; then
 fi
 
 # --- 7. the installation's own credentials -----------------------------------------
-# OWNER DECISION A1: a secret is a FILE under /etc/lares/secrets/, root:lares 0440, mounted
+# OWNER DECISION: a secret is a FILE under /etc/lares/secrets/, root:lares 0440, mounted
 # into containers as a Docker secret. Never an environment value (they leak into
 # `docker inspect`, `ps` and every crash report), and never shown back.
 #

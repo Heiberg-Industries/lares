@@ -2,7 +2,7 @@
 // bin/generate-connections.ts — writes BOTH generated integration files from the integration
 // manifests and integrations/installation.json:
 //
-//   src/connections.ts         — what the console shows (W6A-s3)
+//   src/connections.ts         — what the console shows
 // src/integration-secrets.ts — what the keeper may MOUNT
 //
 //   pnpm -C packages/agent-kit run generate:connections

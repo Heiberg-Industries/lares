@@ -7,7 +7,7 @@
 //
 // One list (`@lares/vault-format/settings`), one generator, one committed shell fragment: that is
 // what stops the guard from drifting out of step with `SETTINGS` the way `images/agent-runtime/
-// start.sh`'s hand-written `:?` list already has, twice (W8A-s2 found two names the code reads
+// start.sh`'s hand-written `:?` list already has, twice (it missed two names the code reads
 // that nothing declared). Never hand-edit the generated file.
 //
 // Run BY HAND after a setting's `requiredFor` changes. `packages/agent-kit/tests/

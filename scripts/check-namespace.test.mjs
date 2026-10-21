@@ -52,6 +52,35 @@ test('an underscore or a literal escape before the word still counts as the word
   assert.equal(embedded.status, 0);
 });
 
+// Internal planning labels: one rejected input and one near-miss per pattern.
+const labelCases = [
+  ['slice id', '// W8B-s5 added this\n', '// W3C is a name, and s5 alone is fine\n'],
+  ['slice id with a letter suffix', 'see W5I-s7b\n', 'W5I-sprint\n'],
+  ['fix round', '// Fix round 2: hardened\n', 'a round of fixes; round 2 of the tournament\n'],
+  ['controller ruling', 'per the controller ruling\n', 'the controller decides; a ruling was made\n'],
+  ['migration number', 'Box 085 renamed it\n', 'the box 85 items; a box 4000 pixels wide\n'],
+  ['owner decision', 'owner decision C1 says so\n', 'the owner decision was to wait; owner decisions\n'],
+  ['ruling', 'ruling D4 applies\n', 'ruling out the rest; ruling 4\n'],
+];
+for (const [name, bad, ok] of labelCases) {
+  test(`planning label (${name}) is rejected, a near-miss passes`, () => {
+    const rejected = run({ 'src/a.ts': bad });
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /src\/a\.ts:1 \(internal planning label/);
+    assert.equal(run({ 'src/a.ts': ok }).status, 0);
+  });
+}
+
+test('planning labels are tolerated only in the dated board evidence records', () => {
+  const label = 'measured at W2-s11 after box 086\n';
+  assert.equal(run({ 'packages/board-evals/proofs/p.md': label }).status, 0);
+  assert.equal(run({ 'packages/board-evals/snapshots/s.md': label }).status, 0);
+  assert.equal(run({ 'packages/board-evals/src/x.ts': label }).status, 1);
+  // Shipped migration files are referenced by release records and never rewritten.
+  assert.equal(run({ 'services/chief-of-staff/sql/006-x.sql': '-- upgrade (W2-s8c)\n' }).status, 0);
+  assert.equal(run({ 'services/chief-of-staff/lib/x.ts': '// upgrade (W2-s8c)\n' }).status, 1);
+});
+
 test('an unreadable deny-list file fails the check', () => {
   const dir = mkdtempSync(join(tmpdir(), 'ns-check-'));
   spawnSync('git', ['init', '-q'], { cwd: dir });

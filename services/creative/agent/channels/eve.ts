@@ -65,7 +65,7 @@ function routePassword(): string {
  * is worth writing out rather than leaving to be inferred: this agent believes the header because
  * the request already proved it knows the agent's own route password, so **anyone holding that
  * password can claim to be any member**. Today that is the console container and the keeper, both
- * on the owner's own server (owner decision B3, and the same sentence is in
+ * on the owner's own server (an owner decision, and the same sentence is in
  * `docs/decisions/0022-the-tested-install-path.md`). The claim is still only a claim:
  * `lib/principals.ts` checks the named member against this agent's own allow-list before it may
  * approve anything, and an unset list admits nobody.
