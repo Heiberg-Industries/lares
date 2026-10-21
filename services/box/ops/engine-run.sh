@@ -73,13 +73,15 @@ engine_resolve_target_image() {
 #   SCRIPT is relative to services/box inside the image (migrate.ts, bin/render-stack.ts, ...).
 #   --env is for plain settings only; a secret is handed over as a file under a --ro mount.
 engine_run() {
+  local runtime_user=0:0
   local -a docker_args=(
-    run --rm --network host --user 0:0 --read-only --tmpfs /tmp
+    run --rm --network host --read-only --tmpfs /tmp
     --cap-drop ALL --security-opt no-new-privileges
     -e HOME=/tmp -w /app/services/box
   )
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --runtime-user) runtime_user=10001:10001; shift ;;
       --ro) docker_args+=(-v "$2:$2:ro"); shift 2 ;;
       --rw) docker_args+=(-v "$2:$2"); shift 2 ;;
       --env) docker_args+=(-e "$2"); shift 2 ;;
@@ -90,6 +92,6 @@ engine_run() {
   [ -n "$ENGINE_IMAGE" ] || { echo "engine_run: no engine image is known" >&2; return 2; }
   local script="$1"
   shift
-  docker "${docker_args[@]}" --entrypoint /app/services/box/node_modules/.bin/tsx \
+  docker "${docker_args[@]:0:4}" --user "$runtime_user" "${docker_args[@]:4}" --entrypoint /app/services/box/node_modules/.bin/tsx \
     "$ENGINE_IMAGE" "/app/services/box/$script" "$@"
 }

@@ -2,7 +2,7 @@
 Description=Rehearse a restore of the Lares off-box backup
 Wants=network-online.target
 After=network-online.target docker.service
-RequiresMountsFor=/srv/lares /srv/taste
+RequiresMountsFor=/srv/lares /srv/taste /srv/vault /var/lib/lares-vault-git
 
 [Service]
 Type=oneshot

@@ -32,6 +32,19 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
 fi
 
+
+# A provisioned Vault is one inventory plus both fixed storage roots, never optional pieces.
+VAULT_STORAGE_PRESENT=0
+VAULT_STORAGE_PATHS=()
+vault_storage_unlock() { :; }
+VAULT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault-storage.sh"
+if [ -r "$VAULT_HELPER" ]; then
+  . "$VAULT_HELPER"
+  vault_storage_load "${LARES_PREFIX:-}" || exit 1
+elif [ -e "${LARES_PREFIX:-}/srv/vault" ] || [ -e "${LARES_PREFIX:-}/var/lib/lares-vault-git" ] || [ -e "${LARES_PREFIX:-}/srv/lares/installation/vault-storage.json" ]; then
+  echo 'vault storage: recovery helper missing; refusing an incomplete operation' >&2; exit 1
+fi
+
 # Keeper configuration includes credential references and its secrets live here.
 # A Lares installation must never report a complete backup without escrow encryption.
 if [ -d /etc/lares ] && [ -z "${AGE_SECRETS_RECIPIENT:-}" ]; then
@@ -72,8 +85,15 @@ DUMP=/var/backups/pg
 mkdir -p "$DUMP"
 if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   # A failed current-layout backup must not strand plaintext database dumps.
-  trap 'rm -rf -- "$DUMP"' EXIT
+  trap 'vault_storage_unlock; rm -rf -- "$DUMP"' EXIT
 fi
+
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
+  vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify-files
+  vault_storage_lock
+  vault_storage_load "${LARES_PREFIX:-}"
+fi
+if declare -F vault_storage_verify >/dev/null; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify; fi
 
 dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
 
@@ -207,6 +227,10 @@ else
     [ -d "$p" ] && PATHS+=("$p")
   done
 fi
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
+  PATHS+=("${VAULT_STORAGE_PATHS[@]}")
+  trap 'vault_storage_unlock; rm -rf -- "$DUMP"' EXIT
+fi
 # Retained Eve file/blob volumes are separate from the PostgreSQL workflow stores.
 # Enumerate exact installation-owned names in backup.env; never archive dbdata live.
 for volume in ${LARES_WORKFLOW_VOLUMES:-}; do
@@ -216,7 +240,7 @@ for volume in ${LARES_WORKFLOW_VOLUMES:-}; do
   PATHS+=("$mount")
 done
 "${RESTIC[@]}" backup "${PATHS[@]}" \
-  --tag nightly --exclude-caches --exclude /opt/agent-box/.env
+  --tag nightly --exclude-caches --exclude '**/.git/lares-vault.lock' --exclude /opt/agent-box/.env
 
 # 4. NO heartbeat here — deliberately. This block used to be
 #      `if [ -n "${HC_URL:-}" ]; then curl ... "$HC_URL"; fi`
@@ -231,4 +255,5 @@ done
 #    One job, one liveness owner, one alert (ADR-0012 rule 4).
 
 # 5. Local cleanup — the snapshot is safely off-box now.
+vault_storage_unlock
 rm -rf "$DUMP"

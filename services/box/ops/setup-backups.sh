@@ -425,7 +425,7 @@ if [ "$ASSUME_YES" != 1 ] && [ "$DRY" != 1 ]; then
 fi
 
 # --- 8. the files ----------------------------------------------------------------------------
-SCRIPTS="backup.sh backup-verify.sh restore-drill.sh"
+SCRIPTS="backup.sh backup-verify.sh restore-drill.sh vault-storage.sh engine-run.sh"
 UNITS="lares-backup.service lares-backup.timer lares-backup-verify.service lares-backup-verify.timer lares-restore-drill.service lares-restore-drill.timer"
 
 for f in $SCRIPTS $UNITS; do
@@ -519,7 +519,7 @@ else
   say "the backup repository already exists and opens with this password; reusing it"
 fi
 
-systemctl daemon-reload
+bash "$HERE/refresh-recovery.sh" --prefix "$PREFIX"
 systemctl enable --now lares-backup.timer lares-backup-verify.timer lares-restore-drill.timer
 say "the three timers are on (backup 03:00 UTC, check 05:00 UTC, restore rehearsal monthly)"
 

@@ -100,6 +100,25 @@ DRILL_SCRATCH_ROOT="${DRILL_SCRATCH_ROOT:-/var/tmp}"
 # it in backup.env if a real drill ever fails this check with room to spare.
 DRILL_MIN_FREE_MB="${DRILL_MIN_FREE_MB:-5120}"
 
+
+# A provisioned Vault is one inventory plus both fixed storage roots, never optional pieces.
+VAULT_STORAGE_PRESENT=0
+VAULT_STORAGE_PATHS=()
+vault_storage_unlock() { :; }
+VAULT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault-storage.sh"
+if [ -r "$VAULT_HELPER" ]; then
+  . "$VAULT_HELPER"
+  vault_storage_load "${LARES_PREFIX:-}" || exit 1
+elif [ -e "${LARES_PREFIX:-}/srv/vault" ] || [ -e "${LARES_PREFIX:-}/var/lib/lares-vault-git" ] || [ -e "${LARES_PREFIX:-}/srv/lares/installation/vault-storage.json" ]; then
+  echo 'vault storage: recovery helper missing; refusing an incomplete operation' >&2; exit 1
+fi
+
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
+  for path in "${VAULT_STORAGE_PATHS[@]}" "${LARES_PREFIX:-}/srv/lares/installation"; do
+    case " $DRILL_RESTORE_PATHS " in *" $path "*) ;; *) DRILL_RESTORE_PATHS="$DRILL_RESTORE_PATHS $path" ;; esac
+  done
+fi
+
 # --- 0. Scratch dir + the safety trap that always cleans it up ----------------------
 # Every scratch database this run creates, space-separated (see the DRILL_RESTORE_PATHS
 # comment above for why this is a string and not an array). Populated BEFORE each
@@ -378,6 +397,11 @@ done
 [ -z "$MISSING_DIRS" ] \
   || fail "restore of snapshot $SNAP_ID is missing or empty for:${MISSING_DIRS} — these directories should have come back with the snapshot's own content"
 
+if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
+  vault_storage_load "$SCRATCH" || fail "restored Vault inventory or stores disagree"
+  vault_storage_verify "$SCRATCH" "$DB_NAME" verify-files || fail "restored Vault Git integrity failed"
+fi
+
 # --- 4. Load each dump into a throwaway database and compare table counts -----------
 # Reads the LIVE database only to count its tables — never anything else, and never a
 # write. `pg_tables` (not information_schema.tables) so views never inflate the count.
@@ -407,6 +431,10 @@ for dumpfile in "${dumps[@]}"; do
 
   drill_count=$(table_count "$drill_db") || fail "could not read the table count of restored database $drill_db"
   live_count=$(table_count "$db") || fail "could not read the live table count of $db to compare the restore against"
+
+  if declare -F vault_storage_verify >/dev/null && [ "$db" = "$DB_NAME" ]; then
+    vault_storage_verify "$SCRATCH" "$drill_db" verify-snapshot || fail "restored Vault metadata and files disagree"
+  fi
 
   case "$drill_count" in
     ''|*[!0-9]*) fail "restored database $drill_db returned a non-numeric table count ('$drill_count') — treat an unreadable check as failing, never as passing" ;;
