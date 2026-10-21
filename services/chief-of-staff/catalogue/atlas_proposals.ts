@@ -1,10 +1,7 @@
 // List the open Atlas proposals: re-derived venture-note narratives waiting on the owner's
-// approval. Read-only, ungated — the atlas_resolve_proposal decision tool is the gated one.
+// approval. Read-only, ungated; the atlas_resolve_proposal decision tool is the gated one.
 //
-// The Atlas equivalent of notion_proposals.ts. There is no prior agent-runtime "atlas
-// proposal" hand to port from (the old system's Telegram `ap:a:`/`ap:r:` buttons were wired
-// directly in bin/chief-of-staff.ts, not behind a hand), so this mirrors notion_proposals.ts's shape
-// rather than an existing tool description.
+// The Atlas equivalent of notion_proposals.ts, mirroring its shape.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

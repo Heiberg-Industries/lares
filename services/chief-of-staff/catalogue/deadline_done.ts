@@ -1,4 +1,4 @@
-// Close a deadline as done, on the owner's word. GATED — a wrong close ends in a penalty, the
+// Close a deadline as done, on the owner's word. GATED: a wrong close ends in a penalty, the
 // same reasoning `deadline_mint_statutory`'s header states for its own gate.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

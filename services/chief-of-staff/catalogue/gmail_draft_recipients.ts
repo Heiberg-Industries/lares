@@ -1,11 +1,11 @@
 /**
- * gmail_draft_recipients — change who an EXISTING draft goes to.
+ * gmail_draft_recipients: change who an EXISTING draft goes to.
  *
- * Owner: recipients of a drafted reply must be editable "both via Gmail AND by telling the chief of staff".
- * Gmail already works — it is a normal draft. This is the telling-chief-of-staff half: "add Mats to the
+ * Recipients of a drafted reply must be editable both via Gmail AND by telling the agent.
+ * Gmail already works, since it is a normal draft. This is the telling-the-agent half: "add Mats to the
  * reply to Henrik" resolves to the draft the triage remembered for that thread (sql/001_baseline.sql), reads
  * its raw message, rewrites ONLY the To/Cc headers (lib/draft-recipients.ts) and writes the same
- * bytes back with drafts.update — body, HTML part and signature untouched, same draft id.
+ * bytes back with drafts.update: body, HTML part and signature untouched, same draft id.
  *
  * Autonomous by default because this only edits an unsent draft. An installation can re-gate the
  * specific action. Refuses a change that would leave nobody in To.

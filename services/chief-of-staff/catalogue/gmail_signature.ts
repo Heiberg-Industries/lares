@@ -1,5 +1,5 @@
-// The account's configured Gmail signature (HTML), for the given send-as address. Ported
-// from hands/gmail.ts's "signature" action (hands/gmail.ts:17). Best-effort: any googleapis
+// The account's configured Gmail signature (HTML), for the given send-as address.
+// Best-effort: any googleapis
 // error degrades to "" inside lib/google.ts's GmailClient, never throws.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

@@ -1,8 +1,8 @@
-// Approve or reject a Notion→vault proposal. GATED WRITE — requires the owner to tap Approve on the card on every
-// call; the eve approval card this renders (id + decision, shown before he taps) is what
-// replaces the old Telegram `np:a:`/`np:r:` button pair.
+// Approve or reject a Notion→vault proposal. GATED WRITE: requires the owner to tap Approve on the card on every
+// call; the eve approval card this renders (id + decision, shown before the owner taps) is the only
+// way to resolve a proposal in this lane.
 //
-// Input is the plan's literal `{id, decision}` shape — nothing more. `resolveProposal`'s own
+// Input is just `{id, decision}`. `resolveProposal`'s own
 // atomicity (throws when `id` is not currently open) is the safety net against a stale/wrong
 // id; the watch schedule that offers this tool always announces id+path together immediately
 // before requesting a decision, so there is no long window for the model's belief about which

@@ -1,9 +1,6 @@
-// List the open Notion→vault proposals. Read-only, ungated — matches remind_list.ts's
+// List the open Notion→vault proposals. Read-only, ungated, matching remind_list.ts's
 // verdict for a list tool: only the decision (notion_resolve_proposal) needs the owner's approval.
-//
-// Ported from services/agent-runtime/lib/adapters/hands/notion.ts's list_proposals action
-// (and its renderProposals text formatter), against lib/proposals-store.ts instead of the
-// old NotionDeps indirection.
+// Reads lib/proposals-store.ts.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

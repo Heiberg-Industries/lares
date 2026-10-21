@@ -1,32 +1,30 @@
-// The tool pool. GENERATED — regenerate with the snippet in the plan, Task 7.
-// Each entry names the capability whose grant decides whether a session gets the tool.
+// The tool pool. Each entry names the capability whose grant decides whether a session gets the tool.
 //
 // It is a real module and not a glob on purpose: `eve build` bundles what it can see statically,
 // and a directory read at runtime would resolve against .output/server/, not this folder.
-// `tests/catalogue-index.test.ts` is what keeps it honest — it holds this map against the files
+// `tests/catalogue-index.test.ts` is what keeps it honest: it holds this map against the files
 // on disk in both directions, and every capability against `capabilityOfTool`.
 //
 // ONE THING IS DELIBERATELY NOT HERE, and one thing IS here for a reason worth stating.
 //
-// `commercial_who_to_contact` stays in `agent/tools/` — it is gated by the "commercial" SKILL
+// `commercial_who_to_contact` stays in `agent/tools/`. It is gated by the "commercial" SKILL
 // declaration (`resolveSkillTool`), not by a capability grant. `grantedToolNames` below only ever asks a capability's
 // grant whether a tool is present; it has no notion of a skill declaration. Moving this tool into
-// the pool would silently swap what gates it — present whenever `twenty` is granted,
-// even with the "commercial" skill undeclared — rather than genuinely widening what a catalogue
+// the pool would silently swap what gates it (present whenever `twenty` is granted,
+// even with the "commercial" skill undeclared) rather than genuinely widening what a catalogue
 // entry can express. `tests/catalogue-index.test.ts` does not expect to find it here, and
-// `tests/tool-harness.test.ts`'s AUTHORED map still imports it from `agent/tools/`, unmoved.
+// `tests/tool-harness.test.ts`'s AUTHORED map still imports it from `agent/tools/`.
 //
-// Ten of the chief of staff's `agent-kit__*` contributions move here as real catalogue entries (// step 2, Tasks 9-10 — the same shape Task 8 proved on the travel agent's one live kit tool,
-// `agent-kit__transit_plan`, including the "supersede the mount, don't duplicate it" pattern:
-// each of the ten `agent/extensions/agent-kit/tools/*.ts` override files below is now an
-// unconditional `disableTool` sentinel, because a resolver-emitted tool under the SAME
-// prefixed key replaces an authored/mounted tool of that name completely). THREE of the ten
-// moved — `agent-kit__vault_write`, `agent-kit__vault_file`, `agent-kit__vault_drop` —
-// carry their own `approval: always` and write to the owner's vault; the resolver in
-// `agent/tools/catalogue.ts` copies a catalogue entry's `.approval` across unconditionally, so
-// the card survives the move, and `packages/agent-kit/src/write-shape-lint.ts`'s `sourcesForTool`
-// was fixed (Task 8 §11) specifically so these three, once moved, stay inspected by the
-// ungated-write lint rather than going blind on the disabled mount files.
+// The `agent-kit__*` contributions are real catalogue entries, following the "supersede the mount,
+// don't duplicate it" pattern: each `agent/extensions/agent-kit/tools/*.ts` override file for one of
+// them is an unconditional `disableTool` sentinel, because a resolver-emitted tool under the SAME
+// prefixed key replaces an authored/mounted tool of that name completely. THREE of them
+// (`agent-kit__vault_write`, `agent-kit__vault_file`, `agent-kit__vault_drop`) carry an approval
+// and write to the owner's vault; the resolver in `agent/tools/catalogue.ts` copies a catalogue
+// entry's `.approval` across unconditionally, so the card survives, and
+// `packages/agent-kit/src/write-shape-lint.ts`'s `sourcesForTool` inspects these three in the
+// catalogue so they stay covered by the ungated-write lint rather than going blind on the
+// disabled mount files.
 import type { Catalogue } from "@lares/agent-kit/catalogue";
 import { ALWAYS_PRESENT_CAPABILITY } from "@lares/agent-kit/catalogue";
 
@@ -95,10 +93,9 @@ import twenty_set_stage from "./twenty_set_stage.js";
 import voice_guide from "./voice_guide.js";
 
 export const CATALOGUE: Catalogue = {
-  // THE THREE WRITE TOOLS, UNDER THE ONE NAME (W5C-s4). The three personal-store writes
-  // as they were, plus the required `area` and the injected authority — narrowed to the private
-  // area alone, because that is the only store they have ever written (see
-  // `agent-kit__vault_write.ts`). W5C-s6 moved the capability from `brain` to `vault`; the area
+  // THE THREE WRITE TOOLS. Each takes the required `area` and an injected authority, and is
+  // narrowed to the private area alone, because that is the only store they write (see
+  // `agent-kit__vault_write.ts`). Their capability is `vault`; the area
   // each of them is offered under is `private`, from the engine's own table (`areaOfTool`), so
   // a declaration that grants `vault` without the private area is offered none of them.
   "agent-kit__vault_drop": { capability: "vault", tool: agent_kit__vault_drop },
@@ -106,11 +103,10 @@ export const CATALOGUE: Catalogue = {
   "agent-kit__vault_write": { capability: "vault", tool: agent_kit__vault_write },
   "agent-kit__signals_recent": { capability: "signals", tool: agent_kit__signals_recent },
   "agent-kit__transit_plan": { capability: "transit", tool: agent_kit__transit_plan },
-  // ONE SET OF NOTE TOOLS FOR BOTH AREAS (W5C-s3). These four replace the `atlas_list`,
-  // `atlas_read` and `atlas_search` entries that used to sit below: the area is an input now,
-  // and each tool refuses an area this agent's definition does not grant. W5C-s6 moved the
-  // capability from `brain` to `vault`, together with the grant that decides them — one edit,
-  // because either half alone empties every session's note tools.
+  // ONE SET OF NOTE TOOLS FOR EVERY AREA. The area is an input, and each tool refuses an area
+  // this agent's definition does not grant. The capability is `vault`, which is also what the
+  // grant that decides them names: the two must change together, because either half alone
+  // empties every session's note tools.
   "agent-kit__vault_backlinks": { capability: "vault", tool: agent_kit__vault_backlinks },
   "agent-kit__vault_list": { capability: "vault", tool: agent_kit__vault_list },
   "agent-kit__vault_read": { capability: "vault", tool: agent_kit__vault_read },
@@ -153,10 +149,10 @@ export const CATALOGUE: Catalogue = {
   obligation_dismiss: { capability: "obligation", tool: obligation_dismiss },
   outreach_track: { capability: "outreach", tool: outreach_track },
   person_lookup: { capability: "person", tool: person_lookup },
-  // `asksWithoutWriting`: W7D-s3 gave this tool an approval gate — it asks before opening a link
-  // in a turn that has already read somebody else's words — but it still only fetches and returns
+  // `asksWithoutWriting`: this tool has an approval gate (it asks before opening a link
+  // in a turn that has already read somebody else's words) but it still only fetches and returns
   // text. Without the marker the catalogue would read the gate as "write class" and drop the tool
-  // from this `read`-scoped grant entirely (caught by the tool-list snapshot, 75 → 74).
+  // from this `read`-scoped grant entirely (the tool-list snapshot catches that).
   read_url: { capability: "read_url", tool: read_url, asksWithoutWriting: true },
   remember: { capability: "vault", tool: remember },
   remind_cancel: { capability: "remind", tool: remind_cancel },

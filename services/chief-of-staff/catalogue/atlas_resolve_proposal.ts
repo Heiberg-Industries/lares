@@ -1,8 +1,8 @@
-// Approve or reject an Atlas proposal. GATED WRITE — requires the owner to tap Approve on the card on every call; the
-// eve approval card this renders (id + decision, shown before he taps) replaces the old
-// Telegram `ap:a:`/`ap:r:` button pair for this lane.
+// Approve or reject an Atlas proposal. GATED WRITE: requires the owner to tap Approve on the card on every call. The
+// eve approval card this renders (id + decision, shown before the owner taps) is the only way to
+// resolve a proposal in this lane.
 //
-// Input is the plan's literal `{id, decision}` shape — nothing more. `resolveAtlasProposal`'s
+// Input is just `{id, decision}`. `resolveAtlasProposal`'s
 // own atomicity (throws when `id` is not currently open) is the safety net against a
 // stale/wrong id; the watch schedule that offers this tool always announces id+path together
 // immediately before requesting a decision, so there is no long window for the model's belief

@@ -1,35 +1,33 @@
 /**
- * catalogue/facts_list.ts — read the owner's standing facts back (W4A-s4 follow-up).
+ * catalogue/facts_list.ts: read the owner's standing facts back.
  *
- * THE HOLE THIS CLOSES. `lib/standing-facts.ts`'s `FACT_LOOKUP_TOOL` names the tool an agent
- * could call to read back a fact the per-session character budget left out of the "## What I
- * have been told" block — until this tool existed, that name was `null`, because nothing here
- * listed standing facts back to the model at all (`remember` writes one, `forget` retires one by
- * id, neither reads the table back). A budget that dropped the oldest facts with no such tool
- * would be a one-way door: words the owner actually said, gone from the only place the agent can
- * see them, with no call it could make to get them back. This tool is that call, so
- * `buildFactsCore` can honestly start cutting at the budget instead of only reporting.
+ * WHY IT EXISTS. `lib/standing-facts.ts`'s `FACT_LOOKUP_TOOL` names the tool an agent can call to
+ * read back a fact the per-session character budget left out of the "## What I have been told"
+ * block. `remember` writes one and `forget` retires one by id, but neither reads the table back, so
+ * without this tool a budget that dropped the oldest facts would be a one-way door: words the owner
+ * actually said, gone from the only place the agent can see them, with no call it could make to get
+ * them back. This tool is that call, so `buildFactsCore` can honestly cut at the budget instead of
+ * only reporting.
  *
  * READ-ONLY AND UNGATED, same posture as `remember`: this reaches nobody outside the box, it
  * only reads rows the CHECK constraint (`services/box/sql/002_standing_facts.sql`) already restricts
- * to `origin = 'owner'`, and it returns only what the owner said — no third-party text, no
- * inference. Bounded to `MAX_STANDING_FACTS`, the same ceiling the injected block itself has
- * always used, so this tool cannot become an unbounded read the block never was.
+ * to `origin = 'owner'`, and it returns only what the owner said: no third-party text, no
+ * inference. Bounded to `MAX_STANDING_FACTS`, the same ceiling the injected block itself
+ * uses, so this tool cannot become an unbounded read the block never was.
  *
- * W5A-s3: records every id this call actually hands back (kind `standing_fact`, `memory_reads`,
- * box 075) so a later `memory_used` call can say this turn's answer opened them — the same
+ * It records every id this call actually hands back (kind `standing_fact`, in `memory_reads`)
+ * so a later `memory_used` call can say this turn's answer opened them, with the same
  * fire-and-forget posture `recordRead` documents (never throws, never delays the reply). A read
  * whose turn cannot be named (no session id, no turn id on `ctx`) records nothing rather than
  * guess.
  *
- * `retired: true` (owner ruling, 2026-09-19 afternoon) — "what have I retired?" `forget` only
- * ever sets `retired_at` on a row; nothing else listed it back, so this is the smallest change
- * that closes that hole: the same tool, one more optional input, read-only, still nothing but
- * `standing_facts` for the canonical owner. It NEVER touches the forget ledger (that table holds
+ * `retired: true` answers "what have I retired?". `forget` only ever sets `retired_at` on a row, so
+ * this is the one way to list retired facts: the same tool, one more optional input, read-only,
+ * still nothing but `standing_facts` for the canonical owner. It NEVER touches the forget ledger (that table holds
  * a one-way hash, not words, so there is nothing there to show) and a retired fact returned here
- * never enters the per-session facts block or the turn's correction note — both are built from
+ * never enters the per-session facts block or the turn's correction note: both are built from
  * `listActiveFacts` alone, which a retired row has already dropped out of. `false` or absent
- * behaves exactly as before this input existed.
+ * lists active facts only.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";

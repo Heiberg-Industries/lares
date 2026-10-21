@@ -1,12 +1,10 @@
-// Propose a new reminder. GATED WRITE — requires the owner to tap Approve on the card on every call.
+// Propose a new reminder. GATED WRITE: requires the owner to tap Approve on the card on every call.
 //
-// Deliberate scope boundary: this does NOT port `services/agent-runtime/lib/adapters/
-// reminders/parse.ts`'s natural-language `parseWhen` (the old hand's "in 5 minutes" / "every
-// weekday 09:00" text parser). The model itself computes `dueAt` (and `recurrence`, in the
+// The tool takes structured fields only; it does no natural-language time parsing ("in 5 minutes",
+// "every weekday 09:00"). The model itself computes `dueAt` (and `recurrence`, in the
 // `daily:HH:MM` / `weekdays:HH:MM` / `weekly:<dow>:HH:MM` format `lib/recurrence.ts` consumes)
-// from conversational context — the idiomatic pattern for an LLM tool, and it removes an
-// entire parser's worth of surface this task would otherwise have to re-test. `remind_set`
-// takes structured fields only.
+// from conversational context, the idiomatic pattern for an LLM tool, which avoids carrying an
+// entire parser's worth of surface to maintain and test.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -21,17 +19,15 @@ import { approvalFor } from "../lib/board.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
 import { agentName } from "../lib/agent-name.js";
 
-// Matches `agent/tools/digest_run.ts`'s own AGENT constant: both write to shared Postgres
-// tables (`reminders`, `digest_requests`) that the old runtime's own agent='chief-of-staff' rows also
-// use, on the same `db` service.
+// Reminders and digest requests (`catalogue/digest_run.ts`) land in shared Postgres tables
+// keyed by `agent`, so both tools write the row under `agentName()`.
 
 const RECURRENCE_RE = /^(daily:\d{2}:\d{2}|weekdays:\d{2}:\d{2}|weekly:(mon|tue|wed|thu|fri|sat|sun):\d{2}:\d{2})$/;
 
 /**
- * Default threadRef per door when the caller doesn't name one — the owner's own standing address
- * on that door, mirroring `services/agent-runtime/lib/adapters/reminders/wiring.ts`'s
- * `makeTargetResolver` (Slack → his DM/user id, Telegram → his chat id) and matching
- * `digest_run.ts`'s existing use of `allowedSlackUserIds[0]` as a Slack target.
+ * Default threadRef per door when the caller doesn't name one: the owner's own standing address
+ * on that door (Slack → the owner's DM/user id, Telegram → the owner's chat id), matching
+ * `digest_run.ts`'s use of `allowedSlackUserIds[0]` as a Slack target.
  */
 function defaultThreadRef(door: "slack" | "telegram"): string | undefined {
   if (door === "slack") return allowedSlackUserIds()[0];
@@ -66,8 +62,8 @@ export default defineTool({
     const due = new Date(dueAt);
     if (Number.isNaN(due.getTime())) throw new Error(`remind_set: invalid dueAt "${dueAt}"`);
 
-    // The model has no clock (a live finding: "in 3 minutes" arrived dated JUNE
-    // 2025 — right wall-clock time, hallucinated date — and was instantly "due"). A past
+    // The model has no clock (seen live: "in 3 minutes" arrived with the right
+    // wall-clock time but a hallucinated date in the past, and was instantly "due"). A past
     // dueAt is therefore always a model error, and the error message IS the clock: it
     // carries the current time so the model recomputes correctly on its retry. 90s of
     // grace absorbs honest clock skew and approval-card latency.
@@ -107,15 +103,16 @@ export default defineTool({
     return {
       id: reminder.id,
       dueAt: due.toISOString(),
-      // The absolute rendering of what was ACTUALLY stored, on the OWNER's clock. An earlier
-      // failure was invisible because the tool returned only a UTC ISO string and the model confirmed
-      // "i morgen" — its own paraphrase of the request — while the row said three days later.
+      // The absolute rendering of what was ACTUALLY stored, on the OWNER's clock. Returning only
+      // a UTC ISO string hid a wrong date: the model confirmed "i morgen" (its own paraphrase
+      // of the request) while the row said three days later.
       //
-      // final review: `ownerTz`, not Oslo. The turn's clock block already speaks the
-      // owner's zone, so a confirmation on the home clock would have him told "Tuesday 21:00
-      // (Europe/Oslo)" about a reminder his own phone will ring at 15:00 in another time zone. The
-      // RECURRENCE stays on the home clock deliberately — `lib/recurrence.ts` computes every later
-      // firing in Oslo wall-clock time, and the tool's own description says so.
+      // `ownerTz`, not the home time zone. The turn's clock block already speaks the
+      // owner's current zone, so a confirmation on the home clock would tell the owner
+      // "Tuesday 21:00 (home zone)" about a reminder their own phone will ring at 15:00 in another
+      // time zone. The RECURRENCE stays on the home clock deliberately: `lib/recurrence.ts`
+      // computes every later firing in home-time-zone wall-clock time, and the tool's own
+      // description says so.
       dueAtLocal: formatDateTimeIn(due, await ownerTz()),
       recurrence: recurrence ?? null,
       door,

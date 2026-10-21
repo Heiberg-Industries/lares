@@ -1,13 +1,10 @@
 // Read the company linked to a CRM person, by the person's record id. Read-only HTTP
-// against TWENTY_BASE_URL.
+// against TWENTY_BASE_URL. It calls `getPersonImpl` first to resolve `companyId`.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s
-// `getCompanyForPerson`, which itself calls `getPersonImpl` first to resolve `companyId`.
-//
-// posture: three distinct "no company" outcomes are all valid, expected results —
-// person not found, person found but has no linked company, and a dangling companyId that
-// 404s — and all collapse to the same typed not-found shape the hand's description
-// promised ("...or a no-company note"). Only a genuine `TwentyUnavailableError` from either
+// Three distinct "no company" outcomes are all valid, expected results (person not found,
+// person found but has no linked company, and a dangling companyId that
+// 404s), and all collapse to the same typed not-found shape the tool's description
+// promises ("...or a no-company note"). Only a genuine `TwentyUnavailableError` from either
 // HTTP call propagates as a real error.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -61,7 +58,7 @@ export async function twentyCompanyForPerson(recordId: string): Promise<TwentyCr
 }
 
 /**
- * — the CRM company matched BY MAIL DOMAIN, for person_lookup's organisation stage.
+ * The CRM company matched BY MAIL DOMAIN, for person_lookup's organisation stage.
  *
  * Lives beside `twentyCompanyForPerson` rather than in `twenty_lookup.ts` because it answers a
  * COMPANY question, and because `buildLookupQueries` deliberately matches companies by NAME
@@ -76,7 +73,7 @@ export async function twentyCompanyForPerson(recordId: string): Promise<TwentyCr
  * Only a genuine `TwentyUnavailableError` propagates: the organisation stage must be able to tell
  * "asked, nobody there" from "could not ask".
  *
- * FIX ROUND 1 — the `ilike` is a SUBSTRING match, so a query for `bridgeco.example` matches a stored
+ * HOST VERIFICATION. The `ilike` is a SUBSTRING match, so a query for `bridgeco.example` matches a stored
  * `https://atbridgeco.example` and hands back the wrong company under the right name. Every candidate is
  * therefore host-verified here: the stored URL's host must BE the queried domain or a subdomain of
  * it (`www.northwind.example` passes, `atbridgeco.example` for `bridgeco.example` does not). The query asks for several

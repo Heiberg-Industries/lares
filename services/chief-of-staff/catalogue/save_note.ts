@@ -1,42 +1,42 @@
 /**
- * catalogue/save_note.ts — an add-only note the agent may write mid-conversation (W4B-s5,
- * ADR-0018 rule 9's companion to the per-session core).
+ * catalogue/save_note.ts: an add-only note the agent may write mid-conversation (ADR-0018 rule 9's
+ * companion to the per-session core).
  *
  * WHAT THIS IS. Both model makers recommend a tool exactly this shape, because a conversation
- * can be interrupted at any time: a working note — "the owner prefers the summary first",
- * "waiting on the supplier's reply about X" — never a fact about the owner (`remember` is that
+ * can be interrupted at any time: a working note ("the owner prefers the summary first",
+ * "waiting on the supplier's reply about X"), never a fact about the owner (`remember` is that
  * tool) and never a standing instruction.
  *
  * ADD-ONLY. There is no id in the input and no update path anywhere in this tool or in
- * `lib/agent-notes.ts` — a wrong or stale note is superseded by a newer one, never rewritten.
+ * `lib/agent-notes.ts`: a wrong or stale note is superseded by a newer one, never rewritten.
  *
  * NO ORIGIN ARGUMENT, EVER. The model is never asked, and never allowed, to say where a note
- * came from — that is computed by code: `const key = turnKeyFrom(ctx); const origin = key ?
- * stampFor("agent", key) : "third_party";`, the exact pattern WAVE-3-NOTES pins for every write
- * path. A note left on an ordinary turn is stamped `agent`; one left on a turn that has already
+ * came from; that is computed by code: `const key = turnKeyFrom(ctx); const origin = key ?
+ * stampFor("agent", key) : "third_party";`, the pattern every write path follows. A note left on
+ * an ordinary turn is stamped `agent`; one left on a turn that has already
  * read someone else's words this turn (an email, a web page) is narrowed to `third_party`,
- * however the note is worded — and a turn whose key cannot be determined at all stamps
+ * however the note is worded, and a turn whose key cannot be determined at all stamps
  * `third_party` too, the least trusted class, never the intended one (see
  * `@lares/agent-kit/origin-taint`'s header, "fails closed").
  *
- * THE WRITE STILL SUCCEEDS ON A TAINTED TURN — DELIBERATELY, UNLIKE `remember`. Owner decision
- * B3: a note is exactly where quoted material legitimately belongs, so refusing it would cost
+ * THE WRITE STILL SUCCEEDS ON A TAINTED TURN, DELIBERATELY, UNLIKE `remember`: a note is exactly
+ * where quoted material legitimately belongs, so refusing it would cost
  * the model its own working memory for no gain. The stamp is the answer, not a refusal.
  *
  * UNGATED, like `remember`: writing its own note reaches nobody outside this box. It does NOT
- * call `humanTurnRefusal` either, unlike `remember`/`forget` — a note is the agent's own, and a
+ * call `humanTurnRefusal` either, unlike `remember`/`forget`: a note is the agent's own, and a
  * scheduled turn with no owner present may legitimately want to leave one ("still waiting on X"
  * needs to survive past the brief that wrote it).
  *
  * NEVER READ BACK AS A FACT. `agent/instructions/standing-facts.ts` surfaces a session's OWN
  * notes on a later turn of the SAME conversation, and only the ones whose origin is safe to
- * reflect back — a `third_party`/`synced`-stamped note is kept, exactly as written, but is never
+ * reflect back: a `third_party`/`synced`-stamped note is kept, exactly as written, but is never
  * placed in front of the model again automatically, so outside text a turn happened to read can
  * never quietly re-enter the model's trusted context as "something I noted". Nothing reads a
- * note back in a LATER session yet — that is wave 5A's job.
+ * note back in a LATER session yet.
  *
- * FAILS SOFT ON AN INSTALLATION THAT HAS NOT APPLIED 071. The model is told plainly, in one
- * sentence, and the turn carries on — nothing is thrown.
+ * FAILS SOFT ON AN INSTALLATION WITHOUT THE NOTES TABLE. The model is told plainly, in one
+ * sentence, and the turn carries on; nothing is thrown.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -65,7 +65,7 @@ export default defineTool({
     const refusal = rejectNote(note);
     if (refusal) return { saved: false as const, message: refusal };
 
-    // NARROWING ONLY, NEVER A REFUSAL — see the module header and Owner decision B3.
+    // NARROWING ONLY, NEVER A REFUSAL (see the module header).
     const key = turnKeyFrom(ctx);
     const origin = key ? stampFor("agent", key) : "third_party";
 
@@ -85,8 +85,8 @@ export default defineTool({
       return { saved: true as const, message: "Noted." };
     } catch (err) {
       if (!isMissingTableError(err)) throw err;
-      // DEPLOY FAIL-SOFT (this installation applies SQL by hand) — the same posture
-      // `remember.ts`'s pre-005 fallback and `turn-capture.ts`'s missing-table warning take.
+      // FAIL SOFT when the notes table is missing: the same posture
+      // `turn-capture.ts`'s missing-table warning takes.
       return {
         saved: false as const,
         message:

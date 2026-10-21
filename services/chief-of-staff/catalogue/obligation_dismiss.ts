@@ -1,15 +1,14 @@
 /**
- * Close an item on the obligation radar. Ported from
- * `services/agent-runtime/lib/adapters/hands/obligation.ts`'s `obligation.dismiss` action.
+ * Close an item on the obligation radar.
  *
- * Deliberately UNGATED (no `approval`), same reasoning as the old hand: dismissal only
- * changes what the owner is SHOWN — it never sends mail, never touches a CRM record, never
- * reaches a real stranger. It is not on his approval gate list (Task 9's confirm-card set).
+ * Deliberately UNGATED (no `approval`): dismissal only
+ * changes what the owner is SHOWN. It never sends mail, never touches a CRM record, never
+ * reaches a real stranger, so it is not on the owner's approval gate list.
  *
  * Why its own tool rather than a `remind_cancel`-style action: an obligation has no due time
  * and is not in the reminder queue (lib/obligations-store.ts / sql/001_baseline.sql).
- * Overloading remind.cancel would make "cancel that" ambiguous in exactly the moment he is
- * trying to clear his list.
+ * Overloading remind.cancel would make "cancel that" ambiguous in exactly the moment the owner is
+ * trying to clear the list.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";

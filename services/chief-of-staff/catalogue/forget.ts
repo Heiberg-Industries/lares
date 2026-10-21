@@ -1,39 +1,39 @@
 /**
- * agent/tools/forget.ts — retire a standing fact the owner has superseded.
+ * catalogue/forget.ts: retire a standing fact the owner has superseded.
  *
  * The other half of `remember`. Without it the store is a ratchet: "I've switched to driving"
  * would leave the train fact standing beside the car one, and every brief afterwards would carry
- * both. A memory that cannot be corrected is worse than none, because he stops trusting the ones
+ * both. A memory that cannot be corrected is worse than none, because the owner stops trusting the ones
  * that are right.
  *
  * RETIRING IS NOT DELETING. `forgetFact` stamps `retired_at`; the row stays. The superseded fact
- * is what explains why she used to say "train", and nothing in this system is worth losing that.
+ * is what explains why the agent used to say "train", and nothing in this system is worth losing that.
  *
- * GATED: retiring a fact is a delete — `TOOL_CATEGORIES` (@lares/agent-kit/always-ask)
+ * GATED: retiring a fact is a delete. `TOOL_CATEGORIES` (@lares/agent-kit/always-ask)
  * marks it so, and `mustAlwaysAsk` makes the board ask before every call regardless of any level set
  * for `memory`. `remember` stays ungated (it reaches nobody outside this box); `forget` is the
- * riskier of the two (a wrong id silently drops a fact he stated), which is why the description
+ * riskier of the two (a wrong id silently drops a fact the owner stated), which is why the description
  * also tells the model to name the fact back rather than guess an id, and why an unknown or
  * already-retired id answers "nothing changed" instead of "done".
  *
- * BUT ONLY WHEN HE IS IN THE TURN (review fix, the same hole as `remember`'s). Ungated is not
- * unattributed: the 08:00/20:00 brief turns run as the app principal, carry the facts block and
- * the sentence "if he supersedes one, call `forget`", and contain no utterance of his at all — so
+ * BUT ONLY WHEN THE OWNER IS IN THE TURN, the same hole as `remember`'s. Ungated is not
+ * unattributed: the morning and evening brief turns run as the app principal, carry the facts block and
+ * the instruction to call `forget` when the owner supersedes one, and contain no utterance of the owner at all, so
  * a model re-reading a stale-looking fact there could retire it with nobody present to have
  * superseded anything. `humanTurnRefusal` (lib/approvals.ts) requires an allowlisted HUMAN on
  * `ctx.session.auth.current`; the refusal is a returned message, matching this tool's existing
  * "nothing changed" posture rather than costing the turn.
  *
- * ONE STEP, WRITTEN DOWN. Retiring used to be the whole job; now the same
+ * ONE STEP, WRITTEN DOWN. The same
  * transaction that retires the row also writes a `forget_ledger` entry (`recordForgotten`,
- * `@lares/agent-kit/forget-ledger`) keyed on a one-way hash of the fact's words — so a later
+ * `@lares/agent-kit/forget-ledger`) keyed on a one-way hash of the fact's words, so a later
  * `remember` or a Notion re-sync can be checked against it without this tool, or that table,
  * ever holding the words back out. The ledger holds no readable text; the reply below quotes the
  * fact this tool holds in hand at the moment it retires it, never anything read back from the
  * ledger. On a box that has not applied `services/box/sql/001_baseline.sql`,
  * `isMissingLedgerTable` catches the failure OUTSIDE the transaction `forgetFact` ran (which has
- * already rolled itself back), and this tool simply retires the fact again with no ledger writer
- * — one step still, just without the "cannot come back" half, and the reply says so.
+ * already rolled itself back), and this tool simply retires the fact again with no ledger writer:
+ * one step still, just without the "cannot come back" half, and the reply says so.
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -49,11 +49,11 @@ import { forgetFact, type StandingFact } from "../lib/standing-facts.js";
 /** Built here, not in `lib/standing-facts.ts`, so that file keeps no dependency on the ledger
  *  module. Runs inside `forgetFact`'s own transaction — see `ForgetLedgerWriter`.
  *
- *  HOT-PATH HONESTY (W5I-s7): `f.userId` is `CANONICAL_USER_ID` — the fail-soft configured owner
+ *  HOT PATH: `f.userId` is `CANONICAL_USER_ID` — the fail-soft configured owner
  *  key (`ownerId`), not a live read of the identity register. That is deliberate: this runs
  *  inside a turn, and a register round-trip here would cost the turn a query for a value that
  *  practically never changes mid-process. The register-verified check is done ONCE per process,
- *  not on every `forget` call — `checkOwnerKeyAgreement` (W5I-s5b, `lib/identity-client.ts`)
+ *  not on every `forget` call — `checkOwnerKeyAgreement` (`lib/identity-client.ts`)
  *  compares this same key against `users.id` at boot and raises a repair the moment they
  *  disagree, rather than silently filing every write under a name notion-sync's forgotten-file
  *  guard does not look under. `recordForgotten` itself also refuses a value that does not even
@@ -98,7 +98,7 @@ export default defineTool({
       retired = await forgetFact(pool, id, configuredOwnerId());
     }
     // Never "forgotten" for an update that changed nothing. A guessed or stale id updates zero
-    // rows; reporting success there would tell him a correction landed when it did not.
+    // rows; reporting success there would tell the owner a correction landed when it did not.
     if (!retired) {
       return {
         forgotten: false as const,

@@ -1,29 +1,29 @@
 // The conflict radar, on request. The morning brief runs the same pass over today
-// automatically; this is what answers "is anything clashing next week?" when he asks directly.
+// automatically; this is what answers "is anything clashing next week?" when the owner asks directly.
 //
-// WHY A TOOL AND NOT A SKILL FILE. A skill would be prose telling her to reason about overlaps
-// herself — precisely the unreliable-by-construction behaviour this ticket exists to replace.
-// The detection is CODE (`lib/calendar-conflicts.ts`), so what she needs is a way to call it,
-// and a tool is the only shape that gives her one.
+// WHY A TOOL AND NOT A SKILL FILE. A skill would be prose telling the agent to reason about overlaps
+// itself, which is unreliable by construction.
+// The detection is CODE (`lib/calendar-conflicts.ts`), so what the agent needs is a way to call it,
+// and a tool is the only shape that gives it one.
 //
 // READ-ONLY, UNGATED, under the existing `calendar` capability. Same reasoning as the transit
-// and signals reads that carry no approval: this tool has no write path at all — it lists
+// and signals reads that carry no approval: this tool has no write path at all. It lists
 // calendars, reads events, and returns rows. Gating something harmless is what costs the real
 // gates their meaning. It can never delete, decline or move anything itself.
 //
-// -s5 — RESOLUTION IS A PROPOSAL, NEVER AN ACTION. For each `overlapping-stay` finding
-// (the only kind the owner decided is worth a mailbox search — `lib/conflict-resolution.ts`'s
-// own header), this tool now runs `resolveConflicts` after detection: a small, bounded Gmail
+// RESOLUTION IS A PROPOSAL, NEVER AN ACTION. For each `overlapping-stay` finding
+// (the only kind worth a mailbox search; see `lib/conflict-resolution.ts`'s
+// own header), this tool runs `resolveConflicts` after detection: a small, bounded Gmail
 // search (at most 3 clashes per call, 5 messages per event, 10s per clash) for a cancellation
 // of one of the two bookings. When exactly one booking has a STRONG match, that row gains a
 // `resolution` naming the stale event, its `account`/`calendarId`, and the evidence sentence.
-// THE MAIL NEVER CHOOSES THE EVENT — `resolveConflicts` only asks "does this event the
+// THE MAIL NEVER CHOOSES THE EVENT: `resolveConflicts` only asks "does this event the
 // DETECTOR already flagged have a cancellation?", never "which event does this mail name?"
 // (see that module's own header for why that direction matters). This tool still deletes
 // nothing: a `resolution` is a proposal for the model to relay and offer, never an action taken
 // here. Removing the stale event stays entirely behind `calendar_delete_event`'s own approval
-// card — that call uses the row's `eventId`, `account` and `calendarId`, with `reason` set to
-// `resolution.sentence` verbatim, so the card names the evidence he is asked to approve
+// card; that call uses the row's `eventId`, `account` and `calendarId`, with `reason` set to
+// `resolution.sentence` verbatim, so the card names the evidence the owner is asked to approve
 // against. A row with no `resolution` is reported as found, nothing more.
 //
 // EVERY CALENDAR OF EVERY ACCOUNT, like the briefs. `listEventsEverywhere` with
@@ -31,17 +31,17 @@
 // on; asking the primary calendar alone would answer "nothing clashes" off half the data,
 // which is the silence wearing a new hat.
 //
-// W3A-s5 (beyond the slice's own file list — found auditing the catalogue for the register-
-// completeness test, tests/origin-taint-reads.test.ts). This tool structurally cannot make
-// `calendar_list_events.ts`'s "bare primary listing" exception — it deliberately reads EVERY
+// Taint. This tool structurally cannot make
+// `calendar_list_events.ts`'s "bare primary listing" exception: it deliberately reads EVERY
 // calendar of every account, including subscribed and read-only ones, every time. So unlike
 // that tool it taints unconditionally on a successful call, same class (`third_party`) and same
-// reasoning (the origin model, "The in-turn taint rule").
+// reasoning (the origin model, "The in-turn taint rule"). The register-completeness test
+// (tests/origin-taint-reads.test.ts) covers it.
 //
-// -s5 — the taint above is set from the CALENDAR read alone, before `resolveConflicts`
+// The taint is set from the CALENDAR read alone, before `resolveConflicts`
 // ever touches Gmail, and deliberately stays that way: the turn must read `third_party` whether
 // or not any clash turns out to be an `overlapping-stay` worth searching mail for. A mail read
-// happening afterwards, in the same tainted turn, never needs a taint call of its own — it
+// happening afterwards, in the same tainted turn, never needs a taint call of its own; it
 // would only ever confirm a class the turn already carries.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
@@ -125,7 +125,7 @@ export default defineTool({
 
     const conflicts = detectCalendarConflicts(events, { days: window });
 
-    // -s5 — never let a resolver problem cost him the plain findings. `resolveConflicts`
+    // Never let a resolver problem cost the owner the plain findings. `resolveConflicts`
     // already documents itself as never throwing (every per-clash failure is caught inside it
     // and logged as a warning), but this call is defensive belt-and-braces on top of that
     // promise: whatever goes wrong, the tool still answers with what the DETECTOR found.

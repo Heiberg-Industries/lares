@@ -1,15 +1,13 @@
-// List events on a calendar between two RFC-3339 timestamps. Ported from
-// services/agent-runtime/lib/adapters/hands/calendar.ts's "list_events" action
-// (hands/calendar.ts:34,50) — same timeMin/timeMax/max/account/calendarId marshaling as the
-// old hand, now against lib/google.ts's ported adapter.
+// List events on a calendar between two RFC-3339 timestamps (timeMin/timeMax/max/account/calendarId
+// go to lib/google.ts's calendar adapter).
 //
-// W3A-s5 — A PROXY, NOT A DETERMINATION. The result (`{id, summary, start, end}`) carries no
+// A PROXY, NOT A DETERMINATION. The result (`{id, summary, start, end}`) carries no
 // organiser or creator field, so "was this event written by the owner" is not answerable from
 // this tool's output. `calendarId`/`account` are the only signal available: naming either is
 // treated as somebody else's calendar and taints `third_party`; a bare listing of the owner's
-// own primary calendar does not. This errs towards tainting (the origin model, "The in-turn taint rule") — an owner decision of 2026-09-18. Previously the agent hook (agent/hooks/origin-taint.ts) tainted every call
-// regardless of arguments, because a hook cannot see them; that blanket entry is now dropped and
-// this precise check replaces it.
+// own primary calendar does not. This errs towards tainting (the origin model, "The in-turn taint rule").
+// The agent hook (agent/hooks/origin-taint.ts) cannot see a call's arguments, so it does not taint
+// this tool at all; this precise check does.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

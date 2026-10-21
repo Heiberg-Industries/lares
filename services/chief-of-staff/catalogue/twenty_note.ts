@@ -1,21 +1,19 @@
-// Propose a CRM note on a person. GATED WRITE — requires the owner to tap Approve on the card on every call.
+// Propose a CRM note on a person. GATED WRITE: requires the owner to tap Approve on the card on every call.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `createNote` +
-// `resolvePersonId`: create the Note, then — only when `target` resolves to exactly one
-// person — link it via `/noteTargets`. An ambiguous or unresolved target leaves the note
+// Create the Note, then, only when `target` resolves to exactly one
+// person, link it via `/noteTargets`. An ambiguous or unresolved target leaves the note
 // unlinked rather than risk attaching it to the wrong person.
 //
-// The person-resolution step is deliberately best-effort (matches the old client): the note
+// The person-resolution step is deliberately best-effort: the note
 // itself is already written by the time it runs, so a lookup hiccup there must never make
-// this tool look like it failed — it just leaves the note unlinked. That is a narrower,
-// intentional exception to the "never swallow TwentyUnavailableError" rule elsewhere in this
-// wave (see twenty_lookup.ts): the primary write already succeeded before this step starts.
+// this tool look like it failed; it just leaves the note unlinked. That is a narrower,
+// intentional exception to the "never swallow TwentyUnavailableError" rule elsewhere
+// (see twenty_lookup.ts): the primary write already succeeded before this step starts.
 //
 // `createTwentyNote` below is the reusable core (create + best-effort link), exported so
 // `meeting_followup_send.ts` can call it directly to log a touchpoint without going through
-// this tool's own approval — see that file's own
-// comment for why. This tool's `execute` is just that core plus the approval check; the
-// core's own behaviour, and this tool's observable behaviour, are both unchanged by the split.
+// this tool's own approval; see that file's own
+// comment for why. This tool's `execute` is just that core plus the approval check.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -41,7 +39,7 @@ function extractId(res: unknown): string | undefined {
 
 /**
  * Resolve a free-text target to a single person id, or undefined if 0/ambiguous. `swallowErrors`
- * (default true, matching this function's original behaviour) folds a lookup failure into
+ * (default true) folds a lookup failure into
  * "didn't resolve" — correct for the default best-effort LINKING use (the note already
  * exists; a lookup hiccup must not surface as this tool failing). `requireResolvedPerson`
  * below passes `false`: there, "Twenty is down" and "this person genuinely isn't in the CRM"
@@ -72,12 +70,11 @@ export interface CreateTwentyNoteInput {
   /**
    * When true, resolve `target` to a person FIRST and skip creating the note entirely if it
    * does not resolve to exactly one match — rather than this function's default behaviour of
-   * creating the note unlinked. Defaults to false/unset, which is BYTE-IDENTICAL to this
-   * function's original body: this tool's own gated `execute` never sets it, because a
+   * creating the note unlinked. Defaults to false/unset, which creates the note unlinked
+   * when the target does not resolve: this tool's own gated `execute` never sets it, because a
    * human who asked for a note should still get one, linked or not.
    *
-   * The follow-up send (`meeting_followup_send.ts`) sets this true (security-review fix,
-   * ): an unlinked note there carries a full sent email body with no way to ever find
+   * The follow-up send (`meeting_followup_send.ts`) sets this true: an unlinked note there carries a full sent email body with no way to ever find
    * it again — every send to a recipient not yet in Twenty would silently accrete one, on
    * every send, forever. That is worse than no note. The follow-up send logs the skip itself.
    */
@@ -101,7 +98,7 @@ export async function createTwentyNote(
   const trimmedTarget = target.trim();
 
   if (requireResolvedPerson) {
-    // swallowErrors: false — a lookup failure here must propagate (Twenty being down is not
+    // swallowErrors: false. A lookup failure here must propagate (Twenty being down is not
     // the same fact as "this recipient isn't in the CRM") so the caller's own containment
     // sees it as a real failure rather than a silent, indistinguishable skip.
     const personId = trimmedTarget ? await resolvePersonId(trimmedTarget, { swallowErrors: false }) : undefined;
@@ -113,7 +110,7 @@ export async function createTwentyNote(
     return { id: noteId };
   }
 
-  // Original, untouched body — `twenty_note`'s own `execute` always takes this path.
+  // The default path: `twenty_note`'s own `execute` always takes it.
   const noteRes = await twentyPost<unknown>("/notes", { title: noteTitle, bodyV2: { markdown: trimmedBody } });
   const noteId = extractId(noteRes);
   if (!noteId) throw new Error("Twenty note: no id in create response");
