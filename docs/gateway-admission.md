@@ -94,6 +94,17 @@ across two deployment-hook phases. The final HTTP guard applies to SDK retries,
 native reconnections and message-reformat loops. Redirects, alternative routes,
 unreviewed callbacks, response caching and Rust execution are disabled/refused.
 
+The pinned native model-budget limiter and database cost logger remain installed.
+The adapter verifies the budget/service/proxy hooks against their native owner-held
+objects and records callback identities at startup. The separate native async cost
+logger and four router accounting methods are admitted only in their reviewed event
+lists. Native lazy promotion may add the same approved primary objects to event
+lists; replacement objects and unknown callbacks refuse. Native shadow evaluation
+can create detached provider requests, so its exact hook class is removed from all
+nine callback registries before readiness. A subclass or later reintroduction
+refuses; no shadow hook is invoked during removal. These checks do not establish
+that native accounting and the admission ledger are one atomic authority.
+
 ## Terminal receipts
 
 Only complete provider usage settles in this adapter. There is no zero-cost or

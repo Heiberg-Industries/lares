@@ -38,7 +38,7 @@ runtime = None
 STARTUP_STATE_FILE = "/tmp/lares-gateway-startup-state.json"
 STARTUP_FAILURE_FILE = "/tmp/lares-gateway-startup-first-failure.json"
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
-STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 
 
 def record_startup_diagnostic(phase, stage="not-started"):
@@ -250,6 +250,8 @@ class Runtime:
     def __init__(self):
         self.profile, self.config, self.endpoint, self.gate_url, self.key = load_files()
         self.callback_ids = None
+        self.secondary_callback_ids = None
+        self.callback_references = None
         self.validation_stage = "not-started"
 
     async def rpc(self, path, document):
@@ -271,24 +273,94 @@ class Runtime:
                     return parse_json(body)
         except Exception: raise Refused() from None
 
+    def check_callbacks(self, proxy_server, startup=False):
+        from litellm.proxy.hooks import PROXY_HOOKS, get_proxy_hook
+        from litellm.proxy.hooks.model_max_budget_limiter import _PROXY_VirtualKeyModelMaxBudgetLimiter
+        from litellm.proxy.hooks.proxy_track_cost_callback import _ProxyDBLogger
+        from litellm.integrations.shadow_eval_logger import ShadowEvalLogger
+        from litellm._service_logger import ServiceLogging
+        from litellm import Router
+        from types import MethodType
+
+        # Native startup fans callbacks into event lists. The manager's removal
+        # helper omits input, async-input, service and audit, so enumerate all of
+        # the pinned registries explicitly. Never invoke a shadow hook to disable it.
+        self.validation_stage = "callback-registry"
+        names = ("callbacks", "input_callback", "_async_input_callback", "success_callback", "failure_callback",
+                 "_async_success_callback", "_async_failure_callback", "service_callback", "audit_log_callbacks")
+        registries = {name: getattr(litellm, name) for name in names}
+        if any(type(items) is not list for items in registries.values()): raise Refused()
+        if startup:
+            if self.callback_ids is not None: raise Refused()
+            for items in registries.values():
+                items[:] = [c for c in items if type(c) is not ShadowEvalLogger]
+
+        self.validation_stage = "callback-types"
+        allowed_types = {get_proxy_hook(name) for name in PROXY_HOOKS} | {ServiceLogging, type(gateway_hook), _ProxyDBLogger, _PROXY_VirtualKeyModelMaxBudgetLimiter}
+        callbacks = registries["callbacks"]
+        if sum(c is gateway_hook for c in callbacks) != 1 or any(type(c) not in allowed_types for c in callbacks): raise Refused()
+        if len({type(c) for c in callbacks}) != len(callbacks): raise Refused()
+        # The native budget and service hooks have owner-held instances. A second
+        # object of their class is not an approved replacement.
+        self.validation_stage = "callback-native-identity"
+        logging = proxy_server.proxy_logging_obj
+        native = [proxy_server.model_max_budget_limiter, logging.service_logging_obj]
+        if type(native[0]) is not _PROXY_VirtualKeyModelMaxBudgetLimiter or type(native[1]) is not ServiceLogging: raise Refused()
+        for name, hook in logging.proxy_hook_mapping.items():
+            if name not in PROXY_HOOKS or type(hook) is not get_proxy_hook(name): raise Refused()
+            native.append(hook)
+        if any(not any(c is hook for c in callbacks) for hook in native): raise Refused()
+        if any(c is not gateway_hook and type(c) is not _ProxyDBLogger and not any(c is hook for hook in native) for c in callbacks): raise Refused()
+        if sum(type(c) is _ProxyDBLogger for c in callbacks) != 1: raise Refused()
+
+        self.validation_stage = "callback-secondary"
+        primary_ids = {id(c) for c in callbacks}
+        router = proxy_server.llm_router
+        router_methods = {"success_callback": "sync_deployment_callback_on_success", "_async_success_callback": "deployment_callback_on_success",
+                          "failure_callback": "deployment_callback_on_failure", "_async_failure_callback": "async_deployment_callback_on_failure"}
+        secondary = {}
+        for name in names[1:]:
+            items = registries[name]
+            if len({id(c) for c in items}) != len(items): raise Refused()
+            extras = []
+            method = router_methods.get(name)
+            method_count = 0
+            for c in items:
+                if id(c) in primary_ids: continue  # Native lazy event-list promotion.
+                if startup and name == "_async_success_callback" and type(c) is _ProxyDBLogger:
+                    extras.append(id(c))  # cost_tracking creates a separate instance.
+                    continue
+                if (type(router) is Router and type(c) is MethodType and c.__self__ is router
+                        and method is not None and c.__func__ is getattr(Router, method)):
+                    method_count += 1
+                    extras.append(id(c))
+                    continue
+                if not startup and self.secondary_callback_ids is not None and id(c) in self.secondary_callback_ids[name]:
+                    extras.append(id(c))
+                    continue
+                raise Refused()
+            db_count = sum(type(c) is _ProxyDBLogger for c in items)
+            if db_count > 1 or (name == "_async_success_callback" and db_count != 1): raise Refused()
+            if method is not None and method_count != 1: raise Refused()
+            secondary[name] = tuple(extras)
+        self.validation_stage = "callback-identity"
+        ids = tuple(id(c) for c in callbacks)
+        if startup:
+            if self.callback_ids is not None or self.secondary_callback_ids is not None: raise Refused()
+            self.callback_ids, self.secondary_callback_ids = ids, secondary
+            # Hold references so a removed object cannot recycle an approved id.
+            self.callback_references = tuple(c for items in registries.values() for c in items)
+        elif ids != self.callback_ids or secondary != self.secondary_callback_ids: raise Refused()
+
     def check_runtime(self, startup=False):
         self.validation_stage = "runtime-imports"
         from litellm.proxy import proxy_server
-        from litellm.proxy.hooks import PROXY_HOOKS, get_proxy_hook
-        from litellm._service_logger import ServiceLogging
         from litellm.rust_bridge.configuration import rust_enabled
         # Reject unreviewed background/config/provider paths. The fixed generated config
         # does not turn any of them on; check the loaded runtime too, not YAML alone.
         self.validation_stage = "runtime-flags"
         if rust_enabled() or litellm.cache is not None or not litellm.disable_aiohttp_transport or not litellm.use_chat_completions_url_for_anthropic_messages: raise Refused()
-        self.validation_stage = "callback-registry"
-        allowed_types = {get_proxy_hook(name) for name in PROXY_HOOKS} | {ServiceLogging, type(gateway_hook)}
-        callbacks = litellm.callbacks
-        if not isinstance(callbacks, list) or sum(c is gateway_hook for c in callbacks) != 1 or any(type(c) not in allowed_types for c in callbacks): raise Refused()
-        ids = tuple(id(c) for c in callbacks)
-        self.validation_stage = "callback-identity"
-        if startup: self.callback_ids = ids
-        elif ids != self.callback_ids: raise Refused()
+        self.check_callbacks(proxy_server, startup)
         router = proxy_server.llm_router
         self.validation_stage = "router-aliases"
         if router is None or set(router.model_names) != set(self.profile.document["aliases"]) or router.default_deployment is not None: raise Refused()

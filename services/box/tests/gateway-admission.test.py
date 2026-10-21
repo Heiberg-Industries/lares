@@ -18,6 +18,7 @@ import tempfile
 import os
 import base64
 import tarfile
+import types
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
@@ -87,6 +88,144 @@ class ContractTests(unittest.TestCase):
             evidence = TerminalEvidence("/v1/messages")
             for chunk in chunks: evidence.feed(chunk)
             self.assertIsNone(evidence.result())
+
+
+class NativeCallbackTests(unittest.TestCase):
+    """Adapter enforcement with offline stand-ins, never a native compatibility claim."""
+    names = ("callbacks", "input_callback", "_async_input_callback", "success_callback", "failure_callback",
+             "_async_success_callback", "_async_failure_callback", "service_callback", "audit_log_callbacks")
+
+    def setUp(self):
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        runtime_class = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "Runtime")
+        self.litellm = types.ModuleType("litellm")
+        for name in self.names: setattr(self.litellm, name, [])
+        self.Budget = type("NativeModelBudget", (), {})
+        self.DBLogger = type("NativeDBLogger", (), {})
+        self.Service = type("NativeService", (), {})
+        self.Hook = type("NativeProxyHook", (), {})
+        self.Gateway = type("GatewayHook", (), {})
+        self.Shadow = type("ShadowEvalLogger", (), {"async_log_success_event": mock.Mock(side_effect=AssertionError("shadow ran"))})
+        class Router:
+            def sync_deployment_callback_on_success(self): pass
+            async def deployment_callback_on_success(self): pass
+            def deployment_callback_on_failure(self): pass
+            async def async_deployment_callback_on_failure(self): pass
+        self.Router = Router
+        self.router = Router()
+        self.gateway, self.budget, self.service, self.hook = self.Gateway(), self.Budget(), self.Service(), self.Hook()
+        self.db, self.async_db = self.DBLogger(), self.DBLogger()
+        self.proxy = types.SimpleNamespace(llm_router=self.router, model_max_budget_limiter=self.budget,
+            proxy_logging_obj=types.SimpleNamespace(service_logging_obj=self.service, proxy_hook_mapping={"budget": self.hook}))
+        modules = {"litellm": self.litellm}
+        def module(name, **values):
+            item = types.ModuleType(name);item.__dict__.update(values);modules[name] = item
+        self.litellm.Router = Router
+        module("litellm.proxy", proxy_server=self.proxy)
+        module("litellm.rust_bridge.configuration", rust_enabled=lambda: False)
+        self.litellm.cache = None
+        self.litellm.disable_aiohttp_transport = self.litellm.use_chat_completions_url_for_anthropic_messages = True
+        self.proxy.store_model_in_db, self.proxy.user_custom_auth = False, None
+        module("litellm.proxy.hooks", PROXY_HOOKS={"budget": self.Hook}, get_proxy_hook=lambda name: self.Hook)
+        module("litellm.proxy.hooks.model_max_budget_limiter", _PROXY_VirtualKeyModelMaxBudgetLimiter=self.Budget)
+        module("litellm.proxy.hooks.proxy_track_cost_callback", _ProxyDBLogger=self.DBLogger)
+        module("litellm.integrations.shadow_eval_logger", ShadowEvalLogger=self.Shadow)
+        module("litellm._service_logger", ServiceLogging=self.Service)
+        self.modules = mock.patch.dict(sys.modules, modules);self.modules.start();self.addCleanup(self.modules.stop)
+        namespace = {"litellm": self.litellm, "gateway_hook": self.gateway, "Refused": Refused}
+        exec(compile(ast.Module(body=[runtime_class], type_ignores=[]), "adapter-runtime", "exec"), namespace)
+        self.runtime = namespace["Runtime"].__new__(namespace["Runtime"])
+        self.runtime.callback_ids = self.runtime.secondary_callback_ids = self.runtime.callback_references = None
+        self.runtime.profile = types.SimpleNamespace(document={"aliases": ["lares-brain"], "provider": "openai", "model": "fixture", "providerBaseUrl": "https://provider.example.invalid/v1"})
+        self.router.model_names, self.router.default_deployment = ["lares-brain"], None
+        self.router.get_model_list = lambda **kwargs: [{"litellm_params": {"model": "openai/fixture", "api_base": "https://provider.example.invalid/v1", "num_retries": 0, "max_retries": 0}}]
+        self.litellm.callbacks[:] = [self.budget, self.gateway, self.db, self.hook, self.service]
+        self.litellm.success_callback[:] = [self.router.sync_deployment_callback_on_success, *self.litellm.callbacks]
+        self.litellm.failure_callback[:] = [self.router.deployment_callback_on_failure, *self.litellm.callbacks]
+        self.litellm._async_success_callback[:] = [self.router.deployment_callback_on_success, self.async_db]
+        self.litellm._async_failure_callback[:] = [self.router.async_deployment_callback_on_failure]
+
+    def check(self, startup=False): self.runtime.check_callbacks(self.proxy, startup)
+
+    def test_pinned_native_objects_and_lazy_primary_promotions_remain_valid(self):
+        self.runtime.check_runtime(startup=True)
+        original = self.runtime.callback_ids
+        # function_setup promotes these same primary objects after startup. Native
+        # class deduplication preserves cost_tracking's separate async DB logger.
+        self.litellm.input_callback.extend(self.litellm.callbacks)
+        self.litellm._async_success_callback.extend(c for c in self.litellm.callbacks if type(c) is not self.DBLogger)
+        self.litellm._async_failure_callback.extend(self.litellm.callbacks)
+        for _ in range(3): self.runtime.check_runtime()
+        self.assertEqual(self.runtime.validation_stage, "complete")
+        self.assertEqual(self.runtime.callback_ids, original)
+
+    def test_shadow_is_removed_from_every_registry_without_running_it(self):
+        for name in self.names: getattr(self.litellm, name).append(self.Shadow())
+        self.check(startup=True)
+        for name in self.names:
+            self.assertFalse(any(type(c) is self.Shadow for c in getattr(self.litellm, name)))
+        self.Shadow.async_log_success_event.assert_not_called()
+        self.check()
+
+    def test_secondary_only_shadow_is_removed_at_startup_but_late_shadow_refuses(self):
+        self.litellm._async_success_callback.append(self.Shadow())
+        self.check(startup=True)
+        self.litellm._async_success_callback.append(self.Shadow())
+        with self.assertRaises(Refused): self.check()
+        self.Shadow.async_log_success_event.assert_not_called()
+
+    def test_unknown_callbacks_and_shadow_subclasses_fail_closed_in_every_registry(self):
+        for name in self.names:
+            for callback in (object(), type("UnreviewedShadow", (self.Shadow,), {})()):
+                with self.subTest(registry=name, callback=type(callback).__name__):
+                    items = getattr(self.litellm, name);items.append(callback)
+                    with self.assertRaises(Refused): self.check(startup=True)
+                    items.pop()
+
+    def test_missing_duplicate_and_same_type_gateway_instances_refuse(self):
+        for callbacks in ([c for c in self.litellm.callbacks if c is not self.gateway],
+                          [*self.litellm.callbacks, self.gateway],
+                          [self.Gateway() if c is self.gateway else c for c in self.litellm.callbacks]):
+            with self.subTest(callbacks=len(callbacks)):
+                original = self.litellm.callbacks;self.litellm.callbacks = callbacks
+                with self.assertRaises(Refused): self.check(startup=True)
+                self.litellm.callbacks = original
+
+    def test_native_singleton_replacement_and_extra_db_instances_refuse_at_startup(self):
+        for old, new in ((self.budget, self.Budget()), (self.service, self.Service()), (self.hook, self.Hook())):
+            original = self.litellm.callbacks[:]
+            self.litellm.callbacks[:] = [new if c is old else c for c in original]
+            with self.assertRaises(Refused): self.check(startup=True)
+            self.litellm.callbacks[:] = original
+        self.litellm._async_success_callback.append(self.DBLogger())
+        with self.assertRaises(Refused): self.check(startup=True)
+
+    def test_missing_native_async_accounting_or_router_method_refuses(self):
+        for name, index in (("_async_success_callback", 1), ("success_callback", 0),
+                            ("failure_callback", 0), ("_async_success_callback", 0), ("_async_failure_callback", 0)):
+            items = getattr(self.litellm, name);callback = items.pop(index)
+            with self.subTest(registry=name), self.assertRaises(Refused): self.check(startup=True)
+            items.insert(index, callback)
+
+    def test_same_type_replacement_and_registry_mutation_refuse_after_startup(self):
+        self.check(startup=True)
+        for name, index, new in (("callbacks", 2, self.DBLogger()), ("_async_success_callback", 1, self.DBLogger()),
+                                 ("success_callback", 0, self.router.sync_deployment_callback_on_success)):
+            items = getattr(self.litellm, name);old = items[index];items[index] = new
+            with self.subTest(registry=name), self.assertRaises(Refused): self.check()
+            items[index] = old
+        for name in self.names:
+            items = getattr(self.litellm, name);items.append(object())
+            with self.subTest(registry=name), self.assertRaises(Refused): self.check()
+            items.pop()
+        self.litellm.callbacks.reverse()
+        with self.assertRaises(Refused): self.check()
+
+    def test_unknown_router_methods_and_foreign_router_instances_refuse(self):
+        for callback in (self.Router().sync_deployment_callback_on_success, self.router.deployment_callback_on_failure):
+            self.litellm.success_callback.append(callback)
+            with self.assertRaises(Refused): self.check(startup=True)
+            self.litellm.success_callback.pop()
 
 
 class EmbeddedFixtureTests(unittest.TestCase):
