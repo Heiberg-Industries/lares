@@ -38,10 +38,10 @@ runtime = None
 STARTUP_STATE_FILE = "/tmp/lares-gateway-startup-state.json"
 STARTUP_FAILURE_FILE = "/tmp/lares-gateway-startup-first-failure.json"
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
-STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 
 
-def record_startup_diagnostic(phase, stage="not-started"):
+def record_startup_diagnostic(phase, stage="not-started", checks=None):
     """CI-only, fixed vocabulary. Never store exception, config or provider values."""
     if os.environ.get("CI") != "true" or os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") != "1": return
     if phase not in STARTUP_PHASES or stage not in STARTUP_STAGES: return
@@ -51,7 +51,9 @@ def record_startup_diagnostic(phase, stage="not-started"):
             for name in (STARTUP_STATE_FILE, STARTUP_FAILURE_FILE):
                 try: os.unlink(name)
                 except FileNotFoundError: pass
-        raw = canonical({"phase": phase, "stage": stage})
+        marker = {"phase": phase, "stage": stage}
+        if checks is not None: marker["checks"] = checks
+        raw = canonical(marker)
         with tempfile.NamedTemporaryFile(prefix=".lares-gateway-startup-", dir=pathlib.Path(STARTUP_STATE_FILE).parent, delete=False) as destination:
             temporary = destination.name
             destination.write(raw)
@@ -67,6 +69,57 @@ def record_startup_diagnostic(phase, stage="not-started"):
         if temporary is not None:
             try: os.unlink(temporary)
             except OSError: pass
+
+
+def callback_startup_checks(proxy_server):
+    """Fixed roles, capped counts and booleans only; no object/config strings."""
+    from litellm.proxy.hooks import PROXY_HOOKS
+    from litellm.proxy.hooks.model_max_budget_limiter import _PROXY_VirtualKeyModelMaxBudgetLimiter
+    from litellm.proxy.hooks.proxy_track_cost_callback import _ProxyDBLogger
+    from litellm.integrations.shadow_eval_logger import ShadowEvalLogger
+    from litellm._service_logger import ServiceLogging
+    from litellm import Router
+    from types import MethodType
+    roles = ("max_budget_limiter", "parallel_request_limiter", "cache_control_check", "responses_id_security",
+             "litellm_skills", "max_iterations_limiter", "max_budget_per_session_limiter", "sensitive_data_routing")
+    cap = lambda values: min(sum(values), 31)
+    callbacks = litellm.callbacks if type(litellm.callbacks) is list else []
+    logging = proxy_server.proxy_logging_obj
+    mapping = logging.proxy_hook_mapping
+    native = [proxy_server.model_max_budget_limiter, logging.service_logging_obj, *mapping.values()]
+    allowed = set(PROXY_HOOKS.values()) | {ServiceLogging, type(gateway_hook), _ProxyDBLogger, _PROXY_VirtualKeyModelMaxBudgetLimiter}
+    checks = {"primary": {
+        "list": type(litellm.callbacks) is list,
+        "gateway_count": cap(c is gateway_hook for c in callbacks),
+        "db_count": cap(type(c) is _ProxyDBLogger for c in callbacks),
+        "unique_types": len({type(c) for c in callbacks}) == len(callbacks),
+        "unknown_count": cap(type(c) not in allowed for c in callbacks),
+        "unowned_count": cap(c is not gateway_hook and type(c) is not _ProxyDBLogger and not any(c is owner for owner in native) for c in callbacks),
+        "unknown_mapping_count": cap(name not in PROXY_HOOKS for name in mapping),
+    }, "native": {}, "proxy_hooks": {}, "events": {}}
+    for role, owner, expected in (("model_budget", native[0], _PROXY_VirtualKeyModelMaxBudgetLimiter), ("service", native[1], ServiceLogging)):
+        checks["native"][role] = {"owner_type": type(owner) is expected, "owner_present": any(c is owner for c in callbacks),
+                                  "count": cap(type(c) is expected for c in callbacks)}
+    for role in roles:
+        expected = PROXY_HOOKS.get(role)
+        owner = mapping.get(role)
+        checks["proxy_hooks"][role] = {"mapped": role in mapping, "mapped_type": expected is not None and type(owner) is expected,
+            "mapped_present": owner is not None and any(c is owner for c in callbacks), "count": cap(type(c) is expected for c in callbacks)}
+    router = proxy_server.llm_router
+    methods = {"success_callback": "sync_deployment_callback_on_success", "_async_success_callback": "deployment_callback_on_success",
+               "failure_callback": "deployment_callback_on_failure", "_async_failure_callback": "async_deployment_callback_on_failure"}
+    for name in ("input_callback", "_async_input_callback", "success_callback", "failure_callback", "_async_success_callback", "_async_failure_callback", "service_callback", "audit_log_callbacks"):
+        registry = getattr(litellm, name)
+        items = registry if type(registry) is list else []
+        method = methods.get(name)
+        router_callback = lambda c: (type(router) is Router and type(c) is MethodType and c.__self__ is router
+                                     and method is not None and c.__func__ is getattr(Router, method))
+        primary_callback = lambda c: any(c is primary for primary in callbacks)
+        checks["events"][name] = {"list": type(registry) is list, "unique_objects": len({id(c) for c in items}) == len(items),
+            "primary_count": cap(primary_callback(c) for c in items), "db_count": cap(type(c) is _ProxyDBLogger for c in items),
+            "shadow_count": cap(type(c) is ShadowEvalLogger for c in items), "router_count": cap(router_callback(c) for c in items),
+            "unknown_count": cap(not primary_callback(c) and not router_callback(c) and not (name == "_async_success_callback" and type(c) is _ProxyDBLogger) for c in items)}
+    return checks
 
 
 def refusal():
@@ -253,6 +306,7 @@ class Runtime:
         self.secondary_callback_ids = None
         self.callback_references = None
         self.validation_stage = "not-started"
+        self.startup_checks = None
 
     async def rpc(self, path, document):
         raw = canonical(document)
@@ -295,6 +349,9 @@ class Runtime:
             for items in registries.values():
                 items[:] = [c for c in items if type(c) is not ShadowEvalLogger]
 
+        if startup and os.environ.get("CI") == "true" and os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") == "1":
+            try: self.startup_checks = callback_startup_checks(proxy_server)
+            except Exception: self.startup_checks = None  # Diagnostics never alter enforcement.
         self.validation_stage = "callback-types"
         allowed_types = {get_proxy_hook(name) for name in PROXY_HOOKS} | {ServiceLogging, type(gateway_hook), _ProxyDBLogger, _PROXY_VirtualKeyModelMaxBudgetLimiter}
         callbacks = registries["callbacks"]
@@ -305,12 +362,17 @@ class Runtime:
         self.validation_stage = "callback-native-identity"
         logging = proxy_server.proxy_logging_obj
         native = [proxy_server.model_max_budget_limiter, logging.service_logging_obj]
+        self.validation_stage = "callback-native-types"
         if type(native[0]) is not _PROXY_VirtualKeyModelMaxBudgetLimiter or type(native[1]) is not ServiceLogging: raise Refused()
+        self.validation_stage = "callback-proxy-hook-types"
         for name, hook in logging.proxy_hook_mapping.items():
             if name not in PROXY_HOOKS or type(hook) is not get_proxy_hook(name): raise Refused()
             native.append(hook)
+        self.validation_stage = "callback-native-membership"
         if any(not any(c is hook for c in callbacks) for hook in native): raise Refused()
+        self.validation_stage = "callback-native-coverage"
         if any(c is not gateway_hook and type(c) is not _ProxyDBLogger and not any(c is hook for hook in native) for c in callbacks): raise Refused()
+        self.validation_stage = "callback-native-cost"
         if sum(type(c) is _ProxyDBLogger for c in callbacks) != 1: raise Refused()
 
         self.validation_stage = "callback-secondary"
@@ -518,7 +580,7 @@ class GatewayApp:
                     record_startup_diagnostic("native-lifespan-complete")
                     try: runtime.check_runtime(startup=True)
                     except Exception:
-                        record_startup_diagnostic("runtime-validation-failed", runtime.validation_stage)
+                        record_startup_diagnostic("runtime-validation-failed", runtime.validation_stage, runtime.startup_checks)
                         await send({"type": "lifespan.startup.failed", "message": "Gateway admission runtime validation failed: " + runtime.validation_stage})
                         return
                     record_startup_diagnostic("ready", runtime.validation_stage)

@@ -29,7 +29,7 @@ sys.path.insert(0, str(ASSETS))
 from admission_contract import Profile, canonical
 
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
-STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
+STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
 
 FIXTURE = r'''
 import http.server,ssl,threading,json,time,pathlib,hashlib,uuid,sys,gzip
@@ -203,11 +203,31 @@ def sanitize_diagnostic(value, secrets_to_hide):
     return "".join(char for char in value if char in "\n\t" or ord(char)>=32)[:16384]
 
 
+def valid_callback_startup_checks(checks):
+    roles = ("max_budget_limiter", "parallel_request_limiter", "cache_control_check", "responses_id_security",
+             "litellm_skills", "max_iterations_limiter", "max_budget_per_session_limiter", "sensitive_data_routing")
+    events = ("input_callback", "_async_input_callback", "success_callback", "failure_callback", "_async_success_callback", "_async_failure_callback", "service_callback", "audit_log_callbacks")
+    def fields(value, booleans, counts):
+        return (type(value) is dict and set(value) == set(booleans + counts)
+                and all(type(value[name]) is bool for name in booleans)
+                and all(type(value[name]) is int and 0 <= value[name] <= 31 for name in counts))
+    if type(checks) is not dict or set(checks) != {"primary", "native", "proxy_hooks", "events"}: return False
+    if not fields(checks["primary"], ("list", "unique_types"), ("gateway_count", "db_count", "unknown_count", "unowned_count", "unknown_mapping_count")): return False
+    if type(checks["native"]) is not dict or set(checks["native"]) != {"model_budget", "service"}: return False
+    if not all(fields(value, ("owner_type", "owner_present"), ("count",)) for value in checks["native"].values()): return False
+    if type(checks["proxy_hooks"]) is not dict or set(checks["proxy_hooks"]) != set(roles): return False
+    if not all(fields(value, ("mapped", "mapped_type", "mapped_present"), ("count",)) for value in checks["proxy_hooks"].values()): return False
+    if type(checks["events"]) is not dict or set(checks["events"]) != set(events): return False
+    return all(fields(value, ("list", "unique_objects"), ("primary_count", "db_count", "shadow_count", "router_count", "unknown_count")) for value in checks["events"].values())
+
+
 def validated_startup_marker(raw):
-    if len(raw)>1024:return "unknown"
+    if len(raw)>8192:return "unknown"
     try:
         marker=json.loads(raw)
-        if set(marker)!={"phase","stage"} or marker["phase"] not in STARTUP_PHASES or marker["stage"] not in STARTUP_STAGES:return "unknown"
+        if type(marker) is not dict or set(marker) not in ({"phase","stage"}, {"phase","stage","checks"}):return "unknown"
+        if marker["phase"] not in STARTUP_PHASES or marker["stage"] not in STARTUP_STAGES:return "unknown"
+        if "checks" in marker and not valid_callback_startup_checks(marker["checks"]):return "unknown"
         return marker
     except (ValueError,TypeError):return "unknown"
 
@@ -219,8 +239,8 @@ def startup_marker_from_archive(raw,filename):
             members=archive.getmembers()
             if len(members)!=1:return "unknown"
             member=members[0]
-            if member.name!=filename or not member.isreg() or member.size>1024:return "unknown"
-            with archive.extractfile(member) as source:return validated_startup_marker(source.read(1025))
+            if member.name!=filename or not member.isreg() or member.size>8192:return "unknown"
+            with archive.extractfile(member) as source:return validated_startup_marker(source.read(8193))
     except (tarfile.TarError,OSError,ValueError,TypeError):return "unknown"
 
 

@@ -116,7 +116,7 @@ class NativeCallbackTests(unittest.TestCase):
         self.gateway, self.budget, self.service, self.hook = self.Gateway(), self.Budget(), self.Service(), self.Hook()
         self.db, self.async_db = self.DBLogger(), self.DBLogger()
         self.proxy = types.SimpleNamespace(llm_router=self.router, model_max_budget_limiter=self.budget,
-            proxy_logging_obj=types.SimpleNamespace(service_logging_obj=self.service, proxy_hook_mapping={"budget": self.hook}))
+            proxy_logging_obj=types.SimpleNamespace(service_logging_obj=self.service, proxy_hook_mapping={"max_budget_limiter": self.hook}))
         modules = {"litellm": self.litellm}
         def module(name, **values):
             item = types.ModuleType(name);item.__dict__.update(values);modules[name] = item
@@ -126,14 +126,16 @@ class NativeCallbackTests(unittest.TestCase):
         self.litellm.cache = None
         self.litellm.disable_aiohttp_transport = self.litellm.use_chat_completions_url_for_anthropic_messages = True
         self.proxy.store_model_in_db, self.proxy.user_custom_auth = False, None
-        module("litellm.proxy.hooks", PROXY_HOOKS={"budget": self.Hook}, get_proxy_hook=lambda name: self.Hook)
+        module("litellm.proxy.hooks", PROXY_HOOKS={"max_budget_limiter": self.Hook}, get_proxy_hook=lambda name: self.Hook)
         module("litellm.proxy.hooks.model_max_budget_limiter", _PROXY_VirtualKeyModelMaxBudgetLimiter=self.Budget)
         module("litellm.proxy.hooks.proxy_track_cost_callback", _ProxyDBLogger=self.DBLogger)
         module("litellm.integrations.shadow_eval_logger", ShadowEvalLogger=self.Shadow)
         module("litellm._service_logger", ServiceLogging=self.Service)
         self.modules = mock.patch.dict(sys.modules, modules);self.modules.start();self.addCleanup(self.modules.stop)
-        namespace = {"litellm": self.litellm, "gateway_hook": self.gateway, "Refused": Refused}
-        exec(compile(ast.Module(body=[runtime_class], type_ignores=[]), "adapter-runtime", "exec"), namespace)
+        namespace = {"litellm": self.litellm, "gateway_hook": self.gateway, "Refused": Refused, "os": os}
+        diagnostics = next(node for node in source.body if isinstance(node, ast.FunctionDef) and node.name == "callback_startup_checks")
+        exec(compile(ast.Module(body=[diagnostics, runtime_class], type_ignores=[]), "adapter-runtime", "exec"), namespace)
+        self.callback_checks = namespace["callback_startup_checks"]
         self.runtime = namespace["Runtime"].__new__(namespace["Runtime"])
         self.runtime.callback_ids = self.runtime.secondary_callback_ids = self.runtime.callback_references = None
         self.runtime.profile = types.SimpleNamespace(document={"aliases": ["lares-brain"], "provider": "openai", "model": "fixture", "providerBaseUrl": "https://provider.example.invalid/v1"})
@@ -220,6 +222,68 @@ class NativeCallbackTests(unittest.TestCase):
             items.pop()
         self.litellm.callbacks.reverse()
         with self.assertRaises(Refused): self.check()
+
+    def test_startup_snapshot_identifies_each_native_predicate_without_disclosing_values(self):
+        probe_path = ROOT / "services/keeper/tests/gateway-admission-image.probe.py"
+        spec = importlib.util.spec_from_file_location("callback_marker_probe", probe_path)
+        probe = importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
+        self.hook.private_value = "private-credential-must-not-appear"
+        # Reproduce native manager deduplication leaving a newly constructed owner
+        # mapping distinct from the callback it retained; diagnose, never admit it.
+        self.proxy.proxy_logging_obj.proxy_hook_mapping = {"max_budget_limiter": self.Hook()}
+        with mock.patch.dict(os.environ, {"CI": "true", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "1"}):
+            with self.assertRaises(Refused): self.check(startup=True)
+        self.assertEqual(self.runtime.validation_stage, "callback-native-membership")
+        checks = self.runtime.startup_checks
+        self.assertTrue(probe.valid_callback_startup_checks(checks))
+        self.assertEqual(checks["proxy_hooks"]["max_budget_limiter"], {"mapped": True, "mapped_type": True, "mapped_present": False, "count": 1})
+        self.assertEqual(checks["native"]["model_budget"], {"owner_type": True, "owner_present": True, "count": 1})
+        self.assertEqual(checks["primary"]["unowned_count"], 1)
+        marker = {"phase": "runtime-validation-failed", "stage": self.runtime.validation_stage, "checks": checks}
+        raw = json.dumps(marker).encode()
+        self.assertLess(len(raw), 8192)
+        self.assertNotIn(b"private-credential", raw)
+        self.assertNotIn(type(self.hook).__name__.encode(), raw)
+        self.assertEqual(probe.validated_startup_marker(raw), marker)
+        for mutate in (lambda d: d["native"]["model_budget"].update(count=32),
+                       lambda d: d["native"]["model_budget"].update(count=True),
+                       lambda d: d["native"]["model_budget"].update(owner_present="private"),
+                       lambda d: d["proxy_hooks"].update(private={}),
+                       lambda d: d["primary"].update(private="private")):
+            bad = json.loads(raw);mutate(bad["checks"])
+            self.assertEqual(probe.validated_startup_marker(json.dumps(bad).encode()), "unknown")
+        archive_bytes = io.BytesIO()
+        with tarfile.open(fileobj=archive_bytes, mode="w") as archive:
+            info = tarfile.TarInfo("failure.json");info.size = len(raw);archive.addfile(info, io.BytesIO(raw))
+        self.assertEqual(probe.startup_marker_from_archive(archive_bytes.getvalue(), "failure.json"), marker)
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        names = {"STARTUP_STATE_FILE", "STARTUP_FAILURE_FILE", "STARTUP_PHASES", "STARTUP_STAGES"}
+        selected = [node for node in source.body if (isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id in names) or (isinstance(node, ast.FunctionDef) and node.name == "record_startup_diagnostic")]
+        from admission_contract import canonical
+        namespace = {"os": os, "pathlib": pathlib, "tempfile": tempfile, "canonical": canonical}
+        exec(compile(ast.Module(body=selected, type_ignores=[]), "callback-diagnostic-writer", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(os.environ, {"CI": "true", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "1"}):
+            state = pathlib.Path(folder) / "state.json";failure = pathlib.Path(folder) / "failure.json"
+            namespace.update(STARTUP_STATE_FILE=str(state), STARTUP_FAILURE_FILE=str(failure))
+            namespace["record_startup_diagnostic"](marker["phase"], marker["stage"], checks)
+            first = failure.read_bytes()
+            namespace["record_startup_diagnostic"]("native-lifespan-error", marker["stage"])
+            self.assertEqual(failure.read_bytes(), first)
+            self.assertEqual(probe.validated_startup_marker(first), marker)
+
+    def test_startup_snapshot_is_ci_only_capped_and_cannot_change_enforcement(self):
+        for environment in ({"CI": "false", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "1"}, {"CI": "true", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "0"}):
+            with mock.patch.dict(os.environ, environment):
+                self.check(startup=True)
+            self.assertIsNone(getattr(self.runtime, "startup_checks", None))
+            self.runtime.callback_ids = self.runtime.secondary_callback_ids = None
+        self.litellm.input_callback[:] = [object() for _ in range(40)]
+        checks = self.callback_checks(self.proxy)
+        self.assertEqual(checks["events"]["input_callback"]["unknown_count"], 31)
+        self.litellm.input_callback.clear()
+        with mock.patch.dict(os.environ, {"CI": "true", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "1"}), mock.patch.dict(self.runtime.check_callbacks.__globals__, {"callback_startup_checks": mock.Mock(side_effect=RuntimeError("private"))}):
+            self.check(startup=True)
+        self.assertIsNone(self.runtime.startup_checks)
 
     def test_unknown_router_methods_and_foreign_router_instances_refuse(self):
         for callback in (self.Router().sync_deployment_callback_on_success, self.router.deployment_callback_on_failure):
