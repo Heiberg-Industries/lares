@@ -57,7 +57,7 @@ function routePassword(): string {
 
 /**
  * The header the console's chat proxy sets to name the signed-in member it is acting for
- * (`MEMBER_HEADER` in `services/console/lib/chat-proxy.ts`, W8B-s5). The console STRIPS whatever
+ * (`MEMBER_HEADER` in `services/console/lib/chat-proxy.ts`). The console STRIPS whatever
  * the browser sent under this name — its forwarded-header list is deny-by-default — and sets its
  * own from the session cookie it has just verified.
  *

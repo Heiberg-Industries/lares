@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { mustAlwaysAsk, TOOL_CATEGORIES } from "@lares/agent-kit/always-ask";
 import { describe, expect, it } from "vitest";
 
-// BOTH directories, since step 2 (ADR-0015 rule 3): the real tools live in the
+// BOTH directories (ADR-0015 rule 3): the real tools live in the
 // `catalogue/` pool and what is left under agent/tools/ is the `disableTool()` sentinels plus the
 // one resolver. Reading only agent/tools/ would have left `vault_write` — the single gated tool
 // this whole file exists to watch — unchecked, and every assertion below vacuously green.

@@ -59,7 +59,7 @@ Old voice.
 - Spec: \`docs/DESIGN_SPEC.md\`
 `;
 
-// ── Round-2 property corpus: an EVEN count of fence-looking lines is not the same thing
+// ── Property corpus: an EVEN count of fence-looking lines is not the same thing
 // as a BALANCED, trustworthy pair. Each of these has exactly two, and each hides a real
 // heading ("## Positioning / wedge") between them under fence-aware detection alone. ────
 
@@ -188,9 +188,9 @@ Old voice.
 - kept
 `;
 
-// Round-4 (A6): two stray, unpaired ``` markers bracket a REAL "## Target" section — but
+// Fixture A6: two stray, unpaired ``` markers bracket a REAL "## Target" section — but
 // unlike the three above, "## Target" ALSO appears a second time, later, unfenced. A
-// heading-TEXT subset check (round 3's mistake) is fooled by this: "## Target" IS visible
+// heading-TEXT subset check (an earlier, wrong approach) is fooled by this: "## Target" IS visible
 // to fence-aware detection somewhere, so the check never notices the FIRST occurrence went
 // missing. The hidden occurrence's prose must never be silently dropped — either it
 // survives in a successful render, or the note is safely refused; it must never disappear.
@@ -271,8 +271,8 @@ describe("renderBody", () => {
   // ── Scrutiny: the splicing must not be fooled by a `## ` line that is not really a
   // section boundary, and must not drop or duplicate a region when it isn't. ──────────
 
-  it("round 4: a fenced pseudo-heading whose text COINCIDES with a later real heading is safely REFUSED, not corrupted", () => {
-    // This fixture predates the min-bound fix (round 1) and originally asserted a CLEAN
+  it("a fenced pseudo-heading whose text COINCIDES with a later real heading is safely REFUSED, not corrupted", () => {
+    // This fixture predates the min-bound fix and originally asserted a CLEAN
     // render: the fenced "## Positioning / wedge" correctly excluded, the real one drafted,
     // no leftovers. Under min-bound that clean outcome is no longer achievable for THIS
     // specific shape — and here is exactly why, worth stating precisely rather than papering
@@ -517,7 +517,7 @@ Old voice.
     expect(out).toContain("- kept");
   });
 
-  // ── CRITICAL, round 4: verifying the OUTPUT (round 3) has the wrong shape. Checking
+  // ── Verifying the OUTPUT after the fact has the wrong shape. Checking
   // "is every heading TEXT that exists somewhere also visible somewhere" is a set-of-texts
   // check, not a per-occurrence one — a heading hidden by bad fence tracking is masked
   // whenever the SAME TEXT also happens to appear a second time, visibly, elsewhere (see
@@ -543,7 +543,7 @@ Old voice.
     // detection) so it is never freshly drafted — but the min-bound bounds "## What it
     // is"'s span to stop right before it, so it survives verbatim rather than being
     // swallowed. That is the QUALITY cost the fix accepts: a stale, undrafted heading
-    // instead of either a clean re-draft (round 1) or a total refusal (round 3).
+    // instead of either a clean re-draft or a total refusal.
     expect(out).toContain("## Positioning / wedge");
     expect(out).toContain("Real wedge content, hand-written.");
     expect(out).toContain("## Canonical links");
@@ -619,7 +619,7 @@ Old voice.
 
   // ── The other direction: a well-formed, correctly-PAIRED fence containing a `## `-
   // looking line must never be refused forever just because that line's text happens not
-  // to be duplicated anywhere unfenced. Each of these regressed under round 3's check. ───
+  // to be duplicated anywhere unfenced. Each of these regressed under the after-the-fact check. ───
 
   it("renders (does not refuse) a paired ``` fence containing a unique `## Example` line", () => {
     const raw = `---
@@ -742,8 +742,8 @@ More text, still part of What it is.
   });
 
   it("de-duplicates a drafted value that repeats the EXACT schema heading as its own leading line", () => {
-    // The reverse-direction cost of always prepending the heading (round 2, item I2's
-    // follow-on): a draft that happens to open with "## Target" verbatim would otherwise
+    // The reverse-direction cost of always prepending the heading (a follow-on of the
+    // schema-heading rule): a draft that happens to open with "## Target" verbatim would otherwise
     // render it TWICE. Stripping a leading exact-heading line before prepending fixes the
     // common case; the safety net above still refuses anything this can't cleanly resolve
     // (e.g. a section that is ONLY the heading, nothing else).
@@ -759,7 +759,7 @@ More text, still part of What it is.
   });
 
   it("a heading indented 1-3 spaces (CommonMark-legal) is still visible to both scans and survives", () => {
-    // Round 4's min-bound guarantee is stated unqualified: "no heading visible to either
+    // The min-bound guarantee is stated unqualified: "no heading visible to either
     // scan can be absorbed". `line.startsWith("## ")` with no leading-whitespace tolerance
     // is the one gap in that sentence — a 1-3-space-indented heading (still a real heading
     // per CommonMark; 4+ spaces would make it an indented code block instead) is invisible
@@ -910,7 +910,7 @@ describe("decideNote", () => {
     // (currentBody returned unchanged) were a genuinely identical draft, so this case
     // reported "the draft is identical to the note as it stands" on every tick — untrue
     // across five consecutive ticks with CHANGING sources, since the draft was never even
-    // compared; it was refused before comparison was meaningful. Task 9 surfaces this
+    // compared; it was refused before comparison was meaningful. the sync job surfaces this
     // reason directly to the owner, so it has to say what actually happened.
     const note = parseNote(A6_RAW);
     const d = await decideNote({
@@ -1059,7 +1059,7 @@ Old voice.
     })).rejects.toThrow(/diverged/i);
   });
 
-  // ── Round-4 property corpus, end to end: under the min-bound fix these three now RENDER
+  // ── Property corpus, end to end: under the min-bound fix these three now RENDER
   // successfully (min-bound stops the drafted span before the hidden heading rather than
   // refusing the whole note) — asserting nothing is lost, whichever outcome results. ────
 

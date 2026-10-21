@@ -91,7 +91,7 @@ export function parseSourceRef(declared: string, opts: { codebase: string | null
     );
   }
 
-  // Legacy: Part A's earlier notes (example-app, example-service, acme, example venture) list bare
+  // Legacy: the earlier seeded notes (example-app, example-service, acme, example venture) list bare
   // repo-relative paths. They mean `repo:`, and the first mechanical pass normalises them —
   // but only where a repo exists for them to mean it against.
   if (opts.codebase === null) {

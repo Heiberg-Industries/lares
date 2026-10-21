@@ -1,4 +1,4 @@
--- eve workflow schema upgrade: @workflow/world-postgres beta.32 → beta.42 (W2-s8c)
+-- eve workflow schema upgrade: @workflow/world-postgres beta.32 → beta.42
 --
 -- WHY THIS FILE EXISTS. `001-eve-workflow.sql` is regenerated whole, every time, from whatever
 -- version of @workflow/world-postgres is installed (see that file's own header and

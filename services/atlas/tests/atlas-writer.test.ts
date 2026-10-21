@@ -12,7 +12,7 @@ beforeEach(() => {
   execFileSync("git", ["init", "-q", "-b", "main"], { cwd: atlasPath });
   execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: atlasPath });
   execFileSync("git", ["config", "user.name", "t"], { cwd: atlasPath });
-  // Isolation from the developer's ambient git config (review round 1, MINOR 9): a global
+  // Isolation from the developer's ambient git config: a global
   // `commit.gpgsign=true` would hang or fail every commit in this suite waiting on a key that
   // doesn't exist for `t@example.com`, and a global `core.hooksPath` would run someone's real
   // hooks against a throwaway temp repo. Both are pinned per-repo so neither can reach in.
@@ -36,7 +36,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("sorts explicitly — proven by a fixture whose creation order is NOT sorted order", () => {
-    // Review round 1, IMPORTANT 4: the earlier version of this fixture happened to already
+    // The earlier version of this fixture happened to already
     // enumerate in sorted order on APFS, so deleting `.sort()` from `listNotes` left every
     // test green. This fixture is built in reverse-of-sorted order, with a nested file
     // created before its earlier-sorting flat sibling, so a pass can only mean the explicit
@@ -59,7 +59,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("does not descend into a symlinked directory", () => {
-    // MINOR 7: `statSync` follows links, so a symlinked directory used to be walked as if it
+    // `statSync` follows links, so a symlinked directory used to be walked as if it
     // were a real one — listing files outside the store, which `readNote`/`writeNotes` then
     // correctly refuse, aborting whatever was iterating the list. `lstatSync` sees the link
     // itself, not what it points to, so the walk never enters it.
@@ -76,7 +76,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("refuses to read a note that is a symlink escaping the store", () => {
-    // CRITICAL 1: the directory-escape guard realpaths `dirname(abs)` but never the target
+    // The directory-escape guard realpaths `dirname(abs)` but never the target
     // itself, so a plain FILE symlink (not a symlinked directory) sailed straight through it.
     const outside = mkdtempSync(join(tmpdir(), "atlas-outside-"));
     const secretPath = join(outside, "secret.txt");
@@ -134,7 +134,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("refuses an absolute path", async () => {
-    // MINOR 6: `join(root, "/etc/evil.md")` lands INSIDE the root as a string (Node's `join`
+    // `join(root, "/etc/evil.md")` lands INSIDE the root as a string (Node's `join`
     // doesn't treat a leading slash on the second argument as absolute), so it used to pass
     // the escape check, get written to `<root>/etc/evil.md`, and then fail at `git add --
     // /etc/evil.md` — because THAT string, the raw relPath, is what got handed to git, and
@@ -145,7 +145,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("validates every path in the batch before writing any of them", async () => {
-    // IMPORTANT 2 (part one): a batch is validated whole, up front. Previously the bad path
+    // A batch is validated whole, up front. Previously the bad path
     // in a mixed batch was only discovered when the loop reached it, by which point an
     // earlier, perfectly good file in the same batch had already been written to disk with
     // no commit to show for it.
@@ -158,7 +158,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("recovers an orphaned write — bytes already on disk from a run whose commit failed still get committed on retry", async () => {
-    // IMPORTANT 2 (part two): the OTHER way a write can be orphaned — not a bad path
+    // The OTHER way a write can be orphaned — not a bad path
     // elsewhere in the batch, but `git commit` itself failing (a hook, a full disk, whatever)
     // AFTER the file was already written. A retry with the identical content used to compare
     // memory to disk, see the bytes already match, and conclude "nothing to do" — HEAD never
@@ -184,7 +184,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("commits only the given paths — an unrelated file staged by someone else is left alone", async () => {
-    // IMPORTANT 3: `git add` was already path-scoped, but the `git commit` that followed it
+    // `git add` was already path-scoped, but the `git commit` that followed it
     // was not, so anything ELSE staged in the shared clone — a human's in-progress edit, a
     // concurrent writer's half-finished batch — rode along into this service's commit under
     // this service's message.
@@ -205,12 +205,11 @@ describe("makeAtlasWriter", () => {
   });
 
   it("does nothing at all for an empty batch, even when someone else has staged something", async () => {
-    // Review round 2, new IMPORTANT: `git status --porcelain --` with NO pathspec after `--`
-    // means "the whole tree", not "these zero paths". Every guard this round added assumes
-    // the pathspec scopes to files THIS BATCH is responsible for — an empty batch broke that
-    // assumption and reintroduced the IMPORTANT-3 hijack (plus a commit for zero changes,
-    // the churn defect this whole plan exists to prevent) through the one door those fixes
-    // didn't cover.
+    // `git status --porcelain --` with NO pathspec after `--` means "the whole tree", not
+    // "these zero paths". Every guard assumes the pathspec scopes to files THIS BATCH is
+    // responsible for — an empty batch breaks that assumption and would reintroduce the
+    // hijack of someone else's staged work (plus a commit for zero changes, the churn this
+    // job exists to prevent) through the one door those guards don't cover.
     writeFileSync(join(atlasPath, "README.md"), "# Edited by someone else\n");
     execFileSync("git", ["add", "README.md"], { cwd: atlasPath });
     const before = execFileSync("git", ["rev-parse", "HEAD"], { cwd: atlasPath, encoding: "utf8" }).trim();
@@ -223,8 +222,7 @@ describe("makeAtlasWriter", () => {
   });
 
   it("refuses to silently report {committed:false} when a written file is invisible to git", async () => {
-    // MINOR (deferred from round 1, closed now): the Atlas has no .gitignore today, so this
-    // isn't live yet, but "I wrote your bytes and then told you nothing happened" is the
+    // The Atlas has no .gitignore by default, so this isn't live yet, but "I wrote your bytes and then told you nothing happened" is the
     // wrong answer from a write boundary regardless. If we wrote a file and git then reports
     // NOTHING dirty for that exact path, that's a contradiction — not a no-op — and must be
     // loud, not silent.
@@ -237,8 +235,8 @@ describe("makeAtlasWriter", () => {
   });
 
   it("commits a note whose path contains a space", async () => {
-    // Review round 3, new IMPORTANT: the round-2 fix parsed default `git status --porcelain`
-    // output with `line.slice(3)`, but git C-QUOTES paths it considers unusual in that
+    // Parsing default `git status --porcelain`
+    // output with `line.slice(3)` is wrong, because git C-QUOTES paths it considers unusual in that
     // output — and a plain space is enough (`?? "note with space.md"`, quotes included). The
     // quoted string then never matched the unquoted entry in `touched`, so a genuinely new,
     // untracked file was wrongly classified "invisible to git" and the call threw the

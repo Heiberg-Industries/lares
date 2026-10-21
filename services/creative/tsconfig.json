@@ -6,7 +6,7 @@
     "types": ["node"],
     "strict": true,
     "esModuleInterop": true,
-    // agent/agent.ts (and, from Task 3 on, the agent-kit override files) import ../agent.json —
+    // agent/agent.ts (and the agent-kit override files) import ../agent.json —
     // the agent declaration — as a JSON module.
     "resolveJsonModule": true,
     "skipLibCheck": true,

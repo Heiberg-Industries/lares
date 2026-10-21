@@ -1,9 +1,9 @@
 // services/atlas/tests/steady-state.test.ts
-// THE MANDATORY TEST (spec §5). Everything else in this service is a hypothesis until this
+// THE MANDATORY TEST. Everything else in this service is a hypothesis until this
 // passes.
 //
-// The hazard is the notion-sync one: "correct for one tick, broken on the next" — eight
-// instances in a single phase there, every one invisible in the diff and findable only by
+// The hazard is the notion-sync one: "correct for one tick, broken on the next" — many
+// instances there, every one invisible in the diff and findable only by
 // running several ticks against a real database. A job that re-proposes an already-decided
 // refresh every night is not a cosmetic bug; it is the store every business agent grounds on
 // churning under a human who has stopped reading the messages.

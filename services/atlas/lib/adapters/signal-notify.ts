@@ -5,10 +5,9 @@
 // eagerly at import time (poolFromEnv, probeLocalStores — a live network call), so it can
 // never itself be imported by a test; this adapter can.
 //
-// Task 15 (source-health findings are warn): every atlas signal went out as
-// data-quality/info, and the spine's route table has no row for that pair — every atlas
-// signal was silently dropped, which is how the first live tick's source-health alert
-// was lost. `opts.key === "source-health"` is what upgrades severity to "warn"
+// Source-health findings are warn: atlas signals used to go out as data-quality/info, and
+// the spine's route table has no row for that pair, so every one was silently dropped
+// (including the source-health alert). `opts.key === "source-health"` is what upgrades severity to "warn"
 // (data-quality/warn DOES have a route); anything else stays "info" and reaches the spine's
 // v2 catch-all instead. Nothing else about the wire format changes.
 import { createHash } from "node:crypto";

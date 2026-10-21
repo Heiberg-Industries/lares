@@ -2,7 +2,7 @@
 // Env → Config, plus the two guards that a composition root cannot pass by accident.
 //
 // WHY THE GUARDS EXIST: a root wired to a wrong-but-PRESENT value typechecks and passes the
-// whole suite. notion-sync Phase 4 shipped that defect three times. Types cannot catch it —
+// whole suite. The notion-sync package shipped that defect more than once. Types cannot catch it —
 // `makeFsReader({id:"vault", root: atlasPath})` is a perfectly well-typed vault reader that
 // reads the wrong store — so the check has to be a runtime one whose correct answer is a
 // semantic contradiction: two readers cannot both be "the store containing index.md" and
@@ -153,7 +153,7 @@ export function assertReaderWiring(readers: ReaderMap): void {
 /**
  * The runtime sentinel. Each local store is asked for a file that exists ONLY in it:
  * `SCHEMA.md` is the Atlas's contract file; `index.md` is the vault's root index (both
- * verified present on the box, 2026-08-11). A root that pointed both readers at one root
+ * verified present on a live box). A root that pointed both readers at one root
  * cannot satisfy both, and a root that pointed either at nothing cannot satisfy either.
  *
  * Local stores only: the remote ones need network and belong in `atlas-sync --doctor`, not in

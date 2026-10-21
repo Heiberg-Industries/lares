@@ -3,13 +3,12 @@
 // ungranted, scoped `none`, or set to autonomy `never`; strips its approval gate when
 // "transit" is `autonomous`; and otherwise hands it back untouched.
 //
-// This file is BYTE-IDENTICAL in every eve agent in this repo (chief-of-staff, travel agent,
+// This file is BYTE-IDENTICAL in every eve agent in this repo (chief-of-staff,
 // creative agent) — `diff -r` across their agent/extensions/agent-kit/tools directories is
 // empty, and that emptiness is the point.
-// The chief of staff and the travel agent both grant "transit" at scope `read`, so there this resolves to the live
-// tool the kit contributes, byte for byte — it is the FIRST kit contribution the travel agent resolves
-// live rather than into a sentinel. The creative agent grants no "transit", so there the same code is a
-// disableTool() sentinel and `agent-kit__transit_plan` never reaches her.
+// An agent that grants "transit" at scope `read` (the chief of staff, for one) resolves this to the live
+// tool the kit contributes, byte for byte. The creative agent grants no "transit", so there the same code is a
+// disableTool() sentinel and `agent-kit__transit_plan` never reaches it.
 // To give an agent a capability you add a grant; you do not write or delete code. A grant is
 // not a deploy, though — see ../extension.ts for the env, volume and secret each capability
 // still needs before its tools can do anything at call time. For `transit` that is the squid

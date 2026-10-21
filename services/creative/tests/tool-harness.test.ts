@@ -4,13 +4,13 @@
  * before production use — this file is that review, written down so it survives the next
  * refactor.
  *
- * Done BEFORE her authored tools exist (Task 5), so there is never a build in which the creative agent
+ * Done BEFORE the authored tools exist, so there is never a build in which the creative agent
  * has `bash` and `write_file` on a box with an Atlas mount.
  *
- * WHY THIS FILE CARRIED MORE WEIGHT THAN THE BRIEF EXPECTED, ON 0.32. eve's docs stated that a
+ * WHY THIS FILE CARRIES MORE WEIGHT THAN IT SEEMS TO NEED, ON 0.32. eve's docs stated that a
  * disable filename matching no framework tool "fails ... at build time rather than removing the
- * wrong tool", and chief-of-staff's and travel agent's tool files repeat that claim in a comment. It was
- * NOT true of `eve build` on eve 0.32, and I checked rather than assuming: dropping a bogus
+ * wrong tool", and chief-of-staff's tool files repeat that claim in a comment. It was
+ * NOT true of `eve build` on eve 0.32, verified rather than assumed: dropping a bogus
  * `agent/tools/bahs.ts` into this app produced a CLEAN build — exit 0, 0 errors, 0 warnings —
  * with `"bahs"` sitting in `.output/.eve/compile/compiled-agent-manifest.json`'s
  * `disabledFrameworkTools`. The name check lived in `resolveRuntimeAgentGraph`
@@ -18,10 +18,10 @@
  * on the box that meant a typo surfaced as a container that could not resolve its agent, not as
  * a red build, the expensive end of the feedback loop.
  *
- * UPDATE, eve 0.60.1 (W2-s8b). That claim eve's docs made is now TRUE: a disableTool() sentinel
+ * UPDATE, eve 0.60.1. That claim eve's docs made is now TRUE: a disableTool() sentinel
  * whose name matches no framework-default candidate now fails `eve build` itself
  * (`compiler/source-graph.js`: `Source "..." disables a slot with no lower-precedence source.`
- * — the exact CI blocker W2-s8 retired the glob.ts/grep.ts sentinels for). So a bogus
+ * — the exact CI blocker that retired the old glob.ts/grep.ts sentinels). So a bogus
  * `agent/tools/bahs.ts` would now be a RED BUILD, not a clean one. This test is not made
  * redundant by that — it is the fast, no-build confirmation of the same fact, useful in a plain
  * `pnpm test` run long before anyone pays for `eve build`'s ~40s.
@@ -30,8 +30,8 @@
  * here — comes from the last test: it reads eve's real framework-tool name set out of the
  * installed package and asserts that the eight disabled plus the three enabled account for ALL
  * of it. That catches a typo, and it also catches an eve upgrade that adds a twelfth default
- * tool — which would otherwise arrive silently enabled (task_cancel, on 0.60.1, until W2-s8b
- * gave it a sentinel of its own).
+ * tool — which would otherwise arrive silently enabled (task_cancel, on 0.60.1, until it got
+ * a sentinel of its own).
  *
  * THE 0.60.1 SOURCE OF TRUTH CHANGED TOO. `getAllFrameworkToolNames()` — what this file read
  * before — no longer exists anywhere in the installed package; `dist/src/runtime/framework-tools/`
@@ -51,13 +51,13 @@
  * (`createAgentSourceRegistry`'s returned shape), which is no more stable than the file it
  * would be reading anyway.
  *
- * ONE THING THIS FILE CANNOT SEE, and it is a real hole rather than a nitpick (Task 6).
+ * ONE THING THIS FILE CANNOT SEE, and it is a real hole rather than a nitpick.
  * `connection_search` IS one of registry.js's `eve:defaults` entries (so it is not invisible to
  * `frameworkToolNames()` the way it was to the old `getAllFrameworkToolNames()`), but it is also
  * eve's one REQUIRED framework tool (`compiler/default-tool-policy.js`'s
  * `REQUIRED_FRAMEWORK_TOOL_SLOTS`) — a disableTool() sentinel for it fails the build with its own
  * dedicated error, so it can never appear as a disabled sentinel here regardless. It is absent
- * from the creative agent's compiled tool list today only because she declares no eve connections
+ * from the creative agent's compiled tool list today only because it declares no eve connections
  * (`connections: []`), not because anything here turns it off.
  */
 import { describe, it, expect } from "vitest";
@@ -77,12 +77,12 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
   agent: () => import("../agent/tools/agent.js"),
   // glob and grep left eve's default tool set at 0.39.0, and 0.60.1 fails the build outright
   // on a disableTool() sentinel for a slot nothing provides ("disables a slot with no
-  // lower-precedence source") — W2-s8 retired both sentinel files. `defaultTools: false` was
+  // lower-precedence source") — both sentinel files were retired. `defaultTools: false` was
   // considered and NOT added: on this build it silently drops ask_question, todo and
   // load_skill too (no sentinel authors those slots, so eve stops granting them once its
-  // optional defaults are off), which would have violated the wave's safety bar — see
+  // optional defaults are off), which would have violated the safety bar — see
   // packages/board-evals/snapshots/tools-creative.txt, where all three are baselined.
-  // task_cancel is new in eve 0.60.1 (W2-s8b): a new framework tool from a version bump is an
+  // task_cancel is new in eve 0.60.1: a new framework tool from a version bump is an
   // owner decision, not a side effect, so it is disabled the same as its `agent` neighbour.
   task_cancel: () => import("../agent/tools/task_cancel.js"),
 };
@@ -90,7 +90,7 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
 // Left enabled, and each for its own reason — none of the three can read a file, run a
 // command, or reach the network, so none of them widens the surface the eight above close:
 //
-//   ask_question — a real park-and-wait primitive. Her persona tells her to run the studio on
+//   ask_question — a real park-and-wait primitive. The persona tells the agent to run the studio on
 //                  a terse brief with a stated assumption rather than interrogating first,
 //                  but it also says to ask BEFORE running when a brief is truly unparseable.
 //                  This is the tool for that one case.
@@ -98,7 +98,7 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
 //                  re-injects it across compaction, so removing it would cost context on long
 //                  sessions for no gain.
 //   load_skill — pulls a declared skill's instructions into the turn. It adds NO execution
-//                  surface (behaviour still comes from the tools she already has), and eve
+//                  surface (behaviour still comes from the tools the agent already has), and eve
 //                  only registers it when the agent declares skills — the creative agent declares none
 //                  today, so it is currently absent anyway. Leaving it undisabled means a
 //                  future skill works without first deleting a file nobody remembers.
@@ -107,7 +107,7 @@ const ENABLED = ["ask_question", "todo", "load_skill"] as const;
 // `connection_search` is neither disabled nor a free choice to enable: it is eve's one REQUIRED
 // framework tool (`compiler/default-tool-policy.js`'s `REQUIRED_FRAMEWORK_TOOL_SLOTS`) — a
 // disableTool() sentinel for it fails `eve build` with its own dedicated error, so it can never
-// join DISABLED. It is a real `eve:defaults` registration (W2-s8b's `frameworkToolNames()` below
+// join DISABLED. It is a real `eve:defaults` registration (`frameworkToolNames()` below
 // sees it, unlike the old `getAllFrameworkToolNames()` this file used before eve 0.60.1 — see
 // this file's header), so the "covers eve's whole harness" union below must name it explicitly
 // or go red on every build. Harmless for the creative agent today because it contributes no dynamic tool
@@ -169,11 +169,11 @@ describe("tool harness lockdown", () => {
   });
 
   it("ask_question / todo / load_skill are NOT disabled — they are the useful three", () => {
-    // eve disables by FILENAME, so "enabled" is proven by the ABSENCE of a file. Task 5 will
-    // add authored tools to this directory; none of them may be named after these three.
+    // eve disables by FILENAME, so "enabled" is proven by the ABSENCE of a file. Authored tools
+    // belong in `catalogue/`, not this directory; none of them may be named after these three.
     const slugs = toolFileSlugs();
     for (const keep of ENABLED) {
-      expect(slugs, `${keep}.ts must NOT exist — its presence would remove a tool she uses`)
+      expect(slugs, `${keep}.ts must NOT exist — its presence would remove a tool the agent uses`)
         .not.toContain(keep);
     }
   });
@@ -185,7 +185,7 @@ describe("tool harness lockdown", () => {
     // `eve build` itself now fails the same way (see this file's header) — but it is the fast
     // one, and it still catches a name that used to be a real framework tool and stopped being
     // one (glob, grep: gone from `names` since they left the default set at 0.39.0, which is
-    // exactly why W2-s8 had to retire their sentinel files rather than just leave them be).
+    // exactly why their sentinel files had to be retired rather than left in place).
     for (const slug of Object.keys(DISABLED)) {
       expect(
         [...names],
@@ -195,8 +195,8 @@ describe("tool harness lockdown", () => {
 
     // Direction 2 — nothing arrives silently enabled. If an eve upgrade adds another default
     // tool, it is in none of DISABLED/ENABLED/REQUIRED and this goes red, forcing a decision
-    // instead of handing the creative agent a capability nobody chose to give her (task_cancel was
-    // exactly this, on 0.60.1, until W2-s8b gave it a sentinel of its own).
+    // instead of handing the creative agent a capability nobody chose to give it (task_cancel was
+    // exactly this, on 0.60.1, until it got a sentinel of its own).
     expect([...names].sort()).toEqual([...Object.keys(DISABLED), ...ENABLED, ...REQUIRED].sort());
   });
 });

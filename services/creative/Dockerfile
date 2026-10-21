@@ -12,7 +12,7 @@
 # Build context = the REPO ROOT (not this directory) — creative agent is a pnpm workspace
 # member with no lockfile of its own, so `pnpm install --filter lares-creative...` needs the
 # root pnpm-workspace.yaml + pnpm-lock.yaml. CI must pass `-f services/creative/Dockerfile .`
-# from the root (mirrors travel agent's and chief-of-staff's convention).
+# from the root (mirrors chief-of-staff's convention).
 
 # ---- builder: install the creative agent workspace closure and build ---------------
 # eve 0.32.0 requires Node >=24 (package.json "engines") — confirmed the hard way on chief-of-staff:
@@ -42,7 +42,7 @@ COPY services/creative/package.json services/creative/package.json
 # convention, node_modules/eve/docs/extensions.md). pnpm runs a workspace-local package's
 # `prepare` script during `pnpm install` itself, so a manifest-only copy here leaves
 # `extension/` missing and `eve extension build` fails with ENOENT scanning it (the same fix
-# chief-of-staff's and travel agent's Dockerfiles carry).
+# chief-of-staff's Dockerfile carries).
 # Caching trade-off: this puts agent-kit ahead of the `pnpm install` layer, so ANY change to
 # agent-kit's source busts that layer's cache. Accepted — it is the only package here with a
 # `prepare` script that needs its own source present at install time.
@@ -54,7 +54,7 @@ COPY packages/vault-format packages/vault-format
 # creative agent's closure is `eve`, `ai`, `@ai-sdk/*`, `@workflow/world-postgres`, `pg`,
 # `undici`, `zod`, the OpenTelemetry exporter set, `https-proxy-agent`, plus dev deps
 # (vitest/typescript) needed for `pnpm typecheck`/`pnpm test` upstream — and exactly ONE
-# workspace sibling: @lares/agent-kit. She needs NOTHING else from the monorepo: no
+# workspace sibling: @lares/agent-kit. It needs NOTHING else from the monorepo: no
 # @lares/taste, no @lares/junk, no
 # @lares/compose-contract. `--filter lares-creative...` resolves the closure automatically, but
 # only if EVERY workspace member in it has its manifest copied above: a filtered install
@@ -62,7 +62,7 @@ COPY packages/vault-format packages/vault-format
 # trap that has bitten the console image before.) Not --prod, since `eve` itself is a normal
 # "dependencies" entry (not dev-only) either way. This also runs @lares/agent-kit's `prepare`
 # script (see the COPY above), building its extension's dist/ tree so it exists by the time
-# creative agent's own `eve build` compiles the agent below — she MOUNTS that extension
+# creative agent's own `eve build` compiles the agent below — it MOUNTS that extension
 # (agent/extensions/agent-kit/extension.ts), so a missing dist/ here is a build failure.
 RUN pnpm install --frozen-lockfile --filter lares-creative...
 
@@ -84,7 +84,7 @@ WORKDIR /app/services/creative
 # and fails the build naming the file. It must run BEFORE `eve build`, so a stale persona costs
 # seconds rather than a full Nitro compile.
 # ---- BUILDER IMAGE ENDS HERE ----
-# Published as ghcr.io/<org>/lares-creative:<tag>. An overlay's Dockerfile does:
+# Published as ghcr.io/<org>/lares-creative:<tag>. A derived image's Dockerfile does:
 #   FROM ghcr.io/<org>/lares-creative:<tag> AS build
 #   COPY agents/<name>/agent.json /app/services/creative/agent.json
 #   COPY agents/<name>/agent/      /app/services/creative/agent/
@@ -92,11 +92,11 @@ WORKDIR /app/services/creative
 #   destination lands one level too deep and silently ships the neutral persona.)
 #   RUN pnpm run assemble:check && pnpm exec eve build
 #   FROM ghcr.io/<org>/lares-runtime-base:<tag>
-#   COPY --from=build /app /app (+ the mkdir/chown/USER/CMD lines from the overlay template)
-# The neutral default agent.json/voice.md in this tree let the engine build and test with no overlay.
+#   COPY --from=build /app /app (+ the mkdir/chown/USER/CMD lines the runtime needs)
+# The neutral default agent.json/voice.md in this tree let the engine build and test with no derived image.
 WORKDIR /app/services/creative
 
-# CI-only neutral runtime target. Default final stage below preserves the overlay builder contract.
+# CI-only neutral runtime target. Default final stage below preserves the builder-image contract.
 FROM builder AS compiled-runtime
 RUN pnpm run assemble:check && pnpm exec eve build
 FROM node:24-bookworm-slim AS runtime

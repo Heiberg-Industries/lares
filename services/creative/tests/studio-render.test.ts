@@ -41,8 +41,8 @@ describe("renderSpread", () => {
 
   /**
    * The grounding line is ground truth the narrating model cannot otherwise see — it receives
-   * the rendered spread, not the consensus. Without it she guesses, and the observed failure was
-   * her claiming "the Atlas came up empty" on a run that had grounded fully on a brand note.
+   * the rendered spread, not the consensus. Without it the agent guesses, and the observed failure was
+   * it claiming "the Atlas came up empty" on a run that had grounded fully on a brand note.
    */
   it("says grounded when there was consensus material", () => {
     expect(renderSpread(run("org-two is an agentic AI consultancy")))
@@ -55,7 +55,7 @@ describe("renderSpread", () => {
    * DIFFERENT module (`consensus.ts`). Nothing but this test connects the two. Rather than
    * hardcode the sentinel on both sides, it produces the real one — a real Atlas with no match,
    * through the real adapter — and feeds it to the real renderer. Change either string alone and
-   * this goes red; without it, the failure is silent and lands as her lying about grounding.
+   * this goes red; without it, the failure is silent and lands as the agent misreporting its grounding.
    */
   it("says NOT grounded for the sentinel the real Atlas consensus actually emits", async () => {
     const root = mkdtempSync(join(tmpdir(), "creative-agent-atlas-render-"));

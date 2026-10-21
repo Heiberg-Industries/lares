@@ -1,7 +1,7 @@
 // services/atlas/tests/helpers/tick-deps.ts
 // A minimal, fully-wired TickDeps builder for apply.test.ts and run.test.ts — extracted so
 // the two test files don't grow two independently-driftable ideas of "what a stub TickDeps
-// looks like" (the same reason fake-writer.ts was pulled out for Task 9).
+// looks like" (the same reason fake-writer.ts is shared).
 //
 // Readers and the draft model default to THROWING if actually invoked: a test that only
 // exercises apply.ts (which never resolves a source or drafts anything) should never reach
@@ -37,7 +37,7 @@ export interface TestTickDeps extends TickDeps {
   /** Every message passed to `notify`, in call order. */
   notifications: string[];
   /** Every (message, opts) pair passed to `notify`, in call order — for asserting on
-   *  opts.key (Task 15: source-health notices carry `{ key: "source-health" }`). */
+   *  opts.key (source-health notices carry `{ key: "source-health" }`). */
   notifyCalls: Array<{ message: string; opts?: { key?: string } }>;
   /** Every message passed to `log`, in call order. */
   logs: string[];

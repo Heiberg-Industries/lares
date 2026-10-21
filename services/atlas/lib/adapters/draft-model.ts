@@ -3,7 +3,7 @@
 //
 // The model id is a REQUIRED option with no default. Model selection follows the standing
 // portfolio policy — resolved from the live gateway config at deploy time, never named from
-// memory in code (spec §4.2). A default here would be a name that rots.
+// memory in code. A default here would be a name that rots.
 //
 // Every failure THROWS. A drafting call that returns something plausible on failure is how
 // a proposal gets made from nothing; decideNote's caller treats a throw as "skip this note

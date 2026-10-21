@@ -1,8 +1,8 @@
 /**
- * Her five tools, proven through their real `execute` against a real temp Atlas.
+ * The agent's tools, proven through their real `execute` against a real temp Atlas.
  *
- * The task brief asked for these guarantees as a source-text grep — reading each tool file and
- * asserting it CONTAINS `"approval: always("` and `"assertApprover"`. That is brittle in both
+ * These guarantees could be asserted as a source-text grep — reading each tool file and
+ * asserting it CONTAINS `"approval: always("` and `"assertApprover"` — but that is brittle in both
  * directions: it passes on a commented-out gate and fails on a reformat. Every guarantee below
  * is asserted on the imported tool OBJECT or on real behaviour instead.
  *
@@ -110,7 +110,7 @@ describe("the reads are UNGATED and read the shared area", () => {
     // The temp Brain contains a note that also matches "the second company". Finding only the Atlas one is
     // the assertion: it proves which env var the kit factory closed over.
     //
-    // Read as a schedule turn (`auth.current` null): since the multi-user substrate (2026-09-01)
+    // Read as a schedule turn (`auth.current` null): since the multi-user substrate
     // a turn WITH a speaker resolves them against the identity registry, which needs the box
     // Postgres and fails closed without it — that path is agent-kit's to test
     // (tests/note-tools-reader.test.ts), not this file's. The assertion here is about paths.
@@ -136,7 +136,7 @@ describe("the reads are UNGATED and read the shared area", () => {
 
   it("refuses a path that escapes the store, even for an allowlisted caller", async () => {
     // containment, inherited from the kit's `resolveInStore`. Asserted here because
-    // these three tools are the only file-reaching surface she has: eve's own read_file/glob/
+    // these three tools are the only file-reaching surface the agent has: eve's own read_file/glob/
     // grep are disabled (tests/tool-harness.test.ts), on the grounds that these cover the need
     // without exposing absolute paths like /run/secrets.
     await expect(
@@ -144,9 +144,9 @@ describe("the reads are UNGATED and read the shared area", () => {
     ).rejects.toThrow();
   });
 
-  // W5C-s3, and the reason one tool for every area does not widen anything: the area is an
-  // INPUT now, so "she cannot reach the personal store" stopped being a property of which
-  // factory argument a file passed and became a property of her DECLARATION. Her agent.json
+  // The reason one tool for every area does not widen anything: the area is an
+  // INPUT, so "the agent cannot reach the personal store" is a property of the DECLARATION,
+  // not of which factory argument a file passed. The agent.json
   // grants the shared store and not the personal one, so `lib/vault-areas.ts` hands the tool
   // the shared area alone and the private one is refused by name. This is the code half of the
   // same rule the last block in this file greps for.
@@ -186,7 +186,7 @@ describe("the gated tools re-check the approver", () => {
   });
 
   it("studio_ideate is NOT gated — but still re-checks the approver", () => {
-    // the owner's call, 2026-08-24, after seeing the first live card: a gate in front of a run he
+    // The owner's call, after seeing the first live card: a gate in front of a run they
     // had just asked for carried no decision content, and it devalued the vault_write gate
     // beside it. The approver re-check STAYS, and that distinction is the point of this test —
     // "ungated" here means "no card", not "no identity check". The refusal itself is proven by
@@ -243,13 +243,13 @@ describe("vault_write, when the owner approves", () => {
     expect(written).toContain("tags: [ideation]");
     expect(written).toContain("Three angles worth trying.");
 
-    // NORMALISED, not passed through — parity with agent-runtime/lib/adapters/hands/atlas.ts:39.
+    // NORMALISED, not passed through — parity with the old agent-runtime atlas write tool.
     // The model supplies a title, a body and optional tags and nothing else reaches the file,
     // so the Atlas stays queryable by `type` instead of carrying whatever keys a model invented.
     expect(written).toContain("type: note");
 
-    // Provenance, stamped from the agent name by the old hand for the same reason: without it
-    // every note she has ever saved is indistinguishable from one the owner wrote by hand.
+    // Provenance, stamped from the agent name by the old tool for the same reason: without it
+    // every note the agent has ever saved is indistinguishable from one the owner wrote manually.
     // The name comes from this agent's definition (the neutral default ships as "creative"), not a literal.
     const agentName = (await thisAgent(undefined)).loaded.definition.name;
     expect(agentName).toBe("creative");
@@ -285,7 +285,7 @@ describe("vault_write, when the owner approves", () => {
   });
 
   it("makes traversal UNREPRESENTABLE — the path is derived, never supplied", async () => {
-    // The controller's fix-round-1 ruling, asserted as a property rather than as a refusal.
+    // Asserted as a property rather than as a refusal.
     // There is no `path` input to refuse: a path-shaped title is flattened into a filename
     // inside _inbox. This covers the case containment alone would have allowed — `.git/config`
     // is IN the store, so `resolveInStore` would have passed it and the file would have been
@@ -308,7 +308,7 @@ describe("vault_write, when the owner approves", () => {
     expect(readdirSync(atlasRoot).filter((e) => !e.startsWith(".")).sort()).toEqual(["_inbox", "ventures"]);
 
     // And the schema itself refuses to carry one: `path` is not an accepted input. `area` is
-    // (W5C-s4) — it says WHICH store, never where inside it.
+    // — it says WHICH store, never where inside it.
     expect(Object.keys((vaultWrite.inputSchema as { shape: Record<string, unknown> }).shape).sort()).toEqual([
       "area",
       "body",
@@ -318,9 +318,9 @@ describe("vault_write, when the owner approves", () => {
   });
 
   it("NEVER WIDENS: the one write tool refuses the private area, against the real declaration", async () => {
-    // W5C-s4. `atlas_write` was bound to the shared store at construction, so the filename was
-    // the permission. The area is an input now — this is what replaces that binding, and it is
-    // checked against the committed declaration (`agent.json` grants `atlas` and nothing else),
+    // The old write tool was bound to the shared store at construction, so the filename was
+    // the permission. The area is an input — this is what replaces that binding, and it is
+    // checked against the committed declaration (`agent.json` grants the shared area only),
     // not against a fixture. The approver is allowlisted, so the refusal below can only be the
     // area guard.
     const before = git(atlasRoot, "rev-parse", "HEAD").trim();
@@ -337,12 +337,12 @@ describe("she has NO Brain access — Atlas only", () => {
    * that no file ANYWHERE in the service names the Brain, including a file nothing imports yet.
    * An object-level check can only see the tools that are wired up today.
    *
-   * The physical half of the same rule lives in compose (Task 7): no VAULT_PATH, no /srv/brain
+   * The physical half of the same rule lives in compose: no VAULT_PATH, no /srv/brain
    * volume. The declaration half lives in agent.json: no `brain` grant, which is what turns the
    * ten agent-kit Brain/vault tools into disable sentinels. This is the code half.
    */
   const SERVICE_ROOT = join(import.meta.dirname, "..");
-  // W5C-s3 note: `lib/vault-areas.ts` is what enforces this at run time now. The grep below
+  // Note: `lib/vault-areas.ts` is what enforces this at run time now. The grep below
   // still holds — nothing in this service names the personal store or its setting — and the
   // test above proves the declaration-driven half.
   const SKIP_DIRS = new Set(["node_modules", ".output", ".eve", ".git", "dist"]);
@@ -366,7 +366,7 @@ describe("she has NO Brain access — Atlas only", () => {
     for (const file of files) {
       const src = readFileSync(file, "utf8");
       // Comments are allowed to DISCUSS the Brain — extension.ts's whole docblock is about why
-      // she has none — so the check is for the code shapes that would actually reach it.
+      // the agent has none — so the check is for the code shapes that would actually reach it.
       const code = src
         .split("\n")
         .filter((l) => !/^\s*(\/\/|\*|\/\*)/u.test(l))
@@ -377,7 +377,7 @@ describe("she has NO Brain access — Atlas only", () => {
   });
 });
 
-// W7A-s6 — vault_write now also checks WHICH card it was shown (`assertApproval`,
+// vault_write also checks WHICH card it was shown (`assertApproval`,
 // `lib/approvals.ts`), not only who tapped it. These cases pin the ORDER inside `execute`: the
 // approver check (already proven above, on the real allowlist) runs first and unconditionally;
 // the card check runs after it and before any git write. Mocking the same technique
@@ -433,7 +433,7 @@ describe("vault_write checks which card it answered, after the approver and befo
     expect(git(atlasRoot, "rev-parse", "HEAD").trim()).toBe(before);
   });
 
-  it("when the card check passes, the write proceeds exactly as it did before this slice", async () => {
+  it("when the card check passes, the write proceeds exactly as it did before the card check existed", async () => {
     const checked = vi.fn();
     vi.doMock("@lares/agent-kit/approval-ledger", () => ({
       assertApprovedCall: async (_ledger: unknown, call: unknown) => { checked(call); },

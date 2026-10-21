@@ -1,6 +1,6 @@
 // services/atlas/lib/mechanical.ts
 // The deterministic half of a refresh: fields that are COMPUTED, never drafted, and
-// therefore need no model and no 👍 (spec §4.2, "split by determinism").
+// therefore need no model and no 👍 (the split is by determinism).
 //
 // THE RULE THIS FILE EXISTS TO ENFORCE: `last_synced` is stamped ONLY when something else
 // changed. A pass that stamped it every run would make the wall clock a content source —

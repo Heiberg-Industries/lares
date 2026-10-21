@@ -105,15 +105,15 @@ export function isAllowedSlackUser(message: SlackMessage): boolean {
 }
 
 /**
- *  item 2 — what the creative agent says when her gateway key hits its cap.
+ * What the creative agent says when its gateway key hits its cap.
  *
- * `the creative agent` may carry a small daily `max_budget` — a tight cap, so she is the
+ * This agent may carry a small daily `max_budget` — a tight cap, so it is the
  * likeliest agent to meet it. LiteLLM refuses with HTTP 400 and `error.type:
  * "budget_exceeded"`; eve treats that as a terminal failure, and before this the door posted
  * its generic "I hit an error while handling your request".
  *
  * Same wording as `services/chief-of-staff/agent/channels/slack.ts` on purpose — this is an
- * operational fact about the gateway, not a voice. Her voice (`agent/voice.md`) belongs to what a model composes, and a capped turn
+ * operational fact about the gateway, not a voice. Its voice (`agent/voice.md`) belongs to what a model composes, and a capped turn
  * composed nothing.
  */
 const BUDGET_EXCEEDED_TEXT =
@@ -154,7 +154,7 @@ export async function onSessionFailed(data: FailureEventData, channel: FailureTh
 
 /**
  * Admits an allowed human's message. eve drops Slack audio and video clips before the
- * turn; the note tells the creative agent what arrived so she can say it plainly (same as chief-of-staff's door).
+ * turn; the note tells the creative agent what arrived so it can say it plainly (same as chief-of-staff's door).
  */
 export function admitSlackMessage(
   ctx: Parameters<typeof defaultSlackAuth>[1],

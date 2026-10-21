@@ -1,7 +1,7 @@
-// THE GATE (step 2, Task 5, step 9).
+// THE GATE.
 //
 // This agent's instructions are now resolved at session start from its DEFINITION rather than
-// compiled from a file baked into its image. The whole plan rests on that being a change of
+// compiled from a file baked into its image. The whole design rests on that being a change of
 // WHERE the persona comes from and not of WHAT it says: what `agent/instructions/aa-definition.ts`
 // hands the model must be byte-for-byte the committed `agent/persona.md`.
 //
@@ -74,8 +74,8 @@ describe("the definition gate", () => {
   });
 });
 
-//  step 2 review, finding 3. The spec's Part 3 resolves instructions, model, tools and
-// skills AT SESSION START, and ADR-0015 promises the owner that a definition edited on the box
+// Instructions, model, tools and skills are resolved AT SESSION START, and ADR-0015 promises
+// the owner that a definition edited on the box
 // "applies at the next conversation" with nothing rebuilt and nothing restarted. A
 // process-lifetime memo silently broke that — `resolveDefinition` re-reads the folder every call
 // (the "cache" in its name is the Postgres last-valid row), so pinning its promise forever meant

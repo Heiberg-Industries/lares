@@ -8,7 +8,7 @@
 Keeps the **Atlas** (`/srv/atlas`, the business knowledge store every business agent grounds
 on) derived from its canonical sources, instead of rotting as a hand-tended wiki.
 
-Part A seeded the store by hand. This is Part B: the job that keeps it current.
+The store is seeded once by hand; this is the job that keeps it current.
 
 ## What it actually does, once a day
 
@@ -98,7 +98,7 @@ Secrets are read from **files**, never plaintext env vars.
 ## Two guards run before the first tick
 
 Both exist because a composition root wired to a **wrong-but-present** value typechecks and
-passes the entire test suite. notion-sync shipped exactly that defect three times in one phase.
+passes the entire test suite. notion-sync shipped exactly that defect more than once.
 
 - `assertReaderWiring` — four prefixes, four distinct reader instances, each reporting the id
   its prefix expects.
