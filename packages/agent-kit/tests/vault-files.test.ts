@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync, spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { GuardedVaultFiles, VAULT_AREA_MARKER, VaultFilesDeniedError, VaultFilesUnavailableError, type VaultFilesBackings, type VaultFilesContext } from '../src/vault-files.js';
 import { vaultContentRevision, VaultContentChangedError, VaultPushFailedError } from '../src/vault-git.js';
+import { readOriginFrontmatter } from '../src/origin.js';
 import { withVaultRepositoryLock } from '../src/note-lock.js';
 import { NotePathEscapesStoreError, resolveInStore } from '../src/notes-store.js';
 import type { VaultAreaBinding, VaultWriteBinding } from '../src/authority-contract.js';
@@ -95,6 +96,44 @@ describe('authorized initialized area reads',()=>{
     aliases.set('alias',{kind:'git',root,areas:new Map()});await expect(new GuardedVaultFiles({vaultAreaBinding:current},aliases).list(ctx)).rejects.toThrow(VaultFilesUnavailableError);
     const shared=new Map(backings);shared.set('second',{kind:'git',root:join(tmp,'second'),areas:new Map([['area-b',{origin}]])});mkdirSync(join(tmp,'second'));await expect(new GuardedVaultFiles({vaultAreaBinding:current},shared).list(ctx)).rejects.toThrow(VaultFilesUnavailableError);
   });
+  it('refuses a filesystem-root backing because no local origin can be outside it',async()=>{
+    const fullRoot={...binding,relativePath:realpathSync(root).slice(1)};
+    const marker=JSON.parse(readFileSync(join(root,VAULT_AREA_MARKER),'utf8'));writeFileSync(join(root,VAULT_AREA_MARKER),JSON.stringify({...marker,relativePath:fullRoot.relativePath}));
+    current.mockResolvedValue(fullRoot);
+    const allFiles:VaultFilesBackings=new Map([['backing',{kind:'git',root:'/',areas:new Map([['area-a',{origin}]])}]]);
+    await expect(new GuardedVaultFiles({vaultAreaBinding:current},allFiles).list(ctx)).rejects.toThrow(new VaultFilesUnavailableError());
+  });
+  it('refuses a real private area origin placed inside another initialized member area',async()=>{
+    const second:VaultAreaBinding={...binding,areaId:'area-b',relativePath:'member-b',owner:{kind:'member',id:'member-b'},resource:{kind:'vault-area',id:'area-b'}};
+    const rootB=join(tmp,'working','member-b'),originB=join(tmp,'bare','area-b.git');setupArea(rootB,second,originB);
+    const nestedOrigin=join(rootB,'a-history.git');renameSync(origin,nestedOrigin);git(root,'remote','set-url','origin',nestedOrigin);
+    const stores:VaultFilesBackings=new Map([['backing',{kind:'git',root:join(tmp,'working'),areas:new Map([['area-a',{origin:nestedOrigin}],['area-b',{origin:originB}]])}]]);
+    current.mockImplementation(async(memberId,input)=>memberId==='member-b'&&input.areaId==='area-b'?second:memberId==='member-a'&&input.areaId==='area-a'?binding:undefined);
+    const guarded=new GuardedVaultFiles({vaultAreaBinding:current},stores),ctxB={...ctx,memberId:'member-b',areaId:'area-b'};
+    expect(readFileSync(join(nestedOrigin,'HEAD'),'utf8')).toContain('ref:');
+    for(const member of [ctx,ctxB]){
+      await expect(guarded.list(member)).rejects.toThrow(new VaultFilesUnavailableError());
+      await expect(guarded.count(member)).rejects.toThrow(new VaultFilesUnavailableError());
+    }
+    for(const path of ['a-history.git/HEAD','a-history.git/config'])await expect(guarded.read(ctxB,path)).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(guarded.search(ctxB,'ref')).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(guarded.backlinks(ctxB,'note.md')).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(guarded.write(ctx,{binding:writeBinding('new.md'),frontmatter:{},body:'bad'})).rejects.toThrow(new VaultFilesUnavailableError());expect(existsSync(join(root,'new.md'))).toBe(false);
+  });
+  it.each(['ordinary','bare','bare-without-config'])('refuses nested %s repositories on every guarded file path',async(kind)=>{
+    seed('safe.md','safe note');const note=await api.read(ctx,'safe.md'),nested=join(root,'nested-history');
+    execFileSync('git',['init','--quiet',...(kind==='ordinary'?[]:['--bare']),nested]);
+    if(kind==='bare-without-config')rmSync(join(nested,'config'));
+    const secretPath=kind==='ordinary'?'private.md':'HEAD';if(kind==='ordinary')writeFileSync(join(nested,secretPath),'other private history');
+    await expect(api.read(ctx,'nested-history/'+secretPath)).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.list(ctx)).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.count(ctx)).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.search(ctx,'private')).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.backlinks(ctx,'safe.md')).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.write(ctx,{binding:writeBinding('nested-history/new.md'),frontmatter:{},body:'bad'})).rejects.toThrow(new VaultFilesUnavailableError());
+    await expect(api.move(ctx,{binding:writeBinding('safe.md',note.contentRevision),destination:'nested-history/moved.md',expectedDestinationRevision:null,companion:null,expectedCompanionDestinationRevision:null})).rejects.toThrow(new VaultFilesUnavailableError());
+    expect(existsSync(join(root,'safe.md'))).toBe(true);expect(existsSync(join(nested,'new.md'))).toBe(false);expect(existsSync(join(nested,'moved.md'))).toBe(false);
+  });
   it('refuses a parent Git repository, gitfile/worktree and object alternates',async()=>{
     renameSync(join(root,'.git'),join(tmp,'saved.git'));execFileSync('git',['init','--quiet',join(tmp,'working')]);await expect(api.list(ctx)).rejects.toThrow(VaultFilesUnavailableError);
     writeFileSync(join(root,'.git'),'gitdir: '+join(tmp,'saved.git')+'\n');await expect(api.list(ctx)).rejects.toThrow(VaultFilesUnavailableError);
@@ -116,6 +155,27 @@ describe('authorized initialized area reads',()=>{
 });
 
 describe('exact content mutations and local durability',()=>{
+  it.each(['*.md',':(glob)*.md',':(top)other.md','[a-z]?.md'])('treats %s literally through create, move and remove without committing an unrelated edit',async(path)=>{
+    seed('other.md','original canary');writeFileSync(join(root,'other.md'),'unrelated unstaged modification');
+    await api.write(ctx,{binding:writeBinding(path),frontmatter:{},body:'literal path'});
+    expect(git(origin,'show','HEAD:other.md')).toBe('original canary');expect(readFileSync(join(root,path),'utf8')).toContain('literal path');
+    expect(git(root,'show','--pretty=','--name-only','HEAD').trim()).toBe(path);
+    const note=await api.read(ctx,path),destination='moved/'+path;
+    await api.move(ctx,{binding:writeBinding(path,note.contentRevision),destination,expectedDestinationRevision:null,companion:null,expectedCompanionDestinationRevision:null});
+    expect(existsSync(join(root,path))).toBe(false);expect(existsSync(join(root,destination))).toBe(true);
+    expect(git(origin,'show','HEAD:other.md')).toBe('original canary');
+    const moved=await api.read(ctx,destination);await api.remove(ctx,{binding:writeBinding(destination,moved.contentRevision),companion:null});
+    expect(existsSync(join(root,destination))).toBe(false);expect(git(origin,'show','HEAD:other.md')).toBe('original canary');expect(readFileSync(join(root,'other.md'),'utf8')).toBe('unrelated unstaged modification');
+    expect(git(root,'status','--porcelain').trim()).toBe('M other.md');expect(git(root,'diff','--cached')).toBe('');
+  });
+  it.each([0x2028,0x2029,0x85])('refuses Unicode line separator %i which can forge a provenance field',async(codepoint)=>{
+    const separator=String.fromCodePoint(codepoint),forgery='title'+separator+'lares_origin: owner'+separator;
+    if(codepoint!==0x85)expect(readOriginFrontmatter('---\ntitle: '+forgery+'\nlares_origin: synced\n---\n')).toBe('owner');
+    for(const frontmatter of [{title:forgery},{tags:[forgery]}])await expect(api.write(ctx,{binding:writeBinding('forged.md'),frontmatter,body:'bad'})).rejects.toThrow(new VaultFilesDeniedError());
+    expect(existsSync(join(root,'forged.md'))).toBe(false);
+    await api.write(ctx,{binding:writeBinding('safe.md'),frontmatter:{title:'safe'},body:'safe'});
+    expect(readOriginFrontmatter(readFileSync(join(root,'safe.md'),'utf8'))).toBe('synced');
+  });
   it('creates only when absent, stamps approved origin, and refuses stale or omitted revisions',async()=>{
     const result=await api.write(ctx,{binding:writeBinding('notes/new.md'),frontmatter:{lares_origin:'owner',owner:'other'},body:'created'});
     expect(git(origin,'show','HEAD:notes/new.md')).toContain('lares_origin: synced');expect(result.commit).toBeTruthy();

@@ -84,8 +84,9 @@ export function vaultGitEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")));
 }
 
-/** Git has one shared index per repository. All engine Git writers must hold this lock,
+/** Git has one shared index per repository. This serializes callers using this API,
  * including writers of different notes and callers reaching the same repository by alias.
+ * Legacy per-note writers are separate; guarded roots must not be shared with them.
  * Stale locks are never stolen automatically: a timed out writer refuses for operator review.
  * This is an advisory engine lock, not protection against hostile concurrent OS processes. */
 export async function withVaultRepositoryLock<T>(vaultRoot: string, fn: () => Promise<T>): Promise<T> {

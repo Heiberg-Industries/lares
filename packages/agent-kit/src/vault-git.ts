@@ -63,7 +63,7 @@ export function serializeFrontmatter(fm: Record<string, unknown>): string {
 
 /** Internal Git calls cannot inherit an alternate GIT_DIR/index or use network transports. */
 export function runVaultGit(vaultRoot: string, args: string[]): string {
-  return execFileSync("git", ["-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+  return execFileSync("git", ["--literal-pathspecs", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
     "-C", vaultRoot, ...args], { encoding: "utf8", env: vaultGitEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
 }
 const runGit = runVaultGit;
@@ -89,7 +89,7 @@ function assertExpected(root: string, expected: Readonly<Record<string, string |
   for (const path of paths) {
     const wanted = expected[path];
     if (wanted !== null && (typeof wanted !== "string" || !/^[a-f0-9]{64}$/.test(wanted))) throw new VaultContentChangedError();
-    const abs = resolveInStore(path, root);
+    const abs = resolveInStore(path, root, {rejectNestedRepositories:true});
     let bytes: Buffer;
     try { bytes = readFileSync(abs); }
     catch (error) {
@@ -134,10 +134,10 @@ function gitPushOrThrow(vaultRoot: string, commit: string): void {
  * deletes use it so the note and its `.txt` always travel together; anything unexpected means
  * "no companion", never an error, so a plain note behaves exactly as before.
  */
-export function vaultCompanionOf(vaultRoot: string, notePath: string): string | null {
+export function vaultCompanionOf(vaultRoot: string, notePath: string, rejectNestedRepositories = false): string | null {
   let raw: string;
   try {
-    raw = readFileSync(resolveInStore(notePath, vaultRoot), "utf8");
+    raw = readFileSync(resolveInStore(notePath, vaultRoot, {rejectNestedRepositories}), "utf8");
   } catch {
     return null;
   }
@@ -154,7 +154,7 @@ export function vaultCompanionOf(vaultRoot: string, notePath: string): string | 
   const companion = articleCompanionPath(notePath, value);
   if (companion === null) return null;
   try {
-    return existsSync(resolveInStore(companion, vaultRoot)) ? companion : null;
+    return existsSync(resolveInStore(companion, vaultRoot, {rejectNestedRepositories})) ? companion : null;
   } catch {
     return null;
   }
@@ -177,14 +177,14 @@ export async function commitNote(opts: {
   guard?: VaultGitGuard;
 }): Promise<VaultWriteResult> {
   const { vaultRoot, path, frontmatter, body } = opts;
-  resolveInStore(path, vaultRoot);
+  resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
   return withVaultRepositoryLock(vaultRoot, async () => {
     if (opts.guard) await opts.guard.revalidate();
-    const abs = resolveInStore(path, vaultRoot); // throws NotePathEscapesStoreError first
+    const abs = resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // throws NotePathEscapesStoreError first
     await prepare(vaultRoot, opts.guard, [path], null);
-    resolveInStore(path, vaultRoot);
+    resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     mkdirSync(dirname(abs), { recursive: true });
-    resolveInStore(path, vaultRoot);
+    resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
 
     const content = `${serializeFrontmatter(frontmatter)}\n\n${body}`;
     writeFileSync(abs, content, "utf8");
@@ -207,26 +207,26 @@ export async function moveNote(opts: {
   guard?: VaultGitGuard;
 }): Promise<VaultWriteResult> {
   const { vaultRoot, sourcePath, destPath, message } = opts;
-  resolveInStore(sourcePath, vaultRoot);
-  resolveInStore(destPath, vaultRoot);
+  resolveInStore(sourcePath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
+  resolveInStore(destPath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
   return withVaultRepositoryLock(vaultRoot, async () => {
     if (opts.guard) await opts.guard.revalidate();
-    const destAbs = resolveInStore(destPath, vaultRoot);
-    resolveInStore(sourcePath, vaultRoot); // reject traversal on the source too, before any git call
+    const destAbs = resolveInStore(destPath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
+    resolveInStore(sourcePath, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // reject traversal on the source too, before any git call
 
     // An article's text companion keeps its name and moves to the note's new folder.
     if (opts.guard) await opts.guard.revalidate();
-    const companion = vaultCompanionOf(vaultRoot, sourcePath);
+    const companion = vaultCompanionOf(vaultRoot, sourcePath, !!opts.guard);
     const companionDest = companion === null ? null : articleCompanionPath(destPath, basename(companion));
     await prepare(vaultRoot, opts.guard, [sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])], companion);
     // Refuse BEFORE the first move: failing between the two would leave the note moved and its text behind.
-    if (companionDest !== null && companionDest !== companion && existsSync(resolveInStore(companionDest, vaultRoot))) {
+    if (companionDest !== null && companionDest !== companion && existsSync(resolveInStore(companionDest, vaultRoot, {rejectNestedRepositories:!!opts.guard}))) {
       throw new Error(`cannot move ${sourcePath}: ${companionDest} already exists`);
     }
 
     if (existsSync(destAbs)) throw new Error("Vault destination already exists");
     mkdirSync(dirname(destAbs), { recursive: true });
-    for (const p of [sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])]) resolveInStore(p, vaultRoot);
+    for (const p of [sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])]) resolveInStore(p, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     // git mv preserves the file's bytes (and its history) — a true move, not a rewrite.
     runGit(vaultRoot, ["mv", "--", sourcePath, destPath]);
     if (companion !== null && companionDest !== null && companionDest !== companion) {
@@ -248,16 +248,16 @@ export async function removeNote(opts: {
   guard?: VaultGitGuard;
 }): Promise<VaultWriteResult> {
   const { vaultRoot, path, message } = opts;
-  resolveInStore(path, vaultRoot);
+  resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
   return withVaultRepositoryLock(vaultRoot, async () => {
     if (opts.guard) await opts.guard.revalidate();
-    resolveInStore(path, vaultRoot); // reject traversal, before any git call
+    resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // reject traversal, before any git call
 
     if (opts.guard) await opts.guard.revalidate();
-    const companion = vaultCompanionOf(vaultRoot, path);
+    const companion = vaultCompanionOf(vaultRoot, path, !!opts.guard);
     await prepare(vaultRoot, opts.guard, [path, ...(companion ? [companion] : [])], companion);
-    resolveInStore(path, vaultRoot);
-    if (companion) resolveInStore(companion, vaultRoot);
+    resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
+    if (companion) resolveInStore(companion, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     runGit(vaultRoot, ["rm", "-q", "--", path]);
     if (companion !== null) runGit(vaultRoot, ["rm", "-q", "--ignore-unmatch", "--", companion]);
     runGit(vaultRoot, ["commit", "-q", "-m", message, "--", path, ...(companion ? [companion] : [])]);

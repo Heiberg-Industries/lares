@@ -107,14 +107,14 @@ export function storeRootForArea(area: VaultArea, env: NodeJS.ProcessEnv = proce
   return storeRoot(store, env);
 }
 
-function walk(dir: string, base: string): string[] {
+function walk(dir: string, base: string, options: NoteReadOptions): string[] {
   const results: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith(".") || EXCLUDED_DIRS.has(entry.name)) continue;
-    resolveInStore(relative(base, join(dir, entry.name)), base);
+    resolveInStore(relative(base, join(dir, entry.name)), base, options);
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...walk(abs, base));
+      results.push(...walk(abs, base, options));
     } else if (entry.isFile() && extname(entry.name) === ".md") {
       results.push(relative(base, abs));
     }
@@ -123,13 +123,13 @@ function walk(dir: string, base: string): string[] {
 }
 
 /** Every markdown note in the store, store-relative. Throws if the store is sick. */
-export interface NoteReadOptions { allowEmpty?: boolean; fresh?: boolean }
+export interface NoteReadOptions { allowEmpty?: boolean; fresh?: boolean; rejectNestedRepositories?: boolean }
 
 export function listNotes(root: string, options: NoteReadOptions = {}): string[] {
   const absRoot = resolve(root);
   let files: string[];
   try {
-    files = walk(absRoot, absRoot);
+    files = walk(absRoot, absRoot, options);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     // A missing or non-directory root is the "misconfigured mount" case by another name,
@@ -304,7 +304,30 @@ function resolvesWithin(candidate: string, root: string): boolean {
  * traversal/symlink-safe containment check rather than reimplementing a simpler
  * prefix-only one.
  */
-export function resolveInStore(notePath: string, root: string): string {
+/** A nested repository can hold another area's history even when its directory is not
+ * hidden. Guarded stores never traverse it. Check path ancestors, not just list results,
+ * so direct reads and writes obey the same boundary. Do not follow marker symlinks. */
+function rejectNestedRepository(candidate: string, root: string): void {
+  const present = (path: string): boolean => {
+    try { lstatSync(path); return true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+  };
+  let cursor = root;
+  for (const segment of relative(root, candidate).split(sep).filter(Boolean)) {
+    cursor = join(cursor, segment);
+    let st;
+    try { st = lstatSync(cursor); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+    if (!st.isDirectory()) return;
+    if (present(join(cursor, ".git")) ||
+      (present(join(cursor, "HEAD")) && present(join(cursor, "objects")) &&
+        (present(join(cursor, "refs")) || present(join(cursor, "packed-refs")) || present(join(cursor, "config"))))) {
+      throw new Error("Nested repository unavailable");
+    }
+  }
+}
+
+export function resolveInStore(notePath: string, root: string, options: Pick<NoteReadOptions, "rejectNestedRepositories"> = {}): string {
   const absRoot = resolve(root);
   if (!notePath || notePath.includes("\\") || /[\x00-\x1f\x7f]/.test(notePath) || notePath.startsWith("/")) throw new NotePathEscapesStoreError(notePath);
   // (3) — an in-store dotfile directory is not a note. `.git/` is the store's own
@@ -318,6 +341,7 @@ export function resolveInStore(notePath: string, root: string): string {
   }
   const abs = resolve(absRoot, notePath);
   if (!resolvesWithin(abs, absRoot)) throw new NotePathEscapesStoreError(notePath);
+  if (options.rejectNestedRepositories) rejectNestedRepository(abs, absRoot);
   return abs;
 }
 
@@ -443,7 +467,7 @@ export interface BacklinkResult {
  * or a pattern matching the wrong thing.
  */
 export function findBacklinks(notePath: string, root: string, reader?: Reader, options: NoteReadOptions = {}): BacklinkResult {
-  resolveInStore(notePath, root);
+  resolveInStore(notePath, root, options);
   const absRoot = resolve(root);
   const files = listNotes(absRoot, options);
   const stem = basename(notePath, ".md").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");

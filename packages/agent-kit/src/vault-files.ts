@@ -1,7 +1,8 @@
 /** Server-only area-scoped files. This is NOT runtime admission or a model tool.
  * The trusted caller authenticates memberId, owns BEGIN/COMMIT on db, and retains that
  * transaction through the entire awaited operation. Never accept backings from a model.
- * Advisory locks coordinate engine writers; hostile concurrent OS processes are out of scope.
+ * Guarded roots must be disjoint from legacy writer roots. Advisory locks coordinate
+ * writers using this API; hostile concurrent OS processes are out of scope.
  */
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, isAbsolute, join, sep } from 'node:path';
@@ -23,7 +24,8 @@ export type VaultAreaInitialization = z.infer<typeof vaultAreaInitializationSche
 export interface VaultBackingFiles {
   kind: 'git' | 'files';
   root: string;
-  /** One local bare repository per area; neither off-site URLs nor shared histories. */
+  /** One local bare repository per area, outside EVERY backing content root.
+   * Content roots must also be disjoint from roots used by legacy note writers. */
   areas: ReadonlyMap<string, {origin:string}>;
 }
 export type VaultFilesBackings = ReadonlyMap<string, VaultBackingFiles>;
@@ -48,7 +50,7 @@ function safeFailure(error:unknown):never {
   if(error instanceof VaultFilesDeniedError||error instanceof VaultFilesUnavailableError||error instanceof NoteNotFoundError||error instanceof NotePathEscapesStoreError||error instanceof VaultContentChangedError||error instanceof VaultStagedChangesError)throw error;
   throw new VaultFilesUnavailableError();
 }
-const under=(candidate:string,root:string)=>candidate===root||candidate.startsWith(root+sep);
+const under=(candidate:string,root:string)=>candidate===root||candidate.startsWith(root.endsWith(sep)?root:root+sep);
 function directory(path:string):string {
   if (!isAbsolute(path)||!lstatSync(path).isDirectory()||lstatSync(path).isSymbolicLink()) throw new VaultFilesUnavailableError();
   return realpathSync(path);
@@ -83,6 +85,7 @@ export class GuardedVaultFiles {
           origins.push(origin);
         }
       }
+      if(origins.some(origin=>roots.some(content=>under(origin,content)||under(content,origin))))throw new VaultFilesUnavailableError();
       const parent=directory(selected.root),root=directory(resolveInStore(binding.relativePath,parent));
       const originEntry=selected.areas.get(binding.areaId);
       if(!originEntry)throw new VaultFilesUnavailableError();
@@ -121,26 +124,26 @@ export class GuardedVaultFiles {
     }).catch(safeFailure);
   }
   async list(ctx:VaultFilesContext):Promise<{paths:string[];files:number}> {
-    return this.readArea(ctx,root=>{const paths=listNotes(root,{allowEmpty:true});return {paths,files:paths.length};});
+    return this.readArea(ctx,root=>{const paths=listNotes(root,{allowEmpty:true,rejectNestedRepositories:true});return {paths,files:paths.length};});
   }
   async count(ctx:VaultFilesContext):Promise<number> {return (await this.list(ctx)).files;}
   async search(ctx:VaultFilesContext,query:string) {
-    return this.readArea(ctx,root=>searchNotes(query,root,undefined,{allowEmpty:true,fresh:true}));
+    return this.readArea(ctx,root=>searchNotes(query,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
   }
   async backlinks(ctx:VaultFilesContext,path:string) {
-    return this.readArea(ctx,root=>findBacklinks(path,root,undefined,{allowEmpty:true,fresh:true}));
+    return this.readArea(ctx,root=>findBacklinks(path,root,undefined,{allowEmpty:true,fresh:true,rejectNestedRepositories:true}));
   }
   async read(ctx:VaultFilesContext,path:string):Promise<VaultFileContent> {
     return this.readArea(ctx,root=>{
-      const abs=resolveInStore(path,root);
+      const abs=resolveInStore(path,root,{rejectNestedRepositories:true});
       let bytes:Buffer;
       try{regular(abs);bytes=readFileSync(abs);}catch(error){
         if((error as NodeJS.ErrnoException).code==='ENOENT')throw new NoteNotFoundError(path);
         throw error;
       }
-      const content=bytes.toString('utf8'),parts=content.split('\n'),companion=vaultCompanionOf(root,path);
+      const content=bytes.toString('utf8'),parts=content.split('\n'),companion=vaultCompanionOf(root,path,true);
       return {path,content,lines:parts.at(-1)===''?parts.length-1:parts.length,contentRevision:vaultContentRevision(bytes),
-        companion:companion===null?null:{path:companion,revision:vaultContentRevision(readFileSync(resolveInStore(companion,root)))}};
+        companion:companion===null?null:{path:companion,revision:vaultContentRevision(readFileSync(resolveInStore(companion,root,{rejectNestedRepositories:true})))}};
     });
   }
   private async writeArea(ctx:VaultFilesContext,write:VaultWriteBinding,expectedContents:Readonly<Record<string,string|null>>,companion:VaultFileCompanion|null) {
@@ -157,7 +160,7 @@ export class GuardedVaultFiles {
   }
   async write(ctx:VaultFilesContext,input:{binding:VaultWriteBinding;frontmatter:Record<string,unknown>;body:string;message?:string}) {
     for(const [key,value] of Object.entries(input.frontmatter)){
-      if(!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(key)||![value].flat().every(v=>v===null||v===undefined||typeof v==='boolean'||typeof v==='number'||(typeof v==='string'&&!/[\r\n\x00-\x1f\x7f]/.test(v))))throw new VaultFilesDeniedError();
+      if(!/^[a-zA-Z_][a-zA-Z0-9_-]*$/.test(key)||![value].flat().every(v=>v===null||v===undefined||typeof v==='boolean'||typeof v==='number'||(typeof v==='string'&&!/[\r\n\x00-\x1f\x7f\x85\u2028\u2029]/.test(v))))throw new VaultFilesDeniedError();
     }
     const {root,guard}=await this.writeArea(ctx,input.binding,{[input.binding.relativePath]:input.binding.expectedContentRevision},null);
     return commitNote({vaultRoot:root,path:input.binding.relativePath,frontmatter:{...input.frontmatter,lares_origin:input.binding.approvedOrigin},body:input.body,message:input.message,guard}).catch(safeFailure);
