@@ -42,7 +42,8 @@ import {
 // database would make the order of the file matter.
 let db: TestDb;
 beforeEach(async () => {
-  db = await startThreeSpellingsDb();
+  // Legacy rows have no provisioned storage. Owned-area refusal is tested separately.
+  db = await startThreeSpellingsDb({vaultAreas:false});
 }, 180_000);
 afterEach(async () => {
   await db.stop();

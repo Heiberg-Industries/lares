@@ -321,6 +321,7 @@ const NO_OUTSIDE_TEXT: Record<string, Record<string, string>> = {
     forget: "internal store write",
     gmail_draft_recipients: "rewrites only To/Cc headers on the AGENT's own existing draft; returns only the new recipient list",
     gmail_send: "write — sends only what the model itself composed",
+    personal_mailbox_send: "returns only local immutable action metadata and a bounded receipt, never provider text",
     gmail_signature: "the owner's own configured signature, not third-party text",
     identity_my_addresses: "the owner's own address registry",
     meeting_followup_auto: "internal policy write",

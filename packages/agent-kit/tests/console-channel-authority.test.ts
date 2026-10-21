@@ -3,6 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterEach,describe,expect,it,vi} from 'vitest';
+import {personalActionApprovalDescriptor,PERSONAL_MAIL_SEND_TOOL} from '../src/personal-action-store.js';
 vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {async captureUse(){return 1;}}}));
 const fake=vi.hoisted(()=>({query:vi.fn()}));
 vi.mock('../src/db.js',()=>({getPool:()=>fake}));
@@ -20,6 +21,34 @@ async function roleModule(role:string){
  vi.resetModules();return import(path);
 }
 function boundRow(){return {agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1};}
+type ResolverFixture = 'exact'|'missing-action'|'wrong-member'|'wrong-session'|'wrong-request'|'wrong-call'|'expired';
+/** Route admission reads distinct persisted records. A session-binding row is not a member,
+ * an action, or an approval. Keep SQL filtering so crossed coordinates cannot pass the mock. */
+function resolverRows(failure:ResolverFixture='exact'){
+ const expiresAt=new Date(Date.now()+(failure==='expired'?-60_000:60_000));
+ const selection={actorMemberId:failure==='wrong-member'?'Other-ID':'Owner-ID',agentId:'helper',incarnation:inc,
+  sessionId:failure==='wrong-session'?'wrun_other':'wrun_test',originalTurnId:'turn1',originalCallId:'call1',
+  accountId:'account1',accountGeneration:0,resourceBindingId:'mailbox1',connectorId:'google',kind:'mail.send' as const};
+ const action={id:'22222222-2222-4222-8222-222222222222',actor_member_id:selection.actorMemberId,agent:selection.agentId,incarnation:inc,
+  session_id:selection.sessionId,original_turn_id:selection.originalTurnId,original_call_id:selection.originalCallId,
+  account_id:selection.accountId,account_generation:0,resource_binding_id:selection.resourceBindingId,connector_id:'google',kind:'mail.send',
+  payload_hash:'1'.repeat(64),expires_at:expiresAt,state:'awaiting_dispatch' as const,attempt_id:null,receipt:null,
+  approval_call_id:failure==='wrong-call'?'other-call':'call1',approval_request_id:failure==='wrong-request'?'other-request':'request1'};
+ const descriptor=personalActionApprovalDescriptor({actionId:action.id,payloadHash:action.payload_hash,expiresAt:expiresAt.toISOString(),
+  state:action.state,attemptId:null,receipt:null},selection,'2'.repeat(64));
+ const approval={call_id:'call1',request_id:'request1',tool:PERSONAL_MAIL_SEND_TOOL,agent:'helper',acting_member_id:'Owner-ID',session_id:'wrun_test',
+  payload_hash:action.payload_hash,original_authority:descriptor,asked_at:new Date(Date.now()-60_000),outcome:null,resolved_by_member_id:null};
+ fake.query.mockImplementation(async(sql:string,values:unknown[]=[])=>{
+  if(sql.includes('FROM console_session_bindings b'))return {rows:values.slice(0,5).join('|')===['helper',inc,'wrun_test','Owner-ID','a'.repeat(43)].join('|')?[boundRow()]:[]};
+  if(sql.includes('FROM agent_resources r'))return {rows:values[0]==='helper'&&values[1]===inc?[{ready:true}]:[]};
+  if(sql.includes('FROM users WHERE'))return {rows:values[0]==='Owner-ID'?[{id:'Owner-ID',org_id:'fixture-org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]:[]};
+  if(sql.includes('FROM orgs WHERE'))return {rows:values[0]==='fixture-org'?[{id:'fixture-org'}]:[]};
+  if(sql.includes('FROM personal_actions WHERE'))return {rows:failure!=='missing-action'&&values.join('|')===[action.approval_request_id,action.actor_member_id,action.agent,action.session_id].join('|')?[action]:[]};
+  if(sql.includes('FROM approval_asks WHERE'))return {rows:values[0]===approval.call_id?[approval]:[]};
+  if(sql.includes('AS alive'))return {rows:[{alive:failure!=='expired'}]};
+  throw new Error('Unexpected resolver fixture query: '+sql);
+ });
+}
 describe('actual Eve HTTP routes enforce authority independently of onMessage',()=>{
  for(const role of ['chief-of-staff','creative']){
   it(`${role}: message-free create is admitted without inventing a session binding`,async()=>{
@@ -51,17 +80,27 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
    for(const payload of payloads)expect((await route.handler(request('/eve/v1/session/wrun_test',payload),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(401);
    expect(attachSession).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
   });
-  it(`${role}: approval-only continuation is a resolver and cannot be mixed with speech`,async()=>{
-   const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[boundRow()]});
+  it(`${role}: only an exact persisted approval request becomes resolver metadata, without speech authority`,async()=>{
+   const mod=await roleModule(role);resolverRows();
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
    const respond=vi.fn(async(_responses:unknown,_options:unknown)=>({status:'accepted',sessionId:'wrun_test',deliveryId:'delivery1'}));
    const attachSession=vi.fn(()=>({respond}));
    const inputResponses=[{requestId:'request1',optionId:'approve'}];
    expect((await route.handler(request('/eve/v1/session/wrun_test',{inputResponses},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(202);
-   expect(respond.mock.calls[0]?.[1]).toMatchObject({auth:{attributes:{lares_purpose:'resolver'}}});
-   attachSession.mockClear();
+   expect(respond.mock.calls[0]?.[1]).toMatchObject({auth:{attributes:{lares_purpose:'resolver',lares_resolver_member_id:'Owner-ID',lares_resume_request_id:'request1',lares_resume_option:'approve'}}});
+   const attributes=(respond.mock.calls[0]?.[1] as {auth:{attributes:Record<string,unknown>}}).auth.attributes;
+   expect(attributes).not.toHaveProperty('lares_member_id');expect(attributes).not.toHaveProperty('lares_admission_nonce');
+   expect(fake.query.mock.calls.some(([sql])=>String(sql).includes('FROM personal_actions WHERE'))).toBe(true);
+   attachSession.mockClear();fake.query.mockClear();
    expect((await route.handler(request('/eve/v1/session/wrun_test',{message:'hello',inputResponses},'resolver'),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(401);
-   expect(attachSession).not.toHaveBeenCalled();
+   expect(attachSession).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
+  });
+  it.each(['missing-action','wrong-member','wrong-session','wrong-request','wrong-call','expired'] as const)(`${role}: %s approval context is refused before Eve dispatch`,async failure=>{
+   const mod=await roleModule(role);resolverRows(failure);
+   const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
+   const respond=vi.fn(),attachSession=vi.fn(()=>({respond}));
+   const response=await route.handler(request('/eve/v1/session/wrun_test',{inputResponses:[{requestId:'request1',optionId:'approve'}]},'resolver'),{params:{sessionId:'wrun_test'},attachSession});
+   expect(response.status).toBe(401);expect(attachSession).not.toHaveBeenCalled();expect(respond).not.toHaveBeenCalled();
   });
  }
 });

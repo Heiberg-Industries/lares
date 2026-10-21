@@ -47,3 +47,11 @@ export function approvalArguments(input: unknown): ApprovalField[] {
         : JSON.stringify(value) ?? String(value),
   }));
 }
+
+/** Trusted server projection of one still-pending immutable personal proposal. */
+export interface PersonalSendCard {accountLabel:string;connectorId:string;accountId:string;generation:number;resourceBindingId:string;to:string[];subject:string;body:string}
+export function personalSendCardFields(card:PersonalSendCard):ApprovalField[]{return [
+  {key:'Account',value:card.accountLabel},{key:'Provider',value:card.connectorId},{key:'Account ID',value:card.accountId},
+  {key:'Account generation',value:String(card.generation)},{key:'Mailbox binding',value:card.resourceBindingId},
+  {key:'To',value:card.to.join('\n')},{key:'Subject',value:card.subject},{key:'Body',value:card.body},
+];}

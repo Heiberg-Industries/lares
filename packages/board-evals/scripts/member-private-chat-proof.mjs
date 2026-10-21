@@ -26,6 +26,7 @@ const password='disposable-fixture-only',incarnation='11111111-1111-4111-8111-11
 const key='1'.repeat(64),owner='proof-owner',a='Member-A',b='member-a',outsider='ungranted-member';
 const canaries={owner:'OWNER_PRIVATE_CANARY',a:'MEMBER_A_INPUT_CANARY',b:'MEMBER_B_INPUT_CANARY'};
 let container,db,child,logs='',port;
+const withSend=process.env.PRIVATE_CHAT_PROOF_SEND==='1';
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise(done=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>done(p));});});
@@ -34,14 +35,22 @@ function hashOutput(path){const h=createHash('sha256');for(const file of readdir
 function modelSource(role){return `
 import {mockModel} from 'eve/evals';
 import {appendFileSync} from 'node:fs';
-${role==='chief-of-staff'?`import {__setTestGmailApiFactory} from './google.js';
+${role==='chief-of-staff'?`import {mountedPersonalSendRuntime} from './personal-send.js';
+mountedPersonalSendRuntime.open=async()=>({adapter:{send:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,'SEND_ACCEPTED\\n');return {state:'accepted',providerReceiptId:'synthetic-message'};}}});
+import {__setTestGmailApiFactory} from './google.js';
 __setTestGmailApiFactory((_config,token)=>{
   const member=token==='refresh-Member-A'?'MEMBER_A_MAIL_CANARY':token==='refresh-member-a'?'MEMBER_B_MAIL_CANARY':null;
   if(!member)throw new Error('Unknown synthetic credential');
   return {users:{messages:{list:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{messages:[{id:'proof-message'}]}};},get:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{id:'proof-message',payload:{mimeType:'text/plain',headers:[],body:{data:Buffer.from(member).toString('base64url')}}}};}}}} as never;
 });`:''}
+const attacked=new Set<string>();
 const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   appendFileSync(process.env.PROOF_MODEL_LOG,JSON.stringify({message:lastUserMessage,messages,tools,toolResults})+'\\n');
+  const lastHuman=messages.findLastIndex(message=>message.role==='user'&&message.text===lastUserMessage);
+  const currentResults=messages.slice(lastHuman+1).some(message=>message.role==='tool');
+  if(lastUserMessage?.startsWith('SEND ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(5))}]};
+  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
+  if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
   if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
@@ -53,19 +62,19 @@ export const gatewayKey=()=>{throw new Error('No live gateway in proof');};
 export const IDENTITY_ENCODING_HEADERS={'Accept-Encoding':'identity'};
 `;}
 async function stop(){if(!child)return;const process=child;child=undefined;if(process.exitCode!==null||process.signalCode!==null)return;try{globalThis.process.kill(-process.pid,'SIGKILL');}catch{try{process.kill('SIGKILL');}catch{}}await new Promise(resolve=>process.once('close',resolve));}
-async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<160;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not start: '+logs.slice(-4000));}
+async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<600;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not become healthy within60s (pid='+child.pid+', exit='+child.exitCode+', signal='+child.signalCode+'): '+logs.slice(-4000));}
 async function makeRole(role){
  logs='';
  const cwd=join(root,'services',role);mkdirSync(join(root,'services'),{recursive:true});
  cpSync(join(repo,'services',role),cwd,{recursive:true,filter:path=>!['node_modules','.output','.eve','tests'].includes(basename(path))});
  symlinkSync(join(repo,'services',role,'node_modules'),join(cwd,'node_modules'));
  const definition=join(root,role+'-definition');mkdirSync(definition);
- const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'}],autonomy:role==='creative'?{}:{gmail:'autonomous'},skills:[]};
+ const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
  const inherited=Object.fromEntries(['PATH','HOME','TMPDIR'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
- const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`};
+ const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`};
  const eve=join(cwd,'node_modules/.bin/eve');
  console.log(role+': building actual role with synthetic provider');
  await run(eve,['build'],{cwd,env,timeout:300000});
@@ -106,9 +115,10 @@ try{
  await db.query("INSERT INTO orgs(id,display_name) VALUES('proof-org','Proof')");
  await db.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES($1,'Owner','proof-org','owner'),($2,'A','proof-org','member'),($3,'B','proof-org','member'),($4,'Ungrant','proof-org','member')",[owner,a,b,outsider]);
  await db.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)',[owner]);
- const memberStore=new PgMemberStore(db);for(const id of [owner,a,b,outsider]){await db.query('INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,\'https://identity.example.invalid\',$1,\'\')',[id]);const session=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:id},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(id,session.token);}
+ const memberStore=new PgMemberStore(db);for(const id of [a,b])await db.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)',[id]);
+ for(const id of [owner,a,b,outsider]){await db.query('INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,\'https://identity.example.invalid\',$1,\'\')',[id]);const session=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:id},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(id,session.token);}
  const accounts=new PgAccountStore(db);const selections=new Map();const adapter=accounts.forTrustedAdapter({connectorId:'google',verifyAccount:async evidence=>({issuer:'https://accounts.google.com',subject:evidence,label:'Personal mailbox'}),verifyResource:async(account)=>({resourceKind:'mailbox',externalId:account.providerAccount.subject,providerLabel:'Inbox'})});
- for(const id of [a,b]){const account=await adapter.createPersonalAccount(id,id,{persist:async client=>{const result=await client.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,scopes,refresh_token_enc) VALUES($1,'google','proof','proof@example.invalid',ARRAY['https://www.googleapis.com/auth/gmail.readonly'],$2) RETURNING id",[id,encrypt('refresh-'+id)]);return result.rows[0].id;}},['mailbox']);const [resource]=await accounts.listResources(id,account.id,account.generation);selections.set(id,{accountId:account.id,generation:account.generation,resourceBindingId:resource.id});}
+ for(const id of [a,b]){const account=await adapter.createPersonalAccount(id,id,{persist:async client=>{const result=await client.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,scopes,refresh_token_enc) VALUES($1,'google','proof','proof@example.invalid',ARRAY['openid','https://www.googleapis.com/auth/gmail.readonly','https://www.googleapis.com/auth/calendar.readonly','https://www.googleapis.com/auth/gmail.send'],$2) RETURNING id",[id,encrypt('refresh-'+id)]);return result.rows[0].id;}},['mailbox']);const [resource]=await accounts.listResources(id,account.id,account.generation);selections.set(id,{accountId:account.id,generation:account.generation,resourceBindingId:resource.id});}
  for(const role of (process.env.PRIVATE_CHAT_PROOF_ROLE?[process.env.PRIVATE_CHAT_PROOF_ROLE]:['chief-of-staff','creative'])){
   assert.ok(['chief-of-staff','creative'].includes(role),'Unknown proof role');
   const app=await makeRole(role);await start(app);const outputHash=hashOutput(app.cwd);
@@ -119,6 +129,7 @@ try{
   }
   assert.equal(models(app).length,0);assert.equal((await db.query('SELECT count(*)::int AS n FROM console_session_bindings WHERE agent=$1',[app.name])).rows[0].n,0);
   console.log(role+': actual compiled channel refused malformed/forbidden envelopes before dispatch');
+  let sendProof;
   const sa=await create(app,a,canaries.a,'same-operation'),sb=await create(app,b,canaries.b,'same-operation');assert.notEqual(sa.id,sb.id,'operationId crossed members');console.log(role+': first-message creates accepted; same operationId isolated by member');
   const ra=await stream(app,a,sa),rb=await stream(app,b,sb);assert.ok(ra.includes(canaries.a));assert.ok(rb.includes(canaries.b));assert.ok(!ra.includes(canaries.b)&&!rb.includes(canaries.a));
   const before=upstreamCalls;assert.equal((await request(app,b,'GET',`eve/v1/session/${sa.id}/stream`,undefined,sa.cookie)).ok,false);assert.equal((await request(app,outsider,'POST','eve/v1/session',{message:'no grant'})).ok,false);assert.equal((await request(app,a,'GET','eve/v1/info')).status,404);assert.equal(upstreamCalls,before);
@@ -127,14 +138,61 @@ try{
   await send(app,a,sa,'question');assert.ok((await send(app,a,sa,'A private planning question')).includes('ANSWER'));console.log(role+': plain-text question continuation accepted');
   if(role==='chief-of-staff'){const mailA=await send(app,a,sa,'MAIL '+JSON.stringify(selections.get(a)));const mailB=await send(app,b,sb,'MAIL '+JSON.stringify(selections.get(b)));assert.ok(mailA.includes('MEMBER_A_MAIL_CANARY'));assert.ok(!mailA.includes('MEMBER_B_MAIL_CANARY'));assert.ok(mailB.includes('MEMBER_B_MAIL_CANARY'));}
   if(role==='creative')for(const skill of ['private-owner-skill','/vault/owner.md','../../agent/voice.md']){const result=await send(app,a,sa,'SKILL '+skill);assert.ok(result.includes('No skill named'),result);assert.ok(!result.includes(canaries.owner));}
-  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo']);assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  if(role==='chief-of-staff'&&withSend){
+    const sendCount=()=>readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line==='SEND_ACCEPTED').length;
+    const input={selection:selections.get(a),to:['recipient@example.invalid','second@example.invalid'],subject:'Exact own mail',body:'Whole plaintext body\nSecond line'};
+    async function proposal(session,message='SEND '+JSON.stringify(input)){
+      const transcript=await send(app,a,session,message);
+      const row=(await db.query("SELECT p.*,a.request_id FROM personal_actions p JOIN approval_asks a ON a.call_id=p.original_call_id WHERE p.session_id=$1 ORDER BY p.created_at DESC LIMIT 1",[session.id])).rows[0];
+      assert.ok(row?.request_id,'Prepared action must exist before the framework card is answered: '+transcript);assert.equal(row.state,'awaiting_dispatch');
+      assert.ok(!row.payload_ciphertext.includes(input.body));return row;
+    }
+    async function answer(session,row,option='approve'){
+      const response=await request(app,a,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId:row.request_id,optionId:option}]},session.cookie);
+      assert.ok(response.ok,'exact answer '+response.status+' '+await response.clone().text());return stream(app,a,session);
+    }
+    sendProof={proposal,sendCount};
+    const cancelled=await proposal(sa,'SEND_ATTACK '+JSON.stringify({...input,subject:'Cancelled continuation attack'}));await answer(sa,cancelled,'cancel');assert.equal(sendCount(),0);
+    assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[cancelled.id])).rows[0].state,'cancelled');
+    const approved=await proposal(sa);const before=models(app).length;
+    await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);
+    assert.ok((await answer(sa,approved)).includes('ANSWER'));assert.equal(sendCount(),1);assert.ok(models(app).length>before,'Approved call must continue to the actual model');
+    assert.equal((await db.query('SELECT state FROM personal_actions WHERE id=$1',[approved.id])).rows[0].state,'accepted');
+    await answer(sa,approved);assert.equal(sendCount(),1);await stop();await start(app);await answer(sa,approved);assert.equal(sendCount(),1);
+    const attack=await proposal(sa,'SEND_ATTACK '+JSON.stringify(input));await answer(sa,attack);assert.equal(sendCount(),2);
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM personal_actions WHERE session_id=$1',[sa.id])).rows[0].n,3,'Resolver model created another proposal');
+    assert.equal(readFileSync(app.providerLog,'utf8').split('\n').filter(line=>line.includes('MAIL_CANARY')).length,2,'Resolver model read a private source');
+    const wrongSelection=await create(app,a,'Wrong personal selection');await stream(app,a,wrongSelection);
+    await send(app,a,wrongSelection,'SEND '+JSON.stringify({...input,selection:selections.get(b)})).catch(()=>{});
+    assert.equal((await db.query('SELECT count(*)::int AS n FROM personal_actions WHERE session_id=$1',[wrongSelection.id])).rows[0].n,0,'Other member account created a proposal');assert.equal(sendCount(),2);
+    const pending=await proposal(sa);
+    const beforeWrong=models(app).length,callsBeforeWrong=sendCount();
+    for(const [member,session,requestId]of [[b,sa,pending.request_id],[a,sb,pending.request_id],[a,sa,'forged-request']]){
+      const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{inputResponses:[{requestId,optionId:'approve'}]},session.cookie);assert.equal(response.ok,false,'Wrong member/session/request reached runtime');
+    }
+    assert.equal(models(app).length,beforeWrong);assert.equal(sendCount(),callsBeforeWrong);await answer(sa,pending,'cancel');
+    const expired=await proposal(sa);
+    const ask=(await db.query('SELECT * FROM approval_asks WHERE request_id=$1',[expired.request_id])).rows[0];
+    await db.query('DELETE FROM approval_asks WHERE request_id=$1',[expired.request_id]);
+    await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,session_id,asked_at)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,clock_timestamp()-interval '25 hours')`,[ask.call_id,ask.request_id,ask.agent,ask.tool,ask.payload_hash,ask.original_authority,ask.acting_member_id,ask.session_id]);
+    const refused=await request(app,a,'POST',`eve/v1/session/${sa.id}`,{inputResponses:[{requestId:expired.request_id,optionId:'approve'}]},sa.cookie);assert.equal(refused.ok,false);assert.equal(sendCount(),callsBeforeWrong);
+    await answer(sa,expired,'cancel');
+    console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
+  }
+  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
   await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
   const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
   const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
   const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));
   const ac=await accounts.read(a,selections.get(a).accountId),ticket=await accounts.beginUpdate(a,ac.id,ac.generation);await accounts.setStatus(a,ticket,'revoked');await denyOld(app,a,fresh);
-  const stopped=await accounts.read(a,ac.id);const renewed=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,stopped.generation),a);assert.ok(renewed.generation>stopped.generation);await denyOld(app,a,fresh);
-  const renewedSession=await create(app,a,'Healthy reconnect session');await stream(app,a,renewedSession);const healthy=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,renewed.generation),a);assert.ok(healthy.generation>renewed.generation);await denyOld(app,a,renewedSession);
+  const stopped=await accounts.read(a,ac.id);const renewed=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,stopped.generation),a,{persist:async client=>(await client.query("SELECT id FROM oauth_tokens WHERE principal=$1 AND provider='google'",[a])).rows[0].id});assert.ok(renewed.generation>stopped.generation);await denyOld(app,a,fresh);
+  const renewedSession=await create(app,a,'Healthy reconnect session');await stream(app,a,renewedSession);
+  const [renewedResource]=await accounts.listResources(a,ac.id,renewed.generation);
+  const generationPending=sendProof?await sendProof.proposal(renewedSession,'SEND '+JSON.stringify({selection:{accountId:ac.id,generation:renewed.generation,resourceBindingId:renewedResource.id},to:['recipient@example.invalid'],subject:'Pending generation',body:'Pending immutable body'})):null;
+  const generationCalls=sendProof?.sendCount(),generationModels=models(app).length;
+  const healthy=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,renewed.generation),a);assert.ok(healthy.generation>renewed.generation);await denyOld(app,a,renewedSession);
+  if(generationPending){const refused=await request(app,a,'POST',`eve/v1/session/${renewedSession.id}`,{inputResponses:[{requestId:generationPending.request_id,optionId:'approve'}]},renewedSession.cookie);assert.equal(refused.ok,false);assert.equal(sendProof.sendCount(),generationCalls);assert.equal(models(app).length,generationModels);console.log('chief-of-staff: pending account generation approval refused before model/provider PASS');}
   const departure=await create(app,b,'Before removal');await stream(app,b,departure);await memberStore.removeMember(owner,b);await denyOld(app,b,departure);await db.query("UPDATE users SET status='active' WHERE id=$1",[b]);const rejoined=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:b},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(b,rejoined.token);await denyOld(app,b,departure);
   const oldInc=await create(app,a,'Before incarnation change');await stream(app,a,oldInc);await db.query("UPDATE agent_resources SET ownership_token='22222222-2222-4222-8222-222222222222',runtime_control_token='22222222-2222-4222-8222-222222222222' WHERE name=$1",[app.name]);await denyOld(app,a,oldInc);
   const projection=await db.query('SELECT (SELECT count(*) FROM model_steps)::int AS models,(SELECT count(*) FROM conversation_entries)::int AS entries');assert.deepEqual(projection.rows[0],{models:0,entries:0});assert.equal(readFileSync(join(root,'vault/owner.md'),'utf8'),canaries.owner);

@@ -288,3 +288,21 @@ describe("approval card field names", () => {
     expect(approvalCardFields({ fiscalYear: 2026 }).fields).toEqual([{ key: "Fiscal year", value: "2026" }]);
   });
 });
+
+describe('complete trusted personal mail review',()=>{
+ const request={kind:'tool-approval',requestId:'mail-card',prompt:'Send personal mail',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}]};
+ const messages=[{id:'mail',role:'assistant',parts:[{type:'dynamic-tool',toolName:'personal_mailbox_send',input:{body:'MODEL_BODY_MUST_NOT_DISPLAY',accountLabel:'MODEL_LABEL_MUST_NOT_DISPLAY'},state:'approval-requested',toolMetadata:{eve:{inputRequest:request}}}]}] as unknown as EveMessage[];
+ const card={accountLabel:'Verified own@example.invalid',connectorId:'google',accountId:'stable-account',generation:4,resourceBindingId:'stable-binding',
+  to:Array.from({length:50},(_,i)=>`recipient-${i}@example.invalid`),subject:'<script>plain subject</script>',body:'x'.repeat(99990)+'BODY_END'};
+ it('shows all trusted recipients/body/selection and plain-text subject without shortening',()=>{
+  const html=renderToStaticMarkup(<ChatTranscript status="ready" messages={messages} onAnswer={()=>{}} personalSendCards={{'mail-card':card}}/>);
+  for(const value of [card.accountLabel,card.accountId,card.resourceBindingId,...card.to,'BODY_END'])expect(html).toContain(value);
+  expect(html).toContain(card.body);expect(html).not.toContain('shortened');expect(html).not.toContain('MODEL_');expect(html).toContain('&lt;script&gt;');
+ });
+ it('disables approval until a trusted complete card arrives, while cancellation remains available',()=>{
+  const html=renderToStaticMarkup(<ChatTranscript status="ready" messages={messages} onAnswer={()=>{}}/>);
+  expect(html).toContain('Full mail review is unavailable');expect(html).not.toContain('MODEL_');
+  const buttons=[...html.matchAll(/<button[^>]*>[^<]*<\/button>/g)].map(m=>m[0]);
+  expect(buttons.find(b=>b.includes('Approve'))).toContain('disabled');expect(buttons.find(b=>b.includes('Cancel'))).not.toContain('disabled');
+ });
+});

@@ -93,6 +93,7 @@ import twenty_note from "./twenty_note.js";
 import twenty_set_stage from "./twenty_set_stage.js";
 import voice_guide from "./voice_guide.js";
 
+import personal_mailbox_send from "./personal_mailbox_send.js";
 import personal_mailbox_accounts from "./personal_mailbox_accounts.js";
 import personal_calendar_accounts from "./personal_calendar_accounts.js";
 import personal_mailbox_list from "./personal_mailbox_list.js";
@@ -100,6 +101,7 @@ import personal_mailbox_read from "./personal_mailbox_read.js";
 import personal_calendar_events from "./personal_calendar_events.js";
 
 export const CATALOGUE: Catalogue = {
+  personal_mailbox_send: { capability: "personal_mailbox", tool: personal_mailbox_send },
   personal_mailbox_accounts: { capability: "personal_mailbox", tool: personal_mailbox_accounts },
   personal_calendar_accounts: { capability: "personal_calendar", tool: personal_calendar_accounts },
   personal_mailbox_list: { capability: "personal_mailbox", tool: personal_mailbox_list },

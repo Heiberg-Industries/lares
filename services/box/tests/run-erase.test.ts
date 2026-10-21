@@ -32,7 +32,8 @@ function git(...args: string[]): string {
 }
 
 beforeEach(async () => {
-  db = await startThreeSpellingsDb();
+  // Legacy rows have no provisioned storage. Owned-area refusal is tested separately.
+  db = await startThreeSpellingsDb({vaultAreas:false});
 
   vaultRoot = mkdtempSync(join(tmpdir(), "run-erase-vault-"));
   write("people/vera.md", "---\nowner: fixture-owner\nscope: private\n---\n\nA note.\n");
@@ -50,6 +51,26 @@ afterEach(async () => {
 });
 
 describe("runErase — the order of operations", () => {
+  it("refuses owned area metadata before either preview or apply touches files or rows", async () => {
+    await db.pool.query(`INSERT INTO orgs(id,display_name) VALUES('vault-proof','Vault proof');
+      UPDATE users SET org_id='vault-proof',org_role='owner' WHERE id='fixture-owner';
+      INSERT INTO vault_backing_stores(id,organisation_id,kind) VALUES('proof-backing','vault-proof','git');
+      INSERT INTO vault_areas(id,organisation_id,kind,owner_member_id,backing_store_id,relative_path)
+      VALUES('proof-area','vault-proof','private','fixture-owner','proof-backing','private/fixture');`);
+    const before=readFileSync(join(vaultRoot,"people/vera.md"));
+    const head=git("rev-parse","HEAD");
+    for(const apply of [false,true]){
+      const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[vaultRoot],apply});
+      expect(result.dbReport.refusals.join(" ")).toMatch(/backing storage.*reconciled/);
+      expect(result.dbReport.deleted).toEqual([]);expect(result.vaults).toEqual([]);
+      expect(readFileSync(join(vaultRoot,"people/vera.md")).equals(before)).toBe(true);
+      expect(git("rev-parse","HEAD")).toBe(head);
+      expect((await db.pool.query("SELECT 1 FROM users WHERE id=$1",[FIXTURE_OWNER])).rowCount).toBe(1);
+      expect((await db.pool.query("SELECT 1 FROM standing_facts WHERE user_id=$1",[FIXTURE_OWNER])).rowCount).toBeGreaterThan(0);
+      expect((await db.pool.query("SELECT status FROM vault_areas WHERE id='proof-area'")).rows[0].status).toBe('active');
+    }
+  },240_000);
+
   it("a database refusal leaves the vault byte-identical", async () => {
     await db.pool.query("DROP TABLE memory_reads");
     const before = readFileSync(join(vaultRoot, "people/vera.md"));

@@ -12,6 +12,8 @@ type ChatIdentity = {
   role: string;
 };
 
+import {readPersonalSendCard} from '../app/actions/accounts';
+import type {PersonalSendCard} from '../lib/approval-text';
 import { useEveAgent } from "eve/react";
 import type { ClientSessionState } from "eve/client";
 import {
@@ -126,6 +128,16 @@ function ChatSession({
       try { tabStorage()?.removeItem(key); } catch {}
     }
   }, [agent.status, storageKey]);
+  const [personalSendCards,setPersonalSendCards]=useState<Record<string,PersonalSendCard|null>>({});
+  const fetchingCards=useRef(new Set<string>());
+  useEffect(()=>{
+    for(const message of agent.data.messages)for(const part of message.parts){
+      if(part.type!=='dynamic-tool'||part.toolName!=='personal_mailbox_send')continue;
+      const request=part.toolMetadata?.eve?.inputRequest;if(!request||fetchingCards.current.has(request.requestId))continue;
+      fetchingCards.current.add(request.requestId);
+      void readPersonalSendCard(request.requestId).then(card=>setPersonalSendCards(previous=>({...previous,[request.requestId]:card})),()=>setPersonalSendCards(previous=>({...previous,[request.requestId]:null})));
+    }
+  },[agent.data.messages]);
   const [text, updateText] = useState(() => {
     try {
       return tabStorage()?.getItem(`${storageKey}:draft`) ?? "";
@@ -300,6 +312,7 @@ function ChatSession({
             expired={expired}
             answering={answering}
             onAnswer={answer}
+            personalSendCards={personalSendCards}
             agentName={identity.displayName}
           />
         )}

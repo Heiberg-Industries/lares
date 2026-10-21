@@ -29,6 +29,8 @@ it('validates identical immutable admissions before any binding read; malformed 
 it('private tools are an intersection and native/source-free controls keep their scope',()=>{
  expect(['gmail_accounts','gmail_search','gmail_read','gmail_send','vault_read','set_language'].filter(n=>privateToolAllowed('chief-of-staff',n))).toEqual(['gmail_accounts','gmail_search','gmail_read']);
  expect(privateToolAllowed('creative','gmail_read')).toBe(false);
+ expect(privateToolAllowed('creative','personal_mailbox_send')).toBe(false);
+ expect(()=>assertPrivateConsoleTool({},'chief-of-staff','personal_mailbox_send')).toThrow('Conversation authority');
  expect(()=>assertPrivateConsoleTool({session:{initiator:auth()}},'chief-of-staff','gmail_send')).toThrow('Conversation authority');
  expect(()=>assertPrivateConsoleTool({},'chief-of-staff','gmail_send')).not.toThrow();
  expect(privateRoleInstructions('creative')).not.toContain('OWNER_CANARY');
