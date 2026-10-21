@@ -84,10 +84,25 @@ Three things to know while you build those lists:
 | `LARES_ENGINE_VERSION` | recorded in the manifest, so the archive says which engine wrote it | `unknown` |
 | `AGENT_BOX_EXPORT_ENV` | a settings file to read first, if you keep the export's settings apart from the backup's | — |
 | `AGENT_BOX_BACKUP_ENV` | the settings file used when the one above is unset | `/etc/lares/backup.env` |
+| `LARES_PREFIX` | trusted physical root used for an offline rehearsal; leave unset on the installed host | empty |
+| `PGDATABASE` | the main database whose retained Vault ownership is reconciled | `lares_state` |
 | `PGUSER` | the Postgres role the export connects as. An existing installation may use a different role and must set this to its actual role, or the export refuses with "postgres unreachable" | `lares` |
 
 The settings file is optional. If it exists it is *read*, never copied — it is a secret and
 stays on this server.
+
+Provisioned managed Vault stores are mandatory even when `EXPORT_DATA_PATHS` is customized:
+the export adds `/srv/vault`, `/var/lib/lares-vault-git`, and the installation inventory directory.
+It holds each repository's normal exclusive lock while copying full working trees and bare
+repositories, including untracked content. Lock files are excluded. An incomplete inventory,
+missing repository, or mismatch with retained database ownership refuses the export. A working
+repository may contain a saved commit awaiting a local push; both histories are retained, and
+diverged histories refuse verification.
+
+These managed stores are carried in data tar files, not only Git bundles. The manual full-import
+and erasure procedure below has not been extended to reconcile their identities and ownership.
+Keep the source server and all exported copies until that separate reconciliation is available.
+The person-erasure command continues to refuse owned Vault data.
 
 ### 2c. Free disk
 

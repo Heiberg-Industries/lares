@@ -46,12 +46,14 @@ beforeEach(() => {
   writeFileSync(join(served, `${RC11}.json`), releaseJson(RC11, KEEPER));
   writeFileSync(join(served, `${RC12}.json`), releaseJson(RC12, KEEPER12));
   // the fake engine: stub scripts, plus the real ones under test
-  script(join(fake, "install.sh"), 'if [ -n "${FAIL_INSTALL:-}" ]; then exit 1; fi');
+  script(join(fake, "install.sh"), 'if [ -n "${FAIL_INSTALL:-}" ]; then exit 1; fi\ncase " $* " in *" --dry-run "*) exit 0;; esac\nbash "$(dirname "$0")/refresh-recovery.sh" --prefix "$LARES_PREFIX"');
   script(join(fake, "update.sh"), 'if [ -n "${FAIL_UPDATE:-}" ]; then exit 1; fi');
   script(join(fake, "rollback.sh"), 'if [ -n "${FAIL_ROLLBACK:-}" ]; then exit 3; fi');
   script(join(fake, "restore.sh"), "exit 0");
   script(join(fake, "setup-backups.sh"), "exit 0");
   writeFileSync(join(fake, "backup.sh"), "# new backup script\n");
+  for(const name of ["export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
+
   copyFileSync(GET, join(fake, "get-lares.sh")); chmodSync(join(fake, "get-lares.sh"), 0o755);
   copyFileSync(join(OPS, "lares"), join(fake, "lares")); chmodSync(join(fake, "lares"), 0o755);
   copyFileSync(join(OPS, "engine-run.sh"), join(fake, "engine-run.sh"));
@@ -66,6 +68,7 @@ beforeEach(() => {
     '       if [ -n "$out" ]; then [ -z "${FAIL_UNPACK:-}" ] || exit 1; n=${a[${#a[@]}-2]}; d=${a[${#a[@]}-1]}\n' +
     '         mkdir -p "$out/$n"; cp -R "$FAKE_ENGINE/." "$out/$n/"; echo "$d" > "$out/$n/services/box/engine-image"; fi; exit 0 ;;\nesac\nexit 0');
   stub("id", 'echo "${FAKE_UID:-0}"');
+  stub("systemctl", "exit 0");stub("chown", "exit 0");
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
@@ -258,12 +261,14 @@ describe("lares", () => {
     expect(current()).toBe(`releases/${RC11}`);
   });
 
-  it("says when backup scripts on this server differ from the new release's, and leaves them alone", () => {
+  it("refreshes installed recovery programs before marking an rc12-style update current", () => {
     writeFileSync(join(root(), "backup.sh"), "# old copy\n");
     const r = lares(["update", "--release", RC12]);
     expect(r.code, r.stderr).toBe(0);
-    expect(r.stdout).toMatch(/backup scripts.*older/i);
-    expect(readFileSync(join(root(), "backup.sh"), "utf8")).toBe("# old copy\n");
+    expect(readFileSync(join(root(), "backup.sh"), "utf8")).toBe("# new backup script\n");
+    expect(readFileSync(join(root(), "vault-storage.sh"), "utf8")).toBe(readFileSync(join(OPS,"vault-storage.sh"),"utf8"));
+    expect(calls()).toContain("systemctl daemon-reload");
+    expect(calls().some(l=>/systemctl (enable|disable)/.test(l))).toBe(false);
   });
 
   it("maps rollback, restore and backups to the scripts of the current release", () => {

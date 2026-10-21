@@ -270,12 +270,26 @@ esac
 #: an agent's store was live and unbacked for weeks because the path list named
 # its old root and the backup skipped the missing one without a word. Reading
 # /srv on the box makes the NEXT rename fail here instead of during a restore.
+
+# A provisioned Vault is one inventory plus both fixed storage roots, never optional pieces.
+VAULT_STORAGE_PRESENT=0
+VAULT_STORAGE_PATHS=()
+vault_storage_unlock() { :; }
+VAULT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault-storage.sh"
+if [ -r "$VAULT_HELPER" ]; then
+  . "$VAULT_HELPER"
+  vault_storage_load "${LARES_PREFIX:-}" || exit 1
+elif [ -e "${LARES_PREFIX:-}/srv/vault" ] || [ -e "${LARES_PREFIX:-}/var/lib/lares-vault-git" ] || [ -e "${LARES_PREFIX:-}/srv/lares/installation/vault-storage.json" ]; then
+  echo 'vault storage: recovery helper missing; refusing an incomplete operation' >&2; exit 1
+fi
+
 MISSING_PATHS=""
 if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   SRV_ROOT="${BACKUP_SRV_ROOT:-/srv}"
   # The installation folder is required in the snapshot only where it exists on the box.
   STORES="$SRV_ROOT/lares/agents $SRV_ROOT/lares/retired $SRV_ROOT/taste"
   [ -d "$SRV_ROOT/lares/installation" ] && STORES="$STORES $SRV_ROOT/lares/installation"
+  if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then STORES="$STORES ${VAULT_STORAGE_PATHS[*]}"; fi
   for d in $STORES; do
     [ -d "$d" ] || fail "required portable store missing: $d"
     case "$SNAP_OBJ" in *"\"$d\""*) : ;; *) MISSING_PATHS="$MISSING_PATHS $d" ;; esac
@@ -289,7 +303,7 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
   done
   for d in "$SRV_ROOT"/*; do
     [ -d "$d" ] || continue
-    case "$d" in "$SRV_ROOT"/lares|"$SRV_ROOT"/taste) continue ;; esac
+    case "$d" in "$SRV_ROOT"/lares|"$SRV_ROOT"/taste|"$SRV_ROOT"/vault) continue ;; esac
     case " $BACKUP_IGNORED_PATHS " in *" $d "*) continue ;; esac
     case "$SNAP_OBJ" in *"\"$d\""*) : ;; *) MISSING_PATHS="$MISSING_PATHS $d" ;; esac
   done

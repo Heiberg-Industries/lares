@@ -31,6 +31,22 @@ if [ "\${1:-}" = run ]; then
     done
     engine_script="\${engine_args[engine_at+3]#/app/services/box/}"
     engine_rest=("\${engine_args[@]:engine_at+4}")
+    # Storage SQL/Git behavior has separate real PostgreSQL+Git coverage. These installer
+    # fixtures model only the image command's JSON protocol and root-owned publication.
+    if [ "$engine_script" = bin/vault-storage.ts ]; then
+      [ "\${STUB_VAULT_FAIL:-}" != "\${engine_rest[0]}" ] || exit 78
+      exec python3 - "\${LARES_PREFIX:-}" "\${engine_rest[@]}" <<'PYVAULTFIXTURE'
+import json,os,sys
+prefix,command=sys.argv[1:3];folder=prefix+'/srv/lares/installation'
+for name in ['vault-storage.json','vault-storage.pending.json']:
+ path=folder+'/'+name
+ if os.path.exists(path):
+  print(open(path).read());sys.exit(0)
+owner=sys.argv[sys.argv.index('--owner')+1] if '--owner' in sys.argv else 'owner'
+private='11111111-1111-4111-8111-111111111111';shared='22222222-2222-4222-8222-222222222222'
+print(json.dumps({'version':1,'planId':'33333333-3333-4333-8333-333333333333','organisationId':'example.invalid','provisionerMemberId':owner,'backing':{'id':'44444444-4444-4444-8444-444444444444','kind':'git','root':'/srv'},'areas':[{'areaId':id,'kind':kind,'owner':{'kind':'member' if kind=='private' else 'organisation','id':owner if kind=='private' else 'example.invalid'},'relativePath':'vault/'+kind+'/'+id,'origin':'/var/lib/lares-vault-git/'+id+'.git'} for id,kind in [(private,'private'),(shared,'shared')]]}))
+PYVAULTFIXTURE
+    fi
     ${
       runner === "tsx"
         ? `case "$engine_script" in

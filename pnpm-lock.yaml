@@ -236,6 +236,9 @@ importers:
 
   services/box:
     dependencies:
+      '@lares/agent-kit':
+        specifier: workspace:*
+        version: link:../../packages/agent-kit
       '@lares/vault-format':
         specifier: workspace:^
         version: link:../../packages/vault-format

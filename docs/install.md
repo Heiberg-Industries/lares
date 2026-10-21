@@ -434,7 +434,23 @@ Tools the engine does not ship come in as outside tool servers listed in the age
 Optional: back up agent definitions to a private Git repository. It is off by default; see
 [definition backups](runbooks/definition-backups.md). It is not a server backup.
 
+The installer prepares one private store for the configured owner and one shared store for the
+organisation. Only that named owner initially has access to the shared store. Each has its own
+working repository under `/srv/vault/private/<area-id>` or `/srv/vault/shared/<area-id>` and a
+local bare repository under `/var/lib/lares-vault-git/<area-id>.git`. The portable inventory is
+`/srv/lares/installation/vault-storage.json`; a `.pending.json` file means initialization has
+not completed. Retrying the installer uses the same planned identities and preserves existing
+notes and sharing. Foreign directories are never adopted.
+
+These stores do not enable agent tools or mounts. `/srv/taste` stays in its existing location;
+converting its existing writers is a separate step. No agent receives a mount of `/srv`.
+
 ## 9. Backups and the restore drill
+
+The installer refreshes the installed recovery programs and services without changing the backup
+destination or timer enablement. Managed Vault snapshots include the complete working trees
+(including untracked files), both local bare repositories, and the inventory. A missing store
+refuses the backup, export or restore drill instead of silently leaving it out.
 
 The base install does not switch backups on; `lares backups` does. Do not rely on the installation for data you need to keep until backups are
 switched on and proven.
@@ -571,6 +587,11 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    newer release than the one installed here, a snapshot with an unsafe database name or no main database,
    too little free disk, a missing token folder, and a restored address that differs from the one
    the server was installed with (restoring to a different address is not possible yet).
+   Vault inventory, stored ownership and both repositories are checked against a temporary
+   restoration of the snapshot database before the target changes. A fresh install's exact,
+   untouched marker-only stores may be moved into private restore staging; notes, extra refs,
+   or mismatched identities refuse this preparation. If restoration then fails, staging is
+   retained and services stay stopped. Older snapshots must have no Vault metadata or stores.
 7. **Do what it prints**, in order. The list below is what `restore.sh` prints; steps that do not
    apply to your snapshot are left out of its list and the numbers shift:
    1. Google, once per organisation: add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>`
@@ -627,8 +648,9 @@ update too. Only when both worked does it make the new release the current one a
 can run the same command again. Switch on backups (section 9) before your first update; without a
 verified backup the update refuses.
 
-If `lares update` says the backup scripts are older than the release's, **run `lares backups --yes`**
-to refresh them (section 9).
+The repair step refreshes the installed backup programs, helpers and service units before new
+Vault stores are initialized. Existing backup settings and enabled timers are preserved; a
+missing destination still leaves backups off (section 9).
 
 **Rolling back.** To put the previous images back, run `lares rollback` (add `--dry-run` to see
 what it would do). It reads the record of the last update, shows what it would put back and what
