@@ -57,6 +57,7 @@
  * `buildFactsCore` then applies the character budget (`STANDING_FACTS_BUDGET_CHARS`). Neither is
  * restated here, so they can never disagree with the store.
  */
+import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { getPool } from "@lares/agent-kit/db";
@@ -277,6 +278,7 @@ export default defineDynamic({
     // and if it ever did not, building one block under a shared key is better than throwing and
     // leaving the conversation with no memory at all.
     "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
+      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
       const markdown = await memoryCore.forSession(ctx?.session?.id ?? "no-session");
       return defineInstructions({ markdown });
     },
@@ -285,6 +287,7 @@ export default defineDynamic({
     // turn-scoped). An empty result here
     // is not a placeholder: eve drops it entirely, so an ordinary turn adds zero bytes.
     "turn.started": async (_event: unknown, ctx?: ResolveCtx) => {
+      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
       const markdown = await memoryCorrection.forSession(ctx?.session?.id ?? "no-session");
       return defineInstructions({ markdown });
     },

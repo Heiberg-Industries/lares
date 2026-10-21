@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AddressInfo } from "node:net";
-import { isDisabledToolSentinel, type DisabledToolSentinel } from "eve/tools";
+import { isDisabledToolSentinel } from "eve/tools";
 
 import { surfaceCommercial, type SurfaceDeps } from "../lib/commercial/surface.js";
 import { isJunkContact } from "../lib/commercial/junk.js";
@@ -12,7 +12,6 @@ import { scoreContact } from "../lib/commercial/score.js";
 import { icpFor } from "../lib/commercial/icp.js";
 import { listPeopleCapped, type TwentyPerson } from "../lib/twenty-people.js";
 import { TwentyUnavailableError } from "../lib/twenty-client.js";
-import type commercialWhoToContactType from "../agent/tools/commercial_who_to_contact.js";
 
 // `gatewayModel` (lib/gateway-provider.ts) caches its providers at MODULE scope — so a fresh
 // module per test is needed. commercial_who_to_contact
@@ -33,10 +32,11 @@ import type commercialWhoToContactType from "../agent/tools/commercial_who_to_co
 // a stack trace about a missing method rather than the actual cause. `isDisabledToolSentinel` is
 // eve's own runtime discriminator, and one line of it turns that into a sentence naming the
 // declaration to fix.
-async function freshCommercialTool(): Promise<Exclude<typeof commercialWhoToContactType, DisabledToolSentinel>> {
+async function freshCommercialTool() {
   vi.resetModules();
-  const tool = (await import("../agent/tools/commercial_who_to_contact.js")).default;
-  if (isDisabledToolSentinel(tool)) {
+  const resolver = (await import("../agent/tools/commercial_who_to_contact.js")).default;
+  const tool = await resolver.events["session.started"]!({}, {session:{id:"native",auth:{current:null,initiator:null}}} as never);
+  if (!tool || isDisabledToolSentinel(tool)) {
     throw new Error(
       "commercial_who_to_contact resolved to a disabled-tool sentinel: agent.json no longer grants " +
         "the `commercial` skill what it requires (twenty:read). Every test in this " +

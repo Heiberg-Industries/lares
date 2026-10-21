@@ -26,6 +26,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { PRIVATE_CONSOLE_SURFACE_REVISION } from "../../../../packages/agent-kit/src/console-turn-authority.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const boxSqlDir = join(here, "..", "..", "sql");
@@ -365,8 +366,8 @@ const SEED_ROWS: SeedRow[] = [
   ]),
 
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
-    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1)`,
-    [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`])),
+    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1,$5)`,
+    [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`,PRIVATE_CONSOLE_SURFACE_REVISION])),
 
   // ── 004_web_inbox.sql ─────────────────────────────────────────────────────────────────────
   row("web_inbox", "owner", FIXTURE_OWNER,

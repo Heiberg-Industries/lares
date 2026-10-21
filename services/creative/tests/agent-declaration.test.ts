@@ -101,6 +101,8 @@ const EXTENSION_TOOLS: Record<string, () => Promise<{ default: unknown }>> = {
  *  the business store; it has no business in the owner's personal vault.
  *  That omission is the whole mechanism by which the ten extension tools disappear. */
 const CAPABILITY_TOOLS: Record<string, readonly string[]> = {
+  signals: ["agent-kit__signals_recent"],
+  transit: ["agent-kit__transit_plan"],
   studio: ["studio_ideate"],
   vault: ["vault_search", "vault_read", "vault_list", "vault_write"],
 };
@@ -154,6 +156,7 @@ async function loadLocalTools(): Promise<Map<string, { approval?: unknown }>> {
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".ts") && f !== "index.ts")) {
     const mod = (await import(join(dir, file))) as { default: unknown };
     if (isDisabledToolSentinel(mod.default)) continue;
+    if (!grantedToolNames(CATALOGUE, parseDefinition(manifest)).includes(file.replace(/\.ts$/u, ""))) continue;
     out.set(file.replace(/\.ts$/u, ""), mod.default as { approval?: unknown });
   }
   return out;

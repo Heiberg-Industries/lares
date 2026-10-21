@@ -1,7 +1,6 @@
 import { fileURLToPath,pathToFileURL } from 'node:url';
 import { afterEach,describe,expect,it,vi } from 'vitest';
-const fake=vi.hoisted(()=>({query:vi.fn(),execute:vi.fn(),approval:vi.fn(),captureUse:vi.fn(async()=>1)}));
-vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {captureUse=fake.captureUse;}}));
+const fake=vi.hoisted(()=>({query:vi.fn(),execute:vi.fn(),approval:vi.fn()}));
 vi.mock('../src/db.js',()=>({getPool:()=>fake}));
 vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
 vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
@@ -18,30 +17,17 @@ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',i
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(purpose='human')=>({authenticator:'lares-console',attributes:{user_id:'owner@example.invalid',lares_member_id:'Owner-ID',lares_admission_nonce:'a'.repeat(43),lares_purpose:purpose}});
 const context=(purpose='human')=>({session:{id:'wrun_test',turn:{id:'turn-1',sequence:0},auth:{current:auth(purpose),initiator:auth()}},abortSignal:new AbortController().signal,approvedTools:new Set(),callId:'call-1',toolInput:{},toolName:'fixture'});
-afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.execute.mockReset();fake.approval.mockReset();fake.captureUse.mockClear();});
+afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.execute.mockReset();fake.approval.mockReset();});
 describe('both catalogues guard real durable callbacks before underlying execution or approval policy',()=>{
- for(const [role,resolver] of [['chief',chief],['creative',creative]] as const){
-  it(`${role}: preserves descriptors; resolver resumes and missing bindings refuse before policy`,async()=>{
-   vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');
-   const tool=(await (resolver.events['session.started'] as any)({},context())).fixture;
+ for (const [role,resolver] of [['chief',chief],['creative',creative]] as const) {
+  it(`${role}: an old native durable descriptor refuses private execution before source or policy`,async()=>{
+   const tool=(await (resolver.events['session.started'] as any)({}, {session:{id:'native',auth:{current:null,initiator:null}}})).fixture;
    const {validateDurableDynamicToolCallbacks}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
-   const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'wrun_test',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
-   expect(callbacks.execute.closure).toEqual({name:'fixture'});expect(callbacks.approvalRequest.closure).toEqual({name:'fixture'});expect(callbacks.approvalResponse.closure).toEqual({name:'fixture'});
-   await expect(tool.execute({},context('resolver'))).rejects.toThrow();
-   await expect(tool.approval.request(context('resolver'))).rejects.toThrow();
-   expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();
-   fake.query.mockResolvedValue({rows:[]});
-   await expect(tool.approval.request(context())).rejects.toThrow();expect(fake.approval).not.toHaveBeenCalled();
-   fake.query.mockImplementation(async(sql:string)=>{
-    if(sql.startsWith('SELECT 1 FROM users'))return {rows:[{id:'Owner-ID'}]};
-    if(sql.includes('FROM agent_resources r'))return {rows:[{}]};
-    if(sql.includes('SELECT b.* FROM console_session_bindings'))return {rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1}]};
-    throw new Error('Unexpected authority fixture query');
-   });
-   fake.execute.mockResolvedValue('executed');fake.approval.mockResolvedValue('user-approval');
-   await expect(tool.execute({},context())).resolves.toBe('executed');
-   await expect(tool.approval.request(context())).rejects.toThrow('Exact approval');
-   expect(fake.approval).not.toHaveBeenCalled();
+   const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'native',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
+   expect(callbacks.execute.closure).toEqual({name:'fixture'});
+   await expect(tool.execute({},context())).rejects.toThrow('Conversation authority');
+   await expect(tool.approval.request(context())).rejects.toThrow('Conversation authority');
+   expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
   });
  }
  for(const [role,resolver] of [['chief',chief],['creative',creative]] as const){
@@ -69,12 +55,10 @@ describe('both catalogues guard real durable callbacks before underlying executi
     expect(resolved.resolvedInputs).toMatchObject([{inputs:[{request:{requestId:'native-request'},outcome:optionId==='approve'?'approved':'denied'}]}]);
    });
   }
-  it(`${role}: strict response descriptors persist when cold refresh has only the tagged initiator`,async()=>{
+  it(`${role}: malformed cold strict reconstruction fails before exposing tools`,async()=>{
    const c=context('resolver');c.session.auth.current=null as never;
-   const tool=(await (resolver.events['session.started'] as any)({},c)).fixture;
-   expect(typeof tool.approval.response).toBe('function');
-   const r={request:{requestId:'strict',callId:'strict',toolName:'fixture',toolInput:{}},responder:null,session:{id:'wrun_test',initiator:auth(),turn:{id:'resolver',sequence:1}}};
-   await expect(tool.approval.response(r)).rejects.toThrow();
+   await expect((resolver.events['session.started'] as any)({},c)).rejects.toThrow('Conversation authority');
+   expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();
   });
  }
  it('an approval resolver cannot become a new human instruction',()=>{

@@ -51,6 +51,7 @@
  * from here on. None of the buffering or attribution reasoning above changes; only what a
  * finished exchange carries when it is handed off.
  */
+import { isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
 import { defineHook, type HookContext, type HookEvent } from "eve/hooks";
 
 import { configuredOwnerId } from "../../lib/identity-client.js";
@@ -369,6 +370,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * tool-using exchange must not reset the question and proposals gathered by the first.
    */
   async function onTurnStarted(event: HookEvent<"turn.started">, ctx: HookContext): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       await evictStale();
       const key = keyOf(ctx);
@@ -417,6 +419,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * because it fires for the tool-park continuation too.
    */
   async function onMessageReceived(event: HookEvent<"message.received">, ctx: HookContext): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       const key = keyOf(ctx);
       if (!key) return;
@@ -445,6 +448,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
 
   /** Tool names accumulate across every turn of the exchange, not just the first. */
   async function onActionsRequested(event: HookEvent<"actions.requested">, ctx: HookContext): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       const key = keyOf(ctx);
       const entry = key ? pending.get(key) : undefined;
@@ -477,6 +481,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
    * direction here.
    */
   async function onMessageCompleted(event: HookEvent<"message.completed">, ctx: HookContext): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       const key = keyOf(ctx);
       const entry = key ? pending.get(key) : undefined;
@@ -500,6 +505,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
   async function onTurnCompleted(event: HookEvent<"turn.completed">, ctx: HookContext): Promise<void> {
     void event;
     void ctx;
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       await evictStale();
     } catch (err) {
@@ -525,6 +531,7 @@ export function makeTurnCapture(deps: TurnCaptureDeps) {
     ctx: HookContext,
   ): Promise<void> {
     void event;
+    if (isPrivateConsoleContext(ctx)) { if (ctx.session?.id) pending.delete(ctx.session.id); return; }
     try {
       const key = keyOf(ctx);
       const open = key ? pending.get(key) : undefined;

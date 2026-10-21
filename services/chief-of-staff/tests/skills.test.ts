@@ -25,33 +25,28 @@
  *     hand-written file allowed to carry them, or in a runtime lookup.
  */
 import { describe, it, expect } from "vitest";
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { lintInstructionSkill, assertSkillIsGeneric } from "@lares/agent-kit/persona";
 import { denylistPatterns } from "./helpers/denylist";
 
 const skillsDir = join(import.meta.dirname, "..", "agent", "skills");
-const skills = readdirSync(skillsDir, { withFileTypes: true })
-  .filter((e) => e.isDirectory())
-  .map((e) => e.name)
-  .sort();
-const bodyOf = (name: string) => readFileSync(join(skillsDir, name, "SKILL.md"), "utf8");
-
-/** The `description:` line of a `---`-delimited YAML frontmatter block, or undefined when there
- *  is no frontmatter at all. Deliberately a small reader rather than a YAML dependency: the
- *  frontmatter here is one key, and the assertion is about presence and non-emptiness. */
-function descriptionOf(md: string): string | undefined {
-  const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/u.exec(md);
-  if (!m) return undefined;
-  const line = /^description:\s*(.*)$/mu.exec(m[1]!);
-  return line?.[1]?.trim();
-}
+const skillDefinitions = {
+  signals: (await import('../agent/skills/signals.js')).default,
+  'sales-outreach': (await import('../agent/skills/sales-outreach.js')).default,
+};
+const skills = Object.keys(skillDefinitions).sort();
+const resolved = Object.fromEntries(await Promise.all(Object.entries(skillDefinitions).map(async ([name, d]) =>
+  [name, await d.events['session.started']!({}, {session:{id:'native',auth:{current:null,initiator:null}}} as never)])));
+const bodyOf = (name: string) => (resolved[name] as {markdown:string}).markdown;
+const descriptionOf = (md: string) => Object.values(resolved).find(s => (s as {markdown:string}).markdown === md)?.description;
 
 describe("chief-of-staff agent/skills", () => {
-  it("ships the skills as skill packages, the way the open format names them", () => {
+  it("ships conditional skills with no static copies", () => {
     expect(skills).toEqual(["sales-outreach", "signals"]);
     for (const s of skills) {
-      expect(existsSync(join(skillsDir, s, "SKILL.md")), `${s}/SKILL.md`).toBe(true);
+      expect(existsSync(join(skillsDir, `${s}.ts`))).toBe(true);
+      expect(existsSync(join(skillsDir, s, "SKILL.md"))).toBe(false);
     }
   });
 
@@ -60,12 +55,6 @@ describe("chief-of-staff agent/skills", () => {
       .filter((e) => e.isFile() && e.name.endsWith(".md"))
       .map((e) => e.name);
     expect(flat).toEqual([]);
-  });
-
-  it("each names itself in its frontmatter, matching its directory", () => {
-    for (const s of skills) {
-      expect(/^name:\s*(.+)$/mu.exec(bodyOf(s))?.[1]?.trim(), s).toBe(s);
-    }
   });
 
   it("keeps every description, which is what eve matches on", () => {

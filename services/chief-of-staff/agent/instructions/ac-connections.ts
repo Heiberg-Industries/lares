@@ -9,13 +9,15 @@
  * Never throws: a failed read yields an empty block, and the persona is then all the agent has, which
  * is where the agent was before this existed.
  */
+import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
 import { connectionsMarkdown, readConnections } from "../../lib/connections.js";
 
 export default defineDynamic({
   events: {
-    "session.started": async () => {
+    "session.started": async (_event, ctx) => {
+      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: "" });
       try {
         return defineInstructions({ markdown: connectionsMarkdown(await readConnections()) });
       } catch (err) {

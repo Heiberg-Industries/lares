@@ -1,3 +1,4 @@
+import { verifyPrivateConsoleModel } from './private-console-surface.js';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { defineState } from 'eve/context';
 import { defineDynamic } from 'eve/tools';
@@ -17,10 +18,10 @@ export function pinSessionGatewayAlias(alias: string): null {
 
 /** Reconstruct the provider for the already-pinned alias; never reread the definition
  * mid-conversation. Eve permits live LanguageModel objects only at step scope. */
-export function sessionGatewayModel(provider: (alias: string) => LanguageModel): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
+export function sessionGatewayModel(provider: (alias: string) => LanguageModel, verifyAuthority: () => Promise<unknown> = async () => {}): { model: Exclude<LanguageModel, string>; modelContextWindowTokens: number } {
   const alias = gatewayAlias.get();
   if (!alias) throw new Error('Session gateway alias is not pinned');
-  return { model: guardDefinitionModel(provider(alias)), modelContextWindowTokens: 200_000 };
+  return { model: guardDefinitionModel(provider(alias), async () => { await assertModelDefinitionReady(); await verifyAuthority(); }), modelContextWindowTokens: 200_000 };
 }
 
 /**
@@ -56,8 +57,13 @@ export function definitionModel(input: {
         _event: unknown,
         ctx?: { readonly session?: { readonly id?: string } },
       ): Promise<{ model: Exclude<LanguageModel, string>; modelContextWindowTokens: number }> => {
+        // The public resolver context contains auth and session id, not turn coordinates.
+        // Copy it before closing over it: a later turn must not change a model's authority.
+        const authorityContext = structuredClone({ session: ctx?.session });
+        const verifyAuthority = () => verifyPrivateConsoleModel(authorityContext);
+        await verifyAuthority();
         if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(ctx?.session?.id));
-        return sessionGatewayModel(input.provider);
+        return sessionGatewayModel(input.provider, verifyAuthority);
       },
     },
   });

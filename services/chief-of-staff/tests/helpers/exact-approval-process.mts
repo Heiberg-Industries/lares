@@ -19,7 +19,18 @@ ctx.set(keys.SessionDynamicToolRuntimeRevisionKey,'fixture-runtime');
 assert(hasUnregisteredDurableDynamicCallbacks(payload.metadata,{sessionId:payload.context.session.id,scope:'session'}));
 const resolvers=[{slug:'catalogue',eventNames:['session.started'],events:resolver.events}];
 try {
- await refreshDynamicSessionToolsForRuntimeRevision({ctx,resolvers,event:{type:'session.started',data:{}},messages:[],runtimeRevision:'fixture-runtime'});
+ const refresh=()=>refreshDynamicSessionToolsForRuntimeRevision({ctx,resolvers,event:{type:'session.started',data:{}},messages:[],runtimeRevision:'fixture-runtime'});
+ if(process.argv[2]==='refuse'){
+  await refresh();
+  assert(hasUnregisteredDurableDynamicCallbacks(payload.metadata,{sessionId:payload.context.session.id,scope:'session'}));
+  await assert.rejects(async()=>{
+   const old=replayDynamicSessionTools(payload.metadata,resolvers,payload.context.session.id).find((tool:any)=>tool.name==='deadline_dismiss');
+   assert(old);
+   await contextStorage.run(ctx,()=>old.execute(payload.input,{toolCallId:payload.context.callId,messages:[]}));
+  },/callback|registered|Conversation authority/i);
+  process.stdout.write(JSON.stringify({pid:process.pid,refused:true}));
+ }else{
+ await refresh();
  const metadata=ctx.get(keys.SessionDynamicToolMetadataKey);
  assert(!hasUnregisteredDurableDynamicCallbacks(metadata,{sessionId:payload.context.session.id,scope:'session'}));
  const tools=replayDynamicSessionTools(metadata,resolvers,payload.context.session.id);
@@ -39,4 +50,5 @@ try {
   assert.equal(output.dismissed,true);
  }
  process.stdout.write(JSON.stringify({pid:process.pid,rebound:true,mode:process.argv[2]}));
+ }
 } finally {await closePool();}

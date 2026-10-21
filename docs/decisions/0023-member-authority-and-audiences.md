@@ -144,3 +144,20 @@ re-adoption or a definition changing away and back cannot revive an old conversa
 The proxy checks admission before reading the runtime address or route password. Missing
 adoption requires an explicit owner action; runtime incarnation tokens never adopt agents.
 Console admission remains designated-owner-only pending scoped automatic context and tools.
+
+Strict private console sessions now use a bounded source surface: the chief of staff offers
+only granted personal Gmail account listing, message reads and search; the creative role offers
+no source tools. Both use neutral role instructions and exclude installation voice, duties,
+standing facts, connection inventory, outside tools and native-only skills. Session-local
+framework questions and task lists remain available. Private turns do not enter owner learning,
+legacy administrative conversation projections or shared usage counts; HTTP traces emit nothing.
+Request envelopes accept the console's text and exact card answers, refusing attachments,
+callbacks, observers, client context and delegated task modes before dispatch.
+
+SQL017 retires earlier private console bindings and captures an immutable bounded-surface
+revision on every fresh session. An old runtime cannot create an active binding by omitting it.
+A prompt refresh cannot approve old broad history: the person must start a new conversation.
+Current binding/access freshness is checked at dynamic surface resolution, model selection and
+both provider execution modes; durable tool callbacks independently refuse unsafe source names.
+Admission is still designated-owner-only. These source boundaries do not claim deployed gateway
+privacy, member admission or complete two-member runtime acceptance.

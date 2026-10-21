@@ -108,6 +108,8 @@
     "./board-approval": "./src/board-approval.ts",
     "./agent-registry": "./src/agent-registry.ts",
     "./catalogue": "./src/catalogue.ts",
+    "./private-console-surface": "./src/private-console-surface.ts",
+    "./private-console-envelope": "./src/private-console-envelope.ts",
     "./console-turn-authority": "./src/console-turn-authority.ts",
     "./door-authority": "./src/door-authority.ts",
     "./door-channels": "./src/door-channels.ts",

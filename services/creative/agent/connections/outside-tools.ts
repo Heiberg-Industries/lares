@@ -4,6 +4,7 @@
 // Resolved on session.started from the SAME per-session definition pin the persona and the model use
 // (`thisAgent`). eve runs this several times per session and again after a restart, so everything
 // below is idempotent. The work is in `@lares/agent-kit/outside-connections`.
+import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
 import { defineDynamic, defineMcpClientConnection } from "eve/connections";
 import { checkedOutsideConnections, descriptionChecks } from "@lares/agent-kit/outside-connections";
 
@@ -19,6 +20,7 @@ const isAllowedApprover = (responder: unknown): boolean => {
 export default defineDynamic({
   events: {
     "session.started": async (_event: unknown, ctx?: { session?: { id?: string } }) => {
+      if (await verifyPrivateConsoleSession(ctx)) return null;
       const { loaded } = await thisAgent(ctx?.session?.id);
       const configs = await checkedOutsideConnections(loaded.definition, {
         isAllowedApprover,

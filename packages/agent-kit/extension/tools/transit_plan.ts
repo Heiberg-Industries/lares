@@ -1,3 +1,4 @@
+import { taintTurn, turnKeyFrom } from "../../src/origin-taint.js";
 /**
  * Real Norwegian public-transport journeys, from Entur.
  *
@@ -29,6 +30,7 @@
  * the construction site. A plain `fetch` here compiles, passes the suite, and
  * then fails on the server as "unreachable".
  */
+import { assertPrivateConsoleTool } from "../../src/private-console-surface.js";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -183,7 +185,8 @@ export function createTransitPlanTool(deps: TransitPlanDeps) {
       "EnturUnavailableError — which means Entur was unreachable, NOT that there are no " +
       "departures.",
     inputSchema,
-    async execute({ from, to, departAfter, arriveBy, count }) {
+    async execute({ from, to, departAfter, arriveBy, count }, ctx) {
+      assertPrivateConsoleTool(ctx, "creative", "agent-kit__transit_plan");
       if (departAfter !== undefined && arriveBy !== undefined) {
         return {
           error:
@@ -194,6 +197,9 @@ export function createTransitPlanTool(deps: TransitPlanDeps) {
       // ONE deadline over all three requests, not three independent 8 s bounds.
       // `done()` in the outermost `finally` so the timer never outlives the call.
       const budget = callBudget(JOURNEY_BUDGET_MS);
+      // Transport failures can quote provider bodies or GraphQL messages.
+      const key = turnKeyFrom(ctx);
+      if (key) taintTurn(key, "third_party");
       try {
         return await planJourney(entur, budget, { from, to, departAfter, arriveBy, count });
       } finally {

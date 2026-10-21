@@ -12,6 +12,8 @@ export const CONSOLE_ADMISSION_HEADER = 'x-lares-admission';
 export const CONSOLE_PURPOSE_HEADER = 'x-lares-purpose';
 /** Version of this private console admission contract, not the permission board policy. */
 export const CONSOLE_AUTHORITY_REVISION = 1;
+/** Only fresh sessions created by the bounded runtime can carry this capture. */
+export const PRIVATE_CONSOLE_SURFACE_REVISION = 1;
 export const CONSOLE_AUTHORITY_REFUSED = 'Conversation authority is not available';
 /** A pool supplies connect; a query-only client belongs to an already-open caller transaction. */
 export interface AuthorityDatabase { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
@@ -87,12 +89,13 @@ export async function bindConsoleSession(input: ConsoleBindingInput, db: Authori
     const revision=await currentAgentUse(client,input.agent,input.memberId,env);
     await runtimeGate(client,input);
     const placeId=`console:${input.agent}:${input.incarnation}:${input.sessionId}`;
-    const {rows}=await authorityQuery(client,`INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision)
-      VALUES($1,$2::uuid,$3,$4,$5,$6,$7)
+    const {rows}=await authorityQuery(client,`INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision)
+      VALUES($1,$2::uuid,$3,$4,$5,$6,$7,$8)
       ON CONFLICT(agent,incarnation,session_id) DO UPDATE SET revoked_at=console_session_bindings.revoked_at
       WHERE console_session_bindings.member_id=EXCLUDED.member_id AND console_session_bindings.admission_nonce=EXCLUDED.admission_nonce
         AND console_session_bindings.place_id=EXCLUDED.place_id AND console_session_bindings.agent_access_revision=EXCLUDED.agent_access_revision
-        AND console_session_bindings.revoked_at IS NULL RETURNING *`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,placeId,revision]);
+        AND console_session_bindings.private_surface_revision=EXCLUDED.private_surface_revision
+        AND console_session_bindings.revoked_at IS NULL RETURNING *`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,placeId,revision,PRIVATE_CONSOLE_SURFACE_REVISION]);
     if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);return binding(rows[0]);
   });}catch{ return denied(); }
 }
@@ -102,7 +105,7 @@ export async function requireConsoleSessionBinding(input: Omit<ConsoleBindingInp
     await runtimeGate(client,input);
     const {rows}=await authorityQuery(client,`SELECT b.* FROM console_session_bindings b WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3
       AND b.member_id=$4 AND ($5::text IS NULL OR b.admission_nonce=$5) AND b.revoked_at IS NULL AND b.audience_revision=1 AND b.policy_revision=1
-      AND b.agent_access_revision=$6 FOR SHARE`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce??null,revision]);
+      AND b.agent_access_revision=$6 AND b.private_surface_revision=$7 FOR SHARE`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce??null,revision,PRIVATE_CONSOLE_SURFACE_REVISION]);
     if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);const result=binding(rows[0]);coordinates(result);return result;
   });}catch{return denied();}
 }

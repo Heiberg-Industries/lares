@@ -12,6 +12,7 @@
  * handler catches everything and warns at most once per process. `getPool()` is called inside the
  * handler, never at module scope, so `eve build` never touches it.
  */
+import { isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
 import { defineHook, type HookContext } from "eve/hooks";
 
 import { getPool } from "@lares/agent-kit/db";
@@ -39,6 +40,7 @@ export function makeModelUsage(deps: ModelUsageDeps = {}) {
     });
 
   async function onStepCompleted(event: unknown, ctx: unknown): Promise<void> {
+    if (isPrivateConsoleContext(ctx)) return;
     try {
       const e = event as { data?: Record<string, unknown>; meta?: { id?: unknown; at?: unknown } } | undefined;
       const data = e?.data;
