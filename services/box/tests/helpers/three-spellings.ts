@@ -84,6 +84,24 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO users (id, display_name, primary_email) VALUES ($1, 'Fixture Second', 'second@fixture.test')`,
     [FIXTURE_SECOND]),
 
+  // Personal connected-account metadata; account rows precede their selected resources.
+  row("connected_accounts", "owner_member_id", FIXTURE_OWNER,
+    `INSERT INTO connected_accounts (id, owner_member_id, connector_id, provider_issuer, provider_subject, provider_label, status)
+     VALUES ('fixture-account-1', $1, 'example', 'https://provider.example', 'fixture-account-1', 'Fixture account', 'ok')`,
+    [FIXTURE_OWNER]),
+  row("connected_accounts", "owner_member_id", FIXTURE_SECOND,
+    `INSERT INTO connected_accounts (id, owner_member_id, connector_id, provider_issuer, provider_subject, provider_label, status)
+     VALUES ('fixture-account-2', $1, 'example', 'https://provider.example', 'fixture-account-2', 'Fixture account', 'ok')`,
+    [FIXTURE_SECOND]),
+  row("connected_resource_bindings", "owner_member_id", FIXTURE_OWNER,
+    `INSERT INTO connected_resource_bindings (id, owner_member_id, connected_account_id, resource_kind, external_id, provider_label)
+     VALUES ('fixture-account-1-resource', $1, 'fixture-account-1', 'mailbox', 'mailbox', 'Fixture inbox')`,
+    [FIXTURE_OWNER]),
+  row("connected_resource_bindings", "owner_member_id", FIXTURE_SECOND,
+    `INSERT INTO connected_resource_bindings (id, owner_member_id, connected_account_id, resource_kind, external_id, provider_label)
+     VALUES ('fixture-account-2-resource', $1, 'fixture-account-2', 'mailbox', 'mailbox', 'Fixture inbox')`,
+    [FIXTURE_SECOND]),
+
   row("user_aliases", "user_id", FIXTURE_OWNER,
     `INSERT INTO user_aliases (system, alias, user_id) VALUES
        ('legacy', $2, $1), ('legacy', $3, $1), ('slack', $4, $1), ('email', $5, $1)`,

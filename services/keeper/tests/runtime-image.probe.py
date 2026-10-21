@@ -74,6 +74,13 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
+ # SQL008 is additive, preserves rows on reapply, and enforces same-owner resource bindings.
+ sql("INSERT INTO users(id,display_name) VALUES ('account-probe-a','Fixture A'),('account-probe-b','Fixture B')")
+ sql("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES ('account-probe','account-probe-a','example','https://provider.example','subject','Fixture','ok')")
+ sql("INSERT INTO connected_resource_bindings(id,owner_member_id,connected_account_id,resource_kind,external_id,provider_label) VALUES ('resource-probe','account-probe-a','account-probe','mailbox','inbox','Inbox')")
+ sql((repo/'services/box/sql/008_connected_accounts.sql').read_text())
+ sql("DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM connected_accounts WHERE id='account-probe' AND generation=0 AND lifecycle_revision=0) OR NOT EXISTS (SELECT 1 FROM connected_resource_bindings WHERE id='resource-probe') THEN RAISE EXCEPTION 'Account metadata changed on migration reapply'; END IF; BEGIN INSERT INTO connected_resource_bindings(id,owner_member_id,connected_account_id,resource_kind,external_id,provider_label) VALUES ('wrong-owner-probe','account-probe-b','account-probe','mailbox','other','Other'); RAISE EXCEPTION 'Cross-owner binding accepted'; EXCEPTION WHEN foreign_key_violation THEN NULL; END; END $$")
+ sql("DELETE FROM users WHERE id IN ('account-probe-a','account-probe-b')")
  # The credential journal is part of the baseline.
  sql("DO $$ BEGIN IF to_regclass('standing_facts') IS NULL OR (SELECT count(*) FROM information_schema.columns WHERE table_name='standing_facts' AND column_name IN ('user_id','origin','recorded_at','source','superseded_by'))<>5 THEN RAISE EXCEPTION 'standing_facts missing or not in its final shape'; END IF; END $$")
  sql("DO $$ BEGIN IF to_regclass('keeper_credentials') IS NULL THEN RAISE EXCEPTION 'Credential journal migration missing'; END IF; END $$")
