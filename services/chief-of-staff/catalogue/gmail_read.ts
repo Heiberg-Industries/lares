@@ -1,19 +1,18 @@
-// Read one message by id. Ported from hands/gmail.ts's "read" action (hands/gmail.ts:16):
-// a not-found id returns a typed { ok: false, reason } shape rather than throwing — a real,
-// expected outcome, not an error. `account` selects a specific enrolled mailbox; omitted,
-// the primary (most-recently-updated) one is used.
+// Read one message by id. A not-found id returns a typed { ok: false, reason } shape rather than
+// throwing: a real, expected outcome, not an error. `account` selects a specific enrolled mailbox;
+// omitted, the primary (most-recently-updated) one is used.
 //
-// W3A-s5 — always taints `third_party` on a successful call, INCLUDING the not-found path: the
+// Always taints `third_party` on a successful call, INCLUDING the not-found path: the
 // model still saw whatever the mailbox returned (the origin model,
 // "The in-turn taint rule"). A thrown call taints nothing.
 //
-// W7D-s1 — owner decision D2: the body comes back QUOTED, not raw. A message the mailbox
+// The body comes back QUOTED, not raw. A message the mailbox
 // returns is somebody else's words, not the agent's own thought, so `bodyText` is wrapped by
 // `quoteUntrusted` (@lares/agent-kit/untrusted-text) before it reaches the model. The not-found
-// path has no `bodyText` and is left exactly as before.
+// path has no `bodyText` and carries no quote.
 //
-// W7D-s2 — owner decision D3: the envelope also says whether the sender is someone the owner
-// has written to before (`senderStanding`, lib/sender-standing.ts) — one cheap, timed-out
+// The envelope also says whether the sender is someone the owner
+// has written to before (`senderStanding`, lib/sender-standing.ts): one cheap, timed-out
 // lookup on the SAME first-contact check `board-approval.ts` already uses for sends, never a
 // second implementation of that question. Judged on the sender's address, never their display
 // name; a lookup that fails, times out, or cannot be parsed to one address answers "I could not

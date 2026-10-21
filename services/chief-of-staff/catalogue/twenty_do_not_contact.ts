@@ -1,7 +1,6 @@
-// Flag a person do-not-contact. GATED WRITE — requires the owner to tap Approve on the card until ratcheted.
+// Flag a person do-not-contact. GATED WRITE: requires the owner to tap Approve on the card until ratcheted.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `setDoNotContact`
-// (PATCH /people/{id} { doNotContact: true, doNotContactReason }).
+// PATCH /people/{id} { doNotContact: true, doNotContactReason }.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -11,8 +10,9 @@ import { approvalFor } from "../lib/board.js";
 
 export default defineTool({
   description: "Flag a person do-not-contact with a reason (unsubscribe, bounce). Requires approval until ratcheted.",
-  // audit: `reason` is LEGITIMATELY free-form. Twenty's `doNotContactReason` is a TEXT
-  // field, not a SELECT (verified against the live schema, `GET /rest/metadata/fields`) — there is no enum to constrain it to. `doNotContact` is a BOOLEAN and is set
+  // `reason` is LEGITIMATELY free-form. Twenty's `doNotContactReason` is a TEXT
+  // field, not a SELECT (verified against the live schema, `GET /rest/metadata/fields`), so there
+  // is no enum to constrain it to. `doNotContact` is a BOOLEAN and is set
   // by this tool, never taken from the model.
   inputSchema: z.object({ recordId: z.string(), reason: z.string() }),
   approval: approvalFor("twenty_do_not_contact"),

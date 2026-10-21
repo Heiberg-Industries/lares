@@ -1,25 +1,23 @@
-// Update a person's outreach comm-state. GATED WRITE — requires the owner to tap Approve on the card until ratcheted.
+// Update a person's outreach comm-state. GATED WRITE: requires the owner to tap Approve on the card until ratcheted.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `writeCommState`:
-// read-before-write — if a human changed the value out from under us (current !=
+// Read-before-write: if a human changed the value out from under us (current !=
 // expectedPrevious), skip the write rather than clobber a rep's manual edit.
 //
-// posture: a genuine 404 on the read (person deleted since we last saw them) is a
-// real, typed "not found" outcome — the old client's `getOrNull` already treated it that
-// way. A `TwentyUnavailableError` on either the read or the write propagates instead.
+// A genuine 404 on the read (person deleted since we last saw them) is a
+// real, typed "not found" outcome. A `TwentyUnavailableError` on either the read or the write
+// propagates instead.
 //
-// `expectedPrevious` OMITTED used to be treated as an assertion of `null` — so a
-// caller that didn't know (or didn't bother naming) the prior state got compared against
-// null regardless of what the record actually held. agent/skills/sales-outreach.md's own
-// send-time call omits it, so the very first transition (new person, truly null) happened to
-// match — but any FOLLOW-UP send on a person already past that state hit the CAS mismatch
-// and silently skipped, `rep_edit_detected`, every time: comm-state never advanced past the
-// first hop. Omitting `expectedPrevious` now means "no assertion, just set it" — the CAS
+// `expectedPrevious` OMITTED means "no assertion, just set it". (Treating an omitted value as an
+// assertion of `null` would compare a caller that didn't know the prior state against null
+// regardless of what the record held: agent/skills/sales-outreach.md's own send-time call omits it,
+// so the first transition would match, but any FOLLOW-UP send on a person already past that state
+// would hit the CAS mismatch and silently skip as `rep_edit_detected`, every time, and comm-state
+// would never advance past the first hop.) The CAS
 // check only fires when a caller explicitly names a prior state to protect (including
-// `null` — an explicit `expectedPrevious: null` still asserts "must currently be unset").
-// Callers that care about not clobbering a rep's manual edit (this file's reply-triage
+// `null`: an explicit `expectedPrevious: null` still asserts "must currently be unset").
+// Callers that care about not clobbering a rep's manual edit (the reply-triage
 // caller, lib/outreach-reply-triage.ts, always passes one) keep that protection; callers
-// that don't know the prior state no longer silently no-op.
+// that don't know the prior state don't silently no-op.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -36,9 +34,9 @@ export default defineTool({
   inputSchema: z.object({
     recordId: z.string(),
     state: commStateSchema,
-    // normalised too, and not merely for symmetry — this is compared against the
+    // Normalised too, and not merely for symmetry: this is compared against the
     // stored (UPPERCASE) value, so a lowercase assertion would ALWAYS mismatch and skip the
-    // write as `rep_edit_detected`. Same defect family, silent instead of loud.
+    // write as `rep_edit_detected`, silently.
     expectedPrevious: commStateSchema.nullable().optional(),
   }),
   approval: approvalFor("twenty_comm_state"),

@@ -1,7 +1,7 @@
 // Create a reply DRAFT in the connected mailbox's Drafts folder (nothing is sent). Drafting is
 // autonomous by default; an installation can re-gate this specific action on the permissions board.
 //
-// Ported from hands/gmail.ts's "draft" action. Set `threadId` + `inReplyTo` (the original
+// Set `threadId` + `inReplyTo` (the original
 // message's Message-ID) to thread it as a proper reply; `signatureHtml` to append the
 // account's signature.
 import { defineTool } from "eve/tools";

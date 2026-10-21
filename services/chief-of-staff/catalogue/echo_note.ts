@@ -1,14 +1,13 @@
 /**
- * The approval-gate proof (Task 9).
+ * The approval-gate proof.
  *
- * The shadow writes nothing real — Brain and Atlas are mounted read-only and no Gmail,
- * CRM, Notion or reminder capability is wired. But the gate that the cutover will hang
- * every one of those on has to be proven working BEFORE the cutover decision, not after,
- * so it is proven here on the most harmless write available: a line appended to a log file
- * inside the container's tmpfs, which nothing reads and a restart discards.
+ * This tool writes nothing real: a line appended to a log file inside the container's tmpfs,
+ * which nothing reads and a restart discards. It exists so the approval gate that every real write
+ * hangs on can be proven working end to end on the most harmless write available, independent of
+ * any Gmail, CRM, Notion or reminder capability.
  *
- * What this exists to demonstrate, end to end: she proposes → Slack renders eve's native
- * approval → approve writes the line, reject writes nothing.
+ * What it demonstrates: the agent proposes, Slack renders eve's native approval, approve writes the
+ * line, reject writes nothing.
  */
 import { appendFileSync } from "node:fs";
 import { defineTool } from "eve/tools";
@@ -28,7 +27,7 @@ export default defineTool({
     "approval on every call.",
   inputSchema: z.object({ note: z.string() }),
   // Asks every time via approvalFor, not once(): a gate the user clears once and never sees
-  // again is a different mechanism from the one the cutover needs, and would prove the wrong thing.
+  // again is a different mechanism from the one the real writes use, and would prove the wrong thing.
   approval: approvalFor("echo_note"),
   async execute(input, ctx) {
     await assertApproval(ctx, "echo_note", input);

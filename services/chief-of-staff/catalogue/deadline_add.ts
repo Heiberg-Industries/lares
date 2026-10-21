@@ -1,16 +1,16 @@
-// Add a manual (or otherwise-sourced) deadline. UNGATED — Decision: a wrong
+// Add a manual (or otherwise-sourced) deadline. UNGATED: a wrong
 // add costs a line in a brief, which is a cheap enough mistake that a card would only add
 // friction. Contrast `deadline_mint_statutory`/`done`/`dismiss`, all gated: a wrong MINT
 // scatters a whole year's worth of wrong lines, and a wrong close/dismiss can end in a real
 // penalty or hide a filing that was never actually done.
 //
-// UNGATED IS NOT UNATTRIBUTED (review fix, ). `agent/tools/remember.ts`'s header states
-// the rule this tool broke: the 08:00 brief runs as the APP principal with no human on the turn,
-// and its own Frister block literally prints `legg til (deadline_add fromThreadId …)` beside every
+// UNGATED IS NOT UNATTRIBUTED. `remember.ts`'s header states
+// the rule: the morning brief runs as the APP principal with no human on the turn,
+// and its own deadline block prints `deadline_add fromThreadId …` beside every
 // candidate. A model reading its own brief could therefore add rows nobody asked for, and stamp
 // the candidate resolved on the way past. `humanTurnRefusal` requires an allowlisted HUMAN on
-// `ctx.session.auth.current` — the same check every gated tool here makes — and the brief's
-// REPORT ONLY line now names this tool too, so the model is told as well as blocked.
+// `ctx.session.auth.current` (the same check every gated tool here makes), and the brief's
+// REPORT ONLY line names this tool too, so the model is told as well as blocked.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

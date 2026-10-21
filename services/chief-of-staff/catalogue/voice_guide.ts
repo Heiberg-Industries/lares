@@ -1,5 +1,4 @@
-// Get the owner's writing-voice guide before drafting an email in his voice (/76 — ported
-// from services/agent-runtime/lib/voice/{profile,store}.ts). Read-only, not gated: this
+// Get the owner's writing-voice guide before drafting an email in the owner's voice. Read-only, not gated: this
 // returns guidance text and past-email examples, it writes nothing and sends nothing.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

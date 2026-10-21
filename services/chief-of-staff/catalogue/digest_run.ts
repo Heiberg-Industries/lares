@@ -1,6 +1,7 @@
-// Ask the digest service (the untouched chief-of-staff-digest container) to run now instead of
-// waiting for its next scheduled pass. Writes one queue row via lib/digest-client.ts;
-// ungated (unlike the write tools elsewhere in this agent) per the plan's TOOL verdict.
+// Ask the digest service to run now instead of waiting for its next scheduled pass. The service
+// polls the `digest_requests` queue (`claimDigestRequests` in services/box/lib/digest-store.ts) for
+// rows carrying its own agent name. Writes one queue row via lib/digest-client.ts; ungated
+// (unlike the write tools elsewhere in this agent) because enqueuing a pass reaches nobody.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -8,9 +9,6 @@ import { getPool } from "@lares/agent-kit/db";
 import { enqueueDigestRequest } from "../lib/digest-client.js";
 import { allowedSlackUserIds } from "../lib/slack-allowlist.js";
 import { agentName } from "../lib/agent-name.js";
-
-// Must match the untouched chief-of-staff-digest container's own `AGENT` constant
-// (services/agent-runtime/bin/digest.ts) — it polls digest_requests WHERE agent = 'the chief of staff'.
 
 export default defineTool({
   description:

@@ -1,9 +1,9 @@
-// List the owner's standing deadlines to institutions. Read-only, ungated — matches the
-// plan's TOOL verdict for `deadline_list` (only `mint_statutory`/`done`/`dismiss` are gated).
+// List the owner's standing deadlines to institutions. Read-only, ungated (only
+// `mint_statutory`/`done`/`dismiss` are gated).
 //
 // `daysToDue` is computed HERE, on the owner's clock (`@lares/agent-kit/deadlines`'s
 // `daysToDue`, the same function the ladder and the brief use), rather than stored on the
-// row — the row only ever holds `due_date`, and "how many days out" changes every day the row
+// row: the row only ever holds `due_date`, and "how many days out" changes every day the row
 // sits open.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

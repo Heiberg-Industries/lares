@@ -1,4 +1,4 @@
-// Mint a fiscal year's statutory deadline calendar onto one entity. GATED — a wrong mint
+// Mint a fiscal year's statutory deadline calendar onto one entity. GATED: a wrong mint
 // scatters a whole year of wrong dates, and every seeded rule's `evidenceRule` says "owner
 // confirms" for exactly this reason (`@lares/agent-kit/deadlines`'s own header): the mint IS
 // the moment a human checks the year's dates against the authority, not a formality on top
@@ -6,11 +6,11 @@
 //
 // THE CARD: `packages/agent-kit/src/approval-summary.ts`'s `deadline_mint_statutory` details
 // formatter re-derives the row list from the RAW (pre-validated) input via the same
-// `mintYear` this tool calls — eve's approval API has no separate "prepare" step (confirmed
-// against `remind_set.ts`, the gated-write reference this task was pointed at: its card is
-// built entirely from input, in `execute` it is too late), so the only way to put real
+// `mintYear` this tool calls. eve's approval API has no separate "prepare" step (see
+// `remind_set.ts`, the gated-write reference: its card is
+// built entirely from input, and in `execute` it is too late), so the only way to put real
 // dates on the card before `execute` runs is to compute them again, synchronously, from the
-// same input the model supplied — the same technique `vault_write`'s formatter already uses
+// same input the model supplied, the same technique `vault_write`'s formatter uses
 // to derive a path from a title. `execute` ALSO returns every inserted row below, so the
 // model's own confirmation back to the owner can name them, independent of what the card
 // rendered.
@@ -65,8 +65,8 @@ export default defineTool({
     }
 
     // The owner's day, never the server's: `mintYear` refuses to guess it (see its own header),
-    // because the boundary between "still ahead" and "already gone" is a calendar day on HIS
-    // clock — the /128/204 rule.
+    // because the boundary between "still ahead" and "already gone" is a calendar day on the
+    // owner's clock.
     const now = new Date();
     const today = ownerDay(now, await ownerTz());
     const { minted, skippedPast } = mintYear(jurisdiction, fiscalYear, {

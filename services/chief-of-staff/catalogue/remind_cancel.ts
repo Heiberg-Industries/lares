@@ -1,4 +1,4 @@
-// Cancel a pending reminder by id. GATED WRITE — requires the owner to tap Approve on the card on every call.
+// Cancel a pending reminder by id. GATED WRITE: requires the owner to tap Approve on the card on every call.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

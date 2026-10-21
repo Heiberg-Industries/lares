@@ -1,8 +1,7 @@
-// Chief of staff's `@lares/agent-kit` contribution, held directly in her OWN catalogue rather than reached
-// through `agent/extensions/agent-kit/tools/signals_recent.ts`. That
-// override file is now an unconditional `disableTool` sentinel — see its own header — because a
-// resolver-emitted tool under the same prefixed key (`agent-kit__signals_recent`) replaces an
-// authored/mounted tool of that name completely (Task 1, Q1c).
+// This agent's `@lares/agent-kit` contribution, held directly in its own catalogue rather than reached
+// through `agent/extensions/agent-kit/tools/signals_recent.ts`. That mount file is an unconditional
+// `disableTool` sentinel (see its own header), because a resolver-emitted tool under the same prefixed
+// key (`agent-kit__signals_recent`) replaces an authored/mounted tool of that name completely.
 //
 // A free, unbilled read of the persisted operational-signal spine (no `.approval`).
 //

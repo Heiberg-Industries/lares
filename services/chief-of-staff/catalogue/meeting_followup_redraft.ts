@@ -1,19 +1,19 @@
-// Reset a meeting follow-up's claim so the chief of staff can check the page again in conversation — the
+// Reset a meeting follow-up's claim so the agent can check the page again in conversation: the
 // "check again" escape hatch. Without this, revisiting a denied or already-queued card
 // could only be done with a hand-run UPDATE on the box: `claimMeeting`'s own hash-diff reclaim
 // (lib/meeting-followup-store.ts) only fires on the SCHEDULE's own next tick, and only once the
-// live summary block's hash has already changed — useful once the owner has corrected the page, but
-// no help for "let me look at it again right now" or a correction that has not landed yet.
+// live summary block's hash has already changed. That helps once the owner has corrected the page, but
+// not for "let me look at it again right now" or a correction that has not landed yet.
 //
 // GATED EXACTLY LIKE `meeting_followup_send`, deliberately: resetting the claim is
-// not itself a send, but it is what MAKES the next tick compose — and, for an autonomous series,
-// send WITHOUT a card — so it inherits the identical policy `meeting_followup_send` uses, keyed on
+// not itself a send, but it is what MAKES the next tick compose (and, for an autonomous series,
+// send WITHOUT a card), so it inherits the identical policy `meeting_followup_send` uses, keyed on
 // the SAME series. `followupApproval` (that tool's own exported policy) is reused verbatim rather
 // than re-implemented: `to: []` because this tool sends nothing itself, so there is no recipient
 // set to check for a group alias, and the series key is read back from the store
-// (`seriesKeyFor`) rather than taken as input — this tool takes only `notionPageId`. A one-off
+// (`seriesKeyFor`) rather than taken as input; this tool takes only `notionPageId`. A one-off
 // meeting (`series_key` `''`) or a page with no claim row at all both resolve to `seriesKey ===
-// ""`, which `followupApproval` already treats as "always a human decision" — exactly right here,
+// ""`, which `followupApproval` already treats as "always a human decision", exactly right here,
 // since neither case has an opted-in series to trust.
 import { defineTool } from "eve/tools";
 import { z } from "zod";

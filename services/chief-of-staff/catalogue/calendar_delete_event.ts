@@ -1,14 +1,13 @@
-// Delete a calendar event by id. GATED WRITE — requires the owner to tap Approve on every card (this
-// cancels a real event and emails the guests). Ported from hands/calendar.ts's "delete_event"
-// action (hands/calendar.ts:38-44,54). The old hand refused a missing/empty eventId ("Guessing
-// an id here would cancel someone else's meeting — refuse instead"); here that's enforced by
+// Delete a calendar event by id. GATED WRITE: requires the owner to tap Approve on every card (this
+// cancels a real event and emails the guests). A missing or empty eventId is refused, because guessing
+// an id here would cancel someone else's meeting; that is enforced by
 // the schema itself (`eventId` is required and non-empty) rather than a runtime check.
 //
-// -s4 — `reason` is CARD TEXT, never a Google API field: it is dropped before
+// `reason` is CARD TEXT, never a Google API field: it is dropped before
 // `deleteEvent` is called (see `execute` below) and exists only so the approval card can say WHY
-// a deletion is being asked for. It is not itself a decision: something else (-s5, not yet
-// built) decides whether to pass one at all, and this tool's approval gate and autonomy are
-// unchanged either way — the owner still taps Approve on every call, reason or not.
+// a deletion is being asked for. It is not itself a decision: the model decides whether to pass one at all
+// (`calendar_conflicts` supplies the evidence sentence for it), and this tool's approval gate and autonomy are
+// unchanged either way. The owner still taps Approve on every call, reason or not.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 

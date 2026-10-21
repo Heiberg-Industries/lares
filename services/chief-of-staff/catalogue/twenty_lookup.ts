@@ -1,19 +1,17 @@
 // Look up a CRM person or company by name/email. Read-only HTTP against TWENTY_BASE_URL.
 //
-// Ported from `services/agent-runtime/lib/adapters/twenty-client.ts`'s `lookup` +
-// `buildLookupQueries` (a Twenty instance may split names inconsistently across
+// A Twenty instance may split names inconsistently across
 // firstName/lastName, so every name token is matched against BOTH fields, with vowels and
 // accented letters as a one-character wildcard; results are de-duplicated by id, ranked by
-// how many tokens match the folded name/email, and cut to ten).
+// how many tokens match the folded name/email, and cut to ten (`buildLookupQueries`).
 //
 // Additional emails: the lookup matches `emails.primaryEmail` only. It leaves additional
 // emails out until `tests/live/twenty-lookup.live.mts` shows Twenty's REST filter supports them.
 //
-// deviation from the old client: the old `lookup` caught every sub-query failure and
-// folded it into a `warnings` string array — so a genuine "Twenty is down" looked, to the
-// model, just like a slow partial search. None of these sub-queries can legitimately 404 (an
-// empty result set from a list endpoint is just a 200 with zero rows), so the only thing a
-// sub-query can throw is a real `TwentyUnavailableError` — and that must propagate, not hide
+// A sub-query failure is never folded into a `warnings` field: a genuine "Twenty is down" would
+// look, to the model, just like a slow partial search. None of these sub-queries can legitimately
+// 404 (an empty result set from a list endpoint is just a 200 with zero rows), so the only thing a
+// sub-query can throw is a real `TwentyUnavailableError`, and that must propagate, not hide
 // in a field the model may never read.
 import { defineTool } from "eve/tools";
 import { z } from "zod";
