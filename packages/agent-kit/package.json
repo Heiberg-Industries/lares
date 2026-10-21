@@ -11,6 +11,7 @@
     }
   },
   "exports": {
+    "./vault-area-store": "./src/vault-area-store.ts",
     "./personal-action-store": "./src/personal-action-store.ts",
     "./grant-store": "./src/grant-store.ts",
     "./telegram-markdown": "./src/telegram-markdown.ts",

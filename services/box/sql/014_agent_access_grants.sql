@@ -38,7 +38,7 @@ DROP TRIGGER IF EXISTS agent_access_changed_guard ON agent_access;
 CREATE TRIGGER agent_access_changed_guard BEFORE UPDATE OR DELETE ON agent_access FOR EACH ROW EXECUTE FUNCTION agent_access_changed();
 CREATE OR REPLACE FUNCTION immutable_resource_grant() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-  IF (to_jsonb(NEW)-'revoked_at') IS DISTINCT FROM (to_jsonb(OLD)-'revoked_at') OR
+  IF (to_jsonb(NEW)-ARRAY['revoked_at','agent_resource_id','vault_area_id']) IS DISTINCT FROM (to_jsonb(OLD)-ARRAY['revoked_at','agent_resource_id','vault_area_id']) OR
      (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at) THEN
     RAISE EXCEPTION 'Resource grant is immutable';
   END IF;

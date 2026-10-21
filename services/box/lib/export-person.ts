@@ -176,6 +176,7 @@ const FORBIDDEN_OUT_DIRS = ["/etc", "/run/secrets"];
  * remains is the place a person's words genuinely sit outside this routine's reach.
  */
 export const EXPORT_NOT_REACHED: readonly string[] = [
+  "Vault area records are metadata only. Their backing-store identifiers do not resolve or export area files; supplied vault folders are handled separately.",
   "Anything said in a conversation that is still open. While a conversation is running the words " +
     "also sit in the agent's own working store, which is cleared when the agent no longer needs " +
     "it to run — this export reads the settled record, not that.",
@@ -536,7 +537,7 @@ function withhold(
 async function unattributedNotIncluded(db: Queryable): Promise<NotIncluded[]> {
   const out: NotIncluded[] = [];
   for (const entry of MEMBER_SCOPE) {
-    if (entry.scope !== "member" || entry.idKind === "actor") continue;
+    if (entry.scope !== "member" || entry.idKind === "actor" || entry.table === "vault_areas") continue; // Organisation ownership is intentional, not missing attribution.
     if ((REGISTER_TABLES as readonly string[]).includes(entry.table)) continue;
     const n = await countWhere(
       db,
