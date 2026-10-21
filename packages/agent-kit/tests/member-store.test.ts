@@ -80,6 +80,22 @@ describe('member storage on disposable PostgreSQL',()=> {
     await expect(store.createSession(proof('unknown'),tomorrow())).rejects.toThrow('denied');
     await expect(store.linkIdentity('owner','owner',{...proof('old'),verifiedAt:new Date(0)})).rejects.toThrow('invalid');
   });
+  it('never conflates exact provider subjects, tenants or issuers during lookup/session creation',async()=> {
+    await store.linkIdentity('owner','owner',proof('owner','tenant'));
+    for (const distinct of [proof(' owner ','tenant'),proof('owner',' tenant '),{...proof('owner','tenant'),identity:{...proof('owner','tenant').identity,issuer:' https://identity.example.invalid '}}]) {
+      expect(await store.memberForIdentity(distinct.identity)).toBeUndefined();
+      await expect(store.createSession(distinct,tomorrow())).rejects.toThrow('denied');
+    }
+    await store.linkIdentity('second','second',proof(' owner ','tenant'));
+    await store.linkIdentity('outsider','outsider',proof('owner',' tenant '));
+    expect(await store.memberForIdentity(proof('owner','tenant').identity)).toMatchObject({id:'owner'});
+    expect(await store.memberForIdentity(proof(' owner ','tenant').identity)).toMatchObject({id:'second'});
+    expect(await store.memberForIdentity(proof('owner',' tenant ').identity)).toMatchObject({id:'outsider'});
+    const second=await store.createSession(proof(' owner ','tenant'),tomorrow());
+    const other=await store.createSession(proof('owner',' tenant '),tomorrow());
+    expect(await store.sessionMember(second.token)).toMatchObject({id:'second'});
+    expect(await store.sessionMember(other.token)).toMatchObject({id:'outsider'});
+  });
   it('keeps two members sessions distinct, secret-free and individually revocable',async()=> {
     await store.linkIdentity('owner','owner',proof('owner'));
     await store.linkIdentity('second','second',proof('second'));
@@ -116,6 +132,11 @@ describe('member storage on disposable PostgreSQL',()=> {
     await expect(db.query("DELETE FROM users WHERE id='owner'")).rejects.toThrow('last active owner');
     await expect(db.query("UPDATE users SET org_role='member' WHERE id='owner'")).rejects.toThrow('last active owner');
     await expect(db.query("UPDATE users SET org_id='other' WHERE id='owner'")).rejects.toThrow('last active owner');
+    await expect(db.query("UPDATE users SET org_id=NULL WHERE id='owner'")).rejects.toThrow('last active owner');
+    // Legacy bootstrap may first create an owner without an organisation, then assign it.
+    await db.query("INSERT INTO users(id,display_name,org_role) VALUES('bootstrap','Bootstrap','owner')");
+    await db.query("UPDATE users SET org_id='org' WHERE id='bootstrap'");
+    await db.query("DELETE FROM users WHERE id='bootstrap'");
     await db.query("UPDATE users SET org_role='owner' WHERE id='second'");
     const results=await Promise.allSettled([db.query("UPDATE users SET status='removed' WHERE id='owner'"),db.query("UPDATE users SET status='removed' WHERE id='second'")]);
     expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);

@@ -51,8 +51,8 @@ CREATE INDEX IF NOT EXISTS member_sessions_member_idx ON member_sessions(member_
 CREATE OR REPLACE FUNCTION guard_member_owner() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   PERFORM 1 FROM orgs WHERE id=OLD.org_id FOR UPDATE;
-  IF OLD.status='active' AND OLD.org_role='owner' AND
-     (TG_OP='DELETE' OR NEW.status <> 'active' OR NEW.org_role <> 'owner' OR NEW.org_id <> OLD.org_id) AND
+  IF OLD.org_id IS NOT NULL AND OLD.status='active' AND OLD.org_role='owner' AND
+     (TG_OP='DELETE' OR NEW.status <> 'active' OR NEW.org_role <> 'owner' OR NEW.org_id IS DISTINCT FROM OLD.org_id) AND
      NOT EXISTS (SELECT 1 FROM users WHERE org_id=OLD.org_id AND id<>OLD.id AND status='active' AND org_role='owner') THEN
     RAISE EXCEPTION 'Cannot remove or demote the last active owner; designate another active owner first';
   END IF;
