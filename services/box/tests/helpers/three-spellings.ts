@@ -26,6 +26,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
+import { encryptSecret } from "../../lib/crypto.js";
+import { payloadFingerprint } from "../../../../packages/agent-kit/src/approval-ledger.js";
 import { PRIVATE_CONSOLE_SURFACE_REVISION } from "../../../../packages/agent-kit/src/console-turn-authority.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -106,6 +108,27 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO connected_resource_bindings (id, owner_member_id, connected_account_id, resource_kind, external_id, provider_label)
      VALUES ('fixture-account-2-resource', $1, 'fixture-account-2', 'mailbox', 'mailbox', 'Fixture inbox')`,
     [FIXTURE_SECOND]),
+
+  // Pending personal action content belongs to its actor; the trigger retains only a call hash
+  // after erasure. Use the real encrypted format so exports exercise the same withheld column.
+  ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => {
+    const id=`77777777-7777-4777-8777-77777777777${index+1}`;
+    const selection={actorMemberId:member,agentId:'fixture-agent',
+      incarnation:'88888888-8888-4888-8888-888888888888',sessionId:`fixture-action-session-${index}`,
+      originalTurnId:`fixture-action-turn-${index}`,originalCallId:`fixture-action-call-${index}`,
+      accountId:`fixture-account-${index+1}`,accountGeneration:0,
+      resourceBindingId:`fixture-account-${index+1}-resource`,connectorId:'google',kind:'mail.send'};
+    const payload={to:['recipient@example.invalid'],subject:'Fixture proposal',body:'Private fixture message'};
+    const ciphertext=encryptSecret(JSON.stringify({purpose:'lares.personal-action.v1',version:1,actionId:id,selection,payload}),'3'.repeat(64));
+    return row("personal_actions", "actor_member_id", member,
+      `INSERT INTO personal_actions(id,payload_version,actor_member_id,agent,incarnation,session_id,
+       original_turn_id,original_call_id,original_call_hash,account_id,account_generation,resource_binding_id,
+       connector_id,kind,payload_hash,payload_ciphertext,created_at,expires_at)
+       SELECT $1,1,$2,'fixture-agent',$3,$4,$5,$6,repeat('0',64),$7,0,$8,'google','mail.send',$9,$10,t,t+interval '24 hours'
+       FROM (SELECT clock_timestamp() AS t) clock`,
+      [id,member,selection.incarnation,selection.sessionId,selection.originalTurnId,selection.originalCallId,
+        selection.accountId,selection.resourceBindingId,payloadFingerprint('mail.send',payload),ciphertext]);
+  }),
 
   row("user_aliases", "user_id", FIXTURE_OWNER,
     `INSERT INTO user_aliases (system, alias, user_id) VALUES
