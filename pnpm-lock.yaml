@@ -270,6 +270,9 @@ importers:
       '@ai-sdk/anthropic':
         specifier: 4.0.72
         version: 4.0.72(zod@4.5.4)
+      '@lares/agent-box':
+        specifier: workspace:^
+        version: link:../box
       '@lares/agent-kit':
         specifier: workspace:*
         version: link:../../packages/agent-kit
@@ -279,6 +282,9 @@ importers:
       '@lares/junk':
         specifier: workspace:*
         version: link:../../packages/junk
+      '@microsoft/microsoft-graph-client':
+        specifier: ^3.0.7
+        version: 3.0.7
       '@notionhq/client':
         specifier: 5.27.0
         version: 5.27.0
@@ -315,6 +321,9 @@ importers:
       mammoth:
         specifier: ^1.13.0
         version: 1.13.0
+      openid-client:
+        specifier: 6.8.8
+        version: 6.8.8
       pg:
         specifier: ^8.23.1
         version: 8.23.1
@@ -328,6 +337,9 @@ importers:
         specifier: 4.5.4
         version: 4.5.4
     devDependencies:
+      '@microsoft/microsoft-graph-types':
+        specifier: ^2.40.0
+        version: 2.43.1
       '@testcontainers/postgresql':
         specifier: ^12.2.0
         version: 12.2.0
@@ -337,6 +349,9 @@ importers:
       '@types/pg':
         specifier: ^8.23.1
         version: 8.23.1
+      jose:
+        specifier: ^6.2.12
+        version: 6.2.12
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

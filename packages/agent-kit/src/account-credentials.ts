@@ -52,3 +52,22 @@ export async function readAccountCredential(db: PoolClient, account: AccountCred
   return { refreshTokenEnc: rows[0].refresh_token_enc, scopes: rows[0].scopes,
     orgId: rows[0].org_id, emailAddress: rows[0].email_address };
 }
+
+/** Server-only rotation inside the caller's locked resource transaction. Never adopt by label,
+ * replace an association or advance account generation. Inputs are encrypted, never raw tokens.
+ * A provider/read failure rolls this update back with the surrounding transaction.
+ */
+export async function rotateAccountCredential(db: PoolClient, account: AccountCredentialOwner,
+  previous: Pick<StoredAccountCredential, 'refreshTokenEnc' | 'scopes'>, refreshTokenEnc: string): Promise<void> {
+  if (!refreshTokenEnc || refreshTokenEnc.length > 65_536) throw new AccountCredentialError();
+  const { rows } = await db.query(`UPDATE oauth_tokens t SET refresh_token_enc=$5,updated_at=clock_timestamp()
+    FROM connected_account_credentials c JOIN connected_accounts a ON a.id=c.account_id
+      JOIN users u ON u.id=c.owner_member_id
+    WHERE c.account_id=$1 AND c.owner_member_id=$2 AND c.connector_id=$3 AND c.account_generation=$4
+      AND a.owner_member_id=c.owner_member_id AND a.connector_id=c.connector_id AND a.generation=c.account_generation AND a.status='ok'
+      AND u.status='active' AND u.org_id IS NOT NULL
+      AND t.id=c.oauth_token_id AND t.principal=c.owner_member_id AND t.provider=c.connector_id
+      AND t.refresh_token_enc=$6 AND t.scopes=$7::text[] RETURNING t.id`,
+    [account.id, account.ownerMemberId, account.connectorId, account.generation, refreshTokenEnc, previous.refreshTokenEnc, previous.scopes]);
+  if (rows.length !== 1) throw new AccountCredentialError();
+}

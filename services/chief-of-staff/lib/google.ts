@@ -333,7 +333,7 @@ export function isBulkMail(headers: RawGmailHeader[] | undefined): boolean {
   return false;
 }
 
-function toMailMessage(raw: RawGmailMessage): MailMessage {
+export function toMailMessage(raw: RawGmailMessage): MailMessage {
   const h = raw.payload?.headers;
   return {
     id: raw.id ?? "",
