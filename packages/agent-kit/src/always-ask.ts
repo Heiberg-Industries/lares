@@ -72,6 +72,7 @@ export const TOOL_CATEGORIES: Readonly<Record<string, readonly AlwaysAskCategory
   deadline_list: [], deadline_add: [], deadline_done: [], deadline_dismiss: [], deadline_reset: [], deadline_mint_statutory: [],
   digest_run: [], echo_note: [], identity_my_addresses: [],
   // gmail
+  personal_mailbox_send: ["contact"],
   personal_mailbox_accounts: [], personal_mailbox_list: [], personal_mailbox_read: [],
   personal_calendar_accounts: [], personal_calendar_events: [],
   gmail_accounts: [], gmail_search: [], gmail_read: [], gmail_signature: [], gmail_draft: [], gmail_draft_recipients: [],

@@ -1,6 +1,7 @@
 /** Only the browser console's text and exact approval envelopes may enter private sessions.
  * Check the original request before Eve parses attachments or public callback destinations. */
 // Only fully validated raw requests receive a minimal, immutable pre-dispatch receipt.
+const verifiedResponses = new WeakMap<Request,Readonly<{requestId:string;optionId:'approve'|'cancel'}>>();
 const verifiedMessages = new WeakMap<Request, Readonly<{message:string}>>();
 const denied = (): never => { throw new Error('Private conversation request is not supported'); };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -38,6 +39,11 @@ export async function assertPrivateConsoleRequest(request: Request): Promise<voi
   if (raw.length > 262144) denied();
   const body=raw.trim()?JSON.parse(raw):{};
   assertPrivateConsoleEnvelope(body,path);
+  if(Array.isArray(body.inputResponses)){
+    const answer=body.inputResponses[0];
+    if(answer.optionId!=='approve'&&answer.optionId!=='cancel')denied();
+    verifiedResponses.set(request,Object.freeze({requestId:answer.requestId,optionId:answer.optionId}));
+  }
   if (/\/session(?:\/[^/]+)?$/.test(path) && typeof body.message==='string') {
     verifiedMessages.set(request,Object.freeze({message:body.message}));
   }
@@ -49,4 +55,10 @@ export function assertVerifiedPrivateConsoleMessage(request:Request,message:unkn
   if(request.method!=='POST'||!/\/session(?:\/[^/]+)?$/.test(new URL(request.url).pathname))denied();
   const receipt=verifiedMessages.get(request);
   if(!receipt||typeof message!=='string'||message!==receipt.message)denied();
+}
+
+/** Same Request object only, after strict raw-envelope validation. Browser-supplied attributes
+ * never create this receipt, and a human message cannot be combined with an answer. */
+export function verifiedPrivateConsoleResponse(request:Request){
+  const receipt=verifiedResponses.get(request);if(!receipt)denied();return receipt!;
 }
