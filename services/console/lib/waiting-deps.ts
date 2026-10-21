@@ -11,6 +11,7 @@ import { readSecret } from "./secrets";
 import type { WaitingDeps } from "./waiting";
 
 export const waitingDeps: WaitingDeps = {
+  connect: () => pool.connect(),
   signedInMember: async () => { const member = await signedInMember(); return member && isConsoleOwner(member) ? member : null; },
   query: (sql, values) => {
     // Built as a variable, as app/api/chat/[name]/[...path]/route.ts does: `pg`'s published

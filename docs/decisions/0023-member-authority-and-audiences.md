@@ -89,3 +89,58 @@ multi-user isolation guarantee. Admission adapters, current membership/grant/rev
 source filtering, approval execution, gateway enforcement, storage/import verification and
 controlled two-member acceptance remain future work. No third-party response handling is
 introduced and no provider-backed proof is claimed.
+
+## Agent ownership and access storage
+
+`@lares/agent-kit/grant-store` supplies the shared server-only `can` and `listVisible`
+path. SQL014 records agent ownership in `agent_access`, separate from runtime control
+and incarnation tokens, and named use/edit or organisation use in `resource_grants`.
+Only the agent adapter exists. Unsupported resource kinds, permissions and place grants
+refuse. A resource owner inherently controls only their own agent; another administrator
+inherits no use, editing, credentials or private source authority. Editing and using are
+separate, and only the resource owner changes the sharing configuration.
+
+Existing agents remain unadopted until the designated active console owner explicitly
+adopts one under their own stable member id, with the current definition fingerprint.
+The owner's explicit `org_member_policy` row must exist. Its non-null capability list is
+the ceiling for active capabilities of agents they own (`none` grants are inactive).
+A missing owner policy refuses adoption/use; a null list is unrestricted and an empty
+list allows no active capabilities. A caller's policy does not constrain use of an agent
+owned by someone else. The definition and skill never-widen checks remain in force.
+
+Current active membership, organisation, owner capability policy, valid definition,
+permission and expiry are checked on every decision. Organisation use excludes restricted
+members. Named grants can include active restricted members of the same organisation.
+Views contain only authorised resource identity, revision and permissions; sharing
+configuration is owner-only. Callers already holding a transaction can pass its database
+client, avoiding a second pool connection, and must keep that transaction open through the
+protected operation. Direct owner-policy row locks protect decisions from concurrent writes.
+
+Access revisions are monotonic across deletion/re-adoption. Sharing changes replace the
+selected grants, retaining revoked rows as immutable tombstones. They also revoke existing
+console session bindings in the same transaction. Membership/role changes advance affected
+organisation agent revisions and retire bindings while preserving unrelated active grants;
+removal or organisation departure tombstones the departing member's direct grants. Changes
+to a resource owner's capability policy advance only that owner's agent revisions and
+preserve grant configuration. Definition fingerprint/status changes also advance the agent
+revision; identical refreshes do not. Rejoining, restoring a role or regranting access cannot revive
+a previously captured revision or a revoked binding. Expiry is checked against current
+database time, not transaction-start time.
+
+The existing owner-only agent detail page provides adoption and sharing controls. Sharing
+records authority only: it does not enable member chat, member editing screens, account
+inheritance or private-source access. Runtime admission remains designated-owner-only until
+all automatic context and exposed tools have their own scoped consumers. SQL014's migration
+and a real PostgreSQL boundary suite are source evidence; the branch runtime-image workflow
+and later two-member runtime acceptance are separate evidence.
+
+Strict private console admission now consumes this same `use` decision. SQL016 captures a
+separate immutable `agent_access_revision` on every new session binding, leaving audience
+and conversation-policy revisions unchanged. Existing unversioned bindings are retained as
+revoked history. Current grant authority and binding reads/inserts use one transaction and
+connection; caller-owned transactions retain the locks through protected local actions.
+Every strict lookup and exact approval resume rechecks the capture. Access restoration,
+re-adoption or a definition changing away and back cannot revive an old conversation.
+The proxy checks admission before reading the runtime address or route password. Missing
+adoption requires an explicit owner action; runtime incarnation tokens never adopt agents.
+Console admission remains designated-owner-only pending scoped automatic context and tools.

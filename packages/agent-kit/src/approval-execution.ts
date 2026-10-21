@@ -85,8 +85,11 @@ async function current(r: Reservation, memberId: string, admissionNonce: string,
   if (await freshExactApprovalPolicy(db,own!.name,own!.incarnation) !== r.policyHash) refuse();
   const target = await supported(tool,o).readTarget(db,input,memberId);
   if (target.ownerMemberId !== memberId || !same(target,r.target)) refuse();
-  // These reads can wait on transaction locks. Recheck time after the last lock, immediately
-  // before the caller may approve or mutate; an approval can expire while its target is busy.
+  // A grant can expire while policy/target locks are busy even when the approval still lives.
+  // Recheck the same immutable binding and captured revision; never mint replacement authority.
+  const finalBinding = await requireConsoleSessionBinding({agent:own!.name,incarnation:own!.incarnation,sessionId,memberId,admissionNonce},db,o.env);
+  if (!same(finalBinding,b)) refuse();
+  // Check approval time after the final authority read, immediately before approval/mutation.
   if (Date.parse(r.expiresAt) <= (o.now ?? new Date()).getTime()) refuse();
 }
 /** Called synchronously BEFORE returning user-approval. A conflict cannot rewrite a reservation. */

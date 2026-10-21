@@ -19,6 +19,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const deps: ChatDeps = {
+  connect: () => pool.connect(),
   query: (sql, values) => {
     // Built as a variable, exactly as app/api/doors/[name]/[kind]/events/route.ts does: `pg`'s
     // published QueryConfig type does not name `query_timeout`, which its runtime honours.

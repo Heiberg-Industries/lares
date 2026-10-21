@@ -3,6 +3,7 @@
  * Native channels and approval resumes do not inherit this authority.
  */
 import { getPool } from './db.js';
+import { PgGrantStore, type GrantDatabase } from './grant-store.js';
 import { managedIdentity, CONSOLE_SESSION_AUTHENTICATOR } from './door-authority.js';
 import { turnAuthoritySchema, type TurnAuthority } from './authority-contract.js';
 
@@ -12,9 +13,19 @@ export const CONSOLE_PURPOSE_HEADER = 'x-lares-purpose';
 /** Version of this private console admission contract, not the permission board policy. */
 export const CONSOLE_AUTHORITY_REVISION = 1;
 export const CONSOLE_AUTHORITY_REFUSED = 'Conversation authority is not available';
+/** A pool supplies connect; a query-only client belongs to an already-open caller transaction. */
 export interface AuthorityDatabase { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
+export interface AuthorityPool extends AuthorityDatabase { connect(): Promise<AuthorityDatabase & {release():void}> }
+export async function authorityTransaction<T>(database:AuthorityDatabase|undefined,fn:(db:AuthorityDatabase)=>Promise<T>):Promise<T> {
+  const source=database ?? getPool();
+  // A checked-out pg client may also expose connect at runtime; never acquire or BEGIN again.
+  if(!('connect' in source) || 'release' in source)return fn(source);
+  const db=await (source as AuthorityPool).connect();
+  try {await db.query('BEGIN');const result=await fn(db);await db.query('COMMIT');return result;}
+  catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
 export interface ConsoleBindingInput { agent: string; incarnation: string; sessionId: string; memberId: string; admissionNonce: string }
-export interface ConsoleBinding extends ConsoleBindingInput { placeId: string; audienceRevision: number; policyRevision: number }
+export interface ConsoleBinding extends ConsoleBindingInput { placeId: string; audienceRevision: number; policyRevision: number; agentAccessRevision: number }
 export interface ConsoleAuthorityContext { session?: { id?: string; turn?: { id?: string; sequence?: number }; auth?: { current?: unknown; initiator?: unknown } | null } }
 type Purpose = 'human' | 'resolver' | 'read' | 'control' | 'legacy-resolver' | 'legacy-read';
 interface Admission { memberId: string; admissionNonce: string; purpose: Purpose }
@@ -50,38 +61,56 @@ function coordinates(input: ConsoleBindingInput): void {
 }
 function binding(row: any): ConsoleBinding {
   return { agent: row.agent, incarnation: row.incarnation, sessionId: row.session_id, memberId: row.member_id,
-    admissionNonce: row.admission_nonce, placeId: row.place_id, audienceRevision: row.audience_revision, policyRevision: row.policy_revision };
+    admissionNonce: row.admission_nonce, placeId: row.place_id, audienceRevision: row.audience_revision, policyRevision: row.policy_revision, agentAccessRevision: Number(row.agent_access_revision) };
 }
-/** Binding and lookup lock current membership/runtime rows for this statement only. Tool
- * consumers recheck immediately before use; this is not a lock over later external work. */
-const gate = `SELECT u.id,$5::text AS request_nonce FROM users u CROSS JOIN agent_resources r JOIN agent_definitions a ON a.name=r.name
- WHERE $3::text IS NOT NULL AND u.id=$4 AND u.id=$6 AND u.status='active' AND u.org_role='owner' AND u.org_id IS NOT NULL
- AND r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token
- AND r.state='ready' AND NOT r.pending AND a.status='valid' FOR SHARE OF u,r,a`;
+/** Owner-only remains deliberate until all automatic context and tools are member-scoped. */
+async function currentAgentUse(db:AuthorityDatabase,agent:string,memberId:string,env:NodeJS.ProcessEnv):Promise<number> {
+  if(memberId!==env.AGENT_OWNER_USER_ID?.trim())denied();
+  const revision=await new PgGrantStore().captureUse(memberId,agent,{db:db as GrantDatabase});
+  if(revision===undefined)denied();
+  const member=await authorityQuery(db,"SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_role='owner'",[memberId]);
+  if(member.rows.length!==1)denied();
+  return revision!;
+}
+/** Runs before registry, route-password or upstream access; returns no resource metadata. */
+export async function requireConsoleAgentUse(agent:string,memberId:string,db?:AuthorityDatabase,env:NodeJS.ProcessEnv=process.env):Promise<void> {
+  try {await authorityTransaction(db,async client=>{await currentAgentUse(client,agent,memberId,env);});}catch{denied();}
+}
+async function runtimeGate(db:AuthorityDatabase,input:Pick<ConsoleBindingInput,'agent'|'incarnation'>):Promise<void> {
+  const {rows}=await authorityQuery(db,`SELECT 1 FROM agent_resources r WHERE r.name=$1 AND r.ownership_token=$2::uuid
+    AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending FOR SHARE`,[input.agent,input.incarnation]);
+  if(rows.length!==1)denied();
+}
 export async function bindConsoleSession(input: ConsoleBindingInput, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<ConsoleBinding> {
   coordinates(input);
-  const placeId = `console:${input.agent}:${input.incarnation}:${input.sessionId}`;
-  const { rows } = await authorityQuery(db,`WITH current_authority AS MATERIALIZED (${gate}), inserted AS (
-    INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id)
-    SELECT $1,$2::uuid,$3,$4,$5,$7 FROM current_authority
-    ON CONFLICT(agent,incarnation,session_id) DO UPDATE SET revoked_at=console_session_bindings.revoked_at
-    WHERE console_session_bindings.member_id=EXCLUDED.member_id AND console_session_bindings.admission_nonce=EXCLUDED.admission_nonce
-      AND console_session_bindings.place_id=EXCLUDED.place_id AND console_session_bindings.revoked_at IS NULL
-    RETURNING *) SELECT * FROM inserted`, [input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,env.AGENT_OWNER_USER_ID?.trim() ?? '',placeId]);
-  if (rows.length !== 1) denied();
-  return binding(rows[0]);
+  try{return await authorityTransaction(db,async client=>{
+    const revision=await currentAgentUse(client,input.agent,input.memberId,env);
+    await runtimeGate(client,input);
+    const placeId=`console:${input.agent}:${input.incarnation}:${input.sessionId}`;
+    const {rows}=await authorityQuery(client,`INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision)
+      VALUES($1,$2::uuid,$3,$4,$5,$6,$7)
+      ON CONFLICT(agent,incarnation,session_id) DO UPDATE SET revoked_at=console_session_bindings.revoked_at
+      WHERE console_session_bindings.member_id=EXCLUDED.member_id AND console_session_bindings.admission_nonce=EXCLUDED.admission_nonce
+        AND console_session_bindings.place_id=EXCLUDED.place_id AND console_session_bindings.agent_access_revision=EXCLUDED.agent_access_revision
+        AND console_session_bindings.revoked_at IS NULL RETURNING *`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,placeId,revision]);
+    if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);return binding(rows[0]);
+  });}catch{ return denied(); }
 }
 export async function requireConsoleSessionBinding(input: Omit<ConsoleBindingInput,'admissionNonce'> & { admissionNonce?: string }, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<ConsoleBinding> {
-  const { rows } = await authorityQuery(db,`WITH current_authority AS MATERIALIZED (${gate})
-    SELECT b.* FROM console_session_bindings b,current_authority WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3
-    AND b.member_id=$4 AND ($5::text IS NULL OR b.admission_nonce=$5) AND b.revoked_at IS NULL AND b.audience_revision=1 AND b.policy_revision=1`,
-    [input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce ?? null,env.AGENT_OWNER_USER_ID?.trim() ?? '']);
-  if (rows.length !== 1) denied();
-  const result = binding(rows[0]); coordinates(result); return result;
+  try{return await authorityTransaction(db,async client=>{
+    const revision=await currentAgentUse(client,input.agent,input.memberId,env);
+    await runtimeGate(client,input);
+    const {rows}=await authorityQuery(client,`SELECT b.* FROM console_session_bindings b WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3
+      AND b.member_id=$4 AND ($5::text IS NULL OR b.admission_nonce=$5) AND b.revoked_at IS NULL AND b.audience_revision=1 AND b.policy_revision=1
+      AND b.agent_access_revision=$6 FOR SHARE`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce??null,revision]);
+    if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);const result=binding(rows[0]);coordinates(result);return result;
+  });}catch{return denied();}
 }
 export async function retireConsoleSession(input: ConsoleBindingInput, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  await requireConsoleSessionBinding(input,db,env);
-  await authorityQuery(db,'UPDATE console_session_bindings SET revoked_at=COALESCE(revoked_at,now()) WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3 AND member_id=$4 AND admission_nonce=$5', [input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce]);
+  await authorityTransaction(db,async client=>{
+    await requireConsoleSessionBinding(input,client,env);
+    await authorityQuery(client,'UPDATE console_session_bindings SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3 AND member_id=$4 AND admission_nonce=$5', [input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce]);
+  });
 }
 export async function bindConsoleSessionStarted(ctx: ConsoleAuthorityContext, db?: AuthorityDatabase, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   if (!hasConsoleTurnAuthorityTag(ctx)) return;
@@ -131,8 +160,10 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
     if (new URL(request.url).pathname.endsWith('/reset')) await retireConsoleSession(tuple,db,env);
   } else if (new URL(request.url).pathname.endsWith('/eve/v1/session') && request.method === 'POST' && purpose === 'human') {
     // Message-free creation cannot bind yet: the proxy will bind its returned session id.
-    const {rows} = await authorityQuery(db,`WITH current_authority AS MATERIALIZED (${gate}) SELECT * FROM current_authority`,[own!.name,own!.incarnation,'',memberId,nonce,env.AGENT_OWNER_USER_ID?.trim() ?? '']);
-    if (rows.length !== 1) denied();
+    await authorityTransaction(db,async client=>{
+      await currentAgentUse(client,own!.name,memberId!,env);
+      await runtimeGate(client,{agent:own!.name,incarnation:own!.incarnation});
+    });
   } else denied();
   if (request.method === 'POST' && /\/session(?:\/[^/]+)?$/.test(new URL(request.url).pathname)) {
     const rawBody = await request.clone().text();

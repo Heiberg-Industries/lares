@@ -249,6 +249,25 @@ describe('personal connected accounts', () => {
     await expect(store.read('member-a', a.id)).rejects.toThrow(AccountAccessError);
     await expect(create()).rejects.toThrow(AccountAccessError);
   });
+  it('refuses a member moved to another organisation while waiting for the original organisation lock',async()=>{
+    await db.query("INSERT INTO orgs(id,display_name) VALUES('moved-org','Other') ON CONFLICT DO NOTHING");
+    const locked=await db.connect();const waitingPool=new Pool({connectionString:container.getConnectionUri(),application_name:'account-org-lock-proof',max:1});
+    let pending:Promise<unknown>|undefined;
+    try{
+      await locked.query('BEGIN');await locked.query("SELECT id FROM orgs WHERE id='org-test' FOR UPDATE");
+      pending=new PgAccountStore(waitingPool).list('member-a');
+      const outcome=pending.then(()=>({ok:true,error:undefined as unknown}),error=>({ok:false,error}));
+      let blocked=false;
+      for(let n=0;n<100;n++){
+        blocked=(await db.query("SELECT 1 FROM pg_stat_activity WHERE application_name='account-org-lock-proof' AND wait_event_type='Lock'")).rows.length>0;
+        if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);
+      await locked.query("UPDATE users SET org_id='moved-org' WHERE id='member-a'");
+      await locked.query('COMMIT');
+      const result=await outcome;expect(result.ok).toBe(false);expect(result.error).toBeInstanceOf(AccountAccessError);
+    }finally{await locked.query('ROLLBACK');locked.release();await pending?.catch(()=>undefined);await waitingPool.end();}
+  },10_000);
   it('refuses company creation and cross-member binding references at the database boundary', async () => {
     await expect(store.createCompanyAccount()).rejects.toThrow('account-manager');
     const a = await create();

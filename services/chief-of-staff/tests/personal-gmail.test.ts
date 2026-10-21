@@ -5,7 +5,11 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'n
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getPool, closePool } from '@lares/agent-kit/db';
+import { Pool } from 'pg';
+import { PgMemberStore } from '@lares/agent-kit/member-store';
+import { requireConsoleTurnAuthority } from '@lares/agent-kit/console-turn-authority';
 import { PgAccountStore, type TrustedAccountAdapter } from '@lares/agent-kit/account-store';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { currentTaint, resetTaintForTests, turnKeyFrom } from '@lares/agent-kit/origin-taint';
 import gmailAccounts from '../catalogue/gmail_accounts.js';
@@ -80,9 +84,11 @@ beforeEach(async () => {
     INSERT INTO users(id,display_name,org_id,org_role,status) VALUES
     ('member-a','A','fixture-org','owner','active'),('member-b','B','fixture-org','owner','active')
     ON CONFLICT(id) DO UPDATE SET status='active',org_role='owner';`);
-  await getPool().query("INSERT INTO agent_definitions(name,definition,hash) VALUES('helper','{}','fixture')");
+  await getPool().query("INSERT INTO agent_definitions(name,definition,hash) VALUES('helper','{\"grants\":[]}','fixture')");
   await getPool().query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending)
     VALUES('helper','127.0.0.2','fixture','owned',$1,$1,'ready',false)`, [incarnation]);
+  await getPool().query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-a',NULL) ON CONFLICT(user_id) DO NOTHING");
+  await new PgGrantStore(getPool()).adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture'},{designatedOwnerMemberId:'member-a'});
   await bindConsoleSession({ agent: 'helper', incarnation, sessionId: 'wrun_mail', memberId: 'member-a', admissionNonce: nonce });
   calls.length = 0; credentials.length = 0; providerError = false; hold = undefined; resetTaintForTests();
   __setTestGmailApiFactory((_cfg, token) => {
@@ -161,7 +167,7 @@ describe('private console Gmail catalogue execution', () => {
     const own = await account(); providerError = true;
     await expect(gmailSearch.execute({ query: 'x', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(currentTaint(turnKeyFrom(ctx())!)).toBeUndefined();
-    credentials.length = 0; vi.spyOn(getPool(), 'query').mockRejectedValueOnce(new Error('secret-database-details') as never);
+    credentials.length = 0; vi.spyOn(getPool(), 'connect').mockRejectedValueOnce(new Error('secret-database-details') as never);
     await expect(gmailRead.execute({ id: 'm', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(credentials).toEqual([]);
   });
@@ -181,6 +187,52 @@ describe('private console Gmail catalogue execution', () => {
       expect(credentials).toEqual([]);
     } finally { pool.options.max = 10; pool.options.connectionTimeoutMillis = 0; }
   });
+  it('rechecks custody authority while the supported member directory waits, without a deadlock',async()=>{
+    const own=await account();let entered!:()=>void,release!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;}),wait=new Promise<void>(resolve=>{release=resolve;});
+    const directoryPool=quiet(new Pool({connectionString:process.env.DATABASE_URL,application_name:'directory-lock-proof',max:1}));
+    const running=store.withPersonalResourceCredential('member-a',own.selection,'mailbox',async(_selection,_credential,db)=>{
+      entered();await wait;return requireConsoleTurnAuthority(ctx(),db);
+    });
+    const readOutcome=running.then(value=>({ok:true,value}),error=>({ok:false,error}));
+    let directory:Promise<unknown>|undefined;
+    try{
+      await ready;
+      directory=new PgMemberStore(directoryPool).listMembers('member-a');
+      const directoryOutcome=directory.then(value=>({ok:true,value}),error=>({ok:false,error}));
+      let blocked=false;
+      for(let n=0;n<100;n++){
+        blocked=(await getPool().query("SELECT 1 FROM pg_stat_activity WHERE application_name='directory-lock-proof' AND wait_event_type='Lock'")).rows.length>0;
+        if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);release();
+      const [read,list]=await Promise.all([readOutcome,directoryOutcome]);
+      expect(read).toMatchObject({ok:true,value:{actingMemberId:'member-a'}});
+      expect(list).toMatchObject({ok:true,value:expect.arrayContaining([expect.objectContaining({member:expect.objectContaining({id:'member-a'})})])});
+    }finally{release();await running.catch(()=>undefined);await directory?.catch(()=>undefined);await directoryPool.end();}
+  },10_000);
+  it('serializes supported member removal after the real Gmail read and refuses later reads',async()=>{
+    const own=await account();let entered!:()=>void,release!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;}),wait=new Promise<void>(resolve=>{release=resolve;});
+    const removalPool=quiet(new Pool({connectionString:process.env.DATABASE_URL,application_name:'removal-lock-proof',max:1}));
+    hold=async()=>{entered();await wait;};
+    const running=gmailSearch.execute({query:'x',selection:own.selection},ctx());
+    let removal:Promise<unknown>|undefined;
+    try{
+      await ready;removal=new PgMemberStore(removalPool).removeMember('member-b','member-a');
+      const removed=removal.then(()=>({ok:true}),error=>({ok:false,error}));
+      let blocked=false;
+      for(let n=0;n<100;n++){
+        blocked=(await getPool().query("SELECT 1 FROM pg_stat_activity WHERE application_name='removal-lock-proof' AND wait_event_type='Lock'")).rows.length>0;
+        if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);release();
+      await expect(running).resolves.toEqual(['message-a']);expect(await removed).toEqual({ok:true});
+      credentials.length=0;
+      await expect(gmailSearch.execute({query:'x',selection:own.selection},ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
+      expect(credentials).toEqual([]);
+    }finally{release();await running.catch(()=>undefined);await removal?.catch(()=>undefined);await removalPool.end();}
+  },10_000);
   it('holds account/member/resource/custody locks until provider work finishes', async () => {
     const own = await account(); let entered!:()=>void, release!:()=>void;
     const ready = new Promise<void>(resolve => { entered=resolve; }); const wait = new Promise<void>(resolve => { release=resolve; });

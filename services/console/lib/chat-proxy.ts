@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { bindConsoleSession, requireConsoleSessionBinding,
+import { bindConsoleSession, requireConsoleSessionBinding, requireConsoleAgentUse, type AuthorityPool,
   CONSOLE_MEMBER_ID_HEADER, CONSOLE_ADMISSION_HEADER, CONSOLE_PURPOSE_HEADER } from "@lares/agent-kit/console-turn-authority";
 import type { Member } from "@lares/agent-kit/authority-contract";
 /**
@@ -114,6 +114,7 @@ const MAX_REQUEST_BYTES = 262144;
 const REQUEST_TIMEOUT_MS = 30000;
 
 export interface ChatDeps {
+  connect?: AuthorityPool["connect"];
   query(sql: string, values: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
   fetch: typeof fetch;
   /** The route password, or undefined when none is mounted. Never logged. */
@@ -208,6 +209,8 @@ export async function forwardChat(request: Request, name: string, path: string, 
     : AbortSignal.any([request.signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
 
   try {
+    try { await requireConsoleAgentUse(name,stableMember.id,deps); }
+    catch { return refuse(403,"Conversation access is unavailable. The console owner must explicitly adopt the agent in its access settings before starting a new conversation."); }
     // 3. The address comes from the console's own registry, by bound parameter — never from the
     //    request. An agent this console cannot vouch for is a 404 with no call made.
     const { rows } = await deps.query(
@@ -220,15 +223,17 @@ export async function forwardChat(request: Request, name: string, path: string, 
     const address = vouchedAddress(rows[0]);
     if (!address) return refuse(404, "Not found");
 
+    // Eve authenticates the route password, not the person who owns a session. A browser may
+    // continue a session only with the cookie this proxy issued when that session was created.
+    const sessionId = /^eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(path)?.[1];
+    const tuple = sessionId ? await requireConsoleSessionBinding({agent:name,incarnation:rows[0]!.incarnation as string,sessionId,memberId:stableMember.id},deps) : undefined;
+
     // 4. The credential, read server-side, spent on one header and named nowhere else.
     const password = deps.routePassword();
     if (!password) {
       return refuse(503, "No route password is mounted for this agent, so the console cannot reach it.");
     }
 
-    // Eve authenticates the route password, not the person who owns a session. A browser may
-    // continue a session only with the cookie this proxy issued when that session was created.
-    const sessionId = /^eve\/v1\/session\/([A-Za-z0-9_-]{1,64})(?:\/|$)/.exec(path)?.[1];
     if (sessionId && !hasChatSessionCapability(request.headers.get("cookie"), password, stableMember.id, name, rows[0]!.incarnation as string, sessionId)) {
       return refuse(403, "This conversation is not available to this signed-in member.");
     }
@@ -238,7 +243,6 @@ export async function forwardChat(request: Request, name: string, path: string, 
     }
     const body = isStream || request.method === "GET" ? undefined : await bounded(request.body, MAX_REQUEST_BYTES, signal);
 
-    const tuple = sessionId ? await requireConsoleSessionBinding({agent:name,incarnation:rows[0]!.incarnation as string,sessionId,memberId:stableMember.id},deps) : undefined;
     const nonce = tuple?.admissionNonce ?? randomBytes(32).toString("base64url");
     let purpose = isStream || request.method === "GET" ? "read" : /\/(cancel|clear|compact|reset)$/.test(path) ? "control" : "human";
     if (body && body.length > 0 && purpose === "human") {
