@@ -175,7 +175,7 @@ describe("a database the pre-release history built", () => {
     const adopted: AppliedMigration = { ...oldRow(BASELINE_FILENAME, 1), checksum: files[0]!.checksum, how: "adopted" };
     const plan = planMigrations(files, [adopted]);
     expect(plan.refusals).toEqual([]);
-    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply"]);
+    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply"]);
   });
 });
 
