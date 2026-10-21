@@ -196,3 +196,37 @@ provider acceptance or deployment evidence.
 
 Revocation refuses later requests and model/provider starts. It cannot recall content already
 delivered to a browser or undo a call that began before revocation committed.
+
+
+## Vault metadata and current area authority
+
+`PgVaultStore` records opaque backing identities and stable areas without resolving a
+filesystem, adopting existing files, enabling tools or changing runtime mounts. Areas have
+immutable organisation, owner, kind, backing and normalized relative path. Active paths
+cannot overlap within one backing, and the installation has one active logical taste home.
+Retirement retains identity and advances a separate monotonic access revision. Ordinary
+provisioning cannot recreate retired identities or reset revisions.
+
+The existing `PgGrantStore.can/listVisible` path also accepts `vault-area` with `use` and
+`edit`; unsupported permissions and the place adapter refuse. Conditional generated target
+columns preserve actual agent and area foreign keys in the existing grant registry. Agent
+management always qualifies grants by kind, including when an agent and area share an id.
+Private areas belong only to their current member owner, with no direct sharing or inherited
+administrator access. Organisation ownership grants no read access: named use/edit or
+organisation use must be explicit, and organisation use excludes restricted members.
+
+Provisioning, configuration and retirement are trusted server operations requiring an
+explicit current actor and a designated active organisation owner. This management seam
+is not a member UI and does not confer content access. Configuring a member-owned area also
+requires that member to be the actor. Bindings return the existing validated area contract
+only after current authorization and expected-revision checks. Visible lists expose only
+resource identity, revision and permissions. Caller-owned transactions use one connection
+and retain authority locks through protected use. Expiry uses database wall time after
+acquiring grant locks. Membership changes and deletions invalidate area captures; departure retires the
+member's owned areas and tombstones direct grants without reviving them on rejoin.
+
+Area exports contain metadata only; opaque backing identities do not export files.
+The existing erasure preflight refuses a person with owned area metadata before the file
+pass begins. Actual backing-content reconciliation and erasure remain required before a
+complete member erasure can be claimed. File reads/writes, content revisions, source-history
+retirement, access-derived mounts and import are not integrated by this metadata slice.

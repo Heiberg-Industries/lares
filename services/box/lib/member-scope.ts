@@ -135,6 +135,8 @@ const BOX = "services/box/sql";
 const DREAM_STORE = "services/chief-of-staff/lib/dream/store.ts (runtime DDL)";
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
+  { table: "vault_areas", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/009_vault_areas.sql`, reason: "Member-owned area metadata is retained as a retired identity; organisation-owned rows contain no person. Content erasure requires the later storage consumer." },
+  { table: "vault_backing_stores", scope: "operational", createdBy: `${BOX}/009_vault_areas.sql`, reason: "Opaque backing identity, organisation and lifecycle; no filesystem or person data." },
   { table: "agent_access", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/014_agent_access_grants.sql` },
   { table: "resource_grants", scope: "member", column: "grantor_member_id", idKind: "registry", createdBy: `${BOX}/014_agent_access_grants.sql`, reason: "principal_member_id also names the recipient and must be included in export/erase." },
   { table: "console_session_bindings", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/013_console_turn_authority.sql` },

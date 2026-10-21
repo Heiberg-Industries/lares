@@ -231,7 +231,7 @@ async function countWhere(q: Queryable, sql: string, params: unknown[] = []): Pr
 async function unattributedLines(q: Queryable): Promise<string[]> {
   const lines: string[] = [];
   for (const entry of MEMBER_SCOPE) {
-    if (entry.scope !== "member" || entry.idKind === "actor") continue;
+    if (entry.scope !== "member" || entry.idKind === "actor" || entry.table === "vault_areas") continue; // NULL owner_member_id deliberately means organisation ownership.
     if ((REGISTER_TABLES as readonly string[]).includes(entry.table)) continue;
     const n = await countWhere(
       q,
@@ -371,6 +371,14 @@ export async function erasePerson(
     }
   }
   if (report.refusals.length > 0) return report;
+
+  // Area metadata deliberately does not resolve or erase backing files. Refuse at the
+  // shared preflight, including dry runs, so runErase cannot delete files before discovering
+  // that these stable identities cannot yet be reconciled with storage.
+  if (await countWhere(db, "SELECT count(*)::int AS n FROM vault_areas WHERE owner_member_id=$1", [person.id])) {
+    report.refusals.push("This person owns Vault areas whose backing storage has not been reconciled for erasure. Nothing was changed. Reconcile their area content and retained identities before erasing this person.");
+    return report;
+  }
 
   const soleMember = (await countWhere(db, "SELECT count(*)::int AS n FROM users")) === 1;
   report.wasOnlyMember = soleMember;

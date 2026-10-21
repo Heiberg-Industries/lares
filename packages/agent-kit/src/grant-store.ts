@@ -1,4 +1,4 @@
-/** Server-only current resource authority. Not a model tool. Only the agent adapter exists;
+/** Server-only current resource authority. Not a model tool. Agent and Vault area adapters share the existing grant registry;
  * other kinds and place principals fail closed until trusted adapters are implemented.
  * Ownership never grants access to the agent's private sources, accounts or credentials. */
 import { randomUUID } from 'node:crypto';
@@ -6,11 +6,12 @@ import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { currentMember,currentSession } from './member-store.js';
 import type { Member } from './authority-contract.js';
+import { currentVaultArea, vaultAreaAllows } from './vault-area-store.js';
 
 export type GrantDatabase = Pick<PoolClient,'query'>;
 type Db = GrantDatabase;
 type Permission = 'use' | 'edit';
-export interface VisibleResource { resource: {kind:'agent';id:string}; accessRevision:number; permissions:Permission[] }
+export interface VisibleResource { resource: {kind:'agent'|'vault-area';id:string}; accessRevision:number; permissions:Permission[] }
 export interface AgentAccessView { agentName:string; ownerMemberId:string; accessRevision:number; definitionHash:string; grants:{ principal:{kind:'member'|'organisation';id:string};permission:Permission;expiresAt:string|null }[] }
 export class GrantStoreError extends Error {
   constructor(public readonly code:'denied'|'invalid'|'stale') { super(`Agent access refused: ${code}`); this.name='GrantStoreError'; }
@@ -76,9 +77,13 @@ export class PgGrantStore {
     return !!rowCount;
   }
   async can(memberId:string,resource:{kind:string;id:string},permission:string,options:{expectedRevision?:number;db?:Db}={}):Promise<boolean> {
-    if(resource.kind!=='agent'||!['use','edit'].includes(permission))return false;
+    if(!['agent','vault-area'].includes(resource.kind)||!['use','edit'].includes(permission))return false;
     return this.transaction(options.db,async db=>{
       let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof GrantStoreError)return false;throw e;}
+      if(resource.kind==='vault-area'){
+        const row=await currentVaultArea(db,member,resource.id);
+        return !!row&&row.kind!=='place'&&(options.expectedRevision===undefined||Number(row.revision)===options.expectedRevision)&&await vaultAreaAllows(db,member,row,permission as Permission);
+      }
       const row=await this.access(db,resource.id);
       if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision))return false;
       return this.evaluate(db,member,row,permission as Permission);
@@ -94,9 +99,20 @@ export class PgGrantStore {
     });
   }
   async listVisible(memberId:string,kind:string,options:{db?:Db}={}):Promise<VisibleResource[]> {
-    if(kind!=='agent')return [];
+    if(!['agent','vault-area'].includes(kind))return [];
     return this.transaction(options.db,async db=>{
       let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof GrantStoreError)return [];throw e;}
+      if(kind==='vault-area'){
+        const candidates=await db.query<{id:string}>("SELECT id FROM vault_areas WHERE organisation_id=$1 AND status='active' ORDER BY backing_store_id,id",[member.organisationId]);
+        const visible:VisibleResource[]=[];
+        for(const candidate of candidates.rows){
+          const row=await currentVaultArea(db,member,candidate.id);if(!row||row.kind==='place')continue;
+          const permissions:Permission[]=[];
+          for(const p of ['use','edit'] as const)if(await vaultAreaAllows(db,member,row,p))permissions.push(p);
+          if(permissions.length)visible.push({resource:{kind:'vault-area',id:row.id},accessRevision:Number(row.revision),permissions});
+        }
+        return visible;
+      }
       const {rows}=await db.query<AccessRow>(`SELECT ${accessColumns} FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.organisation_id=$1 ORDER BY a.agent_name`,[member.organisationId]);
       const visible:VisibleResource[]=[];
       for(const row of rows){const permissions:Permission[]=[];for(const p of ['use','edit'] as const)if(await this.evaluate(db,member,row,p))permissions.push(p);
@@ -126,7 +142,7 @@ export class PgGrantStore {
     const row=await this.access(db,name);
     if(!row||row.owner_member_id!==member.id||!await this.evaluate(db,member,row,'edit'))return undefined;
     const {rows}=await db.query<GrantRow>(`SELECT principal_member_id,principal_organisation_id,permission,expires_at FROM resource_grants
-      WHERE resource_id=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()) ORDER BY permission,id`,[name]);
+      WHERE resource_kind='agent' AND resource_id=$1 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp()) ORDER BY permission,id`,[name]);
     return {agentName:name,ownerMemberId:row.owner_member_id,accessRevision:Number(row.revision),definitionHash:row.hash,grants:rows.map(g=>({principal:g.principal_member_id?{kind:'member',id:g.principal_member_id}:{kind:'organisation',id:g.principal_organisation_id!},permission:g.permission,expiresAt:g.expires_at?.toISOString()??null}))};
   }
   async agentAccess(memberId:string,name:string,options:{db?:Db}={}):Promise<AgentAccessView|undefined> {
@@ -148,7 +164,7 @@ export class PgGrantStore {
         if(grant.expiresAt!==null){const valid=await db.query('SELECT 1 WHERE $1::timestamptz>clock_timestamp()',[grant.expiresAt]);if(!valid.rowCount)throw new GrantStoreError('invalid');}
       }
       if(options.sessionToken!==undefined&&!await currentSession(db,options.sessionToken,memberId,{lock:'share'}))throw new GrantStoreError('denied');
-      await db.query('UPDATE resource_grants SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE resource_id=$1',[input.agentName]);
+      await db.query('UPDATE resource_grants SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE resource_kind=\'agent\' AND resource_id=$1',[input.agentName]);
       const changed=await db.query<{revision:string}>('UPDATE agent_access SET revision=nextval(\'resource_access_revision_seq\') WHERE agent_name=$1 RETURNING revision',[input.agentName]);
       for(const grant of input.grants)await db.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,principal_organisation_id,permission,grantor_member_id,issued_access_revision,expires_at)
         VALUES($1,'agent',$2,$3,$4,$5,$6,$7,$8)`,[randomUUID(),input.agentName,grant.principal.kind==='member'?grant.principal.id:null,grant.principal.kind==='organisation'?grant.principal.id:null,grant.permission,member.id,changed.rows[0].revision,grant.expiresAt]);
