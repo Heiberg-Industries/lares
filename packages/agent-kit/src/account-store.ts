@@ -1,10 +1,11 @@
-/** Personal-account persistence, not authentication or credential custody.
+/** Personal-account persistence and explicit association to existing custody, not authentication.
  * Only trusted server adapters may supply verifiers; never expose them as model tools.
  */
 import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { z } from 'zod';
 import { currentMember } from './member-store.js';
+import { associateAccountCredential, readAccountCredential, type OAuthCredentialCommit, type StoredAccountCredential } from './account-credentials.js';
 import {
   connectedAccountViewSchema, providerIdentitySchema, resourceBindingSchema,
   type ConnectedAccountView, type ResourceBinding,
@@ -13,6 +14,11 @@ import {
 const text = z.string().trim().min(1);
 const verifiedAccountSchema = providerIdentitySchema.extend({ label: text });
 const verifiedResourceSchema = z.strictObject({ resourceKind: text, externalId: z.string().min(1), providerLabel: text });
+const resourceSelectionSchema = z.strictObject({
+  accountId: text, generation: z.number().int().nonnegative(), resourceBindingId: text,
+});
+export type PersonalResourceSelection = z.infer<typeof resourceSelectionSchema>;
+export interface ResolvedPersonalResource { account: ConnectedAccountView; resource: ResourceBinding }
 const updateSchema = z.strictObject({
   accountId: text, generation: z.number().int().nonnegative(), lifecycleRevision: z.number().int().nonnegative(),
 });
@@ -121,13 +127,49 @@ export class PgAccountStore {
         boundTo: { kind: 'member', id: b.owner_member_id } }));
     });
   }
+  private async personalResource(db: PoolClient, memberId: string,
+    expected: PersonalResourceSelection, resourceKind: string): Promise<{ row: Row; selection: ResolvedPersonalResource }> {
+    const r = await this.row(db, memberId, expected.accountId);
+    if (r.status !== 'ok' || r.generation !== expected.generation) throw new AccountAccessError();
+    const { rows } = await db.query(`SELECT * FROM connected_resource_bindings
+      WHERE id=$1 AND connected_account_id=$2 AND owner_member_id=$3 AND resource_kind=$4 FOR SHARE`,
+      [expected.resourceBindingId, r.id, memberId, resourceKind]);
+    const b = rows[0];
+    if (!b) throw new AccountAccessError();
+    return { row: r, selection: { account: view(r), resource: resourceBindingSchema.parse({
+      id: b.id, connectedAccountId: b.connected_account_id, resourceKind: b.resource_kind,
+      externalId: b.external_id, providerLabel: b.provider_label, boundTo: { kind: 'member', id: memberId },
+    }) } };
+  }
+  /** A secret-free current snapshot, not a credential capability. Recheck at point of use. */
+  async resolvePersonalResource(memberId: string, input: PersonalResourceSelection,
+    resourceKind: string): Promise<ResolvedPersonalResource> {
+    const expected = resourceSelectionSchema.parse(input), kind = text.parse(resourceKind);
+    return this.transaction(memberId, async db => (await this.personalResource(db, memberId, expected, kind)).selection);
+  }
+  /** Server-only point of use. Active member, account generation/status, selected resource and
+   * exact custody association remain locked through work. Trusted admission/grants/approvals must
+   * be checked by the runtime caller; supplying a member ID or reference never authenticates it.
+   * Do not return credential material from work or hold this transaction for a user approval.
+   */
+  async withPersonalResourceCredential<T>(memberId: string, input: PersonalResourceSelection,
+    resourceKind: string, work: (selection: ResolvedPersonalResource, credential: StoredAccountCredential) => Promise<T>): Promise<T> {
+    const expected = resourceSelectionSchema.parse(input), kind = text.parse(resourceKind);
+    return this.transaction(memberId, async db => {
+      const { row, selection } = await this.personalResource(db, memberId, expected, kind);
+      const credential = await readAccountCredential(db, { id: row.id, ownerMemberId: memberId,
+        connectorId: row.connector_id, generation: row.generation });
+      return work(selection, credential);
+    });
+  }
   async createCompanyAccount(): Promise<never> {
     throw new Error('Company accounts require account-manager and grant integration');
   }
   /** Trusted admission only. This object is not a model-facing binding API. */
   forTrustedAdapter(adapter: TrustedAccountAdapter) {
     const connectorId = text.parse(adapter.connectorId);
-    const complete = async (memberId: string, input: AccountUpdate, evidence: unknown, replacement: boolean) => {
+    const complete = async (memberId: string, input: AccountUpdate, evidence: unknown, replacement: boolean, credential?: OAuthCredentialCommit) => {
+      const persist = credential?.persist;
       const expected = updateSchema.parse(input);
       // Do not start provider work for another member's account or an already-stale ticket.
       await this.transaction(memberId, async db => {
@@ -148,17 +190,20 @@ export class PgAccountStore {
             (id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_tenant_id,provider_label,status)
             VALUES ($1,$2,$3,$4,$5,$6,$7,'ok') RETURNING *`,
             [randomUUID(), memberId, connectorId, identity.issuer, identity.subject, identity.tenantId ?? '', identity.label]);
+          if (persist) await associateAccountCredential(db, { id: rows[0].id, ownerMemberId: memberId, connectorId, generation: rows[0].generation }, persist);
           return view(rows[0]);
         }
         const { rows } = await db.query<Row>(`UPDATE connected_accounts SET provider_issuer=$2,
           provider_subject=$3, provider_tenant_id=$4, provider_label=$5, status='ok', status_reason=NULL,
           generation=generation+$6, lifecycle_revision=lifecycle_revision+1 WHERE id=$1 RETURNING *`,
           [r.id, identity.issuer, identity.subject, identity.tenantId ?? '', identity.label, r.status !== 'ok' ? 1 : 0]);
+        if (persist) await associateAccountCredential(db, { id: rows[0].id, ownerMemberId: memberId, connectorId, generation: rows[0].generation }, persist);
         return view(rows[0]);
       });
     };
     return {
-      createPersonalAccount: async (memberId: string, evidence: unknown): Promise<ConnectedAccountView> => {
+      createPersonalAccount: async (memberId: string, evidence: unknown, credential?: OAuthCredentialCommit): Promise<ConnectedAccountView> => {
+        const persist = credential?.persist;
         await this.transaction(memberId, async () => undefined);
         const identity = verifiedAccountSchema.parse(await adapter.verifyAccount(evidence));
         return this.transaction(memberId, async db => {
@@ -166,13 +211,14 @@ export class PgAccountStore {
             (id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_tenant_id,provider_label,status)
             VALUES ($1,$2,$3,$4,$5,$6,$7,'ok') RETURNING *`,
             [randomUUID(), memberId, connectorId, identity.issuer, identity.subject, identity.tenantId ?? '', identity.label]);
+          if (persist) await associateAccountCredential(db, { id: rows[0].id, ownerMemberId: memberId, connectorId, generation: rows[0].generation }, persist);
           return view(rows[0]);
         });
       },
-      renew: (memberId: string, expected: AccountUpdate, evidence: unknown) => complete(memberId, expected, evidence, false),
-      replace: (memberId: string, expected: AccountUpdate, evidence: unknown, review: { reviewedReplacement: true }) => {
+      renew: (memberId: string, expected: AccountUpdate, evidence: unknown, credential?: OAuthCredentialCommit) => complete(memberId, expected, evidence, false, credential),
+      replace: (memberId: string, expected: AccountUpdate, evidence: unknown, review: { reviewedReplacement: true }, credential?: OAuthCredentialCommit) => {
         z.strictObject({ reviewedReplacement: z.literal(true) }).parse(review);
-        return complete(memberId, expected, evidence, true);
+        return complete(memberId, expected, evidence, true, credential);
       },
       bindResource: async (memberId: string, input: AccountUpdate, evidence: unknown): Promise<ResourceBinding> => {
         const expected = updateSchema.parse(input);

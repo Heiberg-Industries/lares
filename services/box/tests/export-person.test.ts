@@ -193,6 +193,8 @@ describe("exportPerson — everything about one member", () => {
     expect(token.refresh_token_enc).toBe("[withheld]");
 
     const manifest = readJson("manifest.json") as Manifest;
+    expect(rows("connected_account_credentials")[0]!.oauth_token_id).toBe("[withheld]");
+    expect(manifest.withheld).toContain("connected_account_credentials.oauth_token_id");
     expect(manifest.withheld).toContain("oauth_tokens.refresh_token_enc");
     expect(report.withheld).toContain("oauth_tokens.refresh_token_enc");
     expect(renderExportReport(report)).toMatch(/sign-ins to outside services are secrets/i);
