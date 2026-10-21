@@ -122,7 +122,9 @@ The root-owned keeper configuration `lifecycle.runtime.google` supplies `tokenKe
 `clients`, each client carrying `clientIdFile` and `clientSecretFile` host sources. Values stay
 in files. The legacy `principal` field is optional for personal-only configuration and remains
 required for the separate selected email-door path; it never identifies the actor of a personal
-read. Agent definitions and tool inputs cannot supply these file sources.
+read. Agent definitions and tool inputs cannot supply these file sources. The
+`configure-google-keeper.py` setup helper configures legacy email-door access only and refuses
+an existing personal-only Google configuration; do not add a principal to satisfy that helper.
 
 Only a chief-of-staff definition with an effective Gmail grant receives personal client mounts:
 its scope must not be `none` and its autonomy must not be `never`. Explicit reconciliation uses
