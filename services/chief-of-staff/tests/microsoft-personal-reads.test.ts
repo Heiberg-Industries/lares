@@ -106,3 +106,19 @@ describe('private Microsoft reads, real SDKs',()=>{
     for(const changed of [{until:window.from},{until:'2027-01-01T00:00:00Z'},{limit:101},{query:'from:someone'}])expect(()=>personalReadOperationSchema.parse({kind:'mailWindow',window:{...window,...changed}})).toThrow();
   });
 });
+
+it('reads and rotates a stored eight-scope send grant using the exact same effective scope set',async()=>{
+  const granted=[...scopes,'profile','email','Mail.Send'];
+  token={scope:granted.map(s=>['User.Read','Mail.Read','Calendars.Read','Mail.Send'].includes(s)?`https://graph.microsoft.com/${s}`:s).reverse().join(' ')};
+  const adapter=await open({credential:{orgId:'microsoft',scopes:granted,refreshTokenEnc:encryptSecret('old-refresh',key)}});
+  expect(await adapter.readMail('mail')).toMatchObject({id:'mail'});expect(rotation).toHaveBeenCalledOnce();
+  const refresh=calls.find(c=>c.url.pathname.endsWith('/token'))!;
+  expect(new URLSearchParams(String(refresh.body)).get('scope')).toBe(granted.join(' '));
+});
+it.each(['Mail.Send.Shared','Mail.Read.Shared','.default','Mail.ReadWrite','https://untrusted.invalid/Mail.Send'])('refuses forbidden stored permission %s before discovery',async scope=>{
+  await expect(open({credential:{orgId:'microsoft',scopes:[...scopes,scope],refreshTokenEnc:encryptSecret('old-refresh',key)}})).rejects.toThrow();expect(calls).toEqual([]);
+});
+it('refuses loss of sending permission during refresh without rotating custody or reading Graph',async()=>{
+  await expect(open({credential:{orgId:'microsoft',scopes:[...scopes,'Mail.Send'],refreshTokenEnc:encryptSecret('old-refresh',key)}})).rejects.toThrow();
+  expect(calls.filter(c=>c.url.hostname==='graph.microsoft.com')).toEqual([]);expect(rotation).not.toHaveBeenCalled();
+});

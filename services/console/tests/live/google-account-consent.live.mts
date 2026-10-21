@@ -3,15 +3,18 @@
  * Set RUN_GOOGLE_ACCOUNT_CONSENT_LIVE=1, GOOGLE_LIVE_ORG=<configured-org>, the data client secrets,
  * and CONSOLE_OAUTH_REDIRECT=http://localhost:6767/api/auth/callback. Register the distinct data
  * callback http://localhost:6767/api/accounts/google/callback on that data client first.
+ * Optional PERSONAL_CONSENT_POWER=read+mail-send requests sending permission only; default read.
+ * No message is sent by this probe and permission does not enable engine writes.
  * Only neutral booleans/counts are printed; do not paste consent codes or tokens into a ticket.
  */
+import { personalConsentPower } from '@lares/agent-kit/personal-consent';
 import { createServer } from 'node:http';
 import { startAccountConsent, finishAccountConsent } from '../../lib/account-oauth.ts';
 if (process.env.RUN_GOOGLE_ACCOUNT_CONSENT_LIVE !== '1') throw new Error('Manual opt-in required');
 if (process.env.CONSOLE_OAUTH_REDIRECT !== 'http://localhost:6767/api/auth/callback') throw new Error('Use the dedicated localhost probe callback');
 const org = process.env.GOOGLE_LIVE_ORG;
 if (!org || !/^[a-z0-9]+$/.test(org)) throw new Error('Configure GOOGLE_LIVE_ORG');
-const { flow, url } = await startAccountConsent({ memberId: 'manual-probe', session: 'manual-probe-only', org });
+const { flow, url } = await startAccountConsent({ memberId: 'manual-probe', session: 'manual-probe-only', org, power: personalConsentPower(process.env.PERSONAL_CONSENT_POWER ?? 'read') });
 const server = createServer();
 let expire!: () => void;
 const completed = new Promise<URL>((resolve, reject) => {
