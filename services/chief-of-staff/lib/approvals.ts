@@ -1,4 +1,7 @@
-import { consoleResolverOnly, guardConsoleToolContext } from "@lares/agent-kit/console-turn-authority";
+import { isExactApprovalContext, isExactApprovalResponse, reserveExactApproval, approveExactResponse,
+  requireApprovedExecution, type ExactResponseContext } from "@lares/agent-kit/approval-execution";
+import { deadlineApprovalAdapter } from "./deadlines-store.js";
+import { consoleAdmission, consoleResolverOnly, guardConsoleToolContext, type ConsoleAuthorityContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated write calls, on both channels.
  *
@@ -182,7 +185,39 @@ export async function assertApproval(
   toolName: string,
   input: unknown,
 ): Promise<void> {
+  if (isExactApprovalContext(ctx)) {
+    await requireApprovedExecution(ctx,toolName,input,{adapter:deadlineApprovalAdapter});
+    return;
+  }
   await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
+}
+
+/** Preserve the authored native policy; bound console calls additionally require exact authority. */
+export async function catalogueApprovalRequest(name: string, ctx: unknown, authored: unknown): Promise<unknown> {
+  if (!isExactApprovalContext(ctx)) {
+    await guardConsoleToolContext(ctx);
+    return (authored as (ctx:unknown)=>unknown)(ctx);
+  }
+  const c = ctx as ConsoleAuthorityContext & {callId?:string;toolInput?:unknown};
+  if (consoleAdmission(c.session?.auth?.current)?.purpose === 'resolver') {
+    await requireApprovedExecution(c,name,c.toolInput,{adapter:deadlineApprovalAdapter});
+    return 'user-approval';
+  }
+  await reserveExactApproval(c,name,{adapter:deadlineApprovalAdapter});
+  const decision = await (authored as (ctx:unknown)=>unknown)(ctx);
+  if (decision === 'denied' || (typeof decision === 'object' && decision !== null && 'type' in decision && decision.type === 'denied')) return decision;
+  return 'user-approval';
+}
+export async function catalogueApprovalResponse(_name: string, ctx: unknown): Promise<unknown> {
+  if (!isExactApprovalResponse(ctx)) return {status:'allowed'};
+  return approveExactResponse(ctx as ExactResponseContext,{adapter:deadlineApprovalAdapter});
+}
+export async function guardCatalogueExecution(ctx: unknown, name: string, input: unknown): Promise<void> {
+  if (isExactApprovalContext(ctx) && consoleAdmission((ctx as ConsoleAuthorityContext).session?.auth?.current)?.purpose === 'resolver') {
+    await requireApprovedExecution(ctx as ConsoleAuthorityContext,name,input,{adapter:deadlineApprovalAdapter});
+    return;
+  }
+  await guardConsoleToolContext(ctx);
 }

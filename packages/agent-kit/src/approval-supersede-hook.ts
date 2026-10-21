@@ -86,7 +86,7 @@ async function recordWithSession(a: NewAsk): Promise<void> {
   // The role's own recorder may have inserted the row first, without these columns.
   await db.query(
     `UPDATE approval_asks SET session_id = $2, turn_sequence = $3, target_hash = $4
-     WHERE request_id = $1 AND session_id IS NULL`,
+     WHERE request_id = $1 AND session_id IS NULL AND to_jsonb(approval_asks)->>'original_authority' IS NULL`,
     [a.requestId, a.sessionId, a.turn, a.targetHash],
   );
 }
@@ -100,7 +100,7 @@ async function openAsksForSession(sessionId: string, except: readonly string[]):
   }>(
     `SELECT request_id, tool, turn_sequence, target_hash
        FROM approval_asks
-      WHERE session_id = $1 AND outcome IS NULL AND NOT (request_id = ANY($2::text[]))
+      WHERE session_id = $1 AND request_id IS NOT NULL AND outcome IS NULL AND NOT (request_id = ANY($2::text[]))
       ORDER BY asked_at`,
     [sessionId, [...except]],
   );

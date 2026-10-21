@@ -56,6 +56,7 @@ export type AskOutcome = (typeof ASK_OUTCOMES)[number];
 
 export interface AskRow {
   requestId: string;
+  originalAuthority?: unknown;
   callId: string;
   agent: string;
   tool: string;
@@ -136,6 +137,7 @@ function toAskRow(row: {
 }): AskRow {
   return {
     requestId: row.request_id,
+    originalAuthority: (row as {original_authority?:unknown}).original_authority,
     callId: row.call_id,
     agent: row.agent,
     tool: row.tool,
@@ -185,7 +187,7 @@ export async function recordAnswer(
   try {
     await db.query(
       `UPDATE approval_asks SET answered_at = now(), outcome = $2, answered_via = $3
-       WHERE request_id = $1 AND outcome IS NULL`,
+       WHERE request_id = $1 AND outcome IS NULL AND to_jsonb(approval_asks)->>'original_authority' IS NULL`,
       [a.requestId, a.outcome, a.answeredVia ?? null],
     );
   } catch (err) {
@@ -215,7 +217,7 @@ export async function askForCall(db: Queryable, callId: string): Promise<AskRow 
       use_count: number;
     }>(
       `SELECT request_id, call_id, agent, tool, payload_hash, asked_at, answered_at, outcome,
-              answered_via, used_at, use_count
+              answered_via, used_at, use_count, to_jsonb(approval_asks)->'original_authority' AS original_authority
        FROM approval_asks WHERE call_id = $1`,
       [callId],
     );
@@ -352,6 +354,7 @@ export async function assertApprovedCall(
     return;
   }
   if (row === null) return;
+  if (row.originalAuthority != null) throw new Error("Exact approval requires its original bound authority");
 
   const now = call.now ?? new Date();
   const ttlMs = call.ttlMs ?? APPROVAL_TTL_MS;

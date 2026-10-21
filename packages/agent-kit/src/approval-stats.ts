@@ -65,7 +65,7 @@ export async function readApprovalCounts(
                                                                     AS never_answered,
               min(asked_at) AS first_at, max(asked_at) AS last_at
          FROM approval_asks
-        WHERE asked_at > $1
+        WHERE request_id IS NOT NULL AND asked_at > $1
         GROUP BY agent, tool`,
       [since],
     );
