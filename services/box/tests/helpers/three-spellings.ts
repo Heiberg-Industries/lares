@@ -353,6 +353,17 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('Fixture second said something', 'preference', 'fixture-turn-2', $1, 'owner')`,
     [FIXTURE_SECOND]),
 
+  ...[FIXTURE_OWNER,FIXTURE_SECOND].flatMap((member,index) => [
+    row("agent_access", "owner_member_id", member,
+      `WITH org AS (INSERT INTO orgs(id,display_name) VALUES($3,'Fixture agent organisation') RETURNING id), definition AS (INSERT INTO agent_definitions(name,definition,hash) VALUES($1,'{"grants":[]}'::jsonb,'fixture') RETURNING name)
+       INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) SELECT definition.name,$2,o.id FROM definition,org o`,
+      [`fixture-shared-${index}`,member,`fixture-agent-org-${index}`]),
+    row("resource_grants", "grantor_member_id", member,
+      `INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision)
+       SELECT $1,'agent',agent_name,$2,'use',$2,revision FROM agent_access WHERE agent_name=$3`,
+      [`22222222-2222-4222-8222-${String(index+1).padStart(12,'0')}`,member,`fixture-shared-${index}`]),
+  ]),
+
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
     `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4)`,
     [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`])),
