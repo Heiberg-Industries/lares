@@ -1,4 +1,4 @@
-import { assertPrivateConsoleRequest } from "@lares/agent-kit/private-console-envelope";
+import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage } from "@lares/agent-kit/private-console-envelope";
 import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
@@ -139,10 +139,10 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
 };
 
 export default eveChannel({
-  onMessage: async (ctx) => {
+  onMessage: async (ctx, message) => {
     const caller = ctx.eve.caller;
     const tagged = caller?.attributes?.lares_member_id !== undefined;
-    if (tagged) await assertPrivateConsoleRequest(ctx.eve.request);
+    if (tagged) assertVerifiedPrivateConsoleMessage(ctx.eve.request, message);
     if (tagged && consoleAdmission(caller)?.purpose !== "human") throw new Error("Conversation authority is not available");
     return { auth: caller };
   },
