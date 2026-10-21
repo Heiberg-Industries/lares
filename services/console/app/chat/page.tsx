@@ -1,9 +1,11 @@
+import { requireConsolePage } from "../../lib/auth";
 import { redirect } from "next/navigation";
 import { listAgents } from "../../lib/agents";
 import { EmptyState, PageHeader } from "@lares/ui/patterns";
 import Link from "next/link";
 export const dynamic = "force-dynamic";
 export default async function ChatPage() {
+  await requireConsolePage();
   const agents = await listAgents({ strict: true }).catch(() => null);
   if (agents?.length) redirect(`/chat/${encodeURIComponent(agents[0].name)}`);
   return (

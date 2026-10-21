@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { getVoiceCards, listVoiceExamples } from "../../lib/voice";
 import { VoiceCardEditor } from "../../components/VoiceCardEditor";
 import { VoiceSettings } from "../../components/VoiceSettings";
@@ -12,6 +13,7 @@ export const dynamic = "force-dynamic";
 // settings); each enrolled mailbox has its own card, its own proposal and its own learn status.
 // A mailbox whose card is still empty drafts with the default card until it has learned.
 export default async function VoicePage() {
+  await requireConsolePage();
   const [cards, examples] = await Promise.all([getVoiceCards(), listVoiceExamples()]);
   const def = cards[0]!;
   const mailboxes = cards.slice(1);

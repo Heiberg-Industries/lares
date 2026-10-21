@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { listAutoSendSeries } from "../../lib/meeting-series";
 import { MeetingSeriesRow } from "../../components/MeetingSeriesRow";
 import { PageHeader } from "@lares/ui/patterns";
@@ -5,6 +6,7 @@ import { PageHeader } from "@lares/ui/patterns";
 export const dynamic = "force-dynamic";
 
 export default async function MeetingsPage() {
+  await requireConsolePage();
   const series = await listAutoSendSeries();
 
   return (

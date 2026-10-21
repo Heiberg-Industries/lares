@@ -95,8 +95,9 @@ Ask these one at a time. Explain why each one is needed in one sentence.
    If they differ, tell the person to create an A record for the domain with the server's public
    address at their domain provider, and wait until it shows up here. The installer refuses
    (exit 78) until it does.
-2. **Their e-mail address.** Only this address can sign in to the console at first. It must be the
-   Google account they will sign in with.
+2. **Their e-mail address**, for the existing owner record and contact details. Email equality
+   does not admit the owner; their exact verified provider identity must be explicitly linked
+   before first sign-in (install.md section 6).
 3. **Their name**, as it should appear in the console.
 4. **Their time zone**, for example `Europe/Oslo`. The installer does not ask; it reads the
    server's clock. Set it before installing: `timedatectl set-timezone <zone>`.
@@ -248,10 +249,20 @@ anything:
 lares doctor
 ```
 
-Then ask the person to open `https://example.com/` in their browser, press **Continue with
-Google** and sign in with the e-mail address they gave. If Google says access is blocked, they
-have not added themselves as a test user (step 3, item 3) or the redirect address does not match
-exactly (item 5).
+Before asking the person to sign in, complete
+[the first-owner identity prerequisite](install.md#6-first-start-and-checking-it-worked) and
+[provider-identity adoption](member-authority.md#provider-setup-and-existing-owner-adoption).
+The installer does not collect or verify a provider subject. Preserve the existing stable active
+owner id, obtain the person's exact verified issuer/subject (plus tenant for Microsoft), and
+place that identity's `CONSOLE_BOOTSTRAP_IDENTITY` JSON in the protected console environment
+file. Follow the install guide's console-only recreate step to load it. Fresh installation still
+requires the Google client; Microsoft-only fresh setup remains deferred.
+
+Then ask the person to open `https://example.com/`, press **Continue with Google**, and choose
+that verified provider identity. After the first successful sign-in, remove the bootstrap
+setting and recreate the console again as the install guide describes. If Google says access
+is blocked, check its test-user setting (step 3, item 3) and exact redirect address (item 5).
+A successful installer run or email match alone does not prove sign-in worked.
 
 ## 7. Hand over to the person
 
@@ -267,5 +278,6 @@ Stop here. These are the person's to do, in the console and with their own keys:
 - **Doors and integrations** (Slack, Telegram, e-mail), after the first agent runs (install.md
   section 8).
 
-Finish by giving the person a short summary: the console address, that sign-in worked, that no
-agent runs yet, and that backups are off until they switch them on.
+Finish by giving the person the console address, whether owner sign-in was actually confirmed
+(or the explicit identity-adoption step remains pending), that no agent runs yet, and that
+backups are off until they switch them on.

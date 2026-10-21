@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { EmptyState, PageHeader, StatusBadge } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
 import { TASTE_DOMAINS, type TasteDomain } from "@lares/taste";
@@ -136,6 +137,7 @@ export default async function TastePage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
+  await requireConsolePage();
   const filters = readFilters(await searchParams);
   const store = listAll();
   const everything = TASTE_DOMAINS.flatMap((d) => store[d]);

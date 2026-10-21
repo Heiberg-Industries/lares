@@ -1,8 +1,9 @@
+import { withConsoleAdmission } from "../../../../../lib/admission-error";
 import { cookies } from "next/headers";
 import { verify } from "../../../../../lib/auth";
 import { pool } from "../../../../../lib/db";
 export const runtime = "nodejs";
-export async function GET(
+async function handleGET(
   _request: Request,
   { params }: { params: Promise<{ name: string }> },
 ) {
@@ -28,3 +29,5 @@ export async function GET(
     return new Response(null, { status: 503 });
   }
 }
+
+export const GET = withConsoleAdmission(handleGET);

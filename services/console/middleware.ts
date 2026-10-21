@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { verify } from "./lib/auth";
-import { safeNext, sameOriginTarget } from "./lib/safe-next";
+import { safeNext } from "./lib/safe-next";
 
 // External origin the browser uses; derived from the OAuth redirect so redirects
 // don't leak the container hostname (Next standalone resolves req.url to it).
@@ -23,16 +22,16 @@ export async function middleware(req: NextRequest) {
       return NextResponse.json({ error: "Request origin is not allowed." }, { status: 403 });
     }
   }
-  if (req.nextUrl.pathname.startsWith("/api/auth")) return NextResponse.next();
-  const email = await verify(req.cookies.get("lares_session")?.value);
-  // The sign-in page is public. Someone already signed in has no use for it.
-  if (req.nextUrl.pathname === "/sign-in") {
-    if (email) return NextResponse.redirect(sameOriginTarget(safeNext(req.nextUrl.searchParams.get("next")), BASE_URL ?? req.url));
+  if (/^\/api\/auth\/(login|callback|logout)$/.test(req.nextUrl.pathname)) return NextResponse.next();
+  // Cookie presence is only a navigation hint. Every Node entry checks current DB admission.
+  const hasCookie = /^[A-Za-z0-9_-]{43}$/.test(req.cookies.get("lares_session")?.value ?? "");
+  if (req.nextUrl.pathname === "/sign-in" || req.nextUrl.pathname === "/invite") {
     const page = NextResponse.next();
     page.headers.set("Cache-Control", "no-store");
+    page.headers.set("Referrer-Policy", "no-referrer");
     return page;
   }
-  if (!email) {
+  if (!hasCookie) {
     // Send visitors to the sign-in page, remembering where they were headed.
     const to = new URL("/sign-in", BASE_URL ?? req.url);
     const back = req.nextUrl.pathname + req.nextUrl.search;

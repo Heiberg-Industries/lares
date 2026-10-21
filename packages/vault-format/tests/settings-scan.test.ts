@@ -67,17 +67,12 @@ describe("the settings list and the code agree", () => {
     // `env[\`LARES_${channel.toUpperCase()}_PRINCIPAL\`]` template that already put
     // LARES_SLACK_PRINCIPAL on this list — a scanner looking for a literal `env.X` cannot see any
     // of them. It is a new setting, not a new kind of exemption. Its unmanaged twin,
-    // CONSOLE_ALLOWED_EMAILS, is NOT added: the console reads that one as a literal, so the
-    // scanner finds it without help.
+    // CONSOLE_ALLOWED_EMAILS was not added at that point: console admission still read
+    // it literally then. Its later removal from admission is accounted for below.
     //
-    // RAISED 34 → 35: `CONSOLE_SESSION_SECRET_FILE` is a `_FILE` half read through `readSecret` — services/console/lib/account-oauth-state.ts now
-    // reads its secret through `readSecret("CONSOLE_SESSION_SECRET")`, which builds the `_FILE`
-    // name with a template literal (`` `${name}_FILE` ``) inside lib/secrets.ts, never as a
-    // literal `env.CONSOLE_SESSION_SECRET_FILE` anywhere this scanner walks. Not a new kind of
-    // exemption either. services/console/lib/auth.ts does NOT gain this reader: it stays on the
-    // plain `process.env.CONSOLE_SESSION_SECRET` on purpose (see its own getSecret() comment) —
-    // readSecret's `node:fs` import cannot appear in a file middleware.ts pulls into the Edge
-    // Runtime build, confirmed with a real `next build --webpack` failure.
+    // RAISED 34 → 35: CONSOLE_SESSION_SECRET_FILE is read through readSecret's
+    // templated *_FILE half for Node-only sign-in and account-consent transactions.
+    // Session authority is now database-backed, and Edge middleware imports neither reader.
     //
     // RAISED 35 → 38: the neutral stack's own two new containers get three names
     // (MODEL_PROVIDER_KEY_FILE, GATEWAY_MASTER_KEY_FILE, LARES_DOMAIN) — declared in SETTINGS by
@@ -89,7 +84,11 @@ describe("the settings list and the code agree", () => {
     // in the removed role's own principals file. The chief of staff reaches it through the same
     // `env[\`LARES_${channel.toUpperCase()}_PRINCIPAL\`]` template as LARES_SLACK_PRINCIPAL, which
     // the scanner cannot see. Not a new kind of exemption.
-    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(37);
+    // RAISED 37 → 46 for console OIDC admission: six Microsoft client/tenant names
+    // (three values plus their *_FILE halves), two newly used Google *_CONSOLE_FILE
+    // halves, and CONSOLE_ALLOWED_EMAILS now read only through the roles' ENV_VAR_FOR.
+    // All use existing required/readSecret or ENV_VAR_FOR helpers, not new exemptions.
+    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(46);
     for (const [name, how] of Object.entries(READ_INDIRECTLY)) {
       expect(SETTING_NAMES.has(name), name).toBe(true);
       expect(how.length, name).toBeGreaterThan(10);

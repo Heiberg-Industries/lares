@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { PageHeader } from "@lares/ui/patterns";
 import {
   daysUntil,
@@ -33,6 +34,7 @@ export const dynamic = "force-dynamic";
  */
 
 export default async function DeadlinesPage() {
+  await requireConsolePage();
   const now = new Date();
   const view = await getDeadlinesView();
   const clock = resolveConsoleOwnerClock(now, { homeTz: homeTz() });

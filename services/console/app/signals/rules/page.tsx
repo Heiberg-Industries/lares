@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../../lib/auth";
 import Link from "next/link";
 import { getRules, getConsumers } from "../../../lib/signals";
 import { JsonEditor } from "../../../components/JsonEditor";
@@ -6,6 +7,7 @@ import { saveRules, saveConsumers } from "../../actions/signals";
 import { PageHeader } from "@lares/ui/patterns";
 export const dynamic = "force-dynamic";
 export default async function RulesPage() {
+  await requireConsolePage();
   // : the switches sit ABOVE the rules rather than on their own page, because they are the
   // same question — where does a signal go — asked one level up. Fetched independently so a spine
   // that answers one and not the other still renders what it can.

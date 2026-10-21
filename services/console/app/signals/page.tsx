@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { getRecentSignals } from "../../lib/signals";
 import { Notice, PageHeader } from "@lares/ui/patterns";
@@ -7,6 +8,7 @@ export const dynamic = "force-dynamic";
 const isHttpUrl = (u: string) => /^https?:\/\//i.test(u);
 
 export default async function SignalsPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  await requireConsolePage();
   const q = await searchParams;
   const r = await getRecentSignals({ severity: q.severity, project: q.project, kind: q.kind, state: q.state, since: q.since });
   return (

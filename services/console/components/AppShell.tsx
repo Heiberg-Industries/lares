@@ -4,7 +4,7 @@ import { Nav } from "./Nav";
 import styles from "./AppShell.module.css";
 export function AppShell({ children }: { children: React.ReactNode }) {
   // The sign-in page is its own full-screen layout, without the console's navigation.
-  if (usePathname() === "/sign-in") return <>{children}</>;
+  if (["/sign-in", "/invite", "/membership"].includes(usePathname())) return <>{children}</>;
   return (
     <div className={styles.shell}>
       <a className={styles.skip} href="#main-content">Skip to content</a>

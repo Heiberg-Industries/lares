@@ -1,3 +1,4 @@
+import { withConsoleAdmission } from "../../../lib/admission-error";
 import { clippingActionInput } from '@lares/agent-kit/clipping-console';
 import { CREDENTIAL_SLOT, credentialGrantPreviewSchema } from '@lares/agent-kit/credential-lifecycle';
 import { credentialActor } from '../../../lib/credentials';
@@ -12,7 +13,7 @@ export const dynamic = 'force-dynamic';
 const response = (body: unknown, status = 200) => Response.json(body, { status, headers: { 'cache-control': 'no-store' } });
 const failed = (code: string, status: number) => response({ ok: false, code }, status);
 
-export async function GET(req: Request): Promise<Response> {
+async function handleGET(req: Request): Promise<Response> {
   const actor = await credentialActor();
   if (!actor) return failed('sign-in-required', 401);
   if (new URL(req.url).search) return failed('invalid-request', 400);
@@ -57,7 +58,7 @@ async function needsSource(): Promise<Response | null> {
   return has ? null : failed('no-source', 409);
 }
 
-export async function POST(req: Request): Promise<Response> {
+async function handlePOST(req: Request): Promise<Response> {
   const actor = await credentialActor();
   if (!actor) return failed('sign-in-required', 401);
   if (!sameOrigin(req)) return failed('origin-refused', 403);
@@ -97,3 +98,7 @@ export async function POST(req: Request): Promise<Response> {
     }
   }
 }
+
+export const GET = withConsoleAdmission(handleGET);
+
+export const POST = withConsoleAdmission(handlePOST);

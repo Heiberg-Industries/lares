@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
@@ -39,6 +40,7 @@ export default async function IntegrationsPage({
 }: {
   searchParams: Promise<{ added?: string; error?: string }>;
 }) {
+  await requireConsolePage();
   const params = await searchParams;
   const [rows, board, notionSync, notionProposals, credential, clipping] =
     await Promise.all([

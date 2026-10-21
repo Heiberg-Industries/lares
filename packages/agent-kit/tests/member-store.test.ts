@@ -26,6 +26,24 @@ async function invite(email='invite@example.invalid', role: 'owner'|'member'|'re
   return store.inviteMember('owner',{displayName:'Invited member',email,role,expiresAt:tomorrow()});
 }
 describe('member storage on disposable PostgreSQL',()=> {
+  it('lists same-organisation directory and pending invitations only for current owners, without credentials',async()=> {
+    const invitation=await invite();
+    const directory=await store.listMembers('owner');
+    expect(directory.map(entry=>entry.member.id)).toEqual(expect.arrayContaining(['owner','second',invitation.member.id]));
+    expect(directory.some(entry=>entry.member.id==='outsider')).toBe(false);
+    const pending=await store.listInvitations('owner');
+    expect(pending).toEqual([{id:invitation.invitationId,memberId:invitation.member.id,expiresAt:expect.any(String)}]);
+    const metadata=JSON.stringify({directory,pending});
+    expect(metadata).not.toContain(invitation.token);
+    expect(metadata).not.toContain('token_hash');
+    await expect(store.listMembers('second')).rejects.toThrow('denied');
+    await expect(store.listInvitations('second')).rejects.toThrow('denied');
+    expect((await store.listMembers('outsider')).map(entry=>entry.member.id)).toEqual(['outsider']);
+    await store.revokeInvitation('owner',invitation.invitationId);
+    expect(await store.listInvitations('owner')).toEqual([]);
+    await store.removeMember('owner','second');
+    await expect(store.listMembers('second')).rejects.toThrow('denied');
+  });
   it('preserves existing ids/data and refuses inactive members after repeated migration',async()=> {
     const invitation=await invite();
     await store.removeMember('owner','second');

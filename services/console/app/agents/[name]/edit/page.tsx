@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../../../lib/auth";
 import { PageHeader } from "@lares/ui/patterns";
 import { builderData, editedOutsideTheConsole } from "../../../../lib/builder";
 import { DefinitionForm } from "../../../../components/DefinitionForm";
@@ -7,6 +8,7 @@ export default async function EditAgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
+  await requireConsolePage();
   const { name } = await params;
   try {
     const data = await builderData(name);

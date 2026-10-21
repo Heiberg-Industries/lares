@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { cookies } from "next/headers";
 import { PageHeader } from "@lares/ui/patterns";
 import { verify } from "../../lib/auth";
@@ -15,6 +16,7 @@ export const dynamic = "force-dynamic";
  * (`lib/waiting.ts`).
  */
 export default async function WaitingPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  await requireConsolePage();
   const member = await verify((await cookies()).get("lares_session")?.value);
   if (!member) throw new Error("unauthenticated");
   const [{ request }, list] = await Promise.all([searchParams, listWaiting(member, waitingDeps)]);
