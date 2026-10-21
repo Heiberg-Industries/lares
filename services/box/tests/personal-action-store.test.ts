@@ -7,13 +7,13 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { PgPersonalActionStore, PersonalActionError, PERSONAL_MAIL_SEND_TOOL, personalActionApprovalDescriptor,
-  type TrustedPersonalActionEnvelope, type PersonalActionOutcome, type PersonalActionApprovedReference } from '../src/personal-action-store.js';
-import { encryptSecret, decryptSecret } from '../../../services/box/lib/crypto.js';
-import { exportPerson } from '../../../services/box/lib/export-person.js';
-import { erasePerson } from '../../../services/box/lib/erase-person.js';
-import { APPROVAL_TTL_MS } from '../src/approval-ledger.js';
+  type TrustedPersonalActionEnvelope, type PersonalActionOutcome, type PersonalActionApprovedReference } from '../../../packages/agent-kit/src/personal-action-store.js';
+import { encryptSecret, decryptSecret } from '../lib/crypto.js';
+import { exportPerson } from '../lib/export-person.js';
+import { erasePerson } from '../lib/erase-person.js';
+import { APPROVAL_TTL_MS } from '../../../packages/agent-kit/src/approval-ledger.js';
 
-const sqlDir=fileURLToPath(new URL('../../../services/box/sql/',import.meta.url));
+const sqlDir=fileURLToPath(new URL('../sql/',import.meta.url));
 const key='1'.repeat(64);
 const crypto={encrypt:(s:string)=>encryptSecret(s,key),decrypt:(s:string)=>decryptSecret(s,key)};
 let container:StartedPostgreSqlContainer,db:Pool,store:PgPersonalActionStore;

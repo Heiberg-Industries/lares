@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Pool } from 'pg';
 import { PgPersonalActionStore, PersonalActionError, PERSONAL_MAIL_SEND_TOOL, personalActionApprovalDescriptor,
-  type TrustedPersonalActionEnvelope, type PersonalActionState, type PersonalActionReceipt } from '../src/personal-action-store.js';
-import { payloadFingerprint } from '../src/approval-ledger.js';
-import { encryptSecret, decryptSecret } from '../../../services/box/lib/crypto.js';
+  type TrustedPersonalActionEnvelope, type PersonalActionState, type PersonalActionReceipt } from '../../../packages/agent-kit/src/personal-action-store.js';
+import { payloadFingerprint } from '../../../packages/agent-kit/src/approval-ledger.js';
+import { encryptSecret, decryptSecret } from '../lib/crypto.js';
 
 const key='2'.repeat(64);
 const crypto={encrypt:(s:string)=>encryptSecret(s,key),decrypt:(s:string)=>decryptSecret(s,key)};
