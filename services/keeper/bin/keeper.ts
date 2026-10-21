@@ -20,6 +20,8 @@ import { AgentLifecycle } from "../lib/lifecycle.js";
 import { keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
+import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
+import {productionGatewayBudgetAuthority} from '../lib/gateway-budget.js';
 import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 async function main(): Promise<void> {
@@ -27,6 +29,10 @@ async function main(): Promise<void> {
         throw new Error("usage: keeper serve");
     const config = loadKeeperConfig();
     const pool = keeperPool(config.db);
+    // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
+    // occupy their connections. HTTP deadlines never authorize a late allow.
+    const budgetPool=keeperPool(config.db,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
+    budgetPool.on('error',()=>{});
     const admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
     const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
     const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,config,docker):undefined;
@@ -73,6 +79,7 @@ async function main(): Promise<void> {
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
+        stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(budgetPool,config.gatewayBudget?.serviceKeyFile)}));
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();
@@ -81,6 +88,7 @@ async function main(): Promise<void> {
         for (const stop of stops)
             await stop();
         await pool.end();
+        await budgetPool.end();
         await admin?.end();
         throw new Error("keeper: startup failed");
     }
@@ -92,6 +100,7 @@ async function main(): Promise<void> {
         for (const stop of stops)
             await stop();
         await pool.end();
+        await budgetPool.end();
         await admin?.end();
     };
     for (const signal of ["SIGTERM", "SIGINT"] as const)

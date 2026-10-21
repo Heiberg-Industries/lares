@@ -23,7 +23,10 @@ import {exportPerson} from '../lib/export-person.js';
 import {erasePerson,eraseHandlingFor} from '../lib/erase-person.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
+import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
+const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
 const nonce=(member:string)=>createHash('sha256').update(`${member}:${sessionGeneration}`).digest('base64url');
 const env=(agent='helper')=>({LARES_AGENT_NAME:agent,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:'member-a'});
@@ -159,10 +162,162 @@ beforeEach(async()=>{
     await window(id,member);await db.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[id]);
     for(const agent of ['helper','helper-two']){
       const bindingId=randomUUID();bindings[`${member}:${agent}`]=bindingId;
-      await db.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'standard',$9,0.1,'active')",[bindingId,installation,id,member,endpoint,fingerprint,agent,incarnation,profile]);
+      await db.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'standard',$9,0.1,$10::jsonb,'active')",[bindingId,installation,id,member,endpoint,fingerprint,agent,incarnation,profile,JSON.stringify(pricing)]);
     }
   }
   store=new PgBudgetAdmissionStore(db,env());
+});
+describe('signed keeper gateway admission on the one-connection PostgreSQL pool',()=>{
+  const serviceKey=Buffer.alloc(32,9);
+  const witness:GatewayRecoveryWitness={observe:async()=>recovery()};
+  function authority(pool=db,source:GatewayRecoveryWitness|undefined=witness){return new GatewayBudgetAuthority(pool,serviceKey,source);}
+  function admitDocument(p:Awaited<ReturnType<typeof prepared>>){return {version:1,nonce:h(randomUUID()),ticket:p.ticket,requestHash:p.observation.requestHash,profileHash:profile,endpointHash:endpoint,keyFingerprint:fingerprint,purposeAlias:'standard'};}
+  async function rpc(selected:GatewayBudgetAuthority,path:string,document:unknown){
+    const raw=gatewayCanonical(document),reply=await selected.handle(path,gatewaySignature(serviceKey,'request',path,raw),raw);
+    if(reply.status===200)expect(verifyGatewaySignature(serviceKey,reply.headers['x-lares-signature'],'response',path,reply.body)).toBe(true);
+    return {reply,document:JSON.parse(reply.body.toString())};
+  }
+  async function allowed(selected=authority()){
+    const p=await prepared(),request=admitDocument(p),result=await rpc(selected,GATEWAY_ADMIT_PATH,request);
+    expect(result.reply.status).toBe(200);expect(result.document.state).toBe('allowed');return {selected,request,grant:result.document,p};
+  }
+  function terminal(grant:any,outputTokens=100,changes:Record<string,unknown>={}){
+    const {state,validForMs,...echoes}=grant;
+    const evidence={...echoes,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens,cacheReadTokens:40,cacheWriteTokens:0},...changes};
+    return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
+  }
+  function lostCommit(nth:number):Pool {
+    let commits=0;
+    return {query:(text:string,values?:unknown[])=>db.query(text,values),connect:async()=>{
+      const client=await db.connect();return {release:(broken?:boolean)=>client.release(broken),query:async(text:string,values?:unknown[])=>{const value=await client.query(text,values);if(text==='COMMIT'&&++commits===nth)throw new Error('lost commit acknowledgement');return value;}};
+    }} as unknown as Pool;
+  }
+  it('derives identities from the ticket, durably binds an allow, and burns lost replies',async()=>{
+    const a=await allowed();expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants')).rows[0].n).toBe(1);
+    expect((await rpc(a.selected,GATEWAY_ADMIT_PATH,a.request)).reply.status).toBe(503);
+    expect((await rpc(authority(),GATEWAY_ADMIT_PATH,{...a.request,nonce:h('replay')})).reply.status).toBe(503);
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+    const rows=(await db.query('SELECT * FROM budget_gateway_grants')).rows;
+    expect(Object.keys(rows[0]).sort()).toEqual(['attempt_id','grant_hash']);expect(JSON.stringify(rows)).not.toMatch(/standard|helper|member-a|keyFingerprint|nonce/);
+  });
+  it.each([1,2])('retains R without issuing allow after lost transaction %s acknowledgement',async which=>{
+    const p=await prepared(),request=admitDocument(p);
+    expect((await rpc(authority(lostCommit(which)),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('admitted');
+    expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants')).rows[0].n).toBe(which===2?1:0);
+    expect((await rpc(authority(),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+  });
+  it('admits only once concurrently and cannot issue another grant for an admitted attempt',async()=>{
+    const p=await prepared(),request=admitDocument(p),selected=authority();
+    const results=await Promise.all([rpc(selected,GATEWAY_ADMIT_PATH,request),rpc(selected,GATEWAY_ADMIT_PATH,request)]);
+    expect(results.map(r=>r.reply.status).sort()).toEqual([200,503]);
+    const a=(await db.query('SELECT * FROM budget_attempts')).rows[0];
+    expect(await store.recordGatewayGrant({attemptId:a.id,bindingId:a.binding_id,requestHash:a.request_hash},h('another grant'))).toBe(false);
+  });
+  it('serializes the shared cap across distinct simultaneous signed tickets',async()=>{
+    await db.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+    const p=await prepared(),q=await prepared('member-b');
+    const results=await Promise.all([rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p)),rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(q))]);
+    expect(results.map(r=>r.reply.status).sort()).toEqual([200,503]);
+  });
+  it('freshly denies revoked authority rather than trusting ticket discovery',async()=>{
+    const p=await prepared();await db.query("UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE member_id='member-a'");
+    expect((await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
+  });
+  it('keeps production closed without a real witness, even when the database says open',async()=>{
+    const p=await prepared(),request=admitDocument(p),raw=gatewayCanonical(request);
+    for(const selected of [new GatewayBudgetAuthority(db,serviceKey),productionGatewayBudgetAuthority(db)])expect((await selected.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw)).status).toBe(503);
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+  });
+  it('returns unavailable by its whole-call deadline when an injected witness stalls',async()=>{
+    const p=await prepared(),request=admitDocument(p),raw=gatewayCanonical(request),before=performance.now();
+    const selected=authority(db,{observe:()=>new Promise(()=>{})});
+    expect((await selected.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+30)).status).toBe(503);
+    expect(performance.now()-before).toBeLessThan(300);
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+  });
+  it.each([{epoch:'later-epoch'},{state:'unreconciled'},{endpointGeneration:'1'}])('cannot allow restored or unreconciled witness state %#',async changes=>{
+    const p=await prepared(),selected=authority(db,{observe:async()=>({...recovery(),...changes}) as ReturnType<typeof recovery>});
+    expect((await rpc(selected,GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
+    expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE state='admitted'")).rows[0].n).toBe(0);
+  });
+  it('refuses missing or mismatched immutable reviewed pricing',async()=>{
+    const old=bindings['member-a:helper'],next=randomUUID();
+    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
+    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',NULL))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next]);
+    bindings['member-a:helper']=next;
+    const p=await prepared();expect((await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
+    await expect(db.query('UPDATE budget_gateway_bindings SET pricing_profile=$2::jsonb WHERE id=$1',[next,JSON.stringify(pricing)])).rejects.toThrow('immutable');
+  });
+  it.each([{maximum_liability:'0.09'},{pricing_profile:{...pricing,capabilityHash:h('unrelated capability')}}])('refuses a price maximum or capability mismatch %#',async change=>{
+    const old=bindings['member-a:helper'],next=randomUUID();await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
+    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||$3::jsonb||jsonb_build_object('id',$2::text,'state','active'))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(change)]);
+    bindings['member-a:helper']=next;const p=await prepared();expect((await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+  });
+  it('uses immutable Anthropic pricing for its separate native cache categories',async()=>{
+    const old=bindings['member-a:helper'],next=randomUUID(),anthropic={...pricing,format:'anthropic',usdPerMillionTokens:{...pricing.usdPerMillionTokens,output:'80',cacheWrite:'20'}};
+    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
+    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',$3::jsonb))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(anthropic)]);
+    bindings['member-a:helper']=next;const a=await allowed();
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,100,{format:'anthropic',usage:{inputTokens:100,outputTokens:100,cacheReadTokens:40,cacheWriteTokens:20}}))).document.state).toBe('settled');
+    expect((await db.query('SELECT actual_amount FROM budget_attempts')).rows[0].actual_amount).toBe('0.0096');
+  });
+  it('retains the reservation when the reply deadline expires after the grant commits',async()=>{
+    let commits=0;
+    const slow={query:(text:string,values?:unknown[])=>db.query(text,values),connect:async()=>{
+      const client=await db.connect();return {release:(broken?:boolean)=>client.release(broken),query:async(text:string,values?:unknown[])=>{const r=await client.query(text,values);if(text==='COMMIT'&&++commits===2)await new Promise(resolve=>setTimeout(resolve,150));return r;}};
+    }} as unknown as Pool;
+    const p=await prepared(),request=admitDocument(p),raw=gatewayCanonical(request);
+    expect((await authority(slow).handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+100)).status).toBe(503);
+    expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants')).rows[0].n).toBe(1);
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await rpc(authority(),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
+  });
+  it('settles exact native cache usage and handles a lost settlement acknowledgement idempotently',async()=>{
+    const selected=authority(lostCommit(3)),a=await allowed(selected),receipt=terminal(a.grant);
+    expect((await rpc(selected,GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
+    expect((await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0]).toMatchObject({state:'settled',actual_amount:'0.0098'});
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,200))).document.state).toBe('conflict');
+    expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
+  });
+  it('preserves valid financial overages above reviewed bounds and freezes the installation',async()=>{
+    const a=await allowed();expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,2000))).document.state).toBe('conflict');
+    expect((await db.query('SELECT actual_amount,highest_observed_liability FROM budget_attempts')).rows[0]).toEqual({actual_amount:'0.1808',highest_observed_liability:'0.1808'});
+    expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
+  });
+  it('retains late exact grant correlation after rotation, old-window carry and member erasure',async()=>{
+    const a=await allowed();await store.markUnknown(a.grant.attemptId);
+    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[a.grant.bindingId]);
+    await window(installation,null);await window(accounts['member-a']!,'member-a');
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+    await db.query("DELETE FROM users WHERE id='member-a'");
+    const binding=(await db.query('SELECT key_fingerprint,purpose_alias,pricing_profile FROM budget_gateway_bindings WHERE id=$1',[a.grant.bindingId])).rows[0];
+    expect(binding).toMatchObject({key_fingerprint:null,purpose_alias:null,pricing_profile:pricing});
+    for(const changes of [{nonce:h('different nonce')},{purposeAlias:'different'},{keyFingerprint:h('different key')},{endpointHash:h('different endpoint')},{bindingId:randomUUID()},{profileHash:h('different profile')}])expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,100,changes))).reply.status).toBe(503);
+    expect((await db.query('SELECT state,reserved_amount FROM budget_attempts')).rows[0]).toEqual({state:'unknown',reserved_amount:'0.1'});
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');
+    expect((await db.query('SELECT a.state,a.installation_window_id<>i.active_window_id AS old_window FROM budget_attempts a JOIN budget_accounts i ON i.id=a.installation_account_id')).rows[0]).toEqual({state:'settled',old_window:true});
+  });
+  it('rejects forged totals, nondispatch refunds, invalid usage and mismatched receipt hashes',async()=>{
+    const a=await allowed();
+    for(const change of [{actualAmount:'0'},{kind:'affirmative-nondispatch'},{usage:{inputTokens:10,outputTokens:0,cacheReadTokens:11,cacheWriteTokens:0}},{receiptHash:h('wrong')}]){
+      const receipt=terminal(a.grant,100,change);if('receiptHash'in change)receipt.receiptHash=change.receiptHash;
+      expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
+    }
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+  });
+  it('reapplies all ordered SQL without altering opaque grants, prices or reservations',async()=>{
+    const a=await allowed(),before=(await db.query('SELECT * FROM budget_gateway_grants')).rows;
+    // Baseline runs once through the runner; later additive migrations support reapply.
+    for(const file of readdirSync(sql).filter(f=>f.endsWith('.sql')&&f!=='001_baseline.sql').sort())await db.query(readFileSync(new URL(file,sql),'utf8'));
+    expect((await db.query('SELECT * FROM budget_gateway_grants')).rows).toEqual(before);
+    for(const text of ["UPDATE budget_gateway_grants SET grant_hash=repeat('a',64)",'DELETE FROM budget_gateway_grants',"UPDATE budget_gateway_bindings SET pricing_profile='{}'"])await expect(db.query(text)).rejects.toThrow('immutable');
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant))).document.state).toBe('settled');
+  });
 });
 describe('inactive budget admission on real PostgreSQL',()=>{
   it('requires registered invocation authority and the actual selected alias',async()=>{

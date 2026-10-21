@@ -54,6 +54,13 @@ describe("console mutation origin boundary", () => {
     expect((await middleware(request(`/api/doors/example/${kind}/events`, "POST", null))).headers.get("x-middleware-next")).toBe("1");
 
   });
+  it.each(['admit','settle'])('passes exact gateway %s machine RPC without an origin or cookie',async operation=>{
+    const middleware=await guard();
+    expect((await middleware(request(`/v1/gateway-budget/${operation}`,'POST',null,{cookie:''}))).headers.get('x-middleware-next')).toBe('1');
+  });
+  it.each(['/v1/gateway-budget/admit?x=1','/v1/gateway-budget/%61dmit','/v1/gateway-budget/admit/','/v1/gateway-budget/other'])('does not exempt alternate gateway path %s',async path=>{
+    const middleware=await guard();expect((await middleware(request(path,'POST',null,{cookie:''}))).status).toBe(403);
+  });
   it.each(["/api/doors/example/slack/events/extra", "/api/doors/example/other/events", "/api/auth/callback"])("does not exempt other mutation paths: %s", async path => {
     const middleware = await guard();
     expect((await middleware(request(path, "POST", null))).status).toBe(403);

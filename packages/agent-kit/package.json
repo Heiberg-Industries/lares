@@ -13,6 +13,8 @@
   "exports": {
     "./vault-files": "./src/vault-files.ts",
     "./budget-admission-store": "./src/budget-admission-store.ts",
+    "./gateway-admission-protocol": "./src/gateway-admission-protocol.ts",
+    "./gateway-pricing": "./src/gateway-pricing.ts",
     "./vault-area-store": "./src/vault-area-store.ts",
     "./personal-action-store": "./src/personal-action-store.ts",
     "./grant-store": "./src/grant-store.ts",
