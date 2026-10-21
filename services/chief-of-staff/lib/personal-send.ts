@@ -1,8 +1,6 @@
-/** Trusted own-account executor only; deliberately no catalogue tool is enabled by this slice.
+/** Trusted own-account executor. Only an exact authenticated approval can reach the mutation.
  * Claim COMMIT is transaction A. Current authority, refresh, ONE mutation, rotation and receipt
  * are transaction B, using the custody callback's client throughout. Unknown never resends.
- * Caller fixtures currently describe a synthetic resolver context. Actual exact-response
- * admission and model continuation MUST land separately before any tool enables this path.
  */
 import type { Pool,PoolClient } from 'pg';
 import { PgAccountStore,type ResolvedPersonalResource } from '@lares/agent-kit/account-store';
@@ -10,7 +8,8 @@ import { rotateAccountCredential,type StoredAccountCredential } from '@lares/age
 import { PgPersonalActionStore,type PersonalActionApprovedReference,type PersonalActionOutcome,type PersonalActionReceipt } from '@lares/agent-kit/personal-action-store';
 import { consoleAdmission,requireConsoleSessionBinding,type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { managedIdentity } from '@lares/agent-kit/door-authority';
-import { callIdFrom } from '@lares/agent-kit/approval-ledger';
+import {privateResolverAdmission} from '@lares/agent-kit/private-console-resume';
+import { payloadFingerprint,callIdFrom } from '@lares/agent-kit/approval-ledger';
 import { parseDefinition } from '@lares/agent-kit/definition';
 import { grantFor,scopeAtLeast,autonomyOf } from '@lares/agent-kit/manifest';
 import { googlePersonalSend } from './google-personal-send.js';
@@ -32,7 +31,7 @@ export const mountedPersonalSendRuntime:PersonalSendRuntime={async open({account
 }};
 /** Applied definition, explicit acting-member policy and current board always win. The table
  * lock also protects an ABSENT ratchet row from a concurrent first 'never' insertion. */
-export async function requirePersonalSendPolicy(db:PoolClient,agent:string,incarnation:string,member:string):Promise<void> {
+export async function requirePersonalSendPolicy(db:PoolClient,agent:string,incarnation:string,member:string):Promise<string> {
   await db.query('LOCK TABLE ratchet IN SHARE MODE');
   const {rows}=await db.query(`SELECT r.applied_definition FROM agent_resources r JOIN agent_definitions d ON d.name=r.name
     WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token
@@ -47,14 +46,25 @@ export async function requirePersonalSendPolicy(db:PoolClient,agent:string,incar
   const board=await db.query("SELECT action,level FROM ratchet WHERE agent=$1 AND capability='personal_mailbox' AND action IN ('','send') FOR SHARE",[agent]);
   const level=board.rows.find(r=>r.action==='send')?.level??board.rows.find(r=>r.action==='')?.level??definitionAutonomy;
   if(!['gated','autonomous'].includes(level))throw new PersonalSendError();
+  // Audit IDs survive row deletion/restoration. SQL014 separately advances current access
+  // revision on definition/member policy changes; content hashes alone cannot detect restoration.
+  const history=await db.query(`SELECT COALESCE(max(id),0)::text AS revision FROM ratchet_audit
+    WHERE agent=$1 AND capability='personal_mailbox'`,[agent]);
+  const access=await db.query('SELECT revision::text AS revision FROM agent_access WHERE agent_name=$1 FOR SHARE',[agent]);
+  if(!access.rows[0])throw new PersonalSendError();
+  return payloadFingerprint('personal-mail-policy',{definition,memberPolicy:policy.rows[0].allowed_capabilities,
+    accessRevision:access.rows[0].revision,ratchetRevision:history.rows[0].revision,board:board.rows.sort((a,b)=>a.action.localeCompare(b.action)),alwaysAsk:true});
+}
+export async function requirePersonalSendApprovalPolicy(db:PoolClient,ref:PersonalActionApprovedReference){
+  if(!ref.policyHash||ref.policyHash!==await requirePersonalSendPolicy(db,ref.selection.agentId,ref.selection.incarnation,ref.selection.actorMemberId))throw new PersonalSendError();
 }
 function caller(ctx:ConsoleAuthorityContext,ref:PersonalActionApprovedReference,env:NodeJS.ProcessEnv) {
-  const current=consoleAdmission(ctx.session?.auth?.current),initial=consoleAdmission(ctx.session?.auth?.initiator),own=managedIdentity(env),s=ref.selection;
-  if(!current||current.purpose!=='resolver'||!initial||initial.purpose!=='human'||current.memberId!==initial.memberId||
-    current.admissionNonce!==initial.admissionNonce||current.memberId!==s.actorMemberId||ref.resolvedByMemberId!==s.actorMemberId||
+  const current=privateResolverAdmission(ctx.session?.auth?.current),initial=consoleAdmission(ctx.session?.auth?.initiator),own=managedIdentity(env),s=ref.selection;
+  if(!ref.policyHash||!current||current.optionId!=='approve'||current.requestId!==ref.requestId||!initial||initial.purpose!=='human'||current.memberId!==initial.memberId||
+    current.memberId!==s.actorMemberId||ref.resolvedByMemberId!==s.actorMemberId||
     !own||own.name!==s.agentId||own.incarnation!==s.incarnation||ctx.session?.id!==s.sessionId||
     callIdFrom(ctx)!==s.originalCallId||ref.approvalCallId!==s.originalCallId)throw new PersonalSendError();
-  return {agent:own.name,incarnation:own.incarnation,sessionId:s.sessionId,memberId:s.actorMemberId,admissionNonce:current.admissionNonce};
+  return {agent:own.name,incarnation:own.incarnation,sessionId:s.sessionId,memberId:s.actorMemberId,admissionNonce:initial.admissionNonce};
 }
 export async function executeApprovedPersonalSend(ctx:ConsoleAuthorityContext,ref:PersonalActionApprovedReference,
   options:{pool:Pool;actions:PgPersonalActionStore;runtime?:PersonalSendRuntime;env?:NodeJS.ProcessEnv}):Promise<PersonalActionOutcome> {
@@ -74,7 +84,7 @@ export async function executeApprovedPersonalSend(ctx:ConsoleAuthorityContext,re
       async(selection,credential,db)=>{
         if(selection.account.connectorId!==ref.selection.connectorId||selection.resource.externalId!==selection.account.providerAccount.subject)throw new PersonalSendError();
         await actions.validateClaimInTransaction(permit,db); // action BEFORE approval, binding last
-        await requirePersonalSendPolicy(db,binding.agent,binding.incarnation,binding.memberId);
+        await requirePersonalSendApprovalPolicy(db,ref);
         await requireConsoleSessionBinding(binding,db,env);
         const signal=AbortSignal.timeout(15_000);
         let opened:Awaited<ReturnType<PersonalSendRuntime['open']>>|undefined;
@@ -83,7 +93,7 @@ export async function executeApprovedPersonalSend(ctx:ConsoleAuthorityContext,re
             encrypted=>rotateAccountCredential(db,{id:selection.account.id,ownerMemberId:binding.memberId,
               connectorId:selection.account.connectorId,generation:selection.account.generation},credential,encrypted));
           // Recheck DB-clock TTL and grant expiry AFTER identity/refresh and all lock waits.
-          await requirePersonalSendPolicy(db,binding.agent,binding.incarnation,binding.memberId);
+          await requirePersonalSendApprovalPolicy(db,ref);
           await requireConsoleSessionBinding(binding,db,env);
           await actions.validateClaimInTransaction(permit,db);
           signal.throwIfAborted();

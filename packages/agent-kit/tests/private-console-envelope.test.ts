@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage} from '../src/private-console-envelope.js';
+import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage,verifiedPrivateConsoleResponse} from '../src/private-console-envelope.js';
 describe('private console envelope',()=>{
  const path='/eve/v1/session/private';
  it('accepts current browser text, create operation IDs and exact card answers',()=>{
@@ -44,4 +44,16 @@ it('does not issue receipts for empty creates, controls, non-POST requests or fa
  const request=new Request('https://example.invalid/eve/v1/session',{method:'POST',body:JSON.stringify({message:'hello'})});
  assertPrivateConsoleEnvelope({message:'hello'},'/eve/v1/session');
  expect(()=>assertVerifiedPrivateConsoleMessage(request,'hello')).toThrow();
+});
+
+it('issues one bounded response receipt only for the same validated Request',async()=>{
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body:JSON.stringify({inputResponses:[{requestId:'exact',optionId:'approve'}]})});
+ await assertPrivateConsoleRequest(request);const copy=request.clone();await request.json();
+ expect(verifiedPrivateConsoleResponse(request)).toEqual({requestId:'exact',optionId:'approve'});
+ expect(Object.isFrozen(verifiedPrivateConsoleResponse(request))).toBe(true);
+ expect(()=>verifiedPrivateConsoleResponse(copy)).toThrow();
+ for(const body of [{message:'human'},{inputResponses:[{requestId:'exact',optionId:'other'}]},{inputResponses:[{requestId:'one',optionId:'approve'},{requestId:'two',optionId:'approve'}]}]){
+  const invalid=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body:JSON.stringify(body)});
+  await assertPrivateConsoleRequest(invalid).catch(()=>undefined);expect(()=>verifiedPrivateConsoleResponse(invalid)).toThrow();
+ }
 });

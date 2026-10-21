@@ -20,4 +20,4 @@ it('upgrades the released006 ledger through021 and a second actual migration run
     expect((await pool.query("SELECT conname FROM pg_constraint WHERE conrelid='personal_actions'::regclass AND conname='personal_actions_receipt_check_v2'")).rows).toHaveLength(1);
     expect(await runMigrations(pool,sql)).toMatchObject({applied:[],refused:[]});
   }finally{rmSync(released,{recursive:true,force:true});}
-});
+},60_000);

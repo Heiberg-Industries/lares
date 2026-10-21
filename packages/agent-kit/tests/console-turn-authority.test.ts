@@ -196,9 +196,10 @@ describe('durable console authority on disposable PostgreSQL',()=>{
  });
  it('checks all session routes even when onMessage is skipped; reset retires forever',async()=>{
   await bindConsoleSession(tuple,db,env);
-  for(const [suffix,purpose,body] of [['/wrun_test/stream','read',undefined],['/wrun_test','resolver',{inputResponses:[]}],['/wrun_test/cancel','control',{}],['/wrun_test/clear','control',{}],['/wrun_test/compact','control',{}]] as const){
+  for(const [suffix,purpose,body] of [['/wrun_test/stream','read',undefined],['/wrun_test/cancel','control',{}],['/wrun_test/clear','control',{}],['/wrun_test/compact','control',{}]] as const){
    expect(await consoleRouteAdmission(request(suffix,purpose,body),db,env)).toMatchObject({lares_member_id:'Owner-ID',lares_purpose:purpose});
   }
+  await expect(consoleRouteAdmission(request('/wrun_test','resolver',{inputResponses:[]}),db,env)).rejects.toThrow();
   await consoleRouteAdmission(request('/wrun_test/reset','control',{}),db,env);
   await expect(requireConsoleSessionBinding(tuple,db,env)).rejects.toThrow('Conversation authority');
   await expect(bindConsoleSession(tuple,db,env)).rejects.toThrow('Conversation authority');
