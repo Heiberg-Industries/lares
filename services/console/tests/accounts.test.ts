@@ -71,8 +71,8 @@ describe("accounts data layer", () => {
     expect(googleOrgs().map((o) => o.id)).not.toContain("console");
   });
 
-  // Minor D (final review): GOOGLE_CLIENT_ID_FILE / GOOGLE_CLIENT_SECRET_FILE is a real pair
-  // (agent-box/compose.yaml:717, the travel agent's client-id-from-file secret) — the discovery regex's
+  // GOOGLE_CLIENT_ID_FILE / GOOGLE_CLIENT_SECRET_FILE is a real pair
+  // (a compose file's client-id-from-file secret) — the discovery regex's
   // optional `(_FILE)?` group used to fall back to reading "FILE" itself as an org id.
   it("never surfaces the readSecret _FILE suffix as a phantom org", () => {
     process.env.GOOGLE_CLIENT_ID_FILE = "/run/secrets/google-client-id-acme";
@@ -82,8 +82,8 @@ describe("accounts data layer", () => {
 
   // Regression: the console shipped WITHOUT calendar.events while oauth-enroll.ts granted it,
   // so any console-enrolled mailbox silently lost calendar writes (ACCESS_TOKEN_SCOPE_
-  // INSUFFICIENT) and could only regain them by re-consenting. Caught 2026-08-05 during the
-  // GCP project migration. An exact-set assertion, not toContain — toContain is what let the
+  // INSUFFICIENT) and could only regain them by re-consenting. Caught during an OAuth project
+  // migration. An exact-set assertion, not toContain — toContain is what let the
   // omission through in the first place.
   it("grants EXACTLY the same scope set as agent-runtime/bin/oauth-enroll.ts", () => {
     expect([...GOOGLE_SCOPES].sort()).toEqual(

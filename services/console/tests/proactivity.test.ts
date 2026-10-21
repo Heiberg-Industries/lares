@@ -97,7 +97,7 @@ describe("resolveConsoleOwnerClock", () => {
   const now = new Date("2026-09-08T12:00:00Z");
   it("uses a fresh Slack-profile signal", () => {
     const c = resolveConsoleOwnerClock(now, {
-      homeTz: "Europe/Oslo",
+      homeTz: "Europe/Berlin",
       slackProfile: { tz: "America/New_York", observedAt: new Date("2026-09-08T09:00:00Z") },
     });
     expect(c.tz).toBe("America/New_York");
@@ -106,16 +106,16 @@ describe("resolveConsoleOwnerClock", () => {
   });
   it("falls back to home when the signal is older than 24 h", () => {
     const c = resolveConsoleOwnerClock(now, {
-      homeTz: "Europe/Oslo",
+      homeTz: "Europe/Berlin",
       slackProfile: { tz: "America/New_York", observedAt: new Date("2026-09-06T09:00:00Z") },
     });
-    expect(c.tz).toBe("Europe/Oslo");
+    expect(c.tz).toBe("Europe/Berlin");
     expect(c.source).toBe("home");
     expect(c.detail).toMatch(/stale/i);
   });
   it("ignores a timezone this runtime does not know", () => {
-    const c = resolveConsoleOwnerClock(now, { homeTz: "Europe/Oslo", slackProfile: { tz: "Mars/Olympus", observedAt: now } });
-    expect(c).toMatchObject({ tz: "Europe/Oslo", source: "home" });
+    const c = resolveConsoleOwnerClock(now, { homeTz: "Europe/Berlin", slackProfile: { tz: "Mars/Olympus", observedAt: now } });
+    expect(c).toMatchObject({ tz: "Europe/Berlin", source: "home" });
   });
   it("falls back to UTC when OWNER_HOME_TZ is unusable", () => {
     expect(resolveConsoleOwnerClock(now, { homeTz: "not/a/zone" }).tz).toBe("UTC");
@@ -123,7 +123,7 @@ describe("resolveConsoleOwnerClock", () => {
   it("says nothing about a trip — the console cannot see the travel agent's trip store", () => {
     // The console container does not mount /srv/travel agent (compose.yaml: only /srv/taste), so a
     // trip-set clock is visible on the box and NOT here. The page says so rather than implying home.
-    const c = resolveConsoleOwnerClock(now, { homeTz: "Europe/Oslo" });
+    const c = resolveConsoleOwnerClock(now, { homeTz: "Europe/Berlin" });
     expect(c.source).toBe("home");
     expect(c.tripVisible).toBe(false);
   });
@@ -234,12 +234,12 @@ describe("owner-clock formatting", () => {
   it("ownerDayIn gives the owner's calendar day, not the server's", () => {
     // 01:30 UTC on the 9th is still the 8th in New York.
     expect(ownerDayIn(new Date("2026-09-09T01:30:00Z"), "America/New_York")).toBe("2026-09-08");
-    expect(ownerDayIn(new Date("2026-09-09T01:30:00Z"), "Europe/Oslo")).toBe("2026-09-09");
+    expect(ownerDayIn(new Date("2026-09-09T01:30:00Z"), "Europe/Berlin")).toBe("2026-09-09");
   });
   it("formatInOwnerTz renders a ledger row's time on the owner's clock", () => {
-    expect(formatInOwnerTz(new Date("2026-09-08T19:05:00Z"), "Europe/Oslo")).toBe("2026-09-08 21:05");
+    expect(formatInOwnerTz(new Date("2026-09-08T19:05:00Z"), "Europe/Berlin")).toBe("2026-09-08 21:05");
     expect(formatInOwnerTz(new Date("2026-09-08T19:05:00Z"), "America/New_York")).toBe("2026-09-08 15:05");
-    expect(formatInOwnerTz(null, "Europe/Oslo")).toBe("");
+    expect(formatInOwnerTz(null, "Europe/Berlin")).toBe("");
   });
 });
 

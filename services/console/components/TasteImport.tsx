@@ -209,7 +209,7 @@ export function ListCountry({ lists }: { lists: string[] }) {
 }
 
 /** Anything else the owner has as a list: a playlist, dishes to cook, a restaurant list a friend
- *  sent him. Bulleted, numbered or bare lines all read the same. */
+ *  sent the owner. Bulleted, numbered or bare lines all read the same. */
 export function PasteImport() {
   const [domain, setDomain] = useState("music");
   const [name, setName] = useState("");

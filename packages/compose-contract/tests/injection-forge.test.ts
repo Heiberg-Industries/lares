@@ -1,4 +1,4 @@
-// Slice 1 of the injection test suite: the contract itself.
+// The injection test suite, part one: the contract itself.
 //  - a body line that starts with "## " cannot forge a block heading or a note;
 //  - the corpus every builder test walks is well formed.
 import { describe, it, expect } from "vitest";

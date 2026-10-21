@@ -1,7 +1,7 @@
 # services/sync-jobs
 
 One image, two scheduled jobs — `notion-sync` (hourly Notion ↔ Brain vault) and `atlas-sync`
-(daily Atlas Part B). Both are brand-neutral, tick in-process, and are not agents.
+(daily Atlas sync). Both are brand-neutral, tick in-process, and are not agents.
 
 **The rule:** this image never carries an agent, a persona, a door or a route. A job
 of a different shape gets its own Dockerfile.

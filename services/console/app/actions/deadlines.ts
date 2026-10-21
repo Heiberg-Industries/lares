@@ -136,7 +136,7 @@ export async function addDeadline(input: {
  * for `(owner, entity, rule_key, due_date)` — there is no unique constraint on that combination
  * (sql/001_baseline.sql declares none), so this checks by hand rather than relying on `ON CONFLICT`.
  *
- * ALREADY-PAST DATES ARE SKIPPED (review fix), the same semantics as the kit's `mintYear`
+ * ALREADY-PAST DATES ARE SKIPPED, the same semantics as the kit's `mintYear`
  * and the chief of staff's `deadline_mint_statutory`: a mid-year mint would otherwise insert every term from
  * January onwards, each overdue on arrival, and the brief names an overdue row every morning.
  * They come back in `skippedPast` by title so the form can say which — add one by hand if it is

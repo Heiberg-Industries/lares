@@ -157,10 +157,10 @@ export interface MintYearMirrorResult {
  * that do not apply; an unknown key THROWS, same reasoning as the kit — a silently-ignored typo
  * leaves a deadline standing (or missing) that the owner believed they had chosen otherwise.
  *
- * SAME already-past semantics as the kit (review fix): minting a year that has already
+ * SAME already-past semantics as the kit: minting a year that has already
  * started inserts only the terms still ahead, because a row that is overdue on arrival is named in
  * the brief EVERY morning from then on. `today` is the owner's day (`ownerDayIn`), required rather
- * than defaulted for the same reason the kit requires it — the boundary is a calendar day on HIS
+ * than defaulted for the same reason the kit requires it — the boundary is a calendar day on the OWNER's
  * clock, not the server's.
  */
 export function mintYearFromMirror(

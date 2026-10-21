@@ -34,21 +34,21 @@ function tabStorage(): Storage | null {
 }
 
 /**
- * W8B-s3 — the thin client half. All state and transport is eve's own `useEveAgent`; this
+ * The thin client half. All state and transport is eve's own `useEveAgent`; this
  * component only turns the hook's snapshot into the plain-style form the rest of the console uses,
  * and turns a submit into a `send`.
  *
  * `host` is a same-origin prefix, never an absolute address — `/api/chat/<name>` is the route
- * `services/console/app/api/chat/[name]/[...path]/route.ts` answers (W8B-s2's `forwardChat`), so
+ * `services/console/app/api/chat/[name]/[...path]/route.ts` answers (`forwardChat`), so
  * this component never sees, holds, or sends the agent's own route password; the browser's only
  * credential is the console's own session cookie, exactly as every other page here.
  *
- * `prewarm` is left at its default (`false`, per owner decision B2): no session exists until the
+ * `prewarm` is left at its default (`false`): no session exists until the
  * first message is sent, so opening this page creates nothing.
  *
- * W8B-s5 — answering an approval. `agent.respond([{ requestId, optionId }])` is eve's own call and
+ * Answering an approval. `agent.respond([{ requestId, optionId }])` is eve's own call and
  * the only one that answers a card; the `requestId` comes from the card's own input request, NOT
- * from the tool call id (W8B-s4 measured the difference on the wire). Three rules live here rather
+ * from the tool call id (the two differ on the wire). Three rules live here rather
  * than in the transcript, because they are about time and the transcript is pure:
  *
  *  - ONE answer per click. `answering` holds the request id while the POST is in flight; every

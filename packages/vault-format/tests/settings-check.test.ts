@@ -10,10 +10,9 @@ import {
   type ProbeFile,
 } from "../src/settings-check.js";
 
-// Adapted from the plan's snippet: `checkSettings` there took only `(reader, env)`. This slice's
-// own bar (secrets are FILES; a `*_FILE` check reads only exists/readable/empty, never the value)
-// needs a third, injected argument so no real file ever has to exist for a test. Every call below
-// was adapted to pass one. See the builder's report for the full reasoning.
+// `checkSettings` takes a third, injected argument besides `(reader, env)`: secrets are FILES,
+// and a `*_FILE` check reads only exists/readable/empty, never the value, so a probe is
+// injected and no real file ever has to exist for a test.
 
 const FULL: NodeJS.ProcessEnv = {
   DATABASE_URL: "postgres://proof@db/proof",

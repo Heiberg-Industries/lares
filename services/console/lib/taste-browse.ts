@@ -12,7 +12,7 @@ import { isPlace, type TasteEntry } from "@lares/taste";
 import type { StoredEntry } from "./taste-store";
 
 /** How long an entry counts as fresh. Seven days is one upload session's worth of memory: long
- *  enough that the owner can come back next weekend and still see what he added, short enough that
+ *  enough that the owner can come back next weekend and still see what was added, short enough that
  *  the badge means "recently" rather than decorating the whole store forever. */
 export const FRESH_DAYS = 7;
 

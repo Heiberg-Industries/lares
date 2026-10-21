@@ -202,7 +202,7 @@ describe("the console's date arithmetic has not drifted from the kit's", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// W8B-s5 — the console's APPROVAL_LIFETIME_MS against the kit's own APPROVAL_TTL_MS
+// The console's APPROVAL_LIFETIME_MS against the kit's own APPROVAL_TTL_MS
 // (packages/agent-kit/src/approval-ledger.ts), read as text for the same reason as every mirror
 // above, and for one more: that module opens a pg Pool, so it cannot be imported into a browser
 // bundle at all. If the agent's lifetime is shortened and the console's is not, web chat shows a
@@ -231,8 +231,8 @@ const CHIEF_LIB = path.join(import.meta.dirname, "..", "..", "chief-of-staff", "
 // ---------------------------------------------------------------------------------------------
 //  — the console's BRIEF_LANGUAGES_MIRROR against chief-of-staff's own supported-language list
 // (`services/chief-of-staff/lib/brief-settings.ts`'s `BRIEF_LANGUAGES`), read as text for the same
-// reason as the approval lifetime above: a separate package, a separate build, no import. The owner's
-// amendment of 2026-09-18 made this list grow past "nb"/"en" and said it will grow again, which is
+// reason as the approval lifetime above: a separate package, a separate build, no import. Growth in the supported languages
+// made this list grow past "nb"/"en" and said it will grow again, which is
 // exactly the kind of two-place truth this file exists to guard.
 // ---------------------------------------------------------------------------------------------
 
