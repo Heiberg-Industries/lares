@@ -1,11 +1,12 @@
 /** Server-only, short-lived consent cookie. State alone never permits callback replay. */
 import { createHash } from "node:crypto";
 import { EncryptJWT, jwtDecrypt } from "jose";
+import { personalConsentPower, type PersonalConsentPower } from "@lares/agent-kit/personal-consent";
 import { readSecret } from "./secrets";
 
 export const ACCOUNT_FLOW_COOKIE = "lares_account_consent";
 export const ACCOUNT_FLOW_MAX_AGE = 600;
-interface FlowBase { memberId: string; sessionHash: string; org: string; clientId: string; state: string; nonce: string; verifier: string }
+interface FlowBase { power: PersonalConsentPower; memberId: string; sessionHash: string; org: string; clientId: string; state: string; nonce: string; verifier: string }
 export type AccountFlow = FlowBase & ({ provider: "google" } | { provider: "microsoft"; tenantId: string }) & ({ intent: "new" } | { intent: "reconnect"; update: { accountId: string; generation: number; lifecycleRevision: number } });
 function parseFlow(value: unknown): AccountFlow {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid consent flow");
@@ -15,9 +16,10 @@ function parseFlow(value: unknown): AccountFlow {
   if (flow.provider !== "google" && flow.provider !== "microsoft") throw new Error("Invalid consent provider");
   if (flow.provider === "microsoft" && (typeof flow.tenantId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(flow.tenantId) || flow.tenantId === "9188040d-6c67-4c5b-b112-36a304b66dad")) throw new Error("Invalid work tenant");
   const provider = flow.provider === "google" ? { provider: "google" as const } : { provider: "microsoft" as const, tenantId: String(flow.tenantId) };
-  const allowed = [...fields,"provider",...(flow.provider === "microsoft" ? ["tenantId"] : []),"intent",...(flow.intent === "reconnect" ? ["update"] : [])];
+  const power = personalConsentPower(flow.power);
+  const allowed = ["power",...fields,"provider",...(flow.provider === "microsoft" ? ["tenantId"] : []),"intent",...(flow.intent === "reconnect" ? ["update"] : [])];
   if (Object.keys(flow).some(field => !allowed.includes(field))) throw new Error("Invalid consent flow");
-  const common: FlowBase = { memberId: String(flow.memberId), sessionHash: String(flow.sessionHash), org: String(flow.org),
+  const common: FlowBase = { power, memberId: String(flow.memberId), sessionHash: String(flow.sessionHash), org: String(flow.org),
     clientId: String(flow.clientId), state: String(flow.state), nonce: String(flow.nonce), verifier: String(flow.verifier) };
   if (flow.intent === "new") return { ...common, ...provider, intent: "new" };
   if (flow.intent !== "reconnect" || !flow.update || typeof flow.update !== "object" || Array.isArray(flow.update)) throw new Error("Invalid consent intent");

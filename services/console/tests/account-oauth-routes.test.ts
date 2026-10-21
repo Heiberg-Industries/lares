@@ -14,7 +14,7 @@ vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.e
 import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
 import { GET } from "../app/api/accounts/google/callback/route";
 import { POST } from "../app/api/accounts/google/start/route";
-const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
+const flow: AccountFlow = { power: "read", provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
 const ticket = { accountId: "account-a", generation: 3, lifecycleRevision: 4 };
 const callback = (state = "state") => GET(new Request(`https://internal.example/api/accounts/google/callback?code=code&state=${state}`));
 async function start(values: Record<string,string>) { const form = new FormData(); for (const [key,value] of Object.entries(values)) form.set(key,value); return POST(new Request("https://internal.example/start", { method: "POST", body: form })); }
@@ -87,4 +87,21 @@ it.each(["new", "reconnect"] as const)("refuses %s when the exact session ends d
 it("refuses a sealed Microsoft flow before Google provider work", async () => {
   mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, provider: "microsoft", tenantId: "11111111-2222-4333-8444-555555555555" }));
   await callback(); expect(mock.finish).not.toHaveBeenCalled();
+});
+
+it.each(["new", "reconnect"])("passes explicit closed permission power for %s, keeping read the absent-field default", async intent => {
+  const values = { intent, email: "own@example.test", accountId: "account-a", generation: "3" };
+  await start(values); expect(mock.start).toHaveBeenLastCalledWith(expect.objectContaining({ power: "read" }));
+  await start({ ...values, power: "read+mail-send" });
+  expect(mock.start).toHaveBeenLastCalledWith(expect.objectContaining({ power: "read+mail-send" }));
+});
+it.each(["Mail.Send", "read+calendar-write", "", "https://www.googleapis.com/auth/gmail.send"])("rejects unknown permission input %s before consent", async power => {
+  await start({ intent: "new", email: "own@example.test", power }); expect(mock.start).not.toHaveBeenCalled();
+});
+it("refuses duplicate permission fields and preserves encrypted send intent through callback", async () => {
+  const form = new FormData(); form.set("intent", "new"); form.set("email", "own@example.test"); form.append("power", "read"); form.append("power", "read+mail-send");
+  await POST(new Request("https://internal.example/start", { method: "POST", body: form }));
+  expect(mock.start).not.toHaveBeenCalled();
+  mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, power: "read+mail-send" }));
+  await callback(); expect(mock.finish).toHaveBeenCalledWith(expect.any(URL), expect.objectContaining({ power: "read+mail-send" }));
 });
