@@ -57,6 +57,8 @@ import { google } from "googleapis";
 import {
   GoogleConfigError,
   buildOAuth2Client,
+  decryptSecret,
+  readTokenEncKey,
   getMostRecentRefreshToken,
   listDecryptedRefreshTokens,
   readSecretFile,
@@ -128,6 +130,36 @@ export interface GmailMessagesClient {
  *  its own — only an authenticated client that an agent still has to turn into one. */
 function buildAuthedGmail(cfg: GoogleOrgConfig, refreshToken: string): GmailApi {
   return google.gmail({ version: "v1", auth: buildOAuth2Client(cfg, refreshToken) });
+}
+
+/** Enforce one shared deadline AFTER Gaxios merges OAuth refresh/API request options.
+ * OAuth refresh supplies its own retry config, and a per-request timeout can replace an
+ * already-aborted signal during preparation. This supported request interceptor restores
+ * the exact signal immediately before transport; no outer race releases locks early.
+ */
+export function bindPersonalGoogleDeadline(auth: ReturnType<typeof buildOAuth2Client>, signal: AbortSignal): void {
+  auth.transporter.interceptors.request.add({
+    resolved: async options => {
+      signal.throwIfAborted();
+      return { ...options, signal, timeout: undefined, retry: false,
+        retryConfig: { retry: 0, noResponseRetries: 0, shouldRetry: () => false } };
+    },
+  });
+}
+
+/** Exact server-held credential only: no token lookup, mailbox/email selection or default.
+ * The narrow client never leaves the account store's locked callback.
+ */
+export function personalGmailReader(credential: { refreshTokenEnc: string; orgId: string }, signal: AbortSignal): Pick<GmailClient, "search" | "read"> {
+  const cfg = orgConfig(credential.orgId);
+  const refreshToken = decryptSecret(credential.refreshTokenEnc, readTokenEncKey());
+  const auth = buildOAuth2Client(cfg, refreshToken);
+  bindPersonalGoogleDeadline(auth, signal);
+  const api = testGmailApiFactory
+    ? testGmailApiFactory(cfg, refreshToken)
+    : google.gmail({ version: "v1", auth });
+  const client = makeGmailClient(wrapGmailApi(api));
+  return { read: client.read, search: client.search };
 }
 
 /** Injectable for tests only — swaps the real googleapis client factory for a stub so

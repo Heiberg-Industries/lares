@@ -306,14 +306,14 @@ describe("renderEnvironment — keyed summary parts", () => {
     autonomy: {}, skills: [],
   });
   const ALL = [
-    "gmail_search", "gmail_read", "gmail_signature", "gmail_draft", "gmail_send",
+    "gmail_accounts", "gmail_search", "gmail_read", "gmail_signature", "gmail_draft", "gmail_send",
     "twenty_lookup", "twenty_get_person", "twenty_company_for_person",
     "twenty_note", "twenty_comm_state", "twenty_do_not_contact", "twenty_create_opportunity", "twenty_set_stage",
     "meeting_followup_send", "gmail_draft_recipients",
     // keyed two more sentences of the gmail summary on these — "every tool" includes them.
     "meeting_followup_record_denial", "meeting_followup_redraft",
   ];
-  const READS = ["gmail_search", "gmail_read", "gmail_signature", "twenty_lookup", "twenty_get_person", "twenty_company_for_person"];
+  const READS = ["gmail_accounts", "gmail_search", "gmail_read", "gmail_signature", "twenty_lookup", "twenty_get_person", "twenty_company_for_person"];
   const bulletFor = (env: string, cap: string): string => env.split("\n").filter((l) => l.includes(`**${cap}**`)).join("\n");
 
   it("an agent holding every tool renders the paragraph unchanged — keying is invisible", () => {

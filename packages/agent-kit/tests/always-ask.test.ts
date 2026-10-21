@@ -25,6 +25,11 @@ describe("always-ask table", () => {
   it("classifies every engine tool — a new tool without a line fails here", () => {
     expect(new Set(Object.keys(TOOL_CATEGORIES))).toEqual(allDocTools());
   });
+  it("personal mailbox listing is a read with no contact recipients or always-ask category", () => {
+    expect(TOOL_CATEGORIES.gmail_accounts).toEqual([]);
+    expect(mustAlwaysAsk("gmail_accounts")).toEqual({ ask: false });
+    expect(RECIPIENTS_OF.gmail_accounts).toBeUndefined();
+  });
   it("money, delete and publish always ask", () => {
     expect(mustAlwaysAsk("calendar_delete_event")).toEqual({ ask: true, reason: "deleting data always asks first" });
     expect(mustAlwaysAsk("agent-kit__vault_drop")).toEqual({ ask: true, reason: "deleting data always asks first" });

@@ -288,7 +288,7 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
     summary: [
       "A real, connected Gmail mailbox.",
       {
-        tools: ["gmail_search", "gmail_read", "gmail_signature"],
+        tools: ["gmail_accounts", "gmail_search", "gmail_read", "gmail_signature"],
         text:
           "I search it, read a message by id, and fetch the account's configured signature " +
           "without needing approval, since none of that changes anything.",
@@ -326,7 +326,7 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
         "doesn't.",
     ],
     tools: [
-      "gmail_search", "gmail_read", "gmail_signature", "gmail_draft", "gmail_send",
+      "gmail_accounts", "gmail_search", "gmail_read", "gmail_signature", "gmail_draft", "gmail_send",
       "meeting_followup_send", "gmail_draft_recipients", "meeting_followup_record_denial",
       "meeting_followup_redraft",
     ],

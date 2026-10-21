@@ -150,16 +150,17 @@ export class PgAccountStore {
   /** Server-only point of use. Active member, account generation/status, selected resource and
    * exact custody association remain locked through work. Trusted admission/grants/approvals must
    * be checked by the runtime caller; supplying a member ID or reference never authenticates it.
-   * Do not return credential material from work or hold this transaction for a user approval.
+   * The callback DB is this same locked server transaction, for current authority checks.
+   * Never return that client/credential material or hold this transaction for a user approval.
    */
   async withPersonalResourceCredential<T>(memberId: string, input: PersonalResourceSelection,
-    resourceKind: string, work: (selection: ResolvedPersonalResource, credential: StoredAccountCredential) => Promise<T>): Promise<T> {
+    resourceKind: string, work: (selection: ResolvedPersonalResource, credential: StoredAccountCredential, db: PoolClient) => Promise<T>): Promise<T> {
     const expected = resourceSelectionSchema.parse(input), kind = text.parse(resourceKind);
     return this.transaction(memberId, async db => {
       const { row, selection } = await this.personalResource(db, memberId, expected, kind);
       const credential = await readAccountCredential(db, { id: row.id, ownerMemberId: memberId,
         connectorId: row.connector_id, generation: row.generation });
-      return work(selection, credential);
+      return work(selection, credential, db);
     });
   }
   async createCompanyAccount(): Promise<never> {

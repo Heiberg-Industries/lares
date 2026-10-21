@@ -72,7 +72,7 @@ export const TOOL_CATEGORIES: Readonly<Record<string, readonly AlwaysAskCategory
   deadline_list: [], deadline_add: [], deadline_done: [], deadline_dismiss: [], deadline_reset: [], deadline_mint_statutory: [],
   digest_run: [], echo_note: [], identity_my_addresses: [],
   // gmail
-  gmail_search: [], gmail_read: [], gmail_signature: [], gmail_draft: [], gmail_draft_recipients: [],
+  gmail_accounts: [], gmail_search: [], gmail_read: [], gmail_signature: [], gmail_draft: [], gmail_draft_recipients: [],
   gmail_send: ["contact"],
   // notion, obligation, person, read_url
   notion_proposals: [], notion_resolve_proposal: [], obligation_dismiss: [],
