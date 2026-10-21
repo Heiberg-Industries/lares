@@ -104,6 +104,7 @@ class NativeCallbackTests(unittest.TestCase):
         self.DBLogger = type("NativeDBLogger", (), {})
         self.Service = type("NativeService", (), {})
         self.Hook = type("NativeProxyHook", (), {})
+        self.SkillsHook = type("NativeSkillsInjectionHook", (), {})
         self.Gateway = type("GatewayHook", (), {})
         self.Shadow = type("ShadowEvalLogger", (), {"async_log_success_event": mock.Mock(side_effect=AssertionError("shadow ran"))})
         class Router:
@@ -114,9 +115,15 @@ class NativeCallbackTests(unittest.TestCase):
         self.Router = Router
         self.router = Router()
         self.gateway, self.budget, self.service, self.hook = self.Gateway(), self.Budget(), self.Service(), self.Hook()
+        self.skills_singleton, self.skills_mapping_duplicate = self.SkillsHook(), self.SkillsHook()
+        for hook in (self.skills_singleton, self.skills_mapping_duplicate):
+            hook.optional_params, hook.max_iterations, hook.sandbox_timeout = {}, 10, 120
+            hook.prompt_handler = types.SimpleNamespace()
+            hook.message_logging, hook.turn_off_message_logging = True, False
         self.db, self.async_db = self.DBLogger(), self.DBLogger()
         self.proxy = types.SimpleNamespace(llm_router=self.router, model_max_budget_limiter=self.budget,
-            proxy_logging_obj=types.SimpleNamespace(service_logging_obj=self.service, proxy_hook_mapping={"max_budget_limiter": self.hook}))
+            proxy_logging_obj=types.SimpleNamespace(service_logging_obj=self.service, proxy_hook_mapping={
+                "max_budget_limiter": self.hook, "litellm_skills": self.skills_mapping_duplicate}))
         modules = {"litellm": self.litellm}
         def module(name, **values):
             item = types.ModuleType(name);item.__dict__.update(values);modules[name] = item
@@ -126,7 +133,14 @@ class NativeCallbackTests(unittest.TestCase):
         self.litellm.cache = None
         self.litellm.disable_aiohttp_transport = self.litellm.use_chat_completions_url_for_anthropic_messages = True
         self.proxy.store_model_in_db, self.proxy.user_custom_auth = False, None
-        module("litellm.proxy.hooks", PROXY_HOOKS={"max_budget_limiter": self.Hook}, get_proxy_hook=lambda name: self.Hook)
+        hooks_package = types.ModuleType("litellm.proxy.hooks");hooks_package.__path__ = []
+        hooks_package.PROXY_HOOKS = {"max_budget_limiter": self.Hook, "litellm_skills": self.SkillsHook}
+        hooks_package.get_proxy_hook = lambda name: hooks_package.PROXY_HOOKS[name]
+        modules["litellm.proxy.hooks"] = hooks_package
+        skills_package = types.ModuleType("litellm.proxy.hooks.litellm_skills");skills_package.__path__ = []
+        modules["litellm.proxy.hooks.litellm_skills"] = skills_package
+        module("litellm.proxy.hooks.litellm_skills.main", skills_injection_hook=self.skills_singleton)
+        module("litellm.llms.litellm_proxy.skills.constants", DEFAULT_MAX_ITERATIONS=10, DEFAULT_SANDBOX_TIMEOUT=120)
         module("litellm.proxy.hooks.model_max_budget_limiter", _PROXY_VirtualKeyModelMaxBudgetLimiter=self.Budget)
         module("litellm.proxy.hooks.proxy_track_cost_callback", _ProxyDBLogger=self.DBLogger)
         module("litellm.integrations.shadow_eval_logger", ShadowEvalLogger=self.Shadow)
@@ -141,7 +155,7 @@ class NativeCallbackTests(unittest.TestCase):
         self.runtime.profile = types.SimpleNamespace(document={"aliases": ["lares-brain"], "provider": "openai", "model": "fixture", "providerBaseUrl": "https://provider.example.invalid/v1"})
         self.router.model_names, self.router.default_deployment = ["lares-brain"], None
         self.router.get_model_list = lambda **kwargs: [{"litellm_params": {"model": "openai/fixture", "api_base": "https://provider.example.invalid/v1", "num_retries": 0, "max_retries": 0}}]
-        self.litellm.callbacks[:] = [self.budget, self.gateway, self.db, self.hook, self.service]
+        self.litellm.callbacks[:] = [self.budget, self.gateway, self.db, self.hook, self.service, self.skills_singleton]
         self.litellm.success_callback[:] = [self.router.sync_deployment_callback_on_success, *self.litellm.callbacks]
         self.litellm.failure_callback[:] = [self.router.deployment_callback_on_failure, *self.litellm.callbacks]
         self.litellm._async_success_callback[:] = [self.router.deployment_callback_on_success, self.async_db]
@@ -151,6 +165,7 @@ class NativeCallbackTests(unittest.TestCase):
 
     def test_pinned_native_objects_and_lazy_primary_promotions_remain_valid(self):
         self.runtime.check_runtime(startup=True)
+        self.assertIs(self.proxy.proxy_logging_obj.proxy_hook_mapping["litellm_skills"], self.skills_singleton)
         original = self.runtime.callback_ids
         # function_setup promotes these same primary objects after startup. Native
         # class deduplication preserves cost_tracking's separate async DB logger.
@@ -202,6 +217,33 @@ class NativeCallbackTests(unittest.TestCase):
         self.litellm._async_success_callback.append(self.DBLogger())
         with self.assertRaises(Refused): self.check(startup=True)
 
+    def test_skills_hook_replacement_duplicate_and_wrong_mapping_refuse(self):
+        original_callbacks = self.litellm.callbacks[:]
+        self.litellm.callbacks[:] = [self.SkillsHook() if c is self.skills_singleton else c for c in original_callbacks]
+        with self.assertRaises(Refused): self.check(startup=True)
+        self.litellm.callbacks[:] = original_callbacks
+
+        self.litellm.callbacks.append(self.SkillsHook())
+        with self.assertRaises(Refused): self.check(startup=True)
+        self.litellm.callbacks.pop()
+
+        original_mapping = self.proxy.proxy_logging_obj.proxy_hook_mapping["litellm_skills"]
+        self.proxy.proxy_logging_obj.proxy_hook_mapping["litellm_skills"] = type("UnreviewedSkillsHook", (self.SkillsHook,), {})()
+        with self.assertRaises(Refused): self.check(startup=True)
+        self.proxy.proxy_logging_obj.proxy_hook_mapping["litellm_skills"] = original_mapping
+        self.skills_mapping_duplicate.message_logging = False
+        with self.assertRaises(Refused): self.check(startup=True)
+        self.skills_mapping_duplicate.message_logging = True
+
+        self.skills_singleton.turn_off_message_logging = True
+        with self.assertRaises(Refused): self.check(startup=True)
+        self.skills_singleton.turn_off_message_logging = False
+
+    def test_skills_hook_replacement_after_snapshot_refuses(self):
+        self.check(startup=True)
+        self.litellm.callbacks[:] = [self.SkillsHook() if c is self.skills_singleton else c for c in self.litellm.callbacks]
+        with self.assertRaises(Refused): self.check()
+
     def test_missing_native_async_accounting_or_router_method_refuses(self):
         for name, index in (("_async_success_callback", 1), ("success_callback", 0),
                             ("failure_callback", 0), ("_async_success_callback", 0), ("_async_failure_callback", 0)):
@@ -230,7 +272,8 @@ class NativeCallbackTests(unittest.TestCase):
         self.hook.private_value = "private-credential-must-not-appear"
         # Reproduce native manager deduplication leaving a newly constructed owner
         # mapping distinct from the callback it retained; diagnose, never admit it.
-        self.proxy.proxy_logging_obj.proxy_hook_mapping = {"max_budget_limiter": self.Hook()}
+        self.proxy.proxy_logging_obj.proxy_hook_mapping = {
+            "max_budget_limiter": self.Hook(), "litellm_skills": self.skills_singleton}
         with mock.patch.dict(os.environ, {"CI": "true", "LARES_GATEWAY_PROBE_DIAGNOSTICS": "1"}):
             with self.assertRaises(Refused): self.check(startup=True)
         self.assertEqual(self.runtime.validation_stage, "callback-native-membership")

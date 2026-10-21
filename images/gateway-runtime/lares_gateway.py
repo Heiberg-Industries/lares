@@ -349,6 +349,38 @@ class Runtime:
             for items in registries.values():
                 items[:] = [c for c in items if type(c) is not ShadowEvalLogger]
 
+            # LiteLLM 1.101.6 registers this module-global singleton when the
+            # skills hook module is imported. ProxyLogging._add_proxy_hooks then
+            # constructs a second default instance: the callback manager keeps
+            # the singleton but proxy_hook_mapping stores the new instance.
+            # Rebind only that mapping entry, and only when both instances have
+            # the exact pinned default state and the sole primary callback is
+            # LiteLLM's module-global owner. This does not bless replacements.
+            skills_type = PROXY_HOOKS.get("litellm_skills")
+            logging_owner = proxy_server.proxy_logging_obj
+            mapping = logging_owner.proxy_hook_mapping
+            mapped_skills = mapping.get("litellm_skills")
+            if skills_type is not None and type(mapped_skills) is skills_type:
+                from litellm.proxy.hooks.litellm_skills.main import skills_injection_hook
+                from litellm.llms.litellm_proxy.skills.constants import DEFAULT_MAX_ITERATIONS, DEFAULT_SANDBOX_TIMEOUT
+
+                skills_matches = [callback for callback in registries["callbacks"] if type(callback) is skills_type]
+                default_state = lambda hook: (
+                    set(vars(hook)) == {"optional_params", "prompt_handler", "max_iterations", "sandbox_timeout",
+                                        "message_logging", "turn_off_message_logging"}
+                    and type(hook.optional_params) is dict and hook.optional_params == {}
+                    and type(hook.max_iterations) is int and hook.max_iterations == DEFAULT_MAX_ITERATIONS
+                    and type(hook.sandbox_timeout) is int and hook.sandbox_timeout == DEFAULT_SANDBOX_TIMEOUT
+                    and type(hook.prompt_handler) is type(skills_injection_hook.prompt_handler)
+                    and vars(hook.prompt_handler) == {}
+                    and type(hook.message_logging) is bool and hook.message_logging is True
+                    and type(hook.turn_off_message_logging) is bool and hook.turn_off_message_logging is False
+                )
+                if (len(skills_matches) == 1 and skills_matches[0] is skills_injection_hook
+                        and type(skills_injection_hook) is skills_type and mapped_skills is not skills_injection_hook
+                        and default_state(skills_injection_hook) and default_state(mapped_skills)):
+                    mapping["litellm_skills"] = skills_injection_hook
+
         if startup and os.environ.get("CI") == "true" and os.environ.get("LARES_GATEWAY_PROBE_DIAGNOSTICS") == "1":
             try: self.startup_checks = callback_startup_checks(proxy_server)
             except Exception: self.startup_checks = None  # Diagnostics never alter enforcement.
