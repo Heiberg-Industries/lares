@@ -3,11 +3,11 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Pool, type PoolClient } from 'pg';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { PgAccountStore, AccountAccessError, type TrustedAccountAdapter } from '../src/account-store.js';
-import { AccountCredentialError } from '../src/account-credentials.js';
-import { storeToken } from '../../../services/box/lib/oauth-tokens.js';
+import { PgAccountStore, AccountAccessError, type TrustedAccountAdapter } from '../../../packages/agent-kit/src/account-store.js';
+import { AccountCredentialError } from '../../../packages/agent-kit/src/account-credentials.js';
+import { storeToken } from '../lib/oauth-tokens.js';
 
-const sqlDir = fileURLToPath(new URL('../../../services/box/sql/', import.meta.url));
+const sqlDir = fileURLToPath(new URL('../sql/', import.meta.url));
 const identity = { issuer: 'https://provider.example', subject: 'subject-a', label: 'Same display label' };
 const key = '1'.repeat(64);
 let container: StartedPostgreSqlContainer, db: Pool, store: PgAccountStore, adapter: TrustedAccountAdapter;
