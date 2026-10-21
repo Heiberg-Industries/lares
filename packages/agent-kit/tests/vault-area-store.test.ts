@@ -1,6 +1,11 @@
 import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { readFileSync } from 'node:fs';
+import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { GuardedVaultFiles,VAULT_AREA_MARKER,VaultFilesDeniedError } from '../src/vault-files.js';
+import { withVaultRepositoryLock } from '../src/note-lock.js';
 import { randomUUID } from 'node:crypto';
 import { afterAll,beforeAll,beforeEach,describe,expect,it } from 'vitest';
 import { PgGrantStore } from '../src/grant-store.js';
@@ -56,6 +61,39 @@ describe('Vault area current authority on disposable PostgreSQL',()=>{
     expect(await vault.vaultAreaBinding('owner',{areaId:'private',expectedRevision:own.accessRevision,permission:'use'})).toBeUndefined();
     expect(await vault.vaultAreaBinding('second',{areaId:'private',expectedRevision:own.accessRevision,permission:'use'})).toEqual({areaId:'private',kind:'private',owner:{kind:'member',id:'second'},resource:resource('private'),backingStoreId:'backing',relativePath:'private/second',accessRevision:own.accessRevision});
     await expect(configure([named('admin')],'private')).rejects.toThrow('denied');
+  });
+  it('can require the actual Git backing kind without trusting a filesystem mapping',async()=>{
+    const gitArea=await area('git-area','private',{kind:'member',id:'second'});
+    expect(await vault.vaultAreaBinding('second',{areaId:'git-area',expectedRevision:gitArea.accessRevision,permission:'use'},{requiredBackingKind:'git'})).toBeDefined();
+    expect(await vault.vaultAreaBinding('second',{areaId:'git-area',expectedRevision:gitArea.accessRevision,permission:'use'},{requiredBackingKind:'files'})).toBeUndefined();
+    await vault.provisionBacking('owner',{id:'plain-files',kind:'files'},authority);
+    const plain=await area('files-area','private',{kind:'member',id:'second'},'files-area','plain-files');
+    expect(await vault.vaultAreaBinding('second',{areaId:'files-area',expectedRevision:plain.accessRevision,permission:'use'})).toBeDefined();
+    expect(await vault.vaultAreaBinding('second',{areaId:'files-area',expectedRevision:plain.accessRevision,permission:'use'},{requiredBackingKind:'git'})).toBeUndefined();
+  });
+  it('rechecks database-clock expiry after a filesystem lock wait using a single caller connection',async()=>{
+    await area('files','shared',undefined,'files');
+    const temporary=mkdtempSync(join(tmpdir(),'vault-area-current-')),working=join(temporary,'working'),root=join(working,'files'),origin=join(temporary,'origin.git');
+    mkdirSync(working);execFileSync('git',['init','--quiet','--bare',origin]);execFileSync('git',['init','--quiet',root]);
+    const git=(...args:string[])=>execFileSync('git',['-C',root,...args],{stdio:'pipe'});
+    git('config','user.name','Vault Test');git('config','user.email','vault@example.invalid');git('remote','add','origin',origin);
+    writeFileSync(join(root,VAULT_AREA_MARKER),JSON.stringify({version:1,areaId:'files',backingStoreId:'backing',relativePath:'files',kind:'shared',owner:{kind:'organisation',id:'org'}}));
+    git('add','--',VAULT_AREA_MARKER);git('commit','-qm','initialize area');git('push','-q','origin','HEAD');
+    const granted=await configure([named('second','use',new Date(Date.now()+1200).toISOString())],'files');
+    const single=quiet(new Pool({connectionString:db.options.connectionString,max:1,connectionTimeoutMillis:300})),client=await single.connect();
+    let release!:()=>void,signal!:()=>void,authorized!:()=>void;
+    const locked=new Promise<void>(r=>{signal=r;}),firstAuthorization=new Promise<void>(r=>{authorized=r;});
+    const holder=withVaultRepositoryLock(root,async()=>{signal();await new Promise<void>(r=>{release=r;});});await locked;
+    await client.query('BEGIN');
+    try{
+      const current=new PgVaultStore(single);let decisions=0;
+      const api=new GuardedVaultFiles({vaultAreaBinding:async(...args)=>{const result=await current.vaultAreaBinding(...args);if(++decisions===1){authorized();expect(result).toBeDefined();}return result;}},
+        new Map([['backing',{kind:'git',root:working,areas:new Map([['files',{origin}]])}]]));
+      const pending=api.list({memberId:'second',areaId:'files',expectedRevision:granted.accessRevision,db:client});
+      void pending.catch(()=>undefined);
+      await firstAuthorization;await client.query('SELECT pg_sleep(1.3)');release();await holder;
+      await expect(pending).rejects.toThrow(VaultFilesDeniedError);expect(decisions).toBe(2);
+    }finally{release();await holder;await client.query('ROLLBACK');client.release();await single.end();rmSync(temporary,{recursive:true,force:true});}
   });
   it('has no implicit company reads and separates named use/edit and organisation use',async()=>{
     await area();expect(await grants.can('owner',resource(),'use')).toBe(false);

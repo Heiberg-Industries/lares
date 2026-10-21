@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 
 import type { VaultArea } from "./skill-grants.js";
@@ -110,7 +110,8 @@ export function storeRootForArea(area: VaultArea, env: NodeJS.ProcessEnv = proce
 function walk(dir: string, base: string): string[] {
   const results: string[] = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (EXCLUDED_DIRS.has(entry.name)) continue;
+    if (entry.name.startsWith(".") || EXCLUDED_DIRS.has(entry.name)) continue;
+    resolveInStore(relative(base, join(dir, entry.name)), base);
     const abs = join(dir, entry.name);
     if (entry.isDirectory()) {
       results.push(...walk(abs, base));
@@ -122,7 +123,9 @@ function walk(dir: string, base: string): string[] {
 }
 
 /** Every markdown note in the store, store-relative. Throws if the store is sick. */
-export function listNotes(root: string): string[] {
+export interface NoteReadOptions { allowEmpty?: boolean; fresh?: boolean }
+
+export function listNotes(root: string, options: NoteReadOptions = {}): string[] {
   const absRoot = resolve(root);
   let files: string[];
   try {
@@ -134,7 +137,7 @@ export function listNotes(root: string): string[] {
     if (code === "ENOENT" || code === "ENOTDIR") throw new StoreUnhealthyError(absRoot);
     throw err;
   }
-  if (files.length === 0) throw new StoreUnhealthyError(absRoot);
+  if (files.length === 0 && !options.allowEmpty) throw new StoreUnhealthyError(absRoot);
   return files;
 }
 
@@ -160,7 +163,7 @@ export function _contentCacheReadsForTests(): number {
   return cacheFileReads;
 }
 
-function cachedContent(abs: string): { lower: string; raw: string } | null {
+function cachedContent(abs: string, fresh = false): { lower: string; raw: string } | null {
   let st: { mtimeMs: number; size: number };
   try {
     st = statSync(abs);
@@ -169,7 +172,7 @@ function cachedContent(abs: string): { lower: string; raw: string } | null {
     return null;
   }
   const hit = CONTENT_CACHE.get(abs);
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
+  if (!fresh && hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit;
   let raw: string;
   try {
     raw = readFileSync(abs, "utf8");
@@ -198,9 +201,9 @@ function cachedContent(abs: string): { lower: string; raw: string } | null {
  * noise wearing a path. An honest empty beats a plausible wrong list; this is the same
  * lesson as's geocoder, one layer up.
  */
-export function searchNotes(query: string, root: string, reader?: Reader): SearchResult {
+export function searchNotes(query: string, root: string, reader?: Reader, options: NoteReadOptions = {}): SearchResult {
   const absRoot = resolve(root);
-  const files = listNotes(absRoot);
+  const files = listNotes(absRoot, options);
 
   const tokens = query
     .toLowerCase()
@@ -210,7 +213,7 @@ export function searchNotes(query: string, root: string, reader?: Reader): Searc
 
   const scored = files.map((relPath) => {
     let haystack = relPath.toLowerCase();
-    const cached = cachedContent(join(absRoot, relPath));
+    const cached = cachedContent(join(absRoot, relPath), options.fresh);
     if (cached !== null) haystack += "\n" + cached.lower;
     // an unreadable entry scores on its path alone rather than being dropped silently
     const present = tokens.filter((t) => haystack.includes(t));
@@ -254,9 +257,8 @@ export function searchNotes(query: string, root: string, reader?: Reader): Searc
  * ROOT can itself be a symlink (/srv could be a link to a data volume; on macOS /var is
  * /private/var) and comparing a resolved path against an unresolved root denies everything.
  *
- * A path that cannot be resolved — one that does not exist yet — is judged on its lexical
- * form alone. It reads nothing, and the caller reports it as missing in its own words
- * rather than as a permission refusal.
+ * Missing leaves are allowed only after validating every existing ancestor. Symlinks,
+ * nonregular files and resolution failures refuse; only an actual ENOENT is absence.
  *
  * This began life as the fence around eve's built-in
  * read_file/glob/grep. Those tools are disabled outright (see
@@ -270,20 +272,26 @@ function resolvesWithin(candidate: string, root: string): boolean {
     path === base || path.startsWith(base.endsWith(sep) ? base : base + sep);
 
   if (!isUnder(resolve(candidate), resolvedRoot)) return false;
-  let real: string;
+  // Check every existing component, including the ancestor of a missing leaf.
+  // A dangling/outside symlink must never become permission to create through it.
   try {
-    real = realpathSync(resolve(candidate));
-  } catch {
+    if (!statSync(resolvedRoot).isDirectory()) return false;
+    const components = relative(resolvedRoot, resolve(candidate)).split(sep).filter(Boolean);
+    let cursor = resolvedRoot;
+    for (let i = 0; i < components.length; i++) {
+      cursor = join(cursor, components[i]);
+      let st;
+      try { st = lstatSync(cursor); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+        return false;
+      }
+      if (st.isSymbolicLink() || (!st.isDirectory() && !st.isFile()) || (st.isFile() && st.nlink !== 1)) return false;
+      if (i < components.length - 1 && !st.isDirectory()) return false;
+      if (!isUnder(realpathSync(cursor), realpathSync(resolvedRoot))) return false;
+    }
     return true;
-  }
-  let realRoot: string;
-  try {
-    realRoot = realpathSync(resolvedRoot);
-  } catch {
-    // An unresolvable root matches nothing real — the fail-closed direction.
-    realRoot = resolvedRoot;
-  }
-  return isUnder(real, realRoot);
+  } catch { return false; }
 }
 
 /**
@@ -298,7 +306,7 @@ function resolvesWithin(candidate: string, root: string): boolean {
  */
 export function resolveInStore(notePath: string, root: string): string {
   const absRoot = resolve(root);
-  if (notePath.startsWith("/")) throw new NotePathEscapesStoreError(notePath);
+  if (!notePath || notePath.includes("\\") || /[\x00-\x1f\x7f]/.test(notePath) || notePath.startsWith("/")) throw new NotePathEscapesStoreError(notePath);
   // (3) — an in-store dotfile directory is not a note. `.git/` is the store's own
   // history and `.locks/` its lock files; a tool reaching either through a "note path" is
   // reaching past the store even though the path never leaves the directory. Every segment
@@ -434,10 +442,10 @@ export interface BacklinkResult {
  * RegExp, because a note called `c++ (notes)` is either a syntax error
  * or a pattern matching the wrong thing.
  */
-export function findBacklinks(notePath: string, root: string, reader?: Reader): BacklinkResult {
+export function findBacklinks(notePath: string, root: string, reader?: Reader, options: NoteReadOptions = {}): BacklinkResult {
   resolveInStore(notePath, root);
   const absRoot = resolve(root);
-  const files = listNotes(absRoot);
+  const files = listNotes(absRoot, options);
   const stem = basename(notePath, ".md").replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   // The `[|#\]]` boundary is what keeps [[frameworks-extended]] from counting as a link to
   // [[frameworks]] — Obsidian treats those as different notes.
@@ -445,7 +453,7 @@ export function findBacklinks(notePath: string, root: string, reader?: Reader): 
 
   const backlinks = files.filter((relPath) => {
     if (relPath === notePath) return false;
-    const cached = cachedContent(join(absRoot, relPath)); // same cache as searchNotes
+    const cached = cachedContent(join(absRoot, relPath), options.fresh); // same cache as searchNotes
     if (cached === null || !pattern.test(cached.raw)) return false;
     // A citer that the reader cannot see must not out itself by name — the citing note's
     // OWN visibility gates it, same rule as a search hit.

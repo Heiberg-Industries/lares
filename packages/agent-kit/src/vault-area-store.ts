@@ -160,12 +160,13 @@ export class PgVaultStore {
       await db.query("UPDATE resource_grants SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE resource_kind='vault-area' AND resource_id IN (SELECT id FROM vault_areas WHERE backing_store_id=$1) AND revoked_at IS NULL",[backingStoreId]);
     });
   }
-  async vaultAreaBinding(memberId:string,input:{areaId:string;expectedRevision:number;permission:Permission},options:{db?:Db}={}):Promise<VaultAreaBinding|undefined>{
+  async vaultAreaBinding(memberId:string,input:{areaId:string;expectedRevision:number;permission:Permission},options:{db?:Db;requiredBackingKind?:'git'|'files'}={}):Promise<VaultAreaBinding|undefined>{
     if(!id.safeParse(input.areaId).success||!revision.safeParse(input.expectedRevision).success||!['use','edit'].includes(input.permission))return undefined;
     return this.transaction(options.db,async db=>{
       let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof VaultStoreError)return undefined;throw e;}
       const row=await currentVaultArea(db,member,input.areaId);
       if(!row||row.kind==='place'||Number(row.revision)!==input.expectedRevision||!await vaultAreaAllows(db,member,row,input.permission))return undefined;
+      if(options.requiredBackingKind&&!(await db.query('SELECT 1 FROM vault_backing_stores WHERE id=$1 AND kind=$2',[row.backing_store_id,options.requiredBackingKind])).rowCount)return undefined;
       return vaultAreaBindingSchema.parse({areaId:row.id,kind:row.kind,
         owner:row.owner_member_id?{kind:'member',id:row.owner_member_id}:{kind:'organisation',id:row.owner_organisation_id},
         resource:{kind:'vault-area',id:row.id},backingStoreId:row.backing_store_id,relativePath:row.relative_path,accessRevision:Number(row.revision)});

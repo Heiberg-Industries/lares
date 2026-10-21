@@ -162,6 +162,7 @@ describe('jobs, budgets and Vault bindings', () => {
       expect(vaultAreaBindingSchema.safeParse({ ...b, relativePath: path }).success).toBe(false);
     const w = { areaId: 'area', relativePath: 'notes/note.md', expectedContentRevision: hash, accessRevision: 1, approvedOrigin: 'synced', authority: turn };
     expect(vaultWriteBindingSchema.safeParse(w).success).toBe(true);
+    expect(vaultWriteBindingSchema.safeParse({ ...w, expectedContentRevision: null }).success).toBe(true);
     expect(vaultWriteBindingSchema.safeParse({ ...w, owner: account.owner }).success).toBe(false);
     expect(vaultWriteBindingSchema.safeParse({ ...w, expectedContentRevision: undefined }).success).toBe(false);
   });
