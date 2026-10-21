@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connect an explicitly configured Google data client to a fresh Keeper install.
+"""Configure an explicitly selected legacy Google email door, not personal linked accounts.
 
 Run as root after adding GOOGLE_CLIENT_ID_<ORG> and GOOGLE_CLIENT_SECRET_<ORG>
 to the console's root-only OAuth env file. No credential is passed on argv or printed.
@@ -96,7 +96,18 @@ def main() -> None:
     config = json.loads(args.keeper_config.read_text())
     lifecycle = config["lifecycle"]
     runtime = lifecycle["runtime"]
-    owner = lifecycle["defaultBindings"]["chief-of-staff"]["ownerId"]
+    existing_google = runtime.get("google")
+    if existing_google is not None and (not isinstance(existing_google, dict)
+                                        or not existing_google.get("principal")):
+        parser.error("this helper configures legacy email-door access only; the existing Google "
+                     "configuration has no legacy principal. Keep personal clients under "
+                     "lifecycle.runtime.google.clients without adding a principal, and explicitly "
+                     "reconcile the Gmail runtime")
+    try:
+        owner = lifecycle["defaultBindings"]["chief-of-staff"]["ownerId"]
+    except (KeyError, TypeError):
+        parser.error("legacy email-door setup requires an explicit default chief-of-staff owner; "
+                     "this helper does not configure personal linked accounts")
     try:
         console_env = console_env_with_principal(args.env_file.read_text(), owner)
     except ValueError as error:

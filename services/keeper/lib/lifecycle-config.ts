@@ -56,7 +56,7 @@ export const lifecycleSchema = z.object({
         // installation instead supplies its admin key and lets the keeper mint one stable,
         // budgeted virtual key per agent under its managed secrets root.
         gatewayKeys: z.record(z.string(), path), gatewayMasterKeyFile: path.optional(),
-        google: z.object({principal:z.string().min(1),tokenKeyFile:path,clients:z.record(z.string().regex(/^[a-z][a-z0-9_-]*$/),z.object({clientIdFile:path,clientSecretFile:path}).strict())}).strict().optional() }).strict(),
+        google: z.object({principal:z.string().min(1).optional(),tokenKeyFile:path,clients:z.record(z.string().regex(/^(?:[a-z][a-z0-9_-]*|[a-z0-9]{1,32})$/),z.object({clientIdFile:path,clientSecretFile:path}).strict())}).strict().optional() }).strict(),
     egress: z.object({ endpoints: z.preprocess(ignoreRetiredEndpoints, z.object({ READABILITY_URL: z.string().url().optional(), TWENTY_BASE_URL: z.string().url().optional() }).strict()), legacyConsumers: z.array(z.object({ name: z.string(), address: z.string(), hosts: z.array(z.string()) }).strict()), internalNetworks: z.array(z.string()), directDestinations: z.array(z.string()), infrastructureHosts: z.array(z.string()) }).strict(),
     // Owner verifies a DIRECTORY-mounted owned proxy and complete retained-source inventory.
     installationPrepared: z.literal(true),
