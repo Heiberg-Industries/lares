@@ -3,13 +3,16 @@
  * Set RUN_MICROSOFT_ACCOUNT_CONSENT_LIVE=1, the MICROSOFT_*_DATA[_FILE] data client settings,
  * and CONSOLE_OAUTH_REDIRECT=http://localhost:6767/api/auth/callback. Register the distinct data
  * callback http://localhost:6767/api/accounts/microsoft/callback on that data client first.
+ * Optional PERSONAL_CONSENT_POWER=read+mail-send requests sending permission only; default read.
+ * No message is sent by this probe and permission does not enable engine writes.
  * Only neutral booleans/counts are printed; do not paste consent codes or tokens into a ticket.
  */
+import { personalConsentPower } from '@lares/agent-kit/personal-consent';
 import { createServer } from 'node:http';
 import { startMicrosoftAccountConsent, finishMicrosoftAccountConsent } from '../../lib/microsoft-account-oauth.ts';
 if (process.env.RUN_MICROSOFT_ACCOUNT_CONSENT_LIVE !== '1') throw new Error('Manual opt-in required');
 if (process.env.CONSOLE_OAUTH_REDIRECT !== 'http://localhost:6767/api/auth/callback') throw new Error('Use the dedicated localhost probe callback');
-const { flow, url } = await startMicrosoftAccountConsent({ memberId: 'manual-probe', session: 'manual-probe-only' });
+const { flow, url } = await startMicrosoftAccountConsent({ memberId: 'manual-probe', session: 'manual-probe-only', power: personalConsentPower(process.env.PERSONAL_CONSENT_POWER ?? 'read') });
 const server = createServer();
 let expire!: () => void;
 const completed = new Promise<URL>((resolve, reject) => {
