@@ -25,19 +25,16 @@
 # killed by a deploy, must not leave scratch databases sitting on the box (they would
 # never be dropped again, and the next month's drill would collide with the same
 # epoch-suffixed names badly enough to be confusing) or a scratch directory sitting on
-# disk (this box has already run itself low on disk once — see disk-guard.sh). The
+# disk (a box can run low on disk — see disk-guard.sh). The
 # EXIT/INT/TERM trap therefore always runs cleanup, on the pass path, the fail path and
 # a `kill` alike, and never assumes anything it is about to remove is safe to remove
 # without checking it first (see remove_scratch below).
 #
 # WHY NO HEARTBEAT PING. backup-verify.sh is the single liveness owner for the backup
 # system (ADR-0012 rule 4, restated in that script's own header) — one job, one alert.
-# This script only records its verdict in backup_status; a later slice (s4) adds
-# the check that a stale or failed drill raises backup-verify.sh's alarm, the same way
-# a stale snapshot does today. Until that lands, a broken drill is visible only in the
-# `drill` row and this unit's own systemd state, exactly as the design doc says: "record
-# the pass date where the owner can see it" is this slice; "a drill that has not passed
-# in 45 days is a DOWN" is the next one.
+# This script only records its verdict in backup_status. backup-verify.sh reads that
+# row and raises its alarm when no drill has passed recently, the same way a stale snapshot
+# does; the drill's own systemd state also shows a failed run.
 #
 # Deploy under /opt/lares with the lares-restore-drill units. Runs monthly at 03:40 UTC — after that
 # night's backup (03:00) has normally finished and before verify (05:00), hours
@@ -212,7 +209,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# -s6: identical to backup-verify.sh's function of the same name (scripts in
+# Identical to backup-verify.sh's function of the same name (scripts in
 # this family are self-contained — no shared sourced helper — so it is duplicated, not
 # imported). A RESTIC_REPOSITORY value can carry a password or key right inside the
 # string (sftp:user:pw@host:/path, s3:https://key:secret@host/bucket, ...); this must
@@ -226,7 +223,7 @@ strip_target_credentials() {
   printf '%s' "$v"
 }
 
-# -s2's technique, reused for the 'drill' row: SQL on STDIN (psql's `-c` does not
+# The technique used for the other status rows, reused for the 'drill' row: SQL on STDIN (psql's `-c` does not
 # interpolate `:'var'`), bounded so a hung docker/db never hangs the drill itself, and a
 # failed record only warns — it must never change the drill's own exit code. There is
 # no ping to sequence against here (this script sends none), so unlike
@@ -311,7 +308,7 @@ AVAIL_MB=$(( AVAIL_KB / 1024 ))
 SCRATCH=$(mktemp -d "$DRILL_SCRATCH_ROOT/restore-drill.XXXXXX")
 EPOCH=$(date +%s)
 
-# -s6: see backup.sh's own comment on the same branch — RESTIC_REPOSITORY set
+# See backup.sh's own comment on the same branch — RESTIC_REPOSITORY set
 # means "any restic repository", unset means this box's existing rclone-over-SSH form,
 # unchanged.
 if [ -n "${RESTIC_REPOSITORY:-}" ]; then
@@ -354,7 +351,7 @@ done
 # --- 3. Assert the restore actually produced something --------------------------------
 # The same shape of assertion backup-verify.sh makes against the archive: a restore
 # that "succeeds" and produces nothing is not a passing drill, it is the drill's own
-# version of the empty-snapshot incident (a green run that archived no dump).
+# version of the empty-snapshot failure (a green run that archived no dump).
 DUMP_DIR="$SCRATCH$REQUIRED_PATH"
 [ -f "$DUMP_DIR/globals.sql" ] \
   || fail "restore of snapshot $SNAP_ID has no globals.sql under $DUMP_DIR — the restore produced nothing usable"

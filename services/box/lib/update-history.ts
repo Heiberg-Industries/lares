@@ -1,12 +1,12 @@
-// services/box/lib/update-history.ts — what was running before an update (box 087).
+// services/box/lib/update-history.ts — what was running before an update.
 //
 // WHY THIS EXISTS. Nothing on disk recorded which image digests were live before an update
 // overwrote the rendered compose file. "One command puts the previous version back" (ADR-0021
 // rule 4) had no data behind it — this module and its table are that data, nothing more. It
-// records what was running; `lares rollback` (a later slice) is what acts on `previousImages`.
+// records what was running; `lares rollback` is what acts on `previousImages`.
 //
 // THE DATABASE ENFORCES THE SHAPE, NOT THIS MODULE. `images` must be full digest references
-// (`update_history_images_are_digests`, box 087) and `outcome` must be one of the four known
+// (`update_history_images_are_digests`) and `outcome` must be one of the four known
 // values (the column's own CHECK) — both constraints live in the migration, so a caller that
 // passes a tag or an unknown outcome gets a rejection straight from Postgres. This module does
 // not re-validate either: two copies of the same rule drift, and the one in SQL is the one that
@@ -15,8 +15,7 @@
 // NOT BEST-EFFORT. Unlike packages/agent-kit/src/approval-ledger.ts's writer (evidence about a
 // gate, where a lost row must never turn a pass into a refusal), a lost update record is exactly
 // the failure this table exists to prevent — `beginUpdate` failing is `update.sh`'s signal to
-// refuse the whole update rather than proceed with no way back (see the plan's deploy note for
-// W8D-s2/s3/s4). Throwing here is the correct behaviour, not an omission.
+// refuse the whole update rather than proceed with no way back. Throwing here is the correct behaviour, not an omission.
 import type { Queryable } from "./db.js";
 
 /** The outcomes an update run can end in. `started` is the only one a row is ever created with;
@@ -35,7 +34,7 @@ export interface UpdateRecord {
 }
 
 /** How many rows `finishUpdate` keeps, newest first — enough to see what happened, never a
- *  reason to keep more than one step of rollback data usable (owner decision D3: a rollback only
+ *  reason to keep more than one step of rollback data usable (a rollback only
  *  ever goes back one step; the history is for visibility). */
 export const UPDATE_HISTORY_KEEP = 10;
 

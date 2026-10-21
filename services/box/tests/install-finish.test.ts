@@ -1,8 +1,8 @@
-// W8C-s9 — the installer ends honestly at the console's first-agent setup page.
+// The installer ends honestly at the console's first-agent setup page.
 //
 // Nothing here touches a real machine or network. Every host command is a logging stub, every
 // write lands below a temporary --prefix, and curl stands in only for the public console readiness
-// check. This slice deliberately does not probe an agent: a fresh install has configured the
+// check. The installer deliberately does not probe an agent: a fresh install has configured the
 // keeper's first binding, but no agent definition/runtime or registered gateway key exists yet.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";

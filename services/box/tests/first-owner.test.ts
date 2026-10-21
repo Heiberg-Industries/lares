@@ -1,4 +1,4 @@
-// services/box/tests/first-owner.test.ts — W8C-s7: the owner becomes a real member, with a real
+// services/box/tests/first-owner.test.ts — the owner becomes a real member, with a real
 // id. A REAL disposable Postgres, every migration applied by the runner (a fresh install, not the
 // three-spellings fixture), because the point is what a brand-new database looks like.
 //

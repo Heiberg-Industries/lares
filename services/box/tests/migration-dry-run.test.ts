@@ -64,7 +64,7 @@ describe("dry run", () => {
     await expect(db.pool.query("SELECT 1 FROM a")).rejects.toThrow(/does not exist/);
   });
 
-  // W3D-s2 deliberately left runMigrations NOT calling ensureLedger, so that a dry run touches the
+  // runMigrations deliberately does NOT call ensureLedger, so that a dry run touches the
   // database for nothing but the read. On a fresh installation that means the ledger table itself
   // does not exist yet — a dry run must treat that as an empty ledger, not create the table and not
   // fail, since "what would happen" is exactly the question someone asks before anything exists.

@@ -1,9 +1,9 @@
-// services/box/lib/member-scope.ts —: the list of every table that holds a person.
+// services/box/lib/member-scope.ts — the list of every table that holds a person.
 //
 // THE RULE, stated once so it can be quoted rather than reconstructed: a table added to
 // `services/box/sql/*.sql` without a matching entry below fails
 // `tests/member-scope-inventory.test.ts`, and that is the point. This module is not a
-// convenience — it is the safety property an erase-a-person routine (W5B-s6/s7/s8) depends on. A
+// convenience — it is the safety property an erase-a-person routine depends on. A
 // table nobody listed is a table nobody erases.
 //
 // WHAT EACH CLASS MEANS.
@@ -19,7 +19,7 @@
 // WHAT `idKind` ADDS, beyond its own `{ table, class, column }` shape. The fleet does
 // not agree on what "the person" is: chief-of-staff writes rows under a constant owner id
 // (`CANONICAL_USER_ID`, services/chief-of-staff/lib/identity-client.ts) while notion-sync
-// resolves the owner from the identity registry (`users`, box 001_baseline.sql). A `column` name
+// resolves the owner from the identity registry (`users`, 001_baseline.sql). A `column` name
 // alone hides that disagreement — `owner` and `principal` are both free text, neither is
 // FK-enforced against `users.id` anywhere in this schema, and an erase routine that joins one of
 // them against the wrong id space erases nothing while reporting success. `idKind` names, for
@@ -31,26 +31,21 @@
 //                  address" — deliberately not an FK, so an entry outlives alias churn).
 //   "principal"  — a "principal" (or `requested_by`) column: historically a door-native or legacy
 //                  channel spelling, not FK-enforced against `users.id` anywhere. Five tables are
-//                  left in this family; `oauth_tokens` and `email_watch_cursors` left it with box
-//                  001_baseline.sql, which renamed their values onto
-//                  the register's id (001_baseline.sql's own comment that oauth_tokens is
-//                  "deliberately NOT rewritten" describes the box before 085, and that file is
-//                  left byte-identical because its checksum is recorded). Migration comments and
-//                  this file call it an
-//                  "ADR-0009" convention, but `docs/decisions/` has no 0009 (it jumps 0010 → 0013)
-//                  and no other decision record defines the term either — as of this writing
-//                  "principal" is not defined anywhere in this repository; it survives only as a
-//                  name.
+//                  left in this family; `oauth_tokens` and `email_watch_cursors` left it when
+//                  001_baseline.sql renamed their values onto the register's id. Some comments
+//                  elsewhere call it an "ADR-0009" convention, but `docs/decisions/` has no
+//                  0009 (it jumps 0010 → 0013) and no other decision record defines the term
+//                  either — "principal" is not defined anywhere in this repository; it survives
+//                  only as a name.
 //   "owner-key"  — a free-text `owner` column that installation convention fills with the
 //                  canonical slug (001_baseline.sql backfills `reminders.owner` to it by hand),
-//                  but nothing in the schema enforces that against `users.id`. As of box
-//                  001_baseline.sql ONE table is left in this family:
-//                  `forget_ledger`. 083 moved the other fifteen onto the register's id and gave
-//                  each of them a `CHECK (<column> <> '')`; the ledger is excluded because its
-//                  `match_hash` was derived from the owner string and can never be re-derived
-//                  (see that entry's `reason`). There is still no foreign key on any of them —
-//                  083's header says why, and `idKind: "registry"` here records what the values
-//                  ARE, not what the schema enforces.
+//                  but nothing in the schema enforces that against `users.id`. ONE table is left in
+//                  this family: `forget_ledger`. Every other formerly owner-keyed table now
+//                  holds the register's id and has a `CHECK (<column> <> '')`; the ledger is
+//                  excluded because its `match_hash` was derived from the owner string and can
+//                  never be re-derived (see that entry's `reason`). There is still no foreign
+//                  key on any of them, and `idKind: "registry"` here records what the values ARE,
+//                  not what the schema enforces.
 //   "actor"      — a column that names whoever (or whatever: 'system', 'unknown', 'console')
 //                  changed an administrative row, not a member's own content. Classified `member`
 //                  here on the conservative default this module follows (below), not because it
@@ -60,9 +55,8 @@
 // label rather than clear member content (`ratchet.updated_by`, `ratchet_audit.changed_by`,
 // `keeper_audit.actor`, `settings.updated_by`, `settings_audit.changed_by`,
 // `voice_profile.updated_by`), this module classifies it `member` rather than `operational` and
-// says so in `reason` — a wrongly-skipped person is worse than a wrongly-included one. The
-// builder's report to the controller lists these six by name as genuinely unsure calls for a
-// human to overrule.
+// says so in `reason` — a wrongly-skipped person is worse than a wrongly-included one. These
+// six are the genuinely unsure calls; a human may overrule them.
 //
 // WHAT IS DELIBERATELY EXCLUDED: eve's own `workflow.*` / `workflow_drizzle.*` schema
 // (services/chief-of-staff/sql/001-eve-workflow.sql and its `services/creative` twin).
@@ -76,20 +70,16 @@
 // `dream_preferences` are created by runtime DDL
 // (`services/chief-of-staff/lib/dream/store.ts`'s `ensureDreamTables`), not by a numbered
 // migration. They are listed below anyway, `createdBy` naming the runtime function rather than a
-// `.sql` file. AS OF box 084 (W5I-s6, ruling D5) both carry a free-text-but-registry `owner`
+// `.sql` file. Both now carry a free-text-but-registry `owner`
 // column — `member`/`registry`, not `resolved` any more — and every NEW row carries it
 // (`makeDreamStore(db, owner)` throws rather than writing one without). A row written before the
 // column existed is NULL unless the register held exactly one person at the time it was
-// labelled (`labelExistingDreamRows`, or box 084's own equivalent step) — with more than one
+// labelled (`labelExistingDreamRows`) — with more than one
 // member the guess would be real, so it is left NULL on purpose. An erase still has to decide
 // what a NULL row is: on a single-member installation it is that member's, wherever it was
-// written; box 084's header and `labelExistingDreamRows`'s own doc comment say so.
+// written; `labelExistingDreamRows`'s own doc comment says so.
 //
-// ONE ADDITION BEYOND THE SLICE'S LITERAL INTERFACE: `idKind` (above). Every field the slice
-// names (`table`, `scope`, `column`, `reachedBy`, `createdBy`) is exactly as specified; nothing
-// is renamed or removed.
-//
-// THE RESOLVER. `lib/person-identity.ts` EXISTS (W5I-s1) and is the only sanctioned way to turn a
+// THE RESOLVER. `lib/person-identity.ts` EXISTS and is the only sanctioned way to turn a
 // person into the set of spellings this inventory's `idKind` values describe (`registry`,
 // `principal`, `owner-key`, `actor`). This module states what each table's column holds; it does
 // not itself resolve one spelling to another — that is the resolver's job, and
@@ -98,7 +88,7 @@
 // all. `tests/person-identity.test.ts` walks every `member` entry below against a real schema and
 // fails if the resolver cannot reach one of them.
 //
-// ADDITION 1 — THE RULE FOR EVERY TABLE ADDED FROM HERE ON (owner ruling):
+// THE RULE FOR EVERY NEW TABLE:
 // every new table that holds a person's data carries a person column of kind `registry` — no new
 // free-text owner key, no new legacy "principal" spelling, no new person-holding table with no
 // person column at all, and no new free-text "actor" column. Multi-user is the next priority
@@ -106,8 +96,7 @@
 // row or erase the wrong one. Today's exceptions are named explicitly, one frozen list per kind,
 // in `tests/member-scope-inventory.test.ts`; each list may only SHRINK — the test fails the
 // moment a table not on a list uses that kind, and fails just as loudly when a listed table no
-// longer uses it (a later slice fixed it; remove the table from the list in the same change).
-// Each list's own comment says which slice is expected to shrink it.
+// longer uses it (it was fixed; remove the table from the list in the same change).
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -206,7 +195,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "principal",
     idKind: "registry",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "named `principal` but holds the register's id as of box 001_baseline.sql (ruling D4): the principal is a lookup key, not key material, so the rename needed no re-encryption and no re-consent.",
+    reason: "named `principal` but holds the register's id as of 001_baseline.sql: the principal is a lookup key, not key material, so the rename needed no re-encryption and no re-consent.",
   },
 
   {
@@ -215,7 +204,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "updated_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: updated_by names whoever set a permission level, which may be an operator label rather than a member — unsure, see the builder's report.",
+    reason: "conservative default: updated_by names whoever set a permission level, which may be an operator label rather than a member — an unsure call.",
   },
 
   {
@@ -224,7 +213,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "principal",
     idKind: "registry",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "named `principal` but holds the register's id as of box 001_baseline.sql, renamed in the same transaction as oauth_tokens so the watcher and the token store never disagree about who a mailbox belongs to.",
+    reason: "named `principal` but holds the register's id as of 001_baseline.sql, renamed in the same transaction as oauth_tokens so the watcher and the token store never disagree about who a mailbox belongs to.",
   },
 
   {
@@ -233,7 +222,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "updated_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: voice_profile is a singleton (id text NOT NULL DEFAULT 'default'; learn_key defaults to a specific agent's own name, not a mailbox address or a person id); updated_by is the only candidate person-column and defaults to 'system' — unsure, see the builder's report.",
+    reason: "conservative default: voice_profile is a singleton (id text NOT NULL DEFAULT 'default'; learn_key defaults to a specific agent's own name, not a mailbox address or a person id); updated_by is the only candidate person-column and defaults to 'system' — an unsure call.",
   },
   {
     table: "voice_exemplar",
@@ -436,7 +425,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "changed_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: changed_by names whoever changed a permission level (an operator, 'unknown', or a member via the console) — unsure, see the builder's report.",
+    reason: "conservative default: changed_by names whoever changed a permission level (an operator, 'unknown', or a member via the console) — an unsure call.",
   },
   {
     table: "approval_events",
@@ -477,7 +466,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "actor",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: actor names whoever ran a privileged keeper operation — unsure, see the builder's report.",
+    reason: "conservative default: actor names whoever ran a privileged keeper operation — an unsure call.",
   },
   {
     table: "settings",
@@ -485,7 +474,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "updated_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: updated_by names whoever changed an installation setting — unsure, see the builder's report.",
+    reason: "conservative default: updated_by names whoever changed an installation setting — an unsure call.",
   },
   {
     table: "settings_audit",
@@ -493,7 +482,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     column: "changed_by",
     idKind: "actor",
     createdBy: `${BOX}/001_baseline.sql`,
-    reason: "conservative default: changed_by names whoever changed an installation setting — unsure, see the builder's report.",
+    reason: "conservative default: changed_by names whoever changed an installation setting — an unsure call.",
   },
 
   {
@@ -614,8 +603,8 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "owner string (`forgetKey(owner, kind, normalised)`, packages/vault-format/src/" +
       "forget-ledger.ts), and the forgotten words are not stored, so a hash can never be " +
       "re-derived: rewriting `owner` would turn every existing forget into a row that matches " +
-      "nothing, silently. Box 083 names this table and skips it for exactly that reason; W5I-s7 " +
-      "keys NEW ledger rows on the register's id instead.",
+      "nothing, silently. The migration that moved the other owner-keyed tables onto the register's id " +
+      "skips this table for exactly that reason; NEW ledger rows are keyed on the register's id instead.",
   },
 
   {
@@ -638,7 +627,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "what was answered. `payload_hash` is a hash — the words that were shown are never stored — " +
       "and `answered_via` names the door (or 'revised', a card a later draft replaced), never the " +
       "person who tapped. `session_id`/`turn_sequence` say which conversation and turn raised the " +
-      "card and `target_hash` is a hash of what it was about (box 006). When the approver list " +
+      "card and `target_hash` is a hash of what it was about. When the approver list " +
       "becomes a member list this gains a `member` column of kind registry.",
   },
 
@@ -650,7 +639,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "About an outside tool server, not about a person: SHA-256 hashes (the entry's address and " +
       "allow-list, and the tool descriptions the server sent) keyed by agent and tool name, plus the " +
       "descriptions themselves as the server published them (names, descriptions and input schemas of " +
-      "the allowed tools, box 003) so the owner can review a change. No address, no key and no member " +
+      "the allowed tools) so the owner can review a change. No address, no key and no member " +
       "id is stored.",
   },
 
@@ -682,7 +671,7 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     idKind: "registry",
     createdBy: `${BOX}/001_baseline.sql`,
     reason:
-      "`owner` is the organisation (the literal 'organisation', slice 1's only value) or one " +
+      "`owner` is the organisation (the literal 'organisation', the only organisation-wide value) or one " +
       "member's register id; a member's own source and its state are erased with them.",
   },
   {
@@ -714,12 +703,12 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "the console administrator who changed it, an actor label, not a member's own content.",
   },
 
-  // ── Not created by any services/box/sql migration — box 084 (W5I-s6) gave both an `owner`
-  // column, so they are `member`/`registry` from here on, not `resolved` any more. The column is
+  // ── Not created by any services/box/sql migration — both carry an `owner`
+  // column, so they are `member`/`registry`, not `resolved`. The column is
   // NULLABLE and carries no default (`services/chief-of-staff/lib/dream/store.ts`'s
   // `ensureDreamTables`): a row written before this column existed is NULL unless
-  // `labelExistingDreamRows` (or box 084's own equivalent step) labelled it as the
-  // installation's one member — ruling D5, only ever done when the register held exactly one
+  // `labelExistingDreamRows` labelled it as the
+  // installation's one member, only ever done when the register held exactly one
   // person at the time. A NULL row is still this table's business, not a second convention: an
   // erase reads it as "the installation's own, from before this column existed", the same as any
   // other member row this inventory does not itself resolve down to a single spelling.

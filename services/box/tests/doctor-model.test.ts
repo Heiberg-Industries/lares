@@ -1,10 +1,10 @@
-// services/box/tests/doctor-model.test.ts — W8A-s7: `lares doctor --test-model`, one real
-// completion. Plan: .claude/plans/2026-09-20-prelaunch-wave-8.md, slice W8A-s7.
+// services/box/tests/doctor-model.test.ts — `lares doctor --test-model`, one real
+// completion.
 //
 // `readModelTestResult` is PURE (given a status and a body, never fetches). `testModel` is the
 // one function in this repository allowed to call the gateway for a diagnostic — and only when a
 // caller supplies gatewayUrl/key/alias explicitly; see lib/doctor.ts's header and bin/doctor.ts's
-// `--test-model` flag (owner decision A2: `lares doctor` alone never calls out).
+// `--test-model` flag (`lares doctor` alone never calls out).
 import { describe, it, expect, vi } from "vitest";
 import { readModelTestResult, testModel } from "../lib/doctor.js";
 

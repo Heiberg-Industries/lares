@@ -1,18 +1,16 @@
-// services/box/lib/doctor.ts — W8A-s6: one command says what is wrong with this installation,
-// and what to type. Plan: .claude/plans/2026-09-20-prelaunch-wave-8.md, "8A — one validated
-// settings list, and `lares doctor`", slice W8A-s6.
+// services/box/lib/doctor.ts — one command says what is wrong with this installation,
+// and what to type.
 //
 // READ-ONLY, BY CONSTRUCTION. Every check below is a SELECT, or a read of a file's existence and
 // readability (never its contents when a setting is marked secret). Nothing here writes to the
 // database, writes a file, restarts anything, or makes a network call: the "gateway" check is
-// always `unknown` in this slice, because asking the model gateway is a paid outside call the
-// owner has to ask for (`lares doctor --test-model`, W8A-s7, owner decision A2) — this file makes
-// none. `tests/doctor.test.ts`'s "only ever reads" case records every statement sent through a
+// always `unknown` unless the owner passes `--test-model`, because asking the model gateway
+// is a paid outside call. Everything else in this file makes none. `tests/doctor.test.ts`'s "only ever reads" case records every statement sent through a
 // fake `Queryable` and asserts each one starts with SELECT.
 //
 // PURE CORE + INJECTED EFFECTS. `DoctorDeps` carries the environment, a `Queryable` (or `null`
 // when the database could not even be reached), the directory to read migrations from, a clock,
-// and — because `checkSettings` (W8A-s3) needs one — a way to probe a `*_FILE` setting's file
+// and — because `checkSettings` needs one — a way to probe a `*_FILE` setting's file
 // without ever reading its bytes. Every branch here is exercised by tests/doctor.test.ts with a
 // fake database, no Docker and no real files.
 //
@@ -24,11 +22,11 @@
 // three booleans about the file it names (exists / readable / empty) — never the file's bytes,
 // and never an environment VALUE for a setting `SETTINGS` marks secret.
 //
-// THE LEFTOVER OWNER (A3). Earlier engine versions seeded one installation's owner into the
+// THE LEFTOVER OWNER. Earlier engine versions seeded one installation's owner into the
 // identity register; `services/box/sql/001_baseline.sql` seeds nobody, but a database made by an
 // earlier version may still hold that row. This file does not carry that person's name
 // as a literal: `readEngineSeed` (imported from `./first-owner.js`, the ONE implementation of
-// this reader — W8C-s7) reads the seed file's own `INSERT INTO users (...)` statement at run time
+// this reader) reads the seed file's own `INSERT INTO users (...)` statement at run time
 // and compares the register's one row against what that statement actually inserts. The baseline
 // carries no such statement, so on a current tree the check finds nothing to compare against; the
 // test stands up a throwaway directory with a neutral seed to prove the comparison still works.
@@ -58,16 +56,16 @@ export interface DoctorDeps {
   /** How to learn what is true of a `*_FILE` setting's file, without reading its bytes. Defaults
    *  to a real filesystem probe; a test injects its own. */
   readonly probeFile?: ProbeFile;
-  /** W8A-s7: present ONLY when the caller asked for `--test-model` (owner decision A2 — a plain
+  /** Present ONLY when the caller asked for `--test-model` (a plain
    *  `lares doctor` makes no outside call at all). When set, the `gateway` check spends this one
    *  real, tiny completion to prove the key works; when absent, `gateway` stays `unknown` exactly
-   *  as W8A-s6 left it, and this module makes no network call. `bin/doctor.ts` is the only place
+   *  as it is without the flag, and this module makes no network call. `bin/doctor.ts` is the only place
    *  that ever constructs one, and only after `--gateway`/`--alias`/`--key-file` are all given. */
   readonly testModel?: ModelTestDeps;
 }
 
 /** The readers whose settings a database-owning installation needs — the three role readers each
- *  get their own startup guard (W8A-s4); this is what is left for the box/console side of one. */
+ *  get their own startup guard; this is what is left for the box/console side of one. */
 const DOCTOR_READERS: readonly SettingReader[] = ["box", "console"];
 
 /** A day, plus enough slack that a nightly job running a few hours late is not a false alarm. */
@@ -138,10 +136,10 @@ function checkSettingsCheck(env: NodeJS.ProcessEnv, probeFile: ProbeFile): Check
   const lines = problems.map((p) => p.say);
   const names = problems.map((p) => p.name);
 
-  // The one extra rule this check adds on top of `checkSettings`: `CONSOLE_ALLOWED_EMAILS` has a
-  // fallback, so `requiredNamesFor` never reports it — but that fallback is one installation's own
-  // address (services/console/lib/auth.ts:152), so an installation that left it unset would admit
-  // a stranger to the console the moment it forgets to set `NODE_ENV=production`.
+  // The one extra rule this check adds on top of `checkSettings`: `CONSOLE_ALLOWED_EMAILS` is only
+  // enforced as required by the console when `NODE_ENV=production`, so `requiredNamesFor` may not
+  // report it — but an installation that leaves it unset has an empty allow-list and nobody can
+  // sign in to the console.
   if (isBlank(env.CONSOLE_ALLOWED_EMAILS)) {
     const def = settingByName("CONSOLE_ALLOWED_EMAILS");
     if (def) {
@@ -355,9 +353,9 @@ async function checkRepairs(db: Queryable): Promise<CheckResult> {
   }
 }
 
-// ── W8A-s7: `lares doctor --test-model` — one real completion ─────────────────────────────
+// ── `lares doctor --test-model` — one real completion ─────────────────────────────
 //
-// Owner decision A2: `lares doctor` never calls the model gateway unless asked. This is the one
+// `lares doctor` never calls the model gateway unless asked (it spends the owner's money). This is the one
 // call this file is allowed to make, and it exists ONLY because `bin/doctor.ts`'s `--test-model`
 // flag constructed a `ModelTestDeps` and put it on `DoctorDeps.testModel` — nothing in this
 // module has a default gateway URL, alias or key of its own; every one of them is a caller-
@@ -386,7 +384,7 @@ async function checkRepairs(db: Queryable): Promise<CheckResult> {
 //      `content` present, so `looksLikeCompletion` holds. Correct.
 // This also settles the question the whole gateway design rested on: a request in ANTHROPIC format
 // to `/v1/messages` DOES resolve a LiteLLM `model_group_alias` and come back with a real completion.
-// `tests/live/gateway-completion.live.mts` (W8A-s7b) stays the acceptance bar — this file's
+// `tests/live/gateway-completion.live.mts` stays the acceptance bar — this file's
 // comments are not. Re-run it whenever LiteLLM is upgraded.
 //
 // NEVER THE KEY, NEVER THE BODY. The key is sent only as the `x-api-key` request header; it is
@@ -529,7 +527,7 @@ function isTimeout(err: unknown): boolean {
 }
 
 /**
- * The one real, paid call `lares doctor --test-model` makes (owner decision A2). Smallest
+ * The one real, paid call `lares doctor --test-model` makes. Smallest
  * possible request, to the gateway's router route (`/v1/messages`, Anthropic request shape —
  * `packages/agent-kit/src/gateway-provider.ts`), with the key sent only as `x-api-key` and never
  * elsewhere. A hard timeout (`AbortSignal.timeout`, injected via `timeoutMs` so tests never wait

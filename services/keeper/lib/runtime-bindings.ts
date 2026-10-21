@@ -31,7 +31,7 @@ const environmentKeys = [
   // The Notion database (data source) the meeting follow-up schedule reads meeting notes from.
   // Not a secret; it identifies the installation's own database, so the engine has no default.
   'NOTION_MEETINGS_DATA_SOURCE_ID',
-  // W8B-s5. Who may answer an approval in web chat, on an installation whose agents are NOT a
+  // Who may answer an approval in web chat, on an installation whose agents are NOT a
   // managed incarnation — a managed one is given LARES_CONSOLE_PRINCIPAL below instead, from the
   // owner claim, exactly as the Slack and Telegram principals are (or, with no claim yet, from the
   // installation's credential administrator in keeper.json). Unset admits nobody.
@@ -44,8 +44,8 @@ const environmentKeys = [
 //
 // PLATFORM secrets: the ones that are not an integration with a vendor at the other end — the
 // agent's own HTTP route password, the key its stored OAuth tokens are encrypted at rest with,
-// and the tracing keys. They belong to the engine, so they are declared by hand in the agent kit (`platform-secrets.ts`) and never
-// in `integrations/installation.json` (installation data — taking these with it would leave
+// and the tracing keys. They belong to the engine, so they are declared by hand in the agent kit
+// (`platform-secrets.ts`) and never in `integrations/installation.json` (installation data — taking these with it would leave
 // every installation unable to mount them).
 // The integration half is GENERATED from `integrations/installation.json`: one source,
 // one command (`pnpm -C packages/agent-kit run generate:connections`), one staleness test, and

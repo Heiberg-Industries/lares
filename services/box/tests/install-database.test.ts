@@ -1,11 +1,11 @@
-// W8C-s6 — the database is created and migrated, or the install stops. The hard part (the
+// The database is created and migrated, or the install stops. The hard part (the
 // runner and its exit codes) exists and is proven (services/box/migrate.ts); this proves only
 // install.sh's own wiring onto it: bring the database container up, create the database once,
 // then hand off to `pnpm -C services/box migrate` and stop on anything but 0 or a dry-run's 2.
 //
 // NOTHING HERE TOUCHES A REAL MACHINE OR A REAL DATABASE. Every run installs into a temp
 // `--prefix`, `docker` and `pnpm` are logging stubs on PATH ahead of everything else, and
-// `lares-doctor` (W8C-s5's model-key proof, which every completed wizard run reaches first) is
+// `lares-doctor` (the model-key proof, which every completed wizard run reaches first) is
 // stubbed green so this file is about the database step alone. Following
 // install-model-test.test.ts's harness shape: every call here bakes in `--yes`, since this file
 // is not about screen one's fresh-or-restore prompt.
@@ -33,11 +33,11 @@ const RELEASE = JSON.stringify({
   breaking: [],
 });
 
-/** W8F-F7a: run_stack renders the stack file through
+/** run_stack renders the stack file through
  *  `pnpm -C <box> render-stack <release> <out> …` one step before this file's subject, and
  *  refuses if nothing lands at <out>. Every `pnpm` stub here therefore answers that one call
  *  with a placeholder stack file — a test whose own body mentions render-stack is taking the
- *  call over and gets no prelude. Since W8F-F7b the same prelude answers run_keeper's
+ *  call over and gets no prelude. The same prelude answers run_keeper's
  *  `render-keeper-config` call at the end, for the same reason.
  *  tests/install-stack.test.ts is where the real renderer runs. */
 const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac`;
@@ -54,7 +54,7 @@ function stub(name: string, body = "exit 0") {
  *  file is about the database step alone, never screen one's own fresh-or-restore prompt. */
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
-    // `--release` is load-bearing since W8F-F7a: a fresh install given none refuses with
+    // `--release` is load-bearing: a fresh install given none refuses with
     // EX_USAGE before it writes anything. tests/install-stack.test.ts owns the flag itself.
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", "--release", releaseFile, ...args], {
       input,
@@ -84,7 +84,7 @@ beforeEach(() => {
   // leak — so a test can only see it this way, exactly the shape ops/backup-verify.sh uses.
   stub("docker", 'case "$*" in *psql*) cat >> "$STUB_LOG" 2>/dev/null ;; esac; exit 0');
   stub("pnpm");
-  // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
+  // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   stub("lares-doctor");
   stub("id", "echo 0");                                   // running as root
@@ -93,11 +93,11 @@ beforeEach(() => {
   stub("df", 'echo "/dev/x 100000000 1000000 99000000 1% /"');
   stub("ss", "exit 1");                                   // nothing listening on 80/443
   stub("lsb_release", "echo 24.04");
-  // DNS (owner decision C5): getent and hostname agree, so the fixture domain resolves here —
+  // DNS: getent and hostname agree, so the fixture domain resolves here —
   // this file is not about DNS, so it is fixed to "always fine" and never varied.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; fi');
   stub("hostname", 'if [ "$1" = "-I" ]; then echo "203.0.113.10"; fi');
-  // W8F-F7a: the stack file is no longer placed here by hand. run_stack renders it from the
+  // The stack file is no longer placed here by hand. run_stack renders it from the
   // release this run is given, one step before the database step this file is about; the one
   // test below that is about its absence takes the render call over instead.
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, RELEASE);
@@ -119,9 +119,8 @@ describe("the database the installer creates", () => {
       calls.indexOf("CREATE DATABASE litellm;"),
       "LiteLLM started before the database its virtual keys need existed",
     ).toBeLessThan(wholeStack);
-    // Corrected from the plan's literal `/pnpm -C services\/box migrate/`: install.sh reaches
-    // the runner through $BOX_DIR (resolved from where install.sh itself lives, per the s5
-    // HERE/BOX_DIR convention — never a hardcoded relative "services/box", which would only work
+    // install.sh reaches the runner through $BOX_DIR (resolved from where install.sh itself lives,
+    // per the HERE/BOX_DIR convention — never a hardcoded relative "services/box", which would only work
     // if this script's cwd happened to be the repo root), so the logged argv carries `services/box`
     // as the tail of an absolute path rather than as the whole `-C` value.
     expect(calls).toMatch(/pnpm -C .*services\/box migrate/);
@@ -191,10 +190,10 @@ describe("the database the installer creates", () => {
     expect(readFileSync(log, "utf8")).not.toMatch(/CREATE DATABASE/);
   });
 
-  // --- Added beyond the plan's own snippet: owner decision C1 requires a refusal that names
+  // --- A refusal that names
   // the path when there is no stack file to create a database against.
   //
-  // REWRITTEN W8F-F7a. This used to delete a hand-placed fixture, because nothing in the
+  // This used to delete a hand-placed fixture, because nothing in the
   // installer wrote one. run_stack now does, one step earlier — so the way this installation
   // ends up with no stack file is that the render did not produce one, and that is where the
   // refusal now happens. Both refusals still exist (run_database keeps its own guard, for a

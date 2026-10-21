@@ -1,4 +1,4 @@
-// services/box/bin/first-owner.ts — W8C-s7: the owner becomes a real member, with a real id.
+// services/box/bin/first-owner.ts — the owner becomes a real member, with a real id.
 //
 // THE MOST DANGEROUS COMMAND IN THE INSTALLER (see ../lib/first-owner.ts's own header). Mirrors
 // bin/erase-person.ts's shape: a PRACTICE RUN IS THE DEFAULT — with no `--apply`, this only reads
@@ -72,8 +72,7 @@ function isBlank(v: string | undefined): boolean {
 }
 
 /** Doubles a value into the same undo shape `../lib/first-owner.ts`'s `createFirstOwner` writes,
- *  so a mistaken `--apply` run is reversible by pasting exactly this back — the plan's own
- *  requirement. Never runs on a practice run, since nothing has been removed yet to undo. */
+ *  so a mistaken `--apply` run is reversible by pasting exactly this back. Never runs on a practice run, since nothing has been removed yet to undo. */
 function undoScriptFor(seed: EngineSeed): string {
   const literal = (v: string) => `'${v.replace(/'/g, "''")}'`;
   const lines = [

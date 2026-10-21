@@ -1,4 +1,4 @@
-// services/box/lib/erase-person-vault.ts — W5B-s7: erase a person's files from the vault, and be
+// services/box/lib/erase-person-vault.ts — erase a person's files from the vault, and be
 // honest about what git keeps.
 //
 // THE DATABASE HALF (lib/erase-person.ts) can promise that no ROW names the person, because every
@@ -46,7 +46,7 @@
 // reach one 20-line parse would put the whole agent kit into the box image (the small
 // `@lares/vault-format` package is used, for the companion-path rule only). So the parse below is
 // written here, following `noteScope`'s CRLF rule exactly (a file saved with `\r\n` used to defeat
-// an LF-only check and fall back to the store default — pre-launch wave 3A). It reads MORE than
+// an LF-only check and fall back to the store default). It reads MORE than
 // `noteScope` does: block-style lists and quoted scalars, which `noteScope`'s one-line regex does
 // not handle. That is deliberate. A reader that misses a form sees a wider note than it should; a
 // walker that misses a form leaves a person's file behind and reports success.
@@ -71,7 +71,7 @@ export interface VaultHit {
 }
 
 /** What the commit says about itself, because the git log is where somebody will look in a year.
- *  `services/box/ops/vault-purge.sh` is the separate, destructive step (W5B-s9). */
+ *  `services/box/ops/vault-purge.sh` is the separate, destructive step. */
 export const ERASE_COMMIT_NOTE =
   "These files are removed from the working tree and from this commit forward. They remain in " +
   "this repository's history and can still be read with `git log -p`, and they remain in any " +

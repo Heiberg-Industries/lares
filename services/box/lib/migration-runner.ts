@@ -25,7 +25,7 @@
 //     services/chief-of-staff/sql/001-eve-workflow.sql is GENERATED (see its header and
 //     `pnpm -C services/chief-of-staff run regen:eve-sql:check`), so a @workflow/world-postgres
 //     bump changes its bytes by design. Flagging that is correct behaviour, not a bug — the
-//     operator decides, and W3D-s5's CLI prints the remedy.
+//     operator decides, and the CLI prints the remedy.
 //
 //   no longer on disk — a ledger row with no matching file. This is what a bad rebase or a wrong
 //     checkout looks like, which is precisely when a runner must stop rather than carry on.
@@ -39,13 +39,13 @@
 // runner existed looks like, and applying to it would re-run every migration it already carries.
 // The runner will not guess: it stops and asks for a one-time ADOPTION naming the last file that
 // was really applied (`adoptMigrations`, below). A DRY RUN is exempt — it changes nothing, and
-// looking is precisely how the operator works out what to name. See ADR-0021 and the plan's D1/D2.
+// looking is precisely how the operator works out what to name. See ADR-0021.
 //
 // NO DOWN MIGRATIONS. This runner only ever moves forward — there is no "undo one migration"
 // command and none is planned. ADR-0021 rule 3 asks for a migration that applies itself; a down
 // migration is a second thing to write correctly for every change, and the rollback story is an
-// image digest plus a restore (wave 8D), not SQL run backwards. Do not add one on your own
-// initiative — see the plan's "D. Drop or move" for track 3D.
+// image digest plus a restore, not SQL run backwards. Do not add one on your own
+// initiative.
 //
 // HOW EACH FILE IS APPLIED, and the Postgres fact that shapes it. One file goes to the database as
 // ONE simple query, `BEGIN; <ledger row>; <the file's bytes>; COMMIT;`, so a single connection
@@ -303,8 +303,8 @@ export async function looksAlreadyMigrated(db: Queryable): Promise<boolean> {
 /**
  * What `runMigrations` throws rather than applying to a database that predates the runner.
  *
- * Exported so W3D-s5's CLI can also print it on a DRY RUN, where `runMigrations` deliberately does
- * not throw: without it a dry run against the live installation would print "51 to apply" and say
+ * Exported so the CLI can also print it on a DRY RUN, where `runMigrations` deliberately does
+ * not throw: without it a dry run against such a database would print "N to apply" and say
  * nothing about the fact that the real run will refuse.
  *
  * This is the one place the runner talks to a person in full sentences, because it is the one
@@ -447,12 +447,12 @@ export function exitCodeFor(plan: MigrationPlan): 0 | 1 | 2 {
 // ADOPTION — the one-time act that lets the runner meet a database it did not build.
 //
 // WHAT IT DOES. Records every file up to and including `through` as applied, WITHOUT running any
-// of them, with `how = 'adopted'` and the checksum of the file as it is on disk today — so W3D-s2's
+// of them, with `how = 'adopted'` and the checksum of the file as it is on disk today — so the
 // "changed since it was applied" rule still catches an edit made after the adoption.
 //
 // WHAT IT DOES NOT DO — the limit, stated where it cannot be missed: ADOPTION ASSERTS, IT DOES NOT
-// VERIFY. The runner cannot check that the 037 migration ever ran; it records the operator's word for
-// it. Verifying would mean a hand-written "is this applied?" predicate per migration, 51 of them,
+// VERIFY. The runner cannot check that any given migration ever ran; it records the operator's word for
+// it. Verifying would mean a hand-written "is this applied?" predicate per migration,
 // each its own chance to be wrong. What adoption does guarantee, from that point on, is that
 // nothing is silently re-run and nothing is silently edited.
 //
@@ -471,12 +471,12 @@ export function exitCodeFor(plan: MigrationPlan): 0 | 1 | 2 {
 //     so in as many words, together with the remedy: delete that one row from schema_migrations
 //     and apply the file by hand.
 //
-// `through` IS A FILENAME, never a number and never `--all`. A number is ambiguous against the two
-// files numbered 019 in services/box/sql; `--all` would let someone adopt a tree they never looked
+// `through` IS A FILENAME, never a number and never `--all`. A number is ambiguous when two
+// files share one; `--all` would let someone adopt a tree they never looked
 // at. ONCE PER DATABASE: a non-empty ledger refuses, whether the rows got there by applying or by
 // a previous adoption.
 //
-// The installer (wave 8C) never adopts — it starts from an empty database and applies everything.
+// The installer never adopts — it starts from an empty database and applies everything.
 // ---------------------------------------------------------------------------------------------
 
 export interface AdoptOptions {

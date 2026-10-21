@@ -1,4 +1,4 @@
-// services/box/tests/export-person.test.ts — W5E-s2: everything this installation holds about one
+// services/box/tests/export-person.test.ts — everything this installation holds about one
 // member, written out, and none of its secrets.
 //
 // WHY THIS FILE IS THE PROOF. An export has two failure modes and they pull in opposite

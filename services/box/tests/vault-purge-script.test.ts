@@ -1,5 +1,5 @@
 // vault-purge.sh is the deliberately hard-to-run second half of "erase a person"
-// (W5B-s9): rewriting a vault's git history so a removed file's old content no
+//: rewriting a vault's git history so a removed file's old content no
 // longer exists under any commit id. It refuses by default, requires an explicit
 // long flag to do anything, requires a clean git work tree, and never sends its
 // result anywhere. These tests drive the real script against a REAL disposable git

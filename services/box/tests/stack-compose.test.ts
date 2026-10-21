@@ -27,7 +27,7 @@ const OPTS = {
   domain: "example.invalid",
   consoleAllowedEmails: "owner@example.invalid",
   ownerId: "fixture-owner",
-  ownerHomeTz: "Europe/Oslo",
+  ownerHomeTz: "Europe/Berlin",
   modelAlias: "lares-brain",
   pgUser: "lares",
   pgDatabase: "lares_state",
@@ -63,7 +63,7 @@ describe("the generated stack compose file", () => {
     expect(doc.services["lares-gateway"].ports).toEqual(["127.0.0.1:4000:4000"]);
   });
 
-  it("publishes nothing else — only caddy opens a port beyond loopback (owner decision C2: this engine never touches a firewall, so a port it does not publish here can never be reached from outside)", () => {
+  it("publishes nothing else — only caddy opens a port beyond loopback (this engine never touches a firewall, so a port it does not publish here can never be reached from outside)", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     for (const [name, svc] of Object.entries(doc.services) as [string, any][]) {
       if (name === "db" || name === "lares-gateway") continue;
@@ -158,7 +158,7 @@ describe("the generated stack compose file", () => {
   // images/gateway-runtime/start.sh refuses outright — `: "${MODEL_PROVIDER_KEY_FILE:?...}"`,
   // then the same for GATEWAY_MASTER_KEY_FILE — unless both names are set. Both point at the
   // mounted secret paths, which mirror the on-disk names exactly.
-  // F7a-2 writes this file (bin/render-stack.ts); this file only mounts it, read-only, where
+  // bin/render-stack.ts writes this file ; this file only mounts it, read-only, where
   // the gateway's own start script points LiteLLM (gateway-start-script.test.ts).
   it("mounts the generated gateway config where the gateway container reads it", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
@@ -166,7 +166,7 @@ describe("the generated stack compose file", () => {
       .toContain(`${OPTS.gatewayConfigFile}:/etc/litellm/config.yaml:ro`);
   });
 
-  // F7c — ONE PLACE NAMES THE CONFIG PATH, and it is the start script. Until this slice the
+  // ONE PLACE NAMES THE CONFIG PATH, and it is the start script. Previously the
   // service carried `command: ["--config", "/etc/litellm/config.yaml"]` AND the script ended
   // `exec litellm --config /etc/litellm/config.yaml`: two spellings of one path, and once the
   // script is the entrypoint the compose one is argv handed to a script that never reads `$@`.

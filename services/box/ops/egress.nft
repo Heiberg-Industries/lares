@@ -1,10 +1,10 @@
 # services/box/ops/egress.nft
 # Default-deny OUTBOUND egress for lares-host. Blast-radius limiter: if a
 # contained agent is ever prompt-injected, it can only reach the allow-set.
-# Inbound is governed elsewhere (no published ports; tailnet/SSH only).
+# Inbound is governed elsewhere (no published ports; the private network and SSH only).
 #
 # The `egress_allow` set is populated by refresh-egress-allowlist.sh (resolves
-# the LLM gateway, Slack, and Twenty hostnames). Tailnet is allowed wholesale.
+# the LLM gateway, Slack, and Twenty hostnames). The private network is allowed wholesale.
 #
 # Apply: load it with a rollback timer armed; do NOT apply blind.
 
@@ -32,7 +32,7 @@ table inet egress {
         udp dport 53 accept
         tcp dport 53 accept
 
-        # Tailnet: our own services (gateway/CRM/replica dispatch) ride this.
+        # Private network: the installation's own services ride this.
         oifname "tailscale0" accept
         ip daddr 100.64.0.0/10 accept
         ip6 daddr fd7a:115c:a1e0::/48 accept

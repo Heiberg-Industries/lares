@@ -1,4 +1,4 @@
-// services/box/lib/export-person.ts — W5E-s2: everything this installation holds about one member,
+// services/box/lib/export-person.ts — everything this installation holds about one member,
 // written out where they can read it — and none of its secrets.
 //
 // THE READ-ONLY TWIN OF THE ERASE (ADR-0020 rule 7: export and erase work against the same one
@@ -13,7 +13,7 @@
 // WHO. `opts.person` is whatever the operator typed, and the first thing that happens is
 // `resolvePerson` — which is also the membership check. An unknown name, a name two people claim,
 // a missing register and anybody the register does not hold are each a REFUSAL that writes
-// nothing (owner ruling D2: a member of this installation, never a third party a note is about).
+// nothing (only a member of this installation, never a third party a note is about).
 //
 // THE ONE PROPERTY THIS FILE CANNOT GET WRONG: no token, key or other sign-in material leaves in
 // an export. An export is a file a person carries around — mailed to themselves, dropped in a
@@ -26,7 +26,7 @@
 // routine wrote, anywhere under the output directory.
 //
 // WHAT IS EXPORTED THAT MIGHT SURPRISE. An `actor` column names whoever CHANGED an administrative
-// row (owner ruling D6). The erase keeps those rows and replaces the name; the export writes them
+// row. The erase keeps those rows and replaces the name; the export writes them
 // out, because they are this person's own activity — "you changed this permission, on this day" —
 // and an export that hid them would be telling them less about themselves than the installation
 // knows.

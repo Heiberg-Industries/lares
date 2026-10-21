@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# update.sh — W8D-s3. The command that changes which images this installation runs.
+# update.sh — the command that changes which images this installation runs.
 # Nothing updates until a backup has actually been taken.
 #
 # WHY THE ORDER IS THE WHOLE POINT. An update that half-runs leaves an installation whose
@@ -21,7 +21,7 @@
 # saying 'failed' with a one-sentence reason. It never leaves a half-switched installation
 # that the record calls 'ok'.
 #
-# IT NEVER ROLLS THE DATABASE BACK, AND NEITHER DOES ANYTHING ELSE (owner decision D4).
+# IT NEVER ROLLS THE DATABASE BACK, AND NEITHER DOES ANYTHING ELSE.
 # There are no down migrations, by decision (see services/box/lib/migration-runner.ts's own
 # header). Once step 7 has run, ops/rollback.sh puts the SOFTWARE back and the database stays
 # where the migration left it; going back past a migration means restoring the backup taken
@@ -30,7 +30,7 @@
 # IT REACHES NOTHING BUT THE REGISTRY. The only thing that leaves this box is `docker pull`,
 # to whatever registry the release file names. No heartbeat, no version ping, no telemetry,
 # and no new version is ever looked for — you give this command a release file, it never goes
-# to find one (owner decision D1).
+# to find one.
 #
 # WHERE "WHAT IS RUNNING NOW" COMES FROM, AND WHEN IT IS NOT THERE. This repository is the
 # ENGINE and ships no stack: `services/box/compose.lares-keeper.yaml` is the only compose file

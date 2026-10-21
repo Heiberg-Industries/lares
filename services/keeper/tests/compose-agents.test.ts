@@ -106,8 +106,8 @@ it('mounts one token file per outside tool that asks for one, at a target named 
  expect(()=>renderAgentsCompose([{...agent,outsideTokens:['Bad/../name']}],opts)).toThrow();
 });
 it('passes the owner time zone from the binding into the agent container',()=>{
- const bound={...agent,bindings:{role:'creative' as const,ownerId:'owner-1',environment:{OWNER_HOME_TZ:'Europe/Oslo'},mounts:[],secrets:{}}};
- expect(parse(renderAgentsCompose([bound],opts)).services['lares-bookkeeper'].environment.OWNER_HOME_TZ).toBe('Europe/Oslo');
+ const bound={...agent,bindings:{role:'creative' as const,ownerId:'owner-1',environment:{OWNER_HOME_TZ:'Europe/Berlin'},mounts:[],secrets:{}}};
+ expect(parse(renderAgentsCompose([bound],opts)).services['lares-bookkeeper'].environment.OWNER_HOME_TZ).toBe('Europe/Berlin');
  expect(parse(renderAgentsCompose([agent],opts)).services['lares-bookkeeper'].environment.OWNER_HOME_TZ).toBeUndefined();
 });
 it('gives a managed agent with no claim the installation administrator as console approver; a claim wins',()=>{

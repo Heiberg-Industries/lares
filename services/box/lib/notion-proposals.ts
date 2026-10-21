@@ -1,16 +1,16 @@
 // services/box/lib/notion-proposals.ts
 // The notion-sync proposal queue: the rows behind the owner's 👍 on a Notion→vault edit.
 //
-// WHY IT LIVES HERE and not in notion-sync (where it was written, spec §18.4):
+// WHY IT LIVES HERE and not in notion-sync (where it was first written):
 // two different surfaces now resolve a proposal — the console's Approve/Reject card
 // (services/console/lib/notion-proposals.ts) and the chief of staff's `notion` hand
-// (services/agent-runtime/lib/adapters/hands/notion.ts, spec §19.2/§20) — and the
+// (services/agent-runtime/lib/adapters/hands/notion.ts) — and the
 // binding constraint is that they are the SAME code, never two callers that happen
 // to agree. A direct import between those packages is unavailable: notion-sync
 // already imports agent-runtime (lib/adapters/calendar-source.ts → calendar-oauth),
 // so the reverse edge would be a package cycle. @lares/agent-box is the package all
 // three already depend on, and it already owns this table's schema
-// (sql/001_baseline.sql, sql/001_baseline.sql) and the Queryable these
+// (sql/001_baseline.sql) and the Queryable these
 // are written against — so the shared code moves DOWN rather than sideways, and
 // notion-sync keeps its vendor-neutrality/shareability intact.
 //
@@ -26,15 +26,15 @@ import type { Queryable } from "./db.js";
 export type ProposalState = "pending" | "approved" | "rejected" | "applied" | "superseded";
 
 /**
- * What a proposal is asking for (migration 018, Phase 4 T3b).
+ * What a proposal is asking for.
  *
  * - `update` — the original and the default: a Notion edit to a page whose vault file
  *   already exists, waiting to be written into it.
  * - `create` — a Notion row or page with NO vault file yet, asking for one to be
- *   created (a Meetings transcript, T4; a Notion-born page, T6).
+ *   created (a Meetings transcript, or a Notion-born page).
  *
  * One column rather than a second table because the two must share ONE approval path
- * (spec §18.4/§20: `resolveProposal`, the chief of staff's DM, the console card). What differs is
+ * (`resolveProposal`, the chief of staff's DM, the console card). What differs is
  * what runApplySync does after the 👍, not how the human is asked.
  */
 export type ProposalKind = "update" | "create";
@@ -42,7 +42,7 @@ export type ProposalKind = "update" | "create";
 export interface ProposalInput {
   vaultPath: string;
   notionPageId: string;
-  /** Reverse-translated Obsidian markdown — body only, no frontmatter (spec §18.4). */
+  /** Reverse-translated Obsidian markdown — body only, no frontmatter. */
   proposedBody: string;
   /** Vault render-hash at propose time — runApplySync re-checks this to catch a stale approve. */
   baseMdHash: string;
@@ -51,17 +51,16 @@ export interface ProposalInput {
   /**
    * Compact before/after preview (pull-sync.ts's diffPreview, or cli.ts
    * resolveFrozenDoc's own for a forced proposal), captured at propose time
-   * and persisted — not re-derived later (T6 review, F2): the console has no
+   * and persisted — not re-derived later: the console has no
    * vault mount to diff against, so this column is the ONLY way its
-   * Approve/Reject card can satisfy spec §18.4's "diff visible" contract.
-   * Optional — "" default (016's column default) — so callers/tests that
+   * Approve/Reject card can show the diff.
+   * Optional — "" default (the column default) — so callers/tests that
    * don't care about the preview text don't have to supply one.
    */
   diffPreview?: string;
   /**
-   * Optional, and 'update' when omitted (018's column default) — which is what keeps
-   * every caller written before Phase 4 correct without being touched. A create must
-   * say so explicitly.
+   * Optional, and 'update' when omitted (the column default) — which keeps callers that only
+   * ever propose updates correct without being touched. A create must say so explicitly.
    */
   kind?: ProposalKind;
 }
@@ -98,7 +97,7 @@ export interface ProposalRow {
   createdAt: Date;
 }
 
-// ── What a decision actually does (Phase 4, fix round 3) ──────────────────────────
+// ── What a decision actually does ──────────────────────────
 // Approve and Reject do THREE different things, not two, and which one is not a
 // property of the button — it is a property of the document.
 //
@@ -111,9 +110,9 @@ export interface ProposalRow {
 //                             surprising consequence in the loop
 //
 // These live here, beside ProposalRow, because every surface that states a
-// consequence — the chief of staff's DM, her `notion` hand, the confirm card, the Telegram button
+// consequence — the chief of staff's DM, its `notion` hand, the confirm card, the Telegram button
 // reply, the console card — imports from this package, and because the alternative
-// has now failed twice: each surface writing its own sentence produced six strings
+// has failed before: each surface writing its own sentence produced six strings
 // promising a Notion revert that the engine had stopped doing. A sentence written in
 // one place can be wrong once and fixed once; six can be wrong in five places while
 // looking fixed.
@@ -166,20 +165,19 @@ const PROPOSAL_COLUMNS = `p.id, p.vault_path, p.notion_page_id, p.proposed_body,
             (d.direction = 'notion_to_md') AS notion_owned`;
 
 /**
- * The join every proposal read carries (fix round 3). `notion_sync_docs.vault_path`
+ * The join every proposal read carries. `notion_sync_docs.vault_path`
  * is UNIQUE across the whole table, so joining on it can only ever match the one row
  * for this path — no ambiguity, no fan-out.
  *
- * NOT scoped to `target = 'docs'`, and that scoping was a real defect (Phase 4, T4).
+ * NOT scoped to `target = 'docs'`, and scoping it that way was a real defect.
  * Because vault_path is globally UNIQUE, the predicate could never change WHICH row
- * matched; all it could do is make the join MISS a meetings row. Before Phase 4 no
- * meetings row had a vault_path, so it never missed anything — but a transcript's
- * state row IS its Meetings row, so from T4 on the scoped join answered
+ * matched; all it could do is make the join MISS a meetings row. A transcript's
+ * state row IS its Meetings row and carries a vault_path, so a scoped join answered
  * `notionOwned: false` for a document Notion demonstrably owns, and
  * `rejectConsequence` then promised the owner that rejecting a transcript edit would
  * "revert your Notion page back to it". The engine would have done no such thing
  * (apply branches on the ROW's direction, which is `notion_to_md`), so this was the
- * same defect as the six strings of round 3 and the seventh of round 4: a button
+ * same kind of defect as any button
  * whose label lies about what the button does.
  *
  * LEFT, not inner: a CREATE proposal has no path-bearing row yet (that is its whole
@@ -189,7 +187,7 @@ const PROPOSAL_COLUMNS = `p.id, p.vault_path, p.notion_page_id, p.proposed_body,
  * A join rather than a `direction` column on the proposals table: direction is
  * mutable (`enable-two-way`), and a copy would be stale from the moment it was
  * flipped, which is precisely how a surface ends up confidently stating last week's
- * consequence. Also why no migration is needed — 018 is unchanged.
+ * consequence. Also why no schema change is needed.
  */
 const PROPOSAL_JOIN = `notion_sync_proposals p
        LEFT JOIN notion_sync_docs d
@@ -227,10 +225,10 @@ function toRow(row: ProposalDbRow): ProposalRow {
 }
 
 /**
- * Plain INSERT, not an upsert: `notion_sync_proposals_open` (016) is a partial
+ * Plain INSERT, not an upsert: `notion_sync_proposals_open` is a partial
  * unique index on vault_path, so a second open proposal for the same file must be
  * superseded (setProposalState → 'superseded') BEFORE this runs, never replaced
- * by an ON CONFLICT here — the "never stack" rule (§18.4) belongs to the caller,
+ * by an ON CONFLICT here — the "never stack" rule belongs to the caller,
  * which needs to notify about the superseded one too. Returns the new row's id so
  * the caller can act on it (e.g. tests, or a future same-tick follow-up) without
  * an extra round-trip; BIGINT comes back as text from the driver, same as
@@ -266,16 +264,16 @@ export async function getOpenProposals(db: Queryable): Promise<ProposalRow[]> {
  *
  * resolved_at stamps on 'applied' and 'superseded' — states nothing further will
  * ever act on. It deliberately does NOT stamp 'approved' (still an open,
- * actionable state) and, from T5 on, no longer stamps 'rejected' either:
+ * actionable state) and does not stamp 'rejected' either:
  * rejecting a proposal is a human decision that still owes the world a WRITE —
- * the Notion page has to be reverted from the vault (§18.4) — and that write is
+ * the Notion page has to be reverted from the vault — and that write is
  * runApplySync's job on the next tick, not the CLI's. So for a rejected row
  * resolved_at means "the revert has executed", and a NULL one is the engine's
  * work queue (getRejectedUnexecuted → markProposalReverted). Stamping it here
  * would make a rejection that never reverted indistinguishable from one that
  * did; leaving it NULL forever (no marker at all) would re-revert the same page
  * on every tick. Any other writer of state='rejected' — the console's POST
- * route (T6) included — must leave resolved_at NULL for the same reason.
+ * route included — must leave resolved_at NULL for the same reason.
  */
 export async function setProposalState(
   db: Queryable,
@@ -350,26 +348,26 @@ export async function markProposalReverted(db: Queryable, id: number): Promise<v
  *                   report a revert that has not happened.
  *
  * So the honest label for what this returns is CLOSED, never "decided" — the caller
- * must not word it as the moment he tapped the button.
+ * must not word it as the moment the owner tapped the button.
  *
  * 'superseded' IS EXCLUDED, AND THAT IS A REAL HOLE — not, as an earlier version of this
  * comment claimed, merely the exclusion of machine events. Two different things wear that
  * state, and only one of them is a machine event:
  *
  *   - Nobody decided: a newer proposal replaced an older open one.
- *   - HE DECIDED AND THE ENGINE COULD NOT EXECUTE IT. Three routes in
+ *   - THE OWNER DECIDED AND THE ENGINE COULD NOT EXECUTE IT. Three routes in
  *     services/notion-sync/lib/apply-sync.ts: a rejection whose Notion page changed before
- *     the revert ran (~:1062), `refuseCreate` (~:386), and a stale approval whose vault
- *     hash moved (~:826). All three stamp 'superseded'.
+ *     the revert ran, `refuseCreate`, and a stale approval whose vault
+ *     hash moved. All three stamp 'superseded'.
  *
  * The second group is a decision this block will NEVER report, on any day — not a delay, a
  * permanent silence. They are excluded anyway because the row cannot tell the two groups
  * apart: distinguishing them needs transition history the table does not keep, and there
  * is no column that says "a human moved this before the engine gave up". Reporting all
- * superseded rows would credit him with decisions he never made; reporting none loses a
- * few he did.
+ * superseded rows would credit the owner with decisions never made; reporting none loses a
+ * few that were.
  *
- * WHAT COVERS IT: each of those three routes pings him at the time ("was NOT reverted —
+ * WHAT COVERS IT: each of those three routes pings the owner at the time ("was NOT reverted —
  * the page changed after you rejected it", "refused: … was NOT created", the stale-approval
  * freeze), so the decision is not invisible — it is just invisible HERE. If that ping lane
  * is ever retired, this hole opens for real and this block needs transition history first.
@@ -443,7 +441,7 @@ export async function resolveProposal(
   //
   // The result is a 'rejected' row WITH resolved_at set, which getRejectedUnexecuted
   // (state='rejected' AND resolved_at IS NULL) will never pick up — so the Notion revert
-  // he asked for never happens and nothing reports a failure.
+  // the owner asked for never happens and nothing reports a failure.
   //
   // The state predicate in the WHERE closes it: once the engine has moved the row out of
   // ('pending','approved'), this updates zero rows and throws instead.
@@ -453,7 +451,7 @@ export async function resolveProposal(
   // engine's work queue.
   //
   // The UPDATE sits in a CTE because RETURNING cannot join, and the caller needs the
-  // joined `notion_owned` to say what it just did (fix round 3: every surface states
+  // joined `notion_owned` to say what it just did (every surface states
   // a consequence, and for a Notion-owned row that consequence is different). Still
   // ONE statement, so the guard above is untouched — a data-modifying CTE and the
   // SELECT that reads it execute in the same snapshot.
@@ -478,8 +476,8 @@ export async function resolveProposal(
   return toRow(row);
 }
 
-// ── The announce ledger (/ spec §20.3, migration 017) ──────────────────────
-// The chief of staff polls for proposals she has not yet DM'd about, sends ONE turn covering them,
+// ── The announce ledger ──────────────────────
+// The chief of staff polls for proposals it has not yet DM'd about, sends ONE turn covering them,
 // then stamps each. Durable rather than in-process so a restart cannot re-announce.
 
 /**
@@ -501,7 +499,7 @@ export async function getUnannouncedProposals(db: Queryable): Promise<ProposalRo
 /**
  * Marks a proposal as announced. Guarded on `announced_at IS NULL` — first stamp wins,
  * the same posture as freezeDoc's frozen_at and markProposalReverted — so a retry that
- * races itself cannot move the clock and quietly reset the staleness countdown (§20.4).
+ * races itself cannot move the clock and quietly reset the staleness countdown.
  *
  * The CALLER must only invoke this after the message actually went out. Stamping
  * optimistically would turn one failed send into a proposal that is never announced.
@@ -522,18 +520,18 @@ export interface StaleProposalRow extends ProposalRow {
 
 /**
  * Proposals still pending long after they should have been decided — what the spine now
- * escalates to #lares-alerts in place of the retired per-proposal ping (spec §20.4).
+ * escalates to #lares-alerts in place of a per-proposal ping.
  *
  * TWO cases, and missing the second one is a silent-data-loss bug:
  *
- *  - **Announced, still pending** past `hours`: the chief of staff asked and got no answer. He has not
+ *  - **Announced, still pending** past `hours`: the chief of staff asked and got no answer. The owner has not
  *    looked, or the DM did not really land.
- *  - **NEVER announced** past `unannouncedHours` (default 2×): nothing told him at all.
+ *  - **NEVER announced** past `unannouncedHours` (default 2×): nothing told the owner at all.
  *    An earlier version excluded these on the reasoning that un-announced is the poll's
- *    job — which is only true if the poll RUNS. It does not run when 017 has not been
- *    applied yet (guaranteed on the box until it is applied by hand), when the chief-of-staff image
+ *    job — which is only true if the poll RUNS. It does not run when the announce
+ *    column has not been migrated yet, when the chief-of-staff image
  *    predates the hand, when the proposals channel resolves empty, or when the door is
- *    down. Before every proposal pinged, so all of those were visible; excluding
+ *    down. A per-proposal ping made all of those visible; excluding
  *    NULLs would have made the exact failure this escalation exists to catch invisible.
  *
  * The generous second threshold is what keeps this from firing on every proposal in the

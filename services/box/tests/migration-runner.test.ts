@@ -25,7 +25,7 @@ afterAll(async () => {
   for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
 });
 // Every run test builds its own tables from scratch, against its own empty ledger — on a database
-// that is genuinely EMPTY. startTestDb applies 001-019, and from W3D-s4 a real run against a
+// that is genuinely EMPTY. startTestDb applies every file in services/box/sql, and a real run against a
 // database that has a schema and an empty ledger refuses until someone adopts (see
 // tests/migration-adopt.test.ts). None of the cases below wants that; every one of them means
 // "a fresh installation", so the schema is dropped rather than three tables of it.

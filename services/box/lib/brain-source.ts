@@ -91,7 +91,7 @@ export function makeBrainDeps(vaultPath: string): BrainDeps {
     },
 
     async search(q) {
-      // Tokenized match (W4b): LLM callers send natural multi-word queries
+      // Tokenized match: LLM callers send natural multi-word queries
       // ("example venture positioning") — the old whole-string substring match
       // returned 0 hits unless the exact phrase appeared. Tokens are unicode
       // word chunks (æøå safe), <2 chars dropped. A file hits when ALL tokens

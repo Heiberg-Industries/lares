@@ -25,7 +25,7 @@ describe("what the installer promises", () => {
     ["ghcr.io", "the image registry CI publishes to; the registry is a setting, and this is the default"],
     ["127.0.0.1", "this machine, reaching the database the stack published a port for"],
     ["localhost", "the same, by name"],
-    ["lares-gateway", "the model gateway's compose service name on the fleet's OWN docker network (owner decision C1) — not a public host, and not reachable from outside this installation"],
+    ["lares-gateway", "the model gateway's compose service name on the fleet's OWN docker network — not a public host, and not reachable from outside this installation"],
   ]);
 
   // Nothing here is an outside host a person is told to fetch from, either: when docker is
@@ -40,8 +40,8 @@ describe("what the installer promises", () => {
   });
 
   it("downloads nothing, so a host it merely names cannot become a host it runs", () => {
-    // The promise the host rule above is a proxy for. `curl` itself is allowed (a later slice
-    // asks the console whether it is up); fetching a file, or piping a fetch into a shell, is not.
+    // The promise the host rule above is a proxy for. `curl` itself is allowed (it asks the console
+    // whether it is up); fetching a file, or piping a fetch into a shell, is not.
     const downloads = lines
       .map((line, i) => ({ line: line.trim(), i }))
       .filter(({ line }) => !line.startsWith("#"))

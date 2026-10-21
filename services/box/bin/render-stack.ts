@@ -1,4 +1,4 @@
-// services/box/bin/render-stack.ts — W8F-F7a: the installation's stack file, rendered from the
+// services/box/bin/render-stack.ts — the installation's stack file, rendered from the
 // release file `ops/install.sh` was given.
 //
 // WHY THIS IS A COMMAND AND NOT A HEREDOC. ops/update.sh does its own release read through a
@@ -25,7 +25,7 @@ import { renderGatewayConfig } from "../lib/gateway-config.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
  *  a flag parser here would be one more place for the two to disagree about a name. `alias` and
- *  `providerModel` (F7a-2) go at the end so every earlier caller's argument count still fails
+ *  `providerModel` go at the end so every earlier caller's argument count still fails
  *  loudly instead of silently shifting a path into the wrong slot. */
 const ARGUMENTS = [
   "releaseFile",
@@ -137,7 +137,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // reasons that "the fleet's own containers never read it", which is true of THAT file (the
   // Docker daemon reads it, as root, on the host) and false of this one: it exists to be
   // mounted into the gateway container and read by LiteLLM itself. LiteLLM publishes a
-  // `-non_root` image variant (the pre-launch LiteLLM research), the
+  // `-non_root` image variant (see lib/stack-compose.ts); the
   // image comes from the release manifest, and this engine does not get to assume which
   // variant an installation names — so a root-owned 0640 file is one an unprivileged LiteLLM
   // cannot read, which fails exactly the way the missing file did. Nothing here is secret: the
@@ -157,11 +157,10 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // is the one that should guarantee its mode — this one is also runnable by hand.
   chmodSync(gatewayConfigFile, 0o644);
 
-  // F7c: THE GATEWAY'S ENTRYPOINT, INSTALLED RATHER THAN BAKED INTO AN IMAGE. Nothing in this
+  // THE GATEWAY'S ENTRYPOINT, INSTALLED RATHER THAN BAKED INTO AN IMAGE. Nothing in this
   // repository builds a gateway image and nothing may — the official LiteLLM image carries its
   // own `enterprise/` tree, which its licence forbids publishing or distributing, and a derived
-  // image would not be the artefact upstream's cosign signature covers (see lib/stack-compose.ts
-  // and the pre-launch LiteLLM research). So the committed script is copied
+  // image would not be the artefact upstream's cosign signature covers (see lib/stack-compose.ts). So the committed script is copied
   // here verbatim and bind-mounted in as the entrypoint. Byte-identical on purpose: the copy is
   // never edited, so tests/gateway-start-script.test.ts is a test of the file that actually runs.
   //

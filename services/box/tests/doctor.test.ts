@@ -1,4 +1,4 @@
-// services/box/tests/doctor.test.ts — W8A-s6: `lares doctor` never touches Docker; every branch
+// services/box/tests/doctor.test.ts — `lares doctor` never touches Docker; every branch
 // is exercised through a fake `Queryable` that answers by matching a substring of the SQL text
 // (`fakeDb`, the same shape `tests/migration-runner.test.ts`'s neighbours use for a dry read).
 import { describe, it, expect } from "vitest";
@@ -93,8 +93,7 @@ describe("lares doctor", () => {
     expect(find(rs, "repairs").say).toContain("Two names for one person.");
   });
 
-  // Added beyond the plan's own snippet — the task's own bar for this slice: "Read-only ... A test
-  // records every SQL statement and asserts only SELECTs." None of the cases above proves that on
+  // The doctor must be read-only: a test records every SQL statement and asserts only SELECTs. None of the cases above proves that on
   // their own (a fake `Queryable` cannot tell a SELECT from an UPDATE by refusing one), so this
   // case records the literal text of every statement the doctor sends and checks it by hand.
   it("only ever reads — every statement it sends is a SELECT", async () => {

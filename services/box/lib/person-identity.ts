@@ -1,4 +1,4 @@
-// services/box/lib/person-identity.ts — W5I-s1: one person, every spelling they have.
+// services/box/lib/person-identity.ts — one person, every spelling they have.
 //
 // WHY THIS FILE IS THE CORRECTNESS CORE. Every later erase, export and forget goes through
 // `resolvePerson`. Its failure mode is SILENCE: a spelling it does not know about is a row nobody
@@ -9,7 +9,7 @@
 //
 // WHAT IT READS, AND ONLY READS. `users` and `user_aliases` (services/box/sql/001_baseline.sql),
 // the identity register — the one place in the system that knows two spellings are the same
-// person (owner decision D3: the register is the one truth). `unresolvableValues` additionally
+// person (the register is the one truth). `unresolvableValues` additionally
 // reads ONE member table named by the inventory. This module writes nothing, alters nothing and
 // creates nothing.
 //
@@ -37,7 +37,7 @@ import { MEMBER_SCOPE, type IdKind } from "./member-scope.js";
 
 /** Every spelling one person has, grouped by the id convention that uses it. */
 export interface PersonIdentity {
-  /** The register's canonical id — `users.id`. The one truth (owner decision D3). */
+  /** The register's canonical id — `users.id`. The one truth. */
   id: string;
   /** Every `user_aliases` row for this person, by system. */
   aliases: ReadonlyArray<{ system: string; alias: string }>;

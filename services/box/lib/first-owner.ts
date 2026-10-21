@@ -1,8 +1,8 @@
-// services/box/lib/first-owner.ts — W8C-s7: the owner becomes a real member, with a real id.
+// services/box/lib/first-owner.ts — the owner becomes a real member, with a real id.
 //
 // THIS IS THE MOST DANGEROUS FILE IN THE INSTALLER. A wrong id here is SILENT and PERMANENT:
 // every note, reminder, standing fact and forget-ledger row would be filed under a person who
-// does not exist, and `forget_ledger`'s hashes can never be re-keyed (W5I-s7). Work through this
+// does not exist, and `forget_ledger`'s hashes can never be re-keyed. Work through this
 // file slowly; every branch below either does nothing, or does exactly one thing inside one
 // transaction.
 //
@@ -92,7 +92,7 @@ export function readEngineSeed(sqlDir: string): EngineSeed | null {
   }
 }
 
-/** The register id, and what the free text arrives as (W5I-s7's ruling: NO shape heuristics
+/** The register id, and what the free text arrives as (NO shape heuristics
  *  beyond "not blank" — this stays free text by design). */
 export interface FirstOwnerInput {
   readonly id: string;
@@ -204,7 +204,7 @@ export async function decideFirstOwner(
   if (id === "") {
     return {
       kind: "refused",
-      why: "An owner id cannot be blank. Refusing rather than inventing one (W5I-s7).",
+      why: "An owner id cannot be blank. Refusing rather than inventing one.",
     };
   }
 

@@ -1,18 +1,18 @@
-// -s4 / W5B-s5 — a test that no new table can forget it holds member data.
+// A test that no new table can forget it holds member data.
 //
 // This is a repository test, not runtime code — it reads services/box/sql straight off disk
 // every time it runs (styled after tests/migration-numbering.test.ts), so it keeps catching a
 // missing inventory entry as new migrations land, rather than only pinning what is true today.
 //
-// ONE DEVIATION FROM THE PLAN'S LITERAL TEXT: the third assertion below reads
+// WHY THE THIRD ASSERTION IS LOOSER: the third assertion below reads
 // `expect(t.createdBy, t.table).toMatch(/\.sql$|\(runtime DDL\)$/)` rather than a bare
 // `/\.sql$/`. `dream_observations` and `dream_preferences` are not created by any `.sql` file at
 // all (lib/member-scope.ts explains why: they are runtime DDL in
-// services/chief-of-staff/lib/dream/store.ts), and the plan's own fourth test below requires
+// services/chief-of-staff/lib/dream/store.ts), and the fourth test below requires
 // exactly that literal `createdBy` string for both of them. A bare `/\.sql$/` here would make
 // this file self-contradictory — no `createdBy` value could satisfy both assertions at once. The
 // loosened regex keeps the spirit (createdBy names where to check the claim) while admitting the
-// one documented exception the plan itself calls for.
+// one documented exception.
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -35,7 +35,7 @@ describe("member-scope inventory", () => {
     }
   });
 
-  it("names the tables wave 4 and wave 5 added, with the columns they actually have", () => {
+  it("names the later-added tables, with the columns they actually have", () => {
     expect(scopeOf("conversation_entries")).toMatchObject({ scope: "member", column: "person_key" });
     expect(scopeOf("agent_notes")).toMatchObject({ scope: "member", column: "owner" });
     expect(scopeOf("memory_use")).toMatchObject({ scope: "member", column: "owner" });
@@ -55,7 +55,7 @@ describe("member-scope inventory", () => {
     }
   });
 
-  // W5I-s3 — the inventory says what is true: two entries corrected, and a rule for new tables.
+  // The inventory says what is true: two entries corrected, and a rule for new tables.
 
   it("does not claim a column that the schema does not have", () => {
     // voice_exemplar (sql/001_baseline.sql) has a mailbox column but no person column: nothing in
@@ -84,7 +84,7 @@ describe("member-scope inventory", () => {
   // spelling. No new person-holding table with no person column. No new free-text "actor"
   // column. The four lists below are today's exceptions, one per kind, frozen: each may only
   // SHRINK, and each test below fails the moment a table not on its list uses that kind (a new
-  // exception nobody decided on) or a listed table no longer uses it (a later slice fixed it —
+  // exception nobody decided on) or a listed table no longer uses it (it was fixed —
   // remove it from the list in the same change).
 
   const help = (list: string) =>
@@ -94,32 +94,30 @@ describe("member-scope inventory", () => {
   const LEGACY_PRINCIPAL_TABLES = [
     "digest_requests", "workflow_jobs",
     "meeting_followup_sent", "agent_door_connections", "agent_door_claim_audit",
-  ];   // W5I-s8 (box 085, ruling D4) took `oauth_tokens` and `email_watch_cursors` off this list
-       // in the same commit as the migration that renamed their values. The remaining five are
+  ];   // `oauth_tokens` and `email_watch_cursors` are no longer on this list: they hold the
+       // register's id. The remaining five are
        // door and job bookkeeping, not a person's own content; nothing has claimed them yet.
 
   const LEGACY_OWNER_KEY_TABLES = [
     "forget_ledger",
-  ];   // W5I-s4 (box 083) took the other fifteen off this list in the same commit as the
-       // migration that rewrote them. `forget_ledger` is the one that stays: its `match_hash`
+  ];   // The other formerly owner-keyed tables now hold the register's id. `forget_ledger` is the
+       // one that stays: its `match_hash`
        // was derived FROM the owner string and can never be re-derived, so rewriting the column
-       // would silently switch off every forget it holds (box 083's header states this, and
-       // tests/owner-key-normalised.test.ts pins that the migration does not touch it). W5I-s7
-       // keys NEW ledger rows on the register's id and is the slice that empties this list.
+       // would silently switch off every forget it holds. NEW ledger rows are
+       // keyed on the register's id, and that is what will eventually empty this list.
 
   const FROZEN_ACTOR_TABLES = [
     "ratchet", "ratchet_audit", "voice_profile", "keeper_audit", "settings", "settings_audit",
-  ];   // decision D6: an erase replaces the name with `erased`, not a person id — not expected to shrink
+  ];   // an erase replaces the name with `erased`, not a person id — not expected to shrink
 
   const LEGACY_COLUMNLESS_TABLES = [
     "memory_proposals", "voice_exemplar",
     "notion_sync_docs", "notion_sync_proposals", "notion_sync_fidelity",
     "atlas_notes", "atlas_proposals",
-  ];   // W5I-s6 (box 084) gave `dream_observations` and `dream_preferences` an `owner` column and
-       // took them off this list, both in the same commit as the migration. `voice_exemplar`
-       // stays: per the corrected inventory (W5I-s3) it has no person column and cannot be
-       // reached by any join at all (sql/001_baseline.sql:27-36's own columns have no candidate) —
-       // box 084 does not touch it.
+  ];   // `dream_observations` and `dream_preferences` carry an `owner` column and are no longer
+       // on this list. `voice_exemplar`
+       // stays: it has no person column and cannot be
+       // reached by any join at all (its own columns in sql/001_baseline.sql have no candidate).
 
   it("no table outside the frozen list still uses a legacy principal spelling", () => {
     const principals = MEMBER_SCOPE.filter((t) => t.idKind === "principal").map((t) => t.table);
@@ -136,7 +134,7 @@ describe("member-scope inventory", () => {
     expect(columnless.sort(), help("LEGACY_COLUMNLESS_TABLES")).toEqual([...LEGACY_COLUMNLESS_TABLES].sort());
   });
 
-  it("every member table that is NOT a frozen exception uses the register's id (decision D3)", () => {
+  it("every member table that is NOT a frozen exception uses the register's id", () => {
     const offenders = MEMBER_SCOPE
       .filter((t) => t.scope === "member" && t.idKind !== "registry" && t.idKind !== "actor")
       .map((t) => t.table)

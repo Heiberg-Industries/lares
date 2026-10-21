@@ -9,7 +9,7 @@ export async function verifyCurrentStateSchema(pool: Pool): Promise<void> {
         if (!rows[0]?.relation) throw new KeeperRefusedError('Current-state cleanup schema is incomplete; apply the manual installation migrations before deletion');
     }
 }
-/** Extending current agent identity state (e.g. Task17 claims) requires extending this
+/** Extending current agent identity state (e.g. door claims) requires extending this
  * cleanup contract before slug reuse. Never delete append-only security evidence. */
 export async function deleteAgentCurrentState(pool: Pool, name: string, actor: string): Promise<void> {
     const db = await pool.connect();

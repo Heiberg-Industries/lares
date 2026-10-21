@@ -1,4 +1,4 @@
-// Keeper-owned compose only. No overlay services, builds, orphan removal or mutable tags.
+// Keeper-owned compose only. No services from an installation's own compose files, no builds, orphan removal or mutable tags.
 import { isIP } from 'node:net';
 import { isAbsolute } from 'node:path';
 import { stringify } from 'yaml';
@@ -103,7 +103,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             else environment.TELEGRAM_PRINCIPAL_ID = claim.principal;
             environment.AGENT_OWNER_USER_ID = claim.owner;
         }
-        // W8B-s5: the owner ADDRESS (agent_door_connections.owner_email) is who may answer an
+        // The owner ADDRESS (agent_door_connections.owner_email) is who may answer an
         // approval in web chat. It is one value for the agent (the earliest claim's owner, chosen
         // by the keeper), so the order of the claims here cannot change it. No claim, no console
         // approver: the administrator fallback below.
@@ -140,7 +140,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         secret(`${a.name}-gateway-key`, r.gatewayKeyFile, 'gateway-key');
         if (bindings?.ownerId) {
             environment.AGENT_OWNER_USER_ID = bindings.ownerId;
-            // The Slack sign-in is stored under the owner's register id (migration 085). An explicit
+            // The Slack sign-in is stored under the owner's register id (the identity register). An explicit
             // binding wins. It is derived only when this chief of staff actually has Slack (an enabled
             // Slack door or a Slack claim): an unenrolled sign-in is loud in the brief by design, so a
             // chief without Slack must carry no principal and the brief leaves Slack out quietly.

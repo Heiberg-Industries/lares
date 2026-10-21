@@ -6,7 +6,7 @@
 // the ping without a word for weeks. A verifier that can be silently unarmed is not a
 // verifier, so that case must FAIL.
 //
-// -s1: this file used to stub only `restic snapshots` and `curl`, but the script
+// This file used to stub only `restic snapshots` and `curl`, but the script
 // also calls `docker compose ... psql` (database coverage) and `restic ls` (dump
 // listing). Two more bugs hid behind that gap and made almost every case here pass for
 // the wrong reason:
@@ -25,25 +25,25 @@
 // Both are now fixed in this file (a real `short_id` in the fixture, and assertions
 // that expect the `/fail` ping fail() actually sends), not in the script.
 //
-// -s2: the script now records every verdict in Postgres (sql/001_baseline.sql)
+// The script now records every verdict in Postgres (sql/001_baseline.sql)
 // via a `record_status` helper that upserts through `docker compose ... psql` on STDIN.
 // The docker stub below logs the args and stdin of that call so these tests can assert
 // what would have been upserted, without a real database (sql/001_baseline.sql's own idempotency and
 // column shape are proven separately, against a real Postgres, in
-// tests/backup-status-sql.test.ts). This slice also fixed a second, smaller defect this
+// tests/backup-status-sql.test.ts). The same change also fixed a second, smaller defect this
 // file's "empty repository" case had already exposed: `SNAP_TIME`/`SNAP_ID` used a bare
 // `grep -o` that aborted the script under `set -euo pipefail` on a truly empty
 // repository, before the script's own graceful "no nightly snapshot" fail() call could
 // run (and therefore before it could ping /fail or record anything). Fixed with the same
 // `|| true` idiom the script already used for DUMP_SIZES.
 //
-// -s2 review: the alert must never wait on the bookkeeping. The curl stub and the
+// The alert must never wait on the bookkeeping. The curl stub and the
 // `record_status` branch of the docker stub both append one line to a shared sequence
 // log ("ping" / "record"), so tests can assert the ping always lands first — including
 // when `record_status` is bounded by the `timeout` stub added below (the server has a
 // real `timeout`; this proves the bounded path, not just the unbounded fallback).
 //
-// -s4: the script now also reads the 'drill' row (sql/001_baseline.sql) after step 4, so a
+// The script now also reads the 'drill' row (sql/001_baseline.sql) after step 4, so a
 // stale or failed restore drill fails the same alarm a stale nightly snapshot does.
 // That read shares the docker stub's `lares_state` branch with `record_status`'s write
 // (both connect to that database), so the stub distinguishes them by the presence of
@@ -105,7 +105,7 @@ beforeEach(() => {
     restic,
     `#!/usr/bin/env bash\n` +
       `if [ "\${LARES_CURRENT_LAYOUT:-0}" = 1 ] && { [ -z "\${AWS_ACCESS_KEY_ID:-}" ] || [ -z "\${AWS_SECRET_ACCESS_KEY:-}" ]; }; then exit 1; fi\n` +
-      // -s6: log every call's argv (one call per "---"-separated block) so tests
+      // Log every call's argv (one call per "---"-separated block) so tests
       // can assert what restic was actually invoked with -- in particular, whether
       // RESTIC_REPOSITORY produced "-r <value>" with no rclone option at all.
       `{ printf '%s\\n' "$@"; printf -- '---\\n'; } >> "${resticArgsLog}"\n` +
@@ -118,11 +118,11 @@ beforeEach(() => {
   // Stub docker: three distinct callers.
   //  - The database-coverage check runs `docker compose ... psql -d postgres ...` to ask
   //    which databases exist. Answer with whatever the test staged.
-  //  - `record_status` (s2) runs `docker compose... psql -d lares_state...` with
+  //  - `record_status` runs `docker compose... psql -d lares_state...` with
   //    the upsert SQL on stdin. Log its args (one per line, `---` separated per call) and
   //    its stdin, so tests can assert what would have been upserted without a real
   //    database. Fails outright if told to, to prove a failed record changes nothing else.
-  //  - The -s4 drill-row read also connects to `-d lares_state`, but passes its
+  //  - The drill-row read also connects to `-d lares_state`, but passes its
   //    query as a plain `-tAc` argument and never touches stdin — that `-tAc` is what
   //    tells this branch apart from `record_status`'s write, which has no `-tAc` at all.
   const docker = join(binDir, "docker");
@@ -188,7 +188,7 @@ beforeEach(() => {
     { name: "globals.sql", size: 5000 },
     { name: "app.dump", size: 32000 },
   ]);
-  // -s4: a healthy drill row by default, so every case above the drill block
+  // A healthy drill row by default, so every case above the drill block
   // keeps passing unchanged. Individual tests override this to exercise the new check.
   stageDrillRow({});
 });
@@ -224,7 +224,7 @@ function stageDumps(files: { name: string; size: number }[]) {
 }
 
 /**
- * Stage the pipe-separated row (`ok|never_passed|age_days`) the -s4 drill-row
+ * Stage the pipe-separated row (`ok|never_passed|age_days`) the drill-row
  * read's `psql -tAc` call would print for `backup_status`'s 'drill' row. Defaults to a
  * healthy, recently-passed row so tests that do not care about the drill still pass.
  */
@@ -324,10 +324,10 @@ describe("backup-verify.sh", () => {
     expect(r.code).toBe(0);
     expect(pinged()).toContain("https://hc-ping.com/test-uuid");
     expect(pinged()).not.toContain("/fail");
-    // -s2: a passing run upserts ok=true, with last_pass_at set on the pass.
+    // A passing run upserts ok=true, with last_pass_at set on the pass.
     expect(recordedArgs()).toContain("ok=true");
     expect(recordedStdin()).toContain("last_pass_at");
-    // -s2 review: the alert (the success ping) must never wait on the bookkeeping.
+    // The alert (the success ping) must never wait on the bookkeeping.
     expect(sequence()).toEqual(["ping", "record"]);
   });
 
@@ -339,10 +339,10 @@ describe("backup-verify.sh", () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(/stale|old/i);
     expect(pinged()).toContain("/fail");
-    // -s2: a stale run upserts ok=false with the failure sentence in detail.
+    // A stale run upserts ok=false with the failure sentence in detail.
     expect(recordedArgs()).toContain("ok=false");
     expect(recordedArgs()).toContain("stale");
-    // -s2 review: the /fail ping must never wait on the bookkeeping either.
+    // The /fail ping must never wait on the bookkeeping either.
     expect(sequence()).toEqual(["ping", "record"]);
   });
 
@@ -365,7 +365,7 @@ describe("backup-verify.sh", () => {
   });
 
   it("fails, and pings /fail with the reason, when the repository holds no nightly snapshot at all", () => {
-    // -s2: this used to crash silently (see the file header) because the staged
+    // This used to crash silently (see the file header) because the staged
     // "[]" has no "time"/"short_id" to grep, and that abort happened before the
     // script's own graceful "no nightly snapshot" fail() call. Fixed with `|| true` on
     // those extraction pipelines, so this now reaches fail() and behaves like any
@@ -426,13 +426,13 @@ describe("backup-verify.sh", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain("HC_URL");
     expect(pinged()).toBe("");
-    // -s2: recording the verdict is independent of the healthchecks.io ping —
+    // Recording the verdict is independent of the healthchecks.io ping —
     // this branch still records ok=false even though there is nothing to ping.
     expect(recordedArgs()).toContain("ok=false");
   });
 
   it("a failing record-status call leaves the exit code and the heartbeat ping unchanged", () => {
-    // -s2 acceptance: recording is bookkeeping, never the alarm. If the docker
+    // Recording is bookkeeping, never the alarm. If the docker
     // call behind record_status fails, the run must still pass exactly as if nothing
     // had gone wrong there.
     stageSnapshot({ ageHours: 2 });
@@ -523,8 +523,7 @@ describe("backup-verify.sh", () => {
     expect(pinged()).not.toContain("/fail");
   });
 
-  // -s6: the backup target can be any restic repository, not only the Hetzner
-  // Storage Box over rclone.
+  // The backup target can be any restic repository, not only the rclone-over-SSH form.
   it("keeps the rclone form and its target when RESTIC_REPOSITORY is not set", () => {
     stageSnapshot({ ageHours: 2 });
     const r = run();

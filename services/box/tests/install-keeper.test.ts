@@ -1,12 +1,12 @@
-// W8F-F7b + first-conversation follow-up — the keeper is configured and started from the same
+// The keeper is configured and started from the same
 // release, with any first-agent name and role bound to the real owner.
 //
-// WHY ITS OWN FILE, and not more cases in tests/install-stack.test.ts. That file is F7a's, and
+// WHY ITS OWN FILE, and not more cases in tests/install-stack.test.ts. That file covers the stack step, and
 // its whole fixture is a release naming the FOUR images the stack needs; every case in it
 // reads or asserts against that shape. This step needs three more (`lares-keeper`,
 // `lares-egress-proxy`, `lares-firewall-helper`) plus the three role images, and its cases run
 // the installer all the way through the database and the owner rather than stopping at the
-// model check. Widening F7a's fixture to carry ten images would change what every one of its
+// model check. Widening that fixture to carry ten images would change what every one of its
 // cases is testing; a second file with its own release keeps each one honest.
 //
 // SAME DISCIPLINE AS install-stack.test.ts: every host command is a logging stub on PATH,

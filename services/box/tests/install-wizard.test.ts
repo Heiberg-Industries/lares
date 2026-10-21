@@ -1,10 +1,8 @@
-// W8C-s4 — four questions, asked once, written down (owner decisions C4 "what the wizard
-// asks", C5 "the domain and the certificate", C6 "where the model key goes", A1 "secrets are
-// files, never shown back").
+// Four questions, asked once, written down (what the wizard asks, the domain and the
+// certificate, where the model key goes, and secrets as files that are never shown back).
 //
 // NOTHING HERE TOUCHES A REAL MACHINE OR A REAL NAME SERVER. Every run installs into a temp
-// --prefix, every host command the script could call (including the two this slice adds —
-// getent and hostname, the DNS seam) is a logging stub on PATH ahead of everything else, and
+// --prefix, every host command the script could call (including getent and hostname, the DNS seam) is a logging stub on PATH ahead of everything else, and
 // answers are delivered on stdin exactly the way a person's keyboard would deliver them.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -31,9 +29,9 @@ const RELEASE = JSON.stringify({
   breaking: [],
 });
 
-/** W8F-F7a: run_stack renders the stack file through
+/** run_stack renders the stack file through
  *  `pnpm -C <box> render-stack <release> <out> …` and refuses if nothing lands at <out>, so
- *  every `pnpm` stub in an installer test has to answer that one call — and, since W8F-F7b,
+ *  every `pnpm` stub in an installer test has to answer that one call — and
  *  the `render-keeper-config` call run_keeper makes at the end. This file is about the
  *  four questions, so a placeholder stack file is enough; tests/install-stack.test.ts is where
  *  the real renderer runs. */
@@ -51,7 +49,7 @@ function stub(name: string, body = "exit 0") {
  *  answers, one per line, exactly as execFileSync's own `input` option feeds a child process. */
 function runWithStdin(args: string[], input: string, env: Record<string, string> = {}) {
   try {
-    // `--release` is load-bearing since W8F-F7a: a fresh install given none refuses with
+    // `--release` is load-bearing: a fresh install given none refuses with
     // EX_USAGE before it writes anything. Every run here is given the fixture written in
     // beforeEach; tests/install-stack.test.ts is where the flag itself is the subject.
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--release", releaseFile, ...args], {
@@ -75,7 +73,7 @@ beforeEach(() => {
   secretsDir = join(prefix, "etc", "lares", "secrets");
   installEnv = join(prefix, "etc", "lares", "installation.env");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
-  // `lares-doctor` (W8C-s5): every completed wizard run proves the model key through it, so a
+  // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "lares-doctor"]) stub(name);
   // CREATE DATABASE is sent on stdin; consume it before exiting so pipefail
@@ -87,12 +85,12 @@ beforeEach(() => {
   stub("df", 'echo "/dev/x 100000000 1000000 99000000 1% /"');
   stub("ss", "exit 1");                                   // nothing listening on 80/443
   stub("lsb_release", "echo 24.04");
-  // DNS (owner decision C5): getent and hostname agree on one address by default, so the
+  // DNS: getent and hostname agree on one address by default, so the
   // fixture domain "lares.example.invalid" resolves to this server; individual tests below
   // override one or the other to prove the mismatch and no-answer refusals.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; fi');
   stub("hostname", 'if [ "$1" = "-I" ]; then echo "203.0.113.10"; fi');
-  // W8F-F7a: the installer renders its own stack file from the release it was given, one step
+  // The installer renders its own stack file from the release it was given, one step
   // after these questions. This file is not about that step, so it gets a minimal release and
   // a stubbed renderer (above) rather than a hand-placed compose fixture.
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, RELEASE);
@@ -160,7 +158,7 @@ describe("what the installer asks", () => {
     expect(readFileSync(installEnv, "utf8")).toMatch(/# .*comma-separated/i);
   });
 
-  // --- Added beyond the plan's own snippet ----------------------------------------------
+  // --- More cases ----------------------------------------------
 
   it("does not ask or write anything on a dry run", () => {
     const r = runWithStdin(["--dry-run", "--yes"], "");
@@ -170,7 +168,7 @@ describe("what the installer asks", () => {
     expect(existsSync(join(secretsDir, "model-provider-key"))).toBe(false);
   });
 
-  it("resolves the domain against this server (owner decision C5), and refuses with the exact record on a mismatch", () => {
+  it("resolves the domain against this server, and refuses with the exact record on a mismatch", () => {
     stub("getent", 'if [ "$1" = "hosts" ]; then echo "198.51.100.9 $2"; fi');
     const r = runWithStdin(["--yes"], answers);
     expect(r.code).toBe(78);

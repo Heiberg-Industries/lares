@@ -6,7 +6,7 @@ import { INTEGRATION_SECRET_FILES, isRetiredRole } from './runtime-bindings.js';
 import type { CredentialConsumer, CredentialGrant } from './credential-state.js';
 
 /** Root-owned retained inventory plus actual resource/definition records, not catalogue rows.
- * Missing data fails closed. Runtime activation must recheck Docker ownership in its own slice.
+ * Missing data fails closed. Runtime activation must recheck Docker ownership itself.
  */
 export type CredentialConsumerConfig = Pick<KeeperConfig, 'secretsDir' | 'credentials'> & {
   lifecycle?: Pick<NonNullable<KeeperConfig['lifecycle']>, 'bindings' | 'defaultBindings'> & { egress?: Pick<NonNullable<KeeperConfig['lifecycle']>['egress'], 'legacyConsumers'> };

@@ -106,8 +106,7 @@ export function renderKeeperConfig(
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
     // Definitions resolved at runtime on neutral engine images (ADR-0015). "overlay" is the
-    // older per-agent-image machinery one installation is still on; a fresh install is never
-    // that.
+    // older per-agent-image machinery; a fresh install is never that.
     mode: "rendered",
     project: opts.project,
     dir: opts.dir,
@@ -145,7 +144,7 @@ export function renderKeeperConfig(
       workflowTemplate: "empty_workflow",
       workflowOwner: opts.pgUser,
       runtime: {
-        // Installation-only master switch. ON by default (owner decision): the create-agent
+        // Installation-only master switch. ON by default: the create-agent
         // review page lists the schedules an agent will run, and the owner approves that list
         // there. An installer re-run keeps whatever an earlier keeper.json said.
         schedulesLive: opts.previousSchedulesLive ?? true,

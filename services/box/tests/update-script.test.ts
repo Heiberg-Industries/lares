@@ -1,4 +1,4 @@
-// update.sh is the command that changes which images this installation runs (W8D-s3).
+// update.sh is the command that changes which images this installation runs.
 // It can lose data if it is wrong, so these tests drive the WHOLE ordering with stubs and
 // assert the exact sequence of external calls, not merely the exit code:
 //

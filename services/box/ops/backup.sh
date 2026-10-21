@@ -78,8 +78,8 @@ fi
 dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
 
 # The role this installation uses. Same overridable name ops/install.sh, ops/update.sh and
-# lib/db.ts read, with the same default — an installation that kept the pre-2026-09-21 name
-# with an installation-specific role sets PGUSER in this script's environment. See §3.
+# lib/db.ts read, with the same default — an installation that kept an older role name
+# sets PGUSER in this script's environment. See §3.
 DB_USER="${PGUSER:-lares}"
 
 # 1. Postgres: roles + each DB in custom format, dumped THROUGH the container so the
@@ -116,8 +116,7 @@ done
 shopt -s nullglob
 dumps=("$DUMP"/*.dump)
 [ ${#dumps[@]} -gt 0 ] || { echo "backup: no dumps produced" >&2; exit 1; }
-# EVERY database, not merely some. This is the assertion the earlier incident needed and did
-# not have: a partial dump set restores to a partial system, and "some dumps exist" is exactly
+# EVERY database, not merely some. This is the assertion an earlier failure showed was needed: a partial dump set restores to a partial system, and "some dumps exist" is exactly
 # the shape a silently-skipped database hides behind. A new database on this box is therefore a
 # LOUD failure until it is dumped, which is the correct default for a backup.
 [ ${#dumps[@]} -eq "$EXPECTED" ] || {
@@ -163,7 +162,7 @@ fi
 
 # 3. One restic snapshot. Only include paths that exist — restic treats a missing source
 #    as an error (exit 3). Never snapshot the secret-bearing .env.
-#    The WORKING TREES are included alongside the bare repos: uncommitted files (the W3
+#    The WORKING TREES are included alongside the bare repos: uncommitted files (the
 #    conversation log under _meta/conversations/, the clipper's _inbox/) live only there,
 #    and a bare-repo-only snapshot silently misses them. Atlas and
 #    the agents' state dirs have no upstream source of truth — losing them is permanent.
@@ -222,13 +221,13 @@ done
 # 4. NO heartbeat here — deliberately. This block used to be
 #      `if [ -n "${HC_URL:-}" ]; then curl ... "$HC_URL"; fi`
 #    and HC_URL was EMPTY in the deployed /etc/agent-box/backup.env, so it silently
-#    pinged nothing, on failing and successful nights alike. That is why three failed
-#    nights (22–24 Aug 2026) went unnoticed: the "exit non-zero so the heartbeat never
+#    pinged nothing, on failing and successful nights alike. That is how failed
+#    nights went unnoticed: the "exit non-zero so the heartbeat never
 #    fires" design above was correct and had nothing on the other end.
 #    Liveness is now owned by ONE thing — backup-verify.sh — which asks the repository
 #    whether a fresh snapshot is actually IN it rather than asking this script whether
 #    it ran. It catches everything a heartbeat here would (no run -> no fresh snapshot)
-#    plus the failures this box has actually had: a green run that archived no dump.
+#    plus the failures a backup can have: a green run that archived no dump.
 #    One job, one liveness owner, one alert (ADR-0012 rule 4).
 
 # 5. Local cleanup — the snapshot is safely off-box now.

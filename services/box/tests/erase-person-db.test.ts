@@ -1,4 +1,4 @@
-// services/box/tests/erase-person-db.test.ts — W5B-s6: erase a person from every table that
+// services/box/tests/erase-person-db.test.ts — erase a person from every table that
 // names them, or erase nothing.
 //
 // WHY THIS FILE IS THE PROOF AND NOT THE README. "Everything was erased" is the one claim in this
@@ -186,7 +186,7 @@ describe("erase-person — the database half", () => {
     expect(unknown.refusals[0]).toMatch(/nobody in the identity register/i);
     expect(unknown.deleted).toEqual([]);
 
-    // A third party a note is merely ABOUT is not a member (owner ruling D2).
+    // A third party a note is merely ABOUT is not a member.
     await db.pool.query(
       `INSERT INTO standing_facts (fact, category, source_turn, user_id, origin)
        VALUES ('A note about someone else', 'preference', 'fixture-turn-3', 'a-third-party', 'owner')`,
@@ -262,7 +262,7 @@ describe("erase-person — the database half", () => {
   }, 240_000);
 });
 
-describe("erase-person — the sync-state pass (W5B-s8)", () => {
+describe("erase-person — the sync-state pass", () => {
   it("clears the sync row for every path the vault pass removed", async () => {
     await db.pool.query(
       `INSERT INTO notion_sync_docs (vault_path, notion_page_id, target, direction)

@@ -1,4 +1,4 @@
-// services/box/tests/run-erase.test.ts — W5B-s8: the vault pass and the database pass, wired
+// services/box/tests/run-erase.test.ts — the vault pass and the database pass, wired
 // together in the one order that keeps both halves' promises.
 //
 // WHY A REAL POSTGRES AND A REAL GIT REPOSITORY TOGETHER. The two things this wiring can get

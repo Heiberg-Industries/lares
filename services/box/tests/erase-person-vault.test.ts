@@ -1,4 +1,4 @@
-// services/box/tests/erase-person-vault.test.ts — W5B-s7: the vault half of erasing a person.
+// services/box/tests/erase-person-vault.test.ts — the vault half of erasing a person.
 //
 // WHY A REAL GIT REPOSITORY AND NOT A MOCK. The two things this code can get wrong are both
 // things a mock would agree with: a file that `git rm` cannot see because it was never tracked

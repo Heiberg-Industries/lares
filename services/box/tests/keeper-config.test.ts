@@ -1,8 +1,8 @@
-// W8F-F7b — the file the keeper boots from, rendered from the same release the installer was
+// The file the keeper boots from, rendered from the same release the installer was
 // given, with every possible first role bound to the real owner.
 //
 // THE SCHEMA THIS PARSES AGAINST IS THE KEEPER'S OWN, AND IT IS `configSchema`, NOT
-// `lifecycleSchema`. The slice's original test asserted only that `lifecycleSchema.parse(...)`
+// `lifecycleSchema`. An earlier version of this test asserted only that `lifecycleSchema.parse(...)`
 // did not throw — which would have passed on a file `loadKeeperConfig` refuses to boot from:
 // `/etc/lares/keeper.json` is a `.strict()` object with eleven more required top-level fields
 // (mode, project, dir, files, agentsDir, retiredDir, secretsDir, rolesDir, templatesDir,
@@ -94,10 +94,10 @@ describe("fresh install settings", () => {
   });
 
   it("hands the owner's time zone to both roles, and nothing when it is unknown", () => {
-    const withTz = renderKeeperConfig(MANIFEST, { ...OPTS, ownerHomeTz: "Europe/Oslo" }).lifecycle!.defaultBindings!;
-    expect(withTz["chief-of-staff"]!.environment).toEqual({ OWNER_HOME_TZ: "Europe/Oslo" });
-    expect(withTz.creative!.environment).toEqual({ OWNER_HOME_TZ: "Europe/Oslo" });
-    expect(() => loadAsKeeperWould(renderKeeperConfig(MANIFEST, { ...OPTS, ownerHomeTz: "Europe/Oslo" }))).not.toThrow();
+    const withTz = renderKeeperConfig(MANIFEST, { ...OPTS, ownerHomeTz: "Europe/Berlin" }).lifecycle!.defaultBindings!;
+    expect(withTz["chief-of-staff"]!.environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin" });
+    expect(withTz.creative!.environment).toEqual({ OWNER_HOME_TZ: "Europe/Berlin" });
+    expect(() => loadAsKeeperWould(renderKeeperConfig(MANIFEST, { ...OPTS, ownerHomeTz: "Europe/Berlin" }))).not.toThrow();
     expect(renderKeeperConfig(MANIFEST, OPTS).lifecycle!.defaultBindings!.creative!.environment).toEqual({});
   });
 
@@ -106,7 +106,7 @@ describe("fresh install settings", () => {
     const release = join(f, "release.json");
     writeFileSync(release, JSON.stringify(MANIFEST));
     const out = join(f, "keeper.json.partial"), env = join(f, "keeper.env"), live = join(f, "keeper.json");
-    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Oslo"];
+    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Berlin"];
     expect(renderConfigCommand(args, () => {})).toBe(0);
     const first = JSON.parse(readFileSync(out, "utf8"));
     expect(first.publicDoorOrigin).toBe("https://lares.example.com");
@@ -241,7 +241,7 @@ describe("the generated keeper configuration", () => {
 
   it("names the network the stack actually created, and reserves the proxy's address", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
-    // `docker.ts`'s inventory runs a LITERAL `docker network inspect <network>`, and F7a made
+    // `docker.ts`'s inventory runs a LITERAL `docker network inspect <network>`, and the stack renderer made
     // renderStackCompose emit the network's own `name:`, so this string is the created network.
     expect(config.lifecycle!.network).toBe("lares-network");
     expect(config.lifecycle!.reservedAddresses).toEqual(["172.30.0.2"]);
@@ -264,7 +264,7 @@ it("renderer rejects ambiguous or malformed administrator emails before writing 
   for (const administrator of ["a..b@example.com", ".a@example.com", "one@example.invalid,two@example.invalid", ""]) {
     const f=mkdtempSync(join(tmpdir(),"keeper-admin-render-"));dirs.push(f);
     const out=join(f,"keeper.json"),env=join(f,"keeper.env");
-    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Oslo"];
+    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Berlin"];
     const messages:string[]=[];
     expect(renderConfigCommand(args,message=>messages.push(message))).toBe(1);
     expect(messages).toEqual(["Configure one credential administrator email; nothing was written"]);

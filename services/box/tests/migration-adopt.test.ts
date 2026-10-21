@@ -44,7 +44,7 @@ describe("adopting an already-migrated database", () => {
   it("recognises a genuinely empty database", async () => {
     // startTestDb() takes no arguments and always applies 001-019 (tests/helpers/pg.ts:38),
     // so an empty database is made here directly rather than by parameterising that helper —
-    // this slice must NOT change startTestDb's signature or any existing caller's behaviour.
+    // this change must NOT change startTestDb's signature or any existing caller's behaviour.
     const empty = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     const pool = quiet(new Pool({ connectionString: empty.getConnectionUri() }));
     try {
@@ -64,7 +64,7 @@ describe("adopting an already-migrated database", () => {
   });
 
   it("refuses the same way when the ledger table exists but is empty — the CLI's own path", async () => {
-    // W3D-s5's `main` calls ensureLedger before runMigrations, so on the live installation the
+    // `main` calls ensureLedger before runMigrations, so on a real installation the
     // table exists and holds nothing. That must refuse exactly as the missing table does.
     await ensureLedger(db.pool);
     const dir = tempDirWith({ "001_a.sql": "CREATE TABLE a(i int);" });

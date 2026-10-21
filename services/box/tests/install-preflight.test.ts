@@ -1,9 +1,7 @@
-// install.sh is the install command's preflight (W8C-s1 shortened —
-// docs/decisions/0022-the-tested-install-path.md). It is the ONLY part of the installer
-// built so far: it checks this box against the tested install path (a fresh Ubuntu
+// install.sh is the install command's preflight (docs/decisions/0022-the-tested-install-path.md). It checks this box against the tested install path (a fresh Ubuntu
 // server) and refuses, in one pass, before writing a single file, directory, user or
 // container, if anything is wrong. Every problem is printed together, each with a
-// paste-ready fix. Later slices (the secrets, the four questions, the database, the
+// paste-ready fix. The later steps (the secrets, the four questions, the database, the
 // owner, the finish line) plug their own writes in behind this same discipline.
 //
 // Every external command this script calls (id, uname, lsb_release, free, df, docker,
@@ -190,13 +188,12 @@ describe("the installer, before it writes anything", () => {
     expect(r.stdout).not.toMatch(/start(ing)? fresh/i);
   });
 
-  // Added beyond the plan's own snippet: the plan's cases only ever assert the target
-  // directory is EMPTY (there was nothing to disturb). This proves the stronger claim
-  // the task actually requires — a directory that already holds files from a previous
+  // The target directory is not only left EMPTY when there was nothing to disturb: this proves
+  // the stronger claim — a directory that already holds files from a previous
   // partial run comes back byte-identical — and that the run touched no stub except
   // the read-only probes (id, uname, lsb_release, free, df, ss, docker's own presence
   // check): never useradd, groupadd, chown, ufw, curl, pnpm, openssl or systemctl,
-  // which this slice has no business calling at all.
+  // which a preflight has no business calling at all.
   it("leaves an existing tree byte-identical, and calls no stub but a read-only probe", () => {
     mkdirSync(join(prefix, "srv", "lares", "agents"), { recursive: true });
     writeFileSync(join(prefix, "srv", "lares", "agents", "keep.txt"), "already here\n");
