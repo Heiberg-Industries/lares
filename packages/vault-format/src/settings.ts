@@ -8,14 +8,11 @@
 // timezone handling). This file declares both layers as one list.
 //
 // THIS FILE ONLY WRITES THE LIST DOWN. It does not change how any service reads its
-// environment, and it does not widen what is fatal to start without — `requiredFor` here is
-// exactly the seven names `images/agent-runtime/start.sh` already refuses on, for the three
-// role readers, plus `CONSOLE_SESSION_SECRET` (throws in production). `CONSOLE_ALLOWED_EMAILS`
-// also throws in production, but the code never merely "starts or doesn't" on it — outside
-// production it silently DEGRADES to one installation's own address —
-// so it is declared with that fallback and left out of `requiredFor`, matching this file's own
-// invariant that a required setting has no fallback. Widening `requiredFor` is a separate
-// change, done with evidence.
+// environment or widen its startup requirements. The roles' required names still match
+// images/agent-runtime/start.sh. The console's existing secret requirement now signs only
+// short-lived sign-in and account-consent transactions; member sessions are database-backed.
+// CONSOLE_ALLOWED_EMAILS remains a legacy role approval setting, never console admission.
+// Widening requiredFor is a separate change, done with evidence.
 //
 // NOT DECLARED (deliberately) — three names that are doc-comment EXAMPLES, never a real
 // setting: `X_KEY_FILE` (`packages/agent-kit/src/integration-secret-lint.ts`), and
@@ -219,36 +216,30 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: ["console"],
     fallback: null,
     secret: true,
-    breaksWithout: "In production the console throws on the first request that needs a session; in any other mode it silently signs sessions with a fixed, publicly known secret.",
-    readAt: ["services/console/lib/auth.ts:12", "services/console/lib/account-oauth-state.ts:18"],
+    breaksWithout: "Console sign-in cannot begin without a readable secret file or this plain secret. It signs short-lived OAuth transactions, not database-backed member sessions. Account-consent state signing also refuses a missing secret in production.",
+    readAt: ["services/console/lib/console-oidc.ts (flowKey and required)", "services/console/lib/account-oauth-state.ts (secret)", "images/console-runtime/start.sh"],
   },
   {
-    // A mounted file wins over the plain env value, through the console's own
-    // readSecret (services/console/lib/secrets.ts) — but only where readSecret can safely be
-    // used. lib/account-oauth-state.ts is Node-only and reads it that way. lib/auth.ts's
-    // getSecret() does NOT: it is reachable from middleware.ts, which Next compiles for the
-    // Edge Runtime, and readSecret's `node:fs` import fails that build outright (confirmed with
-    // `next build --webpack`, see the comment on lib/auth.ts's getSecret()). So this file
-    // currently changes only the OAuth `state` round-trip's secret, not the session cookie's —
-    // an honest partial fix.
+    // Both sign-in and account-consent transaction signing are Node-only readers.
+    // The runtime entrypoint also exports the mounted file's contents to the plain name.
     name: "CONSOLE_SESSION_SECRET_FILE",
     readers: ["console"],
     source: "installer",
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "The add-account OAuth `state` round-trip falls back to the plain CONSOLE_SESSION_SECRET value (or, if that is also unset, a fixed publicly known one outside production). In the console image the file is also required: images/console-runtime/start.sh refuses to start without it and reads it into CONSOLE_SESSION_SECRET, the session cookie's key.",
-    readAt: ["services/console/lib/account-oauth-state.ts:18", "services/console/lib/secrets.ts:7"],
+    breaksWithout: "When unset, Node OAuth readers use CONSOLE_SESSION_SECRET instead. The console image itself still requires a readable mounted secret file and refuses to start without it.",
+    readAt: ["services/console/lib/console-oidc.ts (flowKey through readSecret)", "services/console/lib/account-oauth-state.ts (secret)", "services/console/lib/secrets.ts", "images/console-runtime/start.sh"],
   },
   {
     name: "CONSOLE_ALLOWED_EMAILS",
-    readers: ["console", "chief-of-staff", "creative"],
+    readers: ["chief-of-staff", "creative"],
     source: "owner",
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "In production the console throws on login when no allow-list is configured. Outside production an empty allow-list admits nobody. Unmanaged web-chat approvals without an approver list are refused.",
-    readAt: ["services/console/lib/auth.ts:152", "services/chief-of-staff/lib/principals.ts (ENV_VAR_FOR.console)", "services/creative/lib/principals.ts (ENV_VAR_FOR.console)"],
+    breaksWithout: "Unmanaged web-chat approvals without a configured approver list are refused. This legacy role approval list no longer admits anyone to the console; console sign-in requires a linked provider identity and a current member session.",
+    readAt: ["services/chief-of-staff/lib/principals.ts (ENV_VAR_FOR.console)", "services/creative/lib/principals.ts (ENV_VAR_FOR.console)"],
   },
 
   // ── The fixed 13 (plus the door files and platform secrets) every agent container gets ────
@@ -339,8 +330,8 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Owner-scoped operations throw when the configured owner id is missing or blank; no installation identity is guessed.",
-    readAt: ["services/chief-of-staff/lib/principals.ts:41", "packages/agent-kit/src/note-tools.ts:135"],
+    breaksWithout: "Owner-scoped operations and existing shared console screens refuse a missing or blank stable owner id. No installation identity is guessed, and another owner does not inherit this console access.",
+    readAt: ["services/chief-of-staff/lib/principals.ts", "packages/agent-kit/src/note-tools.ts", "services/console/lib/auth.ts (isConsoleOwner)", "services/console/app/api/auth/[...route]/route.ts (explicit owner adoption)"],
   },
   {
     name: "LARES_SLACK_PRINCIPAL",
@@ -971,14 +962,24 @@ export const SETTINGS: readonly SettingDef[] = [
 
   // ── Console-internal wiring ────────────────────────────────────────────────────────────────
   {
+    name: "CONSOLE_BOOTSTRAP_IDENTITY",
+    readers: ["console"],
+    source: "owner",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "An unknown provider identity cannot adopt the existing owner without this explicit exact issuer, subject and optional tenant mapping. Already linked members and valid invitations do not need it.",
+    readAt: ["services/console/app/api/auth/[...route]/route.ts (explicit owner adoption)"],
+  },
+  {
     name: "CONSOLE_OAUTH_REDIRECT",
     readers: ["console"],
     source: "owner",
     requiredFor: [],
     fallback: "http://localhost:3000/api/auth/callback",
     secret: false,
-    breaksWithout: "Nothing breaks in development — sign-in falls back to a localhost redirect, which is wrong on any real installation and throws in production once GOOGLE_CLIENT_ID_CONSOLE is also missing.",
-    readAt: ["services/console/middleware.ts:6", "services/console/app/api/auth/[...route]/route.ts:18"],
+    breaksWithout: "Production sign-in refuses a missing or invalid HTTPS callback, and mutation origin checks fail closed. Development alone falls back to a localhost callback. The registered provider callback must match exactly.",
+    readAt: ["services/console/lib/console-oidc.ts (consoleRedirect)", "services/console/middleware.ts", "services/console/lib/account-oauth.ts (consoleOrigin)"],
   },
   {
     name: "CONSOLE_PRINCIPAL_ID",
@@ -1067,20 +1068,101 @@ export const SETTINGS: readonly SettingDef[] = [
     readers: ["console"],
     source: "integration",
     requiredFor: [],
-    fallback: "",
+    fallback: null,
     secret: true,
-    breaksWithout: "In production the console's own sign-in route throws; in development sign-in silently uses an empty client id and fails at Google instead.",
-    readAt: ["services/console/app/api/auth/[...route]/route.ts:40"],
+    breaksWithout: "Google console sign-in refuses to begin unless this client id or its mounted file is configured. It grants identity sign-in only, independently of mailbox and calendar consent.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)"],
   },
   {
     name: "GOOGLE_CLIENT_SECRET_CONSOLE",
     readers: ["console"],
     source: "integration",
     requiredFor: [],
-    fallback: "",
+    fallback: null,
     secret: true,
-    breaksWithout: "In production the console's own sign-in route throws; in development the OAuth token exchange silently uses an empty client secret and fails at Google instead.",
-    readAt: ["services/console/app/api/auth/[...route]/route.ts:70"],
+    breaksWithout: "Google console sign-in refuses to begin unless this client secret or its mounted file is configured. No empty client secret or development fallback is used.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)"],
+  },
+
+  {
+    name: "GOOGLE_CLIENT_ID_CONSOLE_FILE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "When unset, Google console sign-in reads GOOGLE_CLIENT_ID_CONSOLE. A configured unreadable or empty file refuses sign-in instead of using an empty client id.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)", "services/console/lib/secrets.ts"],
+  },
+  {
+    name: "GOOGLE_CLIENT_SECRET_CONSOLE_FILE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "When unset, Google console sign-in reads GOOGLE_CLIENT_SECRET_CONSOLE. A configured unreadable or empty file refuses sign-in instead of using an empty client secret.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)", "services/console/lib/secrets.ts"],
+  },
+  {
+    name: "MICROSOFT_CLIENT_ID_CONSOLE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: true,
+    breaksWithout: "Microsoft work-account console sign-in refuses to begin unless this owner-supplied client id or its mounted file is configured. It grants no mailbox or calendar access.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)"],
+  },
+  {
+    name: "MICROSOFT_CLIENT_ID_CONSOLE_FILE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "When unset, Microsoft console sign-in reads MICROSOFT_CLIENT_ID_CONSOLE. A configured unreadable or empty file refuses that provider sign-in.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)", "services/console/lib/secrets.ts"],
+  },
+  {
+    name: "MICROSOFT_CLIENT_SECRET_CONSOLE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: true,
+    breaksWithout: "Microsoft work-account console sign-in refuses to begin unless this client secret or its mounted file is configured. It does not affect Google sign-in.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)"],
+  },
+  {
+    name: "MICROSOFT_CLIENT_SECRET_CONSOLE_FILE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "When unset, Microsoft console sign-in reads MICROSOFT_CLIENT_SECRET_CONSOLE. A configured unreadable or empty file refuses that provider sign-in.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)", "services/console/lib/secrets.ts"],
+  },
+  {
+    name: "MICROSOFT_TENANT_ID_CONSOLE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "Microsoft console sign-in requires this fixed organisational tenant UUID or its mounted file. Common, organisations-wide and consumer authorities are refused.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)"],
+  },
+  {
+    name: "MICROSOFT_TENANT_ID_CONSOLE_FILE",
+    readers: ["console"],
+    source: "integration",
+    requiredFor: [],
+    fallback: null,
+    secret: false,
+    breaksWithout: "When unset, Microsoft console sign-in reads MICROSOFT_TENANT_ID_CONSOLE. A configured unreadable or empty file refuses that provider sign-in.",
+    readAt: ["services/console/lib/console-oidc.ts (providerSettings through required and readSecret)", "services/console/lib/secrets.ts"],
   },
 
   // ── Notion integration ──────────────────────────────────────────────────────────────────────
@@ -1415,8 +1497,8 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: NOT_AN_INSTALLATION_SETTING + " The console's own Dockerfile always sets it to \"production\"; that is what makes CONSOLE_SESSION_SECRET and CONSOLE_ALLOWED_EMAILS hard failures on the real image.",
-    readAt: ["services/console/lib/auth.ts:13", "services/console/lib/auth.ts:153"],
+    breaksWithout: "The console image sets production mode: authentication cookies require HTTPS, sign-in has no localhost callback fallback, and account-consent signing refuses a missing secret. This mode does not make an email allow-list console admission authority.",
+    readAt: ["services/console/lib/console-oidc.ts", "services/console/app/api/auth/[...route]/route.ts", "services/console/middleware.ts", "services/console/lib/account-oauth-state.ts"],
   },
 
   // ── PG* — read directly by box and console, distinct from DATABASE_URL/WORKFLOW_POSTGRES_URL ─

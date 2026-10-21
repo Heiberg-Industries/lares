@@ -127,12 +127,15 @@ every saved sign-in to an outside service becomes unreadable (you would reconnec
 You can answer without prompts: `--domain`, `--email`, `--name`, and `--model-key-file <path>`
 (a file holding only the key). Never pass the key itself as an argument.
 
-The same file also gets `OWNER_HOME_TZ`, `CONSOLE_ALLOWED_EMAILS` (comma-separated; only these
-addresses can sign in), the gateway address and the default model alias. To let a second person
-in, add their address to `CONSOLE_ALLOWED_EMAILS` and run the installer again.
+The same file also gets `OWNER_HOME_TZ`, the legacy `CONSOLE_ALLOWED_EMAILS` setting, the
+gateway address and the default model alias. The legacy email list no longer admits anyone.
+After the designated owner has linked their exact provider identity (section 6), they invite
+another person from **Members** in the console. Other admitted members receive only their own
+membership and sign-out page while shared resource access is being integrated.
 
-Every setting an agent or the console can read is declared in
-`packages/vault-format/src/settings.ts`, with what breaks without it.
+The installation and agent settings registry is
+`packages/vault-format/src/settings.ts`. Current console provider-admission settings and
+owner adoption are described in [member admission](member-authority.md#provider-setup-and-existing-owner-adoption).
 
 ## 5. Running the installer
 
@@ -216,10 +219,44 @@ You should see `db`, `console`, `lares-gateway` and `caddy` running. The keeper 
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
 `docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml ps`.
 
-Then open the console at your domain. You see the sign-in page; press **Continue with Google** and
-sign in as the e-mail address you gave. That proves the OAuth client, the domain and the
-certificate. Create your first agent on `/agents/new`. To end the session, use **Sign out** at the
-bottom of the sidebar.
+**Before the first owner sign-in**, complete the explicit
+[provider-identity adoption](member-authority.md#provider-setup-and-existing-owner-adoption).
+The installer creates the owner record, but does not collect or verify a provider subject. An
+email address and a working Google client are not enough to admit that owner.
+
+1. Verify that the running console's `AGENT_OWNER_USER_ID` names the intended existing member,
+   with an active status, owner role and organisation. Preserve that stable id and its data;
+   do not create a replacement owner or change an id to make sign-in work.
+2. Use the manual sign-in probe described in the adoption guide to obtain that person's verified
+   exact issuer and subject, plus tenant for Microsoft. On the server, add
+   `CONSOLE_BOOTSTRAP_IDENTITY` to the protected `/etc/lares/console-oauth.env`. For Google its
+   format is:
+
+   ```text
+   CONSOLE_BOOTSTRAP_IDENTITY={"issuer":"https://accounts.google.com","subject":"<verified subject>"}
+   ```
+
+   Copy the actual verified identity object; do not substitute an email address or guess the
+   subject. A Microsoft identity also includes `tenantId` and its exact tenant-specific issuer.
+   Fresh installation still requires the Google client from section 5; Microsoft-only fresh
+   setup remains deferred.
+3. Recreate only the console from the existing installed release stack so it reads the changed
+   environment file. This retains the image selected in that stack:
+
+   ```bash
+   docker compose -f /opt/lares/compose.yaml up -d --force-recreate console
+   ```
+
+Then open the console at your domain, press **Continue with Google**, and choose the same
+provider identity you verified. Only a successful callback matching the explicit mapping links
+that identity to the existing owner. After the first successful sign-in, remove the
+`CONSOLE_BOOTSTRAP_IDENTITY` line from `/etc/lares/console-oauth.env` and run the same console
+recreate command again to remove it from the running environment. Future sign-ins use the
+stored identity binding.
+
+Create your first agent on `/agents/new`. To end the session, use **Sign out** at the bottom of
+the sidebar. To admit another member, create an invitation from **Members**; changing the
+legacy email list has no effect on admission.
 
 To check the installation from the command line, run `lares doctor`, a read-only check that says in
 plain sentences what is wrong and what to type to fix it (settings, database, migrations, owner,

@@ -41,12 +41,13 @@ describe("the settings list", () => {
   });
 
   it("records fail-closed identity and console configuration", () => {
-    // services/console/lib/auth.ts:152 — the reason `lares doctor` has a check of its own.
+    // Legacy role approval addresses must not be described as console admission.
     const allowed = settingByName("CONSOLE_ALLOWED_EMAILS")!;
-    expect(allowed.readers).toContain("console");
+    expect(allowed.readers).not.toContain("console");
+    expect(allowed.readers).toEqual(["chief-of-staff", "creative"]);
     expect(allowed.source).toBe("owner");
     expect(allowed.fallback).toBeNull();
-    expect(allowed.breaksWithout).toMatch(/admits nobody/i);
+    expect(allowed.breaksWithout).toMatch(/no longer admits anyone to the console/i);
     expect(settingByName("AGENT_OWNER_USER_ID")!.fallback).toBeNull();
     expect(settingByName("SLACK_TOKEN_PRINCIPAL_ID")!.breaksWithout).toMatch(/refuses before querying/);
   });
