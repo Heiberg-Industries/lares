@@ -52,14 +52,14 @@ export async function freshExactApprovalPolicy(db: AuthorityDatabase, agent: str
   if (rows.length !== 1) refuse();
   const d = parseDefinition(rows[0].applied_definition);
   if (d.name !== agent || !scopeAtLeast(grantFor(d,'deadline')?.scope ?? 'none','write-with-confirm')) refuse();
-  const board = await db.query("SELECT level,updated_at FROM ratchet WHERE agent=$1 AND capability='deadline' AND action='' FOR SHARE",[agent]);
+  const board = await db.query("SELECT level,updated_at::text AS updated_at FROM ratchet WHERE agent=$1 AND capability='deadline' AND action='' FOR SHARE",[agent]);
   const level = board.rows[0]?.level ?? autonomyOf(d,'deadline');
   if (!['gated','autonomous'].includes(level)) refuse();
   return payloadFingerprint('deadline_dismiss-policy-v1',{appliedDefinition:d,board:board.rows[0] ?? null,level,alwaysAsk:true});
 }
 async function rowForCall(db: AuthorityDatabase, callId: string): Promise<Row> {
   if (!callId) refuse();
-  const {rows} = await db.query('SELECT * FROM approval_asks WHERE call_id=$1 FOR SHARE',[callId]);
+  const {rows} = await db.query('SELECT * FROM approval_asks WHERE call_id=$1 FOR UPDATE',[callId]);
   if (rows.length !== 1 || !rows[0].original_authority) refuse();
   return rows[0] as Row;
 }
@@ -85,6 +85,9 @@ async function current(r: Reservation, memberId: string, admissionNonce: string,
   if (await freshExactApprovalPolicy(db,own!.name,own!.incarnation) !== r.policyHash) refuse();
   const target = await supported(tool,o).readTarget(db,input,memberId);
   if (target.ownerMemberId !== memberId || !same(target,r.target)) refuse();
+  // These reads can wait on transaction locks. Recheck time after the last lock, immediately
+  // before the caller may approve or mutate; an approval can expire while its target is busy.
+  if (Date.parse(r.expiresAt) <= (o.now ?? new Date()).getTime()) refuse();
 }
 /** Called synchronously BEFORE returning user-approval. A conflict cannot rewrite a reservation. */
 export async function reserveExactApproval(ctx: ConsoleAuthorityContext & {callId?:string;toolInput?:unknown}, tool: string, o: ExactApprovalOptions = {}): Promise<void> {

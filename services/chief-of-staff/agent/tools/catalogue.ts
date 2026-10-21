@@ -1,3 +1,4 @@
+import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
 //
@@ -67,6 +68,10 @@ export default defineDynamic({
     "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
       const { loaded } = await thisAgent(ctx?.session?.id);
       const names = grantedToolNames(CATALOGUE, loaded.definition);
+      // Eve requires authenticated button responses whenever this descriptor exists.
+      // Native Telegram deliberately resumes with auth:null; its legacy executor check stays
+      // authoritative. Bound console sessions retain their tagged initiator on cold replay.
+      const exactApproval = isExactApprovalContext(ctx);
       return Object.fromEntries(
         names.map((name) => {
           const tool = valueOf(name);
@@ -93,11 +98,13 @@ export default defineDynamic({
                         callback: async (closure: { name: string }, ctx: unknown) =>
                           catalogueApprovalRequest(closure.name,ctx,valueOf(closure.name).approval),
                       }),
-                      response: defineDurableCallback({
-                        closure: { name },
-                        callback: async (closure: { name: string }, ctx: unknown) =>
-                          catalogueApprovalResponse(closure.name,ctx),
-                      }),
+                      ...(exactApproval ? {
+                        response: defineDurableCallback({
+                          closure: { name },
+                          callback: async (closure: { name: string }, ctx: unknown) =>
+                            catalogueApprovalResponse(closure.name,ctx),
+                        }),
+                      } : {}),
                     },
                   }
                 : {}),

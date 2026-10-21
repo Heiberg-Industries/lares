@@ -9,7 +9,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { getPool, closePool } from '@lares/agent-kit/db';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
-import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint } from '@lares/agent-kit/approval-ledger';
+import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint, APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
 import { readApprovalCounts } from '@lares/agent-kit/approval-stats';
 import { makeApprovalRecord } from '@lares/agent-kit/approval-record-hook';
 import { deadlineApprovalAdapter, dismissExactDeadline } from '../lib/deadlines-store.js';
@@ -131,6 +131,53 @@ describe('exact private approval execution',()=>{
    await expect(dismissExactDeadline(getPool(),context('resolver',raw),raw)).rejects.toThrow();await stillOpen();
   });
  }
+ for(const revision of ['same-level rewrite','disabled and restored']){
+  for(const stage of ['response','execution']){
+   it(`refuses an existing board ${revision} before ${stage}`,async()=>{
+    await getPool().query("INSERT INTO ratchet(agent,capability,level,updated_by,updated_at) VALUES('helper','deadline','gated','fixture','2026-10-21T10:00:00.000001Z')");
+    if(stage==='execution')await approved();else await reserved();
+    if(revision==='disabled and restored')await getPool().query("UPDATE ratchet SET level='never',updated_at=updated_at+interval '1 microsecond' WHERE agent='helper'");
+    await getPool().query("UPDATE ratchet SET level='gated',updated_at=updated_at+interval '1 microsecond' WHERE agent='helper'");
+    if(stage==='execution')await expect(dismissExactDeadline(getPool(),context('resolver'),input)).rejects.toThrow();
+    else await expect(approveExactResponse(response(),opts())).rejects.toThrow();
+    await stillOpen();
+   });
+  }
+ }
+ it('rechecks expiry after waiting for the target lock, immediately before mutation',async()=>{
+  const justBeforeExpiry={...opts(),now:new Date(Date.now()-APPROVAL_TTL_MS+1200)};
+  await reserveExactApproval(context(),'deadline_dismiss',justBeforeExpiry);
+  await attachExactApproval({requestId:'request-1',callId:'call-1',tool:'deadline_dismiss',input});
+  await approveExactResponse(response(),opts());
+  const locked=await getPool().connect();let executing:Promise<unknown>|undefined;
+  try{
+   await locked.query('BEGIN');await deadlineApprovalAdapter.readTarget(locked,input,'member-a');
+   const pid=(await locked.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+   executing=dismissExactDeadline(getPool(),context('resolver'),input);
+   // Consume rejection immediately while the assertions inspect the deliberate lock wait.
+   const outcome=executing.then(()=>({ok:true,error:undefined as unknown}),error=>({ok:false,error}));
+   let blocked=false;
+   for(let n=0;n<100;n++){
+    blocked=(await getPool().query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS blocked',[pid])).rows[0].blocked;
+    if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));
+   }
+   expect(blocked).toBe(true);
+   const expiry=(await getPool().query("SELECT original_authority->>'expiresAt' AS expiry FROM approval_asks WHERE call_id='call-1'")).rows[0].expiry;
+   await new Promise(resolve=>setTimeout(resolve,Math.max(0,Date.parse(expiry)-Date.now()+50)));
+   await locked.query('ROLLBACK');
+   const result=await outcome;expect(result.ok).toBe(false);expect((result.error as Error).message).toContain('Exact approval');await stillOpen();
+  }finally{await locked.query('ROLLBACK');locked.release();await executing?.catch(()=>undefined);}
+ },10_000);
+ it('serializes concurrent exact-call executions without a lock-upgrade deadlock',async()=>{
+  await approved();const results=await Promise.allSettled([
+   dismissExactDeadline(getPool(),context('resolver'),input),dismissExactDeadline(getPool(),context('resolver'),input),
+  ]);
+  expect(results.filter(r=>r.status==='fulfilled')).toHaveLength(1);
+  const failed=results.find(r=>r.status==='rejected') as PromiseRejectedResult;
+  expect(failed.reason).not.toMatchObject({code:'40P01'});
+  expect((await getPool().query('SELECT status FROM deadlines WHERE id=$1',[input.id])).rows[0].status).toBe('dismissed');
+  expect((await getPool().query("SELECT use_count FROM approval_asks WHERE call_id='call-1'")).rows[0].use_count).toBe(1);
+ });
  it('refuses expiry, a different responder, an initiator fallback, wrong call, audience/place or nonce',async()=>{
   await reserved();const later={...opts(),now:new Date(Date.now()+24*3600_000)};
   await expect(approveExactResponse(response(),later)).rejects.toThrow();

@@ -38,6 +38,39 @@ describe('both catalogues guard real durable callbacks before underlying executi
    expect(fake.approval).not.toHaveBeenCalled();
   });
  }
+ for(const [role,resolver] of [['chief',chief],['creative',creative]] as const){
+  for(const optionId of ['approve','cancel']){
+   it(`${role}: native Telegram ${optionId} with auth:null reaches Eve's legacy input resolver`,async()=>{
+    const nativeAuth={current:null,initiator:{authenticator:'telegram',principalId:'fixture-owner',principalType:'user'}};
+    const nativeContext={session:{id:'wrun_native',auth:nativeAuth,turn:{id:'native-turn',sequence:1}}};
+    const tool=(await (resolver.events['session.started'] as any)({},nativeContext)).fixture;
+    const {validateDurableDynamicToolCallbacks}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
+    const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'wrun_native',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
+    expect(callbacks.approvalRequest).toBeDefined();expect(callbacks.approvalResponse).toBeUndefined();
+    expect(tool.approval.response).toBeUndefined();
+    const request={kind:'tool-approval',requestId:'native-request',prompt:'Fixture',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],action:{kind:'tool-call',callId:'native-call',toolName:'fixture',input:{}}};
+    // This is the marker Eve's tool loop derives from the resolved response descriptor.
+    const session={state:{'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'native-turn'},requests:[request],responseMessages:[],responseAuthRequiredRequestIds:tool.approval.response?['native-request']:[]}]}};
+    const stepInput={attributedInputResponses:[{auth:null,response:{requestId:'native-request',optionId}}]};
+    const {ContextContainer,contextStorage}=await import(`${dist}context/container.js`);
+    const {coordinateApprovalDelivery}=await import(`${dist}harness/approval-delivery-coordinator.js`);
+    const {resolvePendingInput}=await import(`${dist}harness/input-requests.js`);
+    const container=new ContextContainer();container.set({name:'eve.session'},{sessionId:'wrun_native',auth:nativeAuth,turn:nativeContext.session.turn});
+    const coordinated=await contextStorage.run(container,()=>coordinateApprovalDelivery({session,stepInput,tools:new Map([['fixture',tool]])}));
+    expect(coordinated.feedback).toEqual([]);expect(coordinated.stepInput.inputResponses).toEqual([{requestId:'native-request',optionId}]);
+    const resolved=resolvePendingInput({session:coordinated.session,stepInput:coordinated.stepInput,history:[]});
+    expect(resolved.outcome).toBe('resolved');
+    expect(resolved.resolvedInputs).toMatchObject([{inputs:[{request:{requestId:'native-request'},outcome:optionId==='approve'?'approved':'denied'}]}]);
+   });
+  }
+  it(`${role}: strict response descriptors persist when cold refresh has only the tagged initiator`,async()=>{
+   const c=context('resolver');c.session.auth.current=null as never;
+   const tool=(await (resolver.events['session.started'] as any)({},c)).fixture;
+   expect(typeof tool.approval.response).toBe('function');
+   const r={request:{requestId:'strict',callId:'strict',toolName:'fixture',toolInput:{}},responder:null,session:{id:'wrun_test',initiator:auth(),turn:{id:'resolver',sequence:1}}};
+   await expect(tool.approval.response(r)).rejects.toThrow();
+  });
+ }
  it('an approval resolver cannot become a new human instruction',()=>{
   expect(humanTurnRefusal({current:auth('resolver'),initiator:auth()},'Refused.',{LARES_AGENT_INCARNATION:inc,LARES_CONSOLE_PRINCIPAL:'owner@example.invalid'})).toContain('no new human instruction');
  });
