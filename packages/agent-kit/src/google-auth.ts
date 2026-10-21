@@ -155,7 +155,7 @@ function warnNoTokenForPrincipal(principal: string, provider: string): void {
   principalMissWarned = true;
   console.warn(
     `google-auth: no ${provider} token is stored under the principal "${principal}". ` +
-    `Box migration 085 renamed legacy principal spellings onto the identity register's id ` +
+    `Legacy principal spellings were replaced by the identity register's id ` +
     `(users.id): if this deployment still names the old spelling in GOOGLE_PRINCIPAL_ID, point ` +
     `it at the register's id instead. Said once per process.`,
   );
