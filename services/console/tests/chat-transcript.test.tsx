@@ -117,12 +117,12 @@ describe("the chat transcript", () => {
 });
 
 // ---------------------------------------------------------------------------------------------
-// W8B-s5 — the approval card. What it shows is the whole of its value: it is the last thing a
+// The approval card. What it shows is the whole of its value: it is the last thing a
 // person reads before an irreversible action.
 // ---------------------------------------------------------------------------------------------
 
 /** The four-recipient mail fixture. `to` is the field the Slack and Telegram cards name in full
- *  (`allRecipients`, W7A-s1) and the title abbreviates to "and 3 more" — so this is exactly the
+ *  (`allRecipients`) and the title abbreviates to "and 3 more" — so this is exactly the
  *  shape that would hide three real people if the web card showed only the title. */
 const FOUR = ["first@example.invalid", "second@example.invalid", "third@example.invalid", "fourth@example.invalid"];
 

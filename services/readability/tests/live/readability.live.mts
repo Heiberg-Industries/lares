@@ -8,10 +8,10 @@
  *     READABILITY_URL=https://readability.example.com READABILITY_TOKEN=… \
  *       npx tsx services/readability/tests/live/readability.live.mts # the deployed worker
  *
- * WHY THIS FILE EXISTS. From 2026-09-01 to 2026-09-14 the worker failed EVERY url with
+ * WHY THIS FILE EXISTS. After the undici ^7 → ^8 bump the worker failed EVERY url with
  * "fetch failed": the undici ^7 → ^8 bump made Node's built-in fetch reject the SSRF-pinning
  * dispatcher. Every unit test injects `fetchFn`, which skips that dispatcher, so the suite stayed
- * green for two weeks while the chief of staff and the travel agent told the owner "the reader is down".
+ * green for weeks while the agents told the owner "the reader is down".
  *
  * IT COVERS BOTH DIRECTIONS: real public pages MUST read (the over-rejection that shipped), and
  * internal addresses MUST still be refused (the leak a careless fix would open).

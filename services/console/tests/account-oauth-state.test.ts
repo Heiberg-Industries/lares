@@ -38,7 +38,7 @@ describe("account oauth state", () => {
     expect(verifyAccountState(s)).toMatchObject({ ok: false, reason: "bad_signature" });
   });
 
-  // W8C-s2b(b): CONSOLE_SESSION_SECRET_FILE wins over the plain env value — readSecret's own
+  // CONSOLE_SESSION_SECRET_FILE wins over the plain env value — readSecret's own
   // file-first rule (services/console/lib/secrets.ts), now used here too.
   it("prefers CONSOLE_SESSION_SECRET_FILE over the plain env value", () => {
     const dir = mkdtempSync(join(tmpdir(), "account-oauth-state-"));

@@ -219,7 +219,7 @@ describe("country and the store's own stamps", () => {
 
   it("DROPS a hand-typed stamp it cannot read rather than losing the whole entry", () => {
     // The asymmetry with lat/lon is deliberate: a bad coordinate would misdirect the trip planner, a bad
-    // date costs a badge. Throwing here would delete the PLACE from his recommendations.
+    // date costs a badge. Throwing here would delete the PLACE from the owner's recommendations.
     const raw = "---\ntype: place\nname: Place A\nimported_at: i går\n---\n";
     expect(parseEntry(raw)).toEqual({ type: "place", name: "Place A" });
   });

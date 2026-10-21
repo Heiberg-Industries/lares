@@ -275,7 +275,7 @@ export function youtubeVideoId(url: string): string | null {
 }
 
 /**
- * What a server can learn about a YouTube video (batch 6). Measured from the public host, 2026-09-14:
+ * What a server can learn about a YouTube video. Measured from a public host:
  * the oEmbed endpoint answered title + channel for 3/3 videos; the watch page answered "Sign in to
  * confirm you're not a bot" for 2/3; and caption tracks came back EMPTY (0 bytes) from both the public host
  * and a home connection, because YouTube now gates them behind a browser-only token. So: title and
@@ -344,7 +344,7 @@ export async function fetchAndExtract(
   // undici's OWN fetch, never Node's built-in one: the pinned `Agent` below comes from the npm
   // undici package, and Node 22's bundled fetch rejects an undici-8 dispatcher outright
   // (UND_ERR_INVALID_ARG → "fetch failed" on every URL). That pairing broke all link reading
-  // from the 2026-09-01 undici ^7 → ^8 bump until 2026-09-14, unseen because every
+  // from the undici ^7 → ^8 bump until it was found, unseen because every
   // unit test injects fetchFn. tests/live/readability.live.mts is the check that makes real calls.
   const f = deps.fetchFn ?? (undiciFetch as unknown as typeof fetch);
   const timeoutMs = deps.timeoutMs ?? FETCH_TIMEOUT_MS;

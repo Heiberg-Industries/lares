@@ -19,8 +19,8 @@ const ROOTS = [
 
 // The names that are doc-comment EXAMPLES, not settings: `X_KEY_FILE`
 // (packages/agent-kit/src/integration-secret-lint.ts) and `SOME_CLIENT_ID_FILE` / `MY_KEY`
-// (the console's own secrets tests), as the plan names them — plus `NAME`, which this repo's
-// own `packages/vault-format/src/settings.ts` acquired after the plan was written: its header
+// (the console's own secrets tests) — plus `NAME`, which this repo's
+// own `packages/vault-format/src/settings.ts` acquired later: its header
 // comment spells out the shape `process.env.NAME` / `env["NAME"]` to describe what this very
 // scanner looks for, and that description is itself a literal match for the pattern it
 // describes. Same kind of false positive as the other three, found only once settings.ts
@@ -54,17 +54,15 @@ describe("the settings list and the code agree", () => {
   });
 
   it("the indirect list may only shrink, and every entry names its helper", () => {
-    // The plan's own read of the code estimated "at least 24" indirect names before
-    // `settings.ts` existed to scan. Running this scanner for real against the repository
-    // finds 33: the plan's own contradiction-item-1 list already named 32 of them
+    // Running this scanner for real against the repository finds 33 indirect names,
+    // 32 of which were already known by hand
     // (VAULT_PATH/ATLAS_PATH, TOKEN_ENC_KEY, the Slack/Telegram/Signal/Twenty/Notion/CRM
     // secret names, the GOOGLE_CLIENT_*_<ORG>/_CONSOLE family, HTTPS_PROXY/HTTP_PROXY,
     // DATABASE_PASSWORD_FILE, TZ, GIT_AUTHOR_*/GIT_COMMITTER_*, EVE_TELEMETRY_DISABLED); the
-    // 33rd was a `_FILE` half read through a `readSecret` call (since removed). 26 was the plan's estimate, written before this file existed to
-    // check it against — this bound is the real, measured count instead of that estimate,
+    // 33rd was a `_FILE` half read through a `readSecret` call (since removed). This bound is the real, measured count,
     // still a fixed ceiling a future PR must justify raising.
     //
-    // RAISED 33 → 34, W8B-s5, with its justification: `LARES_CONSOLE_PRINCIPAL` is the managed
+    // RAISED 33 → 34, with its justification: `LARES_CONSOLE_PRINCIPAL` is the managed
     // half of the new `console` channel's allow-list, and it is reached through the SAME
     // `env[\`LARES_${channel.toUpperCase()}_PRINCIPAL\`]` template that already put
     // LARES_SLACK_PRINCIPAL on this list — a scanner looking for a literal `env.X` cannot see any
@@ -72,7 +70,7 @@ describe("the settings list and the code agree", () => {
     // CONSOLE_ALLOWED_EMAILS, is NOT added: the console reads that one as a literal, so the
     // scanner finds it without help.
     //
-    // RAISED 34 → 35, W8C-s2b(b): `CONSOLE_SESSION_SECRET_FILE` is a `_FILE` half read through `readSecret` — services/console/lib/account-oauth-state.ts now
+    // RAISED 34 → 35: `CONSOLE_SESSION_SECRET_FILE` is a `_FILE` half read through `readSecret` — services/console/lib/account-oauth-state.ts now
     // reads its secret through `readSecret("CONSOLE_SESSION_SECRET")`, which builds the `_FILE`
     // name with a template literal (`` `${name}_FILE` ``) inside lib/secrets.ts, never as a
     // literal `env.CONSOLE_SESSION_SECRET_FILE` anywhere this scanner walks. Not a new kind of
@@ -81,7 +79,7 @@ describe("the settings list and the code agree", () => {
     // readSecret's `node:fs` import cannot appear in a file middleware.ts pulls into the Edge
     // Runtime build, confirmed with a real `next build --webpack` failure.
     //
-    // RAISED 35 → 38, F6 (8F): the neutral stack's own two new containers get three names
+    // RAISED 35 → 38: the neutral stack's own two new containers get three names
     // (MODEL_PROVIDER_KEY_FILE, GATEWAY_MASTER_KEY_FILE, LARES_DOMAIN) — declared in SETTINGS by
     // hand under the new "gateway"/"caddy" readers, exactly as DATABASE_PASSWORD_FILE already is,
     // because none of `images/gateway-runtime/start.sh`, `services/box/ops/Caddyfile` or

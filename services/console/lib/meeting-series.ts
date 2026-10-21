@@ -1,4 +1,4 @@
-// services/console/lib/meeting-series.ts — Task 11.
+// services/console/lib/meeting-series.ts
 //
 // The list of meeting series the chief of staff is allowed to send follow-ups for WITHOUT asking first
 // (ratchet rows at level "autonomous" for agent="the chief of staff", capability="meeting_followup"), named

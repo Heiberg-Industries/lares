@@ -8,7 +8,7 @@
  * day the two lists disagree. This file adds a display name per code, which the agent side has no
  * use for.
  *
- * The owner's amendment of 2026-09-18: the supported set is English plus the four Nordic languages
+ * The supported set is English plus the four Nordic languages
  * today, and will grow — so this list, not a fixed nb/en pair, is the one the control offers and
  * the one `saveBriefLanguage` validates against.
  *

@@ -114,10 +114,10 @@ export function groundingClause(opts: { toolResults?: boolean } = {}): string {
 /**
  * An ABSENT block means nothing to report — it is not an invitation to remember.
  *
- * The mirror of the W4b rule below. That one bans claiming a store is EMPTY without
+ * The mirror of the rule below. That one bans claiming a store is EMPTY without
  * querying it; this one bans the opposite lie — asserting a store's CONTENTS when
  * nothing this turn told you what they are. This is the direction that actually fired:
- * on 2026-08-06 the morning brief opened with "two Notion proposals are still waiting
+ * once the morning brief opened with "two Notion proposals are still waiting
  * on your decision" and named both files. Both had been rejected the previous day, the
  * pending list handed to the brief was empty, and an empty block is dropped before the
  * prompt is assembled — so the section was simply absent, and the model rebuilt it from
@@ -135,7 +135,7 @@ export function groundingClause(opts: { toolResults?: boolean } = {}): string {
  * means "nothing happened". Same class of false claim as the one this clause exists to
  * stop, arriving by the door the fix left open. So:
  *
- *   - EMPTY block   → a fact, obtained. Nothing to report, and she may say so.
+ *   - EMPTY block   → a fact, obtained. Nothing to report, and the agent may say so.
  *   - MISSING block → no information at all. Say nothing — in particular, do not report
  *                     it as empty.
  *
@@ -144,8 +144,8 @@ export function groundingClause(opts: { toolResults?: boolean } = {}): string {
  *
  * TOOL RESULTS ARE ALSO GROUNDING, and the clause has to say so or it contradicts the
  * brief it is spliced into: the brief deliberately does NOT hand over today's events, it
- * sends her to call the calendar tool (groundingClause({ toolResults: true }) admits what
- * comes back). Read without this admission, "the blocks are the complete record" tells her
+ * sends the agent to call the calendar tool (groundingClause({ toolResults: true }) admits what
+ * comes back). Read without this admission, "the blocks are the complete record" tells the agent
  * to say nothing about the calendar — the most valuable thing in the message.
  */
 export function absentBlockClause(): string {
@@ -267,7 +267,7 @@ export function labeledContext(blocks: ContextBlock[]): string {
     .join("\n\n");
 }
 
-// ── No unqueried-store claims (One Brain W4b) ────────────────────────────────
+// ── No unqueried-store claims ────────────────────────────────
 // The W2 contract bans claiming untaken ACTIONS ("I've accepted the invite").
 // This is the same lie in the other direction: claiming a STORE is empty
 // ("the Atlas has nothing on X") without having called that store's hand in

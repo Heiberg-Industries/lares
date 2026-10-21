@@ -1,5 +1,5 @@
 /**
- * W8B-s2 — the console's chat proxy.
+ * The console's chat proxy.
  *
  * This is the one place in the system that holds a browser session cookie and an agent's route
  * password at the same time, so the tests below are ordered by what would go wrong: a signed-out
@@ -335,7 +335,7 @@ describe("the console's chat proxy", () => {
   });
 
   it("uses the username the agent's own door answers to", () => {
-    // The role's door is the source of truth (W8B-s1). The console cannot import a service, so the
+    // The role's door is the source of truth. The console cannot import a service, so the
     // name is mirrored here and this reads the door's own source as text — the same reason and the
     // same method as tests/engine-drift.test.ts.
     const door = readFileSync(
@@ -347,7 +347,7 @@ describe("the console's chat proxy", () => {
 });
 
 /**
- * W8B-s5 — who the agent is told it is acting for.
+ * Who the agent is told it is acting for.
  *
  * The trust boundary, in two sentences, because it is the thing these tests are really about: the
  * agent believes this header ONLY because the same request carries the route password, so anything

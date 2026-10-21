@@ -54,7 +54,7 @@ export interface GeocodeDeps {
   fallbackBias?: LatLon;
   /**
    * Hard ceiling on billed searches for one call. An import of a 900-row export should not be
-   * able to become a surprise invoice because a header changed shape — the 2026-08-14 lesson.
+   * able to become a surprise invoice because a header changed shape — a lesson learned from a real overspend.
    * Everything above the cap is reported as unresolved rather than silently skipped.
    */
   maxSearches?: number;

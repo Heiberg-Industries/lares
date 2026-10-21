@@ -115,8 +115,8 @@ export interface CommitResult extends ApplyResult {
  * Ceiling on billed searches per committed list.
  *
  * A large single list is around a hundred places, so 250 leaves generous headroom while making a
- * runaway import impossible: worst case one list costs a few dollars, not a few hundred. The
- * 2026-08-14 leak is the reason a number is written down here at all.
+ * runaway import impossible: worst case one list costs a few dollars, not a few hundred. A past overspend
+ * is the reason a number is written down here at all.
  */
 const MAX_SEARCHES_PER_LIST = 250;
 
@@ -139,7 +139,7 @@ function listCentroid(entries: readonly PlaceEntry[]): { lat: number; lon: numbe
  * City and country for entries that have a pin but no name for where it is.
  *
  * Operator-supplied values always win: the form's city/country are an override, not a default, so
- * a list the owner has deliberately labelled keeps his label. Everything else is derived offline from
+ * a list the owner has deliberately labelled keeps that label. Everything else is derived offline from
  * the coordinate.
  */
 function withDerivedPlaceNames(entries: readonly PlaceEntry[]): PlaceEntry[] {

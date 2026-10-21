@@ -1,6 +1,5 @@
-// The agents on this box, as they registered themselves at start (agent-definitions spec, Part 4). Until
-// 2026-09 this read the retired runtime's folder (AGENTS_DIR), which listed old-runtime agents that no
-// longer run and missed the travel agent entirely.
+// The agents on this box, as they registered themselves at start. This reads the registry rather than a
+// folder, so it lists only agents that actually run.
 import { pool } from "./db";
 import type { AutonomyLevel } from "./contracts";
 

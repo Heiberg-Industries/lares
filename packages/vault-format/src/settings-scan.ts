@@ -1,6 +1,6 @@
-// A setting the code reads and nobody declared is a build failure (W8A-s2).
+// A setting the code reads and nobody declared is a build failure.
 //
-// `settings.ts` (W8A-s1) is one list that claims to say what every setting is for. Nothing
+// `settings.ts` is one list that claims to say what every setting is for. Nothing
 // checked that claim against what the engine's OWN CODE actually reads. This is a TRIPWIRE over
 // SOURCE TEXT, the same shape `integration-secret-lint.ts` already uses in this repository: walk
 // `.ts`/`.tsx`/`.mts` files under given roots, find every `process.env.X` / `env["X"]` shape, and
@@ -152,7 +152,7 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // .toUpperCase()}_CLAIM_REVISION`]`) and read back by nothing in this repository's TypeScript
   // at all — bookkeeping only, per its own breaksWithout in settings.ts.
   LARES_SLACK_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts",
-  LARES_CONSOLE_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts and services/creative/lib/principals.ts (W8B-s5)",
+  LARES_CONSOLE_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts and services/creative/lib/principals.ts",
   LARES_TELEGRAM_PRINCIPAL: "templated LARES_${channel}_PRINCIPAL key in services/chief-of-staff/lib/principals.ts",
   LARES_SLACK_CLAIM_REVISION: "templated LARES_${claim.kind}_CLAIM_REVISION key, written only, in services/keeper/lib/compose-agents.ts",
   LARES_TELEGRAM_CLAIM_REVISION: "templated LARES_${claim.kind}_CLAIM_REVISION key, written only, in services/keeper/lib/compose-agents.ts",
@@ -176,7 +176,7 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // start.sh's guard and exported as PGPASSWORD by the same script — no TypeScript in this
   // repo ever names it.
   DATABASE_PASSWORD_FILE: "start.sh's own ${VAR:?...} guard in images/agent-runtime/start.sh",
-  // F6 (8F): the neutral stack's own containers (gateway, caddy) are shell/Caddyfile-only,
+  // The neutral stack's own containers (gateway, caddy) are shell/Caddyfile-only,
   // the same shape as DATABASE_PASSWORD_FILE above — no TypeScript in this repo reads them.
   MODEL_PROVIDER_KEY_FILE: "the gateway container's own ${VAR:?...} guard in images/gateway-runtime/start.sh",
   GATEWAY_MASTER_KEY_FILE: "the gateway container's own ${VAR:?...} guard in images/gateway-runtime/start.sh",

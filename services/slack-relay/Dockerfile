@@ -1,9 +1,9 @@
 # services/slack-relay/Dockerfile
 #
-# The ADR-0011 relay: public Slack and Telegram webhooks terminate here, and exactly one path per
-# door is forwarded over the tailnet to the agent that owns it on the agent host.
+# The relay: public Slack and Telegram webhooks terminate here, and exactly one path per
+# door is forwarded over a private network to the agent that owns it on the agent host.
 #
-# Build context = the REPO ROOT, matching the sibling services Coolify already builds:
+# Build context = the REPO ROOT, matching the sibling services:
 # docker build -f services/slack-relay/Dockerfile .
 #
 # There is no application here on purpose. The relay must stay a dumb pipe — no
@@ -21,7 +21,7 @@ COPY --chmod=755 services/slack-relay/start.sh /usr/local/bin/lares-relay
 RUN mkdir -p /var/lib/nginx-relay && chown nginx:nginx /var/lib/nginx-relay
 
 # Run as the image's existing unprivileged user. Port 8080 (not 80) so no capability to
-# bind a privileged port is needed — and it matches the sibling services' Coolify port.
+# bind a privileged port is needed.
 USER nginx
 EXPOSE 8080
 

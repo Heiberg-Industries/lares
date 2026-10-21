@@ -135,7 +135,7 @@ describe("mintYearFromMirror", () => {
     expect(() => mintYearFromMirror(2026, ["not-a-real-rule"], AHEAD)).toThrow(/unknown rule key/i);
   });
 
-  // ── The already-past skip (review fix) — the kit's `mintYear` semantics, mirrored ──
+  // ── The already-past skip — the kit's `mintYear` semantics, mirrored ──
   it("skips the terms already behind the owner's day and names them", () => {
     const { minted, skippedPast } = mintYearFromMirror(2026, [], { today: "2026-09-08" });
     expect(minted.length + skippedPast.length).toBe(12);
@@ -161,15 +161,15 @@ describe("mintYearFromMirror", () => {
 
 describe("daysUntil", () => {
   it("is zero for a deadline due today on the owner's clock", () => {
-    expect(daysUntil("2026-09-08", new Date("2026-09-08T12:00:00Z"), "Europe/Oslo")).toBe(0);
+    expect(daysUntil("2026-09-08", new Date("2026-09-08T12:00:00Z"), "Europe/Berlin")).toBe(0);
   });
   it("is positive for a future date and negative for a past one", () => {
-    expect(daysUntil("2026-09-10", new Date("2026-09-08T12:00:00Z"), "Europe/Oslo")).toBe(2);
-    expect(daysUntil("2026-09-01", new Date("2026-09-08T12:00:00Z"), "Europe/Oslo")).toBe(-7);
+    expect(daysUntil("2026-09-10", new Date("2026-09-08T12:00:00Z"), "Europe/Berlin")).toBe(2);
+    expect(daysUntil("2026-09-01", new Date("2026-09-08T12:00:00Z"), "Europe/Berlin")).toBe(-7);
   });
   it("uses the OWNER's day, not the server's — 01:30 UTC on the 9th is still the 8th in New York", () => {
     expect(daysUntil("2026-09-08", new Date("2026-09-09T01:30:00Z"), "America/New_York")).toBe(0);
-    expect(daysUntil("2026-09-08", new Date("2026-09-09T01:30:00Z"), "Europe/Oslo")).toBe(-1);
+    expect(daysUntil("2026-09-08", new Date("2026-09-09T01:30:00Z"), "Europe/Berlin")).toBe(-1);
   });
 });
 

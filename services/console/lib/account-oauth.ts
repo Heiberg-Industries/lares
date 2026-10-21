@@ -5,7 +5,7 @@ import { GOOGLE_SCOPES } from "./accounts";
 
 /**
  * The console's external origin — derived from CONSOLE_OAUTH_REDIRECT, NOT the request URL.
- * Behind a proxy (tailscale serve / Next standalone) req.url leaks the container host, so the
+ * Behind a proxy (or Next standalone) req.url leaks the container host, so the
  * OAuth redirect_uri + post-flow redirects MUST come from the configured value (same approach
  * the login route uses). Falls back to localhost for dev.
  */

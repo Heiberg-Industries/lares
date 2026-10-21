@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 
-/** Plain textarea + Save. The spine validates; its message is shown verbatim. Unstyled on purpose (working agreement 2026-08-31). */
+/** Plain textarea + Save. The spine validates; its message is shown verbatim. Unstyled on purpose. */
 export function JsonEditor({ initial, onSave, hint }: { initial: unknown; onSave(json: string): Promise<void>; hint: string }) {
   const [text, setText] = useState(JSON.stringify(initial, null, 2));
   const [msg, setMsg] = useState("");

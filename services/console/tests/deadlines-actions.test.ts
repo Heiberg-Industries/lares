@@ -191,7 +191,7 @@ describe("mintStatutoryYear", () => {
     expect(r).toEqual({ ok: true, inserted: 10, skipped: 0, skippedPast: [] });
   });
 
-  // ── Already-past dates (review fix) ───────────────────────────────────────────────
+  // ── Already-past dates ───────────────────────────────────────────────
   //
   // The same rule the chief of staff's `deadline_mint_statutory` now applies: a mint of a year already gone
   // would insert twelve rows overdue on arrival, and the brief names an overdue row every morning.

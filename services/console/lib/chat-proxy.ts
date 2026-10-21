@@ -1,5 +1,5 @@
 /**
- * W8B-s2 — the console's half of web chat: one signed-in browser, one agent's own HTTP door.
+ * The console's half of web chat: one signed-in browser, one agent's own HTTP door.
  *
  * This is the only place in the console that holds a browser session and an agent's route password
  * at the same time, so it is written as a gate with a fixed order and no way round it:
@@ -31,13 +31,13 @@ import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSession
 
 /**
  * The username the agent's own door answers to (`ROUTE_USERNAME` in every role's
- * `agent/channels/eve.ts`, W8B-s1). The console does not depend on a role service, so this is a
+ * `agent/channels/eve.ts`). The console does not depend on a role service, so this is a
  * mirror; `tests/chat-proxy.test.ts` reads the door's source as text so the two cannot drift.
  */
 export const ROUTE_USERNAME = "eve";
 
 /**
- * The header this proxy sets to name the signed-in member it is acting for (W8B-s5). The agent's
+ * The header this proxy sets to name the signed-in member it is acting for. The agent's
  * own door reads it — `MEMBER_HEADER` in every role's `agent/channels/eve.ts`, which
  * `tests/chat-proxy.test.ts` reads as text so the two cannot drift.
  *
@@ -51,8 +51,7 @@ export const ROUTE_USERNAME = "eve";
  * WHAT THE AGENT IS TRUSTING. The agent believes this header because the same request carries
  * `Authorization: Basic eve:<route password>`. So the assertion is exactly as strong as that
  * password: **anything holding the agent's route password can claim to be any member** — today the
- * console container and the keeper, both on the owner's own server. That is owner decision B3, and
- * it is the honest limit `docs/decisions/0022-the-tested-install-path.md` states.
+ * console container and the keeper, both on the owner's own server. That is the honest limit `docs/decisions/0022-the-tested-install-path.md` states.
  *
  * The BODY cannot carry an identity either, and this proxy does not have to parse it to be sure:
  * eve's own `forwardedPrincipal` body field is answered 403 unless the channel declares a
@@ -181,7 +180,7 @@ export function vouchedAddress(row: Record<string, unknown> | undefined): string
  */
 export async function forwardChat(request: Request, name: string, path: string, deps: ChatDeps): Promise<Response> {
   // 1. Signed in, or nothing happens at all. The address is kept: it is both the gate and, from
-  //    W8B-s5, the identity this request is carried out under.
+  //    the identity this request is carried out under.
   const member = await deps.signedInEmail();
   if (!member) return refuse(401, "Sign in to the console to talk to an agent.");
   if (member.length > MEMBER_MAX || !MEMBER_SHAPE.test(member)) {

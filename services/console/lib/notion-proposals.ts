@@ -1,5 +1,5 @@
 // services/console/lib/notion-proposals.ts
-// The console's half of the 👍 loop (Phase 3 plan T6, spec §18.4/§18.6): the same
+// The console's half of the 👍 loop: the same
 // state-flip semantics as `notion-sync approve|reject <path>` (services/notion-sync/
 // lib/cli.ts), reached from the console instead of a terminal. Kept as pure
 // DB-facing functions — not the route — so they're unit-testable the way
@@ -32,14 +32,14 @@ export interface NotionProposalDTO {
   preview: string;
   /**
    * 'update' (a Notion edit to a file that exists) or 'create' (a file Notion wants
-   * to ADD to the vault; Phase 4). Carried onto the card because the two Reject
+   * to ADD to the vault). Carried onto the card because the two Reject
    * buttons do different things — an update's rejection reverts the Notion page
    * from the vault, a create's changes nothing anywhere — and a card that states
-   * only the first is telling him the wrong consequence for half the queue.
+   * only the first is telling the owner the wrong consequence for half the queue.
    */
   kind: ProposalKind;
   /**
-   * Does NOTION own this document? The third thing Reject can do (Phase 4): for a
+   * Does NOTION own this document? The third thing Reject can do: for a
    * Notion-owned row nothing is written on either side, so the "your Notion page is
    * reverted" line — true for a mirror or two-way row — is false for it.
    */
@@ -56,7 +56,7 @@ export interface NotionProposalsView {
   proposals: NotionProposalDTO[];
   frozen: FrozenDocDTO[];
   /** Set (never `false`) when the queries themselves failed — DB unreachable, or
-   *  the Phase 3 tables not migrated in this environment yet. Same posture as
+   *  the proposal tables not migrated in this environment yet. Same posture as
    *  queries.ts's NotionSyncDTO.unavailable, and for the same reason: a query
    *  failure here must degrade the card, not take the whole /integrations page
    *  down with it (see getNotionProposalsView). */
@@ -111,7 +111,7 @@ export type ProposalAction = "approve" | "reject";
  * an already-resolved proposal into the `notion_sync_proposals_open` partial
  * unique index) used to live here. It now lives in `resolveProposal`
  * (@lares/agent-box/lib/notion-proposals.ts) because a second human-facing
- * surface — the chief of staff's `notion` hand, spec §19.2/§20 — needs exactly the same
+ * surface — the chief of staff's `notion` hand — needs exactly the same
  * semantics, and two copies of an approval guard is precisely the "third
  * execution path" the design forbids. This function stays as the console's
  * thin, pool-bound entry point.

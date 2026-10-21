@@ -1,7 +1,7 @@
 // packages/taste/src/takeout.ts — Google Takeout "Saved" list CSV → taste place entries.
 //
 // This is the ONE manual feed the taste layer ships with: no connectors, no sync jobs —
-// The owner exports his saved lists from Google Takeout and uploads them in the console). The
+// The owner exports saved lists from Google Takeout and uploads them in the console). The
 // parser is lifted from the trip planner's own `services/travel/lib/taste.ts`, which has read these
 // exact files in production since the earlier travel agent — same hand-rolled CSV reader, same coordinate
 // extraction, both proven against real Takeout exports. It lives here now because the console

@@ -17,11 +17,11 @@ vi.mock("../lib/deadlines", async (importOriginal) => {
   return { ...actual, getDeadlinesView };
 });
 
-/** `YYYY-MM-DD` `offset` owner-clock days from today (Europe/Oslo, the default home tz), computed
+/** `YYYY-MM-DD` `offset` owner-clock days from today (Europe/Berlin, an example zone), computed
  *  the same way `daysUntil` will read it back — so the test never hard-codes a date that would go
  *  stale (or flip overdue/future) the day this test suite is run again. */
 function ownerDateOffset(offsetDays: number): string {
-  const todayIso = ownerDayIn(new Date(), "Europe/Oslo");
+  const todayIso = ownerDayIn(new Date(), "Europe/Berlin");
   const [y, m, d] = todayIso.split("-").map(Number);
   const dt = new Date(Date.UTC(y!, m! - 1, d! + offsetDays));
   return dt.toISOString().slice(0, 10);
@@ -74,14 +74,14 @@ describe("/deadlines", () => {
     expect(html).toMatch(/escalation ladder is on/i);
   });
 
-  // The switch LABEL states both states (review fix): a bare "Escalation ladder" beside an
+  // The switch LABEL states both states: a bare "Escalation ladder" beside an
   // unchecked box reads as a value that failed to render, not as a switch that is off.
   it("the ladder switch says OFF as plainly as it says ON", async () => {
     expect(await render(view({ ladderEnabled: false }))).toContain("Escalation ladder — OFF");
     expect(await render(view({ ladderEnabled: true }))).toContain("Escalation ladder — ON");
   });
 
-  // The mint form greys the terms already behind today (review fix): the mint skips them, and a
+  // The mint form greys the terms already behind today: the mint skips them, and a
   // form that offered them as ordinary checkboxes would promise rows it will not create.
   it("the mint form greys the statutory rules already past for the default year and says why", async () => {
     // The clock is PINNED: the default fiscal year is the current one, so which rules are behind

@@ -8,16 +8,16 @@ export const SESSION_MAX_AGE = 7 * 24 * 60 * 60; // 7 days in seconds
  * doesn't throw when CONSOLE_SESSION_SECRET isn't set in the build environment.
  * In production the guard fires on the first actual request.
  *
- * DELIBERATELY STILL A PLAIN process.env READ (W8C-s2b/b): lib/secrets.ts's `readSecret`
+ * DELIBERATELY A PLAIN process.env READ: lib/secrets.ts's `readSecret`
  * imports `node:fs` to resolve a `_FILE` name, and `node:fs` cannot appear anywhere in this
  * file's import graph — webpack's Edge Runtime compiler refuses it outright ("Reading from
  * 'node:fs' is not handled by plugins"), confirmed against this file with both a static and a
  * runtime-guarded dynamic `import("./secrets")` (`next build --webpack`, both fail the same
  * way; middleware.ts imports `verify` from here with no `runtime: "nodejs"` override, so it
  * compiles for Edge). lib/account-oauth-state.ts is Node-only and switched to `readSecret`
- * instead; this file did not, and CONSOLE_SESSION_SECRET_FILE has no effect on the session
- * cookie until either middleware moves off the Edge runtime or this reads its secret some
- * other way — a call the controller should make, not this slice.
+ * instead; this file did not. The session cookie still honours CONSOLE_SESSION_SECRET_FILE in the
+ * container: images/console-runtime/start.sh reads that file into CONSOLE_SESSION_SECRET before the
+ * console starts, so this plain read sees the file's contents.
  */
 function getSecret(): string {
   const s = process.env.CONSOLE_SESSION_SECRET;

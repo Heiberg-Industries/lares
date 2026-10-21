@@ -33,7 +33,7 @@ function ProposalRow(p: { proposal: NotionProposalDTO; onResolved: (id: number) 
   }
 
   // THREE different decisions, not two, and Reject is where they diverge most
-  // (Phase 4): an ordinary edit's rejection UNDOES his Notion edit; a Notion-owned
+  // An ordinary edit's rejection UNDOES the owner's Notion edit; a Notion-owned
   // document's writes nothing on either side; a create's simply declines. Stated per
   // row rather than once at the top, because a mixed queue makes any single blanket
   // sentence wrong for part of it — and phrased by the SHARED consequence functions,

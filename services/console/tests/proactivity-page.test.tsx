@@ -67,7 +67,7 @@ function view(settings: SettingsRowDTO[]): ProactivityView {
     owner: "owner-1",
     agents: ["chief-of-staff", "travel-agent", "creative-agent"],
     clock: { tz: "America/New_York", source: "slack-profile", detail: "Slack profile, observed 2h ago", tripVisible: false },
-    homeTz: "Europe/Oslo",
+    homeTz: "Europe/Berlin",
     settings,
     doors: ["*", "telegram:123456", "slack:U0ABC"],
     today: [
@@ -149,7 +149,7 @@ describe("/proactivity", () => {
     expect(html).toContain("Slack · U0ABC");
 
     // Today, with reasons in words — and the ledger row's time on the OWNER's clock (15:05 in
-    // New York, not 21:05 in Oslo and not 19:05 UTC).
+    // New York, not 21:05 in Berlin and not 19:05 UTC).
     expect(html).toContain("inside quiet hours");
     expect(html).toContain("this door&#x27;s daily ceiling was full");
     expect(html).toContain("2026-09-08 15:05");

@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * W8B-s3 — a narrow, temporary webpack loader for exactly one file.
+ * A narrow, temporary webpack loader for exactly one file.
  *
  * eve 0.60.1's compiled browser client uses ONE TC39 "explicit resource management"
  * `using` declaration — `node_modules/eve/dist/src/client/eve-agent-store.js`, inside

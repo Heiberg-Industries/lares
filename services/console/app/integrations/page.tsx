@@ -20,7 +20,7 @@ export const dynamic = "force-dynamic";
 /** How often the owner actually says yes, in the owner's own words — never a percentage of
  *  nothing, and never the word "ratchet" or a column name. A never-answered card (ignored, expired,
  *  a stale card) is not a refusal, so it never counts against the rate — it is only named on its
- *  own (owner decision B1). */
+ *  own ). */
 function answersLine(a: BoardRowDTO["answers"]): string {
   const asked = a.approved + a.cancelled + a.neverAnswered;
   if (asked === 0) return "no answers recorded yet";
