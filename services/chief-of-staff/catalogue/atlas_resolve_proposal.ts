@@ -22,7 +22,7 @@ import { approvalFor } from "../lib/board.js";
 export default defineTool({
   description:
     "Approve or reject an Atlas proposal (requires the owner to tap Approve on the card). Pass id and decision " +
-    "('approve' | 'reject') from atlas_proposals — both are shown on his confirmation card. " +
+    "('approve' | 'reject') from atlas_proposals — both are shown on the owner's confirmation card. " +
     "Approving writes the re-derived note into the Atlas on the next sync tick, NOT " +
     "immediately. Rejecting leaves the note exactly as it is and the draft is not offered " +
     "again until one of its sources actually changes.",

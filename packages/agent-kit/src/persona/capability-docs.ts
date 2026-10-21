@@ -616,7 +616,7 @@ export const CAPABILITY_DOCS: Record<string, CapabilityDoc> = {
       {
         tools: [...VAULT_PRIVATE_TOOLS],
         text:
-          "The personal second brain — a vault of notes I search, read and follow backlinks " +
+          "The owner's private area of the Vault — notes I search, read and follow backlinks " +
           "through. It is the owner's private store; a store answer always comes from a store " +
           "call made in this turn, never from memory of an earlier result.",
       },

@@ -57,7 +57,7 @@ const TRIAGE_CEILING_PER_TICK = 10;
  * The dossier text handed to the DRAFTER — deliberately NOT every dossier `renderDossier` can
  * produce. `renderDossier`'s `ambiguous`/`unknown`
  * branches (`lib/person/render.ts:61-136`) are authored as second-person INSTRUCTIONS for
- * chief-of-staff-the-conversationalist talking to the owner — "Ask him which one", "You cannot search the
+ * chief-of-staff-the-conversationalist talking to the owner — "Ask the owner which one", "You cannot search the
  * web — you have no search tool, only `read_url.fetch` for a link you are GIVEN" — not facts
  * about the counterpart. Placed verbatim under a `## Person` block in a reply-drafting prompt,
  * they can leak into the draft itself: a reply to an external third party that mentions the

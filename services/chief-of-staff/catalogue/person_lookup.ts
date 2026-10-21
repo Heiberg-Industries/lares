@@ -32,17 +32,17 @@ export default defineTool({
     "meetings, what they actually said in meeting transcripts, and their company. Pass `email` " +
     "when you have it — it is exact; `name` otherwise. Use this for ANY question about a person " +
     "('what's the deal with Per', 'who is this', 'should I chase them') instead of calling " +
-    "twenty/network/gmail/calendar/brain separately.\n" +
+    "twenty/network/gmail/calendar/vault separately.\n" +
     "Read the result carefully: it names the LAST ENGAGEMENT and splits everything into NEW SINCE " +
     "and EARLIER — lead with what is new, and only give the full history when there is little else. " +
     "It also lists every source it consulted, and the time windows it searched — 'nothing found' " +
     "always means nothing in that window, never nothing ever. A source marked COULD NOT READ is a " +
     "gap in your reading, NOT an absence in the world — say that, never 'nothing found'. A source " +
     "marked 'not searchable this way' is a third thing again: that question cannot be put to it in " +
-    "this form, which is neither a failure nor an absence. If it comes back AMBIGUOUS, ask him which " +
-    "person he means; never pick one.\n" +
+    "this form, which is neither a failure nor an absence. If it comes back AMBIGUOUS, ask the owner which " +
+    "person they mean; never pick one.\n" +
     "A partial `name` works — 'Per' finds the record for 'Per Hansen' when he is the only match. " +
-    "The result then says MATCHED LOOSELY, and you must pass that on in a clause so he can correct you.\n" +
+    "The result then says MATCHED LOOSELY, and you must pass that on in a clause so the owner can correct you.\n" +
     "When the owner tells you two addresses belong to the SAME person (someone who changed jobs), pass " +
     "BOTH in `emails` and you get one combined view across both mailboxes.",
   inputSchema: z.object({

@@ -260,7 +260,7 @@ function buildNoteBody(result: PromoterResult, scrubbed = 0): string {
 
   if (result.rejected.length > 0) {
     // A run that rejects every candidate must look different from a run with nothing to look
-    // at (OpenClaw's own failure, ADR-0018 rule 6, `#121232`): the two used to render the same
+    // at (a known failure in other agent systems, ADR-0018 rule 6): the two used to render the same
     // "_No new observations..._" line. A failure IN this section must never cost the note
     // itself — the promoted/superseded/held/needsConfirm sections above are already built, and
     // the commit below must still happen.
@@ -317,7 +317,7 @@ const PASSED_THE_ORIGIN_CHECK: ReadonlySet<string> = new Set([
 /**
  * A run in which candidates existed and NONE of them survived the gate. Not "nothing
  * happened" — a gate that rejects everything looks identical to a gate that is working, and
- * OpenClaw shipped exactly that for weeks (research report 10, issue #121232).
+ * other agent systems have shipped exactly that for weeks.
  */
 export function everythingRejected(result: PromoterResult): boolean {
   return (
@@ -339,7 +339,7 @@ export const DREAM_ALL_REJECTED_EVENT = "dream-all-rejected";
  * reject everything on a quiet night (a one-off owner remark is `below-recurrence`; the
  * agent's own inference is `agent-inference`, and both already keep `everythingRejected` false
  * by way of `held`/`needsConfirm`). What is a problem is the SAME failure holding for several
- * nights running — that is `#121232` again, just spread across nights instead of one giant
+ * nights running — that is the same failure again, just spread across nights instead of one giant
  * batch. The alarm fires on the third consecutive night, and then again every 7 nights beyond
  * that (10, 17, …) rather than nightly, so a real installation does not get a message it learns
  * to ignore before it matters (`shouldRaiseAllRejectedSignal`).

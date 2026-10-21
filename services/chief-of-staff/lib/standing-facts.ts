@@ -150,13 +150,13 @@ export function rejectFact(fact: string): string | null {
     return "A standing fact must be the owner's own words. Nothing was quoted, so there is nothing to remember.";
   }
   if (trimmed.length > MAX_FACT_LENGTH) {
-    return `A standing fact is one sentence in his words, at most ${MAX_FACT_LENGTH} characters — this was ${trimmed.length}. Quote the part that stands, not the whole message.`;
+    return `A standing fact is one sentence in the owner's words, at most ${MAX_FACT_LENGTH} characters — this was ${trimmed.length}. Quote the part that stands, not the whole message.`;
   }
   if (DAY_SCOPED.test(trimmed)) {
     return "That is true today, not always — it is a fact about one day, not a standing one. Do not remember it; use it this turn and let it go.";
   }
   if (HEDGED.test(trimmed)) {
-    return "That reads as your inference, not his words. Only store what he actually said, quoted as he said it.";
+    return "That reads as your inference, not the owner's words. Only store what the owner actually said, quoted as the owner said it.";
   }
   return null;
 }

@@ -99,7 +99,7 @@ export function makeGmailSentAfter(
           // keeps obligations alive forever. Louder is better; the caller turns this into an
           // `unreadable` source.
           throw new Error(
-            "cannot tell which sent mail is his: the identity registry returned no addresses for the owner",
+            "cannot tell which sent mail is the owner's: the identity registry returned no addresses for the owner",
           );
         }
         return new Set(addresses.map((a) => a.toLowerCase()));

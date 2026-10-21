@@ -22,11 +22,11 @@ import { approvalFor } from "../lib/board.js";
 export default defineTool({
   description:
     "Approve or reject a Notion→vault proposal (requires the owner to tap Approve on the card). Pass id and decision " +
-    "('approve' | 'reject') from notion_proposals — both are shown on his confirmation card. " +
+    "('approve' | 'reject') from notion_proposals — both are shown on the owner's confirmation card. " +
     "Approving an ordinary edit writes it to the vault file (or creates it, for a NEW FILE " +
     "proposal) on the sync engine's next hourly tick, NOT immediately, so 'nothing has " +
     "changed yet' right afterwards is expected. Rejecting does one of three different things " +
-    "depending on the proposal — quote notion_proposals's own consequence sentence to him " +
+    "depending on the proposal — quote notion_proposals's own consequence sentence to the owner " +
     "before asking for the approval rather than guessing.",
   inputSchema: z.object({
     id: z.number().int().positive(),

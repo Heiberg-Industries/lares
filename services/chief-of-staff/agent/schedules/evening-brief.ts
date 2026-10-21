@@ -140,7 +140,7 @@ export function buildEveningPrompt(
   // inside a flagged block, the owner-side wording stays in the heading's label and note.
   const meetingLines = labeledContext([{
     label: "Tomorrow's calendar",
-    note: "meetings, and the blocks he set aside",
+    note: "meetings, and the blocks the owner set aside",
     // GOTCHA — see morning-brief.ts's own note: `.map(commitmentLine)` would pass the
     // array index as `tz`, so this is wrapped in an arrow instead.
     content: commitments.map((m) => commitmentLine(m, tz)).join("\n"),
@@ -155,7 +155,7 @@ export function buildEveningPrompt(
   // The counterparty's name and the mail's subject are outside text: flagged block, as above.
   const obligationLines = labeledContext([{
     label: "Owed a reply",
-    note: "from people he's meeting tomorrow",
+    note: "from people the owner is meeting tomorrow",
     content: content.obligations
         .map((o: Obligation) =>
           `- ${o.counterpartyName} <${o.counterpartyAddress}> — waiting ${o.ageHours}h` +
@@ -184,7 +184,7 @@ export function buildEveningPrompt(
 
   return [
     "[scheduled turn — the evening prep pass. This is not a message from a person; it is your cue",
-    "to prepare him for tomorrow.]",
+    "to prepare the owner for tomorrow.]",
     "",
     meetingLines,
     "",
@@ -196,17 +196,17 @@ export function buildEveningPrompt(
     ...(factsSection ? [factsSection, ""] : []),
     "For EACH participant listed above, call person_lookup now (pass their email) and read what",
     "comes back. Do not write about anyone you have not looked up, and do not fill a gap from",
-    "memory. An entry with no participants needs no lookup — name it as what his day holds and",
+    "memory. An entry with no participants needs no lookup — name it as what the owner's day holds and",
     "move on; never guess who might be there.",
     "",
     // — the ONE sentence about what an UNKNOWN lookup that still carries an ORGANISATION
     // section means. From lib/brief-content.ts so the two briefs cannot disagree; unconditional,
     // because whether a lookup comes back that way is only knowable at turn time.
     ...organisationLookupClause(),
-    "Then write him one short message covering tomorrow: who he's meeting, what last came up and",
-    "where things stand, plus anything he owes them from the list above — lead with that, it's",
-    "why this arrives tonight rather than in the morning, while he can still act. Blocks without",
-    "participants belong in the shape of his day (when he is committed, and where), not as",
+    "Then write the owner one short message covering tomorrow: who they're meeting, what last came up and",
+    "where things stand, plus anything the owner owes them from the list above — lead with that, it's",
+    "why this arrives tonight rather than in the morning, while they can still act. Blocks without",
+    "participants belong in the shape of the owner's day (when they are committed, and where), not as",
     "people to prepare for.",
     "",
     // — the same two clauses the morning brief uses, from the same helper, so the two
@@ -232,8 +232,8 @@ export function buildEveningPrompt(
     // it anyway. Told AND blocked.
     "This is a PREPARATION message: REPORT ONLY. Take no action and propose nothing this turn —",
     "no emails, no drafts, no calendar changes, no reminders, no notes, no 👍 confirmation cards.",
-    "Do not call `remember` or `forget` — he has said nothing on this turn, and a standing fact",
-    "is only ever his own words.",
+    "Do not call `remember` or `forget` — the owner has said nothing on this turn, and a standing fact",
+    "is only ever the owner's own words.",
   ].join("\n");
 }
 

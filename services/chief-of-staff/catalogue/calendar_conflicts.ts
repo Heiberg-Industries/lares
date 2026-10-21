@@ -73,7 +73,7 @@ export default defineTool({
     "connected account, not a judgement. Finds three things: double-booked time (two timed " +
     "commitments overlapping), overlapping stays (two places to sleep booked for the same " +
     "night), and timezone traps (an event whose booked clock time lands outside waking hours " +
-    "where he actually is that day). For an overlapping-stay " +
+    "where the owner actually is that day). For an overlapping-stay " +
     "finding it also runs a small, bounded mailbox search for a cancellation of one of the two " +
     "bookings; when exactly one has a strong match, that row carries a `resolution` naming the " +
     "stale event and the cancellation mail's own sentence as evidence. Returns a list of " +

@@ -604,14 +604,14 @@ describe("proposals", () => {
       expect(atlasStamped).toEqual([13]); // the atlas lane is unaffected by the notion lane's failure
     });
 
-    it("the conversational prompt builders (kept for the gated-tool path) still say YOU PRESENT, HE DECIDES", () => {
+    it("the conversational prompt builders (kept for the gated-tool path) still say YOU PRESENT, THE OWNER DECIDES", () => {
       const notionPrompt = buildNotionProposalsPrompt([row({ id: 1 })]);
-      expect(notionPrompt).toContain("YOU PRESENT, HE DECIDES");
+      expect(notionPrompt).toContain("YOU PRESENT, THE OWNER DECIDES");
       expect(notionPrompt).toContain("notion_resolve_proposal");
       expect(notionPrompt).not.toContain("np:a:"); // the retired Telegram button data
 
       const atlasPrompt = buildAtlasProposalsPrompt([atlasRow({ id: 1 })]);
-      expect(atlasPrompt).toContain("YOU PRESENT, HE DECIDES");
+      expect(atlasPrompt).toContain("YOU PRESENT, THE OWNER DECIDES");
       expect(atlasPrompt).toContain("atlas_resolve_proposal");
     });
   });

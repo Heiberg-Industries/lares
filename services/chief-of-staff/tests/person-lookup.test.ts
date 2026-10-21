@@ -209,7 +209,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
     expect(text).toContain("PERSON LOOKUP — UNKNOWN: dana@atbridgeco.example");
     expect(text).toContain("You do know their ORGANISATION, though");
     expect(text).toContain("ORGANISATION — atbridgeco.example:");
-    expect(text).toContain("- brain: tools/bridgeco-tracker-bridge.md");
+    expect(text).toContain("- private: tools/bridgeco-tracker-bridge.md");
     expect(text).toContain("- organisation: read OK");
   });
 
@@ -230,7 +230,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
     );
     expect(text).toContain("PERSON LOOKUP — UNKNOWN: dana@atbridgeco.example");
     expect(text).toContain("ORGANISATION — Bridgeco — atbridgeco.example:");
-    expect(text).toContain("- brain: tools/bridgeco-tracker-bridge.md");
+    expect(text).toContain("- private: tools/bridgeco-tracker-bridge.md");
     expect(text).toContain("- CRM: Bridgeco (https://atbridgeco.example)");
   });
 
@@ -252,7 +252,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
       { email: "per@gmail.com" },
     );
     expect(text).toContain("ORGANISATION — Northwind Audio:");
-    expect(text).toContain("- brain: companies/northwind-audio.md");
+    expect(text).toContain("- private: companies/northwind-audio.md");
     expect(text).not.toContain("- organisation: not searchable this way");
   });
 
@@ -271,8 +271,8 @@ describe("the organisation stage: a stranger at a company we know", () => {
       { name: "Per Hansen" },
     );
     expect(text).toContain("ORGANISATION — Northwind Audio — partner.example:");
-    expect(text).toContain("- brain: companies/northwind-audio.md");
-    expect(text).toContain("- atlas: ventures/acme/northwind-audio.md");
+    expect(text).toContain("- private: companies/northwind-audio.md");
+    expect(text).toContain("- shared: ventures/acme/northwind-audio.md");
   });
 
   it("a free-mail address NEVER reaches the organisation source — not asked, not asked-and-empty", async () => {
@@ -355,7 +355,7 @@ describe("the organisation stage: a stranger at a company we know", () => {
 
       expect(calls).toContain("organisation");
       expect(text).toContain("ORGANISATION — ");
-      expect(text).toContain("- brain: companies/northwind-audio.md");
+      expect(text).toContain("- private: companies/northwind-audio.md");
     });
   });
 
@@ -675,7 +675,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
     expect(text).toContain("- organisation: read OK");
     // — the organisation stage, over the real Atlas store and the real Twenty stub.
     expect(text).toContain("ORGANISATION — Northwind Audio — partner.example:");
-    expect(text).toContain("- atlas: ventures/northwind-audio.md");
+    expect(text).toContain("- shared: ventures/northwind-audio.md");
     expect(text).toContain("- CRM: Northwind Audio (https://partner.example), org no 999");
     // render.ts's trailing footer always mentions the phrase "COULD NOT READ" as boilerplate
     // explanation — so the real assertion is that no SOURCE LINE ("- name: COULD NOT READ")

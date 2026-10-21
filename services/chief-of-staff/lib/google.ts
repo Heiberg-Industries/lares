@@ -732,8 +732,8 @@ export function wrapCalendarApi(api: CalendarApi): CalendarApiClient {
       const res = await api.calendarList.list({ maxResults: 250, showHidden: false });
       return (res.data.items ?? [])
         // Owner/writer only by default: a tool that CREATES an event may only offer calendars
-        // he can write. Reading is a different question — his a company calendar is
-        // subscribed read-only and its meetings are still his day, so the brief's
+        // the owner can write. Reading is a different question — a company calendar is
+        // subscribed read-only and its meetings are still the owner's day, so the brief's
         // fan-out asks for everything and filters by name instead.
         .filter((c) => opts?.includeReadOnly === true || c.accessRole === "owner" || c.accessRole === "writer" || c.primary === true)
         .map((c) => ({ id: c.id ?? "", summary: c.summary ?? "", primary: c.primary === true }))

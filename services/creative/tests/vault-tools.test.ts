@@ -150,7 +150,7 @@ describe("the reads are UNGATED and read the shared area", () => {
   // grants the shared store and not the personal one, so `lib/vault-areas.ts` hands the tool
   // the shared area alone and the private one is refused by name. This is the code half of the
   // same rule the last block in this file greps for.
-  it("refuses the private area — her declaration grants the shared one and nothing else", async () => {
+  it("refuses the private area — the agent's declaration grants the shared one and nothing else", async () => {
     for (const [name, tool] of [
       ["vault_search", vaultSearch],
       ["vault_read", vaultRead],
@@ -325,13 +325,13 @@ describe("vault_write, when the owner approves", () => {
     // area guard.
     const before = git(atlasRoot, "rev-parse", "HEAD").trim();
     await expect(
-      vaultWrite.execute({ area: "private", title: "Not her store", body: "…" }, ctx(slackAuth(OWNER))),
+      vaultWrite.execute({ area: "private", title: "Not the agent's store", body: "…" }, ctx(slackAuth(OWNER))),
     ).rejects.toThrow(/"private" area of the Vault was not granted/);
     expect(git(atlasRoot, "rev-parse", "HEAD").trim()).toBe(before);
   });
 });
 
-describe("she has NO Brain access — Atlas only", () => {
+describe("the agent has NO Brain access — Atlas only", () => {
   /**
    * A source grep, deliberately, and the one place it is the right instrument: this asserts
    * that no file ANYWHERE in the service names the Brain, including a file nothing imports yet.

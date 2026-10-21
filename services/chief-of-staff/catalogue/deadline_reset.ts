@@ -18,7 +18,7 @@ export default defineTool({
   description:
     "Reset a deadline's escalation ladder back to rung 0, so it can ring again from the start " +
     "(rung 1, the day-before nudge). Use this when the owner says a stopped deadline should " +
-    "start chasing him again — a new due date usually calls for `deadline_add`/mint instead. " +
+    "start chasing them again — a new due date usually calls for `deadline_add`/mint instead. " +
     "An unknown id changes nothing; the result says so.",
   inputSchema: z.object({ id: z.string() }),
   async execute({ id }, ctx) {

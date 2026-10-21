@@ -29,7 +29,7 @@ export default defineTool({
   description:
     "Check a meeting's follow-up again and, if it has not already been sent, reset it so the " +
     "next automatic pass drafts and sends a fresh card — the 'check again' path for when the owner " +
-    "says he corrected the meeting page. Refuses a follow-up that has already been sent; that " +
+    "says they corrected the meeting page. Refuses a follow-up that has already been sent; that " +
     "cannot be undone.",
   inputSchema: z.object({ notionPageId: z.string() }),
   approval: async (ctx: { toolInput?: unknown }) => {

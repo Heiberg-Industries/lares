@@ -107,7 +107,7 @@ export function deadlinePrompt(line: string): string {
   return [
     "[scheduled turn — a deadline reminder. This is not a message from a person.]",
     "",
-    "Relay the following to him verbatim, with no preamble and no additions:",
+    "Relay the following to the owner verbatim, with no preamble and no additions:",
     "",
     line,
   ].join("\n");

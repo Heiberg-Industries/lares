@@ -227,7 +227,7 @@ export async function runDreamCycle(): Promise<{ notePath: string; counts: Recor
     rejected: result.rejected.length,
   };
 
-  // OpenClaw's own failure (ADR-0018 rule 6, issue #121232) — but a SINGLE all-rejected night is
+  // OpenClaw's own failure (ADR-0018 rule 6) — but a SINGLE all-rejected night is
   // not yet that failure: with tonight's strict gate a perfectly healthy night can reject
   // everything (a one-off owner remark, the agent's own inference), so the alarm is gated on the
   // STREAK (kept in the note itself, see `cycle.ts`) reaching `DREAM_ALL_REJECTED_SIGNAL_AT` and

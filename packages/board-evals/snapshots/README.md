@@ -45,6 +45,10 @@ the finding, never a chore to be re-baselined away.
   automatically; typed "approve" approves nothing). The instructions files are the newly assembled
   `persona.md`; the same paragraph was inserted into both system-prompt files. Not re-captured
   with `snapshot:capture` (it could not invoke eve in the build environment); tool counts unchanged.
+- **Edited by hand for the model-text wording pass**: the vault capability's private-area sentence no
+  longer says "The personal second brain" (it opens "The owner's private area of the Vault"). The
+  chief-of-staff instructions file is the newly assembled `persona.md`; the same sentence was changed
+  in the system-prompt file. Not re-captured with `snapshot:capture`; tool counts unchanged.
 - Counts at capture:
 
   | role | tools | instructions | system prompt |

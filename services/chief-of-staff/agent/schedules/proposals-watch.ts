@@ -141,7 +141,7 @@ export function buildNotionProposalsPrompt(rows: ProposalRow[]): string {
   });
   return [
     "[scheduled check — Notion proposals. This is not a message from a person; it is your cue",
-    "to tell him what is waiting.]",
+    "to tell the owner what is waiting.]",
     "",
     `${rows.length} Notion→vault proposal(s) are newly open:`,
     "",
@@ -151,9 +151,9 @@ export function buildNotionProposalsPrompt(rows: ProposalRow[]): string {
     "proposal's own approve/reject consequence sentence; quote that sentence rather than",
     "guessing, the three possible outcomes are NOT the same for every proposal.",
     "",
-    "YOU PRESENT, HE DECIDES: do not call notion_resolve_proposal in this turn. When he",
-    "replies with a decision — now or later in this conversation — call",
-    "notion_resolve_proposal with the id and decision; that is what renders his approval card.",
+    "YOU PRESENT, THE OWNER DECIDES: do not call notion_resolve_proposal in this turn. When the",
+    "owner replies with a decision — now or later in this conversation — call",
+    "notion_resolve_proposal with the id and decision; that is what renders the owner's approval card.",
   ].join("\n");
 }
 
@@ -164,7 +164,7 @@ export function buildAtlasProposalsPrompt(rows: AtlasUnannouncedRow[]): string {
   });
   return [
     "[scheduled check — Atlas proposals. This is not a message from a person; it is your cue",
-    "to tell him what is waiting.]",
+    "to tell the owner what is waiting.]",
     "",
     `${rows.length} Atlas proposal(s) are newly open — a venture note whose narrative has`,
     "been re-derived from its sources:",
@@ -175,9 +175,9 @@ export function buildAtlasProposalsPrompt(rows: AtlasUnannouncedRow[]): string {
     "proposal's own approve/reject consequence sentence; quote that sentence rather than",
     "guessing.",
     "",
-    "YOU PRESENT, HE DECIDES: do not call atlas_resolve_proposal in this turn. When he replies",
-    "with a decision — now or later in this conversation — call atlas_resolve_proposal with",
-    "the id and decision; that is what renders his approval card.",
+    "YOU PRESENT, THE OWNER DECIDES: do not call atlas_resolve_proposal in this turn. When the",
+    "owner replies with a decision — now or later in this conversation — call",
+    "atlas_resolve_proposal with the id and decision; that is what renders the owner's approval card.",
   ].join("\n");
 }
 

@@ -97,7 +97,7 @@ describe("transitCandidates", () => {
     expect(transitCandidates([row({ kind: "remote-call", location: undefined })])).toEqual([]);
   });
 
-  it("a block he set aside has nowhere to go", () => {
+  it("a block the owner set aside has nowhere to go", () => {
     expect(transitCandidates([row({ kind: "block", location: undefined })])).toEqual([]);
   });
 
@@ -174,10 +174,10 @@ describe(" — the brief may state a real departure", () => {
     );
   });
 
-  it("is bounded — one lookup per listed commitment, and none for a venue in the town he is already in", async () => {
+  it("is bounded — one lookup per listed commitment, and none for a venue in the town the owner is already in", async () => {
     const prompt = sentences(await morningPromptFor([HOTEL, INTRO_CALL, TOWN_B_SESSION]));
     expect(prompt).toContain("At most ONE lookup per commitment listed");
-    expect(prompt).toContain("none at all for a venue in the town he is already in");
+    expect(prompt).toContain("none at all for a venue in the town the owner is already in");
   });
 
   it("a CALENDAR lodging row is never the journey's origin — a booking is not evidence he is in that bed", async () => {
@@ -283,24 +283,24 @@ describe("hybrid and all-day shapes", () => {
     const meetings = await listTodayMeetings(depsFor([HOTEL, TOWN_B_SESSION]), THAT_MORNING);
     const evening = sentences(buildEveningPrompt(buildEveningBrief({ meetings, obligations: [] })!));
 
-    expect(evening).toContain("DIFFERENT TOWN from where he will be tomorrow");
-    expect(evening).toContain("the journey starts wherever he will be TOMORROW MORNING");
-    expect(evening).toContain("different question from where he is tonight");
+    expect(evening).toContain("DIFFERENT TOWN from where the owner will be tomorrow");
+    expect(evening).toContain("the journey starts wherever the owner will be TOMORROW MORNING");
+    expect(evening).toContain("different question from where they are tonight");
     // The present-tense reading — right at 08:00, wrong at 20:00 — must be gone from this one.
-    expect(evening).not.toContain("DIFFERENT TOWN from where he already is");
+    expect(evening).not.toContain("DIFFERENT TOWN from where the owner already is");
   });
 
   it("FINDING 2: …and the morning pass keeps the present tense, which is correct there", async () => {
     const morning = sentences(await morningPromptFor([HOTEL, TOWN_B_SESSION]));
-    expect(morning).toContain("DIFFERENT TOWN from where he already is");
-    expect(morning).toContain("none at all for a venue in the town he is already in");
+    expect(morning).toContain("DIFFERENT TOWN from where the owner already is");
+    expect(morning).toContain("none at all for a venue in the town the owner is already in");
     expect(morning).not.toContain("TOMORROW MORNING");
   });
 
   it("FINDING 3: an unknowable origin must be declared, not assumed", async () => {
     const morning = sentences(await morningPromptFor([HOTEL, TOWN_B_SESSION]));
     expect(morning).toContain("Say in plain words where you assumed the journey starts");
-    expect(morning).toContain("If you cannot actually say where he will be, say THAT and look nothing up");
+    expect(morning).toContain("If you cannot actually say where they will be, say THAT and look nothing up");
     // Why it matters, stated so the rule is not read as mere politeness.
     expect(morning).toContain("a wrong origin still returns a real departure from a real platform");
   });
