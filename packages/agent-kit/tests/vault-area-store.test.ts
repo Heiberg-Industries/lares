@@ -174,6 +174,22 @@ describe('Vault area current authority on disposable PostgreSQL',()=>{
     expect(await vault.vaultAreaBinding('second',{areaId:'shared',expectedRevision:before.accessRevision,permission:'use'})).toBeUndefined();
     expect((await db.query('SELECT revoked_at FROM resource_grants WHERE id=$1',[grant])).rows[0].revoked_at).toBeNull();
   });
+  it('reserves retired private paths against a different owner, including parents and children',async()=>{
+    const original=await area('member-a','private',{kind:'member',id:'second'},'private/member-a');
+    await vault.retireArea('owner',{areaId:'member-a',expectedRevision:original.accessRevision},authority);
+    // Reapply must preserve the reservation and cannot silently adopt an existing path.
+    await db.query(migration('009_vault_areas.sql'));
+    for(const [id,path] of [['replacement','private/member-a'],['child','private/member-a/notes'],['parent','private']] as const){
+      await expect(area(id,'private',{kind:'member',id:'admin'},path)).rejects.toThrow('overlap');
+      expect(await grants.can('admin',resource(id),'use')).toBe(false);
+      expect(await vault.vaultAreaBinding('admin',{areaId:id,expectedRevision:original.accessRevision+1,permission:'use'})).toBeUndefined();
+      expect((await db.query('SELECT 1 FROM vault_areas WHERE id=$1',[id])).rowCount).toBe(0);
+    }
+    const unrelated=await area('member-b','private',{kind:'member',id:'admin'},'private/member-b');
+    expect(await grants.can('admin',resource('member-b'),'use')).toBe(true);
+    expect(await vault.vaultAreaBinding('admin',{areaId:'member-b',expectedRevision:unrelated.accessRevision,permission:'use'})).toMatchObject({areaId:'member-b',owner:{kind:'member',id:'admin'},relativePath:'private/member-b'});
+    expect((await db.query("SELECT status,owner_member_id FROM vault_areas WHERE id='member-a'")).rows[0]).toEqual({status:'retired',owner_member_id:'second'});
+  });
   it('retains retired identities, prevents recreation and retires a whole backing',async()=>{
     await area();const current=await configure([named('second')]);await vault.retireArea('owner',{areaId:'shared',expectedRevision:current.accessRevision},authority);
     expect(await grants.can('second',resource(),'use')).toBe(false);await expect(area()).rejects.toThrow('stale');

@@ -24,7 +24,15 @@ CREATE TABLE IF NOT EXISTS vault_areas (
 );
 -- One Vault per installation, hence one active logical taste home across organisations.
 CREATE UNIQUE INDEX IF NOT EXISTS vault_one_active_taste ON vault_areas ((kind)) WHERE kind='taste' AND status='active';
-CREATE UNIQUE INDEX IF NOT EXISTS vault_active_path ON vault_areas(backing_store_id,relative_path) WHERE status='active';
+-- Retirement does not prove that backing files were erased. Retained identities reserve
+-- their paths until a future explicit storage-reconciliation flow can release them.
+CREATE UNIQUE INDEX IF NOT EXISTS vault_reserved_path ON vault_areas(backing_store_id,relative_path);
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM vault_areas a JOIN vault_areas b ON a.backing_store_id=b.backing_store_id AND a.id<b.id
+    WHERE starts_with(a.relative_path,b.relative_path||'/') OR starts_with(b.relative_path,a.relative_path||'/')) THEN
+    RAISE EXCEPTION 'Existing Vault area paths overlap; reconcile storage before continuing';
+  END IF;
+END $$;
 CREATE OR REPLACE FUNCTION guard_vault_metadata() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE store vault_backing_stores; member users;
 BEGIN
@@ -49,7 +57,7 @@ BEGIN
   ELSIF NEW.owner_organisation_id<>NEW.organisation_id THEN RAISE EXCEPTION 'Vault owner organisation mismatch'; END IF;
   SELECT * INTO store FROM vault_backing_stores WHERE id=NEW.backing_store_id FOR UPDATE;
   IF store.id IS NULL OR store.organisation_id<>NEW.organisation_id OR store.status<>'active' THEN RAISE EXCEPTION 'Vault backing is unavailable'; END IF;
-  IF EXISTS (SELECT 1 FROM vault_areas a WHERE a.id<>NEW.id AND a.status='active' AND a.backing_store_id=NEW.backing_store_id AND
+  IF EXISTS (SELECT 1 FROM vault_areas a WHERE a.id<>NEW.id AND a.backing_store_id=NEW.backing_store_id AND
     (a.relative_path=NEW.relative_path OR starts_with(a.relative_path,NEW.relative_path||'/') OR starts_with(NEW.relative_path,a.relative_path||'/'))) THEN
     RAISE EXCEPTION 'Vault area paths overlap';
   END IF;

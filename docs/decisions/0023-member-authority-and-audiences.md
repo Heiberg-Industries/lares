@@ -202,8 +202,10 @@ delivered to a browser or undo a call that began before revocation committed.
 
 `PgVaultStore` records opaque backing identities and stable areas without resolving a
 filesystem, adopting existing files, enabling tools or changing runtime mounts. Areas have
-immutable organisation, owner, kind, backing and normalized relative path. Active paths
-cannot overlap within one backing, and the installation has one active logical taste home.
+immutable organisation, owner, kind, backing and normalized relative path. All retained area
+paths remain reserved and cannot overlap within one backing, including after retirement:
+retirement does not prove that backing files were erased. Releasing a reservation requires
+a future explicit storage-reconciliation flow. The installation has one active logical taste home.
 Retirement retains identity and advances a separate monotonic access revision. Ordinary
 provisioning cannot recreate retired identities or reset revisions.
 
