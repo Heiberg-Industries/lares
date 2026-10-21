@@ -46,28 +46,28 @@ import type { Pool } from "pg";
 import { getPool } from "@lares/agent-kit/db";
 import { gatewayComplete } from "./llm-complete.js";
 import { configuredOwnerId } from "./identity-client.js";
-import { homeTz, osloDate } from "./recurrence.js";
+import { homeTz, homeDate } from "./recurrence.js";
 
 /** Home-zone calendar date as `YYYY-MM-DD` — the rotation boundary. A separate
- *  Intl.DateTimeFormat call, would duplicate recurrence.ts's osloDate (which additionally
+ *  Intl.DateTimeFormat call, would duplicate recurrence.ts's homeDate (which additionally
  *  handles the midnight-renders-as-24 ICU quirk on its hour field — a date-string caller
  *  like this one was never exposed to that quirk, but there's no reason to compute the same
  *  value two different ways). */
-export function osloDay(now: Date = new Date()): string {
-  return osloDate(now);
+export function homeDay(now: Date = new Date()): string {
+  return homeDate(now);
 }
 
 /** The calendar day before `day` (both `YYYY-MM-DD`). Calendar arithmetic, deliberately not
  *  clock arithmetic: midday UTC is never within a day of a DST shift in any zone, so stepping
  *  back one UTC date can never land on the wrong calendar date. */
-export function osloDayBefore(day: string): string {
+export function homeDayBefore(day: string): string {
   const d = new Date(`${day}T12:00:00Z`);
   d.setUTCDate(d.getUTCDate() - 1);
   return d.toISOString().slice(0, 10);
 }
 
 export interface RotationState {
-  osloDay: string;
+  homeDay: string;
   pendingContext: string | null;
   /** The day whose hand-over summary has already been written, or null when
    *  no day has been handed over for this chat yet. */
@@ -88,7 +88,7 @@ export async function getRotationState(db: Pool, chatId: string, today: string):
     [chatId, today, configuredOwnerId()],
   );
   return {
-    osloDay: rows[0]!.local_day,
+    homeDay: rows[0]!.local_day,
     pendingContext: rows[0]!.pending_context,
     handoverDay: rows[0]!.handover_day,
   };
@@ -96,7 +96,7 @@ export async function getRotationState(db: Pool, chatId: string, today: string):
 
 /** True once the tracked anchor day is behind `today` — the rotation trigger. */
 export function dayHasRolledOver(state: RotationState, today: string): boolean {
-  return state.osloDay !== today;
+  return state.homeDay !== today;
 }
 
 /** Reads + clears the carry-forward summary left by a prior rotation, if any. Safe to call
@@ -401,7 +401,7 @@ export function telegramChatIdOfUpdate(raw: string): string | null {
 
 /** Recorded on the reset so a day-boundary retirement is distinguishable, in the runtime's own
  *  logs, from the one the owner asks for from the console. */
-const DAY_BOUNDARY_REASON = "The Oslo calendar day rolled over; the previous day's conversation is retired";
+const DAY_BOUNDARY_REASON = "The home calendar day rolled over; the previous day's conversation is retired";
 
 /** How long the whole day-boundary check may take before the update is forwarded regardless.
  *  Short on purpose: the door's standing contract is that the agent going deaf is worse than a
@@ -442,7 +442,7 @@ export async function retirePriorDaySession(
     const db = deps.db ?? getPool();
     const budget = deps.budgetMs ?? RETIREMENT_BUDGET_MS;
     const sessionId = await withBudget(
-      claimRolledOverSession(db, chatId, osloDay(deps.now)), budget, "the day-boundary read",
+      claimRolledOverSession(db, chatId, homeDay(deps.now)), budget, "the day-boundary read",
     );
     if (sessionId === null) return;
     await withBudget(

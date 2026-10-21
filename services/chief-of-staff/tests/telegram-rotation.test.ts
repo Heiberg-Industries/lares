@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { closePool } from "@lares/agent-kit/db";
 
 import {
-  osloDay,
-  osloDayBefore,
+  homeDay,
+  homeDayBefore,
   dayHasRolledOver,
   getRotationState,
   consumePendingContext,
@@ -61,37 +61,37 @@ describe("telegram-rotation", () => {
     vi.clearAllMocks();
   });
 
-  describe("osloDay", () => {
-    it("formats a UTC instant as its Europe/Oslo calendar date", () => {
-      // 2026-08-16 23:30 UTC is already 2026-08-17 01:30 in Oslo (summer, UTC+2).
-      expect(osloDay(new Date("2026-08-16T23:30:00Z"))).toBe("2026-08-17");
+  describe("homeDay", () => {
+    it("formats a UTC instant as its Europe/Berlin calendar date", () => {
+      // 2026-08-16 23:30 UTC is already 2026-08-17 01:30 in Berlin (summer, UTC+2).
+      expect(homeDay(new Date("2026-08-16T23:30:00Z"))).toBe("2026-08-17");
     });
 
     it("stays on the same day for a morning UTC instant", () => {
-      expect(osloDay(new Date("2026-08-16T06:00:00Z"))).toBe("2026-08-16");
+      expect(homeDay(new Date("2026-08-16T06:00:00Z"))).toBe("2026-08-16");
     });
   });
 
   describe("dayHasRolledOver", () => {
     it("is false when the tracked day matches today", () => {
-      expect(dayHasRolledOver({ osloDay: "2026-08-16", pendingContext: null }, "2026-08-16")).toBe(false);
+      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null }, "2026-08-16")).toBe(false);
     });
 
     it("is true once today has moved past the tracked day", () => {
-      expect(dayHasRolledOver({ osloDay: "2026-08-16", pendingContext: null }, "2026-08-17")).toBe(true);
+      expect(dayHasRolledOver({ homeDay: "2026-08-16", pendingContext: null }, "2026-08-17")).toBe(true);
     });
   });
 
   describe("getRotationState", () => {
     it("anchors a brand-new chat to today, with no pending context", async () => {
       const state = await getRotationState(pool, "chat1", "2026-08-16");
-      expect(state).toEqual({ osloDay: "2026-08-16", pendingContext: null, handoverDay: null });
+      expect(state).toEqual({ homeDay: "2026-08-16", pendingContext: null, handoverDay: null });
     });
 
     it("returns the EXISTING anchor day untouched on a later call the same day", async () => {
       await getRotationState(pool, "chat1", "2026-08-16");
       const state = await getRotationState(pool, "chat1", "2026-08-16");
-      expect(state.osloDay).toBe("2026-08-16");
+      expect(state.homeDay).toBe("2026-08-16");
     });
 
     it("does not itself advance the day even when called after a rollover", async () => {
@@ -99,7 +99,7 @@ describe("telegram-rotation", () => {
       // A later call with a NEW `today` must not silently fast-forward the anchor —
       // only completeRotation may do that, after a summary actually lands.
       const state = await getRotationState(pool, "chat1", "2026-08-17");
-      expect(state.osloDay).toBe("2026-08-16");
+      expect(state.homeDay).toBe("2026-08-16");
     });
   });
 
@@ -160,7 +160,7 @@ describe("telegram-rotation", () => {
       await getRotationState(pool, "chat1", "2026-08-16");
       await completeRotation(pool, "chat1", "2026-08-17", "note");
       const state = await getRotationState(pool, "chat1", "2026-08-17");
-      expect(state.osloDay).toBe("2026-08-17");
+      expect(state.homeDay).toBe("2026-08-17");
     });
 
     it("clears any prior pending context when the new summary is null", async () => {
@@ -307,7 +307,7 @@ describe("telegram-rotation", () => {
       process.env["TELEGRAM_PRINCIPAL_ID"] = FIXTURE_CHAT;
     });
 
-    it("records the session id and the Oslo day on a terminal reply", async () => {
+    it("records the session id and the Berlin day on a terminal reply", async () => {
       const { onMessageCompleted } = await import("../agent/channels/telegram.js");
       const posted: unknown[] = [];
 
@@ -325,7 +325,7 @@ describe("telegram-rotation", () => {
         "SELECT session_id, session_day FROM telegram_session_rotation WHERE chat_id = $1",
         [FIXTURE_CHAT],
       );
-      expect(rows).toEqual([{ session_id: "wrun_fixture_today", session_day: osloDay() }]);
+      expect(rows).toEqual([{ session_id: "wrun_fixture_today", session_day: homeDay() }]);
     });
 
     it("records nothing for a chat outside rotation tracking, and still delivers the reply", async () => {
@@ -353,18 +353,18 @@ describe("telegram-rotation", () => {
   // completed, so the first message of a new day is answered by a fresh session that has not
   // been handed anything. These cover the job that writes it the night before, and the two
   // rules that keep it from colliding with the on-completion path it falls back to.
-  describe("osloDayBefore", () => {
+  describe("homeDayBefore", () => {
     it("steps back one calendar day", () => {
-      expect(osloDayBefore("2026-08-17")).toBe("2026-08-16");
+      expect(homeDayBefore("2026-08-17")).toBe("2026-08-16");
     });
 
     it("crosses a month boundary", () => {
-      expect(osloDayBefore("2026-09-01")).toBe("2026-08-31");
+      expect(homeDayBefore("2026-09-01")).toBe("2026-08-31");
     });
   });
 
   describe("chatsThatTalkedOn", () => {
-    it("lists only the chats with exchanges on that Oslo day", async () => {
+    it("lists only the chats with exchanges on that Berlin day", async () => {
       await pool.query(
         `INSERT INTO telegram_daily_log (chat_id, role, body, created_at) VALUES
            ('5550001','user','yesterday',      TIMESTAMPTZ '2026-08-16T10:00:00Z'),
@@ -373,8 +373,8 @@ describe("telegram-rotation", () => {
       await expect(chatsThatTalkedOn(pool, "2026-08-16")).resolves.toEqual(["5550001"]);
     });
 
-    it("reads the day in Oslo time, not UTC", async () => {
-      // 23:30 UTC on the 16th is already 01:30 on the 17th in Oslo — the same boundary the
+    it("reads the day in Berlin time, not UTC", async () => {
+      // 23:30 UTC on the 16th is already 01:30 on the 17th in Berlin — the same boundary the
       // rotation itself rotates on, so the job must not disagree with it by two hours.
       await pool.query(
         `INSERT INTO telegram_daily_log (chat_id, role, body, created_at) VALUES
@@ -508,7 +508,7 @@ describe("telegram-rotation", () => {
     }
 
     it("when the job never ran, behaviour is exactly today's — the turn writes the summary", async () => {
-      const yesterday = osloDayBefore(osloDay());
+      const yesterday = homeDayBefore(homeDay());
       await getRotationState(pool, FIXTURE_CHAT, yesterday);
       await recordExchange(pool, FIXTURE_CHAT, "user", "yesterday's question");
 
@@ -521,7 +521,7 @@ describe("telegram-rotation", () => {
     });
 
     it("does not overwrite the summary the job already wrote for that day", async () => {
-      const yesterday = osloDayBefore(osloDay());
+      const yesterday = homeDayBefore(homeDay());
       await getRotationState(pool, FIXTURE_CHAT, yesterday);
       await recordExchange(pool, FIXTURE_CHAT, "user", "yesterday's question");
       await storeDayHandover(pool, FIXTURE_CHAT, yesterday, "the overnight hand-over");
@@ -537,7 +537,7 @@ describe("telegram-rotation", () => {
         "SELECT local_day, pending_context, handover_day FROM telegram_session_rotation WHERE chat_id = $1",
         [FIXTURE_CHAT],
       );
-      expect(rows[0]).toEqual({ local_day: osloDay(), pending_context: null, handover_day: yesterday });
+      expect(rows[0]).toEqual({ local_day: homeDay(), pending_context: null, handover_day: yesterday });
     });
   });
 });

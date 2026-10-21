@@ -79,7 +79,7 @@ export function dreamGate(env: NodeJS.ProcessEnv = process.env): boolean {
  * The cycle writes a dated note and touches nothing the owner sees, so moving it onto the owner clock
  * is consistency, not behaviour: at home the resolver answers the home zone and 03:00 is 03:00.
  */
-export function osloSlot(now: Date, tz: string, hour: number): string | null {
+export function homeSlot(now: Date, tz: string, hour: number): string | null {
   return slotIn(now, tz, hour);
 }
 
@@ -120,7 +120,7 @@ export function makeDreamBrain(root: string) {
  * number is RETURNED (and logged by the caller) so a run that held things back says so.
  *
  * Deps as plain arguments, no `getPool` inside, so the cap and the "sends nothing" behaviour
- * are unit-testable with fakes, the same way `osloSlot`/`makeDreamBrain` are.
+ * are unit-testable with fakes, the same way `homeSlot`/`makeDreamBrain` are.
  */
 export async function fileConfirmations(
   needsConfirm: Observation[],
@@ -283,7 +283,7 @@ export default defineSchedule({
     // The hour is a setting now, cached in-process for a few minutes too
     // (lib/schedule-hours.ts).
     const [hour] = await scheduleHours("dream");
-    const slot = osloSlot(new Date(), await ownerTz(), hour);
+    const slot = homeSlot(new Date(), await ownerTz(), hour);
     const due = slot !== null && slot !== lastSlot;
     if (!due && !forced) return;
 

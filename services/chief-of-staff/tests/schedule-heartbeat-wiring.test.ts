@@ -6,7 +6,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { basename, dirname, join } from "node:path";
 
-import { osloLocalToDate } from "../lib/recurrence.js";
+import { homeLocalToDate } from "../lib/recurrence.js";
 import { closePool } from "@lares/agent-kit/db";
 import { PROPOSALS_SCHEMA } from "./helpers/proposals-schema.js";
 
@@ -109,7 +109,7 @@ let pool: Pool;
 
 const CTX = { to: (() => {}) as never, waitUntil: (() => {}) as never, appAuth: {} as never };
 
-/** Each schedule: its env, and the Oslo wall-clock at which its pass is due (null = polling). */
+/** Each schedule: its env, and the Berlin wall-clock at which its pass is due (null = polling). */
 const CASES: Array<{ name: string; slot: string | null; env: Record<string, string> }> = [
   { name: "morning-brief",        slot: "2026-06-17 08:00", env: { TELEGRAM_PRINCIPAL_ID: "123456" } },
   { name: "evening-brief",        slot: "2026-06-17 20:00", env: { TELEGRAM_PRINCIPAL_ID: "123456" } },
@@ -212,7 +212,7 @@ async function resetDomainTables(): Promise<void> {
 async function runSchedule(c: (typeof CASES)[number], live: boolean): Promise<void> {
   if (live) process.env["EVE_SCHEDULES_LIVE"] = "1";
   for (const [k, v] of Object.entries(c.env)) process.env[k] = v;
-  if (c.slot) { vi.useFakeTimers(); vi.setSystemTime(osloLocalToDate(c.slot)); }
+  if (c.slot) { vi.useFakeTimers(); vi.setSystemTime(homeLocalToDate(c.slot)); }
   const importer = IMPORTERS[c.name];
   if (!importer) throw new Error(`no importer registered for schedule "${c.name}"`);
   const { default: schedule } = await importer();

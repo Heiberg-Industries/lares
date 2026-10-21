@@ -274,7 +274,7 @@ describe("buildMorningBrief and conflicts", () => {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 describe("listTodayCalendar", () => {
-  const NOW = new Date("2026-08-26T06:00:00Z"); // 08:00 Oslo, the morning slot
+  const NOW = new Date("2026-08-26T06:00:00Z"); // 08:00 Berlin, the morning slot
 
   /** Today's events as the fan-out would hand them over. */
   const events: CalendarEvent[] = [

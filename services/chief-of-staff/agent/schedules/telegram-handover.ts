@@ -46,7 +46,7 @@ import { slotIn } from "../../lib/recurrence.js";
 import { ownerTz } from "../../lib/owner-clock.js";
 import { emitSignal } from "../../lib/signal-emit.js";
 import { errorDetail } from "../../lib/error-detail.js";
-import { osloDay, osloDayBefore, runDayHandover } from "../../lib/telegram-rotation.js";
+import { homeDay, homeDayBefore, runDayHandover } from "../../lib/telegram-rotation.js";
 
 /** Midnight on the owner's clock — see the header for why the day boundary itself, not an hour
  *  after it. A constant, not a `schedule_settings` key: every key there is mirrored by the
@@ -76,7 +76,7 @@ export default defineSchedule({
     try {
       // The day that just ended, read on the same home-zone day boundary the rotation rotates on — never
       // "yesterday" as the container's UTC clock would compute it.
-      await runDayHandover(getPool(), osloDayBefore(osloDay()));
+      await runDayHandover(getPool(), homeDayBefore(homeDay()));
       // A night with nothing to hand over IS a completed pass: the job ran and found the chats
       // quiet. Only a failure to do the work at all leaves the row to age.
       await recordSchedulePass(getPool(), HEARTBEAT_KEY);

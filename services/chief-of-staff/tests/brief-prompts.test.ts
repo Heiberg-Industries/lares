@@ -102,7 +102,7 @@ describe("buildMorningPrompt", () => {
 });
 
 /** the brief's clock times follow the owner's actual timezone, carried through
- *  `render.tz`, rather than a Europe/Oslo literal baked into `lib/brief-content.ts`. */
+ *  `render.tz`, rather than a Europe/Berlin literal baked into `lib/brief-content.ts`. */
 describe("buildMorningPrompt honors render.tz", () => {
   const withMeeting: BriefContent = {
     meetings: [meeting({ startsAt: new Date("2026-08-25T14:00:00Z"), kind: "remote-call" })],
@@ -110,10 +110,10 @@ describe("buildMorningPrompt honors render.tz", () => {
     picks: [],
   };
 
-  it("omitting tz is byte-identical to passing Europe/Oslo (DEFAULT_HOME_TZ) explicitly", () => {
+  it("omitting tz is byte-identical to passing the home zone (Europe/Berlin in vitest.config) explicitly", () => {
     const withoutTz = buildMorningPrompt(withMeeting);
-    const withOslo = buildMorningPrompt(withMeeting, [], [], null, { tz: "Europe/Oslo" });
-    expect(withoutTz).toBe(withOslo);
+    const withHomeZone = buildMorningPrompt(withMeeting, [], [], null, { tz: "Europe/Berlin" });
+    expect(withoutTz).toBe(withHomeZone);
     expect(withoutTz).toContain("16:00"); // CEST, unchanged from before this ticket
   });
 
@@ -134,10 +134,10 @@ describe("buildEveningPrompt honors render.tz", () => {
     picks: [],
   };
 
-  it("omitting tz is byte-identical to passing Europe/Oslo (DEFAULT_HOME_TZ) explicitly", () => {
+  it("omitting tz is byte-identical to passing the home zone (Europe/Berlin in vitest.config) explicitly", () => {
     const withoutTz = buildEveningPrompt(withMeeting);
-    const withOslo = buildEveningPrompt(withMeeting, [], [], { tz: "Europe/Oslo" });
-    expect(withoutTz).toBe(withOslo);
+    const withHomeZone = buildEveningPrompt(withMeeting, [], [], { tz: "Europe/Berlin" });
+    expect(withoutTz).toBe(withHomeZone);
     expect(withoutTz).toContain("16:00");
   });
 

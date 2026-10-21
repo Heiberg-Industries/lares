@@ -35,7 +35,7 @@ describe("remind_set clock guard", () => {
         { message: "test", dueAt: "2025-06-13T16:55:00+02:00", door: "slack" },
         ctx(slackAuth),
       ),
-    ).rejects.toThrow(/is in the past.*It is now .*Europe\/Oslo.*recompute/s);
+    ).rejects.toThrow(/is in the past.*It is now .*Europe\/Berlin.*recompute/s);
   });
 
   it("rejects an unparseable dueAt before the past-check ever runs", async () => {

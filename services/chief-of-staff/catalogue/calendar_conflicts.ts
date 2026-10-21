@@ -54,7 +54,7 @@ import {
   detectCalendarConflicts,
 } from "../lib/calendar-conflicts.js";
 import { resolveConflicts } from "../lib/conflict-resolution.js";
-import { addOsloDays, osloDate } from "../lib/recurrence.js";
+import { addHomeDays, homeDate } from "../lib/recurrence.js";
 
 /** How far ahead one call may look. A month is more calendar than any real question needs, and
  *  the pass is pairwise — the ceiling is a guard on a runaway request, not a tuning knob. */
@@ -100,9 +100,9 @@ export default defineTool({
   }),
   async execute({ from, days }, ctx) {
     const now = new Date();
-    const first = from ?? osloDate(now);
+    const first = from ?? homeDate(now);
     const span = days ?? DEFAULT_DAYS;
-    const window = Array.from({ length: span }, (_, i) => addOsloDays(first, i));
+    const window = Array.from({ length: span }, (_, i) => addHomeDays(first, i));
     const last = window[window.length - 1] ?? first;
 
     // A day either side of the window, so a stay or a meeting that STRADDLES its edge is
@@ -114,8 +114,8 @@ export default defineTool({
         clientFor: (account) => googleClients().calendar(account),
       },
       {
-        timeMin: `${addOsloDays(first, -1)}T00:00:00Z`,
-        timeMax: `${addOsloDays(last, 2)}T00:00:00Z`,
+        timeMin: `${addHomeDays(first, -1)}T00:00:00Z`,
+        timeMax: `${addHomeDays(last, 2)}T00:00:00Z`,
         max: EVENTS_MAX,
       },
     );

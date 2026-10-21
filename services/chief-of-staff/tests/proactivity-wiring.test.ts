@@ -337,7 +337,7 @@ vi.mock("../lib/reminders-store.js", () => ({
 
 // ─── deadlines (escalation,) ────────────────────────────────────────────────────────
 
-/** Due tomorrow, never rung — so at 16:00 Oslo on the 17th the ladder owes rung 1. */
+/** Due tomorrow, never rung — so at 16:00 Berlin on the 17th the ladder owes rung 1. */
 const OPEN_DEADLINE = {
   id: "d1",
   owner: "owner-1",
@@ -456,8 +456,8 @@ function spyingCtx() {
 describe("a suppressed initiation costs the message, never the heartbeat", () => {
   it("evening-brief (scheduled): the telegram send is skipped, the pass still stamps", async () => {
     vi.useFakeTimers();
-    const { osloLocalToDate } = await import("../lib/recurrence.js");
-    vi.setSystemTime(osloLocalToDate("2026-06-17 20:00"));
+    const { homeLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(homeLocalToDate("2026-06-17 20:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
 
@@ -552,8 +552,8 @@ describe("a suppressed initiation costs the message, never the heartbeat", () =>
 
   it("deadlines (escalation): the rung is asked for, not sent, and the row does not move", async () => {
     vi.useFakeTimers();
-    const { osloLocalToDate } = await import("../lib/recurrence.js");
-    vi.setSystemTime(osloLocalToDate("2026-06-17 16:00")); // T-1, past 15:00 — rung 1 is due
+    const { homeLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(homeLocalToDate("2026-06-17 16:00")); // T-1, past 15:00 — rung 1 is due
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
 
@@ -577,8 +577,8 @@ describe("a suppressed initiation costs the message, never the heartbeat", () =>
 
   it("deadlines: the final stop asks with finalStop true — deferred under DND, never dropped", async () => {
     vi.useFakeTimers();
-    const { osloLocalToDate } = await import("../lib/recurrence.js");
-    vi.setSystemTime(osloLocalToDate("2026-06-19 09:00")); // the day after the due date
+    const { homeLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(homeLocalToDate("2026-06-19 09:00")); // the day after the due date
     listDeadlines.mockImplementation(async () => [{ ...OPEN_DEADLINE, rung: 2 }]);
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
@@ -618,8 +618,8 @@ describe("a `send` verdict changes nothing about what goes out", () => {
       return { verdict: "send" } as never;
     });
     vi.useFakeTimers();
-    const { osloLocalToDate } = await import("../lib/recurrence.js");
-    vi.setSystemTime(osloLocalToDate("2026-06-17 20:00"));
+    const { homeLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(homeLocalToDate("2026-06-17 20:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
 
@@ -913,8 +913,8 @@ function recordingCtx() {
 
 async function atEvening() {
   vi.useFakeTimers();
-  const { osloLocalToDate } = await import("../lib/recurrence.js");
-  vi.setSystemTime(osloLocalToDate("2026-06-17 20:00"));
+  const { homeLocalToDate } = await import("../lib/recurrence.js");
+  vi.setSystemTime(homeLocalToDate("2026-06-17 20:00"));
   process.env["EVE_SCHEDULES_LIVE"] = "1";
 }
 
@@ -1010,8 +1010,8 @@ describe("delivery routing", () => {
   it("deadlines: map [web] shows the rung's own wording, with no model call", async () => {
     gateSends();
     vi.useFakeTimers();
-    const { osloLocalToDate } = await import("../lib/recurrence.js");
-    vi.setSystemTime(osloLocalToDate("2026-06-17 16:00"));
+    const { homeLocalToDate } = await import("../lib/recurrence.js");
+    vi.setSystemTime(homeLocalToDate("2026-06-17 16:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
     routeVia("deadlines", ["web"]);

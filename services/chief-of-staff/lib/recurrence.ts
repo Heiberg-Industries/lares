@@ -24,7 +24,7 @@ import { clockParts, homeTzFromEnv, slotKey } from "@lares/agent-kit/owner-clock
  * The tz-taking helpers below are parameterised by timezone: every one of the chief of
  * staff's slot schedules used to compute its slot from this constant, so "08:00" meant 08:00
  * at home whatever continent the owner was standing on (a job that fired mid-flight). Those
- * schedules now take the owner's current zone; `osloParts`/`osloDate` stay as wrappers over
+ * schedules now take the owner's current zone; `homeParts`/`homeDate` stay as wrappers over
  * the helpers because the recurrence math
  * in this file is deliberately still on the home clock — a repeating reminder the owner set as
  * "weekdays 09:00" means 09:00 at home, and re-basing it mid-trip would silently move every
@@ -79,31 +79,31 @@ export function dowIn(d: Date, tz: string): number {
 }
 
 /** { date: "YYYY-MM-DD", hour, minute } for `d`, read in the home zone's wall-clock time. */
-export function osloParts(d: Date): { date: string; hour: number; minute: number } {
+export function homeParts(d: Date): { date: string; hour: number; minute: number } {
   return partsIn(d, homeTz());
 }
 
 /** Home-zone date-string (YYYY-MM-DD) for a given Date. */
-export function osloDate(d: Date): string {
+export function homeDate(d: Date): string {
   return dateIn(d, homeTz());
 }
 
 /** 0=Sun,1=Mon,...,6=Sat — home-zone day-of-week for a Date. */
-function osloDow(d: Date): number {
+function homeDow(d: Date): number {
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: homeTz(), weekday: "short" });
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   return names.indexOf(fmt.format(d));
 }
 
 /** Add N calendar days to a home-zone date string, return the new YYYY-MM-DD. */
-export function addOsloDays(dateStr: string, n: number): string {
+export function addHomeDays(dateStr: string, n: number): string {
   const [y, mo, day] = dateStr.split("-").map(Number);
   const d = new Date(Date.UTC(y, mo - 1, day + n));
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 /** Build a Date from a home-zone local "YYYY-MM-DD HH:MM" string. */
-export function osloLocalToDate(localIso: string): Date {
+export function homeLocalToDate(localIso: string): Date {
   const [datePart, timePart] = localIso.split(" ");
   const [year, month, day] = datePart.split("-").map(Number);
   const [hour, minute] = timePart.split(":").map(Number);
@@ -111,7 +111,7 @@ export function osloLocalToDate(localIso: string): Date {
   // Start with a rough UTC guess (assume UTC+1, i.e. CET), then refine once by checking
   // what the home zone actually says about that instant and correcting for the offset.
   const guess = Date.UTC(year, month - 1, day, hour - 1, minute);
-  const parts = osloParts(new Date(guess));
+  const parts = homeParts(new Date(guess));
   const localFromGuess = `${parts.date} ${String(parts.hour).padStart(2, "0")}:${String(parts.minute).padStart(2, "0")}`;
   const target = `${datePart} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
   const diffMinutes = minuteDiff(localFromGuess, target);
@@ -131,9 +131,9 @@ function minuteDiff(a: string, b: string): number {
 /** Next home-zone date string (>= `now`) landing on `targetDow`, always strictly after `now`'s
  *  clock time on that day (callers pre-advance `now` by one day, so "today" never matches). */
 export function nextDowDate(now: Date, targetDow: number, targetHour: number, targetMinute: number): string {
-  const todayStr = osloDate(now);
-  const nowDow = osloDow(now);
-  const parts = osloParts(now);
+  const todayStr = homeDate(now);
+  const nowDow = homeDow(now);
+  const parts = homeParts(now);
 
   let daysAhead = (targetDow - nowDow + 7) % 7;
   if (daysAhead === 0) {
@@ -141,14 +141,14 @@ export function nextDowDate(now: Date, targetDow: number, targetHour: number, ta
       daysAhead = 7;
     }
   }
-  return daysAhead === 0 ? todayStr : addOsloDays(todayStr, daysAhead);
+  return daysAhead === 0 ? todayStr : addHomeDays(todayStr, daysAhead);
 }
 
 /** Next weekday (Mon-Fri) at the given time, on or after `now`. */
 export function nextWeekdayDate(now: Date, targetHour: number, targetMinute: number): string {
-  const todayStr = osloDate(now);
-  const nowDow = osloDow(now);
-  const parts = osloParts(now);
+  const todayStr = homeDate(now);
+  const nowDow = homeDow(now);
+  const parts = homeParts(now);
 
   const isWeekday = nowDow >= 1 && nowDow <= 5;
   if (isWeekday) {
@@ -162,7 +162,7 @@ export function nextWeekdayDate(now: Date, targetHour: number, targetMinute: num
     if (candidateDow >= 1 && candidateDow <= 5) break;
     daysAhead++;
   }
-  return addOsloDays(todayStr, daysAhead);
+  return addHomeDays(todayStr, daysAhead);
 }
 
 function hhmm(h: number, m: number): string {
@@ -190,16 +190,16 @@ export function nextOccurrence(recurrence: string, from: Date): Date {
 
   if (parts[0] === "daily") {
     const [h, m] = parseHHMM(`${parts[1]}:${parts[2]}`);
-    const nextDateStr = addOsloDays(osloDate(from), 1);
-    return osloLocalToDate(`${nextDateStr} ${hhmm(h, m)}`);
+    const nextDateStr = addHomeDays(homeDate(from), 1);
+    return homeLocalToDate(`${nextDateStr} ${hhmm(h, m)}`);
   }
 
   if (parts[0] === "weekdays") {
     const [h, m] = parseHHMM(`${parts[1]}:${parts[2]}`);
-    const fromPlusOneDate = addOsloDays(osloDate(from), 1);
-    const fromPlusOne = osloLocalToDate(`${fromPlusOneDate} 00:00`);
+    const fromPlusOneDate = addHomeDays(homeDate(from), 1);
+    const fromPlusOne = homeLocalToDate(`${fromPlusOneDate} 00:00`);
     const dateStr = nextWeekdayDate(fromPlusOne, h, m);
-    return osloLocalToDate(`${dateStr} ${hhmm(h, m)}`);
+    return homeLocalToDate(`${dateStr} ${hhmm(h, m)}`);
   }
 
   if (parts[0] === "weekly") {
@@ -209,10 +209,10 @@ export function nextOccurrence(recurrence: string, from: Date): Date {
     if (targetDow === undefined) {
       throw new Error(`Unknown day-of-week abbreviation: "${dowStr}"`);
     }
-    const fromPlusOneDate = addOsloDays(osloDate(from), 1);
-    const fromPlusOne = osloLocalToDate(`${fromPlusOneDate} 00:00`);
+    const fromPlusOneDate = addHomeDays(homeDate(from), 1);
+    const fromPlusOne = homeLocalToDate(`${fromPlusOneDate} 00:00`);
     const dateStr = nextDowDate(fromPlusOne, targetDow, h, m);
-    return osloLocalToDate(`${dateStr} ${hhmm(h, m)}`);
+    return homeLocalToDate(`${dateStr} ${hhmm(h, m)}`);
   }
 
   throw new Error(`Unsupported recurrence format: "${recurrence}"`);

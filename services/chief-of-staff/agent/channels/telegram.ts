@@ -49,7 +49,7 @@ import {
   consumePendingContext,
   dayHasRolledOver,
   getRotationState,
-  osloDay,
+  homeDay,
   pruneOldExchanges,
   recordExchange,
   recordServingSession,
@@ -608,7 +608,7 @@ export async function onMessageCompleted(
 
       try {
         const pool = getPool();
-        const today = osloDay();
+        const today = homeDay();
         await recordExchange(pool, chatId, "assistant", data.message ?? "");
         const state = await getRotationState(pool, chatId, today);
 
@@ -633,11 +633,11 @@ export async function onMessageCompleted(
         // there is nothing left to produce: only the anchor day moves, so the boundary is not
         // detected again. Re-summarizing here would spend a second model call on the same day
         // and leave a second, differently-worded summary waiting for the next message.
-        if (state.handoverDay === state.osloDay) {
+        if (state.handoverDay === state.homeDay) {
           await advanceRotationDay(pool, chatId, today);
         } else {
           const summary = await summarizeRecentExchanges(pool, chatId);
-          await completeRotation(pool, chatId, today, summary, state.osloDay);
+          await completeRotation(pool, chatId, today, summary, state.homeDay);
         }
         await pruneOldExchanges(pool);
       } catch (err) {

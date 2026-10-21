@@ -48,7 +48,7 @@ const SOURCES = ["gmail", "calendar", "slack"] as const;
 type Source = (typeof SOURCES)[number];
 
 /** `YYYY-MM-DD HH:mm` on the home clock — the one clock every evidence sentence quotes. */
-function osloStamp(at: Date): string {
+function homeStamp(at: Date): string {
   const parts = new Intl.DateTimeFormat("en-GB", {
     timeZone: homeTzFromEnv(),
     year: "numeric",
@@ -115,14 +115,14 @@ export async function resolveElsewhere(
 
   const candidates: Candidate[] = [];
   if (gmail.ok && gmail.value) {
-    candidates.push({ source: "gmail", via: "gmail", at: gmail.value, evidence: `you emailed them ${osloStamp(gmail.value)}` });
+    candidates.push({ source: "gmail", via: "gmail", at: gmail.value, evidence: `you emailed them ${homeStamp(gmail.value)}` });
   }
   if (calendar.ok && calendar.value) {
     candidates.push({
       source: "calendar",
       via: "calendar",
       at: calendar.value.at,
-      evidence: `you met ${osloStamp(calendar.value.at)}: ${calendar.value.summary}`,
+      evidence: `you met ${homeStamp(calendar.value.at)}: ${calendar.value.summary}`,
     });
   }
   if (slack.ok && slack.value) {
@@ -130,7 +130,7 @@ export async function resolveElsewhere(
       source: "slack",
       via: "slack",
       at: slack.value,
-      evidence: `you wrote to them on Slack ${osloStamp(slack.value)}`,
+      evidence: `you wrote to them on Slack ${homeStamp(slack.value)}`,
     });
   }
 

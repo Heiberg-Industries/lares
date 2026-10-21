@@ -9,7 +9,7 @@
 import { describe, it, expect } from "vitest";
 
 import { DESTINATIONS, BODY_CHARS_FOR_CLASSIFY, type DigestDecision } from "../lib/digest/types.js";
-import { dueScheduledSlot, osloParts, parseSlotHour, parsePositiveInt } from "../lib/digest/schedule.js";
+import { dueScheduledSlot, homeParts, parseSlotHour, parsePositiveInt } from "../lib/digest/schedule.js";
 import { slugify, buildNote } from "../lib/digest/filer.js";
 import { parseFrontmatter, stripFrontmatter } from "../lib/digest/extract.js";
 import { renderDigest } from "../lib/digest/format.js";
@@ -62,8 +62,8 @@ describe("digest slots — 09:00 and 17:00 on the owner's clock", () => {
     expect(dueScheduledSlot(new Date("2026-08-21T05:00:00Z"), BERLIN, [7])).toBe("2026-08-21T7");
   });
 
-  it("osloParts renders the Oslo wall clock, not UTC", () => {
-    expect(osloParts(new Date("2026-08-21T07:00:00Z"))).toEqual({ date: "2026-08-21", hour: 9, minute: 0 });
+  it("homeParts renders the Berlin wall clock, not UTC", () => {
+    expect(homeParts(new Date("2026-08-21T07:00:00Z"))).toEqual({ date: "2026-08-21", hour: 9, minute: 0 });
   });
 
   it("parseSlotHour falls back AND reports what it rejected — a typo must not silently disable a slot", () => {

@@ -47,7 +47,7 @@ describe("resolveElsewhere", () => {
 
   it("(b) a Gmail message sent to them AFTER `since` resolves via gmail, with the date in the evidence", async () => {
     const o = obligation({ lastMessageAt: new Date("2026-08-10T09:00:00Z") });
-    const sentAt = new Date("2026-08-15T14:02:00Z"); // 16:02 Oslo (CEST, UTC+2 in August)
+    const sentAt = new Date("2026-08-15T14:02:00Z"); // 16:02 Berlin (CEST, UTC+2 in August)
     const d = deps({
       gmailSentAfter: async (_addrs, since) => (sentAt > since ? sentAt : null),
     });
@@ -76,7 +76,7 @@ describe("resolveElsewhere", () => {
 
   it("(d) a calendar event with an attendee match that ENDED resolves via calendar", async () => {
     const o = obligation({ lastMessageAt: new Date("2026-08-10T09:00:00Z") });
-    const meeting = { at: new Date("2026-08-13T11:00:00Z"), summary: "Test Owner and Grete Moe" }; // 13:00 Oslo
+    const meeting = { at: new Date("2026-08-13T11:00:00Z"), summary: "Test Owner and Grete Moe" }; // 13:00 Berlin
     const d = deps({
       calendarEndedWith: async (_addrs, since, now) => (meeting.at > since && meeting.at <= now ? meeting : null),
     });

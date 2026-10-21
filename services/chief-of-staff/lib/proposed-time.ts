@@ -23,7 +23,7 @@
  * thread — that's deliberate, not something to normalise (the owner's mail always has both).
  * Every pattern family below has an EN and a NO branch.
  */
-import { osloDate, addOsloDays, osloLocalToDate } from "./recurrence.js";
+import { homeDate, addHomeDays, homeLocalToDate } from "./recurrence.js";
 import { homeTzFromEnv } from "@lares/agent-kit/owner-clock";
 
 export interface ProposedWindow {
@@ -48,9 +48,9 @@ function pad(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-/** Local copy of recurrence.ts's private `osloDow` — one three-line helper isn't worth
+/** Local copy of recurrence.ts's private `homeDow` — one three-line helper isn't worth
  *  exporting a shared import for (same call as email-triage.ts's `addressOf`). */
-function osloDow(d: Date): number {
+function homeDow(d: Date): number {
   const fmt = new Intl.DateTimeFormat("en-US", { timeZone: homeTzFromEnv(), weekday: "short" });
   const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
   return names.indexOf(fmt.format(d));
@@ -67,8 +67,8 @@ const EN_MONTHS = [
  *  the draft itself (the draft's own language matching is voice.ts's job, not this file's). */
 function labelForDate(dateStr: string): string {
   const [, m, d] = dateStr.split("-").map(Number);
-  const noon = osloLocalToDate(`${dateStr} 12:00`); // noon sidesteps any DST-boundary edge case
-  return `${EN_WEEKDAYS[osloDow(noon)]} ${d} ${EN_MONTHS[m! - 1]}`;
+  const noon = homeLocalToDate(`${dateStr} 12:00`); // noon sidesteps any DST-boundary edge case
+  return `${EN_WEEKDAYS[homeDow(noon)]} ${d} ${EN_MONTHS[m! - 1]}`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -101,7 +101,7 @@ const DAY_MONTH_RE = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\.?\\s+(${MONTH_A
 const MONTH_DAY_RE = new RegExp(`\\b(${MONTH_ALT})\\.?\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,?\\s+(\\d{4}))?\\b`, "i");
 
 /** Actual day count for `month` (1-12) in `year`, leap years included — the day-0-of-next-
- *  month trick, via the same UTC-anchored arithmetic recurrence.ts's addOsloDays already uses
+ *  month trick, via the same UTC-anchored arithmetic recurrence.ts's addHomeDays already uses
  *  elsewhere in this file, so leap-year handling never needs its own separate case. */
 function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
@@ -132,7 +132,7 @@ function daysInMonth(year: number, month: number): number {
  * it silently normalize to a different calendar date the way JS `Date` overflow would.
  */
 function resolveMonthDay(now: Date, month: number, day: number, explicitYear: number | null): string | null {
-  const todayStr = osloDate(now);
+  const todayStr = homeDate(now);
   const currentYear = Number(todayStr.slice(0, 4));
   const yearIsPlausible = explicitYear !== null && explicitYear >= currentYear - 1 && explicitYear <= currentYear + 10;
 
@@ -206,13 +206,13 @@ function findRelativeDay(text: string, now: Date): DayMatch | null {
 
   const tomorrow = TOMORROW_RE.exec(text);
   if (tomorrow) {
-    const date = addOsloDays(osloDate(now), 1);
+    const date = addHomeDays(homeDate(now), 1);
     candidates.push({ index: tomorrow.index, date, label: "tomorrow" });
   }
 
   const overmorgen = OVERMORGEN_RE.exec(text);
   if (overmorgen) {
-    const date = addOsloDays(osloDate(now), 2);
+    const date = addHomeDays(homeDate(now), 2);
     candidates.push({ index: overmorgen.index, date, label: "the day after tomorrow" });
   }
 
@@ -241,7 +241,7 @@ function findWeekdayName(text: string, now: Date): DayMatch | null {
   const m = WEEKDAY_RE.exec(text);
   if (!m) return null;
   const targetDow = WEEKDAY_WORDS[m[1]!.toLowerCase()]!;
-  const nowDow = osloDow(now);
+  const nowDow = homeDow(now);
 
   // Always the NEXT such weekday, strictly after today — including when `now` itself IS that
   // weekday, in which case this resolves 7 days out, not today. Rule, not an accident: a bare
@@ -251,7 +251,7 @@ function findWeekdayName(text: string, now: Date): DayMatch | null {
   // window that's frequently wrong (mail sent Tuesday afternoon proposing "Tuesday" almost
   // never means "in the next few hours").
   const daysAhead = ((targetDow - nowDow + 7) % 7) || 7;
-  const date = addOsloDays(osloDate(now), daysAhead);
+  const date = addHomeDays(homeDate(now), daysAhead);
   return { index: m.index, date, label: labelForDate(date) };
 }
 
@@ -306,7 +306,7 @@ export function detectProposedWindow(text: string, now: Date): ProposedWindow | 
   const time = findTime(text);
 
   if (time) {
-    const start = osloLocalToDate(`${day.date} ${pad(time.hour)}:${pad(time.minute)}`);
+    const start = homeLocalToDate(`${day.date} ${pad(time.hour)}:${pad(time.minute)}`);
     // No message ever states a meeting length, so this assumes a 1-hour meeting starting at
     // the stated time. Getting that wrong just narrows the freeBusy check to a slightly wrong
     // slot on the right day — a false positive/negative on the busy check, not a wrong draft
@@ -319,7 +319,7 @@ export function detectProposedWindow(text: string, now: Date): ProposedWindow | 
     };
   }
 
-  const dayStart = osloLocalToDate(`${day.date} 00:00`);
-  const dayEnd = osloLocalToDate(`${addOsloDays(day.date, 1)} 00:00`);
+  const dayStart = homeLocalToDate(`${day.date} 00:00`);
+  const dayEnd = homeLocalToDate(`${addHomeDays(day.date, 1)} 00:00`);
   return { timeMin: dayStart.toISOString(), timeMax: dayEnd.toISOString(), label: day.label };
 }

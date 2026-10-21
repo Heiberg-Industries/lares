@@ -34,7 +34,7 @@ vi.mock("@lares/agent-kit/schedule-heartbeat", () => ({
 vi.mock("../lib/definition.js", () => ({
   thisAgent: async () => ({ loaded: { definition: { name: "fixture-agent" } } }),
 }));
-vi.mock("../lib/owner-clock.js", () => ({ ownerTz: async () => "Europe/Oslo" }));
+vi.mock("../lib/owner-clock.js", () => ({ ownerTz: async () => "Europe/Berlin" }));
 vi.mock("../lib/signal-emit.js", () => ({
   emitSignal: async (event: string) => { signals.raised.push(event); },
 }));
@@ -90,7 +90,7 @@ describe("the nightly Telegram hand-over schedule", () => {
   });
 
   it("stamps its tick every minute, but only works on the slot", async () => {
-    // 00:30 Oslo — past the hour, so not the slot.
+    // 00:30 Berlin — past the hour, so not the slot.
     vi.setSystemTime(new Date("2026-08-17T22:30:00Z"));
 
     await schedule.run();
@@ -101,7 +101,7 @@ describe("the nightly Telegram hand-over schedule", () => {
   });
 
   it("on the slot, hands over the day that just ENDED, once, and stamps the pass", async () => {
-    // 2026-08-18 00:00 Oslo: the day being closed is the 17th.
+    // 2026-08-18 00:00 Berlin: the day being closed is the 17th.
     vi.setSystemTime(new Date("2026-08-17T22:00:00Z"));
 
     await schedule.run();

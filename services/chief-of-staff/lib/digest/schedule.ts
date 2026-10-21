@@ -3,7 +3,7 @@ import { clockParts, homeTzFromEnv } from "@lares/agent-kit/owner-clock";
 /** { date, hour, minute } for `d` read in `tz`. Delegates to the kit's `clockParts` so
  *  this file, the proactivity gate's quiet hours and every other slot in the fleet read ONE
  *  formatter; the local `Intl.DateTimeFormat` this used to carry was the fourth copy. */
-export function osloParts(d: Date, tz: string = homeTzFromEnv()): { date: string; hour: number; minute: number } {
+export function homeParts(d: Date, tz: string = homeTzFromEnv()): { date: string; hour: number; minute: number } {
   const { date, hour, minute } = clockParts(d, tz);
   return { date, hour, minute };
 }
@@ -24,7 +24,7 @@ export function osloParts(d: Date, tz: string = homeTzFromEnv()): { date: string
  * that read can never come back empty.
  */
 export function dueScheduledSlot(now: Date, tz: string, hours: number[]): string | null {
-  const { date, hour, minute } = osloParts(now, tz);
+  const { date, hour, minute } = homeParts(now, tz);
   if (minute === 0 && hours.includes(hour)) return `${date}T${hour}`;
   return null;
 }

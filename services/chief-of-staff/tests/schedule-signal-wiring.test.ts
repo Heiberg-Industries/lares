@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import { osloLocalToDate } from "../lib/recurrence.js";
+import { homeLocalToDate } from "../lib/recurrence.js";
 import { closePool } from "@lares/agent-kit/db";
 
 /**
@@ -85,9 +85,9 @@ describe("schedule error paths reach the signal spine (Fix 3)", () => {
     );
   }, 20_000);
 
-  it("evening-brief: a failing obligations-table query at the 20:00 Oslo slot is caught and signaled", async () => {
+  it("evening-brief: a failing obligations-table query at the 20:00 Berlin slot is caught and signaled", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(osloLocalToDate("2026-06-17 20:00")); // 2026-06-17 is a Wednesday
+    vi.setSystemTime(homeLocalToDate("2026-06-17 20:00")); // 2026-06-17 is a Wednesday
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["DATABASE_URL"] = UNREACHABLE_DB;
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
@@ -102,9 +102,9 @@ describe("schedule error paths reach the signal spine (Fix 3)", () => {
     );
   }, 20_000);
 
-  it("morning-brief: a failing obligations query at the 08:00 Oslo slot is caught and signaled", async () => {
+  it("morning-brief: a failing obligations query at the 08:00 Berlin slot is caught and signaled", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(osloLocalToDate("2026-06-17 08:00"));
+    vi.setSystemTime(homeLocalToDate("2026-06-17 08:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["DATABASE_URL"] = UNREACHABLE_DB;
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
@@ -135,9 +135,9 @@ describe("schedule error paths reach the signal spine (Fix 3)", () => {
     );
   }, 20_000);
 
-  it("weekly-summary: a failing activePreferences query at the Sunday 09:00 Oslo slot is caught and signaled", async () => {
+  it("weekly-summary: a failing activePreferences query at the Sunday 09:00 Berlin slot is caught and signaled", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(osloLocalToDate("2026-06-21 09:00")); // 2026-06-21 is a Sunday
+    vi.setSystemTime(homeLocalToDate("2026-06-21 09:00")); // 2026-06-21 is a Sunday
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["DATABASE_URL"] = UNREACHABLE_DB;
     process.env["TELEGRAM_PRINCIPAL_ID"] = "123456";
@@ -152,9 +152,9 @@ describe("schedule error paths reach the signal spine (Fix 3)", () => {
     );
   }, 20_000);
 
-  it("crm-routing: a failing ensureRouteTables query at a route-hour Oslo slot is caught and signaled", async () => {
+  it("crm-routing: a failing ensureRouteTables query at a route-hour Berlin slot is caught and signaled", async () => {
     vi.useFakeTimers();
-    vi.setSystemTime(osloLocalToDate("2026-06-17 09:00"));
+    vi.setSystemTime(homeLocalToDate("2026-06-17 09:00"));
     process.env["EVE_SCHEDULES_LIVE"] = "1";
     process.env["DATABASE_URL"] = UNREACHABLE_DB;
     process.env["SLACK_ALLOWED_USER_IDS"] = "U123456";

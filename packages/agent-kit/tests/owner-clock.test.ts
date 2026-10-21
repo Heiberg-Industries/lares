@@ -28,7 +28,7 @@ import {
  * trustworthy — the priority order, and the fact that a SIGNAL WITH NO AGE is not a signal.
  */
 
-const OSLO = "Europe/Oslo";
+const HOME_TZ = "Europe/Berlin";
 const NY = "America/New_York";
 
 const trip = (over: Partial<OwnerClockTrip> = {}): OwnerClockTrip => ({
@@ -42,9 +42,9 @@ const trip = (over: Partial<OwnerClockTrip> = {}): OwnerClockTrip => ({
 
 describe("clockParts — wall-clock parts in whatever zone the owner is standing in", () => {
   it("reads the date, time and weekday off the given zone, not the process's", () => {
-    // 06:00Z on 2026-09-08 is 08:00 in Oslo (CEST) and 02:00 in New York (EDT) — same instant,
+    // 06:00Z on 2026-09-08 is 08:00 in Berlin (CEST) and 02:00 in New York (EDT) — same instant,
     // two different wall clocks, and one of them is a different hour of the same day.
-    expect(clockParts(new Date("2026-09-08T06:00:00Z"), OSLO)).toEqual({
+    expect(clockParts(new Date("2026-09-08T06:00:00Z"), HOME_TZ)).toEqual({
       date: "2026-09-08", hour: 8, minute: 0, hhmm: "08:00", weekday: "Tuesday",
     });
     expect(clockParts(new Date("2026-09-08T06:00:00Z"), NY)).toEqual({
@@ -61,15 +61,15 @@ describe("clockParts — wall-clock parts in whatever zone the owner is standing
 
 describe("slotKey — the fleet's slot shape, on the owner's clock", () => {
   it("fires on minute 0 of the named hour and returns <date>T<hour>", () => {
-    expect(slotKey(new Date("2026-09-08T06:00:00Z"), OSLO, 8)).toBe("2026-09-08T8");
+    expect(slotKey(new Date("2026-09-08T06:00:00Z"), HOME_TZ, 8)).toBe("2026-09-08T8");
   });
 
   it("is null one minute later — a slot is a minute, not an hour", () => {
-    expect(slotKey(new Date("2026-09-08T06:01:00Z"), OSLO, 8)).toBeNull();
+    expect(slotKey(new Date("2026-09-08T06:01:00Z"), HOME_TZ, 8)).toBeNull();
   });
 
   it("is null in the wrong hour", () => {
-    expect(slotKey(new Date("2026-09-08T07:00:00Z"), OSLO, 8)).toBeNull();
+    expect(slotKey(new Date("2026-09-08T07:00:00Z"), HOME_TZ, 8)).toBeNull();
   });
 
   it("moves with the owner: the same 08:00 slot fires six hours later when the owner is in New York", () => {
@@ -85,7 +85,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
     const out = resolveOwnerClockFromSources(now, {
       trips: [trip()],
       slackProfile: { tz: "Europe/Berlin", observedAt: new Date("2026-09-11T08:00:00Z") },
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
     expect(out.tz).toBe(NY);
     expect(out.source).toBe("trip");
@@ -96,7 +96,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
     const out = resolveOwnerClockFromSources(now, {
       trips: [],
       slackProfile: { tz: "Europe/Berlin", observedAt: new Date("2026-09-11T08:00:00Z") },
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
     expect(out).toEqual({ tz: "Europe/Berlin", source: "slack-profile", detail: expect.stringContaining("1h") });
   });
@@ -105,9 +105,9 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
     const out = resolveOwnerClockFromSources(now, {
       trips: [],
       slackProfile: { tz: "Europe/Berlin", observedAt: new Date("2026-09-10T08:00:00Z") },
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
-    expect(out.tz).toBe(OSLO);
+    expect(out.tz).toBe(HOME_TZ);
     expect(out.source).toBe("home");
   });
 
@@ -115,19 +115,19 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
     const out = resolveOwnerClockFromSources(now, {
       trips: [],
       slackProfile: { tz: "Europe/Berlin", observedAt: new Date("2026-09-10T10:00:00Z") },
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
     expect(out.source).toBe("slack-profile");
   });
 
   it("nothing at all → the configured home, said out loud", () => {
-    expect(resolveOwnerClockFromSources(now, { trips: [], homeTz: OSLO })).toEqual({
-      tz: OSLO, source: "home", detail: expect.stringContaining("no trip"),
+    expect(resolveOwnerClockFromSources(now, { trips: [], homeTz: HOME_TZ })).toEqual({
+      tz: HOME_TZ, source: "home", detail: expect.stringContaining("no trip"),
     });
   });
 
   it("the trip window is inclusive at BOTH ends, on the TRIP's clock", () => {
-    const sources = { trips: [trip()], homeTz: OSLO };
+    const sources = { trips: [trip()], homeTz: HOME_TZ };
     // 03:00Z on the 10th is still 23:00 on the 9th in New York — the trip has not started.
     expect(resolveOwnerClockFromSources(new Date("2026-09-10T03:00:00Z"), sources).source).toBe("home");
     // 05:00Z on the 10th is 01:00 on the 10th in New York — day one, inclusive.
@@ -141,7 +141,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
   it("skips a trip with no usable timezone rather than crashing every schedule with it", () => {
     const out = resolveOwnerClockFromSources(now, {
       trips: [trip({ timezone: "Mars/Olympus" }), trip({ slug: "berlin", timezone: "Europe/Berlin" })],
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
     expect(out.tz).toBe("Europe/Berlin");
   });
@@ -150,7 +150,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
     const out = resolveOwnerClockFromSources(now, {
       trips: [],
       slackProfile: { tz: "", observedAt: now },
-      homeTz: OSLO,
+      homeTz: HOME_TZ,
     });
     expect(out.source).toBe("home");
   });
@@ -161,7 +161,7 @@ describe("resolveOwnerClockFromSources — the priority order IS the contract", 
 
   it("homeTzFromEnv: the installation's zone when it names a real one, UTC otherwise", () => {
     expect(homeTzFromEnv({ OWNER_HOME_TZ: "America/New_York" })).toBe("America/New_York");
-    expect(homeTzFromEnv({ OWNER_HOME_TZ: " Europe/Oslo " })).toBe("Europe/Oslo");
+    expect(homeTzFromEnv({ OWNER_HOME_TZ: " Europe/Berlin " })).toBe("Europe/Berlin");
     expect(homeTzFromEnv({})).toBe("UTC");
     expect(homeTzFromEnv({ OWNER_HOME_TZ: "" })).toBe("UTC");
     expect(homeTzFromEnv({ OWNER_HOME_TZ: "Nowhere/Nothing" })).toBe("UTC");
@@ -239,7 +239,7 @@ describe("the Slack-profile signal row, against a real Postgres", () => {
 
   it("resolveOwnerClock reads the seeded row and answers slack-profile", async () => {
     await recordSlackProfileSignal(pool, "owner-1", "Europe/Berlin");
-    const out = await resolveOwnerClock({ now: new Date(), db: pool, owner: "owner-1", homeTz: OSLO });
+    const out = await resolveOwnerClock({ now: new Date(), db: pool, owner: "owner-1", homeTz: HOME_TZ });
     expect(out).toMatchObject({ tz: "Europe/Berlin", source: "slack-profile" });
   });
 
@@ -249,19 +249,19 @@ describe("the Slack-profile signal row, against a real Postgres", () => {
       trips: [{ slug: "nyc-sep", start: "2026-09-10", end: "2026-09-12", timezone: NY }],
     }));
     const out = await resolveOwnerClock({
-      now: new Date("2026-09-11T09:00:00Z"), db: pool, tripsDir: dir, owner: "owner-1", homeTz: OSLO,
+      now: new Date("2026-09-11T09:00:00Z"), db: pool, tripsDir: dir, owner: "owner-1", homeTz: HOME_TZ,
     });
     expect(out).toMatchObject({ tz: NY, source: "trip" });
   });
 
   it("no row for this owner → home", async () => {
-    const out = await resolveOwnerClock({ now: new Date(), db: pool, owner: "someone-else", homeTz: OSLO });
+    const out = await resolveOwnerClock({ now: new Date(), db: pool, owner: "someone-else", homeTz: HOME_TZ });
     expect(out.source).toBe("home");
   });
 
   it("a dead database is home, not a throw — a clock failure must never stop a schedule", async () => {
     const dead = { query: async () => { throw new Error("connection refused"); } };
-    const out = await resolveOwnerClock({ now: new Date(), db: dead as never, owner: "owner-1", homeTz: OSLO });
-    expect(out).toMatchObject({ tz: OSLO, source: "home" });
+    const out = await resolveOwnerClock({ now: new Date(), db: dead as never, owner: "owner-1", homeTz: HOME_TZ });
+    expect(out).toMatchObject({ tz: HOME_TZ, source: "home" });
   });
 });

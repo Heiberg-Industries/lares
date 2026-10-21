@@ -34,7 +34,7 @@ const DAY = "2026-08-26";
 const DAYS = [DAY];
 
 let seq = 0;
-/** A timed event on {@link DAY}, Oslo wall clock. `+02:00` is CEST, which is what late August
+/** A timed event on {@link DAY}, Berlin wall clock. `+02:00` is CEST, which is what late August
  *  actually is — the offset is spelled out rather than guessed so the assertions below are
  *  about the rule, never about a DST surprise. */
 function timed(overrides: Partial<CalendarEvent> & { from: string; to: string }): CalendarEvent {
@@ -292,7 +292,7 @@ describe("timezone traps", () => {
   });
 
   it("compares WALL CLOCKS, not zone names — two names for one clock are not a trap", () => {
-    // Stockholm and Oslo read the same clock. A string comparison would have made every early
+    // Stockholm and Berlin read the same clock. A string comparison would have made every early
     // morning on a Swedish-tagged invitation a finding.
     expect(kinds([
       timed({ from: "06:00", to: "07:00", startTimeZone: "Europe/Stockholm" }),
@@ -335,11 +335,11 @@ describe("timezoneOn", () => {
 
   it("returns home off the trip, and home is the installation zone unless told otherwise", () => {
     expect(timezoneOn("2026-09-01", { days: DAYS, trips: NYC_TRIP })).toBe(defaultHomeTimezone());
-    expect(timezoneOn("2026-09-01", { days: DAYS })).toBe("Europe/Oslo");
+    expect(timezoneOn("2026-09-01", { days: DAYS })).toBe("Europe/Berlin");
   });
 
   it("ignores a trip with no zone rather than reading it as an empty one", () => {
-    expect(timezoneOn(DAY, { days: DAYS, trips: [{ start: DAY, end: DAY, timezone: "" }] })).toBe("Europe/Oslo");
+    expect(timezoneOn(DAY, { days: DAYS, trips: [{ start: DAY, end: DAY, timezone: "" }] })).toBe("Europe/Berlin");
   });
 });
 

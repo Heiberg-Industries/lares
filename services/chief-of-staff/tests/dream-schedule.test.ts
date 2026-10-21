@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { dreamGate, osloSlot, makeDreamBrain } from "../agent/schedules/dream.js";
+import { dreamGate, homeSlot, makeDreamBrain } from "../agent/schedules/dream.js";
 import { listNotes, StoreUnhealthyError, NotePathEscapesStoreError } from "@lares/agent-kit/notes-store";
 import { selectForConfirmation, DREAM_CONFIRM_MAX_PER_RUN } from "../lib/dream/surface.js";
 import type { Observation } from "../lib/dream/reflect.js";
@@ -41,7 +41,7 @@ describe("dreamGate — fails closed", () => {
  * live tick asks `scheduleHours` before computing the slot.
  */
 describe("dream.ts reads its hour from the setting", () => {
-  it("carries no dreamHour/DREAM_HOUR, and asks scheduleHours before osloSlot", async () => {
+  it("carries no dreamHour/DREAM_HOUR, and asks scheduleHours before homeSlot", async () => {
     const src = await (await import("node:fs/promises")).readFile(
       new URL("../agent/schedules/dream.ts", import.meta.url),
       "utf8",
@@ -49,31 +49,31 @@ describe("dream.ts reads its hour from the setting", () => {
     expect(src).not.toContain("dreamHour");
     expect(src).not.toContain("DREAM_HOUR");
     expect(src.indexOf('scheduleHours("dream")')).toBeGreaterThan(-1);
-    expect(src.indexOf('scheduleHours("dream")')).toBeLessThan(src.lastIndexOf("osloSlot("));
+    expect(src.indexOf('scheduleHours("dream")')).toBeLessThan(src.lastIndexOf("homeSlot("));
   });
 });
 
-describe("osloSlot — exact-minute gate on the owner's wall clock", () => {
+describe("homeSlot — exact-minute gate on the owner's wall clock", () => {
   // The timezone is an ARGUMENT (the owner clock, resolved per tick).
   const BERLIN = "Europe/Berlin";
 
   it("matches 03:00 Berlin (01:00 UTC in August)", () => {
-    expect(osloSlot(new Date("2026-08-19T01:00:00Z"), BERLIN, 3)).toBe("2026-08-19T3");
+    expect(homeSlot(new Date("2026-08-19T01:00:00Z"), BERLIN, 3)).toBe("2026-08-19T3");
   });
 
   it("null one minute either side", () => {
-    expect(osloSlot(new Date("2026-08-19T00:59:00Z"), BERLIN, 3)).toBeNull();
-    expect(osloSlot(new Date("2026-08-19T01:01:00Z"), BERLIN, 3)).toBeNull();
+    expect(homeSlot(new Date("2026-08-19T00:59:00Z"), BERLIN, 3)).toBeNull();
+    expect(homeSlot(new Date("2026-08-19T01:01:00Z"), BERLIN, 3)).toBeNull();
   });
 
   it("null at the right minute of the wrong hour", () => {
-    expect(osloSlot(new Date("2026-08-19T02:00:00Z"), BERLIN, 3)).toBeNull();
+    expect(homeSlot(new Date("2026-08-19T02:00:00Z"), BERLIN, 3)).toBeNull();
   });
 
   it("follows the OWNER's clock, not Berlin's — the same instant is 03:00 in a different zone", () => {
     // 2026-08-19T18:00:00Z is 03:00 the next morning in Tokyo (UTC+9) and 20:00 in Berlin.
-    expect(osloSlot(new Date("2026-08-19T18:00:00Z"), "Asia/Tokyo", 3)).toBe("2026-08-20T3");
-    expect(osloSlot(new Date("2026-08-19T18:00:00Z"), BERLIN, 3)).toBeNull();
+    expect(homeSlot(new Date("2026-08-19T18:00:00Z"), "Asia/Tokyo", 3)).toBe("2026-08-20T3");
+    expect(homeSlot(new Date("2026-08-19T18:00:00Z"), BERLIN, 3)).toBeNull();
   });
 });
 

@@ -28,7 +28,7 @@ import { dirname, join } from "node:path";
 import { Pool } from "pg";
 import { quiet } from "./helpers/quiet-pool.js";
 
-import { osloLocalToDate } from "../lib/recurrence.js";
+import { homeLocalToDate } from "../lib/recurrence.js";
 import {
   makeConversationRecord,
   pruneForOwner,
@@ -206,7 +206,7 @@ describe("the live-installation case: a definition written before this schedule 
     process.env["DATABASE_URL"] = container.getConnectionUri();
     process.env["AGENT_OWNER_USER_ID"] = "fixture-owner";
     vi.useFakeTimers();
-    vi.setSystemTime(osloLocalToDate("2026-06-17 04:00"));
+    vi.setSystemTime(homeLocalToDate("2026-06-17 04:00"));
     try {
       const { default: schedule } = await import("../agent/schedules/conversation-prune.js");
       await schedule.run!({} as never);
