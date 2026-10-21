@@ -56,6 +56,7 @@ import digest_run from "./digest_run.js";
 import echo_note from "./echo_note.js";
 import facts_list from "./facts_list.js";
 import forget from "./forget.js";
+import gmail_accounts from "./gmail_accounts.js";
 import gmail_draft from "./gmail_draft.js";
 import gmail_draft_recipients from "./gmail_draft_recipients.js";
 import gmail_read from "./gmail_read.js";
@@ -130,6 +131,7 @@ export const CATALOGUE: Catalogue = {
   echo_note: { capability: "echo", tool: echo_note },
   facts_list: { capability: "vault", tool: facts_list },
   forget: { capability: "vault", tool: forget },
+  gmail_accounts: { capability: "gmail", tool: gmail_accounts },
   gmail_draft: { capability: "gmail", tool: gmail_draft },
   gmail_draft_recipients: { capability: "gmail", tool: gmail_draft_recipients },
   gmail_read: { capability: "gmail", tool: gmail_read },
