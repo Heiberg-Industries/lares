@@ -1728,7 +1728,7 @@ run_finish() {
     say "the installer is finished. No agent is running and no conversation is ready yet."
     say "Open this to create your first agent:"
     say "https://$domain/agents/new"
-    say 'Backups are not switched on yet. Do not rely on this installation for data you need to keep: run ./services/box/ops/install.sh --backups to switch them on and prove them once.'
+    say 'Backups are not switched on yet. Do not rely on this installation for data you need to keep: run lares backups to switch them on and prove them once.'
     say "No chat app is connected yet; after the first agent is running, web chat is the first door and Slack or Telegram can be connected later."
   fi
 }
