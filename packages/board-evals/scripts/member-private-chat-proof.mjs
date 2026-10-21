@@ -1,0 +1,150 @@
+/** Offline acceptance: compile/start actual role sources and use the real console proxy.
+ * Only the model and Gmail API are fake. A preload maps fixed container secret paths to
+ * disposable files; all grant, session, generation, custody and model guards stay real.
+ * Use PRIVATE_CHAT_PROOF_ROLE=chief-of-staff or creative for a serial subset.
+ * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
+ */
+import assert from 'node:assert/strict';
+import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mkdirSync,rmSync,existsSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve,basename,relative} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {createHash,createCipheriv,randomBytes} from 'node:crypto';
+import {spawn,execFileSync} from 'node:child_process';
+import {createServer} from 'node:net';
+import {PostgreSqlContainer} from '@testcontainers/postgresql';
+import {Pool} from 'pg';
+import {PgGrantStore} from '@lares/agent-kit/grant-store';
+import {PgMemberStore} from '@lares/agent-kit/member-store';
+import {PgAccountStore} from '@lares/agent-kit/account-store';
+import {loadDefinition} from '@lares/agent-kit/definition';
+import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
+import {run} from './proof-harness.mjs';
+const repo=resolve(fileURLToPath(new URL('../../../',import.meta.url)));
+const root=mkdtempSync(join(tmpdir(),'lares-member-chat-proof-'));
+const password='disposable-fixture-only',incarnation='11111111-1111-4111-8111-111111111111';
+const key='1'.repeat(64),owner='proof-owner',a='Member-A',b='member-a',outsider='ungranted-member';
+const canaries={owner:'OWNER_PRIVATE_CANARY',a:'MEMBER_A_INPUT_CANARY',b:'MEMBER_B_INPUT_CANARY'};
+let container,db,child,logs='',port;
+const snapshots=[],ownedSessionIds=new Set();
+const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+const freePort=()=>new Promise(done=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>done(p));});});
+function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',Buffer.from(key,'hex'),iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()]).toString('base64');}
+function hashOutput(path){const h=createHash('sha256');for(const file of readdirSync(join(path,'.output'),{recursive:true,withFileTypes:true}).filter(d=>d.isFile()).map(d=>join(d.parentPath,d.name)).sort()){h.update(relative(path,file));h.update(readFileSync(file));}return h.digest('hex');}
+function modelSource(role){return `
+import {mockModel} from 'eve/evals';
+import {appendFileSync} from 'node:fs';
+${role==='chief-of-staff'?`import {__setTestGmailApiFactory} from './google.js';
+__setTestGmailApiFactory((_config,token)=>{
+  const member=token==='refresh-Member-A'?'MEMBER_A_MAIL_CANARY':token==='refresh-member-a'?'MEMBER_B_MAIL_CANARY':null;
+  if(!member)throw new Error('Unknown synthetic credential');
+  return {users:{messages:{list:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{messages:[{id:'proof-message'}]}};},get:async()=>{appendFileSync(process.env.PROOF_PROVIDER_LOG,member+'\\n');return {data:{id:'proof-message',payload:{mimeType:'text/plain',headers:[],body:{data:Buffer.from(member).toString('base64url')}}}};}}}} as never;
+});`:''}
+const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
+  appendFileSync(process.env.PROOF_MODEL_LOG,JSON.stringify({message:lastUserMessage,messages,tools,toolResults})+'\\n');
+  if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
+  if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
+  if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
+  return 'ANSWER '+lastUserMessage+' '+JSON.stringify(toolResults);
+});
+export const gatewayModel=(_alias:string)=>scripted;
+export const gatewayUrl=()=>{throw new Error('No live gateway in proof');};
+export const gatewayKey=()=>{throw new Error('No live gateway in proof');};
+export const IDENTITY_ENCODING_HEADERS={'Accept-Encoding':'identity'};
+`;}
+async function stop(){if(!child)return;const process=child;child=undefined;if(process.exitCode!==null||process.signalCode!==null)return;try{globalThis.process.kill(-process.pid,'SIGKILL');}catch{try{process.kill('SIGKILL');}catch{}}await new Promise(resolve=>process.once('close',resolve));}
+async function start(app){port=await freePort();child=spawn(app.eve,['start','--host','127.0.0.1','--port',String(port)],{cwd:app.cwd,env:app.env,detached:true,stdio:['ignore','pipe','pipe']});child.stdout.on('data',d=>{logs+=d;});child.stderr.on('data',d=>{logs+=d;});for(let i=0;i<160;i++){if(child.exitCode!==null)throw new Error('Role exited: '+logs.slice(-4000));try{if((await fetch(`http://127.0.0.1:${port}/eve/v1/health`)).ok)return;}catch{}await sleep(100);}throw new Error('Role did not start: '+logs.slice(-4000));}
+async function makeRole(role){
+ logs='';
+ const cwd=join(root,'services',role);mkdirSync(join(root,'services'),{recursive:true});
+ cpSync(join(repo,'services',role),cwd,{recursive:true,filter:path=>!['node_modules','.output','.eve','tests'].includes(basename(path))});
+ symlinkSync(join(repo,'services',role,'node_modules'),join(cwd,'node_modules'));
+ const definition=join(root,role+'-definition');mkdirSync(definition);
+ const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'}],autonomy:role==='creative'?{}:{gmail:'autonomous'},skills:[]};
+ writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
+ const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
+ writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
+ const inherited=Object.fromEntries(['PATH','HOME','TMPDIR'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
+ const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`};
+ const eve=join(cwd,'node_modules/.bin/eve');
+ console.log(role+': building actual role with synthetic provider');
+ await run(eve,['build'],{cwd,env,timeout:300000});
+ env.DATABASE_URL=container.getConnectionUri();
+ const workflowName=role==='creative'?'proof_creative_workflow':'proof_chief_workflow';
+ await db.query(`CREATE DATABASE ${workflowName}`);const workflowUrl=new URL(container.getConnectionUri());workflowUrl.pathname='/'+workflowName;env.WORKFLOW_POSTGRES_URL=workflowUrl.href;
+ const workflowDb=new Pool({connectionString:workflowUrl.href});try{await workflowDb.query(readFileSync(join(repo,'services',role,'sql/001-eve-workflow.sql'),'utf8'));}finally{await workflowDb.end();}
+ const loaded=await loadDefinition({serviceDir:cwd,env});
+ const address=role==='creative'?'10.0.0.8':'10.0.0.7';
+ await db.query('INSERT INTO agent_definitions(name,definition,hash,status,duties,voice) VALUES($1,$2,$3,\'valid\',$4,$4)',[declaration.name,declaration,loaded.hash,canaries.owner]);
+ await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending,applied_definition) VALUES($1,$5,$2,'owned',$3,$3,'ready',false,$4)",[declaration.name,workflowName,incarnation,declaration,address]);
+ const grants=new PgGrantStore(db);const access=await grants.adoptAgent(owner,{agentName:declaration.name,expectedDefinitionHash:loaded.hash},{designatedOwnerMemberId:owner});
+ await grants.updateAgentAccess(owner,{agentName:declaration.name,expectedRevision:access.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});
+ return {cwd,env,eve,name:declaration.name,address,modelLog,providerLog,grants};
+}
+let upstreamCalls=0;const members=new Map();
+function request(app,member,method,path,body,cookie=''){
+ const deps={query:(sql,values)=>db.query(sql,values),connect:()=>db.connect(),routePassword:()=>password,signedInMember:()=>new PgMemberStore(db).sessionMember(members.get(member)),fetch:async(url,options)=>{assert.ok(String(url).startsWith(`http://${app.address}:3000/`));assert.equal(new Headers(options.headers).get('x-lares-member'),null);upstreamCalls++;return fetch(`http://127.0.0.1:${port}/`+String(url).split(':3000/')[1],options);}};
+ return forwardChat(new Request(`https://console.example.invalid/api/chat/${app.name}/${path}`,{method,headers:{'content-type':'application/json',cookie},...(body===undefined?{}:{body:JSON.stringify(body)})}),app.name,path.split('?')[0],deps);
+}
+async function create(app,member,message,operationId){const response=await request(app,member,'POST','eve/v1/session',{message,...(operationId?{operationId}:{})});assert.ok(response.ok,`create ${member}: ${response.status} ${await response.clone().text()}`);const id=response.headers.get('x-eve-session-id');assert.ok(id);ownedSessionIds.add(id);return {id,cookie:response.headers.get('set-cookie')?.split(';')[0]??'',index:0};}
+const terminal=new Set(['session.completed','session.failed','session.waiting']);
+async function stream(app,member,session){const lines=[];for(let retry=0;retry<80;retry++){
+ const response=await request(app,member,'GET',`eve/v1/session/${session.id}/stream?streamControlVersion=1&startIndex=${session.index}&includeTailIndex=1`,undefined,session.cookie);
+ if(!response.ok){if([404,409,425,500,502,503,504].includes(response.status)){await sleep(100);continue;}throw new Error('stream '+response.status+' '+await response.text());}
+ const raw=await response.text();for(const line of raw.split('\n').filter(Boolean)){const event=JSON.parse(line);lines.push(line);session.index++;if(terminal.has(event.type)){assert.notEqual(event.type,'session.failed',raw);return lines.join('\n');}}
+ await sleep(100);
+ }throw new Error('Turn never completed '+logs.slice(-1800));}
+async function send(app,member,session,message){const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{message},session.cookie);assert.ok(response.ok,'continue '+response.status+' '+await response.clone().text());return stream(app,member,session);}
+const models=app=>readFileSync(app.modelLog,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+async function denyOld(app,member,session){const before=models(app).length,providers=readFileSync(app.providerLog,'utf8');for(const [method,path,body]of [['POST',`eve/v1/session/${session.id}`,{message:'reuse old private context'}],['GET',`eve/v1/session/${session.id}/stream`,undefined],['POST',`eve/v1/session/${session.id}/compact`,{}]]){const response=await request(app,member,method,path,body,session.cookie);assert.equal(response.ok,false,`${path} revived`);}await sleep(100);assert.equal(models(app).length,before);assert.equal(readFileSync(app.providerLog,'utf8'),providers);}
+try{
+ mkdirSync(join(root,'packages'),{recursive:true});symlinkSync(join(repo,'packages/agent-kit'),join(root,'packages/agent-kit'));symlinkSync(join(repo,'node_modules'),join(root,'node_modules'));mkdirSync(join(root,'vault'));writeFileSync(join(root,'vault/owner.md'),canaries.owner);writeFileSync(join(root,'password'),password);
+ for(const [name,value]of [['google-token-key',key],['personal-google-proof-id','fixture-client'],['personal-google-proof-secret','fixture-secret']])writeFileSync(join(root,name),value);
+ writeFileSync(join(root,'mounts.mjs'),`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const read=fs.readFileSync;const allowed=new Set(['google-token-key','personal-google-proof-id','personal-google-proof-secret']);fs.readFileSync=function(path,...args){if(typeof path==='string'&&path.startsWith('/run/secrets/')&&allowed.has(path.slice(13)))return read(${JSON.stringify(root)}+'/'+path.slice(13),...args);return read(path,...args);};syncBuiltinESMExports();`);
+ container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();db=new Pool({connectionString:container.getConnectionUri()});
+ for(const name of readdirSync(join(repo,'services/box/sql')).filter(n=>/^\d{3}.*sql$/.test(n)).sort())await db.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
+ await db.query("INSERT INTO orgs(id,display_name) VALUES('proof-org','Proof')");
+ await db.query("INSERT INTO users(id,display_name,org_id,org_role) VALUES($1,'Owner','proof-org','owner'),($2,'A','proof-org','member'),($3,'B','proof-org','member'),($4,'Ungrant','proof-org','member')",[owner,a,b,outsider]);
+ await db.query('INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES($1,NULL)',[owner]);
+ const memberStore=new PgMemberStore(db);for(const id of [owner,a,b,outsider]){await db.query('INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,\'https://identity.example.invalid\',$1,\'\')',[id]);const session=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:id},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(id,session.token);}
+ const accounts=new PgAccountStore(db);const selections=new Map();const adapter=accounts.forTrustedAdapter({connectorId:'google',verifyAccount:async evidence=>({issuer:'https://accounts.google.com',subject:evidence,label:'Personal mailbox'}),verifyResource:async(account)=>({resourceKind:'mailbox',externalId:account.providerAccount.subject,providerLabel:'Inbox'})});
+ for(const id of [a,b]){const account=await adapter.createPersonalAccount(id,id,{persist:async client=>{const result=await client.query("INSERT INTO oauth_tokens(principal,provider,org_id,email_address,scopes,refresh_token_enc) VALUES($1,'google','proof','proof@example.invalid',ARRAY['https://www.googleapis.com/auth/gmail.readonly'],$2) RETURNING id",[id,encrypt('refresh-'+id)]);return result.rows[0].id;}},['mailbox']);const [resource]=await accounts.listResources(id,account.id,account.generation);selections.set(id,{accountId:account.id,generation:account.generation,resourceBindingId:resource.id});}
+ for(const role of (process.env.PRIVATE_CHAT_PROOF_ROLE?[process.env.PRIVATE_CHAT_PROOF_ROLE]:['chief-of-staff','creative'])){
+  assert.ok(['chief-of-staff','creative'].includes(role),'Unknown proof role');
+  const app=await makeRole(role);await start(app);const outputHash=hashOutput(app.cwd);
+  const malformed=[{message:[{type:'text',text:'not plain text'}]},{message:'bad',clientContext:['injected']},{message:'bad',callback:{url:'https://example.invalid'}},{message:'bad',capabilities:{tools:true}}];
+  for(const body of malformed){
+   const response=await fetch(`http://127.0.0.1:${port}/eve/v1/session`,{method:'POST',headers:{authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),'content-type':'application/json','x-lares-member-id':a,'x-lares-admission':'m'.repeat(43),'x-lares-purpose':'human'},body:JSON.stringify(body)});
+   assert.ok(!response.ok,'Actual role admitted forbidden private envelope');
+  }
+  assert.equal(models(app).length,0);assert.equal((await db.query('SELECT count(*)::int AS n FROM console_session_bindings WHERE agent=$1',[app.name])).rows[0].n,0);
+  console.log(role+': actual compiled channel refused malformed/forbidden envelopes before dispatch');
+  const sa=await create(app,a,canaries.a,'same-operation'),sb=await create(app,b,canaries.b,'same-operation');assert.notEqual(sa.id,sb.id,'operationId crossed members');console.log(role+': first-message creates accepted; same operationId isolated by member');
+  const ra=await stream(app,a,sa),rb=await stream(app,b,sb);assert.ok(ra.includes(canaries.a));assert.ok(rb.includes(canaries.b));assert.ok(!ra.includes(canaries.b)&&!rb.includes(canaries.a));
+  const before=upstreamCalls;assert.equal((await request(app,b,'GET',`eve/v1/session/${sa.id}/stream`,undefined,sa.cookie)).ok,false);assert.equal((await request(app,outsider,'POST','eve/v1/session',{message:'no grant'})).ok,false);assert.equal((await request(app,a,'GET','eve/v1/info')).status,404);assert.equal(upstreamCalls,before);
+  const crossControl=await request(app,b,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie);assert.equal(crossControl.ok,false);assert.equal(upstreamCalls,before);
+  const controlCalls=models(app).length;assert.ok((await request(app,a,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie)).ok);assert.equal(models(app).length,controlCalls);
+  await send(app,a,sa,'question');assert.ok((await send(app,a,sa,'A private planning question')).includes('ANSWER'));console.log(role+': plain-text question continuation accepted');
+  if(role==='chief-of-staff'){const mailA=await send(app,a,sa,'MAIL '+JSON.stringify(selections.get(a)));const mailB=await send(app,b,sb,'MAIL '+JSON.stringify(selections.get(b)));assert.ok(mailA.includes('MEMBER_A_MAIL_CANARY'));assert.ok(!mailA.includes('MEMBER_B_MAIL_CANARY'));assert.ok(mailB.includes('MEMBER_B_MAIL_CANARY'));}
+  if(role==='creative')for(const skill of ['private-owner-skill','/vault/owner.md','../../agent/voice.md']){const result=await send(app,a,sa,'SKILL '+skill);assert.ok(result.includes('No skill named'),result);assert.ok(!result.includes(canaries.owner));}
+  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo']);assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
+  const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
+  const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
+  const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));
+  const ac=await accounts.read(a,selections.get(a).accountId),ticket=await accounts.beginUpdate(a,ac.id,ac.generation);await accounts.setStatus(a,ticket,'revoked');await denyOld(app,a,fresh);
+  const stopped=await accounts.read(a,ac.id);const renewed=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,stopped.generation),a);assert.ok(renewed.generation>stopped.generation);await denyOld(app,a,fresh);
+  const renewedSession=await create(app,a,'Healthy reconnect session');await stream(app,a,renewedSession);const healthy=await adapter.renew(a,await accounts.beginUpdate(a,ac.id,renewed.generation),a);assert.ok(healthy.generation>renewed.generation);await denyOld(app,a,renewedSession);
+  const departure=await create(app,b,'Before removal');await stream(app,b,departure);await memberStore.removeMember(owner,b);await denyOld(app,b,departure);await db.query("UPDATE users SET status='active' WHERE id=$1",[b]);const rejoined=await memberStore.createSession({identity:{issuer:'https://identity.example.invalid',subject:b},verifiedAt:new Date()},new Date(Date.now()+3600000));members.set(b,rejoined.token);await denyOld(app,b,departure);
+  const oldInc=await create(app,a,'Before incarnation change');await stream(app,a,oldInc);await db.query("UPDATE agent_resources SET ownership_token='22222222-2222-4222-8222-222222222222',runtime_control_token='22222222-2222-4222-8222-222222222222' WHERE name=$1",[app.name]);await denyOld(app,a,oldInc);
+  const projection=await db.query('SELECT (SELECT count(*) FROM model_steps)::int AS models,(SELECT count(*) FROM conversation_entries)::int AS entries');assert.deepEqual(projection.rows[0],{models:0,entries:0});assert.equal(readFileSync(join(root,'vault/owner.md'),'utf8'),canaries.owner);
+  assert.ok(!logs.includes(canaries.owner)&&!logs.includes(canaries.a)&&!logs.includes(canaries.b));
+  snapshots.push({role,modelCalls:models(app).length,providerCalls:readFileSync(app.providerLog,'utf8').trim().split('\n').filter(Boolean).length,compiledHash:outputHash});
+  console.log(JSON.stringify({roleResult:'PASS',...snapshots.at(-1)}));
+  await stop();
+ }
+ console.log(JSON.stringify({result:'PASS',proof:'actual compiled role + actual proxy + migrated PostgreSQL + two opaque members',snapshots}));
+}catch(error){writeFileSync(join(root,'server.log'),logs);console.error(logs.slice(-6000));throw error;}finally{await stop();
+ // Eve's session sandboxes outlive its server. Remove only exact synthetic session labels.
+ for(const id of ownedSessionIds){try{const ids=execFileSync('docker',['ps','-aq','--filter','label=eve.sandbox=1','--filter',`label=eve.sandbox.tag.sessionId=${id}`],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(ids.length){assert.ok(ids.every(value=>/^[a-f0-9]{12,64}$/.test(value)));execFileSync('docker',['rm','-f',...ids],{stdio:'ignore'});}}catch{console.warn('Synthetic sandbox cleanup needs attention for '+id);}}
+ await db?.end();await container?.stop();if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}

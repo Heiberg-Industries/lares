@@ -76,15 +76,15 @@ describe('personal connected accounts', () => {
     expect((await store.listResources('member-a', a.id, a.generation)).map(b => b.externalId).sort())
       .toEqual([' opaque ', 'opaque']);
   });
-  it('keeps account, resource and authority IDs stable for ordinary verified renewal', async () => {
+  it('advances authority on explicit healthy reconnect while preserving account and resource IDs', async () => {
     const a = await create();
     const b = await trusted().bindResource('member-a', await ticket(a), null);
     adapter.verifyAccount = vi.fn(async () => ({ ...identity, label: 'Renamed display label' }));
     const renewed = await trusted().renew('member-a', await ticket(a), null);
     expect(renewed.id).toBe(a.id);
-    expect(renewed.generation).toBe(a.generation);
-    expect(await store.listResources('member-a', a.id, a.generation)).toEqual([b]);
-    expect((await trusted().bindResource('member-a', await ticket(a), null)).id).toBe(b.id);
+    expect(renewed.generation).toBe(a.generation+1);
+    expect(await store.listResources('member-a', a.id, renewed.generation)).toEqual([b]);
+    expect((await trusted().bindResource('member-a', await ticket(renewed), null)).id).toBe(b.id);
   });
   it.each(['subject', 'issuer', 'tenantId'] as const)('refuses silent identity changes through %s', async key => {
     const a = await create();
@@ -132,7 +132,7 @@ describe('personal connected accounts', () => {
     ]);
     expect(outcomes.filter(o => o.status === 'fulfilled')).toHaveLength(1);
     await expect(store.setStatus('member-a', old, 'error')).rejects.toThrow(AccountAccessError);
-    expect((await store.read('member-a', a.id)).generation).toBe(a.generation);
+    expect((await store.read('member-a', a.id)).generation).toBe(a.generation+1);
   });
   it('snapshots status-change account and revision before waiting for a database connection', async () => {
     const a = await create();
@@ -158,8 +158,8 @@ describe('personal connected accounts', () => {
   it('cannot refresh a stale status-change revision by mutating its ticket during a database wait', async () => {
     const a = await create();
     const stale = await ticket(a);
-    await trusted().renew('member-a', stale, null);
-    const fresh = await ticket(a);
+    const renewed = await trusted().renew('member-a', stale, null);
+    const fresh = await ticket(renewed);
     const waitingPool = new Pool({ connectionString: container.getConnectionUri(), max: 1 });
     const occupied = await waitingPool.connect();
     const waitingStore = new PgAccountStore(waitingPool);

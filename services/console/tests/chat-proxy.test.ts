@@ -30,7 +30,7 @@ const row = {
 
 /**
  * The plan's fixture plus two things this slice needs to be able to assert:
- * `signedInEmail` (the session check happens INSIDE the proxy, so a route that forgot it cannot
+ * `signedInMember` (the session check happens INSIDE the proxy, so a route that forgot it cannot
  * exist) and `routePassword` as a spy (so "a signed-out request reads no secret" is a real
  * assertion and not a hope).
  */
@@ -54,7 +54,6 @@ const deps = (
   ),
   routePassword: vi.fn<ChatDeps["routePassword"]>(() => password ?? undefined),
   signedInMember: vi.fn<ChatDeps["signedInMember"]>(async () => email ? ({id:email === "owner@example.invalid" ? "Owner-ID" : "Other-ID",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}) : null),
-  signedInEmail: vi.fn<ChatDeps["signedInEmail"]>(async () => email),
 });
 
 const post = (body = '{"message":"hello"}', signal?: AbortSignal) =>
@@ -79,7 +78,7 @@ describe("the console's chat proxy", () => {
   it("denies missing adoption before reading address, route password or upstream",async()=>{
     const d=deps();access.captureUse.mockResolvedValueOnce(undefined as never);
     const response=await forwardChat(post(),'helper','eve/v1/session',d);
-    expect(response.status).toBe(403);expect(await response.text()).toContain('explicitly adopt');
+    expect(response.status).toBe(403);expect(await response.text()).toContain('Conversation access is unavailable');
     expect(d.query).not.toHaveBeenCalled();expect(d.routePassword).not.toHaveBeenCalled();expect(d.fetch).not.toHaveBeenCalled();
   });
   it("sends the turn to the agent's own door, with the route credential and nothing of the browser's", async () => {
@@ -303,14 +302,14 @@ describe("the console's chat proxy", () => {
     const d = deps();
     // Reading a session's stream is a GET; posting to it is how a turn is sent. Neither may stand
     // in for the other, and nothing outside this list is relayed at all.
-    expect(CHAT_PATHS.length).toBe(6);
+    expect(CHAT_PATHS.length).toBe(5);
     const get = (path: string) => new Request(`https://console.example.invalid/api/chat/helper/${path}`);
     expect((await forwardChat(get("eve/v1/session"), "helper", "eve/v1/session", d)).status).toBe(404);
     expect(
       (await forwardChat(post(), "helper", "eve/v1/session/wrun_A/stream", d)).status,
     ).toBe(404);
     expect(d.query).not.toHaveBeenCalled();
-    for (const path of ["eve/v1/health", "eve/v1/info"]) {
+    for (const path of ["eve/v1/health"]) {
       expect((await forwardChat(get(path), "helper", path, d)).status).toBe(200);
     }
     for (const verb of ["cancel", "clear", "compact", "reset"]) {
@@ -387,15 +386,17 @@ describe("the member the console vouches for", () => {
     const d = deps();
     await forwardChat(post(), "helper", "eve/v1/session", d);
     const headers = d.fetch.mock.calls[0]![1]!.headers as Headers;
-    expect(headers.get(MEMBER_HEADER)).toBe("owner@example.invalid");
+    expect(headers.get(MEMBER_HEADER)).toBeNull();
+    expect(headers.get("x-lares-member-id")).toBe("Owner-ID");
   });
 
   it("throws the browser's own copy away and sends the verified one instead", async () => {
     const d = deps();
     await forwardChat(forge("attacker@example.invalid"), "helper", "eve/v1/session", d);
     const headers = d.fetch.mock.calls[0]![1]!.headers as Headers;
-    expect(headers.get(MEMBER_HEADER)).toBe("owner@example.invalid");
-    expect(headers.get(MEMBER_HEADER)).not.toContain("attacker");
+    expect(headers.get(MEMBER_HEADER)).toBeNull();
+    expect(headers.get("x-lares-member-id")).toBe("Owner-ID");
+    expect(headers.get("x-lares-member-id")).not.toContain("attacker");
     // Deny-by-default: no header the browser invented is relayed under any name.
     expect(headers.has("x-forwarded-user")).toBe(false);
   });
@@ -406,13 +407,11 @@ describe("the member the console vouches for", () => {
     expect(d.fetch).not.toHaveBeenCalled();
   });
 
-  it("refuses to build a header out of a session address that could split one", async () => {
-    for (const bad of ["owner@example.invalid\r\nx-lares-member: attacker@example.invalid", "owner @example.invalid", "not-an-address", "a@b,c@d"]) {
-      const d = deps(row, PASSWORD, bad);
-      const response = await forwardChat(post(), "helper", "eve/v1/session", d);
-      expect(response.status, bad).toBe(403);
-      expect(d.fetch, bad).not.toHaveBeenCalled();
-    }
+  it("uses the verified opaque member even when no usable address exists",async()=>{
+    const d=deps(row,PASSWORD,'not-an-address');
+    expect((await forwardChat(post(),'helper','eve/v1/session',d)).status).toBe(200);
+    const headers=d.fetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get('x-lares-member-id')).toBe('Other-ID');expect(headers.get(MEMBER_HEADER)).toBeNull();
   });
 
   it("is answered on a POST only — a cross-site GET cannot reach the answer path at all", async () => {

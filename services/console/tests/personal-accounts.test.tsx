@@ -13,7 +13,7 @@ it('lets a normal member manage only their personal account by stable ID and gen
  expect(m.list).toHaveBeenCalledWith('member-a');expect(html).toContain('Own mailbox');
  expect(html).toContain('name="accountId" value="stable-account"');expect(html).toContain('name="generation" value="7"');
  expect(html).toContain('name="intent" value="reconnect"');expect(html).toContain('name="intent" value="new"');
- expect(html).toContain('Agent use is pending integration');expect(html).not.toContain('Open the owner console');
+ expect(html).toContain('Private chat is available with agents you have permission to use');expect(html).toContain('Microsoft agent tools are still pending integration');expect(html).not.toContain('Open the owner console');
 });
 it('renders unavailable and neutral flash text without claiming an empty list or exposing URL error text',async()=>{
  m.list.mockRejectedValue(new Error('PRIVATE DATABASE ERROR'));

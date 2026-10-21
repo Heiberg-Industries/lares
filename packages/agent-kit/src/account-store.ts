@@ -226,7 +226,7 @@ export class PgAccountStore {
         const { rows } = await db.query<Row>(`UPDATE connected_accounts SET provider_issuer=$2,
           provider_subject=$3, provider_tenant_id=$4, provider_label=$5, status='ok', status_reason=NULL,
           generation=generation+$6, lifecycle_revision=lifecycle_revision+1 WHERE id=$1 RETURNING *`,
-          [r.id, identity.issuer, identity.subject, identity.tenantId ?? '', identity.label, r.status !== 'ok' ? 1 : 0]);
+          [r.id, identity.issuer, identity.subject, identity.tenantId ?? '', identity.label, 1]);
         if (persist) await associateAccountCredential(db, { id: rows[0].id, ownerMemberId: memberId, connectorId, generation: rows[0].generation }, persist);
         await this.persistResources(db, rows[0], resources);
         return view(rows[0]);

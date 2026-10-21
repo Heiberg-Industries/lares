@@ -9,9 +9,8 @@ import { withConsoleAdmission } from "../../../../../lib/admission-error";
  * is for a signed-in person and is behind the console's ordinary sign-in check, and `forwardChat`
  * checks the session again itself.
  */
-import { cookies } from "next/headers";
 import { pool } from "../../../../../lib/db";
-import { verify, signedInMember } from "../../../../../lib/auth";
+import { signedInMember } from "../../../../../lib/auth";
 import { readSecret } from "../../../../../lib/secrets";
 import { forwardChat, type ChatDeps } from "../../../../../lib/chat-proxy";
 
@@ -29,7 +28,6 @@ const deps: ChatDeps = {
   fetch,
   routePassword: () => readSecret("EVE_ROUTE_PASSWORD"),
   signedInMember,
-  signedInEmail: async () => verify((await cookies()).get("lares_session")?.value),
 };
 
 type Context = { params: Promise<{ name: string; path: string[] }> };

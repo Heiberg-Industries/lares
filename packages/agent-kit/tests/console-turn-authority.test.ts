@@ -42,13 +42,14 @@ beforeEach(async()=>{
  CREATE TABLE org_member_policy(user_id text PRIMARY KEY REFERENCES users(id),allowed_capabilities text[]);
  CREATE TABLE agent_definitions(name text PRIMARY KEY,status text,hash text,definition jsonb);
  CREATE TABLE agent_conversations(agent text,incarnation uuid,session_id text,door text,observed_at timestamptz DEFAULT now(),terminal boolean DEFAULT false,PRIMARY KEY(agent,incarnation,session_id));
+ CREATE TABLE connected_accounts(id text PRIMARY KEY,owner_member_id text,generation integer,status text);
  CREATE TABLE agent_resources(name text PRIMARY KEY,ownership_token uuid,runtime_control_token uuid,state text,pending boolean);
  INSERT INTO orgs VALUES('org','Example');
  INSERT INTO users(id,display_name,status,org_role,org_id) VALUES('Owner-ID','Owner','active','owner','org'),('other','Other','active','owner','org');
  INSERT INTO org_member_policy VALUES('Owner-ID',NULL);
  INSERT INTO agent_definitions VALUES('helper','valid','definition-one','{"grants":[]}');
  INSERT INTO agent_resources VALUES('helper','${incarnation}','${incarnation}','ready',false);`);
- for(const file of ['007_member_identity_sessions.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
+ for(const file of ['007_member_identity_sessions.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
  await new PgGrantStore(db).adoptAgent('Owner-ID',{agentName:'helper',expectedDefinitionHash:'definition-one'},{designatedOwnerMemberId:'Owner-ID'});
 });
 describe('durable console authority on disposable PostgreSQL',()=>{
@@ -99,7 +100,6 @@ describe('durable console authority on disposable PostgreSQL',()=>{
   const store=new PgGrantStore(db),a=await store.agentAccess('Owner-ID','helper');
   await store.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[{principal:{kind:'member',id:'other'},permission:'use',expiresAt:new Date(Date.now()+500).toISOString()}]});
   const other={...tuple,memberId:'other'},otherEnv={...env,AGENT_OWNER_USER_ID:'other'};
-  await expect(bindConsoleSession(other,db,env)).rejects.toThrow('Conversation authority');
   await bindConsoleSession(other,db,otherEnv);await db.query('SELECT pg_sleep(0.6)');
   await expect(requireConsoleSessionBinding(other,db,otherEnv)).rejects.toThrow('Conversation authority');
  });
@@ -159,6 +159,16 @@ describe('durable console authority on disposable PostgreSQL',()=>{
    await client.query('COMMIT');await refused;
    expect((await db.query("SELECT count(*)::int AS n FROM console_session_bindings WHERE revoked_at IS NULL")).rows[0].n).toBe(0);
   }finally{await client.query('ROLLBACK');client.release();}
+ });
+ it('admits an explicitly granted active member with its own singleton audience and refuses ungranted members',async()=>{
+  await db.query("UPDATE users SET org_role='member' WHERE id='other'");
+  await expect(bindConsoleSession({...tuple,memberId:'other'},db,env)).rejects.toThrow('Conversation authority');
+  const store=new PgGrantStore(db),a=await store.agentAccess('Owner-ID','helper');
+  await store.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[{principal:{kind:'member',id:'other'},permission:'use',expiresAt:null}]});
+  await bindConsoleSession({...tuple,memberId:'other'},db,env);
+  const current=auth('human','other');
+  expect(await requireConsoleTurnAuthority({session:{...ctx().session,auth:{current,initiator:current}}},db,env)).toMatchObject({actingMemberId:'other',spokenByMemberId:'other',audience:{participants:[{kind:'member',memberId:'other'}]}});
+  await expect(requireConsoleSessionBinding(tuple,db,env)).rejects.toThrow('Conversation authority');
  });
  it('session-start hook binds first-message creates; message-free proxy binding already exists',async()=>{
   await bindConsoleSessionStarted(ctx(),db,env);
@@ -244,7 +254,7 @@ it('retires every pre-surface conversation and refuses old-binary active capture
  await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_private_surface_capture');
  const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
  await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('helper',$1,'wrun_old','Owner-ID',repeat('z',43),'old',$2)",[incarnation,access!.accessRevision]);
- await db.query(surfaceMigration);await db.query(surfaceMigration);
+ await db.query(surfaceMigration);await db.query(surfaceMigration);await db.query(readFileSync(new URL('../../../services/box/sql/018_private_account_history.sql',import.meta.url),'utf8'));
  expect((await db.query("SELECT revoked_at,private_surface_revision FROM console_session_bindings WHERE session_id='wrun_old'")).rows[0]).toEqual({revoked_at:expect.any(Date),private_surface_revision:0});
  const old={session:{id:'wrun_old',auth:{current:auth('human','Owner-ID','z'.repeat(43)),initiator:auth('human','Owner-ID','z'.repeat(43))}}};
  await expect(verifyPrivateConsoleSession(old)).rejects.toThrow('Conversation authority');
@@ -294,4 +304,23 @@ it('a real revoked binding stops a cached model before either fake provider exec
   for(const method of ['doGenerate','doStream'] as const)await expect(selection.model[method]({prompt:[]})).rejects.toThrow('Conversation authority');
   expect(call).not.toHaveBeenCalled();
  });
+});
+
+it('upgrades pre-account-invalidation history once and preserves protocol 2 on ordered reapply',async()=>{
+ const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
+ await bindConsoleSession(tuple,db,env);
+ await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_private_surface_capture');
+ await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision) VALUES('helper',$1,'old_one','Owner-ID',repeat('q',43),'old-one',$2,1)",[incarnation,access!.accessRevision]);
+ const seventeen=readFileSync(new URL('../../../services/box/sql/017_private_console_surface_capture.sql',import.meta.url),'utf8');
+ const eighteen=readFileSync(new URL('../../../services/box/sql/018_private_account_history.sql',import.meta.url),'utf8');
+ await db.query(eighteen);await db.query(seventeen);await db.query(eighteen);
+ expect((await db.query("SELECT revoked_at FROM console_session_bindings WHERE session_id='old_one'")).rows[0].revoked_at).toBeInstanceOf(Date);
+ await expect(requireConsoleSessionBinding(tuple,db,env)).resolves.toMatchObject({sessionId:tuple.sessionId});
+ await expect(db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision) VALUES('helper',$1,'old_binary','Owner-ID',repeat('j',43),'old-binary',$2,1)",[incarnation,access!.accessRevision])).rejects.toThrow('console_binding_private_surface_capture');
+ await db.query("INSERT INTO connected_accounts(id,owner_member_id,generation,status) VALUES('account','Owner-ID',0,'ok')");
+ await expect(requireConsoleSessionBinding(tuple,db,env)).resolves.toBeDefined();
+ await db.query("UPDATE connected_accounts SET generation=1 WHERE id='account'");
+ await expect(requireConsoleSessionBinding(tuple,db,env)).rejects.toThrow('Conversation authority');
+ await db.query("UPDATE connected_accounts SET generation=2,status='ok' WHERE id='account'");
+ await expect(bindConsoleSession(tuple,db,env)).rejects.toThrow('Conversation authority');
 });

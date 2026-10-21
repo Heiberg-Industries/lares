@@ -171,6 +171,20 @@ describe('private console Gmail catalogue execution', () => {
     await expect(gmailRead.execute({ id: 'm', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(credentials).toEqual([]);
   });
+  it('retires cached private history on healthy reconnect, but not insertion or encrypted refresh rotation',async()=>{
+    const own=await account();const before=(await getPool().query("SELECT revoked_at FROM console_session_bindings WHERE session_id='wrun_mail'")).rows[0];expect(before.revoked_at).toBeNull();
+    await gmailRead.execute({id:'proof',selection:own.selection},ctx());expect(credentials).toHaveLength(1);
+    await getPool().query("UPDATE oauth_tokens SET refresh_token_enc=$1 WHERE principal='member-a'",[encrypt('refresh-subject-a')]);
+    expect((await getPool().query("SELECT revoked_at FROM console_session_bindings WHERE session_id='wrun_mail'")).rows[0].revoked_at).toBeNull();
+    const adapter:TrustedAccountAdapter={connectorId:'google',verifyAccount:async()=>({issuer:'https://accounts.google.com',subject:'subject-a',label:'Same label'}),verifyResource:async()=>({resourceKind:'mailbox',externalId:'subject-a',providerLabel:'Inbox'})};
+    const ticket=await store.beginUpdate('member-a',own.account.id,own.account.generation);
+    const renewed=await store.forTrustedAdapter(adapter).renew('member-a',ticket,null);
+    expect(renewed.generation).toBe(own.account.generation+1);
+    credentials.length=0;
+    await expect(gmailRead.execute({id:'proof',selection:own.selection},ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);expect(credentials).toEqual([]);
+    // A new session needs a new nonce; the old conversation can never be rebound after renewal.
+    await expect(bindConsoleSession({agent:'helper',incarnation,sessionId:'wrun_mail',memberId:'member-a',admissionNonce:nonce})).rejects.toThrow();
+  });
   it('rechecks authority on the same transaction with a one-connection pool', async () => {
     const own = await account();
     await closePool();

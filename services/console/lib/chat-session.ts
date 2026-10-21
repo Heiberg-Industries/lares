@@ -1,8 +1,8 @@
 import type { ClientSessionState } from "eve/client";
 
-/** Keep a tab's active chat separate for each signed-in owner and agent. */
-export function chatSessionKey(owner: string, name: string): string {
-  return `lares:chat:${encodeURIComponent(owner.toLowerCase())}:${encodeURIComponent(name)}`;
+/** Keep a tab's active chat separate for each opaque member id and agent; old email-based handles are never resumed. */
+export function chatSessionKey(memberId: string, name: string): string {
+  return `lares:private-chat:v2:${encodeURIComponent(memberId)}:${encodeURIComponent(name)}`;
 }
 
 /** A corrupt or stale browser value must never become an Eve session URL. */
