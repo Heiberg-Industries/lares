@@ -212,8 +212,8 @@ describe("assignSurfaces", () => {
 });
 
 describe("nightBeforeCoveredDay", () => {
-  it("is tomorrow's Oslo calendar day, not today's", () => {
-    // 2026-08-12 22:00 CEST — tomorrow (Oslo) is 2026-08-13.
+  it("is tomorrow's Berlin calendar day, not today's", () => {
+    // 2026-08-12 22:00 CEST — tomorrow (Berlin) is 2026-08-13.
     expect(nightBeforeCoveredDay(NOW)).toBe("2026-08-13");
   });
 });
@@ -332,7 +332,7 @@ function calendarEvent(overrides: Partial<CalendarEvent> = {}): CalendarEvent {
 }
 
 describe("listTomorrowMeetings", () => {
-  it("includes a meeting with an external attendee, on tomorrow's Oslo date", async () => {
+  it("includes a meeting with an external attendee, on tomorrow's Berlin date", async () => {
     const deps: CalendarSourceDeps = {
       listEvents: async () => [calendarEvent()],
       myAddresses: async () => ["owner@owner.example"],
@@ -348,7 +348,7 @@ describe("listTomorrowMeetings", () => {
     const deps: CalendarSourceDeps = {
       listEvents: async () => [calendarEvent({
         summary: "Weekly Sync",
-        start: "2026-08-13T11:00:00Z",   // 13:00 Oslo
+        start: "2026-08-13T11:00:00Z",   // 13:00 Berlin
         end: "2026-08-13T13:50:00Z",
         location: "Example Folio AS Example Street 3, 0181 Oslo, Norway",
         attendees: undefined,
@@ -894,8 +894,8 @@ describe("buildMorningBrief — deadlines break the silence, candidates do not",
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 // commitment and travel-context clock times follow the owner's clock, not a
-// hardcoded Oslo one. `tz` is required on `commitmentLine`/`travelContextLine`, so every case
-// below states it explicitly; `travelContextBlock` defaults to the home zone (`homeTzFromEnv`, OWNER_HOME_TZ=Europe/Oslo in vitest.config)
+// hardcoded Berlin one. `tz` is required on `commitmentLine`/`travelContextLine`, so every case
+// below states it explicitly; `travelContextBlock` defaults to the home zone (`homeTzFromEnv`, OWNER_HOME_TZ=Europe/Berlin in vitest.config)
 // when omitted, which is what keeps its own existing callers unchanged.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
@@ -910,8 +910,8 @@ function nbMeeting(overrides: Partial<NightBeforeMeeting> = {}): NightBeforeMeet
 }
 
 describe("commitmentLine follows the tz it is given", () => {
-  it("Europe/Oslo (today's default) is unchanged — CEST in August is +2h", () => {
-    expect(commitmentLine(nbMeeting(), "Europe/Oslo")).toContain("16:00");
+  it("Europe/Berlin is unchanged — CEST in August is +2h", () => {
+    expect(commitmentLine(nbMeeting(), "Europe/Berlin")).toContain("16:00");
   });
 
   it("the SAME instant, in America/New_York, prints 10:00 — not 16:00", () => {
@@ -924,8 +924,8 @@ describe("commitmentLine follows the tz it is given", () => {
 describe("travelContextLine follows the tz it is given", () => {
   const stay = nbMeeting({ title: "Hotel", kind: "lodging" });
 
-  it("Europe/Oslo (today's default) is unchanged", () => {
-    expect(travelContextLine(stay, "Europe/Oslo")).toContain("16:00");
+  it("Europe/Berlin is unchanged", () => {
+    expect(travelContextLine(stay, "Europe/Berlin")).toContain("16:00");
   });
 
   it("America/New_York prints the wall time in that zone", () => {
@@ -936,8 +936,8 @@ describe("travelContextLine follows the tz it is given", () => {
 describe("travelContextBlock threads tz to every calendar row", () => {
   const stay = nbMeeting({ title: "Hotel", kind: "lodging" });
 
-  it("defaults to Europe/Oslo (DEFAULT_HOME_TZ) when tz is omitted — unchanged", () => {
-    expect(travelContextBlock([stay])).toBe(travelContextBlock([stay], "Europe/Oslo"));
+  it("defaults to the home zone (OWNER_HOME_TZ) when tz is omitted", () => {
+    expect(travelContextBlock([stay])).toBe(travelContextBlock([stay], "Europe/Berlin"));
     expect(travelContextBlock([stay])).toContain("16:00");
   });
 

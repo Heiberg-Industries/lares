@@ -184,8 +184,8 @@ describe("reminders-store", () => {
 // ─── 2. lib/recurrence.ts — nextOccurrence ─────────────────────────────────────────────────
 
 describe("nextOccurrence", () => {
-  it("daily: advances exactly one Oslo calendar day", () => {
-    // 2026-06-17 08:00 Oslo (CEST, UTC+2) fired → next is 2026-06-18 08:00 Oslo.
+  it("daily: advances exactly one Berlin calendar day", () => {
+    // 2026-06-17 08:00 Berlin (CEST, UTC+2) fired → next is 2026-06-18 08:00 Berlin.
     const fired = new Date("2026-06-17T06:00:00Z");
     const next = nextOccurrence("daily:08:00", fired);
     expect(next.toISOString()).toBe("2026-06-18T06:00:00.000Z");
@@ -193,14 +193,14 @@ describe("nextOccurrence", () => {
 
   it("weekdays: Friday's firing rolls over the weekend to Monday", () => {
     // 2026-06-19 is a Friday.
-    const fired = new Date("2026-06-19T07:00:00Z"); // 09:00 Oslo CEST
+    const fired = new Date("2026-06-19T07:00:00Z"); // 09:00 Berlin CEST
     const next = nextOccurrence("weekdays:09:00", fired);
     // Next weekday after Friday is Monday 2026-06-22.
     expect(next.toISOString()).toBe("2026-06-22T07:00:00.000Z");
   });
 
   it("weekly: advances exactly 7 days to the same weekday/time", () => {
-    // Monday 2026-06-22 11:30 Oslo CEST (09:30 UTC).
+    // Monday 2026-06-22 11:30 Berlin CEST (09:30 UTC).
     const fired = new Date("2026-06-22T09:30:00Z");
     const next = nextOccurrence("weekly:mon:11:30", fired);
     expect(next.toISOString()).toBe("2026-06-29T09:30:00.000Z");
@@ -367,7 +367,7 @@ describe("makeReminderTick", () => {
 
   it("re-arms a recurring reminder by creating the next occurrence BEFORE marking delivered (call order)", async () => {
     const telegram = fakeDoor();
-    const firedAt = new Date("2026-06-22T09:30:00Z"); // Monday 11:30 Oslo CEST
+    const firedAt = new Date("2026-06-22T09:30:00Z"); // Monday 11:30 Berlin CEST
     const { store, calls, created } = fakeStore([
       reminder({
         id: "r-recur",

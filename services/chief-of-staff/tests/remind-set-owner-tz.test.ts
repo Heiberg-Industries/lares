@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  * exchange, which is the class this whole clock exists to close.
  *
  * The RECURRENCE deliberately stays on the home clock: `lib/recurrence.ts` computes every later
- * firing in Oslo wall-clock time and the tool's own description says so. Asserted here so the
+ * firing in Berlin wall-clock time and the tool's own description says so. Asserted here so the
  * asymmetry reads as a decision rather than as a miss.
  *
  * Its own file, not `remind-set-clock.test.ts`: that file's third case proves the 90-second grace by
@@ -72,7 +72,7 @@ describe("remind_set: dueAtLocal is on the owner's clock", () => {
     vi.useRealTimers();
   });
 
-  it("the RECURRENCE is still stated in Oslo wall-clock time — deliberately, and it is stored verbatim", async () => {
+  it("the RECURRENCE is still stated in Berlin wall-clock time — deliberately, and it is stored verbatim", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-08-31T12:00:00Z"));
     const { default: remindSet } = await import("../catalogue/remind_set.js");

@@ -29,7 +29,7 @@ export default defineConfig({
   },
   test: {
     // Explicit legacy fixture identity; production has no owner default.
-    env: { AGENT_OWNER_USER_ID: "owner-1", OWNER_HOME_TZ: "Europe/Oslo", NOTION_MEETINGS_DATA_SOURCE_ID: "00000000-0000-4000-8000-000000000001" },
+    env: { AGENT_OWNER_USER_ID: "owner-1", OWNER_HOME_TZ: "Europe/Berlin", NOTION_MEETINGS_DATA_SOURCE_ID: "00000000-0000-4000-8000-000000000001" },
     include: ["tests/**/*.test.ts"],
     // Vitest 2's default pool is "forks", one worker process per available CPU core (this
     // box has 10). Many of this suite's test files each spin up their own disposable

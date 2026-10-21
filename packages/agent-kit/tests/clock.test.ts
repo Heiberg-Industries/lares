@@ -12,10 +12,10 @@ import { buildClockMarkdown } from "../src/clock.js";
  * silently.
  */
 describe("buildClockMarkdown — the clock coordinator never had", () => {
-  // 2026-08-17 22:43 Oslo (CEST, UTC+2) — the exact moment of the bug.
+  // 2026-08-17 22:43 Berlin (CEST, UTC+2) — the exact moment of the bug.
   const theMoment = new Date("2026-08-17T20:43:30Z");
 
-  it("states today's date in Oslo, so 'i morgen' has something to be relative to", () => {
+  it("states today's date in Berlin, so 'i morgen' has something to be relative to", () => {
     const md = buildClockMarkdown(theMoment);
     expect(md).toContain("2026-08-17");
   });
@@ -29,15 +29,15 @@ describe("buildClockMarkdown — the clock coordinator never had", () => {
   });
 
   it("names the timezone explicitly — an unlabelled time invites a UTC/local mix-up", () => {
-    expect(buildClockMarkdown(theMoment)).toContain("Europe/Oslo");
+    expect(buildClockMarkdown(theMoment)).toContain("Europe/Berlin");
   });
 
   it("carries the UTC instant too, so an ISO dueAt can be computed without guessing the offset", () => {
     expect(buildClockMarkdown(theMoment)).toContain("2026-08-17T20:43:30");
   });
 
-  it("crosses midnight in Oslo correctly — the date is Oslo's, not UTC's", () => {
-    // 22:30 UTC on the 17th is already 00:30 on the 18th in Oslo (CEST). A UTC-derived date
+  it("crosses midnight in Berlin correctly — the date is Berlin's, not UTC's", () => {
+    // 22:30 UTC on the 17th is already 00:30 on the 18th in Berlin (CEST). A UTC-derived date
     // would say the 17th and make every late-night 'i morgen' a day early.
     const lateNight = new Date("2026-08-17T22:30:00Z");
     const md = buildClockMarkdown(lateNight);
@@ -53,16 +53,16 @@ describe("buildClockMarkdown — the clock coordinator never had", () => {
 });
 
 describe("formatHomeDateTime — what a reminder must confirm back", () => {
-  it("renders the stored instant as an absolute Oslo date and time", async () => {
+  it("renders the stored instant as an absolute Berlin date and time", async () => {
     const { formatHomeDateTime } = await import("../src/clock.js");
-    // The bug's actual stored value: 2026-08-20 07:00 Oslo.
-    expect(formatHomeDateTime(new Date("2026-08-20T05:00:00Z"))).toBe("Thursday 2026-08-20 07:00 (Europe/Oslo)");
+    // The bug's actual stored value: 2026-08-20 07:00 Berlin.
+    expect(formatHomeDateTime(new Date("2026-08-20T05:00:00Z"))).toBe("Thursday 2026-08-20 07:00 (Europe/Berlin)");
   });
 
   it("is what makes a wrong date visible — the day the user MEANT reads differently", async () => {
     const { formatHomeDateTime } = await import("../src/clock.js");
     // Had the confirmation said this instead of "i morgen", the two-day error was obvious.
-    expect(formatHomeDateTime(new Date("2026-08-18T05:00:00Z"))).toBe("Tuesday 2026-08-18 07:00 (Europe/Oslo)");
+    expect(formatHomeDateTime(new Date("2026-08-18T05:00:00Z"))).toBe("Tuesday 2026-08-18 07:00 (Europe/Berlin)");
   });
 });
 
@@ -70,7 +70,7 @@ describe("formatHomeDateTime — what a reminder must confirm back", () => {
  * final review — the confirmation must speak the OWNER's clock, not the home one.
  *
  * `buildClockMarkdown` already takes the owner tz, so on a trip abroad the turn tells the model it
- * is 15:00 there. A confirmation card still rendering Europe/Oslo would describe the same instant on
+ * is 15:00 there. A confirmation card still rendering Europe/Berlin would describe the same instant on
  * a second clock inside one exchange — the/128/204 class, where a "tonight" stops meaning
  * anything. Both zones are NAMED in the output either way.
  */
@@ -79,28 +79,28 @@ describe("formatDateTimeIn — the same instant on the owner's clock", () => {
     const { formatDateTimeIn } = await import("../src/clock.js");
     const due = new Date("2026-08-20T05:00:00Z");
     expect(formatDateTimeIn(due, "America/New_York")).toBe("Thursday 2026-08-20 01:00 (America/New_York)");
-    expect(formatDateTimeIn(due, "Europe/Oslo")).toBe("Thursday 2026-08-20 07:00 (Europe/Oslo)");
+    expect(formatDateTimeIn(due, "Europe/Berlin")).toBe("Thursday 2026-08-20 07:00 (Europe/Berlin)");
   });
 
-  it("crosses the date line where the zone does — a New York evening is the next Oslo day", async () => {
+  it("crosses the date line where the zone does — a New York evening is the next Berlin day", async () => {
     const { formatDateTimeIn } = await import("../src/clock.js");
-    // 2026-08-20 23:30 New York is already the 21st in Oslo. Confirming the wrong one of these two
+    // 2026-08-20 23:30 New York is already the 21st in Berlin. Confirming the wrong one of these two
     // is exactly the failure the reminder clock exists to prevent.
     const due = new Date("2026-08-21T03:30:00Z");
     expect(formatDateTimeIn(due, "America/New_York")).toBe("Thursday 2026-08-20 23:30 (America/New_York)");
-    expect(formatDateTimeIn(due, "Europe/Oslo")).toBe("Friday 2026-08-21 05:30 (Europe/Oslo)");
+    expect(formatDateTimeIn(due, "Europe/Berlin")).toBe("Friday 2026-08-21 05:30 (Europe/Berlin)");
   });
 
   it("formatHomeDateTime is the same function on the home clock", async () => {
     const { formatDateTimeIn, formatHomeDateTime } = await import("../src/clock.js");
     const due = new Date("2026-08-20T05:00:00Z");
-    expect(formatHomeDateTime(due)).toBe(formatDateTimeIn(due, "Europe/Oslo"));
+    expect(formatHomeDateTime(due)).toBe(formatDateTimeIn(due, "Europe/Berlin"));
     expect(formatDateTimeIn(due)).toBe(formatHomeDateTime(due)); // the default is the home clock
   });
 });
 
 describe("the clock and the prompt cache", () => {
-  const tz = "Europe/Oslo";
+  const tz = "Europe/Berlin";
   const at = (iso: string) => new Date(iso);
 
   it("changes its bytes every minute at today's default — the finding, pinned", () => {
@@ -121,7 +121,7 @@ describe("the clock and the prompt cache", () => {
   });
 
   it("changes exactly once at the owner's midnight, not at UTC's", () => {
-    // 2026-09-18 23:30 Oslo is 21:30Z; 2026-09-19 00:30 Oslo is 22:30Z.
+    // 2026-09-18 23:30 Berlin is 21:30Z; 2026-09-19 00:30 Berlin is 22:30Z.
     expect(buildClockMarkdown(at("2026-09-18T21:30:00Z"), tz, "day"))
       .not.toBe(buildClockMarkdown(at("2026-09-18T22:30:00Z"), tz, "day"));
     expect(buildClockMarkdown(at("2026-09-18T21:30:00Z"), tz, "day"))
@@ -146,22 +146,22 @@ describe("the clock and the prompt cache", () => {
  * the block takes the OWNER's timezone, not a constant. The chief of staff's per-turn resolver passes
  * `await ownerTz()` (`services/chief-of-staff/agent/instructions/clock.ts`), so on a trip abroad the
  * date, the weekday and the time the agent states are the ones the owner would read off their own phone. The
- * default stays `Europe/Oslo`, which is why every case above is untouched.
+ * home zone stays `Europe/Berlin`, which is why every case above is untouched.
  */
 describe("buildClockMarkdown(now, tz) — the clock follows the owner", () => {
-  // 02:30Z on 2026-09-09 is 04:30 in Oslo (CEST) and still 22:30 on the 8th in New York.
+  // 02:30Z on 2026-09-09 is 04:30 in Berlin (CEST) and still 22:30 on the 8th in New York.
   const instant = new Date("2026-09-09T02:30:00Z");
 
   it("names the timezone it was given, and reads the wall clock in it", () => {
     const md = buildClockMarkdown(instant, "America/New_York");
     expect(md).toContain("America/New_York");
-    expect(md).not.toContain("Europe/Oslo");
+    expect(md).not.toContain("Europe/Berlin");
     expect(md).toContain("22:30");
   });
 
-  it("states the owner's DATE, which is a different day from Oslo's at that instant", () => {
+  it("states the owner's DATE, which is a different day from Berlin's at that instant", () => {
     expect(buildClockMarkdown(instant, "America/New_York")).toContain("2026-09-08");
-    expect(buildClockMarkdown(instant)).toContain("2026-09-09"); // the Oslo default, unchanged
+    expect(buildClockMarkdown(instant)).toContain("2026-09-09"); // the home zone, unchanged
   });
 
   it("states the owner's weekday too — 'på fredag' is relative to where the owner is", () => {

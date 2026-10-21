@@ -17,7 +17,7 @@ import { BRIEF_LANGUAGES } from "../lib/brief-settings.js";
  * pins the SIX Norwegian structural places `lib/brief-content.ts` used to hard-code
  * (`heldBackLine`, `dueLabel`, `candidateRow`, the "+N flere frister" tail, the block label
  * "Frister", `deadlinesClause`) to TODAY's exact `nb` wording, copied verbatim from the source
- * before any of this ticket's edits (see `git show b6f17bd:services/chief-of-staff/lib/brief-content.ts`).
+ * before any of this ticket's edits.
  * The owner's own brief is Norwegian; not one byte of it may change.
  *
  * The second half is a source guard: none of the five literals that used to be scattered through
@@ -193,7 +193,8 @@ describe("no timezone literal survives outside a comment in lib/brief-content.ts
     return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
   }
 
-  it('"Europe/Oslo" is not a code literal — every clock read takes a tz parameter', () => {
+  it('no zone name ("Europe/Oslo", "Europe/Berlin") is a code literal — every clock read takes a tz parameter', () => {
     expect(stripComments(source)).not.toContain("Europe/Oslo");
+    expect(stripComments(source)).not.toContain("Europe/Berlin");
   });
 });

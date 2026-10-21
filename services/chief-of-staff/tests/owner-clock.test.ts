@@ -1,12 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { osloParts, osloDate, partsIn, dateIn, slotIn } from "../lib/recurrence.js";
+import { homeParts, homeDate, partsIn, dateIn, slotIn } from "../lib/recurrence.js";
 import { makeCachedOwnerClock, OWNER_TZ_CACHE_MS } from "../lib/owner-clock.js";
 import { makeOwnerClockRefresh } from "../agent/schedules/owner-clock.js";
 import type { OwnerClock } from "@lares/agent-kit/owner-clock";
 
 // The home zone these fixtures are written in; it matches OWNER_HOME_TZ in vitest.config.
-const TZ = "Europe/Oslo";
+const TZ = "Europe/Berlin";
 
 /**
  * The chief of staff's half of the owner clock: the tz-parameterised slot helpers the agent's seven slot
@@ -19,8 +19,8 @@ const TZ = "Europe/Oslo";
 
 const NY = "America/New_York";
 
-describe("recurrence.ts, generalised — the Oslo helpers become the tz helpers", () => {
-  const instant = new Date("2026-09-09T02:30:00Z"); // 04:30 Oslo, 22:30 on the 8th in New York
+describe("recurrence.ts, generalised — the home-zone helpers become the tz helpers", () => {
+  const instant = new Date("2026-09-09T02:30:00Z"); // 04:30 Berlin, 22:30 on the 8th in New York
 
   it("partsIn reads the wall clock in the zone it is given", () => {
     expect(partsIn(instant, TZ)).toEqual({ date: "2026-09-09", hour: 4, minute: 30 });
@@ -31,12 +31,12 @@ describe("recurrence.ts, generalised — the Oslo helpers become the tz helpers"
     expect(dateIn(instant, NY)).toBe("2026-09-08");
   });
 
-  it("osloParts and osloDate keep answering exactly as before — they are now wrappers", () => {
-    expect(osloParts(instant)).toEqual(partsIn(instant, TZ));
-    expect(osloDate(instant)).toBe("2026-09-09");
+  it("homeParts and homeDate keep answering exactly as before — they are now wrappers", () => {
+    expect(homeParts(instant)).toEqual(partsIn(instant, TZ));
+    expect(homeDate(instant)).toBe("2026-09-09");
   });
 
-  it("slotIn returns the four copied osloSlotNow helpers' shape: <date>T<hour>, else null", () => {
+  it("slotIn returns the four copied homeSlotNow helpers' shape: <date>T<hour>, else null", () => {
     expect(slotIn(new Date("2026-09-08T06:00:00Z"), TZ, 8)).toBe("2026-09-08T8");
     expect(slotIn(new Date("2026-09-08T06:01:00Z"), TZ, 8)).toBeNull();
     expect(slotIn(new Date("2026-09-08T07:00:00Z"), TZ, 8)).toBeNull();
@@ -125,7 +125,7 @@ describe("the cached resolver — one clock read per five minutes, never a throw
   });
 
   it("tzSync serves the last known zone rather than home once the cache is stale", async () => {
-    // The alternative — falling back to home on staleness — would flip a New York card back to Oslo
+    // The alternative — falling back to home on staleness — would flip a New York card back to Berlin
     // every five minutes. Stale-but-right beats fresh-but-home.
     let t = 1_000_000;
     const resolve = vi.fn(async () => clockOf(NY));

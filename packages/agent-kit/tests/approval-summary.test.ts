@@ -114,9 +114,9 @@ describe("summarizeApproval — what owner-1 reads before authorising a write", 
     // Explicit offsets: a bare "2026-09-01T10:00" is parsed as HOST-local by JS, which would
     // make this suite pass or fail depending on the machine's timezone.
     expect(summarizeApproval("calendar_create_event", { summary: "Intro", start: "2026-09-01T10:00:00+02:00", attendees: ["a@example.com"], notify: true }))
-      .toBe('Calendar: create "Intro" at Tuesday 2026-09-01 10:00 (Europe/Oslo) with a@example.com (guests notified)');
+      .toBe('Calendar: create "Intro" at Tuesday 2026-09-01 10:00 (Europe/Berlin) with a@example.com (guests notified)');
     expect(summarizeApproval("calendar_create_event", { summary: "Solo block", start: "2026-09-01T10:00:00+02:00" }))
-      .toBe('Calendar: create "Solo block" at Tuesday 2026-09-01 10:00 (Europe/Oslo)');
+      .toBe('Calendar: create "Solo block" at Tuesday 2026-09-01 10:00 (Europe/Berlin)');
   });
 
   it("surfaces a recurrence — one ping and a standing one are different asks", () => {
@@ -265,25 +265,25 @@ describe("dates on a card are for a human, not a machine", () => {
   // 2026-08-19T09:00:00+02:00 via slack`. The DATE was correct — but an ISO timecode is
   // exactly the raw-JSON illegibility this whole feature exists to remove, and the owner read
   // it as a date bug. The agent's own confirmation line right below it already said
-  // "onsdag 2026-08-19 kl 09:00 (Europe/Oslo)". The card must not be the least readable
+  // "onsdag 2026-08-19 kl 09:00 (Europe/Berlin)". The card must not be the least readable
   // thing in the thread.
   it("renders a reminder's dueAt as a weekday and time, not an ISO string", () => {
     const summary = summarizeApproval("remind_set", {
       message: "Test klokka", dueAt: "2026-08-19T09:00:00+02:00", door: "slack",
     });
-    expect(summary).toBe('Set reminder "Test klokka" for Wednesday 2026-08-19 09:00 (Europe/Oslo) via slack');
+    expect(summary).toBe('Set reminder "Test klokka" for Wednesday 2026-08-19 09:00 (Europe/Berlin) via slack');
     expect(summary).not.toContain("T09:00:00");
   });
 
   it("renders calendar start times the same way", () => {
     expect(summarizeApproval("calendar_create_event", { summary: "Intro", start: "2026-09-01T10:00:00+02:00" }))
-      .toBe('Calendar: create "Intro" at Tuesday 2026-09-01 10:00 (Europe/Oslo)');
+      .toBe('Calendar: create "Intro" at Tuesday 2026-09-01 10:00 (Europe/Berlin)');
   });
 
-  it("converts a non-Oslo offset into Oslo, since that is the clock owner-1 reads", () => {
-    // 08:00 UTC is 10:00 in Oslo (CEST). Showing "08:00" would be true and useless.
+  it("converts a non-Berlin offset into Berlin, since that is the clock owner-1 reads", () => {
+    // 08:00 UTC is 10:00 in Berlin (CEST). Showing "08:00" would be true and useless.
     expect(summarizeApproval("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" }))
-      .toContain("Tuesday 2026-09-01 10:00 (Europe/Oslo)");
+      .toContain("Tuesday 2026-09-01 10:00 (Europe/Berlin)");
   });
 
   it("falls back to the raw value when it is not a date — never renders 'Invalid Date'", () => {
@@ -293,7 +293,7 @@ describe("dates on a card are for a human, not a machine", () => {
   });
 
   // final review. The card's clock is a PARAMETER: on a trip abroad the turn's own clock
-  // block names the foreign zone, and a card still saying Europe/Oslo describes the same instant on a second
+  // block names the foreign zone, and a card still saying Europe/Berlin describes the same instant on a second
   // clock inside one exchange. the chief-of-staff service passes `ownerTzSync()`; the default stays the home clock.
   it("renders on the OWNER's clock when one is passed, naming that zone", () => {
     expect(summarizeApproval("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" }, "America/New_York"))
@@ -307,7 +307,7 @@ describe("dates on a card are for a human, not a machine", () => {
 
   it("falls back to the home clock when no zone is passed", () => {
     expect(summarizeApproval("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" }))
-      .toContain("(Europe/Oslo)");
+      .toContain("(Europe/Berlin)");
   });
 });
 
@@ -324,10 +324,10 @@ describe("registerApprovalSummary — the owner clock reaches the global eve rea
   });
 
   it("calls the injected tz reader on every card, so a trip that starts mid-session is picked up", () => {
-    let zone = "Europe/Oslo";
+    let zone = "Europe/Berlin";
     registerApprovalSummary({ tz: () => zone });
     const card = () => globalThis.__eveApprovalSummary!("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" });
-    expect(card()).toContain("(Europe/Oslo)");
+    expect(card()).toContain("(Europe/Berlin)");
     zone = "America/New_York";
     expect(card()).toContain("Tuesday 2026-09-01 04:00 (America/New_York)");
   });
@@ -337,10 +337,10 @@ describe("registerApprovalSummary — the owner clock reaches the global eve rea
     // cannot be resolved must degrade one step, not take the card down.
     registerApprovalSummary({ tz: () => { throw new Error("no pool"); } });
     expect(globalThis.__eveApprovalSummary!("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" }))
-      .toContain("(Europe/Oslo)");
+      .toContain("(Europe/Berlin)");
     registerApprovalSummary({ tz: () => "  " });
     expect(globalThis.__eveApprovalSummary!("remind_set", { message: "x", dueAt: "2026-09-01T08:00:00Z" }))
-      .toContain("(Europe/Oslo)");
+      .toContain("(Europe/Berlin)");
   });
 
   it("registers with no options at all — every other agent in the fleet keeps its cards", () => {

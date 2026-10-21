@@ -175,7 +175,7 @@ describe("wrapCalendarApi.listEvents — the fields classification needs", () =>
 
 // ── the replay of the morning the brief got it wrong, end to end ───────────────────────────────────────────────────────
 
-/** 08:00 Oslo on the morning the brief got it wrong. */
+/** 08:00 Berlin on the morning the brief got it wrong. */
 const THAT_MORNING = new Date("2026-08-25T06:00:00Z");
 
 /** The three events that produced the two false claims, exactly as the API returned them. */

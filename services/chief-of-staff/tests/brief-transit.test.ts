@@ -117,7 +117,7 @@ describe("the arrive-by the clause hands over", () => {
     title: "Session", startsAt: new Date(iso), participants: [], kind: "in-person", location: "Example Venue",
   });
 
-  it("is ISO-8601 WITH the real Oslo offset in summer (CEST)", () => {
+  it("is ISO-8601 WITH the real Berlin offset in summer (CEST)", () => {
     expect(transitClause([at("2026-08-25T15:00:00Z")], [], "today").join("\n"))
       .toContain("arriveBy 2026-08-25T17:00:00+02:00");
   });
@@ -128,7 +128,7 @@ describe("the arrive-by the clause hands over", () => {
   });
 
   // the same instants, read through a different owner clock. `tz` rides in as the
-  // 5th argument, after the (omitted) itinerary, and the home zone (OWNER_HOME_TZ=Europe/Oslo in vitest.config) is what the
+  // 5th argument, after the (omitted) itinerary, and the home zone (OWNER_HOME_TZ=Europe/Berlin in vitest.config) is what the
   // two cases above exercise implicitly by never passing one.
   it("America/New_York, summer (EDT) — the offset is -04:00", () => {
     expect(transitClause([at("2026-08-25T14:00:00Z")], [], "today", "America/New_York").join("\n"))

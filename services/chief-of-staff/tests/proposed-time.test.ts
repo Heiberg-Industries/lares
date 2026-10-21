@@ -4,11 +4,11 @@ import { detectProposedWindow } from "../lib/proposed-time.js";
 
 /**
  * detectProposedWindow. Fixed `now` throughout so weekday/relative-day
- * resolution is deterministic: 2026-08-24T09:00:00Z is a Monday in Oslo (confirmed via
+ * resolution is deterministic: 2026-08-24T09:00:00Z is a Monday in Berlin (confirmed via
  * Intl.DateTimeFormat before writing these expectations, not assumed).
  */
-const NOW = new Date("2026-08-24T09:00:00Z"); // Monday, Oslo
-const NOW_TUESDAY = new Date("2026-08-25T09:00:00Z"); // Tuesday, Oslo — for the same-day boundary case
+const NOW = new Date("2026-08-24T09:00:00Z"); // Monday, Berlin
+const NOW_TUESDAY = new Date("2026-08-25T09:00:00Z"); // Tuesday, Berlin — for the same-day boundary case
 
 describe("detectProposedWindow", () => {
   it("returns null when nothing matches (negative case)", () => {
@@ -183,8 +183,8 @@ describe("detectProposedWindow", () => {
     // Tuesday reads as next Tuesday, not "right now".
     const r = detectProposedWindow("Passer tirsdag?", NOW_TUESDAY);
     expect(r).toEqual({
-      timeMin: "2026-08-31T22:00:00.000Z", // 2026-09-01 00:00 Oslo
-      timeMax: "2026-09-01T22:00:00.000Z", // 2026-09-02 00:00 Oslo
+      timeMin: "2026-08-31T22:00:00.000Z", // 2026-09-01 00:00 Berlin
+      timeMax: "2026-09-01T22:00:00.000Z", // 2026-09-02 00:00 Berlin
       label: "Tuesday 1 September",
     });
   });
@@ -194,8 +194,8 @@ describe("detectProposedWindow", () => {
   it("narrows to a 1-hour window when a 24h time is given", () => {
     const r = detectProposedWindow("Can we do tuesday at 14:00?", NOW);
     expect(r).toEqual({
-      timeMin: "2026-08-25T12:00:00.000Z", // 14:00 Oslo
-      timeMax: "2026-08-25T13:00:00.000Z", // 15:00 Oslo
+      timeMin: "2026-08-25T12:00:00.000Z", // 14:00 Berlin
+      timeMax: "2026-08-25T13:00:00.000Z", // 15:00 Berlin
       label: "Tuesday 25 August 14:00",
     });
   });

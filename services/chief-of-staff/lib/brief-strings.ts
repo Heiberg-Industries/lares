@@ -28,7 +28,7 @@ import type { BriefLanguage } from "./brief-settings.js";
 
 export interface BriefRender {
   lang?: BriefLanguage;
-  /** IANA zone, e.g. "Europe/Oslo". Defaults to the home zone (`homeTzFromEnv` in `@lares/agent-kit/owner-clock`)
+  /** IANA zone, e.g. "Europe/Berlin". Defaults to the home zone (`homeTzFromEnv` in `@lares/agent-kit/owner-clock`)
    *  wherever this is consumed — see `buildMorningPrompt`/`buildEveningPrompt`. */
   tz?: string;
   /** Whether the agent holds the optional `transit` capability. False (the neutral default)

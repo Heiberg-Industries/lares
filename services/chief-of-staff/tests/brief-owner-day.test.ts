@@ -18,16 +18,16 @@ import type { CalendarEvent } from "../lib/google.js";
  * moved the clock TIMES a brief prints onto the owner's timezone; this file is the other
  * half, the day boundaries. Two groups, written in this order on purpose:
  *
- *   1. PINS — the owner clock is the home clock (`Europe/Oslo`). Every day decision the ticket
+ *   1. PINS — the owner clock is the home clock (`Europe/Berlin`). Every day decision the ticket
  *      touches answers exactly as it did before, with and without the timezone handed in.
  *   2. THE BUG — the owner is abroad on an evening/morning where the home date and the owner's
  *      date DIFFER. "Tomorrow" and "today" must be the owner's.
  *
- * Every instant is fixed; nothing here reads a real clock. September 2026: Oslo is UTC+2,
+ * Every instant is fixed; nothing here reads a real clock. September 2026: Berlin is UTC+2,
  * New York UTC-4, Tokyo UTC+9, Auckland UTC+12 (its summer time starts on the 27th).
  */
 
-const OSLO = "Europe/Oslo";
+const HOME_TZ = "Europe/Berlin";
 const NEW_YORK = "America/New_York";
 const TOKYO = "Asia/Tokyo";
 const AUCKLAND = "Pacific/Auckland";
@@ -56,36 +56,36 @@ const titles = (rows: Array<{ title: string }>) => rows.map((r) => r.title);
 // 1. PINS — owner clock = home clock. Must pass before AND after the change.
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
-/** 20:00 in Oslo, Tuesday 15 September. */
-const EVENING_OSLO = new Date("2026-09-15T18:00:00Z");
-/** 08:00 in Oslo, Wednesday 16 September. */
-const MORNING_OSLO = new Date("2026-09-16T06:00:00Z");
+/** 20:00 in Berlin, Tuesday 15 September. */
+const EVENING_HOME = new Date("2026-09-15T18:00:00Z");
+/** 08:00 in Berlin, Wednesday 16 September. */
+const MORNING_HOME = new Date("2026-09-16T06:00:00Z");
 
 const HOME_WEEK: CalendarEvent[] = [
-  timed("tue 21:00 oslo", "2026-09-15T19:00:00Z", "2026-09-15T20:00:00Z"),
+  timed("tue 21:00 berlin", "2026-09-15T19:00:00Z", "2026-09-15T20:00:00Z"),
   allDay("wed all day", "2026-09-16", "2026-09-17"),
-  timed("wed 09:00 oslo", "2026-09-16T07:00:00Z", "2026-09-16T08:00:00Z"),
-  timed("wed 23:30 oslo", "2026-09-16T21:30:00Z", "2026-09-16T22:00:00Z"),
+  timed("wed 09:00 berlin", "2026-09-16T07:00:00Z", "2026-09-16T08:00:00Z"),
+  timed("wed 23:30 berlin", "2026-09-16T21:30:00Z", "2026-09-16T22:00:00Z"),
   allDay("thu all day", "2026-09-17", "2026-09-18"),
-  timed("thu 00:30 oslo", "2026-09-16T22:30:00Z", "2026-09-16T23:30:00Z"),
-  timed("thu 09:00 oslo", "2026-09-17T07:00:00Z", "2026-09-17T08:00:00Z"),
+  timed("thu 00:30 berlin", "2026-09-16T22:30:00Z", "2026-09-16T23:30:00Z"),
+  timed("thu 09:00 berlin", "2026-09-17T07:00:00Z", "2026-09-17T08:00:00Z"),
 ];
-const WEDNESDAY = ["wed all day", "wed 09:00 oslo", "wed 23:30 oslo"];
+const WEDNESDAY = ["wed all day", "wed 09:00 berlin", "wed 23:30 berlin"];
 
-describe("PIN — with the owner clock = Europe/Oslo nothing moves", () => {
-  it("the evening pass covers tomorrow's Oslo date, with or without the timezone handed in", () => {
-    expect(nightBeforeCoveredDay(EVENING_OSLO)).toBe("2026-09-16");
-    expect(nightBeforeCoveredDay(EVENING_OSLO, OSLO)).toBe("2026-09-16");
+describe("PIN — with the owner clock = Europe/Berlin nothing moves", () => {
+  it("the evening pass covers tomorrow's Berlin date, with or without the timezone handed in", () => {
+    expect(nightBeforeCoveredDay(EVENING_HOME)).toBe("2026-09-16");
+    expect(nightBeforeCoveredDay(EVENING_HOME, HOME_TZ)).toBe("2026-09-16");
   });
 
   it("tomorrow's meetings are Wednesday's — timed and all-day, nothing from Tuesday or Thursday", async () => {
-    expect(titles(await listTomorrowMeetings(calendar(HOME_WEEK), EVENING_OSLO))).toEqual(WEDNESDAY);
-    expect(titles(await listTomorrowMeetings(calendar(HOME_WEEK), EVENING_OSLO, OSLO))).toEqual(WEDNESDAY);
+    expect(titles(await listTomorrowMeetings(calendar(HOME_WEEK), EVENING_HOME))).toEqual(WEDNESDAY);
+    expect(titles(await listTomorrowMeetings(calendar(HOME_WEEK), EVENING_HOME, HOME_TZ))).toEqual(WEDNESDAY);
   });
 
   it("today's meetings are Wednesday's", async () => {
-    expect(titles(await listTodayMeetings(calendar(HOME_WEEK), MORNING_OSLO))).toEqual(WEDNESDAY);
-    expect(titles(await listTodayMeetings(calendar(HOME_WEEK), MORNING_OSLO, OSLO))).toEqual(WEDNESDAY);
+    expect(titles(await listTodayMeetings(calendar(HOME_WEEK), MORNING_HOME))).toEqual(WEDNESDAY);
+    expect(titles(await listTodayMeetings(calendar(HOME_WEEK), MORNING_HOME, HOME_TZ))).toEqual(WEDNESDAY);
   });
 
   it("the one-read calendar pass returns the same rows, and bounds clashes to that same day", async () => {
@@ -94,19 +94,19 @@ describe("PIN — with the owner clock = Europe/Oslo nothing moves", () => {
       timed("wed clash", "2026-09-16T07:30:00Z", "2026-09-16T08:30:00Z"),
       timed("thu clash", "2026-09-17T07:30:00Z", "2026-09-17T08:30:00Z"),
     ];
-    for (const opts of [{}, { tz: OSLO }]) {
-      const day = await listTodayCalendar(calendar(clashes), MORNING_OSLO, opts);
-      expect(titles(day.meetings)).toEqual(["wed all day", "wed 09:00 oslo", "wed clash", "wed 23:30 oslo"]);
-      expect(day.conflicts.map((c) => c.events.map((e) => e.title))).toEqual([["wed 09:00 oslo", "wed clash"]]);
+    for (const opts of [{}, { tz: HOME_TZ }]) {
+      const day = await listTodayCalendar(calendar(clashes), MORNING_HOME, opts);
+      expect(titles(day.meetings)).toEqual(["wed all day", "wed 09:00 berlin", "wed clash", "wed 23:30 berlin"]);
+      expect(day.conflicts.map((c) => c.events.map((e) => e.title))).toEqual([["wed 09:00 berlin", "wed clash"]]);
     }
   });
 
   it("last night's covered day IS this morning's today — the stamp and its reader agree", () => {
-    expect(nightBeforeCoveredDay(EVENING_OSLO, OSLO)).toBe(dateIn(MORNING_OSLO, OSLO));
+    expect(nightBeforeCoveredDay(EVENING_HOME, HOME_TZ)).toBe(dateIn(MORNING_HOME, HOME_TZ));
   });
 
   it("an evening where the two clocks happen to agree on the date answers the same on either", () => {
-    // 20:00 in Auckland on Tuesday the 15th is 10:00 that same Tuesday in Oslo.
+    // 20:00 in Auckland on Tuesday the 15th is 10:00 that same Tuesday in Berlin.
     const EVENING_AUCKLAND = new Date("2026-09-15T08:00:00Z");
     expect(nightBeforeCoveredDay(EVENING_AUCKLAND)).toBe("2026-09-16");
     expect(nightBeforeCoveredDay(EVENING_AUCKLAND, AUCKLAND)).toBe("2026-09-16");
@@ -125,9 +125,9 @@ describe("PIN — the reading-picks cutoff stays on the home clock", () => {
   };
 
   it("a note created on the home-clock cutoff day is in; the instant only matters on the home clock", () => {
-    // 02:00 in Oslo on the 16th: seven home days back is the 9th, so the note is inside.
+    // 02:00 in Berlin on the 16th: seven home days back is the 9th, so the note is inside.
     expect(readIngestedPicks("/vault/raw", new Date("2026-09-16T00:00:00Z"), reader)).toHaveLength(1);
-    // 02:00 in Oslo on the 17th: the cutoff is the 10th, so it is out.
+    // 02:00 in Berlin on the 17th: the cutoff is the 10th, so it is out.
     expect(readIngestedPicks("/vault/raw", new Date("2026-09-17T00:00:00Z"), reader)).toHaveLength(0);
   });
 });
@@ -137,7 +137,7 @@ describe("PIN — the reading-picks cutoff stays on the home clock", () => {
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 
 describe("BUG — an evening brief at 20:00 New York is about the OWNER's tomorrow", () => {
-  /** 20:00 in New York on Tuesday the 15th — already 02:00 on Wednesday the 16th in Oslo. */
+  /** 20:00 in New York on Tuesday the 15th — already 02:00 on Wednesday the 16th in Berlin. */
   const EVENING_NY = new Date("2026-09-16T00:00:00Z");
 
   const AWAY_WEEK: CalendarEvent[] = [
@@ -172,9 +172,9 @@ describe("BUG — an evening brief at 20:00 New York is about the OWNER's tomorr
 });
 
 describe("BUG — a morning brief at 08:00 Tokyo is about the OWNER's today", () => {
-  /** 08:00 in Tokyo on Wednesday the 16th — 01:00 the same Wednesday in Oslo. The two DATES agree
+  /** 08:00 in Tokyo on Wednesday the 16th — 01:00 the same Wednesday in Berlin. The two DATES agree
    *  at this instant; what differs is where the day ENDS: Tokyo's Wednesday is over seven hours
-   *  before Oslo's, so the home clock pulls the owner's Thursday-morning hours into "today". */
+   *  before Berlin's, so the home clock pulls the owner's Thursday-morning hours into "today". */
   const MORNING_TOKYO = new Date("2026-09-15T23:00:00Z");
 
   const TOKYO_WEEK: CalendarEvent[] = [
@@ -191,7 +191,7 @@ describe("BUG — a morning brief at 08:00 Tokyo is about the OWNER's today", ()
 });
 
 describe("BUG — a morning brief at 08:00 Auckland, while it is still yesterday at home", () => {
-  /** 08:00 in Auckland on Wednesday the 16th — 22:00 on TUESDAY the 15th in Oslo. */
+  /** 08:00 in Auckland on Wednesday the 16th — 22:00 on TUESDAY the 15th in Berlin. */
   const MORNING_AUCKLAND = new Date("2026-09-15T20:00:00Z");
 
   const AUCKLAND_WEEK: CalendarEvent[] = [

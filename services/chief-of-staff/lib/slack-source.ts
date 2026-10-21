@@ -113,7 +113,7 @@ type UsersInfoResponse = {
     id: string;
     deleted?: boolean;
     real_name?: string;
-    /** The owner clock's second source. An IANA zone name ("Europe/Oslo"), which Slack
+    /** The owner clock's second source. An IANA zone name ("Europe/Berlin"), which Slack
      *  sets from the device and updates on its own, which is exactly why it catches a trip
      *  nobody told the agent about. Slack also returns `tz_label` and `tz_offset`; neither is read
      *  here, because an offset cannot survive a DST boundary and a label is not a zone id.

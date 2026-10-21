@@ -100,7 +100,7 @@ describe("makeGmailSentAfter", () => {
   it("ignores his own messages sent AT or BEFORE theirs — `after:` is only day-granular", async () => {
     const gmail: GmailLookupDeps = {
       searchThreadIds: async () => ["t-1"],
-      // Same Oslo day as their message, but two hours earlier: Gmail's date-granular `after:`
+      // Same Berlin day as their message, but two hours earlier: Gmail's date-granular `after:`
       // returns this thread, and only the timestamp comparison here rejects it.
       readThread: async () => [message({ sentAt: "2026-08-10T07:00:00Z" })],
     };

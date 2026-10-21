@@ -71,7 +71,7 @@ import {
 import type { ResolvedConflict } from "./conflict-resolution.js";
 import type { CalendarEvent } from "./google.js";
 import type { ThreadMessage } from "./google.js";
-import { dateIn, osloDate } from "./recurrence.js";
+import { dateIn, homeDate } from "./recurrence.js";
 import { standingFactLine, type StandingFact } from "./standing-facts.js";
 import type { BriefLanguage } from "./brief-settings.js";
 import { BRIEF_STRINGS } from "./brief-strings.js";
@@ -738,7 +738,7 @@ function wallTime(d: Date, tz: string): string {
  *    without ever being mistaken for the venue's absence.
  *
  * `tz` is required: every caller says which clock to read, rather than this file
- * assuming a fixed zone such as Europe/Oslo.
+ * assuming a fixed zone such as Europe/Berlin.
  */
 export function commitmentLine(m: NightBeforeMeeting, tz: string): string {
   const when = m.allDay
@@ -1738,7 +1738,7 @@ export function readIngestedPicks(
     // note's `created` is a date the vault wrote at home, so the cutoff it is compared against
     // has to come off that same clock; where the owner is standing has no bearing on when a
     // note was filed. Moving this one would compare dates taken from two different clocks.
-    const cutoff = osloDate(new Date(now.getTime() - PICKS_WINDOW_DAYS * DAY_MS));
+    const cutoff = homeDate(new Date(now.getTime() - PICKS_WINDOW_DAYS * DAY_MS));
     const picks: IngestedPick[] = [];
     for (const name of reader.readdir(dir)) {
       if (!name.toLowerCase().endsWith(".md")) continue;
