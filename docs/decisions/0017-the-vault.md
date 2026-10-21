@@ -7,7 +7,7 @@
 
 ## In plain language
 
-Today an installation has three separately-named stores — the personal vault, the business
+Before this decision an installation had three separately-named stores — the personal vault, the business
 vault, and a taste store — each with its own folder path and its own on/off switch in an
 agent's grant list. This decision gives them one name, "the Vault", with named areas inside
 it, and one switch that turns an area on or off for an agent. It also settles what belongs in
@@ -20,42 +20,36 @@ never allowed to be the only place a fact lives without also being visible and e
 
 ## Context
 
-ADR-0010 (2026-08-11) set the authority rules that still hold: one canonical store per fact
+ADR-0010 set the authority rules that still hold: one canonical store per fact
 class, mirrors never edited in place, a taste layer kept separate from the personal vault so
 an agent that must not see personal notes can still see taste. Its §7 called the taste store
 "planned, not yet built". It has since shipped: `packages/taste/src/index.ts` defines its OKF
-vocabulary, `services/travel/lib/taste-store.ts` and `services/console/lib/taste-store.ts`
-read and write it, and `services/console/app/taste/page.tsx` is the owner's view of it.
+vocabulary, `services/console/lib/taste-store.ts` reads and writes it, and
+`services/console/app/taste/page.tsx` is the owner's view of it.
 
-Three gaps have opened since ADR-0010, found by reading the code for this decision:
+Gaps found by reading the code for this decision:
 
 1. **Three names, three env vars, three capabilities.** The personal store is `VAULT_PATH`
    (capability `brain`), the business store is `ATLAS_PATH` (capability `atlas`)
-   (`packages/agent-kit/src/notes-store.ts:18-21`), and taste is `TASTE_ROOT`, default
-   `/srv/taste`, with no capability grant at all (`services/travel/lib/taste-store.ts:28`,
-   `services/console/lib/taste-store.ts:25`). `services/chief-of-staff/catalogue/remember.ts:13`
-   notes the standing-facts capability was itself renamed once already ("renamed from `facts`").
-2. **The taste store already has a second, divergent write path.** The travel role's own dream
-   cycle appends to `taste/preferences.md` resolved relative to a trip's own directory
-   (`services/travel/lib/dream.ts:132`, wired live by
-   `services/travel/agent/schedules/taste-promote.ts`), a different path from the canonical
-   `TASTE_ROOT`/`/srv/taste` store the console and `nearby_places.ts` read. It writes with a raw
+   (`packages/agent-kit/src/notes-store.ts`), and taste is `TASTE_ROOT`, default
+   `/srv/taste`, with no capability grant at all (`services/console/lib/taste-store.ts`).
+   The standing-facts capability had itself been renamed once already ("renamed from `facts`").
+2. **A second, divergent write path into the taste store existed.** A role's own dream
+   cycle appended to `taste/preferences.md` resolved relative to a trip's own directory, a different
+   path from the canonical `TASTE_ROOT` store the console reads. It wrote with a raw
    `fs.appendFileSync`, no capability grant, no OKF frontmatter and no approval — a "one writable
-   home" violation in production today, not a hypothetical one.
-3. **The OKF conformance check is Atlas-only.** `services/atlas/lib/okf.ts` states the five-value
-   vocabulary is "the whole knowledge layer's" (line 8), but `checkConformance` is invoked only
-   from `services/atlas/lib/cli.ts:137` and `services/atlas/lib/migrate-okf.ts:52` — nothing runs
-   it over Brain, taste, or `_meta`. `okf.ts:14-16` also records a deliberate decision not to
+   home" violation.
+3. **The OKF conformance check was Atlas-only.** `services/atlas/lib/okf.ts` states the five-value
+   vocabulary is "the whole knowledge layer's", but `checkConformance` was invoked only
+   from the Atlas CLI and the Atlas OKF migration — nothing ran
+   it over Brain, taste, or `_meta`. `okf.ts` also recorded a deliberate decision not to
    adopt OKF's optional provenance family (`sources`, `generated`, `verified`, `stale_after`) —
    reversed below for the reasons in rule 3.
 
-Report 06 (the database-first devil's-advocate research) is the source for where the table/file
-line sits: markdown survives as the truth for narrative knowledge, but dated facts, entities and
+The database-first research (a devil's-advocate review of files-as-truth) is the source for where the table/file line sits: markdown survives as the truth for narrative knowledge, but dated facts, entities and
 relationships, operational records, and raw archives are database truth, "not because a database
 is fashionable, but because a sentence in a note has no true-from/true-until and a summarised
-fact is an assertion nobody can check" (pre-launch research, "Where the line should sit"). Two other
-projects studied (gbrain, Hermes/Khoj) independently converge on the same shelf split and on "an index is
-rebuildable, never truth".
+fact is an assertion nobody can check" ("Where the line should sit"). Other memory projects studied independently converge on the same shelf split and on "an index is rebuildable, never truth".
 
 ## Decision
 
@@ -63,9 +57,8 @@ rebuildable, never truth".
    (personal notes, one folder per member once a second member exists), `shared/` (business
    knowledge every member benefits from), `taste/` (life-context: places, tracks, dishes,
    playlists), `_meta/` (what the agents write about their own running — conversation logs, dream
-   reflections; excluded from search today at `packages/agent-kit/src/notes-store.ts:30`, and
-   that exclusion stays). An installation may keep other folder
-   *names* (for example "Brain" and "Atlas") by an installation setting; the engine never hard-codes them (ADR-0015's overlay rule).
+   reflections; excluded from search in `packages/agent-kit/src/notes-store.ts`, and that exclusion stays). An installation may keep other folder
+   *names* (for example "Brain" and "Atlas") by an installation setting; the engine never hard-codes them (ADR-0015).
    One capability `vault`, granted per area, replaces the separate `brain`, `atlas`, `memory` (née
    `facts`) and taste-write capabilities. "Memory" stops naming a store; it names the act — an
    agent remembers by writing to the Vault, to a table, or by calling `remember`.
@@ -75,66 +68,56 @@ rebuildable, never truth".
    - Dated facts, people, relationships, deadlines, bookings → database tables are the truth,
      each row carrying `valid_from`, `valid_to`, `recorded_at`, `source`, `superseded_by`,
      `origin` (the origin model defines the
-     field). `standing_facts` (`services/box/sql/002_standing_facts.sql`) and
-     `dream_preferences` (`services/chief-of-staff/lib/dream/store.ts:104-116`) already carry
+     field). `standing_facts` and `dream_preferences` (`services/chief-of-staff/lib/dream/store.ts`) already carry
      most of this shape (`stated_at`/`retired_at`, `valid_from`/`valid_to`/`superseded_by`) and
      are extended to the full column set rather than replaced.
    - Large imported archives (a mailbox, an imported message history) → an append-only,
-     searchable record, never memory and never bulk-extracted into notes (pre-launch research, failure
-     case 5).
+     searchable record, never memory and never bulk-extracted into notes.
    - Indexes, embeddings, summaries → rebuildable from the store they were built from, never
      hand-edited, never the truth for anything.
    - Never a two-way sync between a table and a note. Where a fact must be visible in both
-     places (a standing fact mentioned in a person's Brain note), the note links to the fact by
+     places (a standing fact mentioned in a person's personal note), the note links to the fact by
      id; it does not restate it.
 3. **Format: "OKF v0.2-compatible markdown"**, spec pinned at commit `ad30107c` of
    `GoogleCloudPlatform/open-knowledge-format` (never described to an owner as "your memory is
    OKF" — it is the file format, not a product name). The vocabulary stays the one
-   `services/atlas/lib/okf.ts:19` already states is shared, not Atlas-local. OKF's optional
+   `services/atlas/lib/okf.ts` already states is shared, not Atlas-local. OKF's optional
    provenance fields (`generated`, `verified`, `sources`, `status`, `stale_after`) are adopted —
-   reversing the 2026-08-11 decision recorded at `okf.ts:14-16`, now that they have a real second
+   reversing the earlier decision recorded in `okf.ts`, now that they have a real second
    consumer (the origin model's frontmatter). Add the `lares_*` extension fields: `lares_origin`,
    `lares_valid_from`, `lares_valid_to`, `lares_supersedes`, `lares_scope` (formalising the
-   `scope:` key `notes-store.ts:293-334` already parses ad hoc). The conformance check
+   `scope:` key `notes-store.ts` already parses ad hoc). The conformance check
    (`checkConformance`) runs over every area of the Vault — private, shared, taste, `_meta` — not
    only the shared one; `services/atlas/lib/cli.ts`'s `--check-okf` mode becomes a Vault-wide
    command rather than an Atlas one.
-4. **All memory work happens before the public launch**: origin marking (the origin model),
+4. **All memory work ships together**: origin marking (the origin model),
    add-only dreaming (ADR-0018), the small per-session core (ADR-0018), the `lares_*`
-   dated-facts fields (this decision), "which memories did you use?" plus one-step forget (rule
-   8 below), and the memory test set (a pre-launch research recommendation — a private eval built from
-   Lares's own question shapes, not a public benchmark). None of these ships piecemeal ahead of
+   dated-facts fields (this decision), "which memories did you use?" plus one-step forget (rule 7 below), and the memory test set (a private eval built from Lares's own question shapes, not a public benchmark). None of these ships piecemeal ahead of
    the others; a half-built origin system is worse than none, because it reads as a guarantee
    that is not actually kept.
-5. *(Ruling 4 continues into the reversal conditions below rather than a numbered rule of its
-   own — see "Open questions".)*
+5. *(No rule. Numbering is kept so references elsewhere to rules 6–10 stay valid.)*
 6. **Seeing memory:** "which memories did you use?" is answerable on every door (a reply that
-   drew on standing facts or Vault notes names them) and in the console, per turn. This is new —
-   today's standing-facts block and dream-promoted preferences are silent about which row
-   answered which question.
+   drew on standing facts or Vault notes names them) and in the console, per turn. Before this, the standing-facts block and dream-promoted preferences were silent about which row answered which question.
 7. **Correcting memory:** one-step forget, already the shape of
    `services/chief-of-staff/catalogue/forget.ts` for standing facts (soft-retire, gated as a
-   `delete` category in `packages/agent-kit/src/always-ask.ts:88`), extended to every writable
+   `delete` category in `packages/agent-kit/src/always-ask.ts`), extended to every writable
    home with a **forget ledger** — a record of what was told to forget, checked on every re-sync
    or re-import so a Notion pull or a Brain restore cannot silently resurrect a retired fact.
-   Today's `forget` retires a row; nothing stops a future import reintroducing the same fact.
+   `forget` retires a row; without the ledger nothing stops a future import reintroducing the same fact.
 8. **Erasure:** a single "erase this person" routine walks every area of the Vault, the facts
    tables, the conversation record (ADR-0018's replacement for markdown conversation logs), the
    archive, and every sync job's own state, and states plainly what git history still holds
-   (pre-launch research: "git remembers deleted text forever; so do backups" — files-as-truth's weakest
+   ("git remembers deleted text forever; so do backups" — files-as-truth's weakest
    legal point, and the database camp is not better by default). A purge command exists for the
    case that needs git history rewritten or backups aged out.
-9. **Notion stays a two-way sync** (the owner overruled the research's one-way recommendation on
-   2026-09-18; recorded here without re-arguing it). Consequence: synced content carries origin
+9. **Notion stays a two-way sync** (the owner overruled the research's one-way recommendation). Consequence: synced content carries origin
    in both directions; content pulled from Notion is stamped `synced` (never `owner` or `agent`,
    whatever it reads like); the fidelity gate (`services/notion-sync`'s pull path,
    `pull-sync.ts`/`notion-born-sync.ts`/`transcript-sync.ts`) refuses a pull that would drop a
-   `lares_*` stamp rather than silently widening it. Today those three files write an ad hoc
-   `source: notion-docs` / `source: notion-meetings` frontmatter key
-   (`notion-born-sync.ts:295`, `transcript-sync.ts:387`) — this decision replaces that key with
+   `lares_*` stamp rather than silently widening it. Those three files used to write an ad hoc `source: notion-docs` / `source: notion-meetings` frontmatter key — this decision replaces that key with
    `lares_origin: synced` plus the sync job's own provenance (`notion_page`, kept as-is).
 10. **Search stays keyword-first.** The existing tokenised search over the Vault
-    (`packages/agent-kit/src/notes-store.ts:168-214`) is the default. A rebuildable Postgres
+    (`packages/agent-kit/src/notes-store.ts`) is the default. A rebuildable Postgres
     full-text index is built only once the memory test set (rule 4) shows keyword search failing
     on Lares's own question shapes — not before. `pgvector` stays installed and unused
     (the research's "the right state today") until full-text search is itself shown insufficient;
@@ -149,8 +132,7 @@ rebuildable, never truth".
 
 - One name, one capability, one mental model for an owner setting up an agent: "does this agent
   see `private/`, `shared/`, `taste/`?" replaces four separate grants that drift independently.
-- The taste store's second write path (rule 1's finding 2) is forced into the open and fixed as
-  part of adopting this ADR, rather than staying an invisible divergence.
+- The taste store's second write path (gap 2 above) is forced into the open and closed, rather than staying an invisible divergence.
 - The conformance check finally does what its own code comment already claimed it did.
 - Extending `standing_facts`/`dream_preferences` rather than replacing them keeps the migration
   small — most of the bi-temporal shape (a pattern borrowed from the research) is already there.
@@ -159,13 +141,11 @@ rebuildable, never truth".
 
 - A real migration: every write path that currently uses `brain`/`atlas`/`memory`/taste grants
   moves to `vault` grants scoped by area, and every note's frontmatter gains `lares_*` fields it
-  does not have today (`grep -rln "lares_origin"` returns nothing in this worktree — confirmed
-  before writing this ADR).
+  does not have before the migration.
 - OKF's optional provenance fields are adopted for a use they were not adopted for before; the
-  frontmatter parser (`services/atlas/lib/frontmatter.ts` and its Brain-side counterparts) grows
+  frontmatter parser (`services/atlas/lib/frontmatter.ts` and its personal-vault counterparts) grows
   more fields to validate.
-- A Vault-wide conformance check will, on first run, surface every non-conformant file already in
-  Brain and taste — this is a one-time noisy migration, not a design flaw.
+- A Vault-wide conformance check will, on first run, surface every non-conformant file already in the personal vault and taste — this is a one-time noisy migration, not a design flaw.
 
 ## Operational rules
 
@@ -176,12 +156,11 @@ rebuildable, never truth".
 - Don't: write a fact to a note and its table twin "to be safe" — pick the one writable home
   per rule 2 and link, never duplicate.
 - Don't: let a schedule or background job write to any Vault area, or to taste, without going
-  through the same capability grant and origin stamp a model-called tool would use — the
-  `services/travel/lib/dream.ts:132` path is the example this rule closes.
+  through the same capability grant and origin stamp a model-called tool would use — the raw dream-cycle append (gap 2) is the example this rule closes.
 
 ## Open questions
 
-Report 06's reversal conditions apply unchanged; they are the standing test for whether
+The database-first research's reversal conditions apply unchanged; they are the standing test for whether
 files-as-truth-for-narrative-knowledge should be reopened:
 
 1. **Nobody opens the files.** If owners manage memory only through the console and chat after
@@ -196,8 +175,7 @@ files-as-truth-for-narrative-knowledge should be reopened:
    tables becomes genuinely painful — the answer is Graphiti's *model* (bi-temporal edges),
    still inside Postgres, never a graph database.
 
-Left for the taste-store fix (rule 1, finding 2) and ADR-0015's agent-definitions work to settle
-together: whether `taste/` gets its own per-agent mount distinct from `shared/`, or whether
+Left for ADR-0015's agent-definitions work to settle: whether `taste/` gets its own per-agent mount distinct from `shared/`, or whether
 area-scoped grants make a separate mount unnecessary.
 
 ## What lives where
@@ -211,18 +189,18 @@ area-scoped grants make a separate mount unnecessary.
 | Deadlines, bookings, approvals | Postgres tables (existing deadline/reminder/obligation stores) | Console pages | Same |
 | Large imported archives (mail, message history) | Append-only Postgres table + full-text index | Search results only, never presented as memory | Export command (rule 8) |
 | Indexes, embeddings, summaries | Rebuildable, derived, never truth | Indirectly, through search results | Not exported — regenerated on demand |
-| The agent's own working record | Markdown under `_meta/`, excluded from search (`notes-store.ts:30`) | Not surfaced as knowledge; included in vault backup | Included in the full vault backup, not in the "what the agent knows" export |
+| The agent's own working record | Markdown under `_meta/`, excluded from search (`notes-store.ts`) | Not surfaced as knowledge; included in vault backup | Included in the full vault backup, not in the "what the agent knows" export |
 
 ## Cross-references
 
 - ADR-0010 — amended by this decision; its §2–§7 authority rules stand.
 - ADR-0018 — the dreaming and per-session-core rules this ADR's rule 4 depends on.
 - The origin model — the `lares_origin` field this ADR's rule 3 introduces into frontmatter.
-- Pre-launch research on database-first memory — the shelf model and reversal conditions this ADR
+- Research on database-first memory — the shelf model and reversal conditions this ADR
   relies on; other research corroborates index-beside-files, retirement by usage and visible
   index health.
 
-## Amendment 2026-10-09 — articles and the shared agent
+## Amendment — articles and the shared agent
 
 An organisation has one shared agent, typically in Slack, with read and write access to the shared area. Which agent that is stays the installation's choice and is expressed only through the agents' `vault` grants; the default is the chief of staff. Each member has one or more personal agents with their own private area. Personal agents read the shared area and write there only where a grant says so. This changes no existing rule above; it states how the grants in rule 1 above are used for an organisation.
 

@@ -1,23 +1,18 @@
 # ADR 0016 — The fleet runs on eve, self-hosted, and carries three standing costs knowingly
 
-**Date:** 2026-09-15 (records a decision taken 2026-08-11 and live since 2026-08-16)
+**Date:** 2026-09-15
 **Status:** Accepted
-**Supersedes:** ADR-0009 (the runtime choice — Vercel AI SDK direct)
+**Supersedes:** the earlier runtime choice (Vercel AI SDK run directly inside the box; the record is not part of this repository)
 **Superseded by:** —
 
 ## Context
 
-ADR-0009 (2026-06-20) chose the Vercel AI SDK, run directly inside our own box, as the fleet's
-runtime. On 2026-08-11 a consolidation decision
-chose **eve** — Vercel's open-source
-agent framework, built on that same SDK — and the fleet moved: the chief of staff first (shadow 2026-08-11,
-cutover 2026-08-16), the travel agent (2026-08-16), the creative agent (2026-08-24), and the old
-`services/agent-runtime` decommissioned 2026-08-31, archived 2026-09-15. The decision was
-scored in a written scorecard and noted in the project's status log, but no ADR
-recorded it. The 2026-09-15 Lares audit (finding B3) found ADR-0009 still standing as the decision of
-record for a runtime nothing runs on. This ADR closes that gap; it records, it does not re-decide.
+The fleet's first runtime was the Vercel AI SDK, run directly inside the box. A later
+consolidation chose **eve** — Vercel's open-source agent framework, built on that same SDK — and
+every agent moved to it; the old standalone agent-runtime service was decommissioned and archived.
+This ADR records that decision; it does not re-decide it.
 
-The 2026-06-17 evaluation had rejected Vercel **Eve** for sovereignty reasons. What was rejected was the
+An earlier evaluation had rejected Vercel **Eve** for sovereignty reasons. What was rejected was the
 managed runtime. eve self-hosted on the installation's own box, calling models only through the self-hosted LiteLLM
 gateway, keeps every byte in the EU; that is the form adopted.
 
@@ -29,29 +24,29 @@ gateway, keeps every byte in the EU; that is the form adopted.
 2. **eve is pinned and patched, never tracked loosely.** The engine pins one eve version (the 0.32 line
    today) and carries `patches/eve.patch` in this repository. A version bump is a ticket that
    re-inspects the three standing costs below before it deploys.
-3. **Three standing costs are accepted, not litigated per deploy** (from the scorecard, verified live):
+3. **Three standing costs are accepted, not litigated per deploy** (verified live):
    - **F1 — restart recovery is defective upstream.** A bare restart mid-turn costs ~15 minutes; the
-     wrapper (a restart wrapper script) costs 26 seconds. We own the
+     restart wrapper costs 26 seconds. We own the
      wrapper and the discipline to use it.
    - **F2 — eve's Slack channel is webhook-only and needs public inbound; the box has none by design**
-     (ADR-0011). The slack-relay on the ops host plus its uptime monitor are permanent operating surface. In a
+     (ADR-0011). The Slack relay plus its uptime monitor are permanent operating surface. In a
      Lares install the installer places the relay on the one box.
    - **F3 — eve's default harness is open** (shell, file tools, no approval). Every agent's harness is
      narrowed on adoption and the box's sealed egress is non-negotiable in Lares; a rollback to a
      pre-fence image un-fences the tools, so the fence is checked, not assumed.
-4. **Since 2026-09-15 eve's job is narrower than "one image per agent".** ADR-0015 makes an agent a
+4. **eve's job is narrower than "one image per agent".** ADR-0015 makes an agent a
    definition resolved at runtime on one general image; eve's dynamic capabilities (`defineDynamic`)
    are the mechanism. Nothing in this ADR depends on the per-agent images the earlier repo-split design
    described.
 
 ## Consequences
 
-- ADR-0009's Decision 3 (AI SDK direct, self-hosted Inngest / pg-boss as the fleet's durability spine)
-  is superseded. What runs an agent's turns and schedules is eve's own durable sessions and schedules
+- The earlier decision to run the AI SDK directly, with self-hosted Inngest / pg-boss as the fleet's
+  durability spine, is superseded. What runs an agent's turns and schedules is eve's own durable sessions and schedules
   (an eve session is one chat-day; a schedule resumes the live session). Anything else on the box that
   still uses pg-boss is a fact of the box compose, not of this decision.
-- ADR-0009's Decisions 1–2 (a per-capability trust ratchet, one governance module above the model
-  layer) survive as ADR-0015 and the permissions board (its first step). The ratchet is being built there,
+- The earlier decisions on a per-capability trust ratchet and one governance module above the model
+  layer survive as ADR-0015 and the permissions board (its first step). The ratchet is being built there,
   not in a framework-neutral module of our own.
 - The costs in 3 are the reason the release process treats an eve bump as a release, and the
   reason `patches/eve.patch` must be copied into every image (the Dockerfile must copy `patches/` before `pnpm install`).

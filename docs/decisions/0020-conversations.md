@@ -4,18 +4,17 @@
 **Status:** Accepted
 **Supersedes:** —
 **Amends:** — (ADR-0010 governs knowledge stores — Brain, Atlas, Notion, the CRM — and says
-nothing about conversation logs; this ADR names a new, fourth kind of record that ADR-0010 does
-not currently cover)
+nothing about conversation logs; this ADR names a further kind of record that ADR-0010 does
+not cover)
 
 ## In plain language
 
-1. Every conversation an agent has today is recorded in three different, incomplete places at
-   once — and none of them is really "the" record.
+1. Every conversation an agent has was recorded in three different, incomplete places at once — and none of them is really "the" record.
 2. This decision names one of them the record: a database table, never edited after the fact,
    one row per turn, marked with who or what produced it.
 3. Conversations are kept for twelve months by default; the owner can shorten that, lengthen it,
    or choose "keep forever".
-4. The daily markdown transcript files an agent writes today stop being written; the database
+4. The daily markdown transcript files an agent used to write stop being written; the database
    table takes over that job.
 5. eve's own internal bookkeeping tables — which the framework needs to keep a conversation
    running at all — are kept only for as long as the framework needs them, not as a historical
@@ -28,52 +27,47 @@ not currently cover)
 
 ## Context
 
-**Copy one — eve's own workflow/session tables.** `services/chief-of-staff/agent/agent.ts:57`
-sets `world: "@workflow/world-postgres"` inside `experimental.workflow` — eve's session, turn,
+**Copy one — eve's own workflow/session tables.** The chief-of-staff agent sets
+`world: "@workflow/world-postgres"` inside `experimental.workflow`, so eve's session, turn,
 step, queue and stream state is persisted in the box's own Postgres rather than eve's default
 local-disk world. The schema it expects already applied is
-`services/chief-of-staff/sql/001-eve-workflow.sql`, which creates `workflow.workflow_events`,
-`workflow.workflow_hooks`, `workflow.workflow_runs`, `workflow.workflow_steps`,
-`workflow.workflow_stream_chunks` and `workflow.workflow_waits` (lines 95-187). This is eve's own
-durability spine, not a conversation log Lares designed — the file's own header says the box has
-no auto-migrate, so this schema is hand-applied once and never touched by the running agent.
+`services/chief-of-staff/sql/001-eve-workflow.sql`, which creates the `workflow.workflow_*` tables
+(events, hooks, runs, steps, stream chunks, waits). This is eve's own durability spine, not a
+conversation log Lares designed — the box has no auto-migrate, so this schema is applied once and
+never touched by the running agent.
 
-**Copy two — the markdown logs under `_meta/conversations/`.** `services/chief-of-staff/lib/conversation-log.ts:24-45`
+**Copy two — the markdown logs under `_meta/conversations/`.** `services/chief-of-staff/lib/conversation-log.ts`
 writes one markdown file per exchange to `_meta/conversations/<date>/<stamp>-<door>.md`, with a
 YAML frontmatter block (`at`, `door`, `principal`, optional `lane`, `proposals`) and a body of
-`**<speaker>:**` lines. The write-time speaker label is hardcoded to the owner's canonical name
-on a human turn, and to the chief-of-staff agent's persona name on the reply line
-(`conversation-log.ts:17`, `:40`) — a role-neutral rewrite of this file is needed regardless of
-this ADR. The actual capture happens in `services/chief-of-staff/agent/hooks/turn-capture.ts`, an
+`**<speaker>:**` lines. The speaker labels must be role-neutral, not tied to any installation's
+names. The actual capture happens in `services/chief-of-staff/agent/hooks/turn-capture.ts`, an
 agent-level hook (not a channel `events` handler, for reasons its own header explains at length:
 a channel handler would silently replace eve's default reply-posting behaviour) that buffers one
 exchange per session across `turn.started`, `message.received`, `actions.requested`,
 `message.completed`, `turn.completed`, `turn.failed` and `turn.cancelled`, and flushes a
-`TurnLogEntry` to `conversation-log.ts` on the terminal reply, on eviction after 24 hours
-(`turn-capture.ts:99`), or on a failed/cancelled turn. It is careful, hard-won code — the module
-header documents a real production outage it exists to prevent — and none of that care is lost by
-this ADR; the same buffering and exchange-boundary logic simply needs to write to a database
-table instead of a markdown file.
+`TurnLogEntry` to `conversation-log.ts` on the terminal reply, on eviction after 24 hours, or on a
+failed/cancelled turn. It is careful, hard-won code — its module header documents a production
+outage it exists to prevent — and none of that care is lost by this ADR; the same buffering and
+exchange-boundary logic simply needs to write to a database table instead of a markdown file.
 
 **Copy three — the `agent_conversations` projection.** `services/box/sql/001_baseline.sql`
 creates one table: `agent, incarnation, session_id, door, observed_at, terminal`, primary-keyed on
 `(agent, incarnation, session_id)`. Its own comment says what it is: "No transcripts,
 current incarnation-scoped UI projection." It stores no message text and no speaker — only that a
 session exists, which door it is on, when it was last observed, and whether it finished.
-`packages/agent-kit/src/conversation-control.ts:17-20` writes it (`INSERT ... ON CONFLICT ...
-DO UPDATE SET observed_at=now()`, and deletes rows beyond the newest 500 per agent/incarnation);
-`services/keeper/lib/conversations.ts:29-38` reads it for two keeper actions,
-`conversation.list` and `conversation.reset`.
+`packages/agent-kit/src/conversation-control.ts` writes it (an upsert that sets `observed_at=now()`,
+and deletes rows beyond the newest 500 per agent/incarnation); `services/keeper/lib/conversations.ts`
+reads it for two keeper actions, `conversation.list` and `conversation.reset`.
 
-**What reads each today.** The dream cycle's `services/chief-of-staff/lib/dream/log-reader.ts`
+**What reads each.** The dream cycle's `services/chief-of-staff/lib/dream/log-reader.ts`
 reads only the markdown logs: `readConversationLogs` lists everything under
 `_meta/conversations/**/*.md`, parses each file's frontmatter and body back into a
-`TurnLogEntry` (`parseConversationLog`, lines 31-58), deliberately excludes any entry carrying a
-`lane` (a scheduled, machine-authored turn — line 118-121: "nothing to learn from it"), and
+`TurnLogEntry` (`parseConversationLog`), deliberately excludes any entry carrying a
+`lane` (a scheduled, machine-authored turn: "nothing to learn from it"), and
 returns entries strictly after a `since` cursor. The console reads only the `agent_conversations`
-projection, through the keeper: `services/console/app/actions/definition.ts:43,47-48` calls
-`conversation.list` and `conversation.reset`. Nothing today reads eve's own workflow tables for
-conversation content; they exist purely so eve itself can resume a session.
+projection, through the keeper (`conversation.list` and `conversation.reset`). Nothing reads
+eve's own workflow tables for conversation content; they exist purely so eve itself can resume a
+session.
 
 ## Decision
 
@@ -86,7 +80,7 @@ conversation content; they exist purely so eve itself can resume a session.
    agent-said, or system, matching the origin classes the origin model defines); a
    **per-person key**, so an erase-a-person routine can find and remove every entry a given
    person produced or received without touching anyone else's; and it is **searchable** — the
-   console's Memory page and "which memories did you use?" (ruling 8) query it directly rather
+   console's Memory page and "which memories did you use?" (ADR-0017 rule 6) query it directly rather
    than grepping files.
 3. **Retention defaults to twelve months.** The owner can change the retention period, including
    to "keep forever", as an installation setting. Entries past the retention window are pruned;
@@ -116,9 +110,7 @@ conversation content; they exist purely so eve itself can resume a session.
 ## Consequences
 
 **Positive:**
-- One searchable place for "what was said", instead of a grep over dated markdown files that the
-  dream cycle already treats as fragile (its own parser tolerates and silently drops unparseable
-  files).
+- One searchable place for "what was said", instead of a grep over dated markdown files that the dream cycle already treats as fragile (its own parser tolerates and silently drops unparseable files).
 - Erasure and export become a query against one table with a person key, rather than a file walk
   with no reliable per-person index.
 - The vault's git history stops accumulating conversation transcripts, which is exactly the
@@ -133,12 +125,12 @@ conversation content; they exist purely so eve itself can resume a session.
   reaches eve's own session state only when that session closes and its rows are pruned (rule 5).
   This must be stated to the owner, not glossed over.
 - **Git history of the vault**, honestly: even after conversation transcripts stop being written
-  to the vault going forward, every markdown log already committed before this ADR remains in
+  to the vault going forward, every markdown log already committed before the change remains in
   the vault's git history unless a history rewrite (a purge) is run. A working-tree delete alone
   does not remove it. An erase-a-person routine that only deletes files leaves those entries
   recoverable from `git log -p` indefinitely.
 - Migrating the existing `_meta/conversations/` corpus into the new table (so the dream cycle
-  does not lose its history on the day this ships) is real, separate work, not covered here.
+  does not lose its history on the day the change ships) is real, separate work, not covered here.
 
 ## Operational rules
 
@@ -153,15 +145,15 @@ conversation content; they exist purely so eve itself can resume a session.
 
 ## Open questions
 
-- The exact table shape and its migration number are a build decision for a slice, not this ADR.
+- The exact table shape and its migration number are a build decision, not this ADR.
 - How eve's own session semantics change under the ADR-0021 upgrade (0.32 to 0.60.x) — the
   execution-model rewrite there changes what "a session" durably holds, and this ADR's rule 5
   should be re-checked once that upgrade lands.
 - Whether the new record also becomes the source for "which memories did you use?" on the door
-  channels themselves (ruling 8), or only in the console — a wave-5 build decision.
+  channels themselves (ADR-0017 rule 6), or only in the console.
 
 ## Cross-references
 
 - ADR-0015 (agents are definitions), ADR-0016 (eve), ADR-0010 (knowledge-store authority, amended)
-- The origin model (drafted alongside this decision)
-- The export and erase feature
+- The origin model
+- The export and erase feature (ADR-0017 rule 8)
