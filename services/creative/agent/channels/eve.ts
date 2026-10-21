@@ -129,7 +129,9 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
         if (request.headers.has("x-lares-member-id") || request.headers.has("x-lares-admission") || request.headers.has("x-lares-purpose")) await assertPrivateConsoleRequest(request);
         const attributes = await consoleRouteAdmission(request);
         if (!attributes) return legacy;
-        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR, attributes: { ...legacy.attributes, ...attributes } };
+        return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR,
+          ...(attributes.lares_member_id ? {principalId:attributes.lares_member_id,principalType:'user' as const}:{}),
+          attributes: { ...legacy.attributes, ...attributes } };
       } catch { return null; }
     }
   }

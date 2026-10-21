@@ -1,5 +1,5 @@
 /** Trusted server admission only. No model-facing input can supply these coordinates.
- * This bounded runtime supports the designated owner in one private console audience.
+ * This bounded runtime supports explicitly authorised members in singleton private console audiences.
  * Native channels and approval resumes do not inherit this authority.
  */
 import { getPool } from './db.js';
@@ -13,7 +13,7 @@ export const CONSOLE_PURPOSE_HEADER = 'x-lares-purpose';
 /** Version of this private console admission contract, not the permission board policy. */
 export const CONSOLE_AUTHORITY_REVISION = 1;
 /** Only fresh sessions created by the bounded runtime can carry this capture. */
-export const PRIVATE_CONSOLE_SURFACE_REVISION = 1;
+export const PRIVATE_CONSOLE_SURFACE_REVISION = 2;
 export const CONSOLE_AUTHORITY_REFUSED = 'Conversation authority is not available';
 /** A pool supplies connect; a query-only client belongs to an already-open caller transaction. */
 export interface AuthorityDatabase { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
@@ -65,13 +65,10 @@ function binding(row: any): ConsoleBinding {
   return { agent: row.agent, incarnation: row.incarnation, sessionId: row.session_id, memberId: row.member_id,
     admissionNonce: row.admission_nonce, placeId: row.place_id, audienceRevision: row.audience_revision, policyRevision: row.policy_revision, agentAccessRevision: Number(row.agent_access_revision) };
 }
-/** Owner-only remains deliberate until all automatic context and tools are member-scoped. */
-async function currentAgentUse(db:AuthorityDatabase,agent:string,memberId:string,env:NodeJS.ProcessEnv):Promise<number> {
-  if(memberId!==env.AGENT_OWNER_USER_ID?.trim())denied();
+/** The common grant store verifies current membership, owner policy, definition and use. */
+async function currentAgentUse(db:AuthorityDatabase,agent:string,memberId:string,_env:NodeJS.ProcessEnv):Promise<number> {
   const revision=await new PgGrantStore().captureUse(memberId,agent,{db:db as GrantDatabase});
   if(revision===undefined)denied();
-  const member=await authorityQuery(db,"SELECT 1 FROM users WHERE id=$1 AND status='active' AND org_role='owner'",[memberId]);
-  if(member.rows.length!==1)denied();
   return revision!;
 }
 /** Runs before registry, route-password or upstream access; returns no resource metadata. */

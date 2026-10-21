@@ -23,8 +23,10 @@ export function personalGoogleConfig(config: {tokenKeyFile: string; clients: Per
   return personalGoogleSchema.parse({tokenKeyFile: config.tokenKeyFile, clients});
 }
 export function personalGoogleEnabled(d: AgentDefinition): boolean {
-  const grant = grantFor(d, 'gmail');
-  return d.role === 'chief-of-staff' && !!grant && grant.scope !== 'none' && autonomyOf(d, 'gmail') !== 'never';
+  return d.role === 'chief-of-staff' && ['gmail', 'personal_mailbox', 'personal_calendar'].some(capability => {
+    const grant = grantFor(d, capability);
+    return !!grant && grant.scope !== 'none' && autonomyOf(d, capability) !== 'never';
+  });
 }
 type GoogleSources = { personalGoogle?: PersonalGoogleConfig; email?: {tokenKeyFile: string; clientIdFile: string; clientSecretFile: string} };
 /** One inventory for compose, reconciliation and credential-operation preflight/rollback. */

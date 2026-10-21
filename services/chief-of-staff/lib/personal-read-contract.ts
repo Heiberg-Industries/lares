@@ -1,4 +1,4 @@
-/** Internal read contract only. Results contain private third-party text; the eventual caller
+/** Private read contract. Results contain private third-party text; the tool wrapper
  * must quote/bound it and taint its turn before exposing it. No query language or URLs cross here.
  */
 import { z } from 'zod';

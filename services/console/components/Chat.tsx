@@ -60,62 +60,35 @@ function tabStorage(): Storage | null {
  *    it anyway (`StaleApprovalError`) and a button that cannot work is worse than a sentence.
  *    `Date.now()` is read HERE, at render, and handed down as a set.
  */
-export function Chat({
-  name,
-  owner,
-  fresh = false,
-  seed,
-  inbox,
-  agents = [],
-}: {
+export function Chat({ name, memberId, agents = [] }: {
   name: string;
-  owner: string;
-  fresh?: boolean;
-  /** "Reply" on a web-chat message: start a new conversation with this text in the box, ready to send. */
-  seed?: string;
-  /** Messages the agent left in web chat, shown at the top. */
-  inbox?: React.ReactNode;
+  memberId: string;
   agents?: ChatIdentity[];
 }) {
-  const storageKey = chatSessionKey(owner, name);
+  const storageKey = chatSessionKey(memberId, name);
   const [binding, setBinding] = useState<{
     key: string;
     session: ClientSessionState | null;
+    generation: number;
   } | null>(null);
-
-  // The server and first browser render agree. Read tab storage only after hydration; a changed
-  // agent or owner gets a new binding before its Eve hook can mount under the wrong host.
   useEffect(() => {
     const storage = tabStorage();
-    if ((fresh || seed !== undefined) && storage) {
-      storage.removeItem(storageKey);
-      storage.removeItem(`${storageKey}:draft`);
-      storage.removeItem(`${storageKey}:scroll`);
-      try {
-        if (seed !== undefined) storage.setItem(`${storageKey}:draft`, seed);
-      } catch {}
-      const url = new URL(window.location.href);
-      url.searchParams.delete("created");
-      url.searchParams.delete("reply");
-      window.history.replaceState(window.history.state, "", url);
-    }
-    setBinding({
-      key: storageKey,
-      session: storage && !fresh && seed === undefined ? readChatSession(storage, storageKey) : null,
-    });
-  }, [storageKey, fresh, seed]);
-
+    setBinding({ key: storageKey, session: storage ? readChatSession(storage, storageKey) : null, generation: 0 });
+  }, [storageKey]);
   if (binding?.key !== storageKey) return <p role="status">Opening chat…</p>;
-  return (
-    <ChatSession
-      key={storageKey}
-      name={name}
-      agents={agents}
-      storageKey={storageKey}
-      initialSession={binding.session}
-      inbox={inbox}
-    />
-  );
+  return <ChatSession
+    key={`${storageKey}:${binding.generation}`}
+    name={name}
+    agents={agents}
+    storageKey={storageKey}
+    initialSession={binding.session}
+    onFresh={() => {
+      for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
+        try { tabStorage()?.removeItem(key); } catch {}
+      }
+      setBinding({ key: storageKey, session: null, generation: binding.generation + 1 });
+    }}
+  />;
 }
 
 function ChatSession({
@@ -123,13 +96,13 @@ function ChatSession({
   agents,
   storageKey,
   initialSession,
-  inbox,
+  onFresh,
 }: {
   agents: ChatIdentity[];
   name: string;
   storageKey: string;
   initialSession: ClientSessionState | null;
-  inbox?: React.ReactNode;
+  onFresh(): void;
 }) {
   const router = useRouter();
   const identity = agents.find((a) => a.name === name) ?? {
@@ -137,15 +110,22 @@ function ChatSession({
     displayName: name,
     role: "",
   };
+  const failed = useRef(false);
   const agent = useEveAgent({
     host: `/api/chat/${name}`,
     initialSession: initialSession ?? undefined,
     resume: initialSession !== null,
     onSessionChange(session) {
       const storage = tabStorage();
-      if (storage) saveChatSession(storage, storageKey, session);
+      if (storage && !failed.current) saveChatSession(storage, storageKey, session);
     },
   });
+  useEffect(() => {
+    if (agent.status === 'error') failed.current = true;
+    if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
+      try { tabStorage()?.removeItem(key); } catch {}
+    }
+  }, [agent.status, storageKey]);
   const [text, updateText] = useState(() => {
     try {
       return tabStorage()?.getItem(`${storageKey}:draft`) ?? "";
@@ -156,7 +136,7 @@ function ChatSession({
   function setText(value: string) {
     updateText(value);
     try {
-      const storage = tabStorage();
+      const storage = failed.current ? null : tabStorage();
       if (value) storage?.setItem(`${storageKey}:draft`, value);
       else storage?.removeItem(`${storageKey}:draft`);
     } catch {}
@@ -187,7 +167,8 @@ function ChatSession({
     if (follow.current) element.scrollTop = element.scrollHeight;
   }, [agent.data.messages, agent.status, storageKey]);
   const isBusy = agent.status === "submitted" || agent.status === "streaming";
-  const composer = composerState(agent.status);
+  const unavailable = failed.current || agent.status === "error";
+  const composer = unavailable ? { disabled: true, say: "Start a new conversation to continue." } : composerState(agent.status);
   const expired = expiredRequestIds(agent.events, Date.now());
 
   const answer = (requestId: string, optionId: string) => {
@@ -214,7 +195,6 @@ function ChatSession({
         title="Chat"
         description="Talk things through. Your agents are here."
       />
-      {inbox}
       <div className="lares-chat-top">
         <Menu.Root>
           <Menu.Trigger asChild>
@@ -272,16 +252,7 @@ function ChatSession({
         <Button
           variant="ghost"
           type="button"
-          onClick={() => {
-            setText("");
-            setAnswerError(null);
-            restored.current = false;
-            follow.current = true;
-            try {
-              tabStorage()?.removeItem(`${storageKey}:scroll`);
-            } catch {}
-            agent.reset();
-          }}
+          onClick={onFresh}
         >
           New conversation
         </Button>
@@ -325,7 +296,7 @@ function ChatSession({
           <ChatTranscript
             status={agent.status}
             messages={agent.data.messages}
-            error={agent.error?.message ?? null}
+            error={unavailable ? "This conversation is unavailable. Start a new conversation." : null}
             expired={expired}
             answering={answering}
             onAnswer={answer}

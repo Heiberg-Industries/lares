@@ -25,7 +25,8 @@ import {
   renderIntegrationSecretsModule,
   type InstallationConnections,
 } from "../src/integration-generate.js";
-import { loadIntegrationManifests } from "../src/integration-manifest.js";
+import { hostsFor } from "../src/persona/index.js";
+import { loadIntegrationManifests, assertCapabilityHosts } from "../src/integration-manifest.js";
 import { KNOWN_CAPABILITIES } from "../src/manifest.js";
 
 const ROOT = join(import.meta.dirname, "..", "..", "..");
@@ -35,11 +36,13 @@ const installation = JSON.parse(
   readFileSync(join(ROOT, "integrations", "installation.json"), "utf8"),
 ) as InstallationConnections;
 
+const manifests=loadIntegrationManifests(join(ROOT, "integrations"));
+assertCapabilityHosts(manifests,hostsFor);
 const outputs: [string, string][] = [
   [
     join(SRC, "connections.ts"),
     renderConnectionsModule(
-      loadIntegrationManifests(join(ROOT, "integrations")),
+      manifests,
       installation,
       KNOWN_CAPABILITIES,
     ),

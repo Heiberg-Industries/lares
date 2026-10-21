@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadIntegrationManifests, parseIntegrationManifest } from "../src/integration-manifest.js";
+import { loadIntegrationManifests, parseIntegrationManifest, assertCapabilityHosts } from "../src/integration-manifest.js";
 import { CAPABILITY_DOCS, hostsFor } from "../src/persona/index.js";
 import { connections, secretsForRefs } from "../src/connections.js";
 
@@ -14,15 +14,13 @@ describe("a manifest and the registries it will generate", () => {
     expect(manifests.map((m) => m.id).sort()).toEqual(["google", "microsoft", "notion", "slack"]);
   });
 
-  it("names only capabilities the fleet knows, and agrees with each one's declared hosts", () => {
-    for (const m of manifests) {
-      for (const c of m.capability) {
-        expect(CAPABILITY_DOCS[c], `${m.id} names unknown capability ${c}`).toBeDefined();
-        expect(hostsFor(c), `${m.id}/${c}`).toEqual(
-          hostsFor(c).filter((h) => m.outbound_hosts.includes(h)),
-        );
-      }
-    }
+  it("names known capabilities whose hosts are covered by the implementing provider union", () => {
+    expect(()=>assertCapabilityHosts(manifests,hostsFor)).not.toThrow();
+    for(const m of manifests)for(const c of m.capability)expect(CAPABILITY_DOCS[c]).toBeDefined();
+    const withoutMicrosoft=manifests.filter(m=>m.id!=="microsoft");
+    expect(()=>assertCapabilityHosts(withoutMicrosoft,hostsFor)).toThrow("Undeclared capability host");
+    expect(()=>assertCapabilityHosts([{...manifests[0],capability:["unknown"]}],hostsFor)).toThrow();
+    expect(()=>assertCapabilityHosts(manifests.map(m=>({...m,outbound_hosts:m.outbound_hosts.filter(h=>h!=="graph.microsoft.com")})),hostsFor)).toThrow("graph.microsoft.com");
   });
 
   it("declares every secret its connection holds, where it has a connection at all", () => {

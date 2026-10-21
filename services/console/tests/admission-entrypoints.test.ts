@@ -33,7 +33,7 @@ describe("all console member entry points guard before reading data", () => {
     it(`page ${path}`, () => {
       const source = syntax(file);
       const fn = functions(source).find(exported)!;
-      const expected = path === "sign-in/page.tsx" ? "signedInMember" : path === "membership/page.tsx" ? "requireMember" : "requireConsolePage";
+      const expected = path === "sign-in/page.tsx" ? "signedInMember" : (path === "membership/page.tsx" || path.startsWith("chat/")) ? "requireMember" : "requireConsolePage";
       // Sign-in reads only its query parameters before checking admission; every data page
       // awaits its guard as its first statement, before invoking any data reader.
       const first = path === "sign-in/page.tsx" ? fn.body!.statements[1] : fn.body!.statements[0];
@@ -62,7 +62,8 @@ describe("all console member entry points guard before reading data", () => {
     if (path === "api/chat/[name]/[...path]/route.ts") {
       it("chat route delegates current admission before the proxy reads data or forwards", () => {
         const source = readFileSync(file, "utf8");
-        expect(source).toContain('signedInEmail: async () => verify((await cookies()).get("lares_session")?.value)');
+        expect(source).toContain('signedInMember,');
+        expect(source).not.toContain('signedInEmail');
         const proxy = syntax(new URL("../lib/chat-proxy.ts", import.meta.url).pathname);
         const fn = functions(proxy).find(fn => fn.name?.text === "forwardChat")!;
         expect(fn.body!.statements[0].getText(proxy)).toContain("await deps.signedInMember()");

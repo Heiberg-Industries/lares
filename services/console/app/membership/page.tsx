@@ -12,15 +12,15 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
   const params = await searchParams;
   let accounts: ConnectedAccountView[] = [], unavailable = false;
   try { accounts = await new PgAccountStore(pool).list(member.id); } catch { unavailable = true; }
-  return <main className="lares-page lares-stack" id="main-content">
+  return <div className="lares-page lares-stack">
     <h1>Your membership</h1>
     <p>Your membership is active. Your current role is {member.role}. New members begin with draft-and-ask automation.</p>
-    <p>Shared console access is still being integrated. Your membership does not give access to other people's conversations, accounts or private files.</p>
+    <p>Private chat is available with agents you have permission to use. Your membership does not give access to other people's conversations, accounts or private files.</p>
     <section className="lares-stack" aria-label="Your personal accounts">
       <h2>Your personal accounts</h2>
-      {params.added && <p role="status">Account consent saved. Agent use is pending integration.</p>}
+      {params.added && <p role="status">Account consent saved. Available agent tools determine which account reads can be used.</p>}
       {params.error && <p role="alert">Account consent could not be saved. Start again here.</p>}
-      <p>Consent is stored for your own account. Agent use is pending integration. Disconnecting stops Lares account access; revoke the provider grant in your Google or Microsoft account settings if needed.</p>
+      <p>Consent is stored for your own account. Private chat can use the available personal Google mailbox read tools; Microsoft agent tools are still pending integration. Disconnecting stops Lares account access; revoke the provider grant in your Google or Microsoft account settings if needed.</p>
       {unavailable ? <p role="status">Personal accounts unavailable. Try again later.</p> : accounts.length ? accounts.map(account => <div key={account.id} className="lares-surface lares-stack">
         <strong>{account.providerAccount.label}</strong><span>{account.status}</span>
         {(account.connectorId === "google" || account.connectorId === "microsoft") && <form method="post" action={`/api/accounts/${account.connectorId}/start`}>
@@ -37,8 +37,9 @@ export default async function MembershipPage({ searchParams }: { searchParams: P
         <p>Your own work mailbox and primary calendar only. The installation needs a separate Microsoft data client; tenant administrator consent may be required. Personal Outlook and shared mailboxes are unavailable.</p>
       </form></>}
     </section>
+    <Link href="/chat">Open private chat →</Link>
     {isConsoleOwner(member) && <Link href="/">Open the owner console →</Link>}
     <form method="post" action="/api/auth/logout"><button type="submit">Sign out</button></form>
     <form action={signOutEverywhere}><button type="submit">Sign out everywhere</button></form>
-  </main>;
+  </div>;
 }

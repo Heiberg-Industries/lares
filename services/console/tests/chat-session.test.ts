@@ -11,7 +11,7 @@ function memoryStorage() {
 }
 
 describe("tab chat recovery", () => {
-  it("keeps the saved cursor separate by signed-in owner and agent", () => {
+  it("keeps the saved cursor separate by opaque member and agent", () => {
     const storage = memoryStorage();
     const alice = chatSessionKey("Alice@example.com", "helper");
     saveChatSession(storage, alice, { sessionId: "wrun_1", streamIndex: 12 });
@@ -20,6 +20,12 @@ describe("tab chat recovery", () => {
     expect(readChatSession(storage, chatSessionKey("Alice@example.com", "other"))).toBeNull();
     saveChatSession(storage, alice, undefined);
     expect(readChatSession(storage, alice)).toBeNull();
+  });
+
+  it('preserves opaque member case and never adopts the legacy email key',()=>{
+    const storage=memoryStorage();storage.setItem('lares:chat:member-id:helper',JSON.stringify({sessionId:'old',streamIndex:0}));
+    expect(chatSessionKey('Member-ID','helper')).not.toBe(chatSessionKey('member-id','helper'));
+    expect(readChatSession(storage,chatSessionKey('member-id','helper'))).toBeNull();
   });
 
   it("refuses malformed browser state before it reaches an Eve route", () => {

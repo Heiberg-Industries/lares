@@ -1,12 +1,11 @@
-import { requireConsolePage } from "../../lib/auth";
+import { requireMember } from "../../lib/auth";
 import { redirect } from "next/navigation";
-import { listAgents } from "../../lib/agents";
+import { listPrivateChatAgents } from "../../lib/agents";
 import { EmptyState, PageHeader } from "@lares/ui/patterns";
-import Link from "next/link";
 export const dynamic = "force-dynamic";
 export default async function ChatPage() {
-  await requireConsolePage();
-  const agents = await listAgents({ strict: true }).catch(() => null);
+  const member=await requireMember();
+  const agents = await listPrivateChatAgents(member).catch(() => null);
   if (agents?.length) redirect(`/chat/${encodeURIComponent(agents[0].name)}`);
   return (
     <div className="lares-page">
@@ -14,9 +13,9 @@ export default async function ChatPage() {
         title="Chat"
         description="Talk things through. Your agents are here."
       />
-      <EmptyState title={agents ? "No agents yet" : "Agents are unavailable"} action={agents ? <Link href="/agents/new">Create an agent</Link> : undefined}>
+      <EmptyState title={agents ? "No conversations available" : "Conversations are unavailable"}>
         {agents
-          ? "Create an agent to start a conversation."
+          ? "An agent will appear here when you have permission to use it."
           : "Reload to try again."}
       </EmptyState>
     </div>

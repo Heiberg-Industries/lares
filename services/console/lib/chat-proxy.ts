@@ -65,14 +65,6 @@ export const ROUTE_USERNAME = "eve";
  */
 export const MEMBER_HEADER = "x-lares-member";
 
-/** A member address may not contain anything that would fold, split or terminate a header line,
- *  and may not be absurdly long. `verify()` only ever returns an allow-listed address, so this is
- *  the belt to that braces: a header value is built here, and building one from an unchecked
- *  string is how response splitting happens. The agent's own `consoleMember` refuses the same
- *  shapes again on arrival. */
-const MEMBER_SHAPE = /^[^\s,;]+@[^\s,;]+$/;
-const MEMBER_MAX = 320;
-
 /** eve's own session surface, by method and by path. Anything else on the agent is not relayed. */
 const ALLOWED: readonly { readonly methods: readonly string[]; readonly path: RegExp }[] = [
   { methods: ["POST"], path: /^eve\/v1\/session$/ },
@@ -80,7 +72,6 @@ const ALLOWED: readonly { readonly methods: readonly string[]; readonly path: Re
   { methods: ["GET"], path: /^eve\/v1\/session\/[A-Za-z0-9_-]{1,64}\/stream$/ },
   { methods: ["POST"], path: /^eve\/v1\/session\/[A-Za-z0-9_-]{1,64}\/(cancel|clear|compact|reset)$/ },
   { methods: ["GET"], path: /^eve\/v1\/health$/ },
-  { methods: ["GET"], path: /^eve\/v1\/info$/ },
 ];
 
 /** The eve paths the console will forward, and nothing else. */
@@ -121,7 +112,6 @@ export interface ChatDeps {
   /** The route password, or undefined when none is mounted. Never logged. */
   routePassword(): string | undefined;
   /** The signed-in console member, or null. Checked before anything else happens. */
-  signedInEmail(): Promise<string | null>;
   signedInMember(): Promise<Member | null>;
 }
 
@@ -190,11 +180,6 @@ export async function forwardChat(request: Request, name: string, path: string, 
   //    the identity this request is carried out under.
   const stableMember = await deps.signedInMember();
   if (!stableMember) return refuse(401, "Sign in to the console to talk to an agent.");
-  const member = await deps.signedInEmail();
-  if (!member) return refuse(401, "Sign in to the console to talk to an agent.");
-  if (member.length > MEMBER_MAX || !MEMBER_SHAPE.test(member)) {
-    return refuse(403, "The signed-in address is not one this console can vouch for to an agent.");
-  }
 
   // 2. What may be asked for, before anything is looked up, read or opened.
   const rule = ALLOWED.find((candidate) => candidate.path.test(path));
@@ -211,14 +196,14 @@ export async function forwardChat(request: Request, name: string, path: string, 
 
   try {
     try { await requireConsoleAgentUse(name,stableMember.id,deps); }
-    catch { return refuse(403,"Conversation access is unavailable. The console owner must explicitly adopt the agent in its access settings before starting a new conversation."); }
+    catch { return refuse(403,"Conversation access is unavailable. Start a new conversation after access has been granted."); }
     // 3. The address comes from the console's own registry, by bound parameter — never from the
     //    request. An agent this console cannot vouch for is a 404 with no call made.
     const { rows } = await deps.query(
       `SELECT host(r.address) AS address, r.state, a.status, r.runtime_control_token,
         r.ownership_token AS incarnation, r.applied_definition->>'role' AS role
         FROM agent_resources r JOIN agent_definitions a ON a.name = r.name
-        WHERE r.name = $1 AND r.state = 'ready' AND a.status = 'valid'`,
+        WHERE r.name = $1 AND r.state = 'ready' AND NOT r.pending AND a.status = 'valid'`,
       [name],
     );
     const address = vouchedAddress(rows[0]);
@@ -264,8 +249,7 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // Set AFTER the loop above, and from the verified session — never copied from the request.
     // Whatever the browser sent under this name was already dropped, because the loop only ever
     // copies the three names in REQUEST_HEADERS.
-    headers.set(MEMBER_HEADER, member);
-    // Health/info never carry member authority.
+    // Health never carries member authority.
     if (path === "eve/v1/session" || sessionId) {
       headers.set(CONSOLE_MEMBER_ID_HEADER, stableMember.id);
       headers.set(CONSOLE_ADMISSION_HEADER, nonce);
