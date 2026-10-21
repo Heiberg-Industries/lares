@@ -117,6 +117,10 @@ jobs:
         if: matrix.name == 'box'
         run: python3 -B services/box/tests/gateway-admission.test.py
 
+      - name: Check gateway admission streaming settlement offline
+        if: matrix.name == 'box'
+        run: python3 -B services/keeper/tests/gateway-admission-settlement.test.py
+
   typecheck:
     name: workspace typecheck
     runs-on: ubuntu-latest

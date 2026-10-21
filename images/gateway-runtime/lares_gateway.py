@@ -607,14 +607,12 @@ class AdmissionHook(CustomLogger):
 
     async def async_post_call_streaming_iterator_hook(self, user_api_key_dict, response, request_data):
         request = state()
-        evidence = TerminalEvidence(request.path)
         async for chunk in response:
-            evidence.feed(response_document(chunk))
             yield chunk
-        # Reached only on normal exhaustion, never cancellation or a partial stream.
-        usage = evidence.result()
-        if request.dispatched and usage is not None:
-            await runtime.settle(request, usage)
+        # Normal exhaustion is required; settlement itself accepts only strict raw
+        # provider usage recorded by EvidenceStream, never SDK-reconstructed usage.
+        if request.dispatched:
+            await runtime.settle(request, None)
 
 
 gateway_hook = AdmissionHook(turn_off_message_logging=True)
