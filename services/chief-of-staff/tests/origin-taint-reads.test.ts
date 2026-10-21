@@ -263,6 +263,12 @@ const TAINTS: Record<string, ReadonlySet<string>> = {
   "chief-of-staff": new Set<string>([
     ...TAINTING_TOOLS.keys(), // gmail_read, gmail_search, read_url — the hook's own blanket coverage
     "gmail_accounts", // self-taints provider-supplied account/mailbox labels
+    // Each private tool self-taints even empty metadata/results: personal-read-tools.test.ts.
+    "personal_mailbox_accounts",
+    "personal_mailbox_list",
+    "personal_mailbox_read",
+    "personal_calendar_accounts",
+    "personal_calendar_events",
     "calendar_list_events", // self-taints on calendarId/account
     "person_lookup", // self-taints when the mail source finds something
     "calendar_conflicts", // self-taints unconditionally — reads beyond the primary calendar by design

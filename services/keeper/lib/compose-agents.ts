@@ -5,7 +5,8 @@ import { stringify } from 'yaml';
 import { gatewayModels } from './gateway-keys.js';
 import { DOOR_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
 import { outsideSecretName, outsideSecretTarget } from '@lares/agent-kit/outside-tools';
-import { googleSecretFiles, personalGoogleSchema, type PersonalGoogleConfig } from './personal-google.js';
+import { personalReadSecretFiles, personalMicrosoftSchema, type PersonalMicrosoftConfig } from './personal-microsoft.js';
+import { personalGoogleSchema, type PersonalGoogleConfig } from './personal-google.js';
 import { bindingsFor, INTEGRATION_SECRET_FILES, type RuntimeBindings } from './runtime-bindings.js';
 export const DIGEST = /^[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}$/;
 export function agentName(name: string): string { if (!/^[a-z][a-z0-9-]{1,30}$/.test(name))
@@ -23,6 +24,7 @@ export interface AgentContainer {
     bindings?: RuntimeBindings;
     email?: {principal:string;org:string;mailbox:string;revision:string;owner:string;tokenKeyFile:string;clientIdFile:string;clientSecretFile:string};
     personalGoogle?: PersonalGoogleConfig;
+    personalMicrosoft?: PersonalMicrosoftConfig;
     claims?: {kind:'slack'|'telegram';principal:string;revision:string;owner:string}[];
     /** The one member who may approve in the console: the owner of the earliest claim. Computed once, never by overwriting. */
     consoleOwner?: string;
@@ -150,7 +152,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         }
         // Personal mailbox credentials use only this root-configured registry, independently
         // of the legacy email-door principal and selected organisation.
-        googleSecretFiles(a); // Reject an ambiguous shared token key before publishing anything.
+        personalReadSecretFiles(a); // Reject an ambiguous shared token key before publishing anything.
         if (a.personalGoogle) {
             if (a.role !== 'chief-of-staff') throw new Error('Role has no personal Gmail reader');
             const config = personalGoogleSchema.parse(a.personalGoogle);
@@ -165,6 +167,18 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             secret(`${a.name}-google-token-key`, config.tokenKeyFile, 'google-token-key');
             environment.TOKEN_ENC_KEY_FILE = '/run/secrets/google-token-key';
             environment.LARES_PERSONAL_GOOGLE_CLIENTS = JSON.stringify(clients);
+        }
+        if (a.personalMicrosoft) {
+            if (a.role !== 'chief-of-staff') throw new Error('Role has no personal Microsoft reader');
+            const config=personalMicrosoftSchema.parse(a.personalMicrosoft);
+            for(const [field,variable,target] of [
+                ['tenantIdFile','LARES_PERSONAL_MICROSOFT_TENANT_ID_FILE','personal-microsoft-tenant-id'],
+                ['clientIdFile','LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE','personal-microsoft-client-id'],
+                ['clientSecretFile','LARES_PERSONAL_MICROSOFT_CLIENT_SECRET_FILE','personal-microsoft-client-secret'],
+                ['tokenKeyFile','LARES_PERSONAL_MICROSOFT_TOKEN_KEY_FILE','personal-microsoft-token-key'],
+            ] as const) {
+                secret(`${a.name}-${target}`,config[field],target);environment[variable]=`/run/secrets/${target}`;
+            }
         }
         secret(`${a.name}-gateway-key`, r.gatewayKeyFile, 'gateway-key');
         if (bindings?.ownerId) {

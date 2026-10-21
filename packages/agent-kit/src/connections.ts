@@ -49,10 +49,10 @@ export interface ConsumerDef {
 
 const defs: ConnectionDef[] = [
   {
-    // Consent only: one fixed work DATA client, separate from console sign-in.
-    // No runtime capabilities or secretEnv entries: keeper does not mount this credential.
+    // One fixed work DATA client, separate from console sign-in.
+    // Runtime reads require explicit personal grants and keeper-owned fixed mounts; definitions cannot choose these files.
     id: "microsoft",
-    label: "Microsoft work data consent (agent use pending)",
+    label: "Microsoft work mailbox and calendar",
     custody: "console",
     instances: [{ id: "main", label: "Work data client", secrets: ["microsoft-data-tenant-id", "microsoft-data-client-id", "microsoft-data-client-secret"] }],
   },
@@ -153,6 +153,8 @@ export const connectionsByCapability: Record<string, string[]> = {
   outside: [],   // each outside tool's optional bearer token is a per-agent file the owner places on the server; the definition names the server
   // Fans out over capabilities the chief of staff already holds — so it needs their credentials, and no new one.
   person: ["twenty", "google"],
+  personal_mailbox: ["google", "microsoft"],
+  personal_calendar: ["google", "microsoft"],
   read_url: ["readability"],
   remind: [],
   signals: [],

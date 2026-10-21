@@ -166,10 +166,10 @@ describe("the generated integration-secrets module", () => {
   });
 });
 
-it("declares Microsoft consent metadata without widening runtime mounts or capability grants", () => {
+it("declares explicit personal capability connections without allowing definition-selected Microsoft mounts", () => {
  const row = installation.connections.find(c => c.id === "microsoft");
  expect(row?.custody).toBe("console");
  expect(row?.instances[0]?.secretEnv).toBeUndefined();
- expect(Object.values(installation.capabilities).flat()).not.toContain("microsoft");
+ expect(Object.entries(installation.capabilities).filter(([,refs])=>refs.includes("microsoft")).map(([cap])=>cap).sort()).toEqual(["personal_calendar","personal_mailbox"]);
  expect(Object.keys(INTEGRATION_SECRET_FILES).some(key => key.startsWith("MICROSOFT_"))).toBe(false);
 });

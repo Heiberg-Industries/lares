@@ -26,6 +26,7 @@ import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
 
+type KeeperMicrosoft = NonNullable<NonNullable<KeeperConfig["lifecycle"]>["runtime"]["microsoft"]>;
 type KeeperGoogle = NonNullable<NonNullable<KeeperConfig["lifecycle"]>["runtime"]["google"]>;
 
 /** Positional on purpose, like render-stack's: install.sh passes paths it built itself, and a
@@ -133,6 +134,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     ...(previous.schedulesLive !== undefined ? { previousSchedulesLive: previous.schedulesLive } : {}),
     ...(deadlineCalendarFile ? { deadlineCalendarFile } : {}),
   });
+  if (previous.microsoft !== undefined) config.lifecycle!.runtime.microsoft = previous.microsoft;
   if (previous.google !== undefined) config.lifecycle!.runtime.google = previous.google;
 
   // Looked up BEFORE the first byte is written: a release missing the keeper's own image or
@@ -187,8 +189,8 @@ function isLink(path: string): boolean {
 }
 
 /** What the keeper.json already on this host holds that the installer does not decide: the
- *  Google block (other commands write it) and the schedules switch (the owner may have chosen). */
-function readPrevious(path: string): { google?: KeeperGoogle; schedulesLive?: boolean } {
+ *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -201,12 +203,13 @@ function readPrevious(path: string): { google?: KeeperGoogle; schedulesLive?: bo
     parsed = JSON.parse(text);
   } catch {
     throw new Error(
-      `${path} is not valid JSON, so the Google settings in it cannot be carried over. Nothing was written and the file is untouched. Repair it, or move it aside if you accept losing those settings, then run the installer again.`,
+      `${path} is not valid JSON, so the provider settings in it cannot be carried over. Nothing was written and the file is untouched. Repair it, or move it aside if you accept losing those settings, then run the installer again.`,
     );
   }
-  const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; schedulesLive?: unknown } } } | null)
+  const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: unknown } } } | null)
     ?.lifecycle?.runtime;
   return {
+    ...(runtime?.microsoft ? { microsoft: runtime.microsoft } : {}),
     ...(runtime?.google ? { google: runtime.google } : {}),
     ...(typeof runtime?.schedulesLive === "boolean" ? { schedulesLive: runtime.schedulesLive } : {}),
   };

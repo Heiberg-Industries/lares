@@ -15,7 +15,12 @@ export const PLATFORM_SECRET_FILES = {
 
 /** Fixed target names used by managed runtimes. google-token-key is the shared Google
  *  encryption-key mount; it is the same configured source when a legacy email door coexists. */
-export const PLATFORM_FIXED_SECRET_FILES = ['runtime-control', 'database-password', 'google-token-key'] as const;
+export const PLATFORM_FIXED_SECRET_FILES = [
+  'runtime-control', 'database-password', 'google-token-key',
+  // Fixed private-reader mounts; these are not definition-bindable secret variables.
+  'personal-microsoft-tenant-id', 'personal-microsoft-client-id',
+  'personal-microsoft-client-secret', 'personal-microsoft-token-key',
+] as const;
 
 /** Per door kind: the environment variable that points at the secret file, and the file-name
  *  suffix the keeper mounts it under (`<agent>-<suffix>`). */
