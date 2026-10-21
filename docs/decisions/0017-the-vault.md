@@ -92,30 +92,31 @@ fact is an assertion nobody can check" ("Where the line should sit"). Other memo
    command rather than an Atlas one.
 4. **All memory work ships together**: origin marking (the origin model),
    add-only dreaming (ADR-0018), the small per-session core (ADR-0018), the `lares_*`
-   dated-facts fields (this decision), "which memories did you use?" plus one-step forget (rule 6 below), and the memory test set (a private eval built from Lares's own question shapes, not a public benchmark). None of these ships piecemeal ahead of
+   dated-facts fields (this decision), "which memories did you use?" plus one-step forget (rule 7 below), and the memory test set (a private eval built from Lares's own question shapes, not a public benchmark). None of these ships piecemeal ahead of
    the others; a half-built origin system is worse than none, because it reads as a guarantee
    that is not actually kept.
-5. **Seeing memory:** "which memories did you use?" is answerable on every door (a reply that
+5. *(No rule. Numbering is kept so references elsewhere to rules 6–10 stay valid.)*
+6. **Seeing memory:** "which memories did you use?" is answerable on every door (a reply that
    drew on standing facts or Vault notes names them) and in the console, per turn. Before this, the standing-facts block and dream-promoted preferences were silent about which row answered which question.
-6. **Correcting memory:** one-step forget, already the shape of
+7. **Correcting memory:** one-step forget, already the shape of
    `services/chief-of-staff/catalogue/forget.ts` for standing facts (soft-retire, gated as a
    `delete` category in `packages/agent-kit/src/always-ask.ts`), extended to every writable
    home with a **forget ledger** — a record of what was told to forget, checked on every re-sync
    or re-import so a Notion pull or a Brain restore cannot silently resurrect a retired fact.
    `forget` retires a row; without the ledger nothing stops a future import reintroducing the same fact.
-7. **Erasure:** a single "erase this person" routine walks every area of the Vault, the facts
+8. **Erasure:** a single "erase this person" routine walks every area of the Vault, the facts
    tables, the conversation record (ADR-0018's replacement for markdown conversation logs), the
    archive, and every sync job's own state, and states plainly what git history still holds
    ("git remembers deleted text forever; so do backups" — files-as-truth's weakest
    legal point, and the database camp is not better by default). A purge command exists for the
    case that needs git history rewritten or backups aged out.
-8. **Notion stays a two-way sync** (the owner overruled the research's one-way recommendation). Consequence: synced content carries origin
+9. **Notion stays a two-way sync** (the owner overruled the research's one-way recommendation). Consequence: synced content carries origin
    in both directions; content pulled from Notion is stamped `synced` (never `owner` or `agent`,
    whatever it reads like); the fidelity gate (`services/notion-sync`'s pull path,
    `pull-sync.ts`/`notion-born-sync.ts`/`transcript-sync.ts`) refuses a pull that would drop a
    `lares_*` stamp rather than silently widening it. Those three files used to write an ad hoc `source: notion-docs` / `source: notion-meetings` frontmatter key — this decision replaces that key with
    `lares_origin: synced` plus the sync job's own provenance (`notion_page`, kept as-is).
-9. **Search stays keyword-first.** The existing tokenised search over the Vault
+10. **Search stays keyword-first.** The existing tokenised search over the Vault
     (`packages/agent-kit/src/notes-store.ts`) is the default. A rebuildable Postgres
     full-text index is built only once the memory test set (rule 4) shows keyword search failing
     on Lares's own question shapes — not before. `pgvector` stays installed and unused
@@ -167,8 +168,8 @@ files-as-truth-for-narrative-knowledge should be reopened:
    would be simpler.
 2. **Multi-user becomes the product**, with many simultaneous writers and per-note sharing.
    Permissions then need a database of record, and files become the projection.
-3. **Recall fails on Lares's own test set** (rule 4) even with a rebuildable index (rule 9).
-4. **Erasure cannot be made reliable in git** (rule 7) — a history rewrite breaks overlays or
+3. **Recall fails on Lares's own test set** (rule 4) even with a rebuildable index (rule 10).
+4. **Erasure cannot be made reliable in git** (rule 8) — a history rewrite breaks overlays or
    backups, or a regulator asks for proof deletion is real, not "gone from HEAD".
 5. **Questions turn multi-hop and temporal as routine** and SQL over the facts/relationship
    tables becomes genuinely painful — the answer is Graphiti's *model* (bi-temporal edges),
@@ -186,7 +187,7 @@ area-scoped grants make a separate mount unnecessary.
 | Dated facts, standing preferences | Postgres tables (`standing_facts`, `dream_preferences`) with `valid_from`/`valid_to`/`recorded_at`/`source`/`superseded_by`/`origin` | Console Facts page, "why did you say that?" lookup | Nightly one-way export to markdown/CSV |
 | People, relationships | Postgres tables (existing identity/network stores) | Console People page | Same |
 | Deadlines, bookings, approvals | Postgres tables (existing deadline/reminder/obligation stores) | Console pages | Same |
-| Large imported archives (mail, message history) | Append-only Postgres table + full-text index | Search results only, never presented as memory | Export command (rule 7) |
+| Large imported archives (mail, message history) | Append-only Postgres table + full-text index | Search results only, never presented as memory | Export command (rule 8) |
 | Indexes, embeddings, summaries | Rebuildable, derived, never truth | Indirectly, through search results | Not exported — regenerated on demand |
 | The agent's own working record | Markdown under `_meta/`, excluded from search (`notes-store.ts`) | Not surfaced as knowledge; included in vault backup | Included in the full vault backup, not in the "what the agent knows" export |
 

@@ -80,7 +80,7 @@ session.
    agent-said, or system, matching the origin classes the origin model defines); a
    **per-person key**, so an erase-a-person routine can find and remove every entry a given
    person produced or received without touching anyone else's; and it is **searchable** — the
-   console's Memory page and "which memories did you use?" (ADR-0017 rule 5) query it directly rather
+   console's Memory page and "which memories did you use?" (ADR-0017 rule 6) query it directly rather
    than grepping files.
 3. **Retention defaults to twelve months.** The owner can change the retention period, including
    to "keep forever", as an installation setting. Entries past the retention window are pruned;
@@ -150,10 +150,10 @@ session.
   execution-model rewrite there changes what "a session" durably holds, and this ADR's rule 5
   should be re-checked once that upgrade lands.
 - Whether the new record also becomes the source for "which memories did you use?" on the door
-  channels themselves (ADR-0017 rule 5), or only in the console.
+  channels themselves (ADR-0017 rule 6), or only in the console.
 
 ## Cross-references
 
 - ADR-0015 (agents are definitions), ADR-0016 (eve), ADR-0010 (knowledge-store authority, amended)
 - The origin model
-- The export and erase feature (ADR-0017 rule 7)
+- The export and erase feature (ADR-0017 rule 8)
