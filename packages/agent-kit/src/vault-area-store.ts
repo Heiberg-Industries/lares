@@ -50,8 +50,8 @@ export async function currentVaultArea(db:Db,member:Member,areaId:string,write=f
   if(row.owner_member_id===null&&row.owner_organisation_id!==member.organisationId)return undefined;
   return row;
 }
-export async function vaultAreaAllows(db:Db,member:Member,row:VaultAreaRow,permission:Permission):Promise<boolean>{
-  if(row.owner_member_id===member.id)return true;
+export async function vaultAreaAllows(db:Db,member:Member,row:VaultAreaRow,permission:Permission,captureExpiry?:(validUntil:string|null)=>void):Promise<boolean>{
+  if(row.owner_member_id===member.id){captureExpiry?.(null);return true;}
   if(row.kind==='private')return false;
   const matching=await db.query<{id:string}>(`SELECT id FROM resource_grants WHERE resource_kind='vault-area' AND resource_id=$1 AND permission=$2
     AND revoked_at IS NULL AND (principal_member_id=$3 OR ($4::boolean AND principal_organisation_id=$5)) ORDER BY id FOR SHARE`,
@@ -59,8 +59,9 @@ export async function vaultAreaAllows(db:Db,member:Member,row:VaultAreaRow,permi
   if(!matching.rowCount)return false;
   // The lock itself may have waited past expiry. Evaluate database wall time AFTER all
   // matching grant locks are held, never against transaction-start time or a pre-wait test.
-  const current=await db.query(`SELECT 1 FROM resource_grants WHERE id=ANY($1::uuid[]) AND revoked_at IS NULL
-    AND (expires_at IS NULL OR expires_at>clock_timestamp()) LIMIT 1`,[matching.rows.map(g=>g.id)]);
+  const current=await db.query(`SELECT expires_at::text AS valid_until FROM resource_grants WHERE id=ANY($1::uuid[]) AND revoked_at IS NULL
+    AND (expires_at IS NULL OR expires_at>clock_timestamp()) ORDER BY expires_at DESC NULLS FIRST,id LIMIT 1`,[matching.rows.map(g=>g.id)]);
+  if(current.rows[0])captureExpiry?.(current.rows[0].valid_until);
   return !!current.rowCount;
 }
 function view(row:VaultAreaRow):VaultAreaView{return {areaId:row.id,accessRevision:Number(row.revision),status:row.status as 'active'|'retired'};}

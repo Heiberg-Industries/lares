@@ -413,7 +413,7 @@ const SEED_ROWS: SeedRow[] = [
   ]),
 
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
-    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1,$5)`,
+    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,policy_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1,$5,2)`,
     [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`,PRIVATE_CONSOLE_SURFACE_REVISION])),
 
   // ── 004_web_inbox.sql ─────────────────────────────────────────────────────────────────────
@@ -457,13 +457,19 @@ const SEED_ROWS: SeedRow[] = [
 ];
 
 // Owned storage metadata is part of resolver/export completeness. Legacy erase-path
-// tests explicitly use vaultAreas:false; dedicated tests prove the bounded storage refusal.
+// tests explicitly use vaultAreas:false; dedicated tests prove owned-area and retained-source refusal.
 const VAULT_ROWS: SeedRow[] = [row("vault_areas", "owner_member_id", FIXTURE_OWNER,
   `WITH organisation AS (INSERT INTO orgs(id,display_name) VALUES('fixture-vault-org','Fixture Vault organisation') RETURNING id),
     member AS (UPDATE users SET org_id=(SELECT id FROM organisation),org_role='owner' WHERE id=$1 RETURNING id,org_id),
     backing AS (INSERT INTO vault_backing_stores(id,organisation_id,kind) SELECT 'fixture-vault-backing',org_id,'git' FROM member RETURNING id,organisation_id)
     INSERT INTO vault_areas(id,organisation_id,kind,owner_member_id,backing_store_id,relative_path)
-    SELECT 'fixture-private-area',backing.organisation_id,'private',member.id,backing.id,'private/fixture' FROM backing,member`, [FIXTURE_OWNER])];
+    SELECT 'fixture-private-area',backing.organisation_id,'private',member.id,backing.id,'private/fixture' FROM backing,member`, [FIXTURE_OWNER]),
+  row("console_vault_source_captures", "member_id", FIXTURE_OWNER,
+    `WITH binding AS (INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,source_history_guard_revision,policy_revision)
+      VALUES('fixture-source-agent','11111111-1111-1111-1111-111111111111','fixture-source-session',$1,repeat('s',43),'fixture-source-place',1,$2,1,2) RETURNING *)
+     INSERT INTO console_vault_source_captures(agent,incarnation,session_id,member_id,admission_nonce,area_id,access_revision,session_definition_hash)
+     SELECT b.agent,b.incarnation,b.session_id,b.member_id,b.admission_nonce,a.id,a.revision,repeat('a',64) FROM binding b,vault_areas a WHERE a.id='fixture-private-area'`,
+    [FIXTURE_OWNER,PRIVATE_CONSOLE_SURFACE_REVISION])];
 
 /** Every table the fixture puts a row in, with the spelling it used. Later tests assert
  *  against THIS, so a table that gains rows must be added here (in SEED_ROWS above) in the

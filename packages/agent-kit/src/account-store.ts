@@ -1,3 +1,4 @@
+import {consoleSourceTransaction,gateConsoleOrganisation} from './console-source-transaction.js';
 /** Personal-account persistence and explicit association to existing custody, not authentication.
  * Only trusted server adapters may supply verifiers; never expose them as model tools.
  */
@@ -58,15 +59,12 @@ export class PgAccountStore {
   constructor(private readonly pool: Pool) {}
 
   private async transaction<T>(memberId: string, work: (db: PoolClient) => Promise<T>): Promise<T> {
-    const db = await this.pool.connect();
-    try {
-      await db.query('BEGIN');
-      await this.requireActiveMember(db, memberId);
-      const result = await work(db);
-      await db.query('COMMIT');
-      return result;
-    } catch (error) { await db.query('ROLLBACK'); throw error; }
-    finally { db.release(); }
+    return consoleSourceTransaction(this.pool,async client=>{
+      const db=client as PoolClient;
+      try{await gateConsoleOrganisation(db,memberId);}catch{throw new AccountAccessError();}
+      await this.requireActiveMember(db,memberId);
+      return work(db);
+    });
   }
 
   private async requireActiveMember(db: PoolClient, memberId: string): Promise<void> {

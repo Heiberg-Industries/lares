@@ -1,3 +1,4 @@
+import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDenied} from './console-source-transaction.js';
 /** Server-only, inactive budget admission. Parsing a reference is NOT authentication.
  * Trusted request/gateway/recovery adapters must supply the observations below. No runtime
  * hook, HTTP endpoint, model tool, account opener or recovery reset is exported here. */
@@ -57,10 +58,9 @@ export class PgBudgetAdmissionStore {
     if(!Number.isSafeInteger(intentLifetimeMs)||intentLifetimeMs<1||intentLifetimeMs>30_000)throw new Error('Invalid intent lifetime');
   }
   private async transaction<T>(fn:(db:PoolClient)=>Promise<T>):Promise<T> {
-    const db=await this.pool.connect();
-    try{await db.query('BEGIN');const value=await fn(db);await db.query('COMMIT');return value;}
-    catch(error){await db.query('ROLLBACK').catch(()=>undefined);throw error;}finally{db.release();}
+    return consoleSourceTransaction(this.pool,db=>fn(db as PoolClient));
   }
+
   private async capture(db:PoolClient,ctx:ConsoleAuthorityContext):Promise<Ref> {
     const own=managedIdentity(this.env),session=ctx.session;
     if(!own||!session?.id||!session.turn?.id||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
@@ -90,7 +90,7 @@ export class PgBudgetAdmissionStore {
     if(!grant)throw new Error('Stale grant');
     // All authority evidence is locked before budget locks. Only immutable time deadlines
     // cross the lock wait; the final transition compares them using the database clock.
-    return (await db.query('SELECT LEAST($1::timestamptz,$2::timestamptz)::text AS valid_until',[grant.validUntil,resumeValidUntil])).rows[0].valid_until;
+    return (await db.query('SELECT LEAST($1::timestamptz,$2::timestamptz,$3::timestamptz)::text AS valid_until',[grant.validUntil,resumeValidUntil,await checkConsoleSourceDeadlines(db)])).rows[0].valid_until;
   }
   private async locks(db:PoolClient,installationId:string,memberId:string,bindingId?:string):Promise<{installation:Row;member:Row;binding?:Row}> {
     const installation=(await db.query('SELECT * FROM budget_accounts WHERE id=$1 AND kind=\'installation\' FOR UPDATE',[installationId])).rows[0];
@@ -167,11 +167,12 @@ export class PgBudgetAdmissionStore {
         if(iCap===null||mCap===null||iLiability===null||mLiability===null)return deny();
         if(totalUnits(mLiability)+units(a.reserved_amount)>units(mCap))return deny();
         if(totalUnits(iLiability)+units(a.reserved_amount)>units(iCap))return deny();
+        await checkConsoleSourceDeadlines(db);
         const admitted=await db.query(`UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1 AND expires_at>clock_timestamp()
           AND ($4::timestamptz IS NULL OR $4::timestamptz>clock_timestamp())
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$2 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp())
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$3 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp()) RETURNING id`,[a.id,i.active_window_id,m.active_window_id,authorityValidUntil]);
-        if(admitted.rows.length!==1)return deny();
+        if(admitted.rows.length!==1){await checkConsoleSourceDeadlines(db);return deny();}
         return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string};
       });
       if(!admitted)return DENIED;
@@ -180,7 +181,7 @@ export class PgBudgetAdmissionStore {
       // Only acknowledged COMMIT reaches this statement. An admitted retry NEVER mints again.
       const permit=Object.freeze({kind:'budget-dispatch-permit' as const});permits.set(permit,admitted);
       return {state:'allowed',permit,attemptId:admitted.attemptId};
-    }catch{return {state:'unavailable',reason:'Budget admission could not be confirmed'};}
+    }catch(error){return error instanceof SourceAuthorityDenied?DENIED:{state:'unavailable',reason:'Budget admission could not be confirmed'};}
   }
   async markUnknown(attemptId:string):Promise<void>{
     if(!uuid(attemptId))throw new Error('Invalid attempt');

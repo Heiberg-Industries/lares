@@ -5,7 +5,7 @@ import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { APPROVED_PENDING, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, type WaitingDeps } from "../lib/waiting";
 
 const grantAccess=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
-vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=grantAccess.captureUse;}}));
+vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=grantAccess.captureUse;async captureUseWithExpiry(){const revision=await grantAccess.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
 beforeEach(()=>vi.stubEnv('AGENT_OWNER_USER_ID','owner-id'));
 afterAll(()=>vi.unstubAllEnvs());
 
@@ -85,14 +85,19 @@ function fake(opts: {
   const atlas = opts.atlas ?? [];
   const sessions = opts.sessions ?? { example: [{ session_id: "wrun_tg", door: "telegram" }] };
   const deps: WaitingDeps = {
+    connect:async()=>({query:async(sql,values=[])=>({...await deps.query(sql,values),command:["BEGIN","COMMIT","ROLLBACK"].includes(sql)?sql:undefined}),release(){}}),
     signedInMember: async () => ({id:"owner-id",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}),
     query: async (sql, values) => {
       queries.push({ sql, values });
+      if (["BEGIN","COMMIT","ROLLBACK"].includes(sql)||sql.includes("pg_advisory_xact_lock")||sql.includes("console_vault_source_captures")) return {rows:[]};
+      if (sql.includes("AS organisation_id FROM users"))return {rows:[{organisation_id:"org"}]};
+      if (sql.includes("FROM users WHERE"))return {rows:[{id:values[0],org_id:"org",org_role:"owner",status:"active",automation_mode:"draft-and-ask"}]};
+      if (sql.includes("FROM orgs WHERE"))return {rows:[{id:"org"}]};
       if (sql.startsWith("SELECT 1 FROM users") || sql.includes("FROM agent_resources r WHERE")) return {rows:[{}]};
       if (sql.includes("console_session_bindings") && !sql.includes("agent_conversations")) {
         const session = sessions[String(values[0])]?.find(s=>s.session_id === values[2]);
         if (!session || ["slack","telegram"].includes(session.door)) return {rows:[]};
-        return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1,agent_access_revision:1}]};
+        return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:2,agent_access_revision:1,private_surface_revision:2,source_history_guard_revision:1}]};
       }
       if (sql.includes("agent_door_connections")) return { rows: agents.filter((a) => values[0] === null || a.name === values[0]) };
       if (sql.includes("agent_conversations")) {

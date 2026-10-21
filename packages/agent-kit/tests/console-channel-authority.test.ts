@@ -4,9 +4,9 @@ import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {personalActionApprovalDescriptor,PERSONAL_MAIL_SEND_TOOL} from '../src/personal-action-store.js';
-vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {async captureUse(){return 1;}}}));
+vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {async captureUse(){return 1;}async captureUseWithExpiry(){return {accessRevision:1,validUntil:null};}}}));
 const fake=vi.hoisted(()=>({query:vi.fn()}));
-vi.mock('../src/db.js',()=>({getPool:()=>fake}));
+vi.mock('../src/db.js',()=>({getPool:()=>({query:fake.query,connect:async()=>({query:async(sql:string,values?:unknown[])=>{const result=await fake.query(sql,values);return {...result,command:['BEGIN','COMMIT','ROLLBACK'].includes(sql)?sql:result.command};},release(){}})})}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
 const inc='11111111-1111-4111-8111-111111111111';
 let directory:string|undefined;
@@ -20,7 +20,7 @@ async function roleModule(role:string){
  const path=new URL(`../../../services/${role}/agent/channels/eve.ts`,import.meta.url).href;
  vi.resetModules();return import(path);
 }
-function boundRow(){return {agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1};}
+function boundRow(){return {agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:2,agent_access_revision:1,private_surface_revision:2,source_history_guard_revision:1};}
 type ResolverFixture = 'exact'|'missing-action'|'wrong-member'|'wrong-session'|'wrong-request'|'wrong-call'|'expired';
 /** Route admission reads distinct persisted records. A session-binding row is not a member,
  * an action, or an approval. Keep SQL filtering so crossed coordinates cannot pass the mock. */
@@ -39,7 +39,9 @@ function resolverRows(failure:ResolverFixture='exact'){
  const approval={call_id:'call1',request_id:'request1',tool:PERSONAL_MAIL_SEND_TOOL,agent:'helper',acting_member_id:'Owner-ID',session_id:'wrun_test',
   payload_hash:action.payload_hash,original_authority:descriptor,asked_at:new Date(Date.now()-60_000),outcome:null,resolved_by_member_id:null};
  fake.query.mockImplementation(async(sql:string,values:unknown[]=[])=>{
-  if(sql.includes('FROM console_session_bindings b'))return {rows:values.slice(0,5).join('|')===['helper',inc,'wrun_test','Owner-ID','a'.repeat(43)].join('|')?[boundRow()]:[]};
+  if(['BEGIN','COMMIT','ROLLBACK'].includes(sql)||sql.includes('pg_advisory_xact_lock')||sql.includes('console_vault_source_captures'))return {rows:[]};
+  if(sql.includes('AS organisation_id FROM users'))return {rows:values[0]==='Owner-ID'?[{organisation_id:'fixture-org'}]:[]};
+  if(sql.includes('FROM console_session_bindings'))return {rows:values.slice(0,5).join('|')===['helper',inc,'wrun_test','Owner-ID','a'.repeat(43)].join('|')?[boundRow()]:[]};
   if(sql.includes('FROM agent_resources r'))return {rows:values[0]==='helper'&&values[1]===inc?[{ready:true}]:[]};
   if(sql.includes('FROM users WHERE'))return {rows:values[0]==='Owner-ID'?[{id:'Owner-ID',org_id:'fixture-org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]:[]};
   if(sql.includes('FROM orgs WHERE'))return {rows:values[0]==='fixture-org'?[{id:'fixture-org'}]:[]};
@@ -52,7 +54,7 @@ function resolverRows(failure:ResolverFixture='exact'){
 describe('actual Eve HTTP routes enforce authority independently of onMessage',()=>{
  for(const role of ['chief-of-staff','creative']){
   it(`${role}: message-free create is admitted without inventing a session binding`,async()=>{
-   const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[{id:'Owner-ID'}]});
+   const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[{id:'Owner-ID',organisation_id:'fixture-org',org_id:'fixture-org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]});
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session');
    const {attachRouteSessionCreator}=await import(`${dist}internal/nitro/routes/channel-route-context.js`);
    const create=vi.fn(async(_options:unknown)=>({sessionId:'wrun_test'}));

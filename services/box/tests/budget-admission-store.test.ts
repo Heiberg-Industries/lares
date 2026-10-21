@@ -1,3 +1,5 @@
+import {parseDefinition,hashOf,type LoadedDefinition} from '../../../packages/agent-kit/src/definition.js';
+import {PgVaultStore} from '../../../packages/agent-kit/src/vault-area-store.js';
 import {beforeAll,beforeEach,afterAll,describe,it,expect} from 'vitest';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
@@ -7,7 +9,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PgBudgetAdmissionStore,consumeDispatchPermit,budgetIdentitySuppression,type BudgetGatewayObservation,type BudgetTerminalReceipt} from '../../../packages/agent-kit/src/budget-admission-store.js';
 import {PgGrantStore} from '../../../packages/agent-kit/src/grant-store.js';
-import {bindConsoleSession} from '../../../packages/agent-kit/src/console-turn-authority.js';
+import {bindConsoleSession,captureConsoleVaultSources} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import {requirePrivateConsoleResume,requirePersistedPrivateConsoleModelResume} from '../../../packages/agent-kit/src/private-console-resume.js';
 import {PgPersonalActionStore,PERSONAL_MAIL_SEND_TOOL,personalActionApprovalDescriptor} from '../../../packages/agent-kit/src/personal-action-store.js';
 import {encryptSecret,decryptSecret} from '../lib/crypto.js';
@@ -140,6 +142,21 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect(consumeDispatchPermit(a.permit)).toBeUndefined();
     expect((await store.admit(a.ticket,a.observation,recovery())).state).toBe('denied');
     expect((await new PgBudgetAdmissionStore(db,env()).admit(a.ticket,a.observation,recovery())).state).toBe('denied');
+  });
+  it('retires retained source history when source expiry passes behind the final budget lock',async()=>{
+    const definition=parseDefinition({name:'helper',model:'fixture-brain',persona:'voice.md',role:'chief-of-staff',channels:[],grants:[{capability:'vault',scope:'read',areas:['shared']}],autonomy:{vault:'gated'},skills:[]});
+    const loaded:LoadedDefinition={definition,dutiesMd:'',voiceMd:'',source:'service',dir:'<fixture>',hash:''};loaded.hash=hashOf(loaded);
+    await db.query("UPDATE agent_definitions SET definition=$1,hash=$2 WHERE name='helper'",[definition,loaded.hash]);await freshConsoleSessions();
+    const vault=new PgVaultStore(db),authority={designatedOwnerMemberId:'member-a'};
+    await vault.provisionBacking('member-a',{id:'source-backing',kind:'git'},authority);
+    const area=await vault.provisionArea('member-a',{id:'source-area',kind:'shared',owner:{kind:'organisation',id:'org'},backingStoreId:'source-backing',relativePath:'shared'},authority);
+    const validUntil=(await db.query("SELECT (clock_timestamp()+interval '1500 millisecond')::text AS deadline")).rows[0].deadline;
+    await vault.configureAccess('member-a',{areaId:area.areaId,expectedRevision:area.accessRevision,grants:[{principal:{kind:'member',id:'member-a'},permission:'use',expiresAt:new Date(validUntil).toISOString()}]},authority);
+    await captureConsoleVaultSources({agent:'helper',incarnation,sessionId:context().session.id,memberId:'member-a',admissionNonce:nonce('member-a')},{sessionDefinition:loaded,areaIds:[area.areaId]},db,env());
+    const p=await prepared();expect((await admitAcrossDeadline(p,validUntil)).state).toBe('denied');
+    expect((await db.query("SELECT revoked_at FROM console_session_bindings WHERE agent='helper' AND session_id=$1",[context().session.id])).rows[0].revoked_at).not.toBeNull();
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+    await expect(store.readStatus(context())).rejects.toThrow();
   });
   it('permits a prepared ticket to cross process/restart before its one winning admission',async()=>{
     const p=await prepared(),cold=new PgBudgetAdmissionStore(db,env());

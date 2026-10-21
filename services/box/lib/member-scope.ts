@@ -135,6 +135,7 @@ const BOX = "services/box/sql";
 const DREAM_STORE = "services/chief-of-staff/lib/dream/store.ts (runtime DDL)";
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
+  { table: "console_vault_source_captures", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/022_console_vault_source_history.sql`, reason: "Immutable conversation source dependencies; erasure refuses retained captures until history reconciliation is implemented." },
   { table: "budget_accounts", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Retire authority and erase member metadata, retaining numeric liability and keyed canonical/provider replay suppression. Installation accounts name no person." },
   { table: "budget_windows", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Erase the member link; retain immutable financial windows so old liabilities cannot reset." },
   { table: "budget_gateway_bindings", scope: "member", column: "live_member_id", idKind: "registry", createdBy: `${BOX}/011_budget_admission.sql`, reason: "Revoke and redact member, agent, provider coordinates and credential fingerprint; retain opaque binding identity for late verified settlement." },

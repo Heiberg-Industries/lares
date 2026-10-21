@@ -14,7 +14,7 @@ import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps }
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
 const access=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
-vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=access.captureUse;}}));
+vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=access.captureUse;async captureUseWithExpiry(){const revision=await access.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
 beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);});
 afterAll(()=>vi.unstubAllEnvs());
 const PASSWORD = "disposable-fixture-only";
@@ -40,10 +40,13 @@ const deps = (
   value: unknown = row,
   password: string | null = PASSWORD,
   email: string | null = "owner@example.invalid",
-) => ({
+) => {const database={
   query: vi.fn<ChatDeps["query"]>(async (sql,values) => {
-    if (sql.startsWith("SELECT 1 FROM users")) return {rows:[{}]};
-    if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1,agent_access_revision:1}]};
+    if (["BEGIN","COMMIT","ROLLBACK"].includes(sql)||sql.includes("pg_advisory_xact_lock")||sql.includes("console_vault_source_captures")) return {rows:[]};
+    if (sql.includes("AS organisation_id FROM users"))return {rows:[{organisation_id:"org"}]};
+    if (sql.includes("FROM users WHERE"))return {rows:[{id:values[0],org_id:"org",org_role:"owner",status:"active",automation_mode:"draft-and-ask"}]};
+    if (sql.includes("FROM orgs WHERE"))return {rows:[{id:"org"}]};
+    if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:2,agent_access_revision:1,private_surface_revision:2,source_history_guard_revision:1}]};
     return {rows:value ? [value as Record<string,unknown>] : []};
   }),
   fetch: vi.fn<typeof fetch>(async () =>
@@ -54,7 +57,7 @@ const deps = (
   ),
   routePassword: vi.fn<ChatDeps["routePassword"]>(() => password ?? undefined),
   signedInMember: vi.fn<ChatDeps["signedInMember"]>(async () => email ? ({id:email === "owner@example.invalid" ? "Owner-ID" : "Other-ID",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}) : null),
-});
+};return {...database,connect:async()=>({query:async(sql:string,values?:unknown[])=>{const result=await database.query(sql,values??[]);return {...result,command:["BEGIN","COMMIT","ROLLBACK"].includes(sql)?sql:undefined};},release(){}})};};
 
 const post = (body = '{"message":"hello"}', signal?: AbortSignal) =>
   new Request("https://console.example.invalid/api/chat/helper/eve/v1/session", {
@@ -79,7 +82,7 @@ describe("the console's chat proxy", () => {
     const d=deps();access.captureUse.mockResolvedValueOnce(undefined as never);
     const response=await forwardChat(post(),'helper','eve/v1/session',d);
     expect(response.status).toBe(403);expect(await response.text()).toContain('Conversation access is unavailable');
-    expect(d.query).not.toHaveBeenCalled();expect(d.routePassword).not.toHaveBeenCalled();expect(d.fetch).not.toHaveBeenCalled();
+    expect(d.query.mock.calls.some(([sql])=>sql.includes("FROM agent_resources"))).toBe(false);expect(d.routePassword).not.toHaveBeenCalled();expect(d.fetch).not.toHaveBeenCalled();
   });
   it("sends the turn to the agent's own door, with the route credential and nothing of the browser's", async () => {
     const d = deps();
@@ -457,7 +460,7 @@ describe("stable console session binding", () => {
   it("message-free creates bind the returned ID; storage failure issues no capability", async () => {
     const d = deps();
     expect((await forwardChat(post('{}'),"helper","eve/v1/session",d)).headers.get("set-cookie")).toContain("HttpOnly");
-    d.query.mockImplementation(async(sql)=>{if(sql.includes("console_session_bindings"))throw new Error("binding unavailable");return {rows:[row]};});
+    const query=d.query.getMockImplementation()!;d.query.mockImplementation(async(sql,values)=>{if(sql.includes("console_session_bindings"))throw new Error("binding unavailable");return query(sql,values);});
     const response = await forwardChat(post('{}'),"helper","eve/v1/session",d);
     expect(response.status).toBe(502);
     expect(response.headers.has("set-cookie")).toBe(false);
@@ -476,7 +479,7 @@ describe("stable console session binding", () => {
   it("rechecks bindings before every stream and control operation", async () => {
     for(const suffix of ["stream","cancel","clear","compact","reset"]){
       const d = deps();
-      d.query.mockImplementation(async(sql)=>({rows:sql.includes("console_session_bindings")?[]:[row]}));
+      const query=d.query.getMockImplementation()!;d.query.mockImplementation(async(sql,values)=>sql.includes("console_session_bindings")?{rows:[]}:query(sql,values));
       const path = `eve/v1/session/wrun_A/${suffix}`;
       expect((await forwardChat(sessionRequest(path,suffix==="stream"?"GET":"POST"),"helper",path,d)).status).toBe(502);
       expect(d.fetch).not.toHaveBeenCalled();

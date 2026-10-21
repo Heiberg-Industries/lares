@@ -24,7 +24,8 @@
 import type { Pool } from "pg";
 import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
 import { requireApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
-import type { ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
+import {authorityTransaction,consoleAdmission,requireConsoleSessionBinding,type ConsoleAuthorityContext} from '@lares/agent-kit/console-turn-authority';
+import {managedIdentity} from '@lares/agent-kit/door-authority';
 
 
 import type { DeadlineRecurrence, DeadlineSource } from "@lares/agent-kit/deadlines";
@@ -386,9 +387,10 @@ export const deadlineApprovalAdapter: ExactApprovalAdapter = {
 /** Holds membership, binding, applied policy and target locks until the mutation commits. */
 export async function dismissExactDeadline(db: Pool, ctx: ConsoleAuthorityContext,
   input: {id?:string;candidateThreadId?:string;reason:string}): Promise<void> {
-  const client = await db.connect();
-  try {
-    await client.query('BEGIN');
+  await authorityTransaction(db,async client=>{
+    const own=managedIdentity(),initial=consoleAdmission(ctx.session?.auth?.initiator);
+    if(!own||!initial||!ctx.session?.id)throw new Error('Exact approval target is unavailable');
+    await requireConsoleSessionBinding({agent:own.name,incarnation:own.incarnation,sessionId:ctx.session.id,...initial},client);
     // Protect a previously absent board row as well as updates to an existing row.
     await client.query('LOCK TABLE ratchet IN SHARE MODE');
     const approved = await requireApprovedExecution(ctx,'deadline_dismiss',input,{db:client,adapter:deadlineApprovalAdapter});
@@ -400,7 +402,5 @@ export async function dismissExactDeadline(db: Pool, ctx: ConsoleAuthorityContex
     if (result.rows.length !== 1) throw new Error('Exact deadline target changed');
     // Counting evidence only; neither a lock against execution replay nor an exactly-once claim.
     await client.query('UPDATE approval_asks SET use_count=use_count+1,used_at=COALESCE(used_at,now()) WHERE request_id=$1', [approved.authority.requestId]);
-    await client.query('COMMIT');
-  } catch (e) { await client.query('ROLLBACK'); throw e; }
-  finally { client.release(); }
+  });
 }
