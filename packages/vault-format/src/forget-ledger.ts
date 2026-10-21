@@ -30,7 +30,7 @@
 // an installation's canonical owner key ever changes — a second member replaces the first, a
 // migration renames the slug — every row written under the old spelling simply stops matching: a
 // re-import or a re-sync it used to block would go through unblocked, silently, because the
-// lookup hashes the NEW owner string and finds nothing. Box 083
+// lookup hashes the NEW owner string and finds nothing. The baseline migration
 // (`001_baseline.sql`) rewrote fifteen other owner columns to the register's
 // id for exactly this reason and named `forget_ledger` as the one table it could not follow;
 // `checkOwnerKeyAgreement`'s repair is the closest thing this system has to a safety net for that

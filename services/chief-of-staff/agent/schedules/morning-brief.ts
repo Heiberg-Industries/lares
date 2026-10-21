@@ -353,7 +353,7 @@ function buildSlackObligationSource(
  * the duration is what turns "the scan is slow" into "40 conversations at ~180 ms each", which
  * is the difference between guessing at a budget and choosing one.
  *
- * FIX ROUND 1 — applied by `scanSlackWithBudget` itself, NOT by its callers. It began as a
+ * Applied by `scanSlackWithBudget` itself, NOT by its callers. It began as a
  * wrapper the call site composed in, which meant a later simplification of
  * `buildSlackObligationSource` back to a bare `createSlackSourceDeps(...)` would have dropped it
  * with every test still green, and the next morning's log would have read "0 conversation(s)

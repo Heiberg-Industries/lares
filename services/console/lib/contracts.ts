@@ -39,7 +39,7 @@ export interface BoardRowDTO {
   lockedTools: Array<{ tool: string; reason: string }>;
   evidence: { asked: number; autonomous: number; denied: number; locked: number; failedClosed: number; lastAt: string | null };
   /** What the OWNER answered, not what the policy decided (see `evidence` above) — from
-   *  `approval_asks` (box 086) via `@lares/agent-kit/approval-stats`. `rate` is null when nobody
+   *  `approval_asks` (the approval-asks migration) via `@lares/agent-kit/approval-stats`. `rate` is null when nobody
    *  has answered a card yet, never a percentage of nothing. */
   answers: { approved: number; cancelled: number; neverAnswered: number; rate: number | null };
   /** True when at least one of this row's tools has a clean, long-enough history and could be

@@ -56,8 +56,8 @@ export async function getBoardRows(options: { strict?: boolean } = {}): Promise<
           WHERE at > now() - interval '30 days' GROUP BY agent, capability, tool, decision`,
       )
       .catch((error: unknown) => { if (options.strict) throw error; return { rows: [] as never[] }; }),
-    // What the OWNER answered (approval_asks, box 086) — never what the policy decided (above).
-    // `readApprovalCounts` never throws: a box that has not applied 086 answers [].
+    // What the OWNER answered (approval_asks) — never what the policy decided (above).
+    // `readApprovalCounts` never throws: a box that has not applied that migration answers [].
     readApprovalCounts(pool),
   ]);
   const out: BoardRowDTO[] = [];
