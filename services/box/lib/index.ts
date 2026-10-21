@@ -35,7 +35,7 @@ export {
 } from "./workflow-jobs.js";
 export { getEmailWatchCursor, advanceEmailWatchCursor } from "./email-watch-cursors.js";
 export { encryptSecret, decryptSecret, keyFromEnv } from "./crypto.js";
-export { storeToken, getDecryptedRefreshToken, listDecryptedRefreshTokens, listTokens, deleteToken, type StoredOAuthToken } from "./oauth-tokens.js";
+export { writeVerifiedAccountToken, LegacyCredentialQuarantinedError, type LockedAccountContext, type TokenMaterial, storeToken, getDecryptedRefreshToken, listDecryptedRefreshTokens, listTokens, deleteToken, type StoredOAuthToken } from "./oauth-tokens.js";
 // The notion-sync proposal queue: shared here so the console card and
 // The chief of staff's `notion` hand resolve proposals through one implementation, not two copies.
 export {

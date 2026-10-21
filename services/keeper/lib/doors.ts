@@ -78,7 +78,7 @@ export function registerDoorActions(o:{pool:Pool;secretsDir:string;publicOrigin?
  registerAction({name:'email.connect',input:z.strictObject({name:z.string().regex(NAME),incarnation:z.string().uuid(),principal:z.string().min(1),org:z.string().min(1),mailbox:z.string().email()}),run:async(input,ctx)=>{
   const row=await resource(input.name,'email');
   if(row.ownership_token!==input.incarnation||!o.emailPrincipal||input.principal!==o.emailPrincipal||!o.googleOrgs?.includes(input.org))throw new KeeperRefusedError('Google installation configuration or agent incarnation does not match');
-  const token=await query("SELECT 1 FROM oauth_tokens WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3 AND refresh_token_enc IS NOT NULL",[input.principal,input.org,input.mailbox]);
+  const token=await query("SELECT 1 FROM oauth_tokens t WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3 AND NOT EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id) AND refresh_token_enc IS NOT NULL",[input.principal,input.org,input.mailbox]);
   if(!token.rows.length)throw new KeeperRefusedError('Complete the real Google OAuth connection first');
   const client=await o.pool.connect();
   try {

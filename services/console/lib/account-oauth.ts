@@ -1,41 +1,65 @@
-// services/console/lib/account-oauth.ts
-// Pure helpers for the add-account OAuth flow — kept out of the route handlers so they're unit-testable.
+/** Google data consent is separate from console sign-in, with its own callback and client. */
+import * as oidc from "openid-client";
 import { google } from "googleapis";
-import { GOOGLE_SCOPES } from "./accounts";
+import { GOOGLE_SCOPES, googleOrgClientConfig } from "./accounts";
+import { consoleRedirect } from "./console-oidc";
+import { accountSessionHash, type AccountFlow } from "./account-oauth-state";
+import type { AccountUpdate, TrustedAccountAdapter } from "@lares/agent-kit/account-store";
 
-/**
- * The console's external origin — derived from CONSOLE_OAUTH_REDIRECT, NOT the request URL.
- * Behind a proxy (or Next standalone) req.url leaks the container host, so the
- * OAuth redirect_uri + post-flow redirects MUST come from the configured value (same approach
- * the login route uses). Falls back to localhost for dev.
- */
-export function consoleOrigin(): string {
-  return new URL(
-    process.env.CONSOLE_OAUTH_REDIRECT ?? "http://localhost:3000/api/auth/callback",
-  ).origin;
-}
-
-export function buildConsentUrl(args: {
-  clientId: string;
-  clientSecret: string;
-  redirectUri: string;
-  state: string;
-  loginHint?: string;
-}): string {
-  const oauth = new google.auth.OAuth2(args.clientId, args.clientSecret, args.redirectUri);
-  return oauth.generateAuthUrl({
-    access_type: "offline",
-    prompt: "consent",
-    scope: GOOGLE_SCOPES,
-    state: args.state,
-    ...(args.loginHint ? { login_hint: args.loginHint } : {}),
-  });
-}
-
-/** Build the redirect back to the Integrations page with a one-shot success/error flash param. */
+const ISSUER = "https://accounts.google.com";
+export function consoleOrigin(): string { return new URL(consoleRedirect()).origin; }
+export function accountRedirect(): string { return new URL("/api/accounts/google/callback", consoleOrigin()).href; }
 export function callbackRedirect(origin: string, result: { added?: string; error?: string }): string {
-  const u = new URL("/integrations", origin);
-  if (result.added) u.searchParams.set("added", result.added);
-  if (result.error) u.searchParams.set("error", result.error);
-  return u.toString();
+  const url = new URL("/membership", origin);
+  if (result.added) url.searchParams.set("added", result.added);
+  if (result.error) url.searchParams.set("error", result.error);
+  return url.href;
+}
+async function configuration(org: string, expectedClientId?: string) {
+  const settings = googleOrgClientConfig(org);
+  if (!settings || (expectedClientId && settings.clientId !== expectedClientId)) throw new Error("Consent configuration changed");
+  const config = await oidc.discovery(new URL(ISSUER), settings.clientId, settings.clientSecret);
+  oidc.enableNonRepudiationChecks(config);
+  return { config, settings };
+}
+export async function startAccountConsent(args: { memberId: string; session: string; org: string; loginHint?: string; update?: AccountUpdate }) {
+  const { config, settings } = await configuration(args.org);
+  const common = { memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
+    clientId: settings.clientId, state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier() };
+  const flow: AccountFlow = args.update ? { ...common, intent: "reconnect", update: { ...args.update } } : { ...common, intent: "new" };
+  const url = oidc.buildAuthorizationUrl(config, { redirect_uri: accountRedirect(), response_type: "code",
+    scope: GOOGLE_SCOPES.join(" "), access_type: "offline", prompt: "consent", state: flow.state, nonce: flow.nonce,
+    code_challenge: await oidc.calculatePKCECodeChallenge(flow.verifier), code_challenge_method: "S256",
+    ...(args.loginHint ? { login_hint: args.loginHint } : {}) });
+  return { flow, url };
+}
+/** All resources are read through the same verified grant. No provider email links a member. */
+export async function finishAccountConsent(url: URL, flow: AccountFlow) {
+  const { config, settings } = await configuration(flow.org, flow.clientId);
+  const tokens = await oidc.authorizationCodeGrant(config, url, { pkceCodeVerifier: flow.verifier,
+    expectedState: flow.state, expectedNonce: flow.nonce, idTokenExpected: true });
+  const claims = tokens.claims();
+  if (!claims || claims.iss !== ISSUER || typeof claims.sub !== "string" || !claims.sub) throw new Error("Provider identity refused");
+  if (!tokens.refresh_token || !tokens.access_token || typeof tokens.scope !== "string") throw new Error("Consent incomplete");
+  const scopes = tokens.scope.split(/\s+/).filter(Boolean);
+  if (GOOGLE_SCOPES.some(scope => !scopes.includes(scope))) throw new Error("Consent scopes incomplete");
+  const auth = new google.auth.OAuth2(settings.clientId, settings.clientSecret, accountRedirect());
+  auth.setCredentials({ access_token: tokens.access_token, refresh_token: tokens.refresh_token });
+  const mailbox = await google.gmail({ version: "v1", auth }).users.getProfile({ userId: "me" });
+  const calendar = await google.calendar({ version: "v3", auth }).calendarList.get({ calendarId: "primary" });
+  const emailAddress = mailbox.data.emailAddress;
+  if (!emailAddress || !calendar.data.id || calendar.data.primary !== true || calendar.data.accessRole !== "owner")
+    throw new Error("Own resources could not be verified");
+  const identity = Object.freeze({ issuer: ISSUER, subject: claims.sub, label: emailAddress });
+  const resources = Object.freeze([
+    Object.freeze({ resourceKind: "mailbox", externalId: claims.sub, providerLabel: emailAddress }),
+    Object.freeze({ resourceKind: "calendar", externalId: calendar.data.id, providerLabel: calendar.data.summary || "Primary calendar" }),
+  ]);
+  // This adapter closes over provider-verified snapshots, never request/model-shaped evidence.
+  const adapter: TrustedAccountAdapter = { connectorId: "google", verifyAccount: async () => identity,
+    verifyResource: async (_account, index) => {
+      if (index !== 0 && index !== 1) throw new Error("Resource evidence refused");
+      return resources[index];
+    } };
+  return { adapter, material: Object.freeze({ orgId: flow.org, emailAddress, scopes: Object.freeze([...scopes]), refreshToken: tokens.refresh_token }) };
 }

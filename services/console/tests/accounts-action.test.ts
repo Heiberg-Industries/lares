@@ -1,24 +1,14 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-// vi.hoisted so the mock factories (which are hoisted above imports) can safely reference these.
-const { cookieStore, deleteToken } = vi.hoisted(() => ({
-  cookieStore: { get: vi.fn<() => { value: string } | undefined>(() => undefined) },
-  deleteToken: vi.fn(async () => {}),
-}));
-
-vi.mock("next/headers", () => ({ cookies: async () => cookieStore }));
+import { beforeEach, expect, it, vi } from "vitest";
+const m = vi.hoisted(() => ({ member: vi.fn(), owner: vi.fn(), delete: vi.fn(), begin: vi.fn(), status: vi.fn() }));
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: () => ({ value: "session" }) }) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
-vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ deleteToken }));
-vi.mock("../lib/db", () => ({ pool: {} }));
-// lib/accounts is imported by the action for CONSOLE_PRINCIPAL; it also imports @lares/agent-box.
-vi.mock("../lib/accounts", () => ({ consolePrincipal: () => "U_owner1" }));
-
-beforeEach(() => { vi.clearAllMocks(); cookieStore.get.mockReturnValue(undefined); });
-
-describe("removeAccount", () => {
-  it("throws when unauthenticated and does not delete", async () => {
-    const { removeAccount } = await import("../app/actions/accounts");
-    await expect(removeAccount({ email: "x@y.co" })).rejects.toThrow(/unauthenticated/);
-    expect(deleteToken).not.toHaveBeenCalled();
-  });
-});
+vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ deleteToken: m.delete }));
+vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { beginUpdate = m.begin; setStatus = m.status; } }));
+vi.mock("../lib/auth", () => ({ sessionMember: m.member, isConsoleOwner: m.owner }));
+vi.mock("../lib/db", () => ({ pool: {} })); vi.mock("../lib/accounts", () => ({ consolePrincipal: () => "configured-owner" }));
+import { removeAccount } from "../app/actions/accounts";
+beforeEach(() => { vi.clearAllMocks(); m.member.mockResolvedValue({ id: "member-a" }); m.owner.mockReturnValue(false); m.begin.mockResolvedValue({ accountId: "account", generation: 2, lifecycleRevision: 3 }); });
+it("refuses unauthenticated deletion", async () => { m.member.mockResolvedValue(null); await expect(removeAccount({ email: "x@example.test" })).rejects.toThrow("unauthenticated"); expect(m.delete).not.toHaveBeenCalled(); });
+it("revokes only the current member stable account and generation", async () => { await removeAccount({ accountId: "account", generation: 2 }); expect(m.begin).toHaveBeenCalledWith("member-a", "account", 2); expect(m.status).toHaveBeenCalledWith("member-a", expect.objectContaining({ lifecycleRevision: 3 }), "revoked"); expect(m.delete).not.toHaveBeenCalled(); });
+it("keeps legacy deletion owner-only, deriving its principal server-side", async () => { await expect(removeAccount({ email: "x@example.test" })).rejects.toThrow("could not"); expect(m.delete).not.toHaveBeenCalled(); m.owner.mockReturnValue(true); await removeAccount({ email: "x@example.test" }); expect(m.delete).toHaveBeenCalledWith({}, "configured-owner", "google", "x@example.test"); });
+it("never exposes DB errors or accepts mixed authority fields", async () => { m.begin.mockRejectedValue(new Error("PRIVATE SQL")); await expect(removeAccount({ accountId: "account", generation: 2 })).rejects.toThrow("Refresh"); await expect(removeAccount({ accountId: "account", generation: 2, email: "x@example.test" } as never)).rejects.toThrow("Refresh"); });

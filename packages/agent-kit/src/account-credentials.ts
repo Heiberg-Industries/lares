@@ -9,7 +9,7 @@ export interface AccountCredentialOwner {
 /** The trusted callback writes with the existing OAuth custody helper on THIS transaction.
  * A rejected association rolls back both the credential write and account lifecycle changes.
  */
-export interface OAuthCredentialCommit { persist(db: PoolClient): Promise<string> }
+export interface OAuthCredentialCommit { persist(db: PoolClient, context: Readonly<AccountCredentialOwner>): Promise<string> }
 export interface StoredAccountCredential {
   refreshTokenEnc: string; scopes: string[]; orgId: string; emailAddress: string;
 }
@@ -19,7 +19,8 @@ export class AccountCredentialError extends Error {
 
 export async function associateAccountCredential(db: PoolClient, account: AccountCredentialOwner,
   persist: OAuthCredentialCommit['persist']): Promise<void> {
-  const tokenId = await persist(db);
+  const context = Object.freeze({ ...account });
+  const tokenId = await persist(db, context);
   if (typeof tokenId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(tokenId))
     throw new AccountCredentialError();
   // Canonical registry member and connector are exact; aliases and display labels confer nothing.
@@ -29,6 +30,8 @@ export async function associateAccountCredential(db: PoolClient, account: Accoun
   if (!token.rows[0]) throw new AccountCredentialError();
   const associated = await db.query('SELECT account_id FROM connected_account_credentials WHERE oauth_token_id=$1::uuid FOR UPDATE', [tokenId]);
   if (associated.rows[0] && associated.rows[0].account_id !== account.id) throw new AccountCredentialError();
+  const current = await db.query('SELECT oauth_token_id FROM connected_account_credentials WHERE account_id=$1 FOR UPDATE', [account.id]);
+  if (current.rows[0] && current.rows[0].oauth_token_id !== tokenId) throw new AccountCredentialError();
   await db.query(`INSERT INTO connected_account_credentials
     (account_id,owner_member_id,connector_id,account_generation,oauth_token_id) VALUES ($1,$2,$3,$4,$5)
     ON CONFLICT (account_id) DO UPDATE SET account_generation=EXCLUDED.account_generation,

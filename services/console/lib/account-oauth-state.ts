@@ -1,72 +1,46 @@
-// services/console/lib/account-oauth-state.ts
-// Tamper-proof, short-lived OAuth `state` for the add-account round-trip. Carries the chosen org
-// + principal through Google and back. HMAC-SHA256, 10-min TTL. Node-only (used in nodejs route
-// handlers). Ported from old-the sales agent's enrollment-state.ts; keyed by CONSOLE_SESSION_SECRET, read
-// through readSecret so a mounted CONSOLE_SESSION_SECRET_FILE wins over the plain env value —
-// this file is Node-only (never imported by Edge middleware), so unlike lib/auth.ts it can
-// safely depend on readSecret's own node:fs read.
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+/** Server-only, short-lived consent cookie. State alone never permits callback replay. */
+import { createHash } from "node:crypto";
+import { EncryptJWT, jwtDecrypt } from "jose";
 import { readSecret } from "./secrets";
 
-const TTL_MS = 10 * 60 * 1000;
-
-// `email` binds the state to the session that initiated the flow (CSRF: the callback rejects a
-// state whose email != the completing session's email). HMAC over the body means it can't be forged.
-export type AccountStatePayload = { org: string; principal: string; email: string; agent?:string; incarnation?:string; mailbox?:string };
-
-/**
- * The key this state is signed with. Three rules, each closing a way to end up signing with a key
- * anybody knows:
- *  - an EMPTY value is not a value — an empty secret file, or a blank env value, must never become
- *    an empty HMAC key;
- *  - a `_FILE` that is set but unreadable or empty falls back to the plain env value (the same
- *    secret lib/auth.ts signs the session cookie with) instead of silently dropping to the dev key
- *    while a real secret is sitting in the environment;
- *  - with nothing usable, PRODUCTION THROWS — exactly as lib/auth.ts does — and only a
- *    non-production run gets the publicly known dev key.
- */
-function secret(): string {
-  const fromFile = readSecret("CONSOLE_SESSION_SECRET");
-  const usable = [fromFile, process.env.CONSOLE_SESSION_SECRET].find(
-    (v): v is string => typeof v === "string" && v.trim().length > 0,
-  );
-  if (usable !== undefined) return usable.trim();
-  if (process.env.NODE_ENV === "production") {
-    throw new Error("CONSOLE_SESSION_SECRET is required in production");
-  }
-  return "dev-only-secret";
+export const ACCOUNT_FLOW_COOKIE = "lares_account_consent";
+export const ACCOUNT_FLOW_MAX_AGE = 600;
+interface FlowBase { memberId: string; sessionHash: string; org: string; clientId: string; state: string; nonce: string; verifier: string }
+export type AccountFlow = FlowBase & ({ intent: "new" } | { intent: "reconnect"; update: { accountId: string; generation: number; lifecycleRevision: number } });
+function parseFlow(value: unknown): AccountFlow {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid consent flow");
+  const flow = value as Record<string, unknown>;
+  const fields = ["memberId", "sessionHash", "org", "clientId", "state", "nonce", "verifier"];
+  if (fields.some(field => typeof flow[field] !== "string" || !flow[field]) || !/^[a-z0-9]+$/.test(String(flow.org))) throw new Error("Invalid consent flow");
+  const allowed = [...fields,"intent",...(flow.intent === "reconnect" ? ["update"] : [])];
+  if (Object.keys(flow).some(field => !allowed.includes(field))) throw new Error("Invalid consent flow");
+  const common: FlowBase = { memberId: String(flow.memberId), sessionHash: String(flow.sessionHash), org: String(flow.org),
+    clientId: String(flow.clientId), state: String(flow.state), nonce: String(flow.nonce), verifier: String(flow.verifier) };
+  if (flow.intent === "new") return { ...common, intent: "new" };
+  if (flow.intent !== "reconnect" || !flow.update || typeof flow.update !== "object" || Array.isArray(flow.update)) throw new Error("Invalid consent intent");
+  const update = flow.update as Record<string,unknown>;
+  if (Object.keys(update).sort().join(",") !== "accountId,generation,lifecycleRevision" || typeof update.accountId !== "string" || !update.accountId ||
+    !Number.isSafeInteger(update.generation) || Number(update.generation) < 0 || !Number.isSafeInteger(update.lifecycleRevision) || Number(update.lifecycleRevision) < 0) throw new Error("Invalid reconnect ticket");
+  return { ...common, intent: "reconnect", update: { accountId: update.accountId, generation: Number(update.generation), lifecycleRevision: Number(update.lifecycleRevision) } };
 }
-
-export function signAccountState(payload: AccountStatePayload, opts: { nowMs?: number } = {}): string {
-  const nowMs = opts.nowMs ?? Date.now();
-  const blob = { o: payload.org, p: payload.principal, e: payload.email, a: payload.agent, i: payload.incarnation, m: payload.mailbox, nonce: randomBytes(16).toString("hex"), exp: nowMs + TTL_MS };
-  const body = Buffer.from(JSON.stringify(blob)).toString("base64url");
-  const sig = createHmac("sha256", secret()).update(body).digest("base64url");
-  return `${body}.${sig}`;
+function key(): Uint8Array {
+  const secret = [readSecret("CONSOLE_SESSION_SECRET"), process.env.CONSOLE_SESSION_SECRET]
+    .find(value => typeof value === "string" && value.trim());
+  if (!secret) throw new Error("Account consent is not configured");
+  return createHash("sha256").update(secret.trim()).digest();
 }
-
-export type VerifyResult =
-  | { ok: true; data: AccountStatePayload }
-  | { ok: false; reason: "malformed" | "bad_signature" | "expired" };
-
-export function verifyAccountState(state: string, opts: { nowMs?: number } = {}): VerifyResult {
-  if (!state || !state.includes(".")) return { ok: false, reason: "malformed" };
-  const dot = state.lastIndexOf(".");
-  const body = state.slice(0, dot);
-  const sig = state.slice(dot + 1);
-  if (!body || !sig) return { ok: false, reason: "malformed" };
-  const expected = createHmac("sha256", secret()).update(body).digest("base64url");
-  const a = Buffer.from(expected);
-  const b = Buffer.from(sig);
-  if (a.length !== b.length || !timingSafeEqual(a, b)) return { ok: false, reason: "bad_signature" };
-  let blob: { o: string; p: string; e: string; a?:string; i?:string; m?:string; exp: number };
+export function accountSessionHash(session: string): string { return createHash("sha256").update(session).digest("base64url"); }
+export async function sealAccountFlow(input: AccountFlow): Promise<string> {
+  const flow = parseFlow(input);
+  return new EncryptJWT({ flow }).setProtectedHeader({ alg: "dir", enc: "A256GCM" })
+    .setIssuer("lares-account-consent").setAudience("lares-account-callback")
+    .setIssuedAt().setExpirationTime("10m").encrypt(key());
+}
+export async function openAccountFlow(value: string | undefined): Promise<AccountFlow | null> {
+  if (!value) return null;
   try {
-    blob = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
-  } catch {
-    return { ok: false, reason: "malformed" };
-  }
-  const nowMs = opts.nowMs ?? Date.now();
-  if (typeof blob.exp !== "number" || blob.exp < nowMs) return { ok: false, reason: "expired" };
-  if ((blob.a !== undefined || blob.i !== undefined) && (typeof blob.a !== 'string' || !/^[a-z][a-z0-9-]{1,30}$/.test(blob.a) || typeof blob.i !== 'string' || !/^[a-f0-9-]{36}$/.test(blob.i) || typeof blob.m !== 'string' || !/^[^\s@]+@[^\s@]+$/.test(blob.m))) return {ok:false,reason:'malformed'};
-  return { ok: true, data: { org: blob.o, principal: blob.p, email: blob.e, ...(blob.a ? {agent:blob.a,incarnation:blob.i,mailbox:blob.m} : {}) } };
+    const { payload } = await jwtDecrypt(value, key(), { issuer: "lares-account-consent", audience: "lares-account-callback",
+      keyManagementAlgorithms: ["dir"], contentEncryptionAlgorithms: ["A256GCM"] });
+    return parseFlow(payload.flow);
+  } catch { return null; }
 }

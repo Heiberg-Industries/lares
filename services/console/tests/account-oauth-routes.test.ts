@@ -1,50 +1,85 @@
-import {beforeEach,it,expect,vi} from 'vitest';
-import {signAccountState,verifyAccountState} from '../lib/account-oauth-state';
-const mocks=vi.hoisted(()=>({query:vi.fn(),store:vi.fn(),keeper:vi.fn(),profile:vi.fn(),consent:vi.fn()}));
-vi.mock('next/headers',()=>({cookies:async()=>({get:()=>({value:'session'})})}));
-vi.mock('../lib/auth',()=>({verify:async()=>'owner@example.test'}));
-vi.mock('../lib/db',()=>({pool:{query:mocks.query}}));
-vi.mock('../lib/keeper-client',()=>({keeper:mocks.keeper}));
-vi.mock('@lares/agent-box/lib/oauth-tokens.js',()=>({storeToken:mocks.store}));
-vi.mock('../lib/accounts',()=>({consolePrincipal: () => 'legacy',googleOrgClientConfig:()=>({clientId:'id',clientSecret:'secret'}),tokenEncKeyHex:()=>'key',googleOrgs:()=>[{id:'tenant'}],orgDomains:()=>({}),resolveOrgForEmail:()=>({org:'tenant'})}));
-vi.mock('../lib/account-oauth',()=>({consoleOrigin:()=>'https://console.example.test',callbackRedirect:(origin:string,p:Record<string,string>)=>`${origin}/integrations?${new URLSearchParams(p)}`,buildConsentUrl:(p:unknown)=>{mocks.consent(p);return 'https://accounts.google.com/consent';}}));
-vi.mock('googleapis',()=>({google:{auth:{OAuth2:class {getToken=async()=>({tokens:{refresh_token:'refresh',scope:'gmail.readonly'}});setCredentials=()=>{};}},gmail:()=>({users:{getProfile:mocks.profile}})}}));
-import {GET} from '../app/api/accounts/google/callback/route';
-import {POST} from '../app/api/accounts/google/start/route';
-const identity={org:'tenant',principal:'explicit',email:'owner@example.test'};
-const binding={agent:'example',incarnation:'11111111-1111-4111-8111-111111111111',mailbox:'selected@example.test'};
-const callback=(managed=true)=>GET(new Request(`https://console.example.test/api/accounts/google/callback?code=code&state=${signAccountState({...identity,...(managed?binding:{})})}`));
-beforeEach(()=>{vi.clearAllMocks();process.env.CONSOLE_PRINCIPAL_ID='explicit';process.env.CONSOLE_SESSION_SECRET='test';mocks.query.mockResolvedValue({rows:[{ownership_token:binding.incarnation}]});mocks.profile.mockResolvedValue({data:{emailAddress:binding.mailbox}});});
-it('signs the selected managed mailbox separately from the authenticated owner',async()=>{
- const form=new FormData();form.set('email',binding.mailbox);form.set('agent',binding.agent);
- expect((await POST(new Request('https://console.example.test/start',{method:'POST',body:form}))).status).toBe(303);
- expect(verifyAccountState(mocks.consent.mock.calls[0][0].state)).toEqual({ok:true,data:{...identity,...binding}});
+import { beforeEach, expect, it, vi } from "vitest";
+import { ACCOUNT_FLOW_COOKIE, accountSessionHash, sealAccountFlow, openAccountFlow, type AccountFlow } from "../lib/account-oauth-state";
+const mock = vi.hoisted(() => ({ member: vi.fn(), currentSession: vi.fn(), writeToken: vi.fn(), transaction: {}, query: vi.fn(), start: vi.fn(), finish: vi.fn(), begin: vi.fn(), read: vi.fn(), create: vi.fn(), renew: vi.fn(),
+  cookies: new Map<string,string>() }));
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: (name: string) => mock.cookies.has(name) ? { value: mock.cookies.get(name) } : undefined }) }));
+vi.mock("../lib/auth", () => ({ sessionMember: mock.member }));
+vi.mock("../lib/db", () => ({ pool: { query: mock.query } }));
+vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ writeVerifiedAccountToken: mock.writeToken }));
+vi.mock("@lares/agent-kit/member-store", () => ({ currentSession: mock.currentSession }));
+vi.mock("@lares/agent-kit/account-store", () => ({ PgAccountStore: class { beginUpdate = mock.begin; read = mock.read; forTrustedAdapter = () => ({ createPersonalAccount: mock.create, renew: mock.renew }); } }));
+vi.mock("../lib/accounts", () => ({ googleOrgClientConfig: () => ({ clientId: "data-client", clientSecret: "secret" }), tokenEncKeyHex: () => "key", googleOrgs: () => [{ id: "example" }], orgDomains: () => ({}), resolveOrgForEmail: () => ({ org: "example" }) }));
+vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.example.test", accountRedirect: () => "https://console.example.test/api/accounts/google/callback",
+  callbackRedirect: (origin: string, p: Record<string,string>) => `${origin}/membership?${new URLSearchParams(p)}`, startAccountConsent: mock.start, finishAccountConsent: mock.finish }));
+import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
+import { GET } from "../app/api/accounts/google/callback/route";
+import { POST } from "../app/api/accounts/google/start/route";
+const flow: AccountFlow = { intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
+const ticket = { accountId: "account-a", generation: 3, lifecycleRevision: 4 };
+const callback = (state = "state") => GET(new Request(`https://internal.example/api/accounts/google/callback?code=code&state=${state}`));
+async function start(values: Record<string,string>) { const form = new FormData(); for (const [key,value] of Object.entries(values)) form.set(key,value); return POST(new Request("https://internal.example/start", { method: "POST", body: form })); }
+beforeEach(async () => {
+  vi.clearAllMocks(); process.env.CONSOLE_SESSION_SECRET = "test-consent-secret";
+  mock.cookies.clear(); mock.cookies.set("lares_session", "session"); mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow));
+  mock.member.mockResolvedValue({ id: "member-a", status: "active", role: "member" });
+  mock.currentSession.mockResolvedValue({ id: "member-a" }); mock.writeToken.mockResolvedValue("token-id");
+  const persist = async (_member: string, _evidence: unknown, credential: { persist: (db: unknown, context: unknown) => Promise<unknown> }) => credential.persist(mock.transaction, { id: "account-a" });
+  mock.create.mockImplementation(persist); mock.renew.mockImplementation((_member, _ticket, _evidence, credential) => persist(_member, _evidence, credential));
+  mock.query.mockResolvedValue({ rows: [{ org_id: "example" }] }); mock.begin.mockResolvedValue(ticket); mock.read.mockResolvedValue({ connectorId: "google" });
+  mock.start.mockResolvedValue({ flow, url: new URL("https://accounts.google.com/consent") });
+  mock.finish.mockResolvedValue({ adapter: {}, material: { orgId: "example", emailAddress: "own@example.test", scopes: ["openid"], refreshToken: "refresh" } });
 });
-it('rejects a different Google profile before any token store or agent binding',async()=>{
- mocks.profile.mockResolvedValue({data:{emailAddress:'different@example.test'}});
- const result=await callback();expect(result.headers.get('location')).toContain('error=');
- expect(mocks.store).not.toHaveBeenCalled();expect(mocks.keeper).not.toHaveBeenCalled();
+it("starts member-owned flow with overwrite-only HttpOnly cookie and stable identity", async () => {
+  const result = await start({ intent: "new", email: "hint@example.test" });
+  expect(result.status).toBe(303); expect(mock.start).toHaveBeenCalledWith(expect.objectContaining({ memberId: "member-a", session: "session", org: "example" }));
+  const cookie = result.headers.get("set-cookie")!; expect(cookie).toContain("HttpOnly"); expect(cookie).toContain("Secure");
+  expect(await openAccountFlow(cookie.split(";")[0].split("=")[1])).toEqual(flow);
 });
-it('stores and binds the matching selected mailbox',async()=>{
- const result=await callback();expect(result.headers.get('location')).toContain('/agents/example/edit');
- expect(mocks.store).toHaveBeenCalledWith(expect.anything(),'key',expect.objectContaining({emailAddress:binding.mailbox}));
- expect(mocks.keeper).toHaveBeenCalledWith('email.connect',expect.objectContaining({mailbox:binding.mailbox}),'owner@example.test');
+it("refuses managed agent consent and unknown/missing intent before provider work", async () => {
+  expect((await start({ agent: "example", email: "own@example.test" })).status).toBe(409);
+  await start({ email: "own@example.test" }); await start({ intent: "replace", email: "own@example.test" }); expect(mock.start).not.toHaveBeenCalled();
 });
-it('preserves unmanaged OAuth acceptance and Integrations return for Google-selected mailbox',async()=>{
- mocks.profile.mockResolvedValue({data:{emailAddress:'another@example.test'}});
- expect((await callback(false)).headers.get('location')).toContain('added=another');
- expect(mocks.store).toHaveBeenCalledWith(expect.anything(),'key',expect.objectContaining({emailAddress:'another@example.test'}));
- expect(mocks.keeper).not.toHaveBeenCalled();expect(mocks.query).not.toHaveBeenCalled();
+it("captures reconnect ticket before beginning consent and ignores requested org/email", async () => {
+  await start({ intent: "reconnect", accountId: "account-a", generation: "3", email: "attacker@example.test", org: "other" });
+  expect(mock.begin).toHaveBeenCalledWith("member-a", "account-a", 3); expect(mock.start).toHaveBeenCalledWith(expect.objectContaining({ update: ticket, org: "example" }));
+});
+it("commits the exact verified account and resources without legacy agent connection", async () => {
+  const result = await callback(); expect(mock.create).toHaveBeenCalledWith("member-a", null, expect.objectContaining({ persist: expect.any(Function) }), [0,1]);
+  expect(result.headers.get("location")).toContain("pending"); expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
+  expect(mock.finish.mock.calls[0][0].origin).toBe("https://console.example.test");
+  expect(mock.currentSession).toHaveBeenCalledWith(mock.transaction, "session", "member-a", { lock: "share" });
+  expect(mock.writeToken).toHaveBeenCalledWith(mock.transaction, { id: "account-a" }, "key", expect.objectContaining({ refreshToken: "refresh" }));
+});
+it.each(["session", "member", "cookie", "state"])("refuses changed %s before any external provider call", async change => {
+  if (change === "session") mock.cookies.set("lares_session", "another-session");
+  if (change === "member") mock.member.mockResolvedValue({ id: "member-b" });
+  if (change === "cookie") mock.cookies.delete(ACCOUNT_FLOW_COOKIE);
+  const result = await callback(change === "state" ? "another-state" : "state");
+  expect(mock.finish).not.toHaveBeenCalled(); expect(mock.create).not.toHaveBeenCalled(); expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
+});
+it("rechecks reconnect lifecycle before provider work and refuses stale revision", async () => {
+  mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, intent: "reconnect", update: ticket })); mock.begin.mockResolvedValue({ ...ticket, lifecycleRevision: 5 });
+  await callback(); expect(mock.finish).not.toHaveBeenCalled(); expect(mock.renew).not.toHaveBeenCalled();
+});
+it("returns neutral terminal failure for raw provider and database errors", async () => {
+  mock.finish.mockRejectedValue(new Error("PRIVATE PROVIDER TOKEN SQL ERROR")); const result = await callback();
+  expect(decodeURIComponent(result.headers.get("location")!)).not.toContain("PRIVATE"); expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
 });
 
-it('refuses managed consent when the runtime-authority lookup returns no current resource',async()=>{
- mocks.query.mockResolvedValue({rows:[]});
- const form=new FormData();form.set('email',binding.mailbox);form.set('agent',binding.agent);
- const response=await POST(new Request('https://console.example.test/start',{method:'POST',body:form}));
- expect(response.status).toBe(400);expect(mocks.consent).not.toHaveBeenCalled();
+it("preserves admission storage outage as 503 and clears the consent cookie", async () => {
+  mock.member.mockRejectedValue(new ConsoleAdmissionUnavailableError()); const result = await callback();
+  expect(result.status).toBe(503); expect(result.headers.get("set-cookie")).toContain("Max-Age=0"); expect(mock.finish).not.toHaveBeenCalled();
 });
-it('refuses stale or revoked managed callback before storing a token or binding a mailbox',async()=>{
- mocks.query.mockResolvedValue({rows:[]});
- const response=await callback();expect(response.headers.get('location')).toContain('error=');
- expect(mocks.store).not.toHaveBeenCalled();expect(mocks.keeper).not.toHaveBeenCalled();
+
+it.each(["new", "reconnect"] as const)("refuses %s when the exact session ends during provider work, before token persistence", async intent => {
+  if (intent === "reconnect") mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, intent, update: ticket }));
+  mock.finish.mockImplementationOnce(async () => {
+    mock.currentSession.mockResolvedValue(undefined);
+    return { adapter: {}, material: { scopes: ["openid"], refreshToken: "refresh" } };
+  });
+  const result = await callback();
+  expect(mock.currentSession).toHaveBeenCalledWith(mock.transaction, "session", "member-a", { lock: "share" });
+  expect(mock.writeToken).not.toHaveBeenCalled();
+  expect(result.headers.get("location")).toContain("error=");
+  expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
 });

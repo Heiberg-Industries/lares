@@ -1,6 +1,6 @@
 import type { ConnectionRowDTO } from "../lib/contracts";
 import { StatePill } from "./StatePill";
-import { AddAccountForm } from "./AddAccountForm";
+import Link from "next/link";
 import { RemoveAccountButton } from "./RemoveAccountButton";
 
 function ago(iso: string): string {
@@ -59,7 +59,7 @@ export function ConnectionsTable({ rows }: { rows: ConnectionRowDTO[] }) {
           {cards(other)}
         </details>
       )}
-      {hasConsoleCustody && <AddAccountForm />}
+      {hasConsoleCustody && <p><Link href="/membership">Manage your personal Google accounts →</Link></p>}
     </>
   );
 }

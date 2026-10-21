@@ -2,7 +2,7 @@
 import { useState, useTransition } from "react";
 import { removeAccount } from "../app/actions/accounts";
 
-export function RemoveAccountButton(p: { email: string }) {
+export function RemoveAccountButton(p: { email: string; accountId?: string; generation?: number }) {
   const [pending, start] = useTransition();
   const [err, setErr] = useState("");
   return (
@@ -14,9 +14,10 @@ export function RemoveAccountButton(p: { email: string }) {
           start(async () => {
             setErr("");
             try {
-              await removeAccount({ email: p.email });
+              await removeAccount(p.accountId !== undefined && p.generation !== undefined
+                ? { accountId: p.accountId, generation: p.generation } : { email: p.email });
             } catch (e) {
-              setErr(String(e instanceof Error ? e.message : e));
+              setErr("Account could not be disconnected. Refresh and try again.");
             }
           })
         }

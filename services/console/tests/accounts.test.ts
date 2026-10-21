@@ -3,28 +3,30 @@ import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 // lib/accounts imports @lares/agent-box (native deps) + lib/db at module load — mock both so the
 // pure helpers under test load hermetically.
 vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: vi.fn().mockResolvedValue([]) }));
-vi.mock("../lib/db", () => ({ pool: {} }));
+const db = vi.hoisted(() => ({ query: vi.fn() }));
+vi.mock("../lib/db", () => ({ pool: db }));
 
-import { listTokens } from "@lares/agent-box/lib/oauth-tokens.js";
+
 import { listGoogleAccounts, toGoogleAccountDTO, googleOrgClientConfig, googleOrgs, GOOGLE_SCOPES } from "../lib/accounts";
 import { readSecret } from "../lib/secrets";
 
 describe("accounts data layer", () => {
   const origEnv = { ...process.env };
-  beforeEach(() => { vi.mocked(listTokens).mockReset().mockResolvedValue([]); });
+  beforeEach(() => { db.query.mockReset().mockResolvedValue({ rows: [] }); });
 
   it("distinguishes a successful empty account read from a failed read", async () => {
     expect(await listGoogleAccounts()).toEqual({ accounts: [], unavailable: false });
-    vi.mocked(listTokens).mockRejectedValue(new Error("private SQL and credentials"));
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("NOT EXISTS"), ["owner-1"]);
+    db.query.mockRejectedValue(new Error("private SQL and credentials"));
     expect(await listGoogleAccounts()).toEqual({ accounts: [], unavailable: true });
   });
 
   it("returns stored account facts without secrets on a successful read", async () => {
-    vi.mocked(listTokens).mockResolvedValue([{
+    db.query.mockResolvedValue({ rows: [{
       id: "token", principal: "owner", provider: "google", orgId: "acme",
       emailAddress: "owner@acme.example", scopes: ["read"],
       createdAt: new Date("2026-10-08T10:00:00Z"), updatedAt: new Date("2026-10-08T10:00:00Z"),
-    }]);
+    }] });
     expect(await listGoogleAccounts()).toEqual({ unavailable: false, accounts: [{
       principal: "owner", email: "owner@acme.example", org: "acme",
       scopeCount: 1, connectedAt: "2026-10-08",
@@ -85,9 +87,10 @@ describe("accounts data layer", () => {
   // INSUFFICIENT) and could only regain them by re-consenting. Caught during an OAuth project
   // migration. An exact-set assertion, not toContain — toContain is what let the
   // omission through in the first place.
-  it("grants EXACTLY the same scope set as agent-runtime/bin/oauth-enroll.ts", () => {
+  it("grants the data scope set plus OIDC identity consent", () => {
     expect([...GOOGLE_SCOPES].sort()).toEqual(
       [
+        "openid",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/drive.readonly", // batch 6: the chief of staff opens Docs links

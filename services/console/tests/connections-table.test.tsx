@@ -91,7 +91,7 @@ describe("Integrations page partial evidence", () => {
     expect(html).toContain("Accounts unavailable");
     expect(html).toContain("Usage unavailable");
     expect(html).toContain("Agent access: assistant");
-    expect(html).toContain("Connect a Google account");
+    expect(html).toContain("Manage your personal Google accounts");
     expect(html).toContain("7 synced");
     expect(html).toContain("Credential status unavailable");
     expect(html).toContain("Agent permissions");

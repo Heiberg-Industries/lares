@@ -1,70 +1,62 @@
-import { withConsoleAdmission } from "../../../../../lib/admission-error";
-import {pool} from '../../../../../lib/db';
-/**
- * POST /api/accounts/google/start — begin the add-Google-account flow.
- * Session-gated (lares_session). Reads the mailbox `email` from the form, resolves which
- * discovered Google client owns its domain, signs a short-lived state, and 303-redirects to
- * that org's OAuth consent screen with the address as a login hint.
- */
 import { NextResponse } from "next/server";
 import { cookies } from "next/headers";
-import { verify } from "../../../../../lib/auth";
-import { googleOrgClientConfig, googleOrgs, orgDomains, resolveOrgForEmail, consolePrincipal } from "../../../../../lib/accounts";
-import { signAccountState } from "../../../../../lib/account-oauth-state";
-import { buildConsentUrl, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
-
+import { PgAccountStore } from "@lares/agent-kit/account-store";
+import { withConsoleAdmission } from "../../../../../lib/admission-error";
+import { sessionMember } from "../../../../../lib/auth";
+import { pool } from "../../../../../lib/db";
+import { googleOrgClientConfig, googleOrgs, orgDomains, resolveOrgForEmail } from "../../../../../lib/accounts";
+import { ACCOUNT_FLOW_COOKIE, ACCOUNT_FLOW_MAX_AGE, sealAccountFlow } from "../../../../../lib/account-oauth-state";
+import { startAccountConsent, callbackRedirect, consoleOrigin } from "../../../../../lib/account-oauth";
 export const runtime = "nodejs";
-
 async function handlePOST(req: Request): Promise<Response> {
-  const email = await verify((await cookies()).get("lares_session")?.value);
-  if (!email) return new Response("Not authorised.", { status: 401 });
+  const jar = await cookies();
+  const session = jar.get("lares_session")?.value;
+  const member = await sessionMember(session);
+  if (!member || !session) return new Response("Not authorised.", { status: 401 });
   const origin = consoleOrigin();
-
-  let form: FormData;
+  const fail = () => {
+    const response = NextResponse.redirect(callbackRedirect(origin, { error: "Account consent could not start. Please try again." }), { status: 303 });
+    response.cookies.set(ACCOUNT_FLOW_COOKIE, "", { httpOnly: true, sameSite: "lax", secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: 0 });
+    return response;
+  };
   try {
-    form = await req.formData();
-  } catch {
-    return NextResponse.redirect(callbackRedirect(origin, { error: "Invalid form." }), { status: 303 });
-  }
-  const mailbox = (form.get("email") ?? "").toString().trim();
-  const resolved = resolveOrgForEmail(
-    mailbox,
-    googleOrgs().map((o) => o.id),
-    orgDomains(),
-    process.env.GOOGLE_DEFAULT_ORG,
-  );
-  if ("error" in resolved) {
-    return NextResponse.redirect(callbackRedirect(origin, { error: resolved.error }), { status: 303 });
-  }
-  const org = resolved.org;
-  const cfg = googleOrgClientConfig(org);
-  if (!cfg) {
-    return NextResponse.redirect(
-      callbackRedirect(origin, { error: `OAuth client not configured for org '${org}'.` }),
-      { status: 303 },
-    );
-  }
-
-  const redirectUri = `${origin}/api/accounts/google/callback`;
-  // Bind the authenticated owner separately from the mailbox selected for a managed agent.
-  const agent=form.get('agent')?.toString();
-  let binding:{agent:string;incarnation:string;mailbox:string}|undefined;
-  let principal=consolePrincipal();
-  if(agent) {
-    if(!/^[a-z][a-z0-9-]{1,30}$/.test(agent)||!process.env.CONSOLE_PRINCIPAL_ID) return new Response('Configure the explicit Google principal before connecting an agent mailbox.',{status:400});
-    const {rows}=await pool.query(`SELECT r.ownership_token FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND d.status='valid' AND d.definition->>'role'='chief-of-staff'`,[agent]);
-    if(!rows[0])return new Response('Agent mailbox setup is unavailable.',{status:400});
-    binding={agent,incarnation:rows[0].ownership_token,mailbox};principal=process.env.CONSOLE_PRINCIPAL_ID;
-  }
-  const state = signAccountState({ org, principal, email,...binding });
-  const consentUrl = buildConsentUrl({
-    clientId: cfg.clientId,
-    clientSecret: cfg.clientSecret,
-    redirectUri,
-    state,
-    loginHint: mailbox,
-  });
-  return NextResponse.redirect(consentUrl, { status: 303 });
+    const form = await req.formData();
+    if (form.has("agent")) {
+      const response = new Response("Agent mailbox connection requires the account-aware runtime adapter. Manage personal accounts on /membership.", { status: 409 });
+      // Overwriting/clearing the sole flow cookie prevents an earlier flow surviving this start.
+      response.headers.append("Set-Cookie", `${ACCOUNT_FLOW_COOKIE}=; Path=/api/accounts/google; HttpOnly; SameSite=Lax; Max-Age=0${origin.startsWith("https:") ? "; Secure" : ""}`);
+      return response;
+    }
+    const intent = form.get("intent");
+    if (intent !== "new" && intent !== "reconnect") return fail();
+    let org: string;
+    let update;
+    const store = new PgAccountStore(pool);
+    if (intent === "reconnect") {
+      const id = form.get("accountId"), rawGeneration = form.get("generation");
+      if (typeof id !== "string" || typeof rawGeneration !== "string" || !/^\d+$/.test(rawGeneration)) return fail();
+      update = await store.beginUpdate(member.id, id, Number(rawGeneration));
+      const account = await store.read(member.id, id);
+      if (account.connectorId !== "google") return fail();
+      // Read the configured client from this account's exact custody, never a request address.
+      const result = await pool.query<{ org_id: string }>(`SELECT t.org_id FROM connected_account_credentials c
+        JOIN oauth_tokens t ON t.id=c.oauth_token_id WHERE c.account_id=$1 AND c.owner_member_id=$2 AND c.connector_id='google'`, [id, member.id]);
+      if (!result.rows[0]) return fail();
+      org = result.rows[0].org_id;
+    } else {
+      const mailbox = form.get("email");
+      if (typeof mailbox !== "string") return fail();
+      const resolved = resolveOrgForEmail(mailbox, googleOrgs().map(value => value.id), orgDomains(), process.env.GOOGLE_DEFAULT_ORG);
+      if ("error" in resolved) return fail();
+      org = resolved.org;
+    }
+    if (!googleOrgClientConfig(org)) return fail();
+    const { flow, url } = await startAccountConsent({ memberId: member.id, session, org, update,
+      ...(intent === "new" ? { loginHint: String(form.get("email")).trim() } : {}) });
+    const response = NextResponse.redirect(url, { status: 303 });
+    response.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow(flow), { httpOnly: true, sameSite: "lax",
+      secure: origin.startsWith("https:"), path: "/api/accounts/google", maxAge: ACCOUNT_FLOW_MAX_AGE });
+    return response;
+  } catch { return fail(); }
 }
-
 export const POST = withConsoleAdmission(handlePOST);

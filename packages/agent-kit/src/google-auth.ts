@@ -167,6 +167,7 @@ export function resetGooglePrincipalWarningForTests(): void {
 }
 
 interface OAuthTokenRow {
+  associated: boolean;
   refresh_token_enc: string;
   scopes: string[];
   email_address: string;
@@ -180,10 +181,12 @@ interface OAuthTokenRow {
 export async function getMostRecentRefreshToken(principal: string, provider: string): Promise<DecryptedGoogleToken | null> {
   const keyHex = readTokenEncKey();
   const { rows } = await getPool().query<OAuthTokenRow>(
-    `SELECT refresh_token_enc, scopes, email_address, org_id FROM oauth_tokens
-     WHERE principal=$1 AND provider=$2 ORDER BY updated_at DESC LIMIT 1`,
+    `SELECT refresh_token_enc, scopes, email_address, org_id,
+       EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id) AS associated
+     FROM oauth_tokens t WHERE principal=$1 AND provider=$2 ORDER BY updated_at DESC`,
     [principal, provider],
   );
+  if (rows.some(row => row.associated)) throw new GoogleConfigError("Account-aware credential selection is required");
   const r = rows[0];
   if (!r) { warnNoTokenForPrincipal(principal, provider); return null; }
   return { token: decryptSecret(r.refresh_token_enc, keyHex), scopes: r.scopes, emailAddress: r.email_address, orgId: r.org_id };
@@ -195,10 +198,12 @@ export async function getMostRecentRefreshToken(principal: string, provider: str
 export async function listDecryptedRefreshTokens(principal: string, provider: string, selection?: {mailbox:string;org:string}): Promise<DecryptedGoogleToken[]> {
   const keyHex = readTokenEncKey();
   const { rows } = await getPool().query<OAuthTokenRow>(
-    `SELECT refresh_token_enc, scopes, email_address, org_id FROM oauth_tokens
-     WHERE principal=$1 AND provider=$2 AND ($3::text IS NULL OR email_address=$3) AND ($4::text IS NULL OR org_id=$4) ORDER BY email_address`,
+    `SELECT refresh_token_enc, scopes, email_address, org_id,
+       EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id) AS associated
+     FROM oauth_tokens t WHERE principal=$1 AND provider=$2 AND ($3::text IS NULL OR email_address=$3) AND ($4::text IS NULL OR org_id=$4) ORDER BY email_address`,
     [principal, provider, selection?.mailbox??null, selection?.org??null],
   );
+  if (rows.some(row => row.associated)) throw new GoogleConfigError("Account-aware credential selection is required");
   if (rows.length === 0) warnNoTokenForPrincipal(principal, provider);
   return rows.map((r) => ({
     token: decryptSecret(r.refresh_token_enc, keyHex),

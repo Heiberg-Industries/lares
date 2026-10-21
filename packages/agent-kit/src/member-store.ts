@@ -40,6 +40,20 @@ export async function currentMember(db: Pick<PoolClient, 'query'>, id: string, o
   return rows[0] && view(rows[0]);
 }
 
+/** The opaque session must still belong to the expected member after asynchronous work.
+ * A shared lock belongs inside the protected mutation's transaction and holds both the
+ * session and member current until commit; standalone reads provide only a snapshot. */
+export async function currentSession(db: Pick<PoolClient, 'query'>, raw: string,
+  expectedMemberId?: string, options: { lock?: 'share' } = {}): Promise<Member | undefined> {
+  if (!validToken(raw)) return undefined;
+  const { rows } = await db.query<MemberRow>(`SELECT ${columns.split(', ').map(c=>'u.'+c).join(', ')}
+    FROM member_sessions s JOIN users u ON u.id=s.member_id
+    WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp()
+      AND u.status='active' AND u.org_id IS NOT NULL${expectedMemberId === undefined ? '' : ' AND s.member_id=$2'}${options.lock === 'share' ? ' FOR SHARE OF s,u' : ''}`,
+    expectedMemberId === undefined ? [hash(raw)] : [hash(raw), expectedMemberId]);
+  return rows[0] && view(rows[0]);
+}
+
 export class PgMemberStore {
   constructor(private readonly pool: Pool) {}
   private async transaction<T>(fn: (db: PoolClient) => Promise<T>): Promise<T> {
@@ -157,9 +171,7 @@ export class PgMemberStore {
     });
   }
   async sessionMember(raw: string): Promise<Member | undefined> {
-    if (!validToken(raw)) return undefined;
-    const { rows } = await this.pool.query<MemberRow>(`SELECT ${columns.split(', ').map(c=>'u.'+c).join(', ')} FROM member_sessions s JOIN users u ON u.id=s.member_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>clock_timestamp() AND u.status='active' AND u.org_id IS NOT NULL`,[hash(raw)]);
-    return rows[0] && view(rows[0]);
+    return currentSession(this.pool, raw);
   }
   async revokeSession(raw: string): Promise<void> {
     if (validToken(raw)) await this.pool.query('UPDATE member_sessions SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE token_hash=$1',[hash(raw)]);
