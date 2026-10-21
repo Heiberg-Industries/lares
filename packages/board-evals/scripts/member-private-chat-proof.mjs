@@ -2,6 +2,7 @@
  * Only the model and Gmail API are fake. A preload maps fixed container secret paths to
  * disposable files; all grant, session, generation, custody and model guards stay real.
  * Use PRIVATE_CHAT_PROOF_ROLE=chief-of-staff or creative for a serial subset.
+ * PRIVATE_CHAT_PROOF_BUDGET=1 adds inactive preparation/cold-replay proof to chief/Anthropic + SEND.
  * Run: pnpm -C packages/board-evals exec tsx scripts/member-private-chat-proof.mjs
  */
 import assert from 'node:assert/strict';
@@ -9,13 +10,16 @@ import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mk
 import {tmpdir} from 'node:os';
 import {join,resolve,basename,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createHash,createCipheriv,randomBytes} from 'node:crypto';
+import {createHash,createCipheriv,randomBytes,randomUUID} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {PostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {PgMemberStore} from '@lares/agent-kit/member-store';
+import {budgetIdentitySuppression} from '@lares/agent-kit/budget-admission-store';
+import {requireConsoleTurnAuthority} from '@lares/agent-kit/console-turn-authority';
+import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
 import {PgAccountStore} from '@lares/agent-kit/account-store';
 import {loadDefinition} from '@lares/agent-kit/definition';
 import {forwardChat} from '../../../services/console/lib/chat-proxy.ts';
@@ -29,6 +33,8 @@ const canaries={owner:'OWNER_PRIVATE_CANARY',a:'MEMBER_A_INPUT_CANARY',b:'MEMBER
 let container,db,child,logs='',port;
 const withSend=process.env.PRIVATE_CHAT_PROOF_SEND==='1';
 const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
+const withBudget=process.env.PRIVATE_CHAT_PROOF_BUDGET==='1';
+if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief/Anthropic approval fixture');
 let gateway;
 const observedSteps=new Set();
 const snapshots=[],ownedSessionIds=new Set();
@@ -76,7 +82,7 @@ async function makeRole(role){
  const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
- if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');
+ if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
    const hook=join(cwd,'agent/hooks/model-invocation.ts');writeFileSync(hook,compactionHookSource(readFileSync(hook,'utf8')));
  }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
@@ -89,6 +95,7 @@ async function makeRole(role){
  const workflowName=role==='creative'?'proof_creative_workflow':'proof_chief_workflow';
  await db.query(`CREATE DATABASE ${workflowName}`);const workflowUrl=new URL(container.getConnectionUri());workflowUrl.pathname='/'+workflowName;env.WORKFLOW_POSTGRES_URL=workflowUrl.href;
  if(gatewayLane)Object.assign(env,{GATEWAY_LANE:gatewayLane,GATEWAY_URL:gateway.url,PROOF_GATEWAY_KEY:join(root,'gateway-key'),PROOF_COMPACTION_LOG:modelLog+'.compaction'});
+ if(withBudget)env.PROOF_BUDGET='1';
  const workflowDb=new Pool({connectionString:workflowUrl.href});try{await workflowDb.query(readFileSync(join(repo,'services',role,'sql/001-eve-workflow.sql'),'utf8'));}finally{await workflowDb.end();}
  const loaded=await loadDefinition({serviceDir:cwd,env});
  const address=role==='creative'?'10.0.0.8':'10.0.0.7';
@@ -96,7 +103,9 @@ async function makeRole(role){
  await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending,applied_definition) VALUES($1,$5,$2,'owned',$3,$3,'ready',false,$4)",[declaration.name,workflowName,incarnation,declaration,address]);
  const grants=new PgGrantStore(db);const access=await grants.adoptAgent(owner,{agentName:declaration.name,expectedDefinitionHash:loaded.hash},{designatedOwnerMemberId:owner});
  await grants.updateAgentAccess(owner,{agentName:declaration.name,expectedRevision:access.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});
- return {cwd,env,eve,name:declaration.name,address,modelLog,providerLog,grants};
+ const app={cwd,env,eve,name:declaration.name,address,modelLog,providerLog,grants};
+ if(withBudget)await provisionBudgetFixture(app);
+ return app;
 }
 let upstreamCalls=0;const members=new Map();
 function request(app,member,method,path,body,cookie=''){
@@ -113,7 +122,53 @@ async function stream(app,member,session){const lines=[];for(let retry=0;retry<8
  }throw new Error('Turn never completed '+logs.slice(-1800));}
 async function send(app,member,session,message){const response=await request(app,member,'POST',`eve/v1/session/${session.id}`,{message},session.cookie);assert.ok(response.ok,'continue '+response.status+' '+await response.clone().text());return stream(app,member,session);}
 const models=app=>readFileSync(app.modelLog,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
-async function denyOld(app,member,session){const before=models(app).length,providers=readFileSync(app.providerLog,'utf8');for(const [method,path,body]of [['POST',`eve/v1/session/${session.id}`,{message:'reuse old private context'}],['GET',`eve/v1/session/${session.id}/stream`,undefined],['POST',`eve/v1/session/${session.id}/compact`,{}]]){const response=await request(app,member,method,path,body,session.cookie);assert.equal(response.ok,false,`${path} revived`);}await sleep(100);assert.equal(models(app).length,before);assert.equal(readFileSync(app.providerLog,'utf8'),providers);}
+async function denyOld(app,member,session){const budgetBefore=withBudget?(await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n:null;const before=models(app).length,providers=readFileSync(app.providerLog,'utf8');for(const [method,path,body]of [['POST',`eve/v1/session/${session.id}`,{message:'reuse old private context'}],['GET',`eve/v1/session/${session.id}/stream`,undefined],['POST',`eve/v1/session/${session.id}/compact`,{}]]){const response=await request(app,member,method,path,body,session.cookie);assert.equal(response.ok,false,`${path} revived`);}await sleep(100);assert.equal(models(app).length,before);assert.equal(readFileSync(app.providerLog,'utf8'),providers);if(withBudget)assert.equal((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n,budgetBefore);}
+// Synthetic request/profile/endpoint fixtures exercise preparation only. This is not
+// production wire-request correlation, gateway admission, provider usage or settlement.
+async function provisionBudgetFixture(app){
+ const installation=randomUUID(),endpoint='e'.repeat(64),profile='f'.repeat(64);
+ await db.query("UPDATE org_member_policy SET spend_cap_usd_month=1 WHERE user_id=ANY($1)",[[a,b]]);
+ await db.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,installation_cap,selected_endpoint,recovery_epoch) VALUES($1,'proof-installation','installation',$1,1,$2,'proof-epoch')",[installation,endpoint]);
+ async function open(account,member){
+  const window=randomUUID();await db.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,$3,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[window,account,member]);
+  await db.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[account,window]);
+ }
+ await open(installation,null);
+ for(const member of [a,b]){
+  const id=randomUUID(),suppression=budgetIdentitySuppression(Buffer.alloc(32,1),{canonicalMemberId:member,providers:[{issuer:'https://identity.example.invalid',subject:member,tenantId:''}]});
+  await db.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'proof-installation','member',$2,$3,'proof-org',$4,$5)",[id,installation,member,suppression.canonicalSuppressionHash,suppression.providerSuppressionHashes]);
+  await open(id,member);
+  await db.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'fixture-brain',$9,0.001,'active')",[randomUUID(),installation,id,member,endpoint,'d'.repeat(64),app.name,incarnation,profile]);
+ }
+}
+async function proveDurableBudget(app){
+ const scopes=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+ const receipts=readFileSync(app.modelLog+'.budget','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+ const rows=async()=>(await db.query('SELECT id,invocation_hash FROM budget_attempts ORDER BY id')).rows;
+ const before=await rows();assert.equal(before.length,scopes.length);assert.equal(receipts.length,scopes.length);
+ assert.equal(new Set(before.map(row=>row.invocation_hash)).size,before.length);assert.deepEqual(new Set(receipts.map(row=>row.id)),new Set(before.map(row=>row.id)));
+ const selected=[scopes.find(s=>s.session.auth.current.attributes.lares_purpose==='human'),...['approve','cancel'].map(option=>scopes.find(s=>s.event.data.turnId===''&&s.session.auth.current.attributes.lares_resume_option===option))];
+ assert.ok(selected.every(Boolean),'Missing actual human or exact blank approval/cancel invocation');
+ const code=`import {Pool} from 'pg';
+ import {PgBudgetAdmissionStore} from '${new URL('../../../packages/agent-kit/src/budget-admission-store.ts',import.meta.url).href}';
+ import {captureModelInvocation,runModelInvocation} from '${new URL('../../../packages/agent-kit/src/model-invocation.ts',import.meta.url).href}';
+ const f=JSON.parse(process.env.BUDGET_PROOF_FIXTURE),pool=new Pool({connectionString:f.databaseUrl});
+ try{const invocation=captureModelInvocation(f.scope.event,f.scope.session,f.scope.alias);let denied=false;
+  try{await runModelInvocation(invocation,()=>new PgBudgetAdmissionStore(pool,f.env).prepareIntent(f.request));}catch{denied=true;}
+  process.stdout.write(JSON.stringify({denied}));
+ }finally{await pool.end();}`;
+ for(const scope of selected){
+  const ctx={session:{...scope.session,turn:{id:scope.event.data.turnId,sequence:scope.event.data.sequence}}};
+  // Confirm fresh authority independently while it is still valid, before revocation tests.
+  if(scope.session.auth.current.attributes.lares_purpose==='resolver')await requirePrivateConsoleResume(ctx,'model',{db,env:app.env});else await requireConsoleTurnAuthority(ctx,db,app.env);
+  const binding=(await db.query("SELECT id,profile_hash FROM budget_gateway_bindings WHERE agent=$1 AND live_member_id=$2 AND state='active'",[app.name,scope.session.auth.initiator.attributes.lares_member_id])).rows[0];
+  const fixture={databaseUrl:container.getConnectionUri(),scope,env:{LARES_AGENT_NAME:app.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner},request:{bindingId:binding.id,profileHash:binding.profile_hash,requestHash:'b'.repeat(64)}};
+  const result=await run(process.execPath,['--import',join(repo,'services/box/node_modules/tsx/dist/loader.mjs'),'--input-type=module','--eval',code],{cwd:join(repo,'services/box'),env:{...process.env,BUDGET_PROOF_FIXTURE:JSON.stringify(fixture)},timeout:15000});
+  assert.deepEqual(JSON.parse(result.stdout),{denied:true});
+ }
+ assert.deepEqual(await rows(),before,'Cold reconstruction changed retained invocation hashes or attempt count');
+ console.log(app.name+': actual human and blank approve/cancel preparation, unchanged hashes/count after valid-authority cold replay PASS (preparation only)');
+}
 function assertGatewayScopes(app){
   gateway.assertHealthy();
   const scopes=()=>readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
@@ -186,7 +241,7 @@ try{
    const response=await fetch(`http://127.0.0.1:${port}/eve/v1/session`,{method:'POST',headers:{authorization:'Basic '+Buffer.from('eve:'+password).toString('base64'),'content-type':'application/json','x-lares-member-id':a,'x-lares-admission':'m'.repeat(43),'x-lares-purpose':'human'},body:JSON.stringify(body)});
    assert.ok(!response.ok,'Actual role admitted forbidden private envelope');
   }
-  assert.equal(models(app).length,0);assert.equal((await db.query('SELECT count(*)::int AS n FROM console_session_bindings WHERE agent=$1',[app.name])).rows[0].n,0);
+  assert.equal(models(app).length,0);if(withBudget)assert.equal((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n,0);assert.equal((await db.query('SELECT count(*)::int AS n FROM console_session_bindings WHERE agent=$1',[app.name])).rows[0].n,0);
   console.log(role+': actual compiled channel refused malformed/forbidden envelopes before dispatch');
   let sendProof;
   const sa=await create(app,a,canaries.a,'same-operation'),sb=await create(app,b,canaries.b,'same-operation');assert.notEqual(sa.id,sb.id,'operationId crossed members');console.log(role+': first-message creates accepted; same operationId isolated by member');
@@ -245,6 +300,7 @@ try{
   if(gatewayLane){const after=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id);assert.ok(after.at(-1).event.data.sequence>Math.max(...beforeCold.map(s=>s.event.data.sequence)),'Cold fresh human turn reused previous sequence');assert.ok(after.at(-1).event.data.turnId,'Cold fresh human turn did not retain actual nonempty turn');}
 
   if(gatewayLane)await proveGatewayInvocation(app);
+  if(withBudget)await proveDurableBudget(app);
   const current=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:current.accessRevision,grants:[{principal:{kind:'member',id:b},permission:'use',expiresAt:null}]});await denyOld(app,a,sa);
   const revoked=await app.grants.agentAccess(owner,app.name);await app.grants.updateAgentAccess(owner,{agentName:app.name,expectedRevision:revoked.accessRevision,grants:[a,b].map(id=>({principal:{kind:'member',id},permission:'use',expiresAt:null}))});await denyOld(app,a,sa);await denyOld(app,b,sb);
   const fresh=await create(app,a,'New empty private context');await stream(app,a,fresh);assert.ok(!JSON.stringify(models(app).at(-1)).includes(canaries.a));

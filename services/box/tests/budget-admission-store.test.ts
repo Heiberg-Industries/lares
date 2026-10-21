@@ -3,6 +3,12 @@ import {PgVaultStore} from '../../../packages/agent-kit/src/vault-area-store.js'
 import {beforeAll,beforeEach,afterAll,describe,it,expect} from 'vitest';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
+import {fileURLToPath} from 'node:url';
+import {captureModelInvocation,runModelInvocation} from '../../../packages/agent-kit/src/model-invocation.js';
+import type {ConsoleAuthorityContext} from '../../../packages/agent-kit/src/console-turn-authority.js';
+import type {BudgetRequestReference} from '../../../packages/agent-kit/src/budget-admission-store.js';
 import {readFileSync,readdirSync,mkdtempSync,rmSync} from 'node:fs';
 import {randomUUID,createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
@@ -31,9 +37,32 @@ const fixtureOwner=randomUUID();
 const sql=new URL('../sql/',import.meta.url);
 const h=(s:string)=>createHash('sha256').update(s).digest('hex');
 const recovery=()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled' as const});
+let invocationSequence=0;
+function prepare(selected:PgBudgetAdmissionStore,ctx:ConsoleAuthorityContext,request:BudgetRequestReference,coordinates={turnId:ctx.session!.turn!.id!,sequence:ctx.session!.turn!.sequence!,stepIndex:invocationSequence++},alias='standard'){
+  const invocation=captureModelInvocation({type:'step.started',data:coordinates},ctx.session as never,alias);
+  return runModelInvocation(invocation,()=>selected.prepareIntent(request));
+}
+// A fresh Node process reconstructs only trusted event/session capture; no caller hash or
+// store bypass. This proves the database suppression independently of process tombstones.
+async function coldPrepare(ctx:ConsoleAuthorityContext,request:BudgetRequestReference,coordinates:{turnId:string;sequence:number;stepIndex:number},alias='standard'){
+  const moduleUrl=new URL('../../../packages/agent-kit/src/',import.meta.url).href;
+  const code=`import {Pool} from 'pg';
+    import {PgBudgetAdmissionStore} from '${moduleUrl}budget-admission-store.ts';
+    import {captureModelInvocation,runModelInvocation} from '${moduleUrl}model-invocation.ts';
+    const f=JSON.parse(process.env.BUDGET_TEST_FIXTURE);
+    const pool=new Pool({connectionString:f.connectionString,max:1});
+    try { const invocation=captureModelInvocation({type:'step.started',data:f.coordinates},f.ctx.session,f.alias);
+      const ticket=await runModelInvocation(invocation,()=>new PgBudgetAdmissionStore(pool,f.env).prepareIntent(f.request));
+      process.stdout.write(JSON.stringify({ticket}));
+    } catch {process.stdout.write(JSON.stringify({denied:true}));} finally {await pool.end();}`;
+  const result=await promisify(execFile)(process.execPath,['--import',fileURLToPath(new URL('../node_modules/tsx/dist/loader.mjs',import.meta.url)),'--input-type=module','--eval',code],{
+    cwd:fileURLToPath(new URL('../',import.meta.url)),env:{...process.env,BUDGET_TEST_FIXTURE:JSON.stringify({ctx,request,coordinates,alias,env:env(),connectionString:container.getConnectionUri()})},timeout:15_000,
+  });
+  return JSON.parse(result.stdout) as {ticket?:string;denied?:boolean};
+}
 async function prepared(member='member-a',agent='helper',selected=store){
   const requestHash=h(randomUUID()),bindingId=bindings[`${member}:${agent}`]!;
-  const ticket=await selected.prepareIntent(context(member,agent),{bindingId,requestHash,profileHash:profile});
+  const ticket=await prepare(selected,context(member,agent),{bindingId,requestHash,profileHash:profile});
   const observation:BudgetGatewayObservation={requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent,incarnation,purposeAlias:'standard'};
   return {ticket,observation,bindingId};
 }
@@ -90,9 +119,9 @@ async function resumeFixture(deadline:'action'|'approval',option:'approve'|'canc
     SELECT $1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,$7,clock_timestamp()-interval '24 hours'+(CASE WHEN $8='approval' THEN $9 ELSE 3600000 END*interval '1 millisecond'),clock_timestamp()`,
     [callId,requestId,PERSONAL_MAIL_SEND_TOOL,payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId,option==='approve'?'approved':'cancelled',deadline,delay]);
   await db.query('UPDATE personal_actions SET approval_call_id=$2,approval_request_id=$3,state=$4 WHERE id=$1',[actionId,callId,requestId,option==='approve'?'awaiting_dispatch':'cancelled']);
-  const human=context(),resume={session:{...human.session,turn:{id:'resume-turn',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:option,lares_purpose:'resolver'}}}}};
+  const human=context(),resume={session:{...human.session,turn:{id:'',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:option,lares_purpose:'resolver'}}}}};
   const current=await requirePrivateConsoleResume(resume,'model',{db,env:env()}),requestHash=h(randomUUID()),bindingId=bindings['member-a:helper']!;
-  const ticket=await store.prepareIntent(resume,{bindingId,requestHash,profileHash:profile});
+  const ticket=await prepare(store,resume,{bindingId,requestHash,profileHash:profile});
   return {ticket,bindingId,validUntil:current.validUntil,observation:{requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'}};
 }
 beforeAll(async()=>{
@@ -104,6 +133,7 @@ beforeAll(async()=>{
 },120_000);
 afterAll(async()=>{await db?.end();await container?.stop();});
 beforeEach(async()=>{
+  sessionGeneration++;
   // Destructive cleanup is confined to this owned, disposable container. Never accept an
   // environment connection string or run this through production store helpers.
   expect((await db.query('SELECT marker,current_database() AS database FROM budget_test_owner')).rows).toEqual([{marker:fixtureOwner,database:'test'}]);
@@ -135,6 +165,173 @@ beforeEach(async()=>{
   store=new PgBudgetAdmissionStore(db,env());
 });
 describe('inactive budget admission on real PostgreSQL',()=>{
+  it('requires registered invocation authority and the actual selected alias',async()=>{
+    const request={bindingId:bindings['member-a:helper']!,requestHash:h('request'),profileHash:profile};
+    await expect(store.prepareIntent(request)).rejects.toThrow('fresh trusted');
+    await expect(prepare(store,context(),request,undefined,'different-alias')).rejects.toThrow('Budget policy unavailable');
+    const blank=context();blank.session.turn.id='';await expect(prepare(store,blank,request)).rejects.toThrow();
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(0);
+    expect((await store.readStatus(context())).liability).toBe('0');
+  });
+  it('gives exactly one ticket to concurrent independent processes for the same actual step',async()=>{
+    const ctx=context(),coordinates={turnId:'same-turn',sequence:5,stepIndex:2};
+    const request={bindingId:bindings['member-a:helper']!,requestHash:h('same-request'),profileHash:profile};
+    const results=await Promise.all([coldPrepare(ctx,request,coordinates),coldPrepare(ctx,request,coordinates),coldPrepare(ctx,request,coordinates)]);
+    expect(results.filter(r=>r.ticket)).toHaveLength(1);expect(results.filter(r=>r.denied)).toHaveLength(2);
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
+  },30_000);
+  it.each(['prepared','expired','retired','admitted','unknown','settled','conflict'] as const)('keeps %s invocation suppression across a cold process',async state=>{
+    const ctx=context(),coordinates={turnId:'durable-turn',sequence:2,stepIndex:4};
+    const request={bindingId:bindings['member-a:helper']!,requestHash:h('durable-request'),profileHash:profile};
+    const selected=state==='expired'?new PgBudgetAdmissionStore(db,env(),1):store;
+    const ticket=await prepare(selected,ctx,request,coordinates);
+    const observation={requestHash:request.requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'};
+    if(state==='expired')await new Promise(resolve=>setTimeout(resolve,10));
+    if(state==='retired')await db.query("UPDATE budget_attempts SET state='retired'");
+    if(['admitted','unknown','settled','conflict'].includes(state)){
+      const admitted=await store.admit(ticket,observation,recovery());expect(admitted.state).toBe('allowed');
+      if(admitted.state!=='allowed')throw new Error('Fixture admission failed');
+      if(state==='unknown')await store.markUnknown(admitted.attemptId);
+      if(state==='settled'||state==='conflict')await store.settle({attemptId:admitted.attemptId,bindingId:request.bindingId,requestHash:request.requestHash,endpointHash:endpoint,credentialGeneration:'0',profileHash:profile,receiptHash:h('durable-receipt'),actualAmount:state==='conflict'?'0.2':'0.05',kind:'terminal-usage'});
+    }
+    expect(await coldPrepare(ctx,{...request,requestHash:h('changed-body')},coordinates)).toEqual({denied:true});
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
+  },20_000);
+  it('preserves old invocation suppression after revoke/regrant and admits a fresh turn and step',async()=>{
+    const ctx=context('member-b'),coordinates={turnId:'before-regrant',sequence:3,stepIndex:1};
+    const request={bindingId:bindings['member-b:helper']!,requestHash:h('regrant-request'),profileHash:profile};
+    await prepare(store,ctx,request,coordinates);
+    const retained=(await db.query('SELECT invocation_hash FROM budget_attempts')).rows[0].invocation_hash;
+    const grants=new PgGrantStore(db),access=await grants.agentAccess('member-a','helper');
+    const revoked=await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:access!.accessRevision,grants:[]});
+    await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:revoked.accessRevision,grants:[{principal:{kind:'organisation',id:'org'},permission:'use',expiresAt:null}]});
+    expect(await coldPrepare(ctx,request,coordinates)).toEqual({denied:true});
+    await freshConsoleSessions();
+    expect(await coldPrepare(context('member-b'),request,{turnId:'fresh-turn',sequence:4,stepIndex:2})).toHaveProperty('ticket');
+    expect((await db.query('SELECT invocation_hash FROM budget_attempts')).rows.map(r=>r.invocation_hash)).toContain(retained);
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(2);
+  });
+  it('does not rearm after alias, key, profile, window and recovery replacement',async()=>{
+    const ctx=context(),coordinates={turnId:'rotating-turn',sequence:2,stepIndex:4};
+    const request={bindingId:bindings['member-a:helper']!,requestHash:h('request'),profileHash:profile};
+    await prepare(store,ctx,request,coordinates);
+    const replacement=randomUUID(),changedProfile=h('changed-profile');
+    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[request.bindingId]);
+    await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
+      SELECT $2,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation+1,$3,agent,incarnation,'changed-alias',$4,maximum_liability,'active' FROM budget_gateway_bindings WHERE id=$1`,[request.bindingId,replacement,h('changed-key'),changedProfile]);
+    await window(installation,null);await window(accounts['member-a']!,'member-a');
+    await db.query("UPDATE budget_accounts SET recovery_epoch='epoch-2' WHERE id=$1",[installation]);
+    expect(await coldPrepare(ctx,{bindingId:replacement,requestHash:h('changed-body'),profileHash:changedProfile},coordinates,'changed-alias')).toEqual({denied:true});
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
+  });
+  it('returns no ticket after a lost commit acknowledgement and preserves durable suppression',async()=>{
+    const ctx=context(),coordinates={turnId:'lost-commit',sequence:2,stepIndex:4},request={bindingId:bindings['member-a:helper']!,requestHash:h('lost-request'),profileHash:profile};
+    const lost={connect:async()=>{const client=await db.connect();return {release:()=>client.release(),query:async(sql:string,values?:unknown[])=>{const result=await client.query(sql,values);if(sql==='COMMIT')throw new Error('lost acknowledgement');return result;}};}} as unknown as Pool;
+    await expect(prepare(new PgBudgetAdmissionStore(lost,env()),ctx,request,coordinates)).rejects.toThrow('could not be confirmed');
+    expect(await coldPrepare(ctx,request,coordinates)).toEqual({denied:true});
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
+  });
+  it('rolls an ordinary failed prepare back without persisting suppression',async()=>{
+    const ctx=context(),coordinates={turnId:'rollback-turn',sequence:2,stepIndex:4},request={bindingId:bindings['member-a:helper']!,requestHash:h('rollback-request'),profileHash:profile};
+    const rollback={connect:async()=>{const client=await db.connect();return {release:()=>client.release(),query:async(sql:string,values?:unknown[])=>{const result=await client.query(sql,values);if(sql.startsWith('INSERT INTO budget_attempts'))throw new Error('ordinary rollback');return result;}};}} as unknown as Pool;
+    await expect(prepare(new PgBudgetAdmissionStore(rollback,env()),ctx,request,coordinates)).rejects.toThrow('ordinary rollback');
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(0);
+    expect(await coldPrepare(ctx,request,coordinates)).toHaveProperty('ticket');
+  });
+  it('rolls the entire cutover back rather than deadlocking a policy INSERT that owns console first',async()=>{
+    await prepared();
+    await db.query("DELETE FROM org_member_policy WHERE user_id='member-a'");
+    await db.query('DROP TRIGGER budget_invocation_insert_guard ON budget_attempts; ALTER TABLE budget_attempts DROP COLUMN invocation_hash');
+    const before=(await db.query('SELECT * FROM budget_attempts')).rows;
+    const bindingsBefore=(await db.query('SELECT * FROM console_session_bindings ORDER BY session_id')).rows;
+    const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),writer=await other.connect();
+    const pausePool=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),pause=await pausePool.connect();
+    let inserting:Promise<unknown>|undefined;
+    try{
+      // This test-only trigger pauses an actual INSERT after SQL 014's BEFORE trigger
+      // has acquired console locks, but before the users FK acquires its table lock.
+      await db.query(`CREATE FUNCTION budget_test_policy_pause() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_advisory_xact_lock(230023); RETURN NEW; END $$;
+        CREATE TRIGGER z_budget_test_policy_pause BEFORE INSERT ON org_member_policy FOR EACH ROW EXECUTE FUNCTION budget_test_policy_pause()`);
+      await pause.query('BEGIN');await pause.query('SELECT pg_advisory_xact_lock(230023)');
+      const pid=(await writer.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      inserting=writer.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES('member-a',NULL,1)");
+      const until=Date.now()+3000;let blocked=false;
+      while(Date.now()<until){
+        if((await db.query("SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event='advisory'",[pid])).rows.length){blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);
+      await expect(db.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'))).rejects.toMatchObject({code:'55P03'});
+      await db.query('ROLLBACK');
+      expect((await db.query("SELECT 1 FROM information_schema.columns WHERE table_name='budget_attempts' AND column_name='invocation_hash'")).rows).toEqual([]);
+      expect((await db.query("SELECT 1 FROM pg_trigger WHERE tgname='budget_invocation_insert_guard'")).rows).toEqual([]);
+      expect((await db.query('SELECT * FROM budget_attempts')).rows).toEqual(before);
+      await pause.query('COMMIT');await inserting;
+      // Policy writes can revoke captures, but a failed migration must add no cutover.
+      expect((await db.query('SELECT * FROM console_session_bindings ORDER BY session_id')).rows).toEqual(bindingsBefore);
+      await db.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'));
+      expect((await db.query('SELECT state,invocation_hash FROM budget_attempts')).rows).toEqual([{state:'retired',invocation_hash:null}]);
+    }finally{
+      await db.query('ROLLBACK');await pause.query('ROLLBACK');await inserting;writer.release();pause.release();await other.end();await pausePool.end();
+      await db.query('DROP TRIGGER IF EXISTS z_budget_test_policy_pause ON org_member_policy; DROP FUNCTION IF EXISTS budget_test_policy_pause()');
+      await db.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'));
+    }
+  });
+  it.each(['remove','delete'] as const)('drains existing %s member transactions before the migration console lock',async operation=>{
+    await prepared();
+    const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),writer=await other.connect();
+    const migrationPool=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),migrator=await migrationPool.connect();
+    let pending:Promise<unknown>|undefined;
+    try{
+      await writer.query('BEGIN');await writer.query('SET LOCAL lock_timeout=1000');
+      await writer.query("SELECT id FROM users WHERE id='member-a' FOR UPDATE");
+      // The removal/erasure path can already own budgets before its later console revoke.
+      await writer.query('LOCK TABLE budget_attempts IN ROW EXCLUSIVE MODE');
+      const pid=(await migrator.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+      pending=migrator.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'));
+      const until=Date.now()+3000;let blocked=false;
+      while(Date.now()<until){
+        if((await db.query("SELECT 1 FROM pg_stat_activity WHERE pid=$1 AND wait_event_type='Lock'",[pid])).rows.length){blocked=true;break;}
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      expect(blocked).toBe(true);
+      await writer.query(operation==='remove'?"UPDATE users SET status='removed' WHERE id='member-a'":"DELETE FROM users WHERE id='member-a'");
+      await writer.query('COMMIT');await pending;
+      expect((await db.query("SELECT state FROM budget_attempts")).rows[0].state).toBe('retired');
+    }finally{await writer.query('ROLLBACK');writer.release();await pending;migrator.release();await migrationPool.end();await other.end();}
+  });
+  it('refuses a busy authority lock before touching budget tables and succeeds on retry',async()=>{
+    const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),locker=await other.connect();
+    const migrationPool=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),migrator=await migrationPool.connect();
+    try{
+      await locker.query('BEGIN');await locker.query('SET LOCAL lock_timeout=1000');
+      await locker.query("SELECT session_id FROM console_session_bindings WHERE member_id='member-a' FOR SHARE");
+      await expect(migrator.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'))).rejects.toMatchObject({code:'55P03'});
+      await migrator.query('ROLLBACK');
+      // Refusal cannot leave a conflicting budget/DDL lock behind.
+      await locker.query('SELECT id FROM budget_accounts WHERE id=$1 FOR UPDATE',[installation]);
+      await locker.query('SELECT id FROM budget_attempts FOR UPDATE');await locker.query('COMMIT');
+      await migrator.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'));
+    }finally{await locker.query('ROLLBACK');await migrator.query('ROLLBACK');locker.release();migrator.release();await migrationPool.end();await other.end();}
+  });
+  it('requires new insert hashes, protects retained hashes, and preserves legacy NULL settlement after one-time cutover',async()=>{
+    const legacy=await admitted();await prepared();
+    // Reconstruct the pre-023 schema in this disposable database, retaining genuine rows.
+    await db.query('DROP TRIGGER budget_invocation_insert_guard ON budget_attempts; ALTER TABLE budget_attempts DROP COLUMN invocation_hash');
+    await db.query(readFileSync(new URL('023_budget_invocation_suppression.sql',sql),'utf8'));
+    expect((await db.query('SELECT state,invocation_hash FROM budget_attempts ORDER BY state')).rows).toEqual([{state:'admitted',invocation_hash:null},{state:'retired',invocation_hash:null}]);
+    await expect(store.readStatus(context())).rejects.toThrow();
+    await freshConsoleSessions();const fresh=await prepared();
+    // Whole-directory reapply recreates SQL 011 functions too; the separate insert guard stays.
+    for(const file of readdirSync(sql).filter(f=>f.endsWith('.sql')&&f>'006_approval_session.sql').sort())await db.query(readFileSync(new URL(file,sql),'utf8'));
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+    expect((await store.admit(fresh.ticket,fresh.observation,recovery())).state).toBe('allowed');
+    const copy=(digest:string|null)=>db.query(`INSERT INTO budget_attempts SELECT (jsonb_populate_record(NULL::budget_attempts,to_jsonb(a)||jsonb_build_object('id',$1::text,'ticket_hash',$2::text,'invocation_hash',$3::text))).* FROM budget_attempts a LIMIT 1`,[randomUUID(),h(randomUUID()),digest]);
+    await expect(copy(null)).rejects.toThrow('Budget invocation is required');await expect(copy('A'.repeat(64))).rejects.toThrow();
+    await expect(db.query("UPDATE budget_attempts SET invocation_hash=repeat('a',64) WHERE invocation_hash IS NOT NULL")).rejects.toThrow('immutable');
+    await db.query("DELETE FROM users WHERE id='member-a'");expect(await store.settle(receipt(legacy))).toBe('settled');
+    expect((await db.query('SELECT count(*)::int n FROM budget_attempts WHERE invocation_hash IS NULL AND live_member_id IS NULL')).rows[0].n).toBe(2);
+  });
   it('reserves exact money on a one-connection pool and burns only acknowledged commits',async()=>{
     await cap('member-a','0.100000000000000001');
     const a=await admitted();expect((await store.readStatus(context())).liability).toBe('0.1');
@@ -172,12 +369,12 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at)
       VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,'approved',clock_timestamp())`,[selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId]);
     await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
-    const current=context(),resume={session:{...current.session,turn:{id:'resume-turn',sequence:1},auth:{initiator:current.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}}}}};
+    const current=context(),resume={session:{...current.session,turn:{id:'',sequence:1},auth:{initiator:current.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}}}}};
     const checked=await requirePrivateConsoleResume(resume,'model',{db,env:env()});
     expect((await requirePersistedPrivateConsoleModelResume({binding:checked.binding,requestId,optionId:'approve'},{db,env:env()})).reference.actionId).toBe(action.actionId);
-    const requestHash=h('resume-model'),ticket=await store.prepareIntent(resume,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile});
+    const requestHash=h('resume-model'),ticket=await prepare(store,resume,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile});
     const row=(await db.query('SELECT authority_reference FROM budget_attempts')).rows[0];expect(row.authority_reference).toMatchObject({kind:'resume',binding:{memberId:'member-a'},resume:{requestId,optionId:'approve'}});
-    const wrong=structuredClone(resume);wrong.session.auth.current.attributes.lares_resolver_member_id='member-b';await expect(store.prepareIntent(wrong,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile})).rejects.toThrow();
+    const wrong=structuredClone(resume);wrong.session.auth.current.attributes.lares_resolver_member_id='member-b';await expect(prepare(store,wrong,{bindingId:bindings['member-a:helper']!,requestHash,profileHash:profile})).rejects.toThrow();
     await expect(requirePersistedPrivateConsoleModelResume({binding:checked.binding,requestId:'other',optionId:'approve'},{db,env:env()})).rejects.toThrow();
     await expect(db.query("UPDATE approval_asks SET resolved_by_member_id='member-b' WHERE call_id=$1",[selection.originalCallId])).rejects.toThrow('immutable');
     await db.query("UPDATE connected_accounts SET generation=generation+1 WHERE id='account-a'");
@@ -196,7 +393,7 @@ describe('inactive budget admission on real PostgreSQL',()=>{
   });
   it('denies absent member policy, closed installation, unselected endpoint and unsupported authority',async()=>{
     const bad=context();bad.session.auth.current={authenticator:'native',attributes:{}} as never;
-    await expect(store.prepareIntent(bad,{bindingId:bindings['member-a:helper']!,requestHash:h('request'),profileHash:profile})).rejects.toThrow();
+    await expect(prepare(store,bad,{bindingId:bindings['member-a:helper']!,requestHash:h('request'),profileHash:profile})).rejects.toThrow();
     await db.query("DELETE FROM org_member_policy WHERE user_id='member-a'");await expect(prepared()).rejects.toThrow();
     await db.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES('member-a',NULL,1)");
     await db.query("UPDATE budget_accounts SET state='closed' WHERE id=$1",[installation]);await expect(prepared()).rejects.toThrow();
@@ -244,7 +441,7 @@ describe('inactive budget admission on real PostgreSQL',()=>{
       SELECT $2,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation+1,$3,agent,incarnation,purpose_alias,profile_hash,maximum_liability,'active' FROM budget_gateway_bindings WHERE id=$1`,[p.bindingId,replacement,h('replacement-key')]);
     await expect(insert()).rejects.toThrow();await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[p.bindingId]);await insert();
     expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('denied');
-    const q=await store.prepareIntent(context(),{bindingId:replacement,requestHash:h('replacement-request'),profileHash:profile});
+    const q=await prepare(store,context(),{bindingId:replacement,requestHash:h('replacement-request'),profileHash:profile});
     expect((await store.admit(q,{...p.observation,requestHash:h('replacement-request'),credentialGeneration:'1',keyFingerprint:h('replacement-key')},recovery())).state).toBe('allowed');
   });
   it('rechecks expiry after lock waits and current cap after authority waits',async()=>{
@@ -340,17 +537,20 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE state='admitted'")).rows[0].n).toBe(0);
   });
   it('exports financial data without credential/ticket/suppression values and erases metadata while retaining late settlement',async()=>{
-    const a=await admitted(),root=mkdtempSync(join(tmpdir(),'budget-export-'));
+    const a=await admitted(),retainedHash=(await db.query('SELECT invocation_hash FROM budget_attempts')).rows[0].invocation_hash,root=mkdtempSync(join(tmpdir(),'budget-export-'));
     try{
       const report=await exportPerson(db,{person:'member-a',outDir:join(root,'export')});expect(report.refusals).toEqual([]);
       for(const table of ['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts']){
         expect(scopeOf(table)).toMatchObject({scope:'member',column:'live_member_id',idKind:'registry'});expect(eraseHandlingFor(scopeOf(table)!)).toBe('retire-and-redact-budget-liability');
-        const body=readFileSync(join(root,'export','data',`${table}.json`),'utf8');expect(body).not.toMatch(/ticket_hash|key_fingerprint|suppression|authority_reference|authority_hash|request_hash|session-/);
+        const body=readFileSync(join(root,'export','data',`${table}.json`),'utf8');expect(body).not.toMatch(/ticket_hash|invocation_hash|key_fingerprint|suppression|authority_reference|authority_hash|request_hash|session-/);
       }
       const erased=await erasePerson(db,{person:'member-a',dryRun:false});expect(erased.refusals).toEqual([]);
       const account=(await db.query('SELECT * FROM budget_accounts WHERE id=$1',[accounts['member-a']])).rows[0];expect(account).toMatchObject({state:'retired',live_member_id:null,organisation_id:null});expect(account.provider_suppression_hashes).toHaveLength(1);
       const binding=(await db.query('SELECT * FROM budget_gateway_bindings WHERE id=$1',[a.bindingId])).rows[0];expect(binding).toMatchObject({state:'revoked',live_member_id:null,agent:null,key_fingerprint:null});
       expect((await db.query('SELECT state,reserved_amount,authority_reference,live_member_id FROM budget_attempts')).rows[0]).toMatchObject({state:'admitted',reserved_amount:'0.1',authority_reference:null,live_member_id:null});
+      expect((await db.query('SELECT invocation_hash FROM budget_attempts')).rows[0].invocation_hash).toBe(retainedHash);
+      // Erasure cannot turn the same opaque invocation hash into a new attempt.
+      await expect(db.query(`INSERT INTO budget_attempts SELECT (jsonb_populate_record(NULL::budget_attempts,to_jsonb(a)||jsonb_build_object('id',$1::text,'ticket_hash',$2::text))).* FROM budget_attempts a LIMIT 1`,[randomUUID(),h(randomUUID())])).rejects.toThrow('invocation_hash');
       expect(await store.settle(receipt(a,'0.05'))).toBe('settled');
       await expect(db.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,$3,$4)",[randomUUID(),installation,h('new-canonical'),account.provider_suppression_hashes])).rejects.toThrow('reconciliation');
       expect((await db.query('SELECT count(*)::int n FROM budget_accounts WHERE live_member_id=\'member-b\'')).rows[0].n).toBe(1);
