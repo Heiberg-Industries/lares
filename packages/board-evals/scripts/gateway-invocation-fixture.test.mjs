@@ -17,12 +17,12 @@ test('OpenAI text and tool role messages preserve the same synthetic scripting b
   const input=fixtureInput({messages:[{role:'user',content:'MAIL {}'},{role:'tool',content:'fixture result'}]});
   assert.equal(input.message,'MAIL {}');assert.deepEqual(input.toolResults,['fixture result']);
 });
-test('generated model scope record uses a runtime newline rather than a literal backslash-n',()=>{
+test('generated model scope record uses a runtime newline rather than a literal backslash-n',async()=>{
   const source=gatewayModelSource('const attacked=');
-  const record=source.slice(source.indexOf('function record'),source.indexOf('export const gatewayModel'));
+  const record=source.slice(source.indexOf('async function record'),source.indexOf('export const gatewayModel'));
   let output;
-  const execute=new Function('currentModelInvocation','appendFileSync','process',record.replace('method:string','method')+';record("stream");');
-  execute(()=>({event:{type:'step.started'}}),(_path,value)=>{output=value;},{env:{PROOF_MODEL_LOG:'fixture'}});
+  const execute=new Function('currentModelInvocation','appendFileSync','process',record.replace('method:string','method')+';return record("stream");');
+  await execute(()=>({event:{type:'step.started'}}),(_path,value)=>{output=value;},{env:{PROOF_MODEL_LOG:'fixture'}});
   assert.equal(output.split('\n').filter(Boolean).length,1);assert.ok(output.endsWith('\n'));assert.equal(JSON.parse(output).method,'stream');
 });
 

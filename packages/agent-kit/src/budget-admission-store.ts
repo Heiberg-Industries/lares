@@ -10,6 +10,7 @@ import { privateResolverAdmission, requirePrivateConsoleResume, requirePersisted
 import { PgGrantStore } from './grant-store.js';
 import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
+import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
 
 const SCALE=10n**18n;
 /** At most 18 integral and 18 fractional digits, no exponent/sign/nonfinite values. */
@@ -63,7 +64,7 @@ export class PgBudgetAdmissionStore {
 
   private async capture(db:PoolClient,ctx:ConsoleAuthorityContext):Promise<Ref> {
     const own=managedIdentity(this.env),session=ctx.session;
-    if(!own||!session?.id||!session.turn?.id||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
+    if(!own||!session?.id||typeof session.turn?.id!=='string'||(session.turn.id!==''&&!session.turn.id.trim())||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
     const resolver=privateResolverAdmission(session.auth?.current);
     if(resolver){
       const current=await requirePrivateConsoleResume(ctx,'model',{db,env:this.env});
@@ -121,7 +122,12 @@ export class PgBudgetAdmissionStore {
   }
   /** Called only by authenticated current console runtime. The random ticket can cross a
    * process boundary while prepared; its hash and authenticated provenance are durable. */
-  async prepareIntent(ctx:ConsoleAuthorityContext,request:BudgetRequestReference):Promise<string> {
+  async prepareIntent(request:BudgetRequestReference):Promise<string> {
+    // Read the registered, frozen scope synchronously. Caller context cannot choose a step.
+    const invocation=currentModelInvocation();
+    if(!invocation)throw new Error(MODEL_INVOCATION_REFUSED);
+    const {turnId,sequence,stepIndex}=invocation.event.data;
+    const ctx:ConsoleAuthorityContext={session:{...invocation.session,turn:{id:turnId,sequence}}};
     if(!uuid(request.bindingId)||!validHash(request.requestHash)||!validHash(request.profileHash))throw new Error('Invalid budget request');
     const raw=randomBytes(32).toString('base64url');
     await this.transaction(async db=>{
@@ -133,10 +139,17 @@ export class PgBudgetAdmissionStore {
       if(!discovered)throw new Error('Budget binding unavailable');
       const {installation,member,binding:b}=await this.locks(db,discovered.installation_account_id,discovered.member_account_id,request.bindingId);
       const iCap=await this.cap(db,installation),mCap=await this.cap(db,member);
-      if(!b||b.state!=='active'||member.live_member_id!==reference.binding.memberId||b.live_member_id!==member.live_member_id||b.agent!==reference.binding.agent||b.incarnation!==reference.binding.incarnation||b.profile_hash!==request.profileHash||b.endpoint_hash!==installation.selected_endpoint||!installation.recovery_epoch||!iCap||!mCap||!await this.ready(db,installation)||!await this.ready(db,member))throw new Error('Budget policy unavailable');
-      await db.query(`INSERT INTO budget_attempts(id,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,endpoint_generation,recovery_epoch,request_hash,authority_hash,authority_reference,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,created_at,expires_at)
-        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,t,t+($22::int*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t) c`,
-        [randomUUID(),hash(raw),installation.id,member.id,b.id,member.live_member_id,installation.active_window_id,member.active_window_id,b.endpoint_hash,b.credential_generation,installation.policy_generation,member.policy_generation,installation.endpoint_generation,installation.recovery_epoch,request.requestHash,payloadFingerprint('budget-authority',reference),JSON.stringify(reference),b.profile_hash,b.maximum_liability,iCap,mCap,this.intentLifetimeMs]);
+      if(!b||b.state!=='active'||member.live_member_id!==reference.binding.memberId||b.live_member_id!==member.live_member_id||b.agent!==reference.binding.agent||b.incarnation!==reference.binding.incarnation||b.purpose_alias!==invocation.alias||b.profile_hash!==request.profileHash||b.endpoint_hash!==installation.selected_endpoint||!installation.recovery_epoch||!iCap||!mCap||!await this.ready(db,installation)||!await this.ready(db,member))throw new Error('Budget policy unavailable');
+      // The retained canonical digest is a pseudorandom namespace, not an auth secret.
+      // Fresh verified authority above grants access; routing/body/window changes cannot rearm.
+      const invocationHash=createHmac('sha256',Buffer.from(member.canonical_suppression_hash,'hex')).update(JSON.stringify([
+        'lares.budget.invocation.v1','conversation-step',installation.id,member.id,reference.binding.memberId,
+        reference.binding.agent,reference.binding.incarnation,reference.binding.sessionId,reference.binding.admissionNonce,turnId,sequence,stepIndex,
+      ])).digest('hex');
+      const inserted=await db.query(`INSERT INTO budget_attempts(invocation_hash,id,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,endpoint_generation,recovery_epoch,request_hash,authority_hash,authority_reference,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,created_at,expires_at)
+        SELECT $23,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,t,t+($22::int*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t) c ON CONFLICT(invocation_hash) DO NOTHING RETURNING id`,
+        [randomUUID(),hash(raw),installation.id,member.id,b.id,member.live_member_id,installation.active_window_id,member.active_window_id,b.endpoint_hash,b.credential_generation,installation.policy_generation,member.policy_generation,installation.endpoint_generation,installation.recovery_epoch,request.requestHash,payloadFingerprint('budget-authority',reference),JSON.stringify(reference),b.profile_hash,b.maximum_liability,iCap,mCap,this.intentLifetimeMs,invocationHash]);
+      if(inserted.rows.length!==1)throw new Error('Budget authority is unavailable or changed');
     });return raw;
   }
   async admit(ticket:string,observation:BudgetGatewayObservation,recovery:BudgetRecoveryReference):Promise<BudgetAdmission> {

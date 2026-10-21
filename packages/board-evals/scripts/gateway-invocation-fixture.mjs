@@ -11,11 +11,26 @@ export function gatewayModelSource(source) {
 import {createGatewayProvider} from '@lares/agent-kit/gateway-provider';
 import {currentModelInvocation} from '@lares/agent-kit/definition-model';
 import {wrapLanguageModel} from 'ai';
+import {createHash} from 'node:crypto';
+import {getPool} from '@lares/agent-kit/db';
+import {PgBudgetAdmissionStore} from '@lares/agent-kit/budget-admission-store';
 const provider=createGatewayProvider({defaultKeyFile:process.env.PROOF_GATEWAY_KEY!});
-function record(method:string){const scope=currentModelInvocation();if(!scope)throw new Error('Missing actual invocation scope');appendFileSync(process.env.PROOF_MODEL_LOG+'.scope',JSON.stringify({method,...scope})+'\\n');}
+async function record(method:string){
+ const scope=currentModelInvocation();if(!scope)throw new Error('Missing actual invocation scope');
+ appendFileSync(process.env.PROOF_MODEL_LOG+'.scope',JSON.stringify({method,...scope})+'\\n');
+ if(process.env.PROOF_BUDGET==='1'){
+  const pool=getPool(),memberId=scope.session.auth.initiator?.attributes?.lares_member_id;
+  const binding=(await pool.query("SELECT id,profile_hash FROM budget_gateway_bindings WHERE agent=$1 AND live_member_id=$2 AND state='active'",[process.env.LARES_AGENT_NAME,memberId])).rows[0];
+  if(!binding)throw new Error('Missing disposable budget binding');
+  const requestHash=createHash('sha256').update(JSON.stringify([method,scope.event])).digest('hex');
+  const ticket=await new PgBudgetAdmissionStore(pool).prepareIntent({bindingId:binding.id,profileHash:binding.profile_hash,requestHash});
+  const attempt=(await pool.query('SELECT id,invocation_hash FROM budget_attempts WHERE ticket_hash=$1',[createHash('sha256').update(ticket).digest('hex')])).rows[0];
+  appendFileSync(process.env.PROOF_MODEL_LOG+'.budget',JSON.stringify(attempt)+'\\n');
+ }
+}
 export const gatewayModel=(alias:string)=>wrapLanguageModel({model:provider.gatewayModel(alias) as Exclude<ReturnType<typeof provider.gatewayModel>,string>,middleware:{
- wrapGenerate:async({doGenerate})=>{record('generate');return doGenerate();},
- wrapStream:async({doStream})=>{record('stream');return doStream();},
+ wrapGenerate:async({doGenerate})=>{await record('generate');return doGenerate();},
+ wrapStream:async({doStream})=>{await record('stream');return doStream();},
 }});
 export const gatewayUrl=provider.gatewayUrl;
 export const gatewayKey=provider.gatewayKey;
