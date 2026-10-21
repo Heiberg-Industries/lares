@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
 import {GatewayBudgetAuthority,readGatewayServiceKey,type GatewayRpcReply} from '../lib/gateway-budget.js';
-import {GATEWAY_ADMIT_PATH,gatewayCanonical,gatewaySignature} from '@lares/agent-kit/gateway-admission-protocol';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature} from '@lares/agent-kit/gateway-admission-protocol';
 let dir:string,stop:(()=>Promise<void>)|undefined;
 const ownership={uid:process.getuid!(),gid:process.getgid!()},key=Buffer.alloc(32,7);
 const handle=vi.fn(async(_path:string,_signature:string|undefined,_raw:Buffer):Promise<GatewayRpcReply>=>({status:200,headers:{'content-type':'application/json','x-lares-signature':'a'.repeat(64)},body:Buffer.from('{"state":"denied"}')}));
@@ -38,9 +38,18 @@ it('bounds bodies, signatures and encodings before authority work',async()=>{
   expect(handle).not.toHaveBeenCalled();
 });
 it('real production absence of a recovery witness cannot allow a signed request',async()=>{
-  const socket=await start(new GatewayBudgetAuthority({} as never,key));
+  const writer={run:vi.fn(async()=>{throw new Error('must not run without recovery witness');})};
+  const socket=await start(new GatewayBudgetAuthority({} as never,key,writer));
   const raw=gatewayCanonical({version:1,nonce:'a'.repeat(64),ticket:'a'.repeat(43),requestHash:'b'.repeat(64),profileHash:'c'.repeat(64),endpointHash:'d'.repeat(64),keyFingerprint:'e'.repeat(64),purposeAlias:'example-brain'});
   expect((await call(socket,raw)).status).toBe(503);
+  expect(writer.run).not.toHaveBeenCalled();
+});
+it('refuses signed settlement before database access when financial custody is absent',async()=>{
+  const pool={query:vi.fn(),connect:vi.fn()};
+  const authority=new GatewayBudgetAuthority(pool as never,key,undefined);
+  const body=gatewayCanonical({version:1}),signature=gatewaySignature(key,'request',GATEWAY_SETTLE_PATH,body);
+  expect((await authority.handle(GATEWAY_SETTLE_PATH,signature,body)).status).toBe(503);
+  expect(pool.query).not.toHaveBeenCalled();expect(pool.connect).not.toHaveBeenCalled();
 });
 it('refuses regular-file replacement and leaves another live listener alone',async()=>{
   const path=join(dir,'gate.sock');await writeFile(path,'keep');

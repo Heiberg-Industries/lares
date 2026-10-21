@@ -9,7 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {captureModelInvocation,runModelInvocation} from '../../../packages/agent-kit/src/model-invocation.js';
 import type {ConsoleAuthorityContext} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import type {BudgetRequestReference} from '../../../packages/agent-kit/src/budget-admission-store.js';
-import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync} from 'node:fs';
+import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync,realpathSync} from 'node:fs';
 import {randomUUID,createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -24,12 +24,13 @@ import {erasePerson,eraseHandlingFor} from '../lib/erase-person.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
-import {journalFixture} from '../../keeper/tests/helpers/financial-journal.js';
+import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
+import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
 let sessionGeneration=0;
@@ -45,6 +46,21 @@ const fixtureOwner=randomUUID();
 const sql=new URL('../sql/',import.meta.url);
 const h=(s:string)=>createHash('sha256').update(s).digest('hex');
 const recovery=()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled' as const});
+async function gatewayCustody(pool:Pool,failOn?:'proposal'|'control'){
+  const directory=join(realpathSync(tmpdir()),`lares-gateway-financial-${randomUUID()}`);let armed=false;
+  const sync=(fd:number)=>{
+    fsyncSync(fd);
+    if(armed&&failOn){
+      const last=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').at(-1);
+      if(last&&JSON.parse(last).record.kind===failOn)throw new Error(`synthetic ${failOn} fsync failure`);
+    }
+  };
+  const options={ownershipUid:testJournalUid,lock:platformTestJournalLock,sync};
+  const preparation=HostFinancialJournal.prepareFresh(directory,await observeFinancialDatabase(pool),options);
+  try{preparation.complete();}finally{preparation.close();}
+  const journal=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});armed=true;
+  return {directory,journal,writer:new JournalBudgetFinancialWriter(journal),records:()=>readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line))};
+}
 let invocationSequence=0;
 function prepare(selected:PgBudgetAdmissionStore,ctx:ConsoleAuthorityContext,request:BudgetRequestReference,coordinates={turnId:ctx.session!.turn!.id!,sequence:ctx.session!.turn!.sequence!,stepIndex:invocationSequence++},alias='standard'){
   const invocation=captureModelInvocation({type:'step.started',data:coordinates},ctx.session as never,alias);
@@ -175,7 +191,10 @@ beforeEach(async()=>{
 describe('signed keeper gateway admission on the one-connection PostgreSQL pool',()=>{
   const serviceKey=Buffer.alloc(32,9);
   const witness:GatewayRecoveryWitness={observe:async()=>recovery()};
-  function authority(pool=db,source:GatewayRecoveryWitness|undefined=witness){return new GatewayBudgetAuthority(pool,serviceKey,source);}
+  let files:{directory:string;journal:HostFinancialJournal;writer:JournalBudgetFinancialWriter;records:()=>any[]};
+  beforeEach(async()=>{files=await gatewayCustody(db);});
+  afterEach(()=>{files.journal.close();rmSync(files.directory,{recursive:true,force:true});});
+  function authority(pool=db,source:GatewayRecoveryWitness|undefined=witness,writer:JournalBudgetFinancialWriter|undefined=files.writer){return new GatewayBudgetAuthority(pool,serviceKey,writer,source);}
   function admitDocument(p:Awaited<ReturnType<typeof prepared>>){return {version:1,nonce:h(randomUUID()),ticket:p.ticket,requestHash:p.observation.requestHash,profileHash:profile,endpointHash:endpoint,keyFingerprint:fingerprint,purposeAlias:'standard'};}
   async function rpc(selected:GatewayBudgetAuthority,path:string,document:unknown){
     const raw=gatewayCanonical(document),reply=await selected.handle(path,gatewaySignature(serviceKey,'request',path,raw),raw);
@@ -205,6 +224,26 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const rows=(await db.query('SELECT * FROM budget_gateway_grants')).rows;
     expect(Object.keys(rows[0]).sort()).toEqual(['attempt_id','grant_hash']);expect(JSON.stringify(rows)).not.toMatch(/standard|helper|member-a|keyFingerprint|nonce/);
   });
+  it('journals signed admission, grant and settlement through prepared Keeper custody',async()=>{
+    const a=await allowed(),receipt=terminal(a.grant);
+    expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
+    const frames=files.records(),proposals=frames.filter(frame=>frame.record.kind==='proposal'),begins=frames.filter(frame=>frame.record.kind==='begin'),commits=frames.filter(frame=>frame.record.kind==='commit');
+    expect(begins.map(frame=>frame.record.operation)).toEqual(['admit','grant','settle']);expect(proposals).toHaveLength(3);
+    expect(commits).toHaveLength(3);
+    for(const frame of proposals){
+      const row=(await db.query('SELECT * FROM budget_financial_checkpoints WHERE operation_id=$1',[frame.record.operationId])).rows[0];
+      expect(row).toMatchObject({journal_id:frames.find(value=>value.record.kind==='control').record.control.journalId,proposal_sequence:String(frame.record.sequence),proposal_digest:frame.digest});
+    }
+    const grant={...a.grant};delete grant.state;delete grant.validForMs;
+    expect(proposals.at(-1).record.atoms).toEqual(expect.arrayContaining([expect.objectContaining({kind:'attempt',state:'settled',actualAmount:'0.0098'}),expect.objectContaining({kind:'grant',grantHash:gatewayGrantHash(grant)})]));
+  });
+  it('refuses settlement without a writer and leaves the admitted liability unchanged',async()=>{
+    const a=await allowed(),before=(await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0];
+    const closed=new GatewayBudgetAuthority(db,serviceKey,undefined,witness);
+    expect((await rpc(closed,GATEWAY_SETTLE_PATH,terminal(a.grant))).reply.status).toBe(503);
+    expect((await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0]).toEqual(before);
+    expect((await store.readStatus(context())).liability).toBe('0.1');
+  });
   it.each([1,2])('retains R without issuing allow after lost transaction %s acknowledgement',async which=>{
     const p=await prepared(),request=admitDocument(p);
     expect((await rpc(authority(lostCommit(which)),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
@@ -233,7 +272,7 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
   });
   it('keeps production closed without a real witness, even when the database says open',async()=>{
     const p=await prepared(),request=admitDocument(p),raw=gatewayCanonical(request);
-    for(const selected of [new GatewayBudgetAuthority(db,serviceKey),productionGatewayBudgetAuthority(db)])expect((await selected.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw)).status).toBe(503);
+    for(const selected of [new GatewayBudgetAuthority(db,serviceKey,files.writer),productionGatewayBudgetAuthority(db,undefined,files.journal)])expect((await selected.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw)).status).toBe(503);
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
   });
   it('returns unavailable by its whole-call deadline when an injected witness stalls',async()=>{
@@ -242,6 +281,17 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await selected.handle(GATEWAY_ADMIT_PATH,gatewaySignature(serviceKey,'request',GATEWAY_ADMIT_PATH,raw),raw,performance.now()+30)).status).toBe(503);
     expect(performance.now()-before).toBeLessThan(300);
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+  });
+  it.each(['proposal','control'] as const)('does not allow when the journal %s fsync fails',async failure=>{
+    files.journal.close();rmSync(files.directory,{recursive:true,force:true});
+    files=await gatewayCustody(db,failure);
+    const selected=authority(db,witness,files.writer),p=await prepared(),request=admitDocument(p);
+    expect((await rpc(selected,GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
+    const state=(await db.query('SELECT state FROM budget_attempts')).rows[0].state;
+    expect(state).toBe(failure==='control'?'admitted':'prepared');
+    expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants')).rows[0].n).toBe(0);
+    expect((await rpc(selected,GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
+    if(failure==='control')expect((await store.readStatus(context())).liability).toBe('0.1');
   });
   it.each([{epoch:'later-epoch'},{state:'unreconciled'},{endpointGeneration:'1'}])('cannot allow restored or unreconciled witness state %#',async changes=>{
     const p=await prepared(),selected=authority(db,{observe:async()=>({...recovery(),...changes}) as ReturnType<typeof recovery>});
@@ -281,13 +331,15 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await store.readStatus(context())).liability).toBe('0.1');
     expect((await rpc(authority(),GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
   });
-  it('settles exact native cache usage and handles a lost settlement acknowledgement idempotently',async()=>{
+  it('freezes financial custody after a lost settlement acknowledgement',async()=>{
     const selected=authority(lostCommit(3)),a=await allowed(selected),receipt=terminal(a.grant);
     expect((await rpc(selected,GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
     expect((await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0]).toMatchObject({state:'settled',actual_amount:'0.0098'});
-    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
-    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,200))).document.state).toBe('conflict');
-    expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
+    expect(files.records().filter(frame=>frame.record.kind==='commit')).toHaveLength(2);
+    expect(files.records().at(-1).record.kind).toBe('freeze');
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
+    expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,200))).reply.status).toBe(503);
+    expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('open');
   });
   it('preserves valid financial overages above reviewed bounds and freezes the installation',async()=>{
     const a=await allowed();expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,2000))).document.state).toBe('conflict');

@@ -1,9 +1,11 @@
 import {closeSync,constants,fstatSync,openSync,readFileSync} from 'node:fs';
 import {performance} from 'node:perf_hooks';
 import type {Pool} from 'pg';
-import {PgBudgetAdmissionStore,consumeDispatchPermit,canonicalBudgetMoney,type BudgetRecoveryReference,type BudgetGatewayTicket} from '@lares/agent-kit/budget-admission-store';
+import {PgBudgetAdmissionStore,consumeDispatchPermit,canonicalBudgetMoney,type BudgetFinancialWriter,type BudgetRecoveryReference,type BudgetGatewayTicket} from '@lares/agent-kit/budget-admission-store';
 import {GATEWAY_ADMIT_PATH,GATEWAY_RPC_MS,gatewayRpcPath,gatewayAdmitSchema,gatewayGrantSchema,gatewaySettleSchema,gatewayCanonical,gatewayGrantHash,gatewayHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '@lares/agent-kit/gateway-pricing';
+import {HostFinancialJournal} from './financial-journal.js';
+import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 
 /** A trusted, non-rollback observation, not an epoch reader on the billing database. There
  * is deliberately no production implementation or configuration switch for this seam. */
@@ -28,7 +30,7 @@ export function readGatewayServiceKey(path:string|undefined):Buffer|undefined {
 
 export class GatewayBudgetAuthority {
   private readonly key:Buffer|undefined;
-  constructor(private readonly pool:Pool,key:Uint8Array|undefined,private readonly recovery?:GatewayRecoveryWitness) {
+  constructor(private readonly pool:Pool,key:Uint8Array|undefined,private readonly financialWriter:BudgetFinancialWriter|undefined,private readonly recovery?:GatewayRecoveryWitness) {
     this.key=key?.byteLength===32?Buffer.from(key):undefined;
   }
   async handle(path:string,signature:string|undefined,raw:Buffer,deadline=performance.now()+GATEWAY_RPC_MS):Promise<GatewayRpcReply> {
@@ -44,13 +46,15 @@ export class GatewayBudgetAuthority {
   }
   private async execute(path:string,signature:string|undefined,raw:Buffer,deadline:number):Promise<GatewayRpcReply> {
     const fresh=()=>{if(performance.now()>=deadline)throw new Error('Gateway deadline elapsed');};
-    if(!this.key||!gatewayRpcPath(path))return refused();
+    // Without a writer this authority is read-only and closed. In particular, terminal
+    // receipts must not settle liability outside prepared Keeper custody.
+    if(!this.key||!this.financialWriter||!gatewayRpcPath(path))return refused();
     try {
       fresh();
       if(!verifyGatewaySignature(this.key,signature,'request',path,raw))return refused();
       const document=parseGatewayDocument(raw);
       let result:unknown;
-      const store=new PgBudgetAdmissionStore(this.pool);
+      const store=new PgBudgetAdmissionStore(this.pool,process.env,30_000,this.financialWriter);
       if(path===GATEWAY_ADMIT_PATH){
         const request=gatewayAdmitSchema.parse(document);
         // Production remains closed until a real witness and provisioning adapter exist.
@@ -63,7 +67,7 @@ export class GatewayBudgetAuthority {
         if(!recovery)return refused();
         // Exact managed identity is derived only from persisted data. admit rechecks the
         // current reference, policy, generation, endpoint, authority and recovery under lock.
-        const selected=new PgBudgetAdmissionStore(this.pool,{LARES_AGENT_NAME:ticket.agent,LARES_AGENT_INCARNATION:ticket.incarnation});
+        const selected=new PgBudgetAdmissionStore(this.pool,{LARES_AGENT_NAME:ticket.agent,LARES_AGENT_INCARNATION:ticket.incarnation},30_000,this.financialWriter);
         const admitted=await selected.admit(request.ticket,{...request,agent:ticket.agent,incarnation:ticket.incarnation,credentialGeneration:ticket.credentialGeneration},recovery);
         if(admitted.state!=='allowed')return refused();
         // Burn before any further await, including grant persistence. Lost/unknown ACKs
@@ -97,6 +101,7 @@ export class GatewayBudgetAuthority {
 
 /** Actual witness/provisioning integration is a follow-on. Never derive reconciled state
  * from the restored database or expose a test-witness environment/configuration switch. */
-export function productionGatewayBudgetAuthority(pool:Pool,keyFile?:string):GatewayBudgetAuthority {
-  return new GatewayBudgetAuthority(pool,readGatewayServiceKey(keyFile));
+export function productionGatewayBudgetAuthority(pool:Pool,keyFile?:string,journal?:HostFinancialJournal):GatewayBudgetAuthority {
+  const writer=journal?.prepared?new JournalBudgetFinancialWriter(journal):undefined;
+  return new GatewayBudgetAuthority(pool,readGatewayServiceKey(keyFile),writer);
 }
