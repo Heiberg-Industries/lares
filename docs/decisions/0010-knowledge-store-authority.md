@@ -4,6 +4,7 @@
 **Status:** Accepted
 **Supersedes:** —
 **Superseded by:** —
+**Renamed by:** [ADR-0017](0017-the-vault.md). Brain is now the Vault's private area (`private/<member>/`) and Atlas its shared area (`shared/`). The ownership rules below still hold under the new names.
 
 ## Context
 
