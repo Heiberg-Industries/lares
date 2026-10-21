@@ -73,7 +73,10 @@ const require=createRequire(base+'package.json');
 let requests=0;
 const original=globalThis.fetch;
 globalThis.fetch=async(...a)=>{requests++;return original(...a);};
-if(x.kind!=='sdk'){
+if(x.kind==='classify'){
+ const {isBudgetExceeded}=await import('/app/packages/agent-kit/src/gateway-budget.ts');
+ console.log(JSON.stringify({recognized:isBudgetExceeded({statusCode:x.status,data:x.body,responseBody:JSON.stringify(x.body)})}));
+}else if(x.kind!=='sdk'){
  try{
   const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),x.timeout??20000);
   try{
@@ -150,17 +153,51 @@ def shell(*args, input=None, timeout=120, check=True):
     return result.stdout.strip()
 
 
-def eventually(fn, description, timeout=60):
+def eventually(fn, description, timeout=60, retry_on=(), timeout_error=ProbeError):
     until = time.monotonic() + timeout
     while time.monotonic() < until:
         try:
             value = fn()
             if value:
                 return value
-        except (ProbeError, ValueError, json.JSONDecodeError):
+        # Only an explicitly identified transient startup command may retry an
+        # exception. SQL/schema/API/JSON failures retain their infrastructure
+        # classification instead of becoming a misleading assertion timeout.
+        except retry_on:
             pass
         time.sleep(.5)
-    raise ProbeError(description)
+    raise timeout_error(description)
+
+
+def cap_observation(scope, cap, spend):
+    require(all(isinstance(x,(int,float)) and math.isfinite(x) and x>=0 for x in (cap,spend)), "invalid cap/spend measurement")
+    overshoot=max(0,spend-cap)
+    return {"scope":scope,"capUsd":cap,"persistedUsd":spend,"measuredOvershootUsd":overshoot,"withinConfiguredCap":spend<=cap or math.isclose(spend,cap,rel_tol=1e-5,abs_tol=1e-10)}
+
+
+def require_configured_caps(observations):
+    require(bool(observations), "configured-cap measurements are missing")
+    require(all(item["withinConfiguredCap"] for item in observations), "native gateway spend exceeded a configured cap; production admission design remains blocked")
+
+
+def provisioning_rejected(status):
+    if status>=500 or status<200:
+        raise InfrastructureError("unknown-member provisioning failed without a verified client rejection")
+    return 400<=status<500
+
+
+def require_auth_refusal(result, upstream_delta):
+    if result["status"]>=500:
+        raise InfrastructureError("credential request returned a server error; refusal unverified")
+    require(result["status"] in (401,403), "credential was not refused as unauthorized or forbidden")
+    require(upstream_delta==0, "refused credential reached upstream")
+
+
+def require_budget_refusal(result, upstream_delta, recognized):
+    if result["status"]>=500:
+        raise InfrastructureError("budget request returned a server error; refusal unverified")
+    require(400<=result["status"]<500 and recognized is True, "response was not recognized by the existing budget-refusal contract")
+    require(upstream_delta==0, "budget refusal reached upstream")
 
 
 def quote(value):
@@ -224,7 +261,7 @@ class Topology:
         bind = ["--mount", f"type=bind,src={self.root},dst=/proof,readonly"]
         self.run_container("upstream", self.image, [*bind, "--network-alias", "upstream", "--entrypoint", "node"], ["/proof/upstream.mjs"])
         self.run_container("client", self.image, [*bind, "--mount", f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly", "--entrypoint", "node"], ["-e", "setInterval(()=>{},60000)"])
-        eventually(lambda: self.control(), "synthetic upstream did not start")
+        eventually(lambda: self.http("upstream:8080","/control",{})["status"]==200, "synthetic upstream did not start", timeout_error=InfrastructureError)
         # Render using the committed production renderer in the built role image.
         # Fixture-only api_base is the sole model-routing change; no mock_response.
         script = "import {renderGatewayConfig} from '/app/services/box/lib/gateway-config.ts';import{createRequire}from'node:module';const{parse}=createRequire('/app/services/box/package.json')('yaml');console.log(JSON.stringify(parse(renderGatewayConfig({alias:'lares-brain',providerModel:'openai/gpt-4o-mini'}))));"
@@ -246,14 +283,14 @@ class Topology:
                 (folder/filename).chmod(0o600)
             (folder/"config.yaml").write_bytes(config_bytes)  # YAML accepts JSON
             db = self.run_container(mode+"-db", self.manifest["images"]["db"], ["--network-alias", mode+"-db", "--mount", f"type=bind,src={folder},dst=/fixtures,readonly", "-e", "POSTGRES_USER=proof", "-e", "POSTGRES_DB=litellm", "-e", "POSTGRES_PASSWORD_FILE=/fixtures/password"])
-            eventually(lambda: shell("docker", "exec", db, "pg_isready", "-h", "127.0.0.1", "-U", "proof", "-d", "litellm")=="127.0.0.1:5432 - accepting connections", "gateway database did not start")
+            eventually(lambda: shell("docker", "exec", db, "pg_isready", "-h", "127.0.0.1", "-U", "proof", "-d", "litellm")=="127.0.0.1:5432 - accepting connections", "gateway database did not start", retry_on=(InfrastructureError,), timeout_error=InfrastructureError)
             # A distinct application database stays available during gateway DB outages.
             shell("docker", "exec", db, "createdb", "-U", "proof", "application")
             args = ["--network-alias", mode, "--mount", f"type=bind,src={folder},dst=/fixtures,readonly", "--mount", f"type=bind,src={folder}/config.yaml,dst=/etc/litellm/config.yaml,readonly", "--mount", f"type=bind,src={REPO}/images/gateway-runtime/start.sh,dst=/start.sh,readonly", "--entrypoint", "/bin/sh"]
             for k,v in {"MODEL_PROVIDER_KEY_FILE":"/fixtures/provider", "GATEWAY_MASTER_KEY_FILE":"/fixtures/master", "DATABASE_PASSWORD_FILE":"/fixtures/password", "PGHOST":mode+"-db", "PGPORT":"5432", "PGDATABASE":"litellm", "PGUSER":"proof", "LITELLM_LOCAL_MODEL_COST_MAP":"True", "LITELLM_TELEMETRY":"False"}.items():
                 args += ["-e", k+"="+v]
             self.run_container(mode, self.manifest["images"]["lares-gateway"], args, ["/start.sh"])
-            eventually(lambda: self.ready(mode), "gateway startup failed", timeout=180)
+            eventually(lambda: self.ready(mode), "gateway startup failed", timeout=180, timeout_error=InfrastructureError)
         # Read identity/prices FROM the running pinned artifact, not docs/current tag.
         meta = json.loads(shell("docker", "exec", self.name+"-included", "python", "-c", "import importlib.metadata,json,litellm,hashlib,pathlib; m=litellm.model_cost['gpt-4o-mini']; print(json.dumps({'version':importlib.metadata.version('litellm'),'input':m['input_cost_per_token'],'output':m['output_cost_per_token'],'insideConfigSha256':hashlib.sha256(pathlib.Path('/etc/litellm/config.yaml').read_bytes()).hexdigest()}))"))
         require(meta["insideConfigSha256"]==self.proof["configSha256"],"running gateway config differs from generated fixture")
@@ -302,11 +339,19 @@ class Topology:
             return totals if all(isinstance(x,(int,float)) and x>0 and math.isclose(x,expected,rel_tol=1e-5,abs_tol=1e-10) for x in totals.values()) else None
         return eventually(check,"nonzero priced spend did not reconcile across key/member/team/logs")
 
-    def refused(self, mode, key, **extra):
+    def budget_contract(self, result):
+        return self.node({"kind":"classify","status":result["status"],"body":result.get("body")}).get("recognized")
+
+    def budget_refused(self, mode, key, **extra):
         before = self.count()
         result = self.call(mode,key,**extra)
-        require(result["status"]>=400, "request was not refused")
-        require(self.count()==before, "refused or unavailable identity reached upstream")
+        require_budget_refusal(result,self.count()-before,self.budget_contract(result))
+        return result
+
+    def auth_refused(self, mode, key, **extra):
+        before=self.count()
+        result=self.call(mode,key,**extra)
+        require_auth_refusal(result,self.count()-before)
         return result
 
     def case(self, mode, name, fn):
@@ -332,21 +377,27 @@ class Topology:
     def serial(self, mode):
         team,members,keys = self.fixture(mode,3.5,1.5)
         count = 0
+        observations={"members":[],"installation":None}
+        self.proof["cases"][-1]["observations"]=observations
         for member in members:
             for agent,lane in (("alpha","anthropic"),("beta","openai-compatible")):
                 result = self.sdk(mode,keys[member,agent],lane)
                 require(result.get("ok"), "actual SDK call failed before cap")
                 count += 1
                 self.settled(mode,team,count)
-            result = self.refused(mode,keys[member,"alpha"])
-            require(result.get("body",{}).get("error",{}).get("type")=="budget_exceeded", "refusal was not a measured budget refusal")
+            spend=float(self.sql(mode,f'''SELECT spend FROM "LiteLLM_TeamMembership" WHERE team_id={quote(team)} AND user_id={quote(member)};'''))
+            observations["members"].append(cap_observation("member",1.5*self.cost,spend))
+            result = self.budget_refused(mode,keys[member,"alpha"])
+        totals=self.totals(mode,team)
+        observations["installation"]=cap_observation("installation",3.5*self.cost,totals["team"])
         # A member who has spent nothing still cannot bypass installation spend.
         fresh = "member-"+uuid.uuid4().hex
         self.admin(mode,"/user/new",{"user_id":fresh,"auto_create_key":False})
         self.admin(mode,"/team/member_add",{"team_id":team,"max_budget_in_team":100*self.cost,"member":{"role":"user","user_id":fresh}})
         fresh_key = self.key(mode,team,fresh)
-        self.refused(mode,fresh_key)
-        return {"pricedCalls":count,"persistedUsd":self.totals(mode,team),"memberAggregatesTwoAgents":True,"installationAggregatesMembers":True,"observedRefusalStatus":result["status"]}
+        self.budget_refused(mode,fresh_key)
+        require_configured_caps([*observations["members"],observations["installation"]])
+        return {"pricedCalls":count,"persistedUsd":totals,"memberAggregatesTwoAgents":True,"installationAggregatesMembers":True,"observedRefusalStatus":result["status"]}
 
     def sdk_refusal(self, mode):
         team,members,keys = self.fixture(mode,100,.5)
@@ -381,8 +432,10 @@ class Topology:
             # an unbound identity is not proof of valid member authority.
             body={"team_id":team,"user_id":"unknown-"+uuid.uuid4().hex,"models":[ALIAS]}
             r=json.loads(shell("docker","exec","-i",self.name+"-"+mode,"python","-c",ADMIN,input=json.dumps({"path":"/key/generate","body":body})))
-            if r["status"]>=400:
-                return {"rejectedAtProvisioning":True,"upstreamDelta":0}
+            if provisioning_rejected(r["status"]):
+                return {"rejectedAtProvisioning":True,"provisioningHttpStatus":r["status"],"upstreamDelta":0}
+            if r["status"]!=200:
+                raise InfrastructureError("unknown-member provisioning returned an unexpected non-rejection status")
             result=self.call(mode,r["body"]["key"])
         else:
             result=self.call(mode,keys[members[0],"alpha"],body={"user":members[1],"metadata":{"member_id":members[1]}},headers={"x-litellm-user-id":members[1]})
@@ -397,7 +450,7 @@ class Topology:
         delta=self.count()-before
         observation={"status":result["status"],"upstreamDelta":delta}
         self.proof["cases"][-1]["observations"]=observation
-        require(result["status"]>=400 and delta==0,"missing, invalid or mismatched member identity reached upstream")
+        require_auth_refusal(result,delta)
         return observation
 
     def missing_membership(self, mode, policy=False):
@@ -415,13 +468,13 @@ class Topology:
         for cache in ("warm","cold"):
             if cache=="cold":
                 shell("docker","restart",self.name+"-"+mode)
-                eventually(lambda:self.ready(mode),"gateway did not restart for cold membership test",timeout=180)
+                eventually(lambda:self.ready(mode),"gateway did not restart for cold membership test",timeout=180,timeout_error=InfrastructureError)
             before=self.count()
             r=self.call(mode,key)
             observations[cache]={"status":r["status"],"upstreamDelta":self.count()-before}
         self.proof["cases"][-1]["observations"]=observations
         for result in observations.values():
-            require(result["status"]>=400 and result["upstreamDelta"]==0,"credential with missing membership or cap policy reached upstream")
+            require_auth_refusal(result,result["upstreamDelta"])
         return observations
 
     def replace_revoke(self, mode):
@@ -431,12 +484,12 @@ class Topology:
         self.settled(mode,team,1)
         replacement=self.key(mode,team,members[0])
         self.admin(mode,"/key/delete",{"keys":[old]})
-        self.refused(mode,old)
+        self.auth_refused(mode,old)
         require(self.call(mode,replacement)["status"]==200,"replacement credential failed")
         # Deleted key's total is absent from the key table by design; verify the
         # durable member/team/log sums independently, not zero on a new key.
         eventually(lambda: all(math.isclose(v,2*self.cost,rel_tol=1e-5) for k,v in self.totals(mode,team).items() if k!="keys"),"replacement lost accrued member spend")
-        self.refused(mode,replacement)
+        self.budget_refused(mode,replacement)
         return {"revokedWarmKeyBlocked":True,"replacementRetainsMemberSpend":True}
 
     def concurrent(self, mode):
@@ -455,10 +508,24 @@ class Topology:
                 finally:
                     self.control(release=True)
                 results=[f.result() for f in work]
-            require(admitted>0 and sum(r["status"]==200 for r in results)==admitted and all(r["status"]==200 or r["status"]>=400 for r in results),"concurrent accounting did not match admitted requests")
-            totals=self.settled(mode,team,admitted)
-            self.refused(mode,keys[members[0],"beta"])
-            return {"offeredConcurrency":CONCURRENCY,"inFlight":admitted,"capUsd":.5*self.cost,"settledUsd":totals,"measuredOvershootUsd":max(0,(admitted-.5)*self.cost),"boundForThisExperimentUsd":CONCURRENCY*self.cost}
+            require(sum(r["status"]==200 for r in results)==admitted,"concurrent accounting did not match admitted requests")
+            for result in results:
+                if result["status"]!=200:
+                    require_budget_refusal(result,0,self.budget_contract(result))
+            if admitted:
+                totals=self.settled(mode,team,admitted)
+            else:
+                totals=self.totals(mode,team)
+                require(all(value==0 for value in totals.values()),"unadmitted concurrent work recorded unexpected spend")
+            measurement=cap_observation("member",.5*self.cost,totals["members"])
+            observations={"offeredConcurrency":CONCURRENCY,"inFlight":admitted,"settledUsd":totals,"cap":measurement,"maxPricedWorkOfferedInExperimentUsd":CONCURRENCY*self.cost}
+            self.proof["cases"][-1]["observations"]=observations
+            self.budget_refused(mode,keys[members[0],"beta"])
+            # Recording a finite overshoot is useful evidence, but does not
+            # satisfy strict configured-cap enforcement. No production allowance
+            # is invented from this deliberately bounded experiment.
+            require_configured_caps([measurement])
+            return observations
         finally:
             self.control(release=True)
 
@@ -474,7 +541,7 @@ class Topology:
         # A cancelled stream whose usage never arrives is an uncertain charge,
         # not permission to conclude that zero cost means budget enforcement.
         totals=self.settled(mode,team,1)
-        self.refused(mode,keys[members[0],"beta"])
+        self.budget_refused(mode,keys[members[0],"beta"])
         return {"cancelled":cancel,"nonzeroReconciledUsd":totals}
 
     def outage(self, mode):
@@ -510,7 +577,7 @@ class Topology:
             shell("docker","network","rm",self.name+"-outage",check=False)
             shell("docker","network","connect","--alias",mode,self.name,gateway,check=False)
             shell("docker","restart",gateway)
-            eventually(lambda:self.ready(mode),"gateway did not recover after database outage",timeout=180)
+            eventually(lambda:self.ready(mode),"gateway did not recover after database outage",timeout=180,timeout_error=InfrastructureError)
         self.proof["cases"][-1]["observations"]=observations
         require(observations["applicationDbAvailable"],"application database was unavailable during outage")
         for entry in (observations["warm"],observations["cold"]):
@@ -533,9 +600,9 @@ class Topology:
         shell("docker","exec",db,"createdb","-U","proof","litellm")
         shell("docker","exec","-i",db,"psql","-X","-v","ON_ERROR_STOP=1","-U","proof","-d","litellm",input=dump)
         shell("docker","start",gateway)
-        eventually(lambda:self.ready(mode),"gateway did not recover after restore",timeout=180)
+        eventually(lambda:self.ready(mode),"gateway did not recover after restore",timeout=180,timeout_error=InfrastructureError)
         self.settled(mode,team,1)
-        self.refused(mode,key)
+        self.budget_refused(mode,key)
         return {"gatewaySpendSurvivesLogicalRestore":True,"coldRestoredKeyRemainsCapped":True}
 
     def cleanup(self):

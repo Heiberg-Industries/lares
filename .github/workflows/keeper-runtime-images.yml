@@ -49,7 +49,9 @@ jobs:
         run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
       - name: Measure actual release-pinned gateway budget compatibility
         if: matrix.role == 'chief-of-staff'
-        run: python3 services/keeper/tests/gateway-budget-image.probe.py lares-runtime:test releases/2026-10-21-rc.12.json "$RUNNER_TEMP/gateway-budget-proof.json"
+        run: |
+          python3 -m unittest discover -s services/keeper/tests -p test_gateway_budget_probe.py
+          python3 services/keeper/tests/gateway-budget-image.probe.py lares-runtime:test releases/2026-10-21-rc.12.json "$RUNNER_TEMP/gateway-budget-proof.json"
       - uses: actions/upload-artifact@v4
         if: always() && matrix.role == 'chief-of-staff'
         with:
