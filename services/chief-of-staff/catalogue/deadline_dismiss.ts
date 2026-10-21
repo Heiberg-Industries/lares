@@ -4,7 +4,8 @@ import { defineTool } from "eve/tools";
 import { z } from "zod";
 
 import { getPool } from "@lares/agent-kit/db";
-import { closeDeadline, resolveCandidate } from "../lib/deadlines-store.js";
+import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
+import { closeDeadline, resolveCandidate, dismissExactDeadline } from "../lib/deadlines-store.js";
 import { ownerId } from "../lib/principals.js";
 import { assertApproval } from "../lib/approvals.js";
 import { approvalFor } from "../lib/board.js";
@@ -25,6 +26,10 @@ export default defineTool({
   approval: approvalFor("deadline_dismiss"),
   async execute(input, ctx) {
     await assertApproval(ctx, "deadline_dismiss", input);
+    if (isExactApprovalContext(ctx)) {
+      await dismissExactDeadline(getPool(),ctx,input);
+      return {dismissed:true, ...input, message:`Dismissed — ${input.reason}`};
+    }
     const { id, candidateThreadId, reason } = input;
 
     if ((id === undefined) === (candidateThreadId === undefined)) {

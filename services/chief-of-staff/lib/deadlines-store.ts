@@ -22,6 +22,10 @@
  * same `YYYY-MM-DD` string currency, never a `Date`, for due dates.
  */
 import type { Pool } from "pg";
+import { payloadFingerprint } from '@lares/agent-kit/approval-ledger';
+import { requireApprovedExecution, type ExactApprovalAdapter } from '@lares/agent-kit/approval-execution';
+import type { ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
+
 
 import type { DeadlineRecurrence, DeadlineSource } from "@lares/agent-kit/deadlines";
 import { nextDue } from "@lares/agent-kit/deadlines";
@@ -357,4 +361,46 @@ export async function resolveCandidate(
     [owner, threadId, resolution],
   );
   return (rowCount ?? 0) > 0;
+}
+
+/** The first exact local action. Stable owner and ALL stored content/version fields are bound;
+ * no provider/account authority is inferred from a local mail-scanner candidate. */
+export const deadlineApprovalAdapter: ExactApprovalAdapter = {
+  async readTarget(db,input,memberId) {
+    const i = input as {id?:unknown;candidateThreadId?:unknown;reason?:unknown};
+    if (!i || typeof i.reason !== 'string' || !i.reason.trim() || (i.id === undefined) === (i.candidateThreadId === undefined))
+      throw new Error('Exact deadline target is unavailable');
+    const id = i.id ?? i.candidateThreadId;
+    if (typeof id !== 'string' || !id) throw new Error('Exact deadline target is unavailable');
+    const deadline = i.id !== undefined;
+    const {rows} = await db.query(deadline
+      ? "SELECT to_jsonb(d) AS content FROM deadlines d WHERE id=$1 AND owner=$2 AND status='open' FOR UPDATE"
+      : 'SELECT to_jsonb(d) AS content FROM deadline_candidates d WHERE thread_id=$1 AND owner=$2 AND resolution IS NULL FOR UPDATE',
+      [id,memberId]);
+    if (rows.length !== 1) throw new Error('Exact deadline target is unavailable');
+    return {kind:deadline ? 'deadline' : 'deadline-candidate',id,ownerMemberId:memberId,
+      fingerprint:payloadFingerprint('deadline-target',rows[0].content)};
+  },
+};
+
+/** Holds membership, binding, applied policy and target locks until the mutation commits. */
+export async function dismissExactDeadline(db: Pool, ctx: ConsoleAuthorityContext,
+  input: {id?:string;candidateThreadId?:string;reason:string}): Promise<void> {
+  const client = await db.connect();
+  try {
+    await client.query('BEGIN');
+    // Protect a previously absent board row as well as updates to an existing row.
+    await client.query('LOCK TABLE ratchet IN SHARE MODE');
+    const approved = await requireApprovedExecution(ctx,'deadline_dismiss',input,{db:client,adapter:deadlineApprovalAdapter});
+    const t = approved.target;
+    const result = await client.query(t.kind === 'deadline'
+      ? "UPDATE deadlines SET status='dismissed',status_reason=$3,resolved_at=now(),updated_at=now() WHERE id=$1 AND owner=$2 AND status='open' RETURNING id"
+      : "UPDATE deadline_candidates SET resolution='ignored' WHERE thread_id=$1 AND owner=$2 AND resolution IS NULL RETURNING thread_id",
+      t.kind === 'deadline' ? [t.id,t.ownerMemberId,input.reason] : [t.id,t.ownerMemberId]);
+    if (result.rows.length !== 1) throw new Error('Exact deadline target changed');
+    // Counting evidence only; neither a lock against execution replay nor an exactly-once claim.
+    await client.query('UPDATE approval_asks SET use_count=use_count+1,used_at=COALESCE(used_at,now()) WHERE request_id=$1', [approved.authority.requestId]);
+    await client.query('COMMIT');
+  } catch (e) { await client.query('ROLLBACK'); throw e; }
+  finally { client.release(); }
 }

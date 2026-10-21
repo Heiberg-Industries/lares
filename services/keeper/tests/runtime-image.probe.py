@@ -91,6 +91,11 @@ try:
  sql("DO $$ BEGIN IF (SELECT count(*) FROM connected_account_credentials WHERE account_id='account-probe')<>1 OR (SELECT refresh_token_enc FROM oauth_tokens WHERE principal='account-probe-a')<>'unchanged-fixture' THEN RAISE EXCEPTION 'Credential association migration changed existing data'; END IF; BEGIN UPDATE connected_account_credentials SET oauth_token_id=(SELECT id FROM oauth_tokens WHERE principal='account-probe-b') WHERE account_id='account-probe'; RAISE EXCEPTION 'Cross-member custody accepted'; EXCEPTION WHEN foreign_key_violation THEN NULL; END; END $$")
  sql("DELETE FROM users WHERE id IN ('account-probe-a','account-probe-b')")
  sql("DELETE FROM oauth_tokens WHERE principal IN ('account-probe-a','account-probe-b')")
+ # Strict reservations precede request IDs; legacy cards retain their unique identities.
+ sql("INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash) VALUES('legacy-proof','legacy-proof','canary','fixture','h'); INSERT INTO approval_asks(call_id,agent,tool,payload_hash) VALUES('reserved-proof','canary','deadline_dismiss','h')")
+ sql((repo/'services/box/sql/015_exact_approval_execution.sql').read_text())
+ sql("DO $$ BEGIN IF (SELECT request_id FROM approval_asks WHERE call_id='legacy-proof')<>'legacy-proof' OR NOT EXISTS(SELECT 1 FROM approval_asks WHERE call_id='reserved-proof' AND request_id IS NULL) THEN RAISE EXCEPTION 'Exact approval migration lost ledger evidence'; END IF; END $$")
+ sql("DELETE FROM approval_asks WHERE call_id IN ('legacy-proof','reserved-proof')")
  # The credential journal is part of the baseline.
  sql("DO $$ BEGIN IF to_regclass('standing_facts') IS NULL OR (SELECT count(*) FROM information_schema.columns WHERE table_name='standing_facts' AND column_name IN ('user_id','origin','recorded_at','source','superseded_by'))<>5 THEN RAISE EXCEPTION 'standing_facts missing or not in its final shape'; END IF; END $$")
  sql("DO $$ BEGIN IF to_regclass('keeper_credentials') IS NULL THEN RAISE EXCEPTION 'Credential journal migration missing'; END IF; END $$")

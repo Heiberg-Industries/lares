@@ -629,15 +629,11 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
 
   {
     table: "approval_asks",
-    scope: "operational",
-    createdBy: `${BOX}/001_baseline.sql`,
-    reason:
-      "About the gate, not about a person: which card was shown for which tool call, when, and " +
-      "what was answered. `payload_hash` is a hash — the words that were shown are never stored — " +
-      "and `answered_via` names the door (or 'revised', a card a later draft replaced), never the " +
-      "person who tapped. `session_id`/`turn_sequence` say which conversation and turn raised the " +
-      "card and `target_hash` is a hash of what it was about. When the approver list " +
-      "becomes a member list this gains a `member` column of kind registry.",
+    scope: "member",
+    column: "acting_member_id",
+    idKind: "registry",
+    createdBy: `${BOX}/015_exact_approval_execution.sql`,
+    reason: "Strict rows retain original actor and matching resolver metadata. Legacy rows have no actor and remain legacy evidence.",
   },
 
   {

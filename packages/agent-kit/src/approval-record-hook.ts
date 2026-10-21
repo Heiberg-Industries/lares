@@ -21,12 +21,16 @@
  * ONLY A TOOL APPROVAL IS A CARD. A `question` or `session-limit` request/resolution is not
  * recorded here at all — this table is about approvals, not every human-input round trip.
  *
- * BEST-EFFORT, LIKE EVERY RECORDER IN THIS REPO. eve turns a thrown hook into `turn.failed`
+ * LEGACY RECORDING IS BEST-EFFORT. Bound console calls instead attach their pre-reserved
+ * exact authority synchronously and propagate a failure; approving a strict row is exclusively
+ * the awaited response authorizer's job. Legacy behavior below remains best-effort. eve turns a thrown hook into `turn.failed`
  * (the rule `agent/hooks/origin-taint.ts` states and obeys) — every handler below catches
  * everything and warns at most once per process, the same shape `agent/hooks/turn-capture.ts`
  * and `origin-taint.ts` already use. `getPool()` is called inside each handler, never at module
  * scope, so `eve build` (no secrets, no live Postgres) never touches it.
  */
+import { attachExactApproval, settleExactInput } from "./approval-execution.js";
+import { hasConsoleTurnAuthorityTag } from "./console-turn-authority.js";
 import { getPool } from "./db.js";
 import { payloadFingerprint, recordAnswer, recordAsk, type AskOutcome } from "./approval-ledger.js";
 
@@ -88,6 +92,10 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         const callId = r.action?.callId;
         const toolName = r.action?.toolName;
         if (typeof requestId !== "string" || typeof callId !== "string" || typeof toolName !== "string") continue;
+        if (hasConsoleTurnAuthorityTag(ctx)) {
+          await attachExactApproval({requestId,callId,tool:toolName,input:r.action?.input});
+          continue;
+        }
         record({
           requestId,
           callId,
@@ -97,11 +105,12 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         });
       }
     } catch (err) {
+      if (hasConsoleTurnAuthorityTag(ctx)) throw err;
       warn("input.requested", err);
     }
   }
 
-  async function onInputResolved(event: unknown, _ctx: unknown): Promise<void> {
+  async function onInputResolved(event: unknown, ctx: unknown): Promise<void> {
     try {
       const data = (event as { data?: unknown } | undefined)?.data;
       const resolutions = (data as { resolutions?: unknown } | undefined)?.resolutions;
@@ -114,9 +123,14 @@ export function makeApprovalRecord(deps: ApprovalRecordDeps = {}) {
         if (typeof requestId !== "string" || typeof r.outcome !== "string") continue;
         const outcome = OUTCOME_MAP[r.outcome];
         if (outcome === undefined) continue;
+        if (hasConsoleTurnAuthorityTag(ctx)) {
+          await settleExactInput(requestId,outcome);
+          continue;
+        }
         answer({ requestId, outcome });
       }
     } catch (err) {
+      if (hasConsoleTurnAuthorityTag(ctx)) throw err;
       warn("input.resolved", err);
     }
   }
