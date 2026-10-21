@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { getPool, closePool } from '@lares/agent-kit/db';
 import { PgAccountStore, type TrustedAccountAdapter } from '@lares/agent-kit/account-store';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { currentTaint, resetTaintForTests, turnKeyFrom } from '@lares/agent-kit/origin-taint';
 import gmailAccounts from '../catalogue/gmail_accounts.js';
@@ -70,9 +71,11 @@ beforeEach(async () => {
     INSERT INTO users(id,display_name,org_id,org_role,status) VALUES
     ('member-a','A','fixture-org','owner','active'),('member-b','B','fixture-org','owner','active')
     ON CONFLICT(id) DO UPDATE SET status='active',org_role='owner';`);
-  await getPool().query("INSERT INTO agent_definitions(name,definition,hash) VALUES('helper','{}','fixture')");
+  await getPool().query("INSERT INTO agent_definitions(name,definition,hash) VALUES('helper','{\"grants\":[]}','fixture')");
   await getPool().query(`INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending)
     VALUES('helper','127.0.0.2','fixture','owned',$1,$1,'ready',false)`, [incarnation]);
+  await getPool().query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-a',NULL) ON CONFLICT(user_id) DO NOTHING");
+  await new PgGrantStore(getPool()).adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture'},{designatedOwnerMemberId:'member-a'});
   await bindConsoleSession({ agent: 'helper', incarnation, sessionId: 'wrun_mail', memberId: 'member-a', admissionNonce: nonce });
   calls.length = 0; credentials.length = 0; providerError = false; hold = undefined; resetTaintForTests();
   __setTestGmailApiFactory((_cfg, token) => {
@@ -151,7 +154,7 @@ describe('private console Gmail catalogue execution', () => {
     const own = await account(); providerError = true;
     await expect(gmailSearch.execute({ query: 'x', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(currentTaint(turnKeyFrom(ctx())!)).toBeUndefined();
-    credentials.length = 0; vi.spyOn(getPool(), 'query').mockRejectedValueOnce(new Error('secret-database-details') as never);
+    credentials.length = 0; vi.spyOn(getPool(), 'connect').mockRejectedValueOnce(new Error('secret-database-details') as never);
     await expect(gmailRead.execute({ id: 'm', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(credentials).toEqual([]);
   });

@@ -115,6 +115,7 @@ export const APPROVED_PENDING =
   "Approved. The agent will now carry out the action; its reply appears in the original conversation.";
 
 export interface WaitingDeps {
+  connect?: import("@lares/agent-kit/console-turn-authority").AuthorityPool["connect"];
   signedInMember(): Promise<Member | null>;
   query(sql: string, values: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
   fetch: typeof fetch;

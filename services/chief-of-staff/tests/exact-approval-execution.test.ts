@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { getPool, closePool } from '@lares/agent-kit/db';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
 import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint, APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
@@ -36,6 +37,8 @@ beforeAll(async()=>{
  await db.query("INSERT INTO orgs(id,display_name) VALUES('fixture-org','Fixture'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('member-a','A','fixture-org','owner','active'),('member-b','B','fixture-org','owner','active')");
  await db.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('helper',$1,'fixture-hash','valid')",[def]);
  await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending,applied_definition) VALUES('helper','172.30.0.99','fixture','owned',$1,$1,'ready',false,$2)",[inc,def]);
+ await db.query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-a',NULL)");
+ await new PgGrantStore(db).adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture-hash'},{designatedOwnerMemberId:'member-a'});
 },120_000);
 afterAll(async()=>{await closePool();await container?.stop();vi.unstubAllEnvs();});
 beforeEach(async()=>{
@@ -109,6 +112,7 @@ describe('exact private approval execution',()=>{
   ['payload',async()=>undefined],
   ['member removed',async()=>getPool().query("UPDATE users SET status='removed' WHERE id='member-a'")],
   ['member demoted',async()=>getPool().query("UPDATE users SET org_role='member' WHERE id='member-a'")],
+  ['access revision changed and restored sharing',async()=>{const store=new PgGrantStore(getPool());const a=await store.agentAccess('member-a','helper');await store.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[]});}],
   ['binding revoked',async()=>getPool().query('UPDATE console_session_bindings SET revoked_at=now()')],
   ['incarnation replaced',async()=>getPool().query("UPDATE agent_resources SET runtime_control_token=NULL,ownership_token='22222222-2222-4222-8222-222222222222' WHERE name='helper'")],
   ['pending desired definition',async()=>getPool().query("UPDATE agent_resources SET pending=true WHERE name='helper'")],

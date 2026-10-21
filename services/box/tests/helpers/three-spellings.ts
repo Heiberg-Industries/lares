@@ -365,7 +365,7 @@ const SEED_ROWS: SeedRow[] = [
   ]),
 
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
-    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4)`,
+    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4,1)`,
     [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`])),
 
   // ── 004_web_inbox.sql ─────────────────────────────────────────────────────────────────────
