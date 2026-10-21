@@ -1,6 +1,7 @@
 import { fileURLToPath,pathToFileURL } from 'node:url';
 import { afterEach,describe,expect,it,vi } from 'vitest';
-const fake=vi.hoisted(()=>({query:vi.fn(),execute:vi.fn(),approval:vi.fn()}));
+const fake=vi.hoisted(()=>({query:vi.fn(),execute:vi.fn(),approval:vi.fn(),captureUse:vi.fn(async()=>1)}));
+vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {captureUse=fake.captureUse;}}));
 vi.mock('../src/db.js',()=>({getPool:()=>fake}));
 vi.mock('../../../services/chief-of-staff/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
 vi.mock('../../../services/creative/catalogue/index.js',()=>({CATALOGUE:{fixture:{capability:'fixture',tool:{description:'Fixture',inputSchema:{type:'object'},execute:fake.execute,approval:fake.approval}}}}));
@@ -17,7 +18,7 @@ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',i
 const inc='11111111-1111-4111-8111-111111111111';
 const auth=(purpose='human')=>({authenticator:'lares-console',attributes:{user_id:'owner@example.invalid',lares_member_id:'Owner-ID',lares_admission_nonce:'a'.repeat(43),lares_purpose:purpose}});
 const context=(purpose='human')=>({session:{id:'wrun_test',turn:{id:'turn-1',sequence:0},auth:{current:auth(purpose),initiator:auth()}},abortSignal:new AbortController().signal,approvedTools:new Set(),callId:'call-1',toolInput:{},toolName:'fixture'});
-afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.execute.mockReset();fake.approval.mockReset();});
+afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.execute.mockReset();fake.approval.mockReset();fake.captureUse.mockClear();});
 describe('both catalogues guard real durable callbacks before underlying execution or approval policy',()=>{
  for(const [role,resolver] of [['chief',chief],['creative',creative]] as const){
   it(`${role}: preserves descriptors; resolver resumes and missing bindings refuse before policy`,async()=>{
@@ -31,7 +32,12 @@ describe('both catalogues guard real durable callbacks before underlying executi
    expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();
    fake.query.mockResolvedValue({rows:[]});
    await expect(tool.approval.request(context())).rejects.toThrow();expect(fake.approval).not.toHaveBeenCalled();
-   fake.query.mockResolvedValue({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1}]});
+   fake.query.mockImplementation(async(sql:string)=>{
+    if(sql.startsWith('SELECT 1 FROM users'))return {rows:[{id:'Owner-ID'}]};
+    if(sql.includes('FROM agent_resources r'))return {rows:[{}]};
+    if(sql.includes('SELECT b.* FROM console_session_bindings'))return {rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1}]};
+    throw new Error('Unexpected authority fixture query');
+   });
    fake.execute.mockResolvedValue('executed');fake.approval.mockResolvedValue('user-approval');
    await expect(tool.execute({},context())).resolves.toBe('executed');
    await expect(tool.approval.request(context())).rejects.toThrow('Exact approval');

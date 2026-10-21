@@ -3,7 +3,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-const fake = vi.hoisted(()=>({query:vi.fn()}));
+const fake = vi.hoisted(()=>({query:vi.fn(),captureUse:vi.fn(async()=>1)}));
+vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {captureUse=fake.captureUse;}}));
 vi.mock('../src/db.js',()=>({getPool:()=>fake}));
 // Load role modules at runtime: extension declarations cannot own downstream service sources.
 const chiefPath=new URL('../../../services/chief-of-staff/agent/hooks/console-turn-authority.ts',import.meta.url).href;
@@ -14,7 +15,7 @@ const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',i
 const load=async(p:string):Promise<any>=>import(`${dist}${p}`);
 const inc='11111111-1111-4111-8111-111111111111';
 const principal={authenticator:'lares-console',attributes:{lares_member_id:'Owner-ID',lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}};
-afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();});
+afterEach(()=>{vi.unstubAllEnvs();fake.query.mockReset();fake.captureUse.mockClear();});
 async function sinkFor(hook:unknown) {
  const {compileHookEntry}=await load('compiler/normalize-hook.js');
  const {resolveHookDefinition}=await load('runtime/resolve-hook.js');
@@ -40,13 +41,19 @@ describe('both roles install a real awaited authority hook',()=>{
   it(`${role}: compiles and awaits binding; storage failure stops event dispatch`,async()=>{
    vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');
    let resolveQuery!:(value:unknown)=>void;
-   fake.query.mockImplementation(()=>new Promise(resolve=>{resolveQuery=resolve;}));
+   fake.query.mockImplementation(async(sql:string)=>{
+    if(sql.startsWith('SELECT 1 FROM users'))return {rows:[{id:'Owner-ID'}]};
+    if(sql.includes('FROM agent_resources r'))return {rows:[{}]};
+    if(sql.startsWith('INSERT INTO console_session_bindings'))return new Promise(resolve=>{resolveQuery=resolve;});
+    throw new Error('Unexpected authority fixture query');
+   });
    const sink=await sinkFor(hook);
    let settled=false;const dispatch=sink.dispatch().then(()=>{settled=true;});
-   await vi.waitFor(()=>expect(fake.query).toHaveBeenCalledOnce());
+   await vi.waitFor(()=>expect(fake.query.mock.calls.filter(([sql])=>String(sql).startsWith('INSERT INTO console_session_bindings'))).toHaveLength(1));
+   expect(fake.captureUse).toHaveBeenCalledOnce();
    expect(settled).toBe(false);
-   resolveQuery({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1}]});
-   await dispatch;expect(settled).toBe(true);sink.release();
+   resolveQuery({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1}]});
+   await dispatch;expect(settled).toBe(true);expect(fake.captureUse).toHaveBeenCalledTimes(2);sink.release();
    fake.query.mockRejectedValue(new Error('binding unavailable'));
    const failed=await sinkFor(hook);
    await expect(failed.dispatch()).rejects.toThrow('Conversation authority');failed.release();
