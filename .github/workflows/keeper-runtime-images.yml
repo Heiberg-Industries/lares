@@ -47,6 +47,15 @@ jobs:
       - name: Exercise compiled runtime, mounted persona and gateway selection across restart
         if: matrix.role == 'chief-of-staff'
         run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
+      - name: Measure actual release-pinned gateway budget compatibility
+        if: matrix.role == 'chief-of-staff'
+        run: python3 services/keeper/tests/gateway-budget-image.probe.py lares-runtime:test releases/2026-10-21-rc.12.json "$RUNNER_TEMP/gateway-budget-proof.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.role == 'chief-of-staff'
+        with:
+          name: gateway-budget-compatibility-proof
+          path: ${{ runner.temp }}/gateway-budget-proof.json
+          if-no-files-found: error
       # creative carries a `tests/agent-declaration.test.ts`
       # framework_tools/tool-truth block that is `skipIf` on a compiled manifest under a
       # gitignored `.output/` — the ONE thing that can prove a disable-sentinel or a
