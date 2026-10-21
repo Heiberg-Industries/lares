@@ -432,11 +432,20 @@ const SEED_ROWS: SeedRow[] = [
     [FIXTURE_SECOND]),
 ];
 
+// Owned storage metadata is part of resolver/export completeness. Legacy erase-path
+// tests explicitly use vaultAreas:false; dedicated tests prove the bounded storage refusal.
+const VAULT_ROWS: SeedRow[] = [row("vault_areas", "owner_member_id", FIXTURE_OWNER,
+  `WITH organisation AS (INSERT INTO orgs(id,display_name) VALUES('fixture-vault-org','Fixture Vault organisation') RETURNING id),
+    member AS (UPDATE users SET org_id=(SELECT id FROM organisation),org_role='owner' WHERE id=$1 RETURNING id,org_id),
+    backing AS (INSERT INTO vault_backing_stores(id,organisation_id,kind) SELECT 'fixture-vault-backing',org_id,'git' FROM member RETURNING id,organisation_id)
+    INSERT INTO vault_areas(id,organisation_id,kind,owner_member_id,backing_store_id,relative_path)
+    SELECT 'fixture-private-area',backing.organisation_id,'private',member.id,backing.id,'private/fixture' FROM backing,member`, [FIXTURE_OWNER])];
+
 /** Every table the fixture puts a row in, with the spelling it used. Later tests assert
  *  against THIS, so a table that gains rows must be added here (in SEED_ROWS above) in the
  *  same change. */
 export const FIXTURE_ROWS: ReadonlyArray<{ table: string; column: string; value: string }> =
-  SEED_ROWS.map(({ table, column, value }) => ({ table, column, value }));
+  [...SEED_ROWS,...VAULT_ROWS].map(({ table, column, value }) => ({ table, column, value }));
 
 // ─── The dream tables' DDL, copied verbatim from services/chief-of-staff/lib/dream/store.ts's
 // `ensureDreamTables` (services/box cannot import services/chief-of-staff). Not a numbered
@@ -490,7 +499,7 @@ function boxSqlFilesInOrder(): string[] {
  *  dream tables' runtime DDL — seeded with TWO people whose rows use all three id conventions.
  *  Nothing here ever connects to a real installation: the container is disposable and the
  *  connection string is generated. */
-export async function startThreeSpellingsDb(): Promise<TestDb> {
+export async function startThreeSpellingsDb(options: {vaultAreas?:boolean} = {}): Promise<TestDb> {
   const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
     "pgvector/pgvector:pg16",
   ).start();
@@ -510,7 +519,7 @@ export async function startThreeSpellingsDb(): Promise<TestDb> {
     await pool.query(stmt);
   }
 
-  for (const seed of SEED_ROWS) {
+  for (const seed of [...SEED_ROWS,...(options.vaultAreas===false?[]:VAULT_ROWS)]) {
     await seed.insert(pool);
   }
 

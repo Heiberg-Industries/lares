@@ -95,6 +95,13 @@ try:
  sql((repo/'services/box/sql/014_agent_access_grants.sql').read_text())
  sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM agent_access WHERE agent_name='grant-probe' AND owner_member_id='console-proof-member') OR NOT EXISTS(SELECT 1 FROM resource_grants WHERE resource_id='grant-probe' AND revoked_at IS NULL) THEN RAISE EXCEPTION 'Agent grants changed on reapply'; END IF; END $$")
  sql("DELETE FROM agent_definitions WHERE name='grant-probe'")
+ # Vault authority is metadata only, uses the same registry, and survives migration replay.
+ sql("INSERT INTO vault_backing_stores(id,organisation_id,kind) VALUES('vault-proof','console-proof','git'); INSERT INTO vault_areas(id,organisation_id,kind,owner_organisation_id,backing_store_id,relative_path) VALUES('vault-area-proof','console-proof','shared','console-proof','vault-proof','shared'); INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision) SELECT '33333333-3333-4333-8333-333333333333','vault-area',id,'console-proof-member','use','console-proof-member',revision FROM vault_areas WHERE id='vault-area-proof'")
+ sql((repo/'services/box/sql/009_vault_areas.sql').read_text())
+ sql((repo/'services/box/sql/014_agent_access_grants.sql').read_text())
+ sql((repo/'services/box/sql/020_vault_resource_grants.sql').read_text())
+ sql("UPDATE resource_grants SET revoked_at=clock_timestamp() WHERE resource_kind='vault-area' AND resource_id='vault-area-proof'")
+ sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM vault_areas WHERE id='vault-area-proof' AND status='active') OR NOT EXISTS(SELECT 1 FROM resource_grants WHERE resource_kind='vault-area' AND vault_area_id='vault-area-proof' AND agent_resource_id IS NULL AND revoked_at IS NOT NULL) THEN RAISE EXCEPTION 'Vault metadata or grant replay failed'; END IF; BEGIN UPDATE resource_grants SET revoked_at=NULL WHERE resource_kind='vault-area'; RAISE EXCEPTION 'Vault grant restored'; EXCEPTION WHEN raise_exception THEN IF SQLERRM<>'Resource grant is immutable' THEN RAISE; END IF; END; END $$")
  # SQL008 is additive, preserves rows on reapply, and enforces same-owner resource bindings.
  sql("INSERT INTO users(id,display_name) VALUES ('account-probe-a','Fixture A'),('account-probe-b','Fixture B')")
  sql("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES ('account-probe','account-probe-a','example','https://provider.example','subject','Fixture','ok')")

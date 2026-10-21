@@ -5,7 +5,8 @@
 //   3. that database can be moved onto the baseline by adoption, once, and only when it is at the
 //      last pre-release state.
 import { describe, it, expect, afterAll, beforeAll, beforeEach } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync,copyFileSync,mkdtempSync,rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
@@ -63,6 +64,8 @@ const EXPECTED_TABLES = [
   "console_session_bindings",
   "agent_access",
   "resource_grants",
+  "vault_areas",
+  "vault_backing_stores",
   "conversation_entries",
   "conversation_retention",
   "cross_member_grants",
@@ -134,17 +137,43 @@ const OLD_FULL = [oldRow("001_init.sql", 1), oldRow("050_brief_settings.sql", 50
 const OLD_PARTIAL = [oldRow("001_init.sql", 1), oldRow("050_brief_settings.sql", 50)];
 
 describe("the baseline on a fresh database", () => {
+  it("upgrades the released 006 ledger with the actual runner and preserves existing rows", async () => {
+    const container=await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
+    const pool=quiet(new Pool({connectionString:container.getConnectionUri()}));
+    const released=mkdtempSync(join(tmpdir(),"lares-released-migrations-"));
+    try {
+      for(const file of readMigrations(SQL).filter(f=>f.number<=6))copyFileSync(file.path,join(released,file.filename));
+      await ensureLedger(pool);
+      expect((await runMigrations(pool,released)).refused).toEqual([]);
+      await pool.query(`INSERT INTO orgs(id,display_name) VALUES('upgrade-org','Upgrade organisation');
+        INSERT INTO users(id,display_name,org_id,org_role) VALUES('upgrade-owner','Upgrade owner','upgrade-org','owner');
+        INSERT INTO reminders(agent,owner,due_at,payload,created_by) VALUES('fixture-agent','upgrade-owner',now()+interval '1 day','{}','upgrade-owner');`);
+      const upgrade=await runMigrations(pool,SQL);
+      expect(upgrade.refused).toEqual([]);
+      expect(upgrade.applied).toContain("009_vault_areas.sql");expect(upgrade.applied).toContain("019_personal_actions.sql");expect(upgrade.applied).toContain("020_vault_resource_grants.sql");expect(upgrade.applied).toContain("021_personal_action_acceptance.sql");
+      expect((await pool.query("SELECT display_name,status FROM users WHERE id='upgrade-owner'")).rows).toEqual([{display_name:'Upgrade owner',status:'active'}]);
+      expect((await pool.query("SELECT 1 FROM reminders WHERE owner='upgrade-owner'")).rowCount).toBe(1);
+      expect(await runMigrations(pool,SQL)).toMatchObject({applied:[],refused:[]});
+      // Intermediate development ledgers are deliberately not repaired or auto-adopted.
+      await pool.query("DELETE FROM schema_migrations WHERE filename IN ('009_vault_areas.sql','020_vault_resource_grants.sql');UPDATE schema_migrations SET checksum='intermediate-development-checksum' WHERE filename='014_agent_access_grants.sql'");
+      const refused=await runMigrations(pool,SQL);
+      expect(refused.applied).toEqual([]);
+      expect(refused.refused.some(r=>r.filename==='009_vault_areas.sql'&&r.reason.includes('out of order'))).toBe(true);
+      expect(refused.refused.some(r=>r.filename==='014_agent_access_grants.sql')).toBe(true);
+    } finally {await pool.end();await container.stop();rmSync(released,{recursive:true,force:true});}
+  },180_000);
+
   it("creates the whole schema in one step, and a second run does nothing", async () => {
     const container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     const pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
     try {
       await ensureLedger(pool);
       const first = await runMigrations(pool, SQL);
-      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "021_personal_action_acceptance.sql"]);
+      expect(first.applied).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
       expect(first.refused).toEqual([]);
       const second = await runMigrations(pool, SQL);
       expect(second.applied).toEqual([]);
-      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "021_personal_action_acceptance.sql"]);
+      expect(second.skipped).toEqual([BASELINE_FILENAME, STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"]);
       const { rows } = await pool.query("SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = 'public'");
       expect(rows[0].n).toBeGreaterThan(50);
       const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name");
@@ -179,7 +208,7 @@ describe("a database the pre-release history built", () => {
     const adopted: AppliedMigration = { ...oldRow(BASELINE_FILENAME, 1), checksum: files[0]!.checksum, how: "adopted" };
     const plan = planMigrations(files, [adopted]);
     expect(plan.refusals).toEqual([]);
-    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply"]);
+    expect(plan.steps.map((s) => s.action)).toEqual(["skip", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply", "apply"]);
   });
 });
 
@@ -218,7 +247,7 @@ describe("adopting the baseline", () => {
     const rows = await listApplied(db.pool);
     expect(rows.map((r) => [r.filename, r.how])).toEqual([[BASELINE_FILENAME, "adopted"]]);
     // Later files still run after adoption: the baseline is skipped, later numbered files are applied.
-    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "021_personal_action_acceptance.sql"], refused: [] });
+    expect(await runMigrations(db.pool, SQL)).toMatchObject({ applied: [STANDING_FACTS_FILENAME, OUTSIDE_TOOL_SEEN_FILENAME, WEB_INBOX_FILENAME, MODEL_STEPS_FILENAME, APPROVAL_SESSION_FILENAME, MEMBER_IDENTITY_FILENAME, CONNECTED_ACCOUNTS_FILENAME, "009_vault_areas.sql", ACCOUNT_CREDENTIALS_FILENAME, CONSOLE_AUTHORITY_FILENAME, "014_agent_access_grants.sql", "015_exact_approval_execution.sql", "016_console_agent_access_capture.sql", "017_private_console_surface_capture.sql", "018_private_account_history.sql", "019_personal_actions.sql", "020_vault_resource_grants.sql", "021_personal_action_acceptance.sql"], refused: [] });
     // Adoption is one-time: the ledger now holds the baseline, so a second adoption refuses.
     await expect(adoptMigrations(db.pool, SQL, { through: BASELINE_FILENAME })).rejects.toThrow(/one-time/);
   });
