@@ -260,7 +260,7 @@ export class AgentLifecycle {
         if(a.doors.some(d=>d.kind==='email'&&d.enabled)) {
             const e=rows.find(c=>c.kind==='email'),config=this.config.runtime.google,client=config?.clients[e?.org];
             if(!e||!config||!client||e.principal!==config.principal)throw new KeeperRefusedError('Configure and select a Google mailbox before enabling email');
-            const token=await this.pool.query("SELECT 1 FROM oauth_tokens WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3",[e.principal,e.org,e.mailbox]);
+            const token=await this.pool.query("SELECT 1 FROM oauth_tokens t WHERE principal=$1 AND provider='google' AND org_id=$2 AND email_address=$3 AND NOT EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id)",[e.principal,e.org,e.mailbox]);
             if(!token.rows.length)throw new KeeperRefusedError('Selected Google mailbox is no longer connected');
             a.email={principal:e.principal,org:e.org,mailbox:e.mailbox,revision:e.revision,owner:e.owner_email,tokenKeyFile:config.tokenKeyFile,...client};
         }

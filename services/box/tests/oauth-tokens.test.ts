@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFileSync } from "node:fs";
 import type { Pool } from "pg";
 import { storeToken, getDecryptedRefreshToken, listDecryptedRefreshTokens, listTokens, deleteToken } from "../lib/oauth-tokens.js";
 import { startTestDb, type TestDb } from "./helpers/pg.js";
 
 const KEY = "0".repeat(64);
 let tdb: TestDb; let db: Pool;
-beforeAll(async () => { tdb = await startTestDb(); db = tdb.pool; }, 120_000);
+beforeAll(async () => { tdb = await startTestDb(); db = tdb.pool; for (const name of ["008_connected_accounts.sql", "012_connected_account_credentials.sql"]) await db.query(readFileSync(new URL(`../sql/${name}`, import.meta.url), "utf8")); }, 120_000);
 afterAll(async () => { await tdb?.stop(); });
 
 describe("oauth-tokens", () => {

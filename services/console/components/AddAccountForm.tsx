@@ -5,6 +5,7 @@ import { Input } from "@lares/ui/primitives/input";
 export function AddAccountForm() {
   return (
     <form method="POST" action="/api/accounts/google/start" className="lares-inline-form lares-operational-filter">
+      <input type="hidden" name="intent" value="new" />
       <label className="lares-field-label" htmlFor="connection-email">
         Connect a Google account
       </label>

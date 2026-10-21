@@ -1,52 +1,69 @@
-import { describe, it, expect, vi } from "vitest";
-
-// lib/account-oauth → lib/accounts imports @lares/agent-box + lib/db at module load; mock both.
-vi.mock("@lares/agent-box/lib/oauth-tokens.js", () => ({ listTokens: async () => [] }));
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+const api = vi.hoisted(() => ({ profile: vi.fn(), calendar: vi.fn(), setCredentials: vi.fn() }));
+vi.mock("googleapis", () => ({ google: { auth: { OAuth2: class { setCredentials = api.setCredentials; } },
+  gmail: () => ({ users: { getProfile: api.profile } }), calendar: () => ({ calendarList: { get: api.calendar } }) } }));
 vi.mock("../lib/db", () => ({ pool: {} }));
-
-import { buildConsentUrl, callbackRedirect } from "../lib/account-oauth";
-
-describe("account oauth helpers", () => {
-  it("builds a Google consent URL with offline access, the state, and the compose scope", () => {
-    const url = buildConsentUrl({
-      clientId: "cid", clientSecret: "secret",
-      redirectUri: "https://console.example/api/accounts/google/callback",
-      state: "STATE123",
-    });
-    const u = new URL(url);
-    expect(u.searchParams.get("access_type")).toBe("offline");
-    expect(u.searchParams.get("prompt")).toBe("consent");
-    expect(u.searchParams.get("state")).toBe("STATE123");
-    expect(decodeURIComponent(u.searchParams.get("scope") ?? "")).toContain("gmail.compose");
-    expect(u.searchParams.get("redirect_uri")).toBe("https://console.example/api/accounts/google/callback");
+import { GOOGLE_SCOPES } from "../lib/accounts";
+import { startAccountConsent, finishAccountConsent, callbackRedirect } from "../lib/account-oauth";
+import { accountSessionHash, type AccountFlow } from "../lib/account-oauth-state";
+const issuer = "https://accounts.google.com";
+const flow: AccountFlow = { intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
+let claims: Record<string, unknown>, response: Record<string, unknown>, badSignature: boolean;
+beforeEach(async () => {
+  vi.clearAllMocks();
+  vi.stubEnv("CONSOLE_OAUTH_REDIRECT", "http://localhost:3000/api/auth/callback");
+  vi.stubEnv("GOOGLE_CLIENT_ID_EXAMPLE", "data-client"); vi.stubEnv("GOOGLE_CLIENT_SECRET_EXAMPLE", "data-secret");
+  vi.stubEnv("GOOGLE_CLIENT_ID_CONSOLE", "sign-in-client");
+  const key = await generateKeyPair("RS256"), jwk = await exportJWK(key.publicKey);
+  claims = {}; response = {}; badSignature = false;
+  api.profile.mockResolvedValue({ data: { emailAddress: "own@example.test" } });
+  api.calendar.mockResolvedValue({ data: { id: "own-calendar", primary: true, accessRole: "owner", summary: "Calendar" } });
+  vi.stubGlobal("fetch", vi.fn(async (input: Request | URL | string) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.endsWith("openid-configuration")) return Response.json({ issuer, authorization_endpoint: `${issuer}/authorize`, token_endpoint: `${issuer}/token`, jwks_uri: `${issuer}/keys`, response_types_supported: ["code"], subject_types_supported: ["public"], id_token_signing_alg_values_supported: ["RS256"] });
+    if (url.pathname.endsWith("/keys")) return Response.json({ keys: [{ ...jwk, kid: "test", alg: "RS256", use: "sig" }] });
+    if (url.pathname.endsWith("/token")) {
+      const signing = badSignature ? (await generateKeyPair("RS256")).privateKey : key.privateKey;
+      const id = await new SignJWT({ nonce: "nonce", ...claims }).setProtectedHeader({ alg: "RS256", kid: "test" })
+        .setIssuer(String(claims.iss ?? issuer)).setSubject(String(claims.sub ?? "provider-subject"))
+        .setAudience(String(claims.aud ?? "data-client")).setIssuedAt().setExpirationTime("5m").sign(signing);
+      return Response.json({ access_token: "access", refresh_token: "refresh", token_type: "Bearer", scope: GOOGLE_SCOPES.join(" "), id_token: id, ...response });
+    }
+    throw new Error("Unexpected outbound request");
+  }));
+});
+afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+const callback = () => new URL("http://localhost:3000/api/accounts/google/callback?code=code&state=state");
+describe("Google account consent against local simulated provider", () => {
+  it("uses data client, distinct callback, PKCE, state, nonce, offline consent and identity scope", async () => {
+    const result = await startAccountConsent({ memberId: "member-a", session: "session", org: "example", loginHint: "hint@example.test" });
+    expect(result.flow).toMatchObject({ memberId: "member-a", sessionHash: accountSessionHash("session"), clientId: "data-client", intent: "new" });
+    expect(result.url.searchParams.get("client_id")).toBe("data-client");
+    expect(result.url.searchParams.get("redirect_uri")).toBe("http://localhost:3000/api/accounts/google/callback");
+    expect(result.url.searchParams.get("scope")).toContain("openid");
+    expect(result.url.searchParams.get("code_challenge_method")).toBe("S256");
+    for (const key of ["nonce", "state", "code_challenge"]) expect(result.url.searchParams.get(key)).toBeTruthy();
   });
-
-  it("passes the mailbox address through as a login hint when given", () => {
-    const url = buildConsentUrl({
-      clientId: "cid", clientSecret: "secret",
-      redirectUri: "https://console.example/api/accounts/google/callback",
-      state: "STATE123",
-      loginHint: "owner@project.example",
-    });
-    expect(new URL(url).searchParams.get("login_hint")).toBe("owner@project.example");
+  it("validates identity and owns both resources with the same grant, never linking by email", async () => {
+    claims = { email: "unrelated@example.test" };
+    const result = await finishAccountConsent(callback(), flow);
+    expect(await result.adapter.verifyAccount(null)).toEqual({ issuer, subject: "provider-subject", label: "own@example.test" });
+    expect(api.setCredentials).toHaveBeenCalledWith({ access_token: "access", refresh_token: "refresh" });
+    expect(api.profile).toHaveBeenCalledWith({ userId: "me" });
+    expect(api.calendar).toHaveBeenCalledWith({ calendarId: "primary" });
+    expect(result.material.scopes).toEqual(GOOGLE_SCOPES);
   });
-
-  it("omits login_hint entirely when none is given", () => {
-    const url = buildConsentUrl({
-      clientId: "cid", clientSecret: "secret",
-      redirectUri: "https://console.example/api/accounts/google/callback",
-      state: "STATE123",
-    });
-    expect(new URL(url).searchParams.has("login_hint")).toBe(false);
+  it.each([{ iss: "https://wrong.example" }, { aud: "sign-in-client" }, { nonce: "wrong" }])("refuses identity claims %s before resource reads", async changed => {
+    claims = changed; await expect(finishAccountConsent(callback(), flow)).rejects.toThrow(); expect(api.profile).not.toHaveBeenCalled();
   });
-
-  it("builds the success redirect back to /integrations with the added email", () => {
-    expect(callbackRedirect("https://console.example", { added: "owner@project.example" }))
-      .toBe("https://console.example/integrations?added=owner%40project.example");
+  it("requires valid signature", async () => { badSignature = true; await expect(finishAccountConsent(callback(), flow)).rejects.toThrow(); expect(api.profile).not.toHaveBeenCalled(); });
+  it.each([{ refresh_token: undefined }, { scope: undefined }, { scope: "openid" }])("refuses incomplete actual consent %s", async changed => {
+    response = changed; await expect(finishAccountConsent(callback(), flow)).rejects.toThrow(); expect(api.profile).not.toHaveBeenCalled();
   });
-
-  it("builds the error redirect back to /integrations with the message", () => {
-    expect(callbackRedirect("https://console.example", { error: "no refresh token" }))
-      .toBe("https://console.example/integrations?error=no+refresh+token");
+  it.each([{ primary: false }, { accessRole: "writer" }, { id: null }])("refuses unowned/nonprimary calendar %s", async changed => {
+    api.calendar.mockResolvedValue({ data: { id: "own", primary: true, accessRole: "owner", ...changed } });
+    await expect(finishAccountConsent(callback(), flow)).rejects.toThrow();
   });
+  it("returns to member page with encoded neutral flash text", () => { expect(callbackRedirect("https://console.example", { added: "Saved consent" })).toBe("https://console.example/membership?added=Saved+consent"); });
 });

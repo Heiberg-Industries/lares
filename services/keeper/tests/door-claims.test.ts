@@ -16,7 +16,7 @@ beforeAll(async()=>{
  // A stopped container ends every session with FATAL 57P01; a connection the pool already let go of
  // has no listener left and the run fails although every test passed (seen on CI, 2026-09-19).
  pool.on('error',()=>undefined);pool.on('connect',(c)=>c.on('error',()=>undefined));
- await pool.query(readFileSync(resolve('../box/sql','001_baseline.sql'),'utf8'));
+ for(const name of ['001_baseline.sql','008_connected_accounts.sql','012_connected_account_credentials.sql']) await pool.query(readFileSync(resolve('../box/sql',name),'utf8'));
 });
 afterAll(async()=>{await pool?.end();await container?.stop();});
 beforeEach(async()=>{
@@ -160,4 +160,20 @@ it('refuses an email connection by a member when another member owns a door of t
  await expect(connect(bob)).rejects.toThrow(REFUSAL);
  await connect(alice);
  expect((await pool.query("SELECT owner_email FROM agent_door_connections WHERE agent='assistant' AND kind='email'")).rows).toEqual([{owner_email:'alice@example.com'}]);
+});
+
+it('refuses legacy email.connect when the exact mailbox belongs to a revoked personal account',async()=>{
+ const chief={name:'writer',role:'chief-of-staff',doors:[{kind:'email',enabled:true}]};
+ await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='writer'",[JSON.stringify(chief)]);
+ await pool.query("INSERT INTO users(id,display_name)VALUES('fixture-personal-owner','Fixture')");
+ await pool.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
+   VALUES('fixture-personal-account','fixture-personal-owner','google','https://accounts.google.com','fixture-subject','Mailbox','revoked')`);
+ await pool.query(`INSERT INTO oauth_tokens(principal,provider,org_id,email_address,refresh_token_enc)
+   VALUES('fixture-personal-owner','google','tenant','own@example.test','ciphertext')`);
+ await pool.query(`INSERT INTO connected_account_credentials(account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
+   SELECT 'fixture-personal-account','fixture-personal-owner','google',0,id FROM oauth_tokens WHERE principal='fixture-personal-owner'`);
+ resetActions();registerDoorActions({pool,secretsDir:'/unused',emailPrincipal:'fixture-personal-owner',googleOrgs:['tenant']});
+ try{await expect(runAction('email.connect',{name:'writer',incarnation:inc,principal:'fixture-personal-owner',org:'tenant',mailbox:'own@example.test'},ctx)).rejects.toThrow('real Google OAuth');
+ expect((await pool.query("SELECT 1 FROM agent_door_connections WHERE agent='writer' AND kind='email'")).rows).toEqual([]);
+ }finally{await pool.query("DELETE FROM connected_accounts WHERE id='fixture-personal-account'");await pool.query("DELETE FROM oauth_tokens WHERE principal='fixture-personal-owner'");await pool.query("DELETE FROM users WHERE id='fixture-personal-owner'");}
 });

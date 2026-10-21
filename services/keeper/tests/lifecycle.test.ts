@@ -76,7 +76,7 @@ it('mounts the managed key only into a granted chief of staff, only when a key r
 });
 beforeAll(async()=>{
  pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:pg.getConnectionUri()}));
- await pool.query(readFileSync(join(repo,'services/box/sql','001_baseline.sql'),'utf8'));
+ for(const name of ['001_baseline.sql','008_connected_accounts.sql','012_connected_account_credentials.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
  await pool.query('CREATE DATABASE empty_workflow');
  const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
  await template.query('CREATE SCHEMA workflow; CREATE TABLE workflow.memory(value text)');await template.end();
@@ -429,7 +429,14 @@ it('accepts the email door once the configured principal is the register id, and
   // The configuration names the register id -> accepted, and the token is found under it.
   config.runtime.google=google('fixture-owner');
   await expect(lifecycle().prepare('bookkeeper',withMail,false)).resolves.toBeUndefined();
- }finally{await pool.query('DELETE FROM agent_door_connections');await pool.query('DELETE FROM oauth_tokens');await pool.query('DELETE FROM user_aliases');await pool.query('DELETE FROM users');}
+  await pool.query(`INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status)
+    VALUES('fixture-account','fixture-owner','google','https://accounts.google.com','fixture-subject','Mailbox','revoked')`);
+  await pool.query(`INSERT INTO connected_account_credentials(account_id,owner_member_id,connector_id,account_generation,oauth_token_id)
+    SELECT 'fixture-account','fixture-owner','google',0,id FROM oauth_tokens WHERE principal='fixture-owner'`);
+  await expect(lifecycle().prepare('bookkeeper',withMail,false)).rejects.toThrow('Selected Google mailbox is no longer connected');
+  await pool.query("DELETE FROM connected_accounts WHERE id='fixture-account'");
+
+ }finally{await pool.query("DELETE FROM connected_accounts WHERE id='fixture-account'");await pool.query('DELETE FROM agent_door_connections');await pool.query('DELETE FROM oauth_tokens');await pool.query('DELETE FROM user_aliases');await pool.query('DELETE FROM users');}
 });
 
 it.each([[undefined,true,false],[false,true,false],[true,false,false],[true,true,true]])('packages schedule master %s and definition %s as effective %s',async(master,on,expected)=>{

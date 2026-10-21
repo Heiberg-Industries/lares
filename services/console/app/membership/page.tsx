@@ -1,13 +1,38 @@
+import { PgAccountStore } from "@lares/agent-kit/account-store";
+import { pool } from "../../lib/db";
+import { AddAccountForm } from "../../components/AddAccountForm";
+import { RemoveAccountButton } from "../../components/RemoveAccountButton";
+import type { ConnectedAccountView } from "@lares/agent-kit/authority-contract";
 import Link from "next/link";
 import { requireMember, isConsoleOwner } from "../../lib/auth";
 import { signOutEverywhere } from "../actions/members";
 export const dynamic = "force-dynamic";
-export default async function MembershipPage() {
+export default async function MembershipPage({ searchParams }: { searchParams: Promise<{ added?: string; error?: string }> }) {
   const member = await requireMember();
+  const params = await searchParams;
+  let accounts: ConnectedAccountView[] = [], unavailable = false;
+  try { accounts = await new PgAccountStore(pool).list(member.id); } catch { unavailable = true; }
   return <main className="lares-page lares-stack" id="main-content">
     <h1>Your membership</h1>
     <p>Your membership is active. Your current role is {member.role}. New members begin with draft-and-ask automation.</p>
     <p>Shared console access is still being integrated. Your membership does not give access to other people's conversations, accounts or private files.</p>
+    <section className="lares-stack" aria-label="Your personal accounts">
+      <h2>Your personal accounts</h2>
+      {params.added && <p role="status">Google consent saved. Agent use is pending integration.</p>}
+      {params.error && <p role="alert">Google consent could not be saved. Start again here.</p>}
+      <p>Consent is stored for your own account. Agent use is pending integration. Disconnecting stops Lares account access; revoke the Google grant in your Google account settings if needed.</p>
+      {unavailable ? <p role="status">Personal accounts unavailable. Try again later.</p> : accounts.length ? accounts.map(account => <div key={account.id} className="lares-surface lares-stack">
+        <strong>{account.providerAccount.label}</strong><span>{account.status}</span>
+        {account.connectorId === "google" && <form method="post" action="/api/accounts/google/start">
+          <input type="hidden" name="intent" value="reconnect" />
+          <input type="hidden" name="accountId" value={account.id} />
+          <input type="hidden" name="generation" value={account.generation} />
+          <button type="submit">Reconnect Google account</button>
+        </form>}
+        {account.status !== "revoked" && <RemoveAccountButton email={account.providerAccount.label} accountId={account.id} generation={account.generation} />}
+      </div>) : <p>No personal accounts connected.</p>}
+      {!unavailable && <AddAccountForm />}
+    </section>
     {isConsoleOwner(member) && <Link href="/">Open the owner console →</Link>}
     <form method="post" action="/api/auth/logout"><button type="submit">Sign out</button></form>
     <form action={signOutEverywhere}><button type="submit">Sign out everywhere</button></form>

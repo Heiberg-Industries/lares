@@ -1,70 +1,65 @@
 # Connections and accounts (console)
 
-The **Connections** page (`/integrations`) is where the owner sees and manages what the agents on
-this installation are connected to: Google accounts, the Notion key, saved-link clipping, and
-what each agent may do with each connection. It is how you connect accounts without editing files
-on the server.
+The **Your membership** page (`/membership`) lets every admitted member connect, reconnect
+and disconnect their own personal Google accounts. The installation-wide **Connections** page
+(`/integrations`) remains owner-only. Its legacy mailbox list includes only the configured owner
+principal's unassociated credentials, never other members' associated personal accounts.
 
-## The model: account, connection, agent access, autonomy
+## Personal Google consent
 
-- **Account** — a connected Google account (mailbox and calendar), stored encrypted in the
-  installation's database, keyed by owner, provider and address. The provider is Google. One
-  consent covers the scopes the agents use: `gmail.readonly`, `gmail.compose` (drafts and send)
-  and `calendar.readonly`.
-- **Connection** — a card on the page for something the installation can reach: a Google client,
-  Notion, an outside tool server. It shows a status, which agents have access, and details.
-- **Agent access** — an agent only has the powers (capabilities) in its definition. The
-  definition is saved by the keeper under `/srv/lares/agents/<name>/`; the console edits it (Edit
-  agent, then Access) and a change reaches the running agent when you apply it ("Apply connection
-  changes (restarts agent)"). Two agents holding the same capability is one connection and two
-  grants.
-- **Autonomy** — for each agent and capability the table at the bottom of the page shows a level:
-  acts on its own, asks first, or never (a live, reversible revoke). A change reaches the agent at
-  its next action. Some actions always ask whatever the level: moving money, deleting data,
-  contacting someone for the first time, publishing, an agent changing its own autonomy.
+Google data consent is separate from console sign-in. Configure `GOOGLE_CLIENT_ID_<ORG>` and
+`GOOGLE_CLIENT_SECRET_<ORG>` through the existing secret-file or environment settings, and register
+`https://<console-host>/api/accounts/google/callback` on that data client. The console login client
+and its `/api/auth/callback` address are not used for data consent. `GOOGLE_ORG_DOMAINS` or
+`GOOGLE_DEFAULT_ORG` selects the configured client; a typed email is only a client-selection/login
+hint, never a member identity. Organisation suffixes use letters and digits, for example `EXAMPLE`.
 
-## Connecting a Google account
+The maintained OIDC client verifies issuer, subject, audience, nonce and signature from the same
+consent grant. An encrypted, ten-minute HttpOnly flow cookie binds the current member and opaque
+session, selected data client, PKCE, state and reconnect ticket. A new start overwrites that cookie;
+every terminal callback clears it. State in a URL alone cannot complete a flow. Returned scopes
+must include `openid`, `gmail.readonly`, `gmail.compose`, `calendar.readonly`, `calendar.events`
+and `drive.readonly` (the data scopes use their full Google API URLs). Missing actual scope evidence
+or a missing refresh token refuses the consent; requested scopes are not treated as granted scopes.
 
-There are two entry points, both ending at Google's consent screen and back to
-`/api/accounts/google/callback`:
+The same verified grant reads Gmail's own profile (`userId: "me"`) and the current primary calendar
+(`calendarId: "primary"`, primary flag and owner access required). The mailbox binding's opaque
+external ID is the verified Google subject; its address is display metadata. An account-aware Gmail
+adapter must always target `me` under that exact associated credential, never use a form field,
+display address or mailbox external ID as a Gmail target override. Calendar uses the verified
+primary calendar's exact provider ID. Google documents the primary lookup and ownership fields in
+[CalendarList.get](https://developers.google.com/workspace/calendar/api/v3/reference/calendarList/get)
+and the [CalendarList resource](https://developers.google.com/workspace/calendar/api/v3/reference/calendarList).
 
-1. **Connections page, "Connect a Google account".** Type the address; its domain decides which
-   configured Google client is used.
-2. **An agent's own mailbox (chief of staff only).** On the agent's page, under Connect doors, the
-   Email door: "Connect mailbox with Google". The agent must be running, and it can then use only
-   that mailbox. Apply the connection changes afterwards.
+Account metadata, fresh encrypted credentials, exact custody association and verified resource
+bindings commit together. Reconnect requires the same provider subject and a current account,
+generation and lifecycle revision. It updates the exact associated custody row even when the
+provider's mailbox label/address changes; a collision rolls the transaction back. Existing resource
+IDs are preserved. If a new consent no longer verifies an existing resource of the same kind, the
+whole reconnect is refused, retaining the last account, token and bindings. A future explicit
+resource-replacement lifecycle is needed for that case.
 
-Either needs a Google **data** client set up first. It is separate from the client that signs you
-in to the console. As root on the server:
+Disconnect changes the account's lifecycle status and invalidates its generation. It does not
+revoke the grant at Google: use Google's third-party access settings separately. Associated
+credentials remain permanently excluded from legacy credential readers/writers and legacy
+removal, including revoked, failed and reconsent accounts. A default/list legacy read that matches
+any associated row refuses the ambiguous selection rather than falling back to an older token.
+Unassociated legacy credentials retain their old behavior. No email match automatically adopts
+stored credentials or changes the installed owner configuration.
 
-1. Add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>` (an explicit lower-case
-   organisation id, for example `org-one`) to `/etc/lares/console-oauth.env`.
-2. Register `https://<console-host>/api/accounts/google/callback` as a redirect address on that
-   Google client.
-3. From the Lares checkout, run the configuration command, then restart the keeper:
+## Current integration boundary and manual verification
 
-   ```sh
-   sudo python3 services/box/ops/configure-google-keeper.py --org org-one --dry-run
-   sudo python3 services/box/ops/configure-google-keeper.py --org org-one
-   sudo docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart
-   ```
+The UI reports **consent saved; agent use pending integration**. Saving consent does not connect an
+agent door or prove provider-backed runtime use. New managed-agent mailbox setup is unavailable
+until its account-aware runtime adapter is integrated; its old route refuses before provider work.
+Legacy selected mailboxes retain their existing exact principal/org/mailbox and door-incarnation
+checks, and cannot select newly associated personal credentials.
 
-   The command writes no credential to the screen or the command line. It copies the two client
-   values into `root:10001` `0440` files that the keeper mounts read-only, adds the installed owner
-   and the organisation to `/etc/lares/keeper.json`, and sets `CONSOLE_PRINCIPAL_ID` in the console
-   file to the installed owner. It does not connect a mailbox or switch an agent on.
-4. Recreate the console so it reads the file again: `sudo docker compose -f /opt/lares/compose.yaml up -d --force-recreate console`.
-5. Connect the mailbox (either entry point above) and complete Google's consent screen.
-
-Re-run step 3 after any installer re-run that replaces `/etc/lares/keeper.json`; the installer
-carries the Google settings over when it can read the file and stops without touching it when it
-cannot (see the install guide).
-
-The token key (`token-enc-key` in `/etc/lares/secrets`, the `TOKEN_ENC_KEY` setting) is shared
-between the console and the agents, so a token the console stores is one the agent can read. The
-installer generates it once; back it up (install guide, section 4). Removing an account on the
-page deletes its stored token, so the agents lose access. It does not revoke the grant at Google:
-do that in the Google account's third-party access settings.
+`services/console/tests/live/google-account-consent.live.mts` is a manual, opt-in probe of the
+actual Google consent response, identity, granted scopes, own Gmail profile and primary owned
+calendar. It stores no credential and sends no mail or calendar writes. Local simulated-provider
+and database tests establish refusal/transaction behavior; they do not establish live Google
+acceptance. The manual probe has not been run as part of this source change.
 
 ## Models (Settings page)
 
@@ -126,7 +121,7 @@ run it by hand when the pinned Notion API version or the SDK changes.
 
 ## Not done yet
 
-- Removing an account does not revoke the token at Google.
+- Disconnecting an account does not revoke the token at Google.
 - Adding a capability to an agent from this page is done in Edit agent, not on the Connections
   page.
-- One owner principal per installation; there is no selector for several.
+- Account-aware runtime use and managed-agent consent wiring remain pending integration.

@@ -215,6 +215,7 @@ describe("oauth_tokens reads", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
     await quiet(getPool()).query(`
+      CREATE TABLE connected_account_credentials (oauth_token_id uuid PRIMARY KEY);
       CREATE TABLE oauth_tokens (
         id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         principal          text        NOT NULL,
@@ -244,6 +245,7 @@ describe("oauth_tokens reads", () => {
   afterEach(async () => {
     rmSync(keyDir, { recursive: true, force: true });
     delete process.env["TOKEN_ENC_KEY_FILE"];
+    await getPool().query(`DELETE FROM connected_account_credentials`);
     await getPool().query(`DELETE FROM oauth_tokens`);
   });
 
@@ -259,6 +261,16 @@ describe("oauth_tokens reads", () => {
     );
   }
 
+  it('quarantines every matching associated selection without falling back to older legacy rows', async () => {
+    await insert({org:'owner-1',email:'associated@example.test',token:'strict-account',updatedAt:"now() - interval '2 days'"});
+    await insert({org:'owner-1',email:'legacy@example.test',token:'legacy',updatedAt:'now()'});
+    await getPool().query(`INSERT INTO connected_account_credentials(oauth_token_id)
+      SELECT id FROM oauth_tokens WHERE email_address='associated@example.test'`);
+    await expect(getMostRecentRefreshToken('U_owner','google')).rejects.toThrow('Account-aware');
+    await expect(listDecryptedRefreshTokens('U_owner','google')).rejects.toThrow('Account-aware');
+    await expect(listDecryptedRefreshTokens('U_owner','google',{mailbox:'associated@example.test',org:'owner-1'})).rejects.toThrow('Account-aware');
+    expect(await listDecryptedRefreshTokens('U_owner','google',{mailbox:'legacy@example.test',org:'owner-1'})).toMatchObject([{token:'legacy'}]);
+  });
   describe("listDecryptedRefreshTokens", () => {
     it("returns every enrolled mailbox, decrypted, ordered by email address", async () => {
       await insert({ org: "example-co", email: "owner@project.example", token: "example-co-token" });

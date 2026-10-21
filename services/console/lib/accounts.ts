@@ -2,7 +2,7 @@
 // Read/config layer for connected Google accounts. Reads the shared oauth_tokens table via
 // @lares/agent-box (the runtime's token store) so the console and runtime agree on encryption,
 // identity, and org. The page + OAuth routes consume this; no secrets ever reach the DTO.
-import { listTokens, type StoredOAuthToken } from "@lares/agent-box/lib/oauth-tokens.js";
+import { type StoredOAuthToken } from "@lares/agent-box/lib/oauth-tokens.js";
 import { pool } from "./db";
 import { ownerId } from "./proactivity";
 import { readSecret } from "./secrets";
@@ -23,12 +23,13 @@ export function consolePrincipal(): string {
   return process.env.CONSOLE_PRINCIPAL_ID?.trim() || ownerId();
 }
 
-/** MUST stay in lockstep with SCOPES in agent-runtime/bin/oauth-enroll.ts — one grant covers
+/** Data scopes match legacy enrollment; openid separately verifies account identity. One grant covers
  *  every Google power the fleet uses. calendar.events is NOT optional: calendar.readonly alone
  *  makes Google reject writes with ACCESS_TOKEN_SCOPE_INSUFFICIENT, and a stored refresh token
  *  never gains scopes on its own, so a console-enrolled mailbox that omits it silently loses
  *  calendar writes until it is re-consented. (It was once omitted here.) */
 export const GOOGLE_SCOPES = [
+  "openid",
   "https://www.googleapis.com/auth/gmail.readonly",
   "https://www.googleapis.com/auth/gmail.compose",
   "https://www.googleapis.com/auth/calendar.readonly",
@@ -120,7 +121,10 @@ export interface GoogleAccountsView {
 
 export async function listGoogleAccounts(): Promise<GoogleAccountsView> {
   try {
-    const rows = await listTokens(pool, "google");
+    const { rows } = await pool.query<StoredOAuthToken>(`SELECT t.id,t.principal,t.provider,t.org_id AS "orgId",
+      t.email_address AS "emailAddress",t.scopes,t.created_at AS "createdAt",t.updated_at AS "updatedAt"
+      FROM oauth_tokens t WHERE t.principal=$1 AND t.provider='google'
+      AND NOT EXISTS(SELECT 1 FROM connected_account_credentials c WHERE c.oauth_token_id=t.id) ORDER BY t.created_at`, [consolePrincipal()]);
     return { accounts: rows.map(toGoogleAccountDTO), unavailable: false };
   } catch {
     // Match the console's unavailable-view pattern; never expose token-store errors.

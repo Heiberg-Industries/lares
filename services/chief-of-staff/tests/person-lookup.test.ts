@@ -405,6 +405,7 @@ describe("eveSagaPersonWiring() against real client test doubles, and person_loo
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
     await quiet(getPool()).query(`
+      CREATE TABLE connected_account_credentials (oauth_token_id uuid PRIMARY KEY);
       CREATE TABLE oauth_tokens (
         id                 uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         principal          text        NOT NULL,
