@@ -1,8 +1,13 @@
 // The Waiting on you page's server half: which approvals are waiting, and deciding one — with a fake
 // database and a fake agent door that behave like the real ones (eve's session stream as NDJSON, and
 // an answer that is accepted at once and settled on the agent's next step).
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
 import { APPROVED_PENDING, classifyReadFailure, decideWaiting, EXPIRED_NOTE, itemId, kindOfStatus, listWaiting, ownedFrom, readApprovals, type WaitingDeps } from "../lib/waiting";
+
+const grantAccess=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
+vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=grantAccess.captureUse;}}));
+beforeEach(()=>vi.stubEnv('AGENT_OWNER_USER_ID','owner-id'));
+afterAll(()=>vi.unstubAllEnvs());
 
 const OWNER = "owner@example.com";
 const OTHER = "someone-else@example.com";
@@ -83,10 +88,11 @@ function fake(opts: {
     signedInMember: async () => ({id:"owner-id",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}),
     query: async (sql, values) => {
       queries.push({ sql, values });
+      if (sql.startsWith("SELECT 1 FROM users") || sql.includes("FROM agent_resources r WHERE")) return {rows:[{}]};
       if (sql.includes("console_session_bindings")) {
         const session = sessions[String(values[0])]?.find(s=>s.session_id === values[2]);
         if (!session || ["slack","telegram"].includes(session.door)) return {rows:[]};
-        return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1}]};
+        return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1,agent_access_revision:1}]};
       }
       if (sql.includes("agent_door_connections")) return { rows: agents.filter((a) => values[0] === null || a.name === values[0]) };
       if (sql.includes("agent_conversations")) {

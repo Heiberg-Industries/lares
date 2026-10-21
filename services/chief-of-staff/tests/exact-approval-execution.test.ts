@@ -7,6 +7,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { getPool, closePool } from '@lares/agent-kit/db';
+import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { reserveExactApproval, attachExactApproval, approveExactResponse, requireApprovedExecution, settleExactInput } from '@lares/agent-kit/approval-execution';
 import { recordAsk, recordAnswer, assertApprovedCall, approvalLedger, payloadFingerprint, APPROVAL_TTL_MS } from '@lares/agent-kit/approval-ledger';
@@ -36,6 +37,8 @@ beforeAll(async()=>{
  await db.query("INSERT INTO orgs(id,display_name) VALUES('fixture-org','Fixture'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('member-a','A','fixture-org','owner','active'),('member-b','B','fixture-org','owner','active')");
  await db.query("INSERT INTO agent_definitions(name,definition,hash,status) VALUES('helper',$1,'fixture-hash','valid')",[def]);
  await db.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,pending,applied_definition) VALUES('helper','172.30.0.99','fixture','owned',$1,$1,'ready',false,$2)",[inc,def]);
+ await db.query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-a',NULL)");
+ await new PgGrantStore(db).adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture-hash'},{designatedOwnerMemberId:'member-a'});
 },120_000);
 afterAll(async()=>{await closePool();await container?.stop();vi.unstubAllEnvs();});
 beforeEach(async()=>{
@@ -109,6 +112,7 @@ describe('exact private approval execution',()=>{
   ['payload',async()=>undefined],
   ['member removed',async()=>getPool().query("UPDATE users SET status='removed' WHERE id='member-a'")],
   ['member demoted',async()=>getPool().query("UPDATE users SET org_role='member' WHERE id='member-a'")],
+  ['access revision changed and restored sharing',async()=>{const store=new PgGrantStore(getPool());const a=await store.agentAccess('member-a','helper');await store.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[]});}],
   ['binding revoked',async()=>getPool().query('UPDATE console_session_bindings SET revoked_at=now()')],
   ['incarnation replaced',async()=>getPool().query("UPDATE agent_resources SET runtime_control_token=NULL,ownership_token='22222222-2222-4222-8222-222222222222' WHERE name='helper'")],
   ['pending desired definition',async()=>getPool().query("UPDATE agent_resources SET pending=true WHERE name='helper'")],
@@ -167,6 +171,40 @@ describe('exact private approval execution',()=>{
    await locked.query('ROLLBACK');
    const result=await outcome;expect(result.ok).toBe(false);expect((result.error as Error).message).toContain('Exact approval');await stillOpen();
   }finally{await locked.query('ROLLBACK');locked.release();await executing?.catch(()=>undefined);}
+ },10_000);
+ it('refuses when a named use grant expires while the approved target is locked',async()=>{
+  const db=getPool(),store=new PgGrantStore(db);
+  const locked=await db.connect();let executing:Promise<unknown>|undefined;
+  try{
+   await db.query('DELETE FROM console_session_bindings; DELETE FROM agent_access');
+   await db.query("INSERT INTO org_member_policy(user_id,allowed_capabilities) VALUES('member-b',NULL) ON CONFLICT(user_id) DO NOTHING");
+   const owner=await store.adoptAgent('member-b',{agentName:'helper',expectedDefinitionHash:'fixture-hash'},{designatedOwnerMemberId:'member-b'});
+   const expiry=new Date(Date.now()+1800).toISOString();
+   await store.updateAgentAccess('member-b',{agentName:'helper',expectedRevision:owner.accessRevision,grants:[{principal:{kind:'member',id:'member-a'},permission:'use',expiresAt:expiry}]});
+   await bindConsoleSession({agent:'helper',incarnation:inc,sessionId:'wrun_exact',memberId:'member-a',admissionNonce:'a'.repeat(43)});
+   await approved();
+   await locked.query('BEGIN');await deadlineApprovalAdapter.readTarget(locked,input,'member-a');
+   const pid=(await locked.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+   executing=dismissExactDeadline(db,context('resolver'),input);
+   const outcome=executing.then(()=>({ok:true,error:undefined as unknown}),error=>({ok:false,error}));
+   let blocked=false;
+   for(let n=0;n<100;n++){
+    blocked=(await db.query('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid))) AS blocked',[pid])).rows[0].blocked;
+    if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));
+   }
+   expect(blocked).toBe(true);
+   await db.query('SELECT pg_sleep(GREATEST(0,EXTRACT(EPOCH FROM ($1::timestamptz-clock_timestamp())))+0.05)',[expiry]);
+   const approval=(await db.query("SELECT original_authority->>'expiresAt' AS expiry FROM approval_asks WHERE call_id='call-1'")).rows[0];
+   expect(Date.parse(approval.expiry)).toBeGreaterThan(Date.now());
+   await locked.query('ROLLBACK');
+   const result=await outcome;expect(result.ok).toBe(false);expect((result.error as Error).message).toMatch(/authority/i);
+   await stillOpen();
+   expect((await db.query("SELECT use_count FROM approval_asks WHERE call_id='call-1'")).rows[0].use_count).toBe(0);
+  }finally{
+   await locked.query('ROLLBACK');locked.release();await executing?.catch(()=>undefined);
+   await db.query('DELETE FROM console_session_bindings; DELETE FROM agent_access');
+   await store.adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:'fixture-hash'},{designatedOwnerMemberId:'member-a'});
+  }
  },10_000);
  it('serializes concurrent exact-call executions without a lock-upgrade deadlock',async()=>{
   await approved();const results=await Promise.allSettled([

@@ -133,3 +133,14 @@ inheritance or private-source access. Runtime admission remains designated-owner
 all automatic context and exposed tools have their own scoped consumers. SQL014's migration
 and a real PostgreSQL boundary suite are source evidence; the branch runtime-image workflow
 and later two-member runtime acceptance are separate evidence.
+
+Strict private console admission now consumes this same `use` decision. SQL016 captures a
+separate immutable `agent_access_revision` on every new session binding, leaving audience
+and conversation-policy revisions unchanged. Existing unversioned bindings are retained as
+revoked history. Current grant authority and binding reads/inserts use one transaction and
+connection; caller-owned transactions retain the locks through protected local actions.
+Every strict lookup and exact approval resume rechecks the capture. Access restoration,
+re-adoption or a definition changing away and back cannot revive an old conversation.
+The proxy checks admission before reading the runtime address or route password. Missing
+adoption requires an explicit owner action; runtime incarnation tokens never adopt agents.
+Console admission remains designated-owner-only pending scoped automatic context and tools.

@@ -3,6 +3,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {afterEach,describe,expect,it,vi} from 'vitest';
+vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {async captureUse(){return 1;}}}));
 const fake=vi.hoisted(()=>({query:vi.fn()}));
 vi.mock('../src/db.js',()=>({getPool:()=>fake}));
 const dist=pathToFileURL(fileURLToPath(new URL('../node_modules/eve/dist/src/',import.meta.url))).href;
@@ -18,7 +19,7 @@ async function roleModule(role:string){
  const path=new URL(`../../../services/${role}/agent/channels/eve.ts`,import.meta.url).href;
  vi.resetModules();return import(path);
 }
-function boundRow(){return {agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1};}
+function boundRow(){return {agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1};}
 describe('actual Eve HTTP routes enforce authority independently of onMessage',()=>{
  for(const role of ['chief-of-staff','creative']){
   it(`${role}: message-free create is admitted without inventing a session binding`,async()=>{

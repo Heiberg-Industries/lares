@@ -9,10 +9,14 @@
  * Shaped after `tests/door-forwarder.test.ts`, which guards the other lane (platform webhooks in).
  */
 import { readFileSync } from "node:fs";
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps } from "../lib/chat-proxy";
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
+const access=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
+vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=access.captureUse;}}));
+beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);});
+afterAll(()=>vi.unstubAllEnvs());
 const PASSWORD = "disposable-fixture-only";
 
 const row = {
@@ -38,7 +42,8 @@ const deps = (
   email: string | null = "owner@example.invalid",
 ) => ({
   query: vi.fn<ChatDeps["query"]>(async (sql,values) => {
-    if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1}]};
+    if (sql.startsWith("SELECT 1 FROM users")) return {rows:[{}]};
+    if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1,agent_access_revision:1}]};
     return {rows:value ? [value as Record<string,unknown>] : []};
   }),
   fetch: vi.fn<typeof fetch>(async () =>
@@ -71,6 +76,12 @@ const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
   });
 
 describe("the console's chat proxy", () => {
+  it("denies missing adoption before reading address, route password or upstream",async()=>{
+    const d=deps();access.captureUse.mockResolvedValueOnce(undefined as never);
+    const response=await forwardChat(post(),'helper','eve/v1/session',d);
+    expect(response.status).toBe(403);expect(await response.text()).toContain('explicitly adopt');
+    expect(d.query).not.toHaveBeenCalled();expect(d.routePassword).not.toHaveBeenCalled();expect(d.fetch).not.toHaveBeenCalled();
+  });
   it("sends the turn to the agent's own door, with the route credential and nothing of the browser's", async () => {
     const d = deps();
     expect((await forwardChat(post(), "helper", "eve/v1/session", d)).status).toBe(200);
@@ -239,7 +250,7 @@ describe("the console's chat proxy", () => {
   it("does NOT require a claimed or enabled door — a fresh installation has none", async () => {
     const d = deps();
     await forwardChat(post(), "helper", "eve/v1/session", d);
-    const [sql] = d.query.mock.calls[0]!;
+    const [sql] = d.query.mock.calls.find(([sql])=>sql.includes("host(r.address)"))!;
     expect(sql).not.toMatch(/agent_doors/);
   });
 

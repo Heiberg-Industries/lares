@@ -7,7 +7,8 @@ import { z } from 'zod';
 import { currentMember,currentSession } from './member-store.js';
 import type { Member } from './authority-contract.js';
 
-type Db = Pick<PoolClient,'query'>;
+export type GrantDatabase = Pick<PoolClient,'query'>;
+type Db = GrantDatabase;
 type Permission = 'use' | 'edit';
 export interface VisibleResource { resource: {kind:'agent';id:string}; accessRevision:number; permissions:Permission[] }
 export interface AgentAccessView { agentName:string; ownerMemberId:string; accessRevision:number; definitionHash:string; grants:{ principal:{kind:'member'|'organisation';id:string};permission:Permission;expiresAt:string|null }[] }
@@ -31,9 +32,11 @@ function capabilities(definition:unknown): string[]|undefined {
 }
 
 export class PgGrantStore {
-  constructor(private readonly pool:Pool) {}
+  /** Without a pool, every operation requires a caller-owned transaction client. */
+  constructor(private readonly pool?:Pool) {}
   private async transaction<T>(client:Db|undefined,fn:(db:Db)=>Promise<T>):Promise<T> {
     if(client) return fn(client); // caller owns the transaction; never acquire a second connection
+    if(!this.pool)throw new Error('A grant transaction client is required');
     const db=await this.pool.connect();
     try {await db.query('BEGIN');const result=await fn(db);await db.query('COMMIT');return result;}
     catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
@@ -57,7 +60,7 @@ export class PgGrantStore {
   }
   private async evaluate(db:Db,member:Member,row:AccessRow,permission:Permission):Promise<boolean> {
     if(row.organisation_id!==member.organisationId||row.status!=='valid')return false;
-    const owner=await currentMember(db,row.owner_member_id);
+    const owner=await currentMember(db,row.owner_member_id,{lock:'share'});
     if(!owner||owner.organisationId!==row.organisation_id||!await this.policyAllows(db,owner,row.definition))return false;
     // Recheck snapshots after acquiring the policy lock; a concurrent policy/definition
     // write may have advanced the resource revision while this reader was waiting.
@@ -79,6 +82,15 @@ export class PgGrantStore {
       const row=await this.access(db,resource.id);
       if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision))return false;
       return this.evaluate(db,member,row,permission as Permission);
+    });
+  }
+  /** Trusted admission capture. The caller keeps its transaction open through binding/use. */
+  async captureUse(memberId:string,agentName:string,options:{expectedRevision?:number;db?:Db}={}):Promise<number|undefined> {
+    return this.transaction(options.db,async db=>{
+      let member:Member;try{member=await this.actor(db,memberId);}catch(e){if(e instanceof GrantStoreError)return undefined;throw e;}
+      const row=await this.access(db,agentName);
+      if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision)||!await this.evaluate(db,member,row,'use'))return undefined;
+      return Number(row.revision);
     });
   }
   async listVisible(memberId:string,kind:string,options:{db?:Db}={}):Promise<VisibleResource[]> {
