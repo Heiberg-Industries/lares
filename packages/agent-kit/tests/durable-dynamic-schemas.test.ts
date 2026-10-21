@@ -66,7 +66,7 @@ const POOL: Record<string, { description: string; inputSchema: unknown; approval
 const valueOf = (name: string) => POOL[name]!;
 
 describe("the catalogue resolver's entries are replay-durable (eve 0.59.0)", () => {
-  it("eve accepts an entry built the way the three role resolvers build one", () => {
+  it.each([false, true])("eve accepts durable approval phases (strict console: %s)", (exactApproval) => {
     const name = "fixture_write";
     const tool = valueOf(name);
     const entry = defineTool({
@@ -77,11 +77,19 @@ describe("the catalogue resolver's entries are replay-durable (eve 0.59.0)", () 
       }),
       ...(tool.approval !== undefined
         ? {
-            approval: defineDurableCallback({
-              closure: { name },
-              callback: (closure: { name: string }, ...args: unknown[]) =>
-                (valueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args),
-            }),
+            approval: {
+              request: defineDurableCallback({
+                closure: { name },
+                callback: (closure: { name: string }, ...args: unknown[]) =>
+                  (valueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args),
+              }),
+              ...(exactApproval ? {
+                response: defineDurableCallback({
+                  closure: { name },
+                  callback: async () => ({ status: "allowed" }),
+                }),
+              } : {}),
+            },
           }
         : {}),
       execute: defineDurableCallback({
@@ -93,11 +101,34 @@ describe("the catalogue resolver's entries are replay-durable (eve 0.59.0)", () 
 
     const callbacks = validateDurableDynamicToolCallbacks(name, entry, owner(name));
 
-    // The three phases this catalogue uses, each with the only capture that has to survive a
-    // cold start: the tool's name. Anything richer would be a non-serializable capture.
+    // Every phase actually used must survive a cold start with only the tool's name.
+    // Native Telegram has no response authorizer; strict console calls must retain one.
     expect(callbacks.execute?.closure).toEqual({ name });
     expect(callbacks.inputSchema?.closure).toEqual({ name });
     expect(callbacks.approvalRequest?.closure).toEqual({ name });
+    if (exactApproval) expect(callbacks.approvalResponse?.closure).toEqual({ name });
+    else expect(callbacks.approvalResponse).toBeUndefined();
+  });
+
+  it("eve rejects an unstamped response even when every other phase is durable", () => {
+    const name = "fixture_write";
+    const tool = valueOf(name);
+    const entry = defineTool({
+      description: tool.description,
+      inputSchema: defineDurableSchema({
+        closure: { name },
+        schema: (closure) => valueOf(closure.name).inputSchema as Record<string, unknown>,
+      }),
+      approval: {
+        request: defineDurableCallback({ closure: { name }, callback: async () => "user-approval" }),
+        response: async () => ({ status: "allowed" }),
+      },
+      execute: defineDurableCallback({ closure: { name }, callback: async () => ({ ok: true }) }),
+    } as never) as unknown as object;
+
+    expect(() => validateDurableDynamicToolCallbacks(name, entry, owner(name))).toThrow(
+      /callback "approvalResponse" does not have a durable descriptor/u,
+    );
   });
 
   it("the wrapping does not change what the model is handed, or what the approval answers", async () => {
@@ -150,13 +181,15 @@ describe("both role resolvers stamp every phase they use", () => {
     );
 
   for (const role of roles) {
-    it(`${role} routes inputSchema, approval and execute through a durable helper`, () => {
+    it(`${role} stamps request and conditional strict-console response as well as schema and execute`, () => {
       const text = resolver(role);
       expect(text).toMatch(/inputSchema:\s*defineDurableSchema\(/u);
-      expect(text).toMatch(/approval:\s*defineDurableCallback\(/u);
+      expect(text).toMatch(/approval:\s*\{\s*request:\s*defineDurableCallback\(/u);
+      expect(text).toMatch(/const exactApproval = isExactApprovalContext\(ctx\);/u);
+      expect(text).toMatch(/\.\.\.\(exactApproval \? \{\s*response:\s*defineDurableCallback\(/u);
       expect(text).toMatch(/execute:\s*defineDurableCallback\(/u);
       // The closure is the tool NAME and nothing else: the entry object itself carries the
-      // authored schema and two functions, none of which survives `JSON.stringify`.
+      // authored schema and callbacks, none of which survives `JSON.stringify`.
       expect(text).not.toMatch(/closure:\s*\{\s*tool\s*\}/u);
     });
   }
