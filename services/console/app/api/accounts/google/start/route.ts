@@ -1,3 +1,4 @@
+import { withConsoleAdmission } from "../../../../../lib/admission-error";
 import {pool} from '../../../../../lib/db';
 /**
  * POST /api/accounts/google/start — begin the add-Google-account flow.
@@ -14,10 +15,10 @@ import { buildConsentUrl, callbackRedirect, consoleOrigin } from "../../../../..
 
 export const runtime = "nodejs";
 
-export async function POST(req: Request): Promise<Response> {
-  const origin = consoleOrigin();
+async function handlePOST(req: Request): Promise<Response> {
   const email = await verify((await cookies()).get("lares_session")?.value);
   if (!email) return new Response("Not authorised.", { status: 401 });
+  const origin = consoleOrigin();
 
   let form: FormData;
   try {
@@ -65,3 +66,5 @@ export async function POST(req: Request): Promise<Response> {
   });
   return NextResponse.redirect(consentUrl, { status: 303 });
 }
+
+export const POST = withConsoleAdmission(handlePOST);

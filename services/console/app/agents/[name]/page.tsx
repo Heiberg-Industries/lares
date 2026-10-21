@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../../lib/auth";
 import { notFound } from "next/navigation";
 import { Notice, PageHeader } from "@lares/ui/patterns";
 import { listAgents } from "../../../lib/agents";
@@ -15,6 +16,7 @@ export default async function AgentPage({
 }: {
   params: Promise<{ name: string }>;
 }) {
+  await requireConsolePage();
   const { name } = await params;
   let agents;
   try {

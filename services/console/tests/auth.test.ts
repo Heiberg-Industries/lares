@@ -1,108 +1,73 @@
-import { describe, it, expect, beforeAll, vi, afterEach } from "vitest";
-
-// Set env before module import so auth.ts picks up the secret.
-// NODE_ENV is "test" so fail-closed production guards don't fire.
-beforeAll(() => {
-  process.env.CONSOLE_SESSION_SECRET = "test-secret-for-unit";
-  process.env.CONSOLE_ALLOWED_EMAILS = "alice@example.com,bob@example.com";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+const mocks = vi.hoisted(() => ({ lookup: vi.fn(), query: vi.fn(), cookie: vi.fn(), keeper: vi.fn() }));
+vi.mock("@lares/agent-kit/member-store", () => ({ PgMemberStore: class { sessionMember = mocks.lookup } }));
+vi.mock("../lib/db", () => ({ pool: { query: mocks.query } }));
+vi.mock("next/headers", () => ({ cookies: async () => ({ get: mocks.cookie }) }));
+vi.mock("next/navigation", () => ({ redirect: (path: string) => { throw new Error(`redirect:${path}`); } }));
+vi.mock("../lib/keeper-client", () => ({ keeper: mocks.keeper, KeeperRefusedError: class extends Error {}, KeeperUnavailableError: class extends Error {} }));
+import { verify, sessionMember, signedInMember, requireConsolePage, requireConsoleMember, requireMember } from "../lib/auth";
+const owner = { id: "owner-1", organisationId: "org", role: "owner", status: "active", automationMode: "draft-and-ask" };
+beforeEach(() => {
+  vi.stubEnv("AGENT_OWNER_USER_ID", "owner-1");
+  mocks.lookup.mockReset().mockResolvedValue(owner);
+  mocks.query.mockReset().mockResolvedValue({ rows: [{ primary_email: "owner@example.test" }] });
+  mocks.cookie.mockReset().mockReturnValue({ value: "opaque" });
+  mocks.keeper.mockReset();
 });
-
-// Dynamic import so env is set first
-const authModule = () => import("../lib/auth");
-
-describe("sign / verify", () => {
-  it("round-trips an email", async () => {
-    const { sign, verify } = await authModule();
-    const cookie = await sign("alice@example.com");
-    expect(await verify(cookie)).toBe("alice@example.com");
+afterEach(() => vi.unstubAllEnvs());
+describe("current database member and session admission", () => {
+  it("gets the address for legacy transport only after exact stable owner admission", async () => {
+    expect(await verify("opaque")).toBe("owner@example.test");
+    expect(mocks.lookup).toHaveBeenCalledWith("opaque");
+    expect(mocks.query).toHaveBeenCalledWith(expect.stringContaining("id=$1 AND status='active'"), ["owner-1"]);
   });
-
-  it("returns null for a tampered signature", async () => {
-    const { sign, verify } = await authModule();
-    const cookie = await sign("alice@example.com");
-    // Replace the last 3 chars of the sig portion to corrupt it
-    const tampered = cookie.slice(0, -3) + "xxx";
-    expect(await verify(tampered)).toBeNull();
+  it("accepts active members for their own membership, never the legacy global console", async () => {
+    mocks.lookup.mockResolvedValue({ ...owner, id: "second", role: "member" });
+    expect(await signedInMember()).toMatchObject({ id: "second" });
+    expect(await requireMember()).toMatchObject({ id: "second" });
+    expect(await verify("opaque")).toBeNull();
+    await expect(requireConsoleMember()).rejects.toThrow("owner admission required");
+    await expect(requireConsolePage()).rejects.toThrow("redirect:/membership");
+    expect(mocks.query).not.toHaveBeenCalled();
   });
-
-  it("returns null for a tampered body", async () => {
-    const { sign, verify } = await authModule();
-    const cookie = await sign("alice@example.com");
-    // Flip a char in the body portion (before the first dot)
-    const dot = cookie.indexOf(".");
-    const corruptBody = "X" + cookie.slice(1, dot) + cookie.slice(dot);
-    expect(await verify(corruptBody)).toBeNull();
+  it.each([{ id: "second", role: "owner" }, { id: "owner-1", role: "member" }, { id: "owner-1", role: "owner", status: "removed" }])("refuses a different owner, demoted or inactive owner: %s", async changes => {
+    mocks.lookup.mockResolvedValue({ ...owner, ...changes });
+    expect(await verify("opaque")).toBeNull();
+    expect(mocks.query).not.toHaveBeenCalled();
   });
-
-  it("returns null for garbage input", async () => {
-    const { verify } = await authModule();
-    expect(await verify(undefined)).toBeNull();
-    expect(await verify("notacookie")).toBeNull();
-    expect(await verify("")).toBeNull();
+  it("refuses missing configuration instead of widening to all owners", async () => {
+    vi.stubEnv("AGENT_OWNER_USER_ID", "");
+    expect(await verify("opaque")).toBeNull();
   });
-
-  it("returns null when body is missing", async () => {
-    const { verify } = await authModule();
-    expect(await verify(".onlysig")).toBeNull();
+  it("rechecks revocation/removal on every invocation and distinguishes a DB outage", async () => {
+    expect(await verify("opaque")).toBe("owner@example.test");
+    mocks.lookup.mockResolvedValue(undefined);
+    expect(await verify("opaque")).toBeNull();
+    await expect(requireConsolePage()).rejects.toThrow("redirect:/sign-in");
+    mocks.lookup.mockRejectedValue(new Error("database offline"));
+    await expect(sessionMember("opaque")).rejects.toThrow("storage is unavailable");
+    expect(await sessionMember(undefined)).toBeNull();
   });
-
-  it("returns null for an expired token", async () => {
-    const { _signWithExp, verify } = await authModule();
-    // exp = 1 second in the past
-    const pastExp = Math.floor(Date.now() / 1000) - 1;
-    const expiredCookie = await _signWithExp("alice@example.com", pastExp);
-    expect(await verify(expiredCookie)).toBeNull();
+  it("keeps transport address lookup outages unavailable instead of signing out", async () => {
+    mocks.query.mockRejectedValue(new Error("private database error detail"));
+    await expect(verify("opaque")).rejects.toThrow("Console sign-in storage is unavailable. Try again.");
   });
-
-  it("accepts a token that has not yet expired", async () => {
-    const { _signWithExp, verify } = await authModule();
-    // exp = 60 seconds in the future
-    const futureExp = Math.floor(Date.now() / 1000) + 60;
-    const cookie = await _signWithExp("alice@example.com", futureExp);
-    expect(await verify(cookie)).toBe("alice@example.com");
+  it("real inbox and credential routes return unavailable before data reads or keeper calls", async () => {
+    mocks.lookup.mockRejectedValue(new Error("private database detail"));
+    const inbox = await import("../app/api/inbox/route");
+    const credential = await import("../app/api/credentials/notion/route");
+    const responses = [await inbox.GET(new Request("https://console.example.test/api/inbox")), await credential.GET(new Request("https://console.example.test/api/credentials/notion"))];
+    for (const response of responses) {
+      expect(response.status).toBe(503);
+      const text = await response.text();
+      expect(text).toContain("admission-unavailable"); expect(text).not.toContain("private database detail");
+    }
+    expect(mocks.query).not.toHaveBeenCalled(); expect(mocks.keeper).not.toHaveBeenCalled();
   });
-
-  it("returns the email for a valid cookie when the email IS on the allow-list", async () => {
-    // CONSOLE_ALLOWED_EMAILS includes alice@example.com (set in beforeAll)
-    const { sign, verify } = await authModule();
-    const cookie = await sign("alice@example.com");
-    expect(await verify(cookie)).toBe("alice@example.com");
-  });
-
-  it("returns null for a valid cookie when the email is NOT on the allow-list (I2)", async () => {
-    // eve@example.com is a validly-signed, non-expired token but not in the allow-list
-    const { sign, verify } = await authModule();
-    const cookie = await sign("eve@example.com");
-    expect(await verify(cookie)).toBeNull();
-  });
-});
-
-describe("allowed", () => {
-  afterEach(() => vi.unstubAllEnvs());
-
-  it("does not admit anyone without an explicit development allow-list", async () => {
-    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", undefined);
-    const { allowed } = await authModule();
-    expect(allowed("owner@example.com")).toBe(false);
-    expect(allowed("")).toBe(false);
-  });
-
-  it("ignores empty allow-list entries", async () => {
-    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", " , alice@example.com, ");
-    const { allowed } = await authModule();
-    expect(allowed("")).toBe(false);
-    expect(allowed("alice@example.com")).toBe(true);
-  });
-
-  it("returns true for an email in the allow-list", async () => {
-    const { allowed } = await authModule();
-    expect(allowed("alice@example.com")).toBe(true);
-    expect(allowed("bob@example.com")).toBe(true);
-  });
-
-  it("returns false for an email not in the allow-list", async () => {
-    const { allowed } = await authModule();
-    expect(allowed("eve@example.com")).toBe(false);
-    expect(allowed("")).toBe(false);
+  it("does not use allow-listed or provider emails as authority", async () => {
+    vi.stubEnv("CONSOLE_ALLOWED_EMAILS", "attacker@example.test");
+    mocks.lookup.mockResolvedValue(undefined);
+    expect(await verify("legacy-email.signature")).toBeNull();
+    expect(mocks.query).not.toHaveBeenCalled();
   });
 });

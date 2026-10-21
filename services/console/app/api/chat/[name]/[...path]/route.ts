@@ -1,3 +1,4 @@
+import { withConsoleAdmission } from "../../../../../lib/admission-error";
 /**
  * `/api/chat/<agent>/eve/v1/...` — the same-origin prefix eve's browser client is pointed at
  * (`useEveAgent({ host: "/api/chat/<agent>" })`).
@@ -36,5 +37,5 @@ async function handle(request: Request, context: Context): Promise<Response> {
   return forwardChat(request, name, (path ?? []).join("/"), deps);
 }
 
-export const GET = handle;
-export const POST = handle;
+export const GET = withConsoleAdmission(handle);
+export const POST = withConsoleAdmission(handle);

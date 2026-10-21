@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../../lib/auth";
 import Link from "next/link";
 import { getCatalogue } from "../../../lib/signals";
 import { JsonEditor } from "../../../components/JsonEditor";
@@ -5,6 +6,7 @@ import { saveCatalogue } from "../../actions/signals";
 import { PageHeader } from "@lares/ui/patterns";
 export const dynamic = "force-dynamic";
 export default async function CataloguePage() {
+  await requireConsolePage();
   const r = await getCatalogue();
   return (
     <div className="lares-page lares-operational">

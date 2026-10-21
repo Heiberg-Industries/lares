@@ -1,3 +1,4 @@
+import { withConsoleAdmission } from "../../../../../lib/admission-error";
 import {keeper} from '../../../../../lib/keeper-client';
 /**
  * GET /api/accounts/google/callback — finish the add-Google-account flow.
@@ -18,13 +19,12 @@ import { callbackRedirect, consoleOrigin } from "../../../../../lib/account-oaut
 
 export const runtime = "nodejs";
 
-export async function GET(req: Request): Promise<Response> {
-  const url = new URL(req.url);
-  const origin = consoleOrigin(); // configured external origin (not req.url — proxy leaks container host)
-  const fail = (msg: string) => NextResponse.redirect(callbackRedirect(origin, { error: msg }), { status: 303 });
-
+async function handleGET(req: Request): Promise<Response> {
   const sessionEmail = await verify((await cookies()).get("lares_session")?.value);
   if (!sessionEmail) return new Response("Not authorised.", { status: 401 });
+  const url = new URL(req.url);
+  const origin = consoleOrigin();
+  const fail = (msg: string) => NextResponse.redirect(callbackRedirect(origin, { error: msg }), { status: 303 });
 
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
@@ -87,3 +87,5 @@ export async function GET(req: Request): Promise<Response> {
   }
   return NextResponse.redirect(callbackRedirect(origin, { added: emailAddress }), { status: 303 });
 }
+
+export const GET = withConsoleAdmission(handleGET);

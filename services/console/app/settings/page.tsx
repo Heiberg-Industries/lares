@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
 import { SettingsThemeControl } from "../../components/ThemeControl";
@@ -12,6 +13,7 @@ import {
 } from "../../lib/proactivity";
 export const dynamic = "force-dynamic";
 export default async function SettingsPage() {
+  await requireConsolePage();
   const [view, gateway, limit] = await Promise.all([getProactivityView().catch(() => null), getGatewayStatusView(), getAgentLimitView()]);
   const quiet =
     view && !view.errors.length

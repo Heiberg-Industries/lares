@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import { getBackupStatus, type BackupCheckRow, type BackupState } from "../../lib/backup-status";
 import { PageHeader } from "@lares/ui/patterns";
 
@@ -43,6 +44,7 @@ function CheckRow({ label, row, neverPassLabel }: { label: string; row: BackupCh
 }
 
 export default async function BackupPage() {
+  await requireConsolePage();
   const status = await getBackupStatus();
 
   return (

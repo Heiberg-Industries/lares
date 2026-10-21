@@ -6,7 +6,7 @@ import { keeper, KeeperRefusedError } from './keeper-client';
 export type CredentialView = { kind: 'status'; status: CredentialStatus } |
   { kind: 'unavailable' | 'administrator-required' | 'sign-in-required' };
 export async function credentialActor(): Promise<string | null> {
-  try { return await verify((await cookies()).get('lares_session')?.value); } catch { return null; }
+  return await verify((await cookies()).get('lares_session')?.value);
 }
 /** Keeper's explicit root-configured administrator is the sole authority. No provider read. */
 export async function credentialViewFor(actor: string): Promise<CredentialView> {

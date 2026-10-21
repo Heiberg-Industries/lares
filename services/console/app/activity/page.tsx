@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import Link from "next/link";
 import { PageHeader } from "@lares/ui/patterns";
 import { Button } from "@lares/ui/primitives/button";
@@ -10,6 +11,7 @@ export default async function ActivityPage({
 }: {
   searchParams: Promise<{ agent?: string; before?: string }>;
 }) {
+  await requireConsolePage();
   const { agent, before } = await searchParams;
   const events = await getPermissionEvents({ agent, before });
   const next = events.available && events.value.next;

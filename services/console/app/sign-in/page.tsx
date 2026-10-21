@@ -1,3 +1,5 @@
+import { signedInMember, isConsoleOwner } from "../../lib/auth";
+import { redirect } from "next/navigation";
 import { Mark } from "@lares/ui/patterns";
 import { safeNext } from "../../lib/safe-next";
 import styles from "./sign-in.module.css";
@@ -5,13 +7,14 @@ import styles from "./sign-in.module.css";
 export const metadata = { title: "Sign in to Lares" };
 
 const ERRORS: Record<string, string> = {
-  denied: "That Google account is not allowed to use this console. Try a different account.",
-  unverified: "Google says that email address is not verified. Verify it with Google, then try again.",
+  denied: "That account is not allowed to use this console. Ask the owner for an invitation.",
   failed: "Sign-in did not finish. Try again.",
 };
 
 export default async function SignIn({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const q = await searchParams;
+  const member = await signedInMember();
+  if (member) redirect(isConsoleOwner(member) ? safeNext(q.next) : "/membership");
   const next = safeNext(q.next);
   const error = typeof q.error === "string" ? (ERRORS[q.error] ?? ERRORS.failed) : null;
   const signedOut = !error && q["signed-out"] !== undefined;
@@ -48,16 +51,15 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<R
             </svg>
             Continue with Google
           </a>
-          <button type="button" className={styles.button} disabled aria-disabled="true">
+          <a className={styles.button} href={`/api/auth/login?provider=microsoft&next=${encodeURIComponent(next)}`}>
             <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
               <path fill="#F25022" d="M2 2h9.5v9.5H2z" />
               <path fill="#7FBA00" d="M12.5 2H22v9.5h-9.5z" />
               <path fill="#00A4EF" d="M2 12.5h9.5V22H2z" />
               <path fill="#FFB900" d="M12.5 12.5H22V22h-9.5z" />
             </svg>
-            Continue with Microsoft
-            <span className={styles.soon}>Coming soon</span>
-          </button>
+            Continue with Microsoft 365 work account
+          </a>
           <p className={styles.divider} aria-hidden="true">or</p>
           <form aria-describedby="sign-in-soon">
             <fieldset className={styles.email} disabled aria-disabled="true">
@@ -72,7 +74,7 @@ export default async function SignIn({ searchParams }: { searchParams: Promise<R
               <button type="button" className={styles.textButton} disabled aria-disabled="true">Email me a sign-in link</button>
             </fieldset>
           </form>
-          <p className={styles.note} id="sign-in-soon">Email sign-in is coming soon. For now, continue with Google.</p>
+          <p className={styles.note} id="sign-in-soon">Email sign-in is coming soon. Continue with Google or a configured Microsoft 365 work account. Sign-in does not connect your mailbox or calendar.</p>
         </div>
       </main>
     </div>

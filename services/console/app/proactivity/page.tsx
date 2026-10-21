@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../lib/auth";
 import {
   ENGINE, agentLabel, doorLabel, effectiveDnd, effectiveQuietWindow, effectiveSettings,
   foldTodayByDoor, formatInOwnerTz, getProactivityView, reasonLabel, rowFor,
@@ -35,6 +36,7 @@ function Reasons({ rows }: { rows: TodayRowDTO[] }) {
 }
 
 export default async function ProactivityPage() {
+  await requireConsolePage();
   const view = await getProactivityView();
   const { settings, clock } = view;
   const briefLanguage = await readBriefLanguage(view.owner);

@@ -1,3 +1,4 @@
+import { withConsoleAdmission } from "../../../lib/admission-error";
 /**
  * GET/POST /api/notion-proposals — the console's half of the 👍 loop (spec
  * §18.4/§18.6). Session-gated, same as every other mutation surface (see
@@ -24,7 +25,7 @@ async function requireSession(): Promise<string | null> {
   return verify((await cookies()).get("lares_session")?.value);
 }
 
-export async function GET(): Promise<Response> {
+async function handleGET(): Promise<Response> {
   if (!(await requireSession())) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
@@ -43,7 +44,7 @@ function isProposalAction(value: unknown): value is ProposalAction {
   return value === "approve" || value === "reject";
 }
 
-export async function POST(req: Request): Promise<Response> {
+async function handlePOST(req: Request): Promise<Response> {
   if (!(await requireSession())) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
@@ -77,3 +78,7 @@ export async function POST(req: Request): Promise<Response> {
 
   return NextResponse.json({ ok: true });
 }
+
+export const GET = withConsoleAdmission(handleGET);
+
+export const POST = withConsoleAdmission(handlePOST);

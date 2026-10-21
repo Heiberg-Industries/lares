@@ -32,6 +32,7 @@ const main = [
   { href: "/agents", label: "Agents", Icon: UsersRound },
   { href: "/activity", label: "Activity", Icon: History },
   { href: "/integrations", label: "Connections", Icon: Plug },
+  { href: "/members", label: "Members", Icon: UsersRound },
 ];
 const tools = [
   { href: "/deadlines", label: "Deadlines", Icon: CalendarDays },

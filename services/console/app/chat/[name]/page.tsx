@@ -1,3 +1,4 @@
+import { requireConsolePage } from "../../../lib/auth";
 import { listAgents } from "../../../lib/agents";
 import { Chat } from "../../../components/Chat";
 import { creationNotices } from "../../../lib/first-conversation";
@@ -16,6 +17,7 @@ export default async function ChatAgentPage({
   params: Promise<{ name: string }>;
   searchParams: Promise<{ created?: string; backup?: string; reply?: string }>;
 }) {
+  await requireConsolePage();
   const { name } = await params;
   const owner = await verify((await cookies()).get("lares_session")?.value);
   if (!owner) redirect("/api/auth/login");

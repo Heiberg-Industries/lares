@@ -1,20 +1,31 @@
 # Using the console
 
-The console is the web page at your installation's domain. You sign in with Google (the account
-you gave the installer), and the sidebar has everything below. This is a tour of what each page is
-for and what it will and will not do. Installing is in [`install.md`](../install.md).
+The console is the web page at your installation's domain. Sign in with your explicitly linked
+Google or configured Microsoft 365 work identity. This is a tour of the existing owner screens.
+Installing is in [`install.md`](../install.md).
 
 Pages under Settings and Connections are not all in the sidebar. They are reached from the page
 named in brackets.
 
-## Sign-in and sign-out
+## Sign-in, members and sign-out
 
-Opening the console while signed out shows the sign-in page with **Continue with Google**. If you
-were heading for a particular page, you come back to it after signing in. Other options on the
-page (Microsoft, e-mail and password, an e-mail link) are shown greyed out as "Coming soon" and do
-nothing yet. **Sign out** is at the bottom of the sidebar; it lands on the sign-in page with
-"You're signed out". Only the addresses in `CONSOLE_ALLOWED_EMAILS` can sign in
-([`install.md`](../install.md#4-settings-and-secrets)); anyone else sees why in plain words.
+The sign-in page offers **Continue with Google** and **Continue with Microsoft 365 work
+account**. Microsoft requires the owner to configure an organisational tenant and client first.
+Sign-in requests identity only; it does not connect a mailbox or calendar. Email/password and
+email-link sign-in remain unavailable.
+
+The designated existing owner can open **Members** to create one-use invitations, revoke an
+open invitation, remove another member's access or sign out their sessions. Deliver invitation
+links privately. Other active members get only their own **Your membership** page and sign-out
+controls while shared resource access is being integrated. Giving a second member the owner
+role does not open the existing shared console screens or inherit private data.
+
+**Sign out** revokes the current server session before returning to the sign-in page. **Sign
+out everywhere** on the membership page revokes all your sessions. An unavailable membership
+store refuses access and reports an unavailable state; it does not pretend you are signed out.
+Existing installations need explicit provider-identity adoption of their stable owner id; the
+old email allow-list is no longer admission authority. See
+[member admission and setup](../member-authority.md#provider-setup-and-existing-owner-adoption).
 
 ## Home
 

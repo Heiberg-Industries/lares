@@ -70,6 +70,28 @@ export class PgMemberStore {
       throw new MemberStoreError('denied');
     return target;
   }
+  /** Owner-only directory metadata. Never returns identity proofs, token values or hashes. */
+  async listMembers(actorId: string): Promise<{ member: Member; displayName: string; email: string | null }[]> {
+    return this.transaction(async db => {
+      await this.lockOrganisation(db, actorId);
+      const actor = await this.active(db, actorId);
+      if (actor.role !== 'owner') throw new MemberStoreError('denied');
+      const { rows } = await db.query<MemberRow & { display_name: string; primary_email: string | null }>(
+        `SELECT ${columns}, display_name, primary_email FROM users WHERE org_id=$1 ORDER BY created_at,id`, [actor.organisationId]);
+      return rows.map(row => ({ member: view(row), displayName: row.display_name, email: row.primary_email }));
+    });
+  }
+  async listInvitations(actorId: string): Promise<{ id: string; memberId: string; expiresAt: string }[]> {
+    return this.transaction(async db => {
+      await this.lockOrganisation(db, actorId);
+      const actor = await this.active(db, actorId);
+      if (actor.role !== 'owner') throw new MemberStoreError('denied');
+      const { rows } = await db.query<{ id: string; member_id: string; expires_at: Date }>(
+        `SELECT i.id,i.member_id,i.expires_at FROM member_invitations i JOIN users u ON u.id=i.member_id
+         WHERE u.org_id=$1 AND u.status='invited' AND i.used_at IS NULL AND i.revoked_at IS NULL AND i.expires_at>clock_timestamp() ORDER BY i.created_at,i.id`, [actor.organisationId]);
+      return rows.map(row => ({ id: row.id, memberId: row.member_id, expiresAt: row.expires_at.toISOString() }));
+    });
+  }
   async inviteMember(actorId: string, input: { displayName: string; email: string; role: OrgRole; expiresAt: Date }): Promise<{ member: Member; invitationId: string; token: string }> {
     expiry(input.expiresAt);
     const email = input.email.trim().toLowerCase();

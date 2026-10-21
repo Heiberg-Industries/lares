@@ -1,3 +1,4 @@
+vi.mock("../lib/auth", () => ({ requireConsolePage: async () => ({ id: "owner-1" }) }));
 import { describe, it, expect, vi } from "vitest";
 vi.mock("../lib/connections", () => ({ getConnectionRows: vi.fn() }));
 vi.mock("../lib/credentials", () => ({ getCredentialView: async () => ({ kind: 'unavailable' }) }));
