@@ -165,7 +165,7 @@ learning is shown for you to accept.
 and a restore from it was rehearsed within the last 45 days), **Unproven** (verified, but no
 restore ever rehearsed) or **Not protected**, with the checks behind it: the nightly backup verify
 and the monthly restore drill. It runs nothing itself. Switching backups on is
-[`install.sh --backups`](../install.md#9-backups-and-the-restore-drill).
+[`lares backups`](../install.md#9-backups-and-the-restore-drill).
 
 ## Settings
 
