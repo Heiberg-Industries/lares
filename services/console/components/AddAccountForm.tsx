@@ -2,6 +2,15 @@
 import { Button } from "@lares/ui/primitives/button";
 import { Input } from "@lares/ui/primitives/input";
 
+export function PersonalConsentPowerSelect() {
+  return <label className="lares-field-label">Provider permissions
+    <select name="power" defaultValue="read">
+      <option value="read">Read mailbox and calendar</option>
+      <option value="read+mail-send">Read mailbox and calendar, and allow mail sending</option>
+    </select>
+  </label>;
+}
+
 export function AddAccountForm() {
   return (
     <form method="POST" action="/api/accounts/google/start" className="lares-inline-form lares-operational-filter">
@@ -16,6 +25,7 @@ export function AddAccountForm() {
         required
         placeholder="name@domain.com"
       />
+      <PersonalConsentPowerSelect />
       <Button type="submit">
         Connect
       </Button>

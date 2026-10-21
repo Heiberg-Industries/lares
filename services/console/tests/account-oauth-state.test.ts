@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { accountSessionHash, openAccountFlow, sealAccountFlow, type AccountFlow } from "../lib/account-oauth-state";
-const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("opaque-session"),
+const flow: AccountFlow = { power: "read", provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("opaque-session"),
   org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
 beforeEach(() => { process.env.CONSOLE_SESSION_SECRET = "test-consent-secret"; });
 describe("member account flow cookie", () => {
@@ -32,4 +32,14 @@ it("strictly binds provider and work tenant in the authenticated cookie", async 
  expect(await openAccountFlow(await sealAccountFlow(microsoft))).toEqual(microsoft);
  for (const changed of [{ provider: undefined }, { provider: "other" }, { provider: "microsoft" }, { provider: "google", tenantId: microsoft.tenantId }, { provider: "microsoft", tenantId: "consumers" }])
    await expect(sealAccountFlow({ ...flow, ...changed } as never)).rejects.toThrow();
+});
+
+it("authenticates closed permission intent and rejects absent, unknown or extra permissions", async () => {
+  const send: AccountFlow = { ...flow, power: "read+mail-send" };
+  expect(await openAccountFlow(await sealAccountFlow(send))).toEqual(send);
+  for (const power of [undefined, null, "send", "read+calendar-write", ["read"], { scope: "Mail.Send" }])
+    await expect(sealAccountFlow({ ...flow, power } as never)).rejects.toThrow();
+  const sealed = await sealAccountFlow(flow);
+  const pieces = sealed.split("."); pieces[3] = `${pieces[3][0] === "a" ? "b" : "a"}${pieces[3].slice(1)}`;
+  expect(await openAccountFlow(pieces.join("."))).toBeNull();
 });

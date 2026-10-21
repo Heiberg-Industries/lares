@@ -36,8 +36,10 @@ export type TrustedPersonalActionEnvelope = z.infer<typeof prepareSchema>;
 const approvalReferenceSchema = z.strictObject({ actionId: z.uuid(), payloadHash: hash,
   approvalCallId: id, requestId: id, resolvedByMemberId: id, selection: selectionSchema });
 export type PersonalActionApprovedReference = z.infer<typeof approvalReferenceSchema>;
+const receiptId = z.string().min(1).max(256).regex(/^[A-Za-z0-9._:@/+=-]+$/);
 const receiptSchema = z.discriminatedUnion('state', [
-  z.strictObject({ state: z.literal('accepted'), providerReceiptId: z.string().min(1).max(256).regex(/^[A-Za-z0-9._:@/+=-]+$/) }),
+  z.strictObject({ state: z.literal('accepted'), providerReceiptId: receiptId.optional(), providerStatus: z.literal(202).optional() })
+    .refine(r => r.providerReceiptId !== undefined || r.providerStatus === 202),
   z.strictObject({ state: z.literal('rejected'), code: z.enum(['provider_refused','invalid_recipient','rate_limited']) }),
   z.strictObject({ state: z.literal('not_dispatched'), code: z.enum(['authority_changed','expired','policy_refused','credential_unavailable']) }),
   z.strictObject({ state: z.literal('unknown'), code: z.enum(['transport_uncertain','process_interrupted']) }),
@@ -184,20 +186,35 @@ export class PgPersonalActionStore {
     const p=this.permits.get(permit); if(!p||p.consumed) refuse(); p.consumed=true;
     return {actionId:p.row.id,attemptId:p.row.attempt_id!,selection:selection(p.row),payload:structuredClone(p.payload)};
   }
-  async recordOutcome(permit:PersonalActionClaimPermit,input:PersonalActionReceipt):Promise<PersonalActionOutcome> {
+  /** Caller already holds org/member/account/resource/custody locks. Action precedes approval;
+   * call again after every later binding/policy lock wait, immediately before consumption. */
+  async validateClaimInTransaction(permit:PersonalActionClaimPermit,db:PoolClient):Promise<void> {
+    const p=this.permits.get(permit); if(!p||p.consumed) refuse();
+    const r=await this.row(db,p.row.id,p.row.actor_member_id);
+    if(r.state!=='claimed'||r.attempt_id!==p.row.attempt_id||!same(selection(r),selection(p.row))||
+      r.payload_hash!==p.row.payload_hash||!same(this.payload(r),p.payload)) refuse();
+    await this.approval(db,r,p.row.approval_call_id!,p.row.approval_request_id!,p.row.actor_member_id);
+  }
+  private settlement(permit:PersonalActionClaimPermit,input:PersonalActionReceipt):(db:PoolClient)=>Promise<PersonalActionOutcome> {
     const receipt=receiptSchema.parse(input),p=this.permits.get(permit); if(!p) refuse();
-    // Starting settlement permanently ends dispatch eligibility, even if connection, rollback or
-    // COMMIT acknowledgement fails. Receipt recording can still be retried with this same permit.
+    // Burn synchronously BEFORE either the standalone or caller-owned path can await anything.
     p.consumed=true;
-    const result=await this.transaction(async db=>{
+    return async db=>{
       const r=await this.row(db,p.row.id,p.row.actor_member_id);
       if(r.attempt_id!==p.row.attempt_id) refuse();
       if(r.state!=='claimed') { if(!same(r.receipt,receipt)) refuse(); return outcome(r); }
       const {rows}=await db.query<Row>(`UPDATE personal_actions SET state=$2,receipt=$3::jsonb,completed_at=clock_timestamp()
         WHERE id=$1 AND state='claimed' AND attempt_id=$4 RETURNING *`,[r.id,receipt.state,JSON.stringify(receipt),r.attempt_id]);
       if(!rows[0]) refuse(); return outcome(rows[0]);
-    });
-    return result;
+    };
+  }
+  async recordOutcome(permit:PersonalActionClaimPermit,input:PersonalActionReceipt):Promise<PersonalActionOutcome> {
+    return this.transaction(this.settlement(permit,input));
+  }
+  /** Snapshot only: caller MUST commit before exposing acceptance. Rollback/uncertain commit
+   * leaves the durable claim nonretryable; never return this snapshot as proof of settlement. */
+  async recordOutcomeInTransaction(permit:PersonalActionClaimPermit,input:PersonalActionReceipt,db:PoolClient):Promise<PersonalActionOutcome> {
+    return this.settlement(permit,input)(db);
   }
   async readOutcome(actorMemberId:string,actionId:string):Promise<PersonalActionOutcome> {
     return this.transaction(async db=>{

@@ -11,7 +11,7 @@ import { MICROSOFT_DATA_SCOPES, microsoftDataSettings, startMicrosoftAccountCons
 import { accountSessionHash, type AccountFlow } from "../lib/account-oauth-state";
 const tenantId = "11111111-2222-4333-8444-555555555555", oid = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
 const issuer = `https://login.microsoftonline.com/${tenantId}/v2.0`;
-const flow: AccountFlow = { provider: "microsoft", tenantId, org: "microsoft", intent: "new", memberId: "member-a",
+const flow: AccountFlow = { power: "read", provider: "microsoft", tenantId, org: "microsoft", intent: "new", memberId: "member-a",
   sessionHash: accountSessionHash("session"), clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
 const callback = () => new URL("http://localhost:3000/api/accounts/microsoft/callback?code=code&state=state");
 let claims: Record<string,unknown>, tokenResponse: Record<string,unknown>, me: Record<string,unknown>, mailbox: Record<string,unknown>, calendar: Record<string,unknown>, badSignature: boolean, graphStatus: number;
@@ -78,7 +78,7 @@ describe("Microsoft work data consent with real OIDC and Graph SDK libraries", (
     claims = changed; await expect(finishMicrosoftAccountConsent(callback(), flow)).rejects.toThrow(); expect(reads).toEqual([]);
   });
   it("requires a valid provider signature", async () => { badSignature = true; await expect(finishMicrosoftAccountConsent(callback(), flow)).rejects.toThrow(); expect(reads).toEqual([]); });
-  it.each([{ refresh_token: undefined }, { scope: undefined }, { scope: "openid User.Read Mail.Read" }, { scope: "User.Read Calendars.Read" }, { scope: "User.Read Mail.Read Calendars.Read Mail.Send" }])("refuses incomplete actual consent %s", async changed => {
+  it.each([{ refresh_token: undefined }, { scope: undefined }, { scope: "openid User.Read Mail.Read" }, { scope: "User.Read Calendars.Read" }, { scope: "User.Read Mail.Read Calendars.Read Mail.Send.Shared" }])("refuses incomplete actual consent %s", async changed => {
     tokenResponse = changed; await expect(finishMicrosoftAccountConsent(callback(), flow)).rejects.toThrow(); expect(reads).toEqual([]);
   });
   it("accepts fully qualified granted Graph scopes", async () => { tokenResponse = { scope: "https://graph.microsoft.com/User.Read https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Calendars.Read" }; await expect(finishMicrosoftAccountConsent(callback(), flow)).resolves.toBeDefined(); });
@@ -101,6 +101,24 @@ describe("Microsoft work data consent with real OIDC and Graph SDK libraries", (
   it.each([{ provider: "google" }, { tenantId: "99999999-2222-4333-8444-555555555555" }, { clientId: "another-client" }, { org: "request-org" }])("refuses changed flow configuration %s before provider calls", async changed => {
     await expect(finishMicrosoftAccountConsent(callback(), { ...flow, ...changed } as AccountFlow)).rejects.toThrow(); expect(fetch).not.toHaveBeenCalled();
   });
+});
+
+
+it("requests sending only in the explicitly selected profile and binds it in flow", async () => {
+  const result = await startMicrosoftAccountConsent({ memberId: "member-a", session: "session", power: "read+mail-send" });
+  expect(result.flow.power).toBe("read+mail-send"); expect(result.url.searchParams.get("scope")).toBe([...MICROSOFT_DATA_SCOPES, "Mail.Send"].join(" "));
+});
+it("requires selected send permission before resource verification", async () => {
+  await expect(finishMicrosoftAccountConsent(callback(), { ...flow, power: "read+mail-send" })).rejects.toThrow(); expect(reads).toEqual([]);
+});
+it.each(["read", "read+mail-send"] as const)("preserves known broader actual grant for %s", async power => {
+  tokenResponse = { scope: "openid offline_access profile email User.Read Mail.Read Calendars.Read https://graph.microsoft.com/Mail.Send" };
+  const result = await finishMicrosoftAccountConsent(callback(), { ...flow, power });
+  expect(result.material.scopes).toHaveLength(8); expect(result.material.scopes).toContain("https://graph.microsoft.com/Mail.Send");
+});
+it.each(["Mail.Read.Shared", "Mail.Send.Shared", ".default", "Mail.ReadWrite", "https://untrusted.invalid/Mail.Send"])("refuses unknown/shared/application grant %s before Graph", async scope => {
+  tokenResponse = { scope: `User.Read Mail.Read Calendars.Read ${scope}` };
+  await expect(finishMicrosoftAccountConsent(callback(), flow)).rejects.toThrow(); expect(reads).toEqual([]);
 });
 
 describe("verified Microsoft consent through real shared PostgreSQL custody", () => {
