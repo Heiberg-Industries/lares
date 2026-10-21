@@ -1,3 +1,6 @@
+import { randomBytes } from "node:crypto";
+import { requireConsoleSessionBinding, CONSOLE_MEMBER_ID_HEADER, CONSOLE_ADMISSION_HEADER, CONSOLE_PURPOSE_HEADER } from "@lares/agent-kit/console-turn-authority";
+import type { Member } from "@lares/agent-kit/authority-contract";
 /**
  * "Waiting on you" — everything the agents have put in front of the owner and are waiting for an
  * answer on, whichever conversation it came from (Telegram, Slack or web chat), in one list.
@@ -112,6 +115,7 @@ export const APPROVED_PENDING =
   "Approved. The agent will now carry out the action; its reply appears in the original conversation.";
 
 export interface WaitingDeps {
+  signedInMember(): Promise<Member | null>;
   query(sql: string, values: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
   fetch: typeof fetch;
   /** The agents' route password, or undefined when none is mounted. Never logged. */
@@ -304,12 +308,31 @@ const OUTCOME_TAIL = -500;
  * (eve's sessions doc: "A later structured inputResponses answer keyed by its requestId still
  * resumes the original tool call, even after intervening turns"), so it can sit anywhere.
  */
+/** Recheck a bound console audience for every stream/decision. Native conversations retain
+ * their existing applied-owner checks and get resolver metadata, never a fabricated binding. */
+async function waitingHeaders(agent: OwnedAgent, sessionId: string, member: string, door: string, purpose: "read" | "resolver", deps: WaitingDeps): Promise<Record<string,string>> {
+  const stable = await deps.signedInMember();
+  if (!stable) throw new AgentReadError("refused");
+  const {rows} = await deps.query("SELECT admission_nonce FROM console_session_bindings WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3",[agent.name,agent.incarnation,sessionId]);
+  let nonce: string;
+  let requestPurpose: string = purpose;
+  if (rows.length) {
+    const binding = await requireConsoleSessionBinding({agent:agent.name,incarnation:agent.incarnation,sessionId,memberId:stable.id},deps);
+    nonce = binding.admissionNonce;
+  } else {
+    if (!["slack","telegram"].includes(door)) throw new AgentReadError("refused");
+    nonce = randomBytes(32).toString("base64url");
+    requestPurpose = `legacy-${purpose}`;
+  }
+  return {[MEMBER_HEADER]:member,[CONSOLE_MEMBER_ID_HEADER]:stable.id,[CONSOLE_ADMISSION_HEADER]:nonce,[CONSOLE_PURPOSE_HEADER]:requestPurpose};
+}
+
 async function sessionEvents(
   agent: OwnedAgent,
   sessionId: string,
   password: string,
   deps: WaitingDeps,
-  opts: { startIndex?: number; signal?: AbortSignal } = {},
+  opts: { member: string; door: string; startIndex?: number; signal?: AbortSignal },
 ): Promise<unknown[]> {
   const signal = opts.signal ? AbortSignal.any([opts.signal, AbortSignal.timeout(READ_TIMEOUT_MS)]) : AbortSignal.timeout(READ_TIMEOUT_MS);
   const start = opts.startIndex === undefined ? "" : `&startIndex=${opts.startIndex}`;
@@ -317,7 +340,7 @@ async function sessionEvents(
   try {
     const response = await deps.fetch(
       `http://${agent.address}:3000/eve/v1/session/${sessionId}/stream?includeTailIndex=1${start}`,
-      { method: "GET", headers: { authorization: basicAuth(password), accept: "application/x-ndjson" }, redirect: "error", signal },
+      { method: "GET", headers: { authorization: basicAuth(password), accept: "application/x-ndjson", ...await waitingHeaders(agent,sessionId,opts.member,opts.door,"read",deps) }, redirect: "error", signal },
     );
     if (response.status === 404) {
       await response.body?.cancel().catch(() => {});
@@ -507,7 +530,7 @@ const approvals: WaitingSource = {
         await eachLimited(live, 6, async (conversation) => {
           if (failed || signal.aborted) return;
           try {
-            const { pending } = readApprovals(await sessionEvents(agent, conversation.sessionId, password, deps, { signal }));
+            const { pending } = readApprovals(await sessionEvents(agent, conversation.sessionId, password, deps, { signal, member, door:conversation.door }));
             for (const approval of pending) items.push(approvalItem(agent, conversation, approval, now));
           } catch (error) {
             if (failed) return;
@@ -562,7 +585,7 @@ const approvals: WaitingSource = {
     // request that is no longer pending would reach the agent as a stray message, so it is not sent.
     let state: ReturnType<typeof readApprovals>;
     try {
-      state = readApprovals(await sessionEvents(agent, sessionId, password, deps));
+      state = readApprovals(await sessionEvents(agent, sessionId, password, deps, {member,door:conversation.door}));
     } catch {
       return { ok: false, reason: "unavailable", message: `${agent.name} did not answer. Nothing was sent; try again in a moment.` };
     }
@@ -583,7 +606,7 @@ const approvals: WaitingSource = {
     try {
       response = await deps.fetch(`http://${agent.address}:3000/eve/v1/session/${sessionId}`, {
         method: "POST",
-        headers: { authorization: basicAuth(password), [MEMBER_HEADER]: member, "content-type": "application/json" },
+        headers: { authorization: basicAuth(password), ...await waitingHeaders(agent,sessionId,member,conversation.door,"resolver",deps), "content-type": "application/json" },
         body: JSON.stringify({ inputResponses: [{ requestId, optionId: actionId }] }),
         redirect: "error",
         signal: AbortSignal.timeout(READ_TIMEOUT_MS),
@@ -602,7 +625,7 @@ const approvals: WaitingSource = {
       await deps.sleep(750);
       let seen: ReturnType<typeof readApprovals>;
       try {
-        seen = readApprovals(await sessionEvents(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL }));
+        seen = readApprovals(await sessionEvents(agent, sessionId, password, deps, { startIndex: OUTCOME_TAIL, member, door:conversation.door }));
       } catch {
         break;
       }
@@ -621,6 +644,9 @@ const approvals: WaitingSource = {
           message: `Your approval arrived, but the action did not go through${result.error ? `: ${result.error}` : "."}`,
         };
       }
+    }
+    if (approved && conversation.door !== "slack" && conversation.door !== "telegram") {
+      return {ok:false,reason:"action-failed",message:"Your approval arrived, but this conversation cannot resume the original action authority yet. Nothing is confirmed as carried out."};
     }
     if (approved) {
       return { ok: true, outcome: "approved", message: APPROVED_PENDING };

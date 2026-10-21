@@ -80,8 +80,14 @@ function fake(opts: {
   const atlas = opts.atlas ?? [];
   const sessions = opts.sessions ?? { example: [{ session_id: "wrun_tg", door: "telegram" }] };
   const deps: WaitingDeps = {
+    signedInMember: async () => ({id:"owner-id",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}),
     query: async (sql, values) => {
       queries.push({ sql, values });
+      if (sql.includes("console_session_bindings")) {
+        const session = sessions[String(values[0])]?.find(s=>s.session_id === values[2]);
+        if (!session || ["slack","telegram"].includes(session.door)) return {rows:[]};
+        return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:"owner-id",admission_nonce:"a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1}]};
+      }
       if (sql.includes("agent_door_connections")) return { rows: agents.filter((a) => values[0] === null || a.name === values[0]) };
       if (sql.includes("agent_conversations")) {
         const mine = sessions[values[0] as string] ?? [];
@@ -109,7 +115,8 @@ function fake(opts: {
       const stream = /\/eve\/v1\/session\/([A-Za-z0-9_-]+)\/stream\?includeTailIndex=1(&startIndex=-?\d+)?$/.exec(url);
       if (init?.method === "GET" && stream) {
         streamUrls.push(url);
-        expect(headers.get("x-lares-member")).toBeNull();
+        expect(headers.get("x-lares-member-id")).toBe("owner-id");
+        expect(["read","legacy-read"]).toContain(headers.get("x-lares-purpose"));
         const events = streams[stream[1]!];
         if (events === undefined) return new Response("Session not found", { status: 404 });
         return new Response(events.map((e) => JSON.stringify(e)).join("\n") + "\n\n", { status: 200 });
@@ -573,4 +580,13 @@ describe("proposals on the Waiting page", () => {
     expect(await decideWaiting(OWNER, itemId("proposal", ["other", "1"]), "approve", f.deps)).toMatchObject({ ok: false, reason: "gone" });
     expect(await decideWaiting(OWNER, itemId("proposal", ["notion", "x"]), "approve", f.deps)).toMatchObject({ ok: false, reason: "gone" });
   });
+});
+
+
+it("native Waiting approval keeps stable resolver separate without creating a private binding",async()=>{
+  const f=fake({streams:{wrun_tg:[asked("req1","Send reply","2026-10-15T11:00:00.000Z")]}});
+  const result=await decideWaiting(OWNER,itemId("approval",["example","wrun_tg","req1"]),"approve",f.deps);
+  expect(result.ok).toBe(true);expect(f.posts).toHaveLength(1);
+  expect(f.queries.every(({sql})=>!sql.includes("INSERT INTO console_session_bindings"))).toBe(true);
+  for(const post of f.posts){expect(post.headers.get("x-lares-member-id")).toBe("owner-id");expect(post.headers.get("x-lares-purpose")).toBe("legacy-resolver");}
 });

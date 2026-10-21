@@ -11,7 +11,7 @@ import { withConsoleAdmission } from "../../../../../lib/admission-error";
  */
 import { cookies } from "next/headers";
 import { pool } from "../../../../../lib/db";
-import { verify } from "../../../../../lib/auth";
+import { verify, signedInMember } from "../../../../../lib/auth";
 import { readSecret } from "../../../../../lib/secrets";
 import { forwardChat, type ChatDeps } from "../../../../../lib/chat-proxy";
 
@@ -27,6 +27,7 @@ const deps: ChatDeps = {
   },
   fetch,
   routePassword: () => readSecret("EVE_ROUTE_PASSWORD"),
+  signedInMember,
   signedInEmail: async () => verify((await cookies()).get("lares_session")?.value),
 };
 

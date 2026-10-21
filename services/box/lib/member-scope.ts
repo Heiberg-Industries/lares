@@ -135,6 +135,7 @@ const BOX = "services/box/sql";
 const DREAM_STORE = "services/chief-of-staff/lib/dream/store.ts (runtime DDL)";
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
+  { table: "console_session_bindings", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/013_console_turn_authority.sql` },
   { table: "connected_accounts", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/008_connected_accounts.sql` },
   { table: "connected_resource_bindings", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/008_connected_accounts.sql` },
 

@@ -1,3 +1,4 @@
+import { guardConsoleToolContext } from "@lares/agent-kit/console-turn-authority";
 /**
  * The approver re-check every gated tool calls.
  *
@@ -141,6 +142,7 @@ export async function assertApproval(
   toolName: string,
   input: unknown,
 ): Promise<void> {
+  await guardConsoleToolContext(ctx);
   assertApprover(approverFrom(ctx?.session?.auth));
   await assertApprovedCall(approvalLedger(), { callId: callIdFrom(ctx), toolName, input });
 }

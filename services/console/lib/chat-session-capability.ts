@@ -12,7 +12,7 @@ function cookieName(sessionId: string): string {
 
 function signature(secret: string, member: string, agent: string, incarnation: string, sessionId: string): string {
   return createHmac("sha256", secret)
-    .update(["lares-chat-v1", member.toLowerCase(), agent, incarnation, sessionId].join("\0"))
+    .update(["lares-chat-v2", member, agent, incarnation, sessionId].join("\0"))
     .digest("base64url");
 }
 

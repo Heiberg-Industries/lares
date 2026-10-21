@@ -37,7 +37,10 @@ const deps = (
   password: string | null = PASSWORD,
   email: string | null = "owner@example.invalid",
 ) => ({
-  query: vi.fn<ChatDeps["query"]>(async () => ({ rows: value ? [value as Record<string, unknown>] : [] })),
+  query: vi.fn<ChatDeps["query"]>(async (sql,values) => {
+    if (sql.includes("console_session_bindings")) return {rows:[{agent:values[0],incarnation:values[1],session_id:values[2],member_id:values[3],admission_nonce:values[4] ?? "a".repeat(43),place_id:`console:${values[0]}:${values[1]}:${values[2]}`,audience_revision:1,policy_revision:1}]};
+    return {rows:value ? [value as Record<string,unknown>] : []};
+  }),
   fetch: vi.fn<typeof fetch>(async () =>
     new Response('{"ok":true,"sessionId":"wrun_A","status":"accepted"}', {
       status: 200,
@@ -45,6 +48,7 @@ const deps = (
     }),
   ),
   routePassword: vi.fn<ChatDeps["routePassword"]>(() => password ?? undefined),
+  signedInMember: vi.fn<ChatDeps["signedInMember"]>(async () => email ? ({id:email === "owner@example.invalid" ? "Owner-ID" : "Other-ID",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"}) : null),
   signedInEmail: vi.fn<ChatDeps["signedInEmail"]>(async () => email),
 });
 
@@ -56,7 +60,7 @@ const post = (body = '{"message":"hello"}', signal?: AbortSignal) =>
     ...(signal ? { signal } : {}),
   });
 
-const capability = (member = "owner@example.invalid", agent = "helper", incarnation = row.incarnation) =>
+const capability = (member = "Owner-ID", agent = "helper", incarnation = row.incarnation) =>
   chatSessionCapabilityCookie(post(), PASSWORD, member, agent, incarnation, "wrun_A").split(";")[0]!;
 
 const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
@@ -418,7 +422,60 @@ describe("the member the console vouches for", () => {
       expect(door, role).toMatch(new RegExp(`MEMBER_HEADER\\s*=\\s*"${MEMBER_HEADER}"`));
       // And it is read only after the credential has been verified — the header appears inside the
       // `result.ok` branch, never before it.
-      expect(door, role).toMatch(/if \(result\.ok\) return withConsoleMember\(result\.sessionAuth, request\.headers\.get\(MEMBER_HEADER\)\)/);
+      expect(door, role).toMatch(/if \(result\.ok\) \{\s+const legacy = withConsoleMember\(result\.sessionAuth, request\.headers\.get\(MEMBER_HEADER\)\)/);
     }
+  });
+});
+
+
+describe("stable console session binding", () => {
+  it("drops forged stable member, nonce and purpose headers and binds before issuing capability", async () => {
+    const d = deps();
+    const request = post();
+    request.headers.set("x-lares-member-id","attacker");
+    request.headers.set("x-lares-admission","forged");
+    request.headers.set("x-lares-purpose","resolver");
+    const response = await forwardChat(request,"helper","eve/v1/session",d);
+    expect(response.status).toBe(200);
+    const headers = d.fetch.mock.calls[0]![1]!.headers as Headers;
+    expect(headers.get("x-lares-member-id")).toBe("Owner-ID");
+    expect(headers.get("x-lares-admission")).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(headers.get("x-lares-purpose")).toBe("human");
+    expect(d.query.mock.calls.some(([sql])=>sql.includes("INSERT INTO console_session_bindings"))).toBe(true);
+    expect(response.headers.get("set-cookie")).toContain("HttpOnly");
+  });
+  it("message-free creates bind the returned ID; storage failure issues no capability", async () => {
+    const d = deps();
+    expect((await forwardChat(post('{}'),"helper","eve/v1/session",d)).headers.get("set-cookie")).toContain("HttpOnly");
+    d.query.mockImplementation(async(sql)=>{if(sql.includes("console_session_bindings"))throw new Error("binding unavailable");return {rows:[row]};});
+    const response = await forwardChat(post('{}'),"helper","eve/v1/session",d);
+    expect(response.status).toBe(502);
+    expect(response.headers.has("set-cookie")).toBe(false);
+  });
+  it("rejects mixed messages and approval replies; approval-only replies carry resolver purpose", async () => {
+    const d = deps();
+    const path = "eve/v1/session/wrun_A";
+    const mixed = sessionRequest(path,"POST");
+    const request = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({message:"hello",inputResponses:[]})});
+    expect((await forwardChat(request,"helper",path,d)).status).toBe(400);
+    expect(d.fetch).not.toHaveBeenCalled();
+    const resolver = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({inputResponses:[]})});
+    expect((await forwardChat(resolver,"helper",path,d)).status).toBe(200);
+    expect((d.fetch.mock.calls[0]![1]!.headers as Headers).get("x-lares-purpose")).toBe("resolver");
+  });
+  it("rechecks bindings before every stream and control operation", async () => {
+    for(const suffix of ["stream","cancel","clear","compact","reset"]){
+      const d = deps();
+      d.query.mockImplementation(async(sql)=>({rows:sql.includes("console_session_bindings")?[]:[row]}));
+      const path = `eve/v1/session/wrun_A/${suffix}`;
+      expect((await forwardChat(sessionRequest(path,suffix==="stream"?"GET":"POST"),"helper",path,d)).status).toBe(502);
+      expect(d.fetch).not.toHaveBeenCalled();
+    }
+  });
+  it("stable member capability IDs remain case-sensitive", async () => {
+    const d=deps();
+    d.signedInMember.mockResolvedValue({id:"owner-id",organisationId:"org",role:"owner",status:"active",automationMode:"draft-and-ask"});
+    const path="eve/v1/session/wrun_A/stream";
+    expect((await forwardChat(sessionRequest(path),"helper",path,d)).status).toBe(403);
   });
 });

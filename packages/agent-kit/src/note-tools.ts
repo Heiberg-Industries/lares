@@ -1,3 +1,4 @@
+import { hasConsoleTurnAuthorityTag, requireConsoleTurnAuthority, type ConsoleAuthorityContext } from "./console-turn-authority.js";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -151,6 +152,10 @@ export async function readerForTurn(
  *  answer shape these tools have always had. Reusing that path — not inventing a second,
  *  returned-object refusal shape — is deliberate. */
 async function readerFor(store: StoreName, ctx: { session?: { auth?: { current?: unknown } | null } }): Promise<Reader | undefined> {
+  if (hasConsoleTurnAuthorityTag(ctx)) {
+    const authority = await requireConsoleTurnAuthority(ctx as ConsoleAuthorityContext);
+    return {userId:authority.actingMemberId!,store};
+  }
   const speaker = speakerFromAuth(ctx.session?.auth);
   return readerForTurn(speaker, store, process.env, (system, alias) => resolveUser(getPool(), system, alias));
 }
@@ -298,7 +303,8 @@ export function listTool(deps?: NoteToolDeps) {
     // than a silent one. Re-check this call specifically before a second real member is
     // ever seated.
     async execute({ area }, ctx) {
-      await storeForGrantedArea(area, deps, ctx);
+      const store = await storeForGrantedArea(area, deps, ctx);
+      await readerFor(store, ctx);
       const notes = listNotes(storeRootForArea(area));
       return { notes, files: notes.length };
     },
