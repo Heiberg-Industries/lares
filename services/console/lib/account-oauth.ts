@@ -24,7 +24,7 @@ async function configuration(org: string, expectedClientId?: string) {
 }
 export async function startAccountConsent(args: { memberId: string; session: string; org: string; loginHint?: string; update?: AccountUpdate }) {
   const { config, settings } = await configuration(args.org);
-  const common = { memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
+  const common = { provider: "google" as const, memberId: args.memberId, sessionHash: accountSessionHash(args.session), org: args.org,
     clientId: settings.clientId, state: oidc.randomState(), nonce: oidc.randomNonce(), verifier: oidc.randomPKCECodeVerifier() };
   const flow: AccountFlow = args.update ? { ...common, intent: "reconnect", update: { ...args.update } } : { ...common, intent: "new" };
   const url = oidc.buildAuthorizationUrl(config, { redirect_uri: accountRedirect(), response_type: "code",
@@ -35,6 +35,7 @@ export async function startAccountConsent(args: { memberId: string; session: str
 }
 /** All resources are read through the same verified grant. No provider email links a member. */
 export async function finishAccountConsent(url: URL, flow: AccountFlow) {
+  if (flow.provider !== "google") throw new Error("Consent provider refused");
   const { config, settings } = await configuration(flow.org, flow.clientId);
   const tokens = await oidc.authorizationCodeGrant(config, url, { pkceCodeVerifier: flow.verifier,
     expectedState: flow.state, expectedNonce: flow.nonce, idTokenExpected: true });

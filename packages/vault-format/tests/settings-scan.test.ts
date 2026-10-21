@@ -88,7 +88,8 @@ describe("the settings list and the code agree", () => {
     // (three values plus their *_FILE halves), two newly used Google *_CONSOLE_FILE
     // halves, and CONSOLE_ALLOWED_EMAILS now read only through the roles' ENV_VAR_FOR.
     // All use existing required/readSecret or ENV_VAR_FOR helpers, not new exemptions.
-    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(46);
+    // Microsoft data consent adds six file-first settings through the existing readSecret helper.
+    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(48);
     for (const [name, how] of Object.entries(READ_INDIRECTLY)) {
       expect(SETTING_NAMES.has(name), name).toBe(true);
       expect(how.length, name).toBeGreaterThan(10);

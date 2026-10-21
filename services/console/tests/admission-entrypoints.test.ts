@@ -71,14 +71,19 @@ describe("all console member entry points guard before reading data", () => {
       });
       continue;
     }
-    if (path === "api/accounts/google/start/route.ts" || path === "api/accounts/google/callback/route.ts") {
+    const consentProvider = /^api\/accounts\/(google|microsoft)\/(?:start|callback)\/route\.ts$/.exec(path)?.[1];
+    if (consentProvider) {
       it(`consent ${path} checks the current session before account or provider work`, () => {
         const source = readFileSync(file, "utf8");
         const admission = source.indexOf("await sessionMember(session)");
         expect(admission).toBeGreaterThan(0);
         const refusal = path.includes("/start/") ? source.indexOf("if (!member || !session)") : source.indexOf("if (!session || !member || !flow");
         expect(refusal).toBeGreaterThan(admission);
-        for (const operation of ["new PgAccountStore(", "await store.beginUpdate(", "await finishAccountConsent(", "await startAccountConsent("]) {
+        const consentCall = path.includes("/start/")
+          ? consentProvider === "google" ? "await startAccountConsent(" : "await startMicrosoftAccountConsent("
+          : consentProvider === "google" ? "await finishAccountConsent(" : "await finishMicrosoftAccountConsent(";
+        expect(source.indexOf(consentCall), "provider work must follow current-session refusal").toBeGreaterThan(refusal);
+        for (const operation of ["new PgAccountStore(", "await store.beginUpdate(", "await store.read("]) {
           const position = source.indexOf(operation);
           if (position !== -1) expect(position, operation).toBeGreaterThan(refusal);
         }

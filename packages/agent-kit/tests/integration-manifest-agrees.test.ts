@@ -10,8 +10,8 @@ const ROOT = join(import.meta.dirname, "..", "..", "..");
 const manifests = loadIntegrationManifests(join(ROOT, "integrations"));
 
 describe("a manifest and the registries it will generate", () => {
-  it("ships exactly the three integrations that sit on an SDK", () => {
-    expect(manifests.map((m) => m.id).sort()).toEqual(["google", "notion", "slack"]);
+  it("ships the declared integrations that sit on an SDK", () => {
+    expect(manifests.map((m) => m.id).sort()).toEqual(["google", "microsoft", "notion", "slack"]);
   });
 
   it("names only capabilities the fleet knows, and agrees with each one's declared hosts", () => {

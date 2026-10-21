@@ -8,7 +8,7 @@ import { GOOGLE_SCOPES } from "../lib/accounts";
 import { startAccountConsent, finishAccountConsent, callbackRedirect } from "../lib/account-oauth";
 import { accountSessionHash, type AccountFlow } from "../lib/account-oauth-state";
 const issuer = "https://accounts.google.com";
-const flow: AccountFlow = { intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
+const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "v".repeat(43) };
 let claims: Record<string, unknown>, response: Record<string, unknown>, badSignature: boolean;
 beforeEach(async () => {
   vi.clearAllMocks();

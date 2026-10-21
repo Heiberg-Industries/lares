@@ -14,7 +14,7 @@ vi.mock("../lib/account-oauth", () => ({ consoleOrigin: () => "https://console.e
 import { ConsoleAdmissionUnavailableError } from "../lib/admission-error";
 import { GET } from "../app/api/accounts/google/callback/route";
 import { POST } from "../app/api/accounts/google/start/route";
-const flow: AccountFlow = { intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
+const flow: AccountFlow = { provider: "google", intent: "new", memberId: "member-a", sessionHash: accountSessionHash("session"), org: "example", clientId: "data-client", state: "state", nonce: "nonce", verifier: "verifier" };
 const ticket = { accountId: "account-a", generation: 3, lifecycleRevision: 4 };
 const callback = (state = "state") => GET(new Request(`https://internal.example/api/accounts/google/callback?code=code&state=${state}`));
 async function start(values: Record<string,string>) { const form = new FormData(); for (const [key,value] of Object.entries(values)) form.set(key,value); return POST(new Request("https://internal.example/start", { method: "POST", body: form })); }
@@ -82,4 +82,9 @@ it.each(["new", "reconnect"] as const)("refuses %s when the exact session ends d
   expect(mock.writeToken).not.toHaveBeenCalled();
   expect(result.headers.get("location")).toContain("error=");
   expect(result.headers.get("set-cookie")).toContain("Max-Age=0");
+});
+
+it("refuses a sealed Microsoft flow before Google provider work", async () => {
+  mock.cookies.set(ACCOUNT_FLOW_COOKIE, await sealAccountFlow({ ...flow, provider: "microsoft", tenantId: "11111111-2222-4333-8444-555555555555" }));
+  await callback(); expect(mock.finish).not.toHaveBeenCalled();
 });
