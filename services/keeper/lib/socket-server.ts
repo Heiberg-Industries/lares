@@ -21,7 +21,7 @@ export interface ServeOptions {
  * The parent directory is already restricted before this check. Never unlink regular files,
  * symlinks, live listeners, foreign-owned sockets, or a replacement inode.
  */
-async function removeStaleSocket(path: string, uid: number): Promise<void> {
+export async function removeStaleSocket(path: string, uid: number): Promise<void> {
   let before;
   try {
     before = await lstat(path);

@@ -45,6 +45,16 @@ export interface BudgetRecoveryReference {installationAccountId:string;epoch:str
 export interface BudgetTerminalReceipt {attemptId:string;bindingId:string;requestHash:string;endpointHash:string;credentialGeneration:string;profileHash:string;receiptHash:string;actualAmount:string;kind:'terminal-usage'|'affirmative-nondispatch'}
 export interface BudgetStatus {state:string;reason:string;cap:string|null;liability:string|null;windowId:string|null}
 export interface BudgetDispatchPermit {readonly kind:'budget-dispatch-permit'}
+/** Discovery is not authority. admit() independently revalidates the persisted reference. */
+export interface BudgetGatewayTicket {
+  agent:string;incarnation:string;credentialGeneration:string;installationAccountId:string;
+  epoch:string;endpointGeneration:string;bindingId:string;requestHash:string;profileHash:string;
+  endpointHash:string;maximumLiability:string;pricingProfile:unknown;
+}
+export interface BudgetGatewaySettlement {
+  attemptId:string;bindingId:string;requestHash:string;profileHash:string;endpointHash:string;
+  credentialGeneration:string;grantHash:string;pricingProfile:unknown;
+}
 export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied'|'unavailable';reason:string};
 type Ref={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
@@ -60,6 +70,33 @@ export class PgBudgetAdmissionStore {
   }
   private async transaction<T>(fn:(db:PoolClient)=>Promise<T>):Promise<T> {
     return consoleSourceTransaction(this.pool,db=>fn(db as PoolClient));
+  }
+  /** Unlocked routing only; the pool query releases its client before owned admission. */
+  async discoverGatewayTicket(ticket:string):Promise<BudgetGatewayTicket|undefined> {
+    if(typeof ticket!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(ticket))return undefined;
+    const r=(await this.pool.query(`SELECT a.*,b.agent,b.incarnation,b.maximum_liability,b.pricing_profile
+      FROM budget_attempts a JOIN budget_gateway_bindings b ON b.id=a.binding_id WHERE a.ticket_hash=$1 AND a.state='prepared'`,[hash(ticket)])).rows[0];
+    if(!r)return undefined;
+    return {agent:r.agent,incarnation:r.incarnation,credentialGeneration:r.credential_generation,installationAccountId:r.installation_account_id,epoch:r.recovery_epoch,endpointGeneration:r.endpoint_generation,bindingId:r.binding_id,requestHash:r.request_hash,profileHash:r.profile_hash,endpointHash:r.endpoint_hash,maximumLiability:r.maximum_liability,pricingProfile:r.pricing_profile};
+  }
+  /** Called AFTER acknowledged admission and synchronous permit consumption. A duplicate or
+   * uncertain COMMIT never recovers a grant or reissues an allow. No client is borrowed. */
+  async recordGatewayGrant(reference:{attemptId:string;bindingId:string;requestHash:string},grantHash:string):Promise<boolean> {
+    if(!uuid(reference.attemptId)||!uuid(reference.bindingId)||!validHash(reference.requestHash)||!validHash(grantHash))return false;
+    return this.transaction(async db=>{
+      const found=(await db.query('SELECT * FROM budget_attempts WHERE id=$1',[reference.attemptId])).rows[0];if(!found)return false;
+      await this.locks(db,found.installation_account_id,found.member_account_id,found.binding_id);
+      const a=(await db.query('SELECT * FROM budget_attempts WHERE id=$1 FOR UPDATE',[found.id])).rows[0];
+      if(a.state!=='admitted'||a.binding_id!==reference.bindingId||a.request_hash!==reference.requestHash)return false;
+      return (await db.query('INSERT INTO budget_gateway_grants(attempt_id,grant_hash) VALUES($1,$2) ON CONFLICT(attempt_id) DO NOTHING RETURNING attempt_id',[a.id,grantHash])).rows.length===1;
+    });
+  }
+  /** Immutable financial correlation survives current identity redaction and key rotation. */
+  async gatewaySettlement(attemptId:string):Promise<BudgetGatewaySettlement|undefined> {
+    if(!uuid(attemptId))return undefined;
+    const a=(await this.pool.query(`SELECT a.*,g.grant_hash,b.pricing_profile FROM budget_attempts a
+      JOIN budget_gateway_grants g ON g.attempt_id=a.id JOIN budget_gateway_bindings b ON b.id=a.binding_id WHERE a.id=$1`,[attemptId])).rows[0];
+    return a?{attemptId:a.id,bindingId:a.binding_id,requestHash:a.request_hash,profileHash:a.profile_hash,endpointHash:a.endpoint_hash,credentialGeneration:a.credential_generation,grantHash:a.grant_hash,pricingProfile:a.pricing_profile}:undefined;
   }
 
   private async capture(db:PoolClient,ctx:ConsoleAuthorityContext):Promise<Ref> {
