@@ -55,7 +55,7 @@ Nothing is built on your server, and you do not clone the code. Images are built
 by digest. A release is a small file that lists the digest of every image. It lives in the
 [`releases/`](https://github.com/Heiberg-Industries/lares/tree/main/releases) folder of this
 repository. A release is named by its full file name without `.json`, for example
-`2026-10-19-rc.11`: the date, then `rc.` and a number. Use the whole name; a short name such as
+`2026-10-21-rc.12`: the date, then `rc.` and a number. Use the whole name; a short name such as
 `rc.12` or the word `latest` is refused. Use rc.12 or a later one (see the note at the top).
 
 On the server, as root, download the one script and read it before you run it:

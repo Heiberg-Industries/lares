@@ -175,7 +175,7 @@ the file with the ID line first, so there is only one secret line).
 ## 5. Run the installer
 
 Choose the release. A release is named by its full file name without `.json`, for example
-`2026-10-19-rc.11` (the shape: date, then `rc.` and a number). Use the newest one that is rc.12
+`2026-10-21-rc.12` (the shape: date, then `rc.` and a number). Use the newest one that is rc.12
 or later. List the folder from your own machine, not the server:
 
 ```bash
