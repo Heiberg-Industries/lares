@@ -74,6 +74,10 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
+ # Durable console authority survives reapply and cannot silently change its audience.
+ sql("INSERT INTO orgs(id,display_name) VALUES('console-proof','Console proof'); INSERT INTO users(id,display_name,org_id,org_role) VALUES('console-proof-member','Member','console-proof','owner'); INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id) VALUES('probe-agent','11111111-1111-1111-1111-111111111111','probe-session','console-proof-member',repeat('a',43),'probe-place')")
+ sql((repo/'services/box/sql/013_console_turn_authority.sql').read_text())
+ sql("DO $$ BEGIN IF (SELECT member_id FROM console_session_bindings WHERE session_id='probe-session')<>'console-proof-member' THEN RAISE EXCEPTION 'Conversation binding changed on reapply'; END IF; BEGIN UPDATE console_session_bindings SET place_id='changed' WHERE session_id='probe-session'; RAISE EXCEPTION 'Conversation audience changed'; EXCEPTION WHEN raise_exception THEN IF SQLERRM<>'Conversation authority is immutable' THEN RAISE; END IF; END; END $$")
  # SQL008 is additive, preserves rows on reapply, and enforces same-owner resource bindings.
  sql("INSERT INTO users(id,display_name) VALUES ('account-probe-a','Fixture A'),('account-probe-b','Fixture B')")
  sql("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES ('account-probe','account-probe-a','example','https://provider.example','subject','Fixture','ok')")

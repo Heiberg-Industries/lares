@@ -349,6 +349,10 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('Fixture second said something', 'preference', 'fixture-turn-2', $1, 'owner')`,
     [FIXTURE_SECOND]),
 
+  ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("console_session_bindings", "member_id", member,
+    `INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id) VALUES('fixture-agent','11111111-1111-1111-1111-111111111111',$1,$2,$3,$4)`,
+    [`console-session-${index}`,member,String(index+1).repeat(43),`console-place-${index}`])),
+
   // ── 004_web_inbox.sql ─────────────────────────────────────────────────────────────────────
   row("web_inbox", "owner", FIXTURE_OWNER,
     `INSERT INTO web_inbox (owner, agent, kind, title, body, item_key)

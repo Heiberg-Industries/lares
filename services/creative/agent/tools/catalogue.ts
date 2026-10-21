@@ -1,3 +1,4 @@
+import { guardConsoleToolContext } from "@lares/agent-kit/console-turn-authority";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
 //
 // `session.started`, never `turn.started`: the tool list is part of what the prompt cache keys
@@ -93,8 +94,10 @@ export default defineDynamic({
                 ? {
                     approval: defineDurableCallback({
                       closure: { name },
-                      callback: (closure: { name: string }, ...args: unknown[]) =>
-                        (valueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args),
+                      callback: async (closure: { name: string }, ...args: unknown[]) => {
+                        await guardConsoleToolContext(args[0]);
+                        return (valueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args);
+                      },
                     }),
                   }
                 : {}),
@@ -102,8 +105,10 @@ export default defineDynamic({
               // value that has to survive a cold start. See this file's header before changing it.
               execute: defineDurableCallback({
                 closure: { name },
-                callback: async (closure: { name: string }, input: unknown, toolCtx: unknown) =>
-                  valueOf(closure.name).execute(input, toolCtx),
+                callback: async (closure: { name: string }, input: unknown, toolCtx: unknown) => {
+                  await guardConsoleToolContext(toolCtx);
+                  return valueOf(closure.name).execute(input, toolCtx);
+                },
               }),
             } as never),
           ];

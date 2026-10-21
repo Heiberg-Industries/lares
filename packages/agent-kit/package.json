@@ -107,6 +107,7 @@
     "./board-approval": "./src/board-approval.ts",
     "./agent-registry": "./src/agent-registry.ts",
     "./catalogue": "./src/catalogue.ts",
+    "./console-turn-authority": "./src/console-turn-authority.ts",
     "./door-authority": "./src/door-authority.ts",
     "./door-channels": "./src/door-channels.ts",
     "./definition-model": "./src/definition-model.ts",
