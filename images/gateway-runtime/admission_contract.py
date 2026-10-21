@@ -200,6 +200,7 @@ class RequestState:
         self.deadline = (time.monotonic() if now is None else now) + REQUEST_LIFETIME
         self.phase = "captured"
         self.dispatched = False
+        self._authored_refusal = False
         self.pre_seen = False
         self.deployment_phases = []
         self.allow = None

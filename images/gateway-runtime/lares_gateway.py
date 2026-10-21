@@ -479,18 +479,31 @@ class Runtime:
         if outgoing.method != "POST" or str(outgoing.url) != base + path: raise Refused()
 
     async def before_http(self, outgoing):
-        request = state()
-        if outgoing.extensions.get("lares.gateway.request") is not request: raise Refused()
-        self.check_destination(outgoing)
-        self.check_runtime()
-        request.fresh()
-        # Recreated Anthropic clients inherit this event hook, even though their
-        # transport is native. A first attempt already burned the shared right;
-        # a reconnect/reformat/SDK retry fails here before that transport is used.
-        if request.dispatched or request.phase != "armed" or request.policy is not None: raise Refused()
-        request.policy = NativePolicy()
-        async with asyncio.timeout_at(request.deadline):
-            await request.policy.acquire(request, request.alias)
+        request = current_request.get()
+        deadline = None
+        try:
+            request = state()
+            if outgoing.extensions.get("lares.gateway.request") is not request: raise Refused()
+            self.check_destination(outgoing)
+            self.check_runtime()
+            request.fresh()
+            # Recreated Anthropic clients inherit this event hook, even though their
+            # transport is native. A first attempt already burned the shared right;
+            # a reconnect/reformat/SDK retry fails here before that transport is used.
+            if request.dispatched or request.phase != "armed" or request.policy is not None: raise Refused()
+            request.policy = NativePolicy()
+            deadline = asyncio.timeout_at(request.deadline)
+            async with deadline:
+                await request.policy.acquire(request, request.alias)
+        except Refused:
+            if request is not None and not request.dispatched: request._authored_refusal = True
+            raise
+        except TimeoutError:
+            # Only the explicit request deadline is an authored guard refusal. A
+            # timeout raised by another component must retain its native meaning.
+            if request is not None and not request.dispatched and deadline is not None and deadline.expired():
+                request._authored_refusal = True
+            raise
 
     async def client(self, request, provider):
         context = ssl.create_default_context(cafile=os.environ.get("SSL_CERT_FILE"))
@@ -535,7 +548,7 @@ class AdmissionHook(CustomLogger):
         # A native SDK can wrap our final policy refusal as a connection error.
         # Use the native supported failure-hook HTTPException transformation,
         # preserving the authored terminal type without rewriting paid failures.
-        if request is not None and request.pre_seen and not request.dispatched:
+        if request is not None and request._authored_refusal and not request.dispatched:
             return AdmissionHTTPRefusal()
 
     async def async_pre_call_hook(self, user_api_key_dict, cache, data, call_type):
@@ -555,7 +568,10 @@ class AdmissionHook(CustomLogger):
             reply = await runtime.rpc(ADMIT_PATH, observation)
             request.accept(observation, reply, started)
             return data
-        except Exception: raise refusal() from None
+        except Refused:
+            request = current_request.get()
+            if request is not None and not request.dispatched: request._authored_refusal = True
+            raise refusal() from None
 
     async def async_pre_call_deployment_hook(self, kwargs, call_type):
         try:
@@ -577,7 +593,10 @@ class AdmissionHook(CustomLogger):
             if len(phases) == len(expected): kwargs["client"] = await runtime.client(request, p["provider"])
             kwargs.update({"num_retries": 0, "max_retries": 0, "rust": False})
             return kwargs
-        except Exception: raise refusal() from None
+        except Refused:
+            request = current_request.get()
+            if request is not None and not request.dispatched: request._authored_refusal = True
+            raise refusal() from None
 
     async def async_post_call_success_hook(self, data, user_api_key_dict, response):
         request = state()
@@ -623,12 +642,18 @@ class GatewayApp:
                 record_startup_diagnostic("native-lifespan-error", runtime.validation_stage)
                 raise
             return
-        request, token = None, None
+        request, token, native_invoked = None, None, False
+        outward_response_started = False
+        async def outward_send(message):
+            nonlocal outward_response_started
+            if message["type"] == "http.response.start": outward_response_started = True
+            await send(message)
         try:
             if scope["type"] != "http" or scope.get("query_string") or scope.get("raw_path", scope["path"].encode()) != scope["path"].encode(): raise Refused()
             route = (scope["method"], scope["path"])
             if route in CONTROL_ROUTES:
-                await self.native(scope, receive, send)
+                native_invoked = True
+                await self.native(scope, receive, outward_send)
                 return
             if route[0] != "POST" or route[1] not in MODEL_ROUTES: raise Refused()
             runtime.check_runtime()
@@ -670,10 +695,28 @@ class GatewayApp:
             # The ticket is adapter-only bearer material. Native audit/spend snapshots
             # must never receive it through their copy of request.headers.
             native_scope["headers"] = [(k, v) for k, v in scope["headers"] if k.lower() not in (b"x-lares-budget-intent", b"user-agent")]
-            await self.native(native_scope, replay, send)
+            native_response_started = False
+            replaced_refusal = False
+            async def native_send(message):
+                nonlocal native_response_started, replaced_refusal
+                if message["type"] == "http.response.start":
+                    if (request._authored_refusal and not request.dispatched and not native_response_started):
+                        replaced_refusal = True
+                        native_response_started = True
+                        await outward_send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
+                        await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
+                        return
+                    native_response_started = True
+                if replaced_refusal: return
+                await outward_send(message)
+            native_invoked = True
+            await self.native(native_scope, replay, native_send)
         except (Refused, TimeoutError, UnicodeError):
-            await send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
-            await send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
+            if outward_response_started: raise
+            if request is None and native_invoked: raise
+            if request is not None and (request.dispatched or not request._authored_refusal): raise
+            await outward_send({"type": "http.response.start", "status": 400, "headers": [(b"content-type", b"application/json")]})
+            await outward_send({"type": "http.response.body", "body": canonical({"error": {"type": ADMISSION_REFUSED_TYPE, "code": ADMISSION_REFUSED_TYPE, "message": ADMISSION_REFUSED_TEXT}})})
         finally:
             if request is not None:
                 request.close()  # Child task contexts share this irreversible stop.

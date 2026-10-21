@@ -514,4 +514,179 @@ class EmbeddedFixtureTests(unittest.TestCase):
             self.assertIsNone(evidence.result())
 
 
+class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
+    """Only a request-local, pre-dispatch guard refusal may replace native ASGI output."""
+    def setUp(self):
+        source = ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        gateway_app = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "GatewayApp")
+        admission_hook = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "AdmissionHook")
+        self.request_context = __import__("contextvars").ContextVar("refusal_test_request", default=None)
+        self.profile = types.SimpleNamespace(document={"maxBodyBytes":4096}, check_body=lambda path, raw: {"model":"fixture"})
+        self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None)
+        self.namespace = {"asyncio":asyncio,"time":time,"current_request":self.request_context,"runtime":self.runtime,
+            "CONTROL_ROUTES":frozenset(),"MODEL_ROUTES":frozenset(("/v1/messages",)),"TICKET":__import__("re").compile(r"[A-Za-z0-9_-]{43}\Z"),
+            "Refused":Refused,"RequestState":RequestState,"canonical":lambda value:json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode(),
+            "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
+            "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
+            "state":lambda: self.request_context.get(),"refusal":lambda: ValueError("authored refusal")}
+        exec(compile(ast.Module(body=[gateway_app,admission_hook],type_ignores=[]),"gateway-refusal","exec"),self.namespace)
+        self.app = self.namespace["GatewayApp"](self.native)
+        self.mode = "marked"
+        self.native_response = (400,b'{"type":"invalid_request_error","message":"remapped"}')
+        self.last_sent = None
+
+    async def native(self, scope, receive, send):
+        await receive()
+        request = self.request_context.get()
+        if self.mode in ("marked","after-replacement-refused"): request._authored_refusal = True
+        elif self.mode == "after-dispatch": request._authored_refusal = True; request.dispatched = True
+        elif self.mode == "post-dispatch-refused": request._authored_refusal = True; request.dispatched = True; raise Refused()
+        elif self.mode == "marked-before-headers-refused": request._authored_refusal = True; raise Refused()
+        elif self.mode == "unmarked-before-headers-timeout": raise TimeoutError()
+        status,body=self.native_response
+        await send({"type":"http.response.start","status":status,"headers":[(b"content-type",b"application/json"),(b"x-native",b"retained")]})
+        if self.mode in ("after-headers","after-headers-refused"): request._authored_refusal = True
+        await send({"type":"http.response.body","body":body})
+        if self.mode in ("after-replacement-refused","after-headers-refused"): raise Refused()
+        if self.mode == "after-headers-timeout-dispatched": request.dispatched=True; raise TimeoutError()
+
+    async def call_app(self):
+        raw=b'{}'
+        scope={"type":"http","method":"POST","path":"/v1/messages","raw_path":b"/v1/messages","query_string":b"",
+            "headers":[(b"host",b"gateway.invalid"),(b"content-type",b"application/json"),(b"authorization",b"Bearer fixture"),(b"x-lares-budget-intent",b"a"*43)]}
+        incoming=[{"type":"http.request","body":raw,"more_body":False}]
+        async def receive(): return incoming.pop(0)
+        sent=[]
+        async def send(message): sent.append(message)
+        self.last_sent=sent
+        await self.app(scope,receive,send)
+        return sent
+
+    async def test_marked_native_remapping_becomes_one_fixed_refusal(self):
+        self.mode="marked"
+        sent=await self.call_app()
+        self.assertEqual(len(sent),2)
+        self.assertEqual(sent[0],{"type":"http.response.start","status":400,"headers":[(b"content-type",b"application/json")]})
+        self.assertEqual(json.loads(sent[1]["body"]),{"error":{"type":"budget_admission_refused","code":"budget_admission_refused","message":"I could not verify permission to spend. Please check the gateway setup."}})
+
+    async def test_unmarked_native_errors_are_passed_through(self):
+        self.mode="unmarked"
+        for status,body in ((401,b'{"error":{"type":"authentication_error"}}'),
+                            (429,b'{"error":{"type":"budget_exceeded"}}'),
+                            (500,b'{"error":{"type":"provider_error"}}')):
+            with self.subTest(status=status):
+                self.native_response=(status,body)
+                sent=await self.call_app()
+                self.assertEqual(len(sent),2)
+                self.assertEqual(sent[0]["status"],status)
+                self.assertEqual(sent[0]["headers"],[(b"content-type",b"application/json"),(b"x-native",b"retained")])
+                self.assertEqual(sent[1]["body"],body)
+
+    async def test_marked_error_after_dispatch_is_passed_through(self):
+        self.mode="after-dispatch"
+        sent=await self.call_app()
+        self.assertEqual(len(sent),2)
+        self.assertEqual(sent[0]["headers"],[(b"content-type",b"application/json"),(b"x-native",b"retained")])
+        self.assertIn(b"invalid_request_error",sent[1]["body"])
+
+    async def test_marker_after_native_headers_does_not_rewrite_response(self):
+        self.mode="after-headers"
+        sent=await self.call_app()
+        self.assertEqual(len(sent),2)
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(sent[0]["headers"],[(b"content-type",b"application/json"),(b"x-native",b"retained")])
+        self.assertIn(b"invalid_request_error",sent[1]["body"])
+
+    async def test_outer_fallback_never_sends_after_native_headers(self):
+        for mode,exception in (("after-headers-refused",Refused),("after-headers-timeout-dispatched",TimeoutError)):
+            with self.subTest(mode=mode):
+                self.mode=mode
+                self.native_response=(500,b'{"error":{"type":"native_error"}}')
+                with self.assertRaises(exception): await self.call_app()
+                self.assertEqual(len(self.last_sent),2)
+                self.assertEqual(self.last_sent[0]["status"],500)
+
+    async def test_outer_fallback_does_not_send_after_refusal_replacement(self):
+        self.mode="after-replacement-refused"
+        with self.assertRaises(Refused): await self.call_app()
+        self.assertEqual(len(self.last_sent),2)
+        self.assertEqual(self.last_sent[0]["status"],400)
+        self.assertEqual(json.loads(self.last_sent[1]["body"])["error"]["type"],"budget_admission_refused")
+
+    async def test_outer_fallback_only_classifies_marked_native_refusals(self):
+        self.mode="marked-before-headers-refused"
+        sent=await self.call_app()
+        self.assertEqual(len(sent),2)
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(json.loads(sent[1]["body"])["error"]["type"],"budget_admission_refused")
+        self.mode="unmarked-before-headers-timeout"
+        with self.assertRaises(TimeoutError): await self.call_app()
+        self.assertEqual(self.last_sent,[])
+
+    async def test_dispatched_refusal_without_headers_is_propagated(self):
+        self.mode="post-dispatch-refused"
+        with self.assertRaises(Refused): await self.call_app()
+        self.assertEqual(self.last_sent,[])
+
+    async def test_failure_hook_requires_private_marker(self):
+        hook=self.namespace["AdmissionHook"]()
+        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True
+        token=self.request_context.set(request)
+        try:
+            self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
+            request._authored_refusal=True
+            self.assertIsInstance(await hook.async_post_call_failure_hook({},ValueError(),None),self.namespace["AdmissionHTTPRefusal"])
+            request.dispatched=True
+            self.assertIsNone(await hook.async_post_call_failure_hook({},ValueError(),None))
+        finally: self.request_context.reset(token)
+
+    async def test_pre_call_guard_failure_marks_only_current_request(self):
+        hook=self.namespace["AdmissionHook"]()
+        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture")
+        token=self.request_context.set(request)
+        try:
+            self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(Refused())
+            with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
+            self.assertTrue(request._authored_refusal)
+            request._authored_refusal=False;request.pre_seen=False
+            self.runtime.check_runtime=lambda **kwargs: (_ for _ in ()).throw(ValueError("fixture"))
+            with self.assertRaises(ValueError): await hook.async_pre_call_hook(None,None,{},"anthropic_messages")
+            self.assertFalse(request._authored_refusal)
+        finally: self.request_context.reset(token)
+
+    async def test_deployment_hook_programming_errors_are_not_authored_refusals(self):
+        hook=self.namespace["AdmissionHook"]()
+        self.runtime.profile.document.update(provider="anthropic",model="fixture",providerBaseUrl="https://provider.invalid/v1")
+        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture");request.pre_seen=True;request.allow={}
+        token=self.request_context.set(request)
+        async def broken_client(*args): raise ValueError("fixture")
+        async def refused_client(*args): raise Refused()
+        try:
+            self.runtime.client=broken_client
+            with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook({"model":"fixture","api_base":"https://provider.invalid/v1"},"anthropic_messages")
+            self.assertFalse(request._authored_refusal)
+            request.deployment_phases.clear()
+            self.runtime.client=refused_client
+            with self.assertRaises(ValueError): await hook.async_pre_call_deployment_hook({"model":"fixture","api_base":"https://provider.invalid/v1"},"anthropic_messages")
+            self.assertTrue(request._authored_refusal)
+        finally: self.request_context.reset(token)
+
+    async def test_before_http_local_guard_marks_refusal_before_dispatch(self):
+        source=ast.parse((ROOT / "images/gateway-runtime/lares_gateway.py").read_text())
+        runtime_class=next(node for node in source.body if isinstance(node,ast.ClassDef) and node.name=="Runtime")
+        method=next(node for node in runtime_class.body if isinstance(node,ast.AsyncFunctionDef) and node.name=="before_http")
+        exec(compile(ast.Module(body=[method],type_ignores=[]),"gateway-before-http","exec"),self.namespace)
+        runtime=types.SimpleNamespace(check_destination=lambda outgoing:None,check_runtime=lambda:None)
+        runtime.before_http=types.MethodType(self.namespace["before_http"],runtime)
+        request=RequestState("POST","/v1/messages",b"{}","a"*64,"fixture")
+        token=self.request_context.set(request)
+        try:
+            with self.assertRaises(Refused): await runtime.before_http(types.SimpleNamespace(extensions={}))
+            self.assertTrue(request._authored_refusal)
+            request._authored_refusal=False;request.dispatched=True
+            with self.assertRaises(Refused): await runtime.before_http(types.SimpleNamespace(extensions={}))
+            self.assertFalse(request._authored_refusal)
+        finally: self.request_context.reset(token)
+
+
 if __name__ == "__main__": unittest.main()
