@@ -72,9 +72,11 @@
 # the default world can skip straight to setting `EVE_MOCK_AUTHORED_MODELS=1` and invoking. Said
 # here rather than built, to avoid over-generalising a script only one service uses so far.
 #
-# Usage: `bash scripts/model-visible-tools-probe.sh [service-dir] [expected-tools-file]`
+# Usage: `bash scripts/model-visible-tools-probe.sh [service-dir] <expected-tools-file> [negative-names]`
 #   service-dir           default: services/creative
-#   expected-tools-file   default: a baseline list of tool names captured before the change (see EXPECTED_FILE below)
+#   expected-tools-file   REQUIRED: a text file with one tool name per line, captured before the change.
+#                         There is no default; the script stops with a usage line when it is missing.
+#   negative-names        default: gmail_send,vault_file (comma-separated names the agent never grants)
 # Also runs a negative control (two names known to be ABSENT — capabilities creative never grants)
 # to prove the technique is discriminating, not just optimistic.
 set -uo pipefail
@@ -86,7 +88,8 @@ log() { echo "[model-tools-probe] $*" >&2; }
 fail() { echo "[model-tools-probe] FAIL: $*" >&2; exit 1; }
 
 SERVICE_DIR="${1:-$SCRIPT_DIR/../../../services/creative}"
-EXPECTED_FILE="${2:-$SCRIPT_DIR/../../../.superpowers/sdd/2026-09-16-lares-agent-definitions-step-2/baseline/creative-tools.txt}"
+EXPECTED_FILE="${2:-}"
+[ -n "$EXPECTED_FILE" ] || fail "usage: model-visible-tools-probe.sh [service-dir] <expected-tools-file> [negative-names] (service-dir defaults to services/creative; expected-tools-file is required; negative-names defaults to gmail_send,vault_file)"
 NEGATIVE_NAMES="${3:-gmail_send,vault_file}"   # capabilities this agent's grants never reach
 SERVICE_DIR="$(cd "$SERVICE_DIR" && pwd)" || fail "service dir not found: $1"
 [ -f "$EXPECTED_FILE" ] || fail "expected-tools file not found: $EXPECTED_FILE"
