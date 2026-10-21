@@ -31,13 +31,13 @@ async function requireResumeReference(reference:{binding:ConsoleBindingInput;req
   const own=managedIdentity(options.env),auth={memberId:reference.binding.memberId,requestId:reference.requestId,optionId:reference.optionId};
   if(!own||own.name!==reference.binding.agent||own.incarnation!==reference.binding.incarnation||!['approve','cancel'].includes(auth.optionId))refuse();
   return authorityTransaction(options.db,async db=>{
+    const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const member=await currentMember(db as never,auth!.memberId);if(!member)refuse();
     await db.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
     const locked=await currentMember(db as never,auth!.memberId,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)refuse();
     const read=()=>personalActionForRequest(db,{requestId:auth!.requestId,memberId:auth!.memberId,agentId:own!.name,sessionId:reference.binding.sessionId});
     const before=await read(),s=before.reference.selection;
     if(!before.reference.policyHash||s.incarnation!==own!.incarnation)refuse();
-    const binding=await requireConsoleSessionBinding(reference.binding,db,options.env);
     const current=await read(); // DB-clock freshness after grant/binding lock waits.
     if(auth!.optionId==='approve'&&!current.alive)refuse();
     if(phase==='model'||phase==='action'){

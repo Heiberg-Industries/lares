@@ -25,8 +25,8 @@
 // checked". `erasePerson`'s own outstanding line already tells them apart (see its `pathsGiven`
 // handling); this module tells them apart too, in `noVaultGiven`.
 
-import type { Pool } from "pg";
-import { erasePerson, renderEraseReport, type EraseReport } from "./erase-person.js";
+import type { Pool, PoolClient } from "pg";
+import { erasePerson, withPersonErasureTransaction, renderEraseReport, type EraseReport } from "./erase-person.js";
 import { erasePersonFiles, findPersonFiles, type VaultHit } from "./erase-person-vault.js";
 import {
   resolvePerson,
@@ -97,8 +97,8 @@ function refusalReport(person: string, message: string): EraseReport {
  * `erasePersonFiles` already let it.
  */
 export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
-  const { db, person, vaults, apply } = opts;
-  const noVaultGiven = vaults.length === 0;
+  const { db, person, apply } = opts;
+  const noVaultGiven = opts.vaults.length === 0;
 
   // ── Step 1: who, once, for both halves. ────────────────────────────────────────────────────
   let identity;
@@ -115,6 +115,12 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
     throw err;
   }
 
+  if(apply)return withPersonErasureTransaction(db,identity.id,client=>runEraseOwned(opts,identity,client));
+  return runEraseOwned(opts,identity,db);
+}
+
+async function runEraseOwned(opts:RunEraseOptions,identity:Awaited<ReturnType<typeof resolvePerson>>,db:Pool|PoolClient):Promise<RunEraseResult>{
+  const {vaults,apply}=opts,noVaultGiven=vaults.length===0;
   // ── Step 2: a database dry run, before any file anywhere is touched. ──────────────────────
   const preCheck = await erasePerson(db, { person: identity.id, dryRun: true });
   if (preCheck.refusals.length > 0) {
@@ -199,7 +205,10 @@ export function renderRunEraseReport(result: RunEraseResult): string {
   }
 
   if (result.dbReport.refusals.length > 0) {
-    return out.join("\n");
+    const filesChanged=!result.dbReport.dryRun&&result.vaults.some(v=>v.removed.length>0||v.untracked.length>0);
+    if(!filesChanged)return out.join("\n");
+    out.push("");
+    out.push("The database changes were rolled back. The file removals below already happened and were not rolled back.");
   }
 
   if (result.noVaultGiven) {

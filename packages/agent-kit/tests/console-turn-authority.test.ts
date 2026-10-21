@@ -11,7 +11,7 @@ import { MockLanguageModelV3 } from 'ai/test';
 import { definitionModel } from '../src/definition-model.js';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { bindConsoleSession, bindConsoleSessionStarted, requireConsoleSessionBinding, requireConsoleTurnAuthority,
-  consoleRouteAdmission, hasConsoleTurnAuthorityTag, type ConsoleAuthorityContext } from '../src/console-turn-authority.js';
+  consoleRouteAdmission, hasConsoleTurnAuthorityTag, CONSOLE_AUTHORITY_REVISION, authorityTransaction, type ConsoleAuthorityContext } from '../src/console-turn-authority.js';
 import { observeConversation, resetConversation } from '../src/conversation-control.js';
 import { verifyPrivateConsoleSession, markPrivateConsoleSurface } from '../src/private-console-surface.js';
 const keeperPath=new URL('../../../services/keeper/lib/conversations.js',import.meta.url).href;
@@ -49,13 +49,13 @@ beforeEach(async()=>{
  INSERT INTO org_member_policy VALUES('Owner-ID',NULL);
  INSERT INTO agent_definitions VALUES('helper','valid','definition-one','{"grants":[]}');
  INSERT INTO agent_resources VALUES('helper','${incarnation}','${incarnation}','ready',false);`);
- for(const file of ['007_member_identity_sessions.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
+ for(const file of ['007_member_identity_sessions.sql','009_vault_areas.sql','013_console_turn_authority.sql','014_agent_access_grants.sql','016_console_agent_access_capture.sql','017_private_console_surface_capture.sql','018_private_account_history.sql','022_console_vault_source_history.sql'])await db.query(readFileSync(new URL(`../../../services/box/sql/${file}`,import.meta.url),'utf8'));
  await new PgGrantStore(db).adoptAgent('Owner-ID',{agentName:'helper',expectedDefinitionHash:'definition-one'},{designatedOwnerMemberId:'Owner-ID'});
 });
 describe('durable console authority on disposable PostgreSQL',()=>{
  it('binds only an exact singleton and returns stable actor/speaker independently of email',async()=>{
   await bindConsoleSession(tuple,db,env);
-  expect(await requireConsoleTurnAuthority(ctx(),db,env)).toEqual({origin:'human',agentId:'helper',sessionId:'wrun_test',turnId:'turn-1',actingMemberId:'Owner-ID',spokenByMemberId:'Owner-ID',placeId:`console:helper:${incarnation}:wrun_test`,audience:{placeId:`console:helper:${incarnation}:wrun_test`,revision:1,participants:[{kind:'member',memberId:'Owner-ID'}]},policyRevision:1});
+  expect(await requireConsoleTurnAuthority(ctx(),db,env)).toEqual({origin:'human',agentId:'helper',sessionId:'wrun_test',turnId:'turn-1',actingMemberId:'Owner-ID',spokenByMemberId:'Owner-ID',placeId:`console:helper:${incarnation}:wrun_test`,audience:{placeId:`console:helper:${incarnation}:wrun_test`,revision:1,participants:[{kind:'member',memberId:'Owner-ID'}]},policyRevision:CONSOLE_AUTHORITY_REVISION});
   await db.query(migration);
   expect((await requireConsoleSessionBinding({agent:tuple.agent,incarnation,sessionId:tuple.sessionId,memberId:tuple.memberId},db,env)).admissionNonce).toBe(nonce);
   expect((await requireConsoleSessionBinding(tuple,db,env)).memberId).toBe('Owner-ID');
@@ -107,23 +107,23 @@ describe('durable console authority on disposable PostgreSQL',()=>{
   const single=new Pool({connectionString:process.env.DATABASE_URL,max:1,connectionTimeoutMillis:500});
   try{await bindConsoleSession(tuple,single,env);await requireConsoleSessionBinding(tuple,single,env);}finally{await single.end();}
   await db.query('DELETE FROM console_session_bindings');
-  const client=await db.connect();await client.query('BEGIN');
-  try{
+  let revoked!:Promise<void>;
+  await authorityTransaction(db,async client=>{
    await bindConsoleSession(tuple,client,env);
    const store=new PgGrantStore(db),a=await store.agentAccess('Owner-ID','helper');
-   let finished=false;const revoked=store.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[]}).then(()=>{finished=true;});
-   // An independent connection proves revocation is waiting on the capture transaction's org lock.
+   let finished=false;revoked=store.updateAgentAccess('Owner-ID',{agentName:'helper',expectedRevision:a!.accessRevision,grants:[]}).then(()=>{finished=true;});
    for(let i=0;i<100;i++){
     const wait=await db.query("SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE 'SELECT id FROM orgs%'");
     if(wait.rows.length)break;
     await new Promise(resolve=>setTimeout(resolve,10));
     if(i===99)throw new Error('Revocation did not reach lock barrier');
    }
-   expect(finished).toBe(false);await client.query('COMMIT');await revoked;
-   expect((await db.query('SELECT revoked_at FROM console_session_bindings')).rows[0].revoked_at).toBeInstanceOf(Date);
-   await expect(requireConsoleSessionBinding(tuple,db,env)).rejects.toThrow('Conversation authority');
-   await expect(bindConsoleSession(tuple,db,env)).rejects.toThrow('Conversation authority');
-  }finally{await client.query('ROLLBACK');client.release();}
+   expect(finished).toBe(false);
+  });
+  await revoked;
+  expect((await db.query('SELECT revoked_at FROM console_session_bindings')).rows[0].revoked_at).toBeInstanceOf(Date);
+  await expect(requireConsoleSessionBinding(tuple,db,env)).rejects.toThrow('Conversation authority');
+  await expect(bindConsoleSession(tuple,db,env)).rejects.toThrow('Conversation authority');
  });
  it('an in-flight first capture cannot escape revocation, and a capture waiting behind revocation refuses',async()=>{
   const store=new PgGrantStore(db),a=await store.agentAccess('Owner-ID','helper');
@@ -254,7 +254,7 @@ it('retires every pre-surface conversation and refuses old-binary active capture
  const surfaceMigration=readFileSync(new URL('../../../services/box/sql/017_private_console_surface_capture.sql',import.meta.url),'utf8');
  await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_private_surface_capture');
  const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
- await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision) VALUES('helper',$1,'wrun_old','Owner-ID',repeat('z',43),'old',$2)",[incarnation,access!.accessRevision]);
+ await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,policy_revision) VALUES('helper',$1,'wrun_old','Owner-ID',repeat('z',43),'old',$2,2)",[incarnation,access!.accessRevision]);
  await db.query(surfaceMigration);await db.query(surfaceMigration);await db.query(readFileSync(new URL('../../../services/box/sql/018_private_account_history.sql',import.meta.url),'utf8'));
  expect((await db.query("SELECT revoked_at,private_surface_revision FROM console_session_bindings WHERE session_id='wrun_old'")).rows[0]).toEqual({revoked_at:expect.any(Date),private_surface_revision:0});
  const old={session:{id:'wrun_old',auth:{current:auth('human','Owner-ID','z'.repeat(43)),initiator:auth('human','Owner-ID','z'.repeat(43))}}};
@@ -311,7 +311,7 @@ it('upgrades pre-account-invalidation history once and preserves protocol 2 on o
  const access=await new PgGrantStore(db).agentAccess('Owner-ID','helper');
  await bindConsoleSession(tuple,db,env);
  await db.query('ALTER TABLE console_session_bindings DROP CONSTRAINT console_binding_private_surface_capture');
- await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision) VALUES('helper',$1,'old_one','Owner-ID',repeat('q',43),'old-one',$2,1)",[incarnation,access!.accessRevision]);
+ await db.query("INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,policy_revision) VALUES('helper',$1,'old_one','Owner-ID',repeat('q',43),'old-one',$2,1,2)",[incarnation,access!.accessRevision]);
  const seventeen=readFileSync(new URL('../../../services/box/sql/017_private_console_surface_capture.sql',import.meta.url),'utf8');
  const eighteen=readFileSync(new URL('../../../services/box/sql/018_private_account_history.sql',import.meta.url),'utf8');
  await db.query(eighteen);await db.query(seventeen);await db.query(eighteen);

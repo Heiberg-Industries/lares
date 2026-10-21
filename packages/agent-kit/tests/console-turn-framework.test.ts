@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 const fake = vi.hoisted(()=>({query:vi.fn(),captureUse:vi.fn(async()=>1)}));
-vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {captureUse=fake.captureUse;}}));
-vi.mock('../src/db.js',()=>({getPool:()=>fake}));
+vi.mock('../src/grant-store.js',()=>({PgGrantStore:class {captureUse=fake.captureUse;async captureUseWithExpiry(){const revision=await fake.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
+vi.mock('../src/db.js',()=>({getPool:()=>({query:fake.query,connect:async()=>({query:async(sql:string,values?:unknown[])=>{const result=await fake.query(sql,values);return {...result,command:['BEGIN','COMMIT','ROLLBACK'].includes(sql)?sql:result.command};},release(){}})})}));
 // Load role modules at runtime: extension declarations cannot own downstream service sources.
 const chiefPath=new URL('../../../services/chief-of-staff/agent/hooks/console-turn-authority.ts',import.meta.url).href;
 const creativePath=new URL('../../../services/creative/agent/hooks/console-turn-authority.ts',import.meta.url).href;
@@ -42,7 +42,10 @@ describe('both roles install a real awaited authority hook',()=>{
    vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION',inc);vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');
    let resolveQuery!:(value:unknown)=>void;
    fake.query.mockImplementation(async(sql:string)=>{
-    if(sql.startsWith('SELECT 1 FROM users'))return {rows:[{id:'Owner-ID'}]};
+    if(['BEGIN','COMMIT','ROLLBACK'].includes(sql)||sql.includes('pg_advisory_xact_lock'))return {rows:[]};
+    if(sql.includes('AS organisation_id FROM users'))return {rows:[{organisation_id:'org'}]};
+    if(sql.includes('FROM users WHERE'))return {rows:[{id:'Owner-ID',org_id:'org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]};
+    if(sql.includes('FROM orgs WHERE'))return {rows:[{id:'org'}]};
     if(sql.includes('FROM agent_resources r'))return {rows:[{}]};
     if(sql.startsWith('INSERT INTO console_session_bindings'))return new Promise(resolve=>{resolveQuery=resolve;});
     throw new Error('Unexpected authority fixture query');
@@ -52,7 +55,7 @@ describe('both roles install a real awaited authority hook',()=>{
    await vi.waitFor(()=>expect(fake.query.mock.calls.filter(([sql])=>String(sql).startsWith('INSERT INTO console_session_bindings'))).toHaveLength(1));
    expect(fake.captureUse).toHaveBeenCalledOnce();
    expect(settled).toBe(false);
-   resolveQuery({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1,agent_access_revision:1}]});
+   resolveQuery({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:2,agent_access_revision:1,private_surface_revision:2,source_history_guard_revision:1}]});
    await dispatch;expect(settled).toBe(true);expect(fake.captureUse).toHaveBeenCalledTimes(2);sink.release();
    fake.query.mockRejectedValue(new Error('binding unavailable'));
    const failed=await sinkFor(hook);

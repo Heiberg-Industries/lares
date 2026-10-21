@@ -1,3 +1,5 @@
+import {consoleSourceTransaction,gateConsoleOrganisation,invalidateConsoleSource,noteConsoleSourceBindingLocked,SourceAuthorityDenied,SourceAuthorityUnavailable,retainConsoleSourceDeadline,checkConsoleSourceDeadlines} from './console-source-transaction.js';
+import {retainedConsoleSources,prepareConsoleVaultSources,insertConsoleVaultSources,type RequestedVaultSources} from './console-vault-source-history.js';
 import {currentMember} from './member-store.js';
 import {verifiedPrivateConsoleResponse} from './private-console-envelope.js';
 import {personalActionForRequest} from './personal-action-store.js';
@@ -14,20 +16,15 @@ export const CONSOLE_MEMBER_ID_HEADER = 'x-lares-member-id';
 export const CONSOLE_ADMISSION_HEADER = 'x-lares-admission';
 export const CONSOLE_PURPOSE_HEADER = 'x-lares-purpose';
 /** Version of this private console admission contract, not the permission board policy. */
-export const CONSOLE_AUTHORITY_REVISION = 1;
+export const CONSOLE_AUTHORITY_REVISION = 2;
 /** Only fresh sessions created by the bounded runtime can carry this capture. */
 export const PRIVATE_CONSOLE_SURFACE_REVISION = 2;
 export const CONSOLE_AUTHORITY_REFUSED = 'Conversation authority is not available';
-/** A pool supplies connect; a query-only client belongs to an already-open caller transaction. */
+/** A pool supplies connect; a query-only client must belong to our registered transaction owner. */
 export interface AuthorityDatabase { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 export interface AuthorityPool extends AuthorityDatabase { connect(): Promise<AuthorityDatabase & {release():void}> }
 export async function authorityTransaction<T>(database:AuthorityDatabase|undefined,fn:(db:AuthorityDatabase)=>Promise<T>):Promise<T> {
-  const source=database ?? getPool();
-  // A checked-out pg client may also expose connect at runtime; never acquire or BEGIN again.
-  if(!('connect' in source) || 'release' in source)return fn(source);
-  const db=await (source as AuthorityPool).connect();
-  try {await db.query('BEGIN');const result=await fn(db);await db.query('COMMIT');return result;}
-  catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  return consoleSourceTransaction(database??getPool(),fn);
 }
 export interface ConsoleBindingInput { agent: string; incarnation: string; sessionId: string; memberId: string; admissionNonce: string }
 export interface ConsoleBinding extends ConsoleBindingInput { placeId: string; audienceRevision: number; policyRevision: number; agentAccessRevision: number }
@@ -70,6 +67,7 @@ function binding(row: any): ConsoleBinding {
 }
 /** The common grant store verifies current membership, owner policy, definition and use. */
 async function currentAgentUse(db:AuthorityDatabase,agent:string,memberId:string,_env:NodeJS.ProcessEnv):Promise<number> {
+  await gateConsoleOrganisation(db,memberId);
   const revision=await new PgGrantStore().captureUse(memberId,agent,{db:db as GrantDatabase});
   if(revision===undefined)denied();
   return revision!;
@@ -89,26 +87,57 @@ export async function bindConsoleSession(input: ConsoleBindingInput, db: Authori
     const revision=await currentAgentUse(client,input.agent,input.memberId,env);
     await runtimeGate(client,input);
     const placeId=`console:${input.agent}:${input.incarnation}:${input.sessionId}`;
-    const {rows}=await authorityQuery(client,`INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision)
-      VALUES($1,$2::uuid,$3,$4,$5,$6,$7,$8)
+    const {rows}=await authorityQuery(client,`INSERT INTO console_session_bindings(agent,incarnation,session_id,member_id,admission_nonce,place_id,agent_access_revision,private_surface_revision,source_history_guard_revision,policy_revision)
+      VALUES($1,$2::uuid,$3,$4,$5,$6,$7,$8,1,$9)
       ON CONFLICT(agent,incarnation,session_id) DO UPDATE SET revoked_at=console_session_bindings.revoked_at
       WHERE console_session_bindings.member_id=EXCLUDED.member_id AND console_session_bindings.admission_nonce=EXCLUDED.admission_nonce
         AND console_session_bindings.place_id=EXCLUDED.place_id AND console_session_bindings.agent_access_revision=EXCLUDED.agent_access_revision
         AND console_session_bindings.private_surface_revision=EXCLUDED.private_surface_revision
-        AND console_session_bindings.revoked_at IS NULL RETURNING *`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,placeId,revision,PRIVATE_CONSOLE_SURFACE_REVISION]);
-    if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);return binding(rows[0]);
+        AND console_session_bindings.source_history_guard_revision=EXCLUDED.source_history_guard_revision
+        AND console_session_bindings.policy_revision=EXCLUDED.policy_revision
+        AND console_session_bindings.revoked_at IS NULL RETURNING *`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce,placeId,revision,PRIVATE_CONSOLE_SURFACE_REVISION,CONSOLE_AUTHORITY_REVISION]);
+    if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);const result=binding(rows[0]);noteConsoleSourceBindingLocked(client,result);return result;
   });}catch{ return denied(); }
 }
 export async function requireConsoleSessionBinding(input: Omit<ConsoleBindingInput,'admissionNonce'> & { admissionNonce?: string }, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<ConsoleBinding> {
+  return checkedConsoleSessionBinding(input,db,env);
+}
+/** Trusted server seam only; supply the actual loaded definition for this session. No files
+ * are read here, and no model-facing caller can manufacture session definition provenance. */
+export async function captureConsoleVaultSources(input:ConsoleBindingInput,requested:RequestedVaultSources,db?:AuthorityDatabase,env:NodeJS.ProcessEnv=process.env):Promise<ConsoleBinding>{
+  return checkedConsoleSessionBinding(input,db,env,requested);
+}
+async function checkedConsoleSessionBinding(input:Omit<ConsoleBindingInput,'admissionNonce'> & {admissionNonce?:string},db:AuthorityDatabase|undefined,env:NodeJS.ProcessEnv,requested?:RequestedVaultSources):Promise<ConsoleBinding>{
   try{return await authorityTransaction(db,async client=>{
-    const revision=await currentAgentUse(client,input.agent,input.memberId,env);
+    // Unlocked discovery establishes the exact tuple; it is rechecked under lock below.
+    const snapshot=(await client.query(`SELECT * FROM console_session_bindings WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3
+      AND member_id=$4 AND ($5::text IS NULL OR admission_nonce=$5)`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce??null])).rows[0];
+    if(!snapshot)denied();const exact=binding(snapshot);coordinates(exact);
+    await gateConsoleOrganisation(client,input.memberId,exact);
+    const retained=await retainedConsoleSources(client,exact);
+    const grant=await new PgGrantStore().captureUseWithExpiry(input.memberId,input.agent,{db:client as GrantDatabase});
+    if(!grant){if(retained.length)invalidateConsoleSource(client,exact);denied();}
+    const revision=grant!.accessRevision;
+    if(retained.length)retainConsoleSourceDeadline(client,exact,grant!.validUntil);
+    const pending=await prepareConsoleVaultSources(client,exact,retained,requested);
+    if(pending.length)retainConsoleSourceDeadline(client,exact,grant!.validUntil);
     await runtimeGate(client,input);
     const {rows}=await authorityQuery(client,`SELECT b.* FROM console_session_bindings b WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3
-      AND b.member_id=$4 AND ($5::text IS NULL OR b.admission_nonce=$5) AND b.revoked_at IS NULL AND b.audience_revision=1 AND b.policy_revision=1
-      AND b.agent_access_revision=$6 AND b.private_surface_revision=$7 FOR SHARE`,[input.agent,input.incarnation,input.sessionId,input.memberId,input.admissionNonce??null,revision,PRIVATE_CONSOLE_SURFACE_REVISION]);
-    if(rows.length!==1)denied();await currentAgentUse(client,input.agent,input.memberId,env);const result=binding(rows[0]);coordinates(result);return result;
-  });}catch{return denied();}
+      AND b.member_id=$4 AND b.admission_nonce=$5 AND b.revoked_at IS NULL AND b.audience_revision=1 AND b.policy_revision=$9
+      AND b.agent_access_revision=$6 AND b.private_surface_revision=$7
+      AND ($8::boolean IS FALSE OR b.source_history_guard_revision=1) FOR SHARE`,[input.agent,input.incarnation,input.sessionId,input.memberId,exact.admissionNonce,revision,PRIVATE_CONSOLE_SURFACE_REVISION,!!requested,CONSOLE_AUTHORITY_REVISION]);
+    if(rows.length!==1)denied();
+    noteConsoleSourceBindingLocked(client,exact);
+    await insertConsoleVaultSources(client,exact,pending);
+    // The runtime/binding locks may have waited past a finite agent grant. Recheck the same
+    // common evaluator while all authority rows remain held; never replace its first deadline.
+    const final=await new PgGrantStore().captureUse(input.memberId,input.agent,{db:client as GrantDatabase});
+    if(final===undefined){if(retained.length||pending.length)invalidateConsoleSource(client,exact);denied();}
+    await checkConsoleSourceDeadlines(client);
+    return binding(rows[0]);
+  });}catch(error){if(error instanceof SourceAuthorityDenied||error instanceof SourceAuthorityUnavailable)throw error;return denied();}
 }
+
 export async function retireConsoleSession(input: ConsoleBindingInput, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   await authorityTransaction(db,async client=>{
     await requireConsoleSessionBinding(input,client,env);
@@ -178,6 +207,7 @@ export async function consoleRouteAdmission(request: Request, db?: AuthorityData
   if(purpose==='resolver'){
     const answer=verifiedPrivateConsoleResponse(request);
     await authorityTransaction(db,async client=>{
+      await requireConsoleSessionBinding(tuple,client,env);
       const member=await currentMember(client as never,memberId!);if(!member)denied();
       await client.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[member!.organisationId]);
       const locked=await currentMember(client as never,memberId!,{lock:'share'});if(!locked||locked.organisationId!==member!.organisationId)denied();

@@ -316,8 +316,30 @@ function messageOf(err: unknown): string {
  * box has not created) deletes NOTHING and is reported. `dryRun` opens no transaction, issues
  * nothing but reads, and fills `planned` with what an `--apply` run would do.
  */
+// Only this owner may lend an existing transaction to the database/file erasure flow.
+// The organisation barrier spans preflight, files and the generated database sweep.
+const erasureOwners=new WeakMap<PoolClient,{failed:boolean}>();
+async function lockErasureMember(client:PoolClient,memberId:string):Promise<void>{
+  const before=(await client.query('SELECT org_id FROM users WHERE id=$1',[memberId])).rows[0];
+  if(!before)throw new Error('Membership changed during erasure');
+  if(before.org_id)await client.query('SELECT id FROM orgs WHERE id=$1 FOR UPDATE',[before.org_id]);
+  const current=(await client.query('SELECT org_id FROM users WHERE id=$1 FOR UPDATE',[memberId])).rows[0];
+  if(!current||current.org_id!==before.org_id)throw new Error('Membership changed during erasure');
+}
+export async function withPersonErasureTransaction<T>(pool:Pool,memberId:string,work:(db:PoolClient)=>Promise<T>):Promise<T>{
+  const db=await pool.connect(),state={failed:false};let broken=false;
+  try{
+    await db.query('BEGIN');await lockErasureMember(db,memberId);erasureOwners.set(db,state);
+    const value=await work(db);
+    if(state.failed)await db.query('ROLLBACK');
+    else try{if((await db.query('COMMIT')).command!=='COMMIT')throw new Error('Commit not acknowledged');}catch{broken=true;throw new Error('Database erasure could not be confirmed. Files already removed may remain removed; inspect the result before retrying.');}
+    return value;
+  }catch(error){await db.query('ROLLBACK').catch(()=>undefined);throw error;}
+  finally{erasureOwners.delete(db);db.release(broken);}
+}
+
 export async function erasePerson(
-  db: Pool,
+  db: Pool | PoolClient,
   opts: {
     person: string;
     dryRun: boolean;
@@ -328,6 +350,8 @@ export async function erasePerson(
     paths?: readonly string[];
   },
 ): Promise<EraseReport> {
+  const owned='release' in db?erasureOwners.get(db):undefined;
+  if('release' in db&&!owned)throw new Error('An erasure-owned transaction is required');
   const report: EraseReport = {
     person: opts.person,
     dryRun: opts.dryRun,
@@ -367,7 +391,7 @@ export async function erasePerson(
     if (present.get(entry.table) === false) {
       report.refusals.push(
         `This box has no "${entry.table}" table, so this person cannot be erased from it. ` +
-          "Nothing was changed: erasing somebody from most of the places that name them is worse " +
+          "No database rows were changed: erasing somebody from most of the places that name them is worse " +
           `than erasing them from none. Apply ${entry.createdBy}, then run this again.`,
       );
     }
@@ -379,6 +403,11 @@ export async function erasePerson(
   // that these stable identities cannot yet be reconciled with storage.
   if (await countWhere(db, "SELECT count(*)::int AS n FROM vault_areas WHERE owner_member_id=$1", [person.id])) {
     report.refusals.push("This person owns Vault areas whose backing storage has not been reconciled for erasure. Nothing was changed. Reconcile their area content and retained identities before erasing this person.");
+    return report;
+  }
+
+  if (await countWhere(db,"SELECT count(*)::int AS n FROM console_vault_source_captures WHERE member_id=$1",[person.id])) {
+    report.refusals.push("This person has retained conversation source dependencies. Nothing was changed. Reconcile their conversation history before erasing this person.");
     return report;
   }
 
@@ -396,30 +425,29 @@ export async function erasePerson(
   if (opts.dryRun) return report;
 
   // ── Step 3: do it, in one transaction. ────────────────────────────────────────────────────
-  const client: PoolClient = await db.connect();
+  if(!('release' in db))return withPersonErasureTransaction(db,person.id,client=>erasePerson(client,opts));
+  const client=db;
   try {
-    await client.query("BEGIN");
+    // Repeat under the barrier for standalone database erasure as well.
+    if(await countWhere(client,"SELECT count(*)::int AS n FROM console_vault_source_captures WHERE member_id=$1",[person.id]))throw new Error('Retained conversation source dependencies prevent erasure');
     const done: ErasePlan[] = [];
     for (const { plan, write } of plans) {
       const { rowCount } = await client.query(write.sql, write.params);
       if ((rowCount ?? 0) > 0) done.push({ ...plan, rows: rowCount ?? 0 });
     }
-    await client.query("COMMIT");
     report.deleted = done;
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => undefined);
+    if(owned)owned.failed=true;
     // 42P01 = undefined_table. A table dropped between the check above and this write; the same
     // refusal, for the same reason, and the transaction has already taken it all back.
     const code = (err as { code?: string }).code;
     report.refusals.push(
       code === "42P01"
         ? `A table this erase needs disappeared while it was running (${messageOf(err)}). ` +
-            "Nothing was changed."
-        : `This erase was stopped before anything was changed: ${messageOf(err)}`,
+            "No database rows were changed."
+        : `Database erasure stopped; no database rows were changed: ${messageOf(err)}`,
     );
     report.deleted = [];
-  } finally {
-    client.release();
   }
 
   return report;
@@ -627,7 +655,7 @@ export function renderEraseReport(r: EraseReport): string {
   out.push("");
 
   if (r.refusals.length > 0) {
-    out.push("**Nothing was erased.** This run refused, and the database is exactly as it was.");
+    out.push("**No database rows were erased.** This run refused, and the database is exactly as it was.");
     out.push("");
     for (const refusal of r.refusals) out.push(`- ${refusal}`);
     out.push("");
