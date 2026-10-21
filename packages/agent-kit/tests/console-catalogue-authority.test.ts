@@ -25,16 +25,17 @@ describe('both catalogues guard real durable callbacks before underlying executi
    const tool=(await (resolver.events['session.started'] as any)({},context())).fixture;
    const {validateDurableDynamicToolCallbacks}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
    const callbacks=validateDurableDynamicToolCallbacks('fixture',tool,{sessionId:'wrun_test',scope:'session',resolverSlug:'catalogue',entryKey:'fixture',name:'fixture'});
-   expect(callbacks.execute.closure).toEqual({name:'fixture'});expect(callbacks.approvalRequest.closure).toEqual({name:'fixture'});
-   await expect(tool.execute({},context('resolver'))).rejects.toThrow('Conversation authority');
-   await expect(tool.approval(context('resolver'))).rejects.toThrow('Conversation authority');
+   expect(callbacks.execute.closure).toEqual({name:'fixture'});expect(callbacks.approvalRequest.closure).toEqual({name:'fixture'});expect(callbacks.approvalResponse.closure).toEqual({name:'fixture'});
+   await expect(tool.execute({},context('resolver'))).rejects.toThrow();
+   await expect(tool.approval.request(context('resolver'))).rejects.toThrow();
    expect(fake.execute).not.toHaveBeenCalled();expect(fake.approval).not.toHaveBeenCalled();
    fake.query.mockResolvedValue({rows:[]});
-   await expect(tool.approval(context())).rejects.toThrow('Conversation authority');expect(fake.approval).not.toHaveBeenCalled();
+   await expect(tool.approval.request(context())).rejects.toThrow();expect(fake.approval).not.toHaveBeenCalled();
    fake.query.mockResolvedValue({rows:[{agent:'helper',incarnation:inc,session_id:'wrun_test',member_id:'Owner-ID',admission_nonce:'a'.repeat(43),place_id:'place',audience_revision:1,policy_revision:1}]});
    fake.execute.mockResolvedValue('executed');fake.approval.mockResolvedValue('user-approval');
    await expect(tool.execute({},context())).resolves.toBe('executed');
-   await expect(tool.approval(context())).resolves.toBe('user-approval');
+   await expect(tool.approval.request(context())).rejects.toThrow('Exact approval');
+   expect(fake.approval).not.toHaveBeenCalled();
   });
  }
  it('an approval resolver cannot become a new human instruction',()=>{

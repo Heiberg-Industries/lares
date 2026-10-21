@@ -84,6 +84,10 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO users (id, display_name, primary_email) VALUES ($1, 'Fixture Second', 'second@fixture.test')`,
     [FIXTURE_SECOND]),
 
+  ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("approval_asks", "acting_member_id", member,
+    `INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash,acting_member_id) VALUES($1,$2,'fixture-agent','deadline_dismiss','fixture-hash',$3)`,
+    [`fixture-approval-${index}`,`fixture-call-${index}`,member])),
+
   // Personal connected-account metadata; account rows precede their selected resources.
   row("connected_accounts", "owner_member_id", FIXTURE_OWNER,
     `INSERT INTO connected_accounts (id, owner_member_id, connector_id, provider_issuer, provider_subject, provider_label, status)

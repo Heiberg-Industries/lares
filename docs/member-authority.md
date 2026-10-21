@@ -159,9 +159,44 @@ All four Vault read factories validate tagged console calls before store access;
 read/search/backlink calls use that stable member as their reader. Plain note listings and
 aggregate counts still have legacy scope limits. Both role catalogues check authority before
 execution and request-time approval policy evaluation, retaining Eve's durable descriptors.
-Approval-only resumes of bound console sessions fail closed until original-action authority
-is durably stored. The Waiting page keeps native Slack/Telegram ownership checks and transports
+Approval-only resumes of bound console sessions require the exact original-action authority
+described below. The Waiting page keeps native Slack/Telegram ownership checks and transports
 a separate stable resolver identity without inventing a private console binding.
 
 This remains a designated-owner console slice. It does not enable second-member access to
 unscoped screens, provide complete audience filtering or claim multi-user release acceptance.
+
+
+## Exact private approval execution
+
+`015_exact_approval_execution.sql` extends `approval_asks`; it does not replace the native
+approval ledger. A bound private console call reserves its immutable human actor, speaker,
+original turn, place/audience, runtime incarnation, payload hash, stable local target/content
+fingerprint, applied-definition/board fingerprint and expiry before a card is returned. Its
+request id is attached synchronously when Eve emits `input.requested`. Unattached reservations
+are excluded from card statistics. Legacy cards keep their existing recorder and supersede
+behavior; legacy best-effort recorders cannot grant or rewrite exact-call authority.
+
+Only `deadline_dismiss` currently has a reviewed local target adapter. It resolves an open
+deadline or unresolved candidate by the explicit acting member id, binds every stored field,
+and rechecks it under a row lock in the same transaction that dismisses it. It never falls back
+to the installation's legacy owner key. The current private-session binding, active designated
+owner, applied valid definition, runtime incarnation and permission board are also checked.
+The board is read freshly; its usual thirty-second cache and the admission contract's revision
+are not policy freshness evidence. Pending desired definitions cannot grant execution.
+This exact action always asks, while a current `never` setting still refuses.
+
+Both role catalogues retain durable request and response callbacks. The response authorizer
+checks the actual authenticated responder against the original private member and awaits the
+ledger approval transition before Eve may continue. The executor separately requires that
+attached, approved, unexpired exact call and unchanged raw input. Its returned provenance keeps
+the original actor/speaker/turn and names the resolver separately. It does not modify session
+authentication: resolving an approval supplies no new human instruction, and subsequent tools
+or fact writes do not inherit the original human's authority. Missing rows, unavailable storage,
+cancellation or changed member, binding, incarnation, target or policy refuse execution.
+
+Provider and unknown action targets remain unavailable in this strict path until their own
+reviewed account/resource adapters exist. Native approvals retain their previous behavior.
+The ledger's use count remains evidence, not an execution lock or an exactly-once guarantee.
+Local storage and pinned-framework regressions do not prove a live provider call, deployment,
+or complete multi-member isolation.

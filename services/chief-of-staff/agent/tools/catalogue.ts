@@ -1,4 +1,4 @@
-import { guardConsoleToolContext } from "@lares/agent-kit/console-turn-authority";
+import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
 //
 // `session.started`, never `turn.started`: the tool list is part of what the prompt cache keys
@@ -87,13 +87,18 @@ export default defineDynamic({
               // same answer; the wrapper exists only so eve can find it again after a restart.
               ...(tool.approval !== undefined
                 ? {
-                    approval: defineDurableCallback({
-                      closure: { name },
-                      callback: async (closure: { name: string }, ...args: unknown[]) => {
-                        await guardConsoleToolContext(args[0]);
-                        return (valueOf(closure.name).approval as (...a: unknown[]) => unknown)(...args);
-                      },
-                    }),
+                    approval: {
+                      request: defineDurableCallback({
+                        closure: { name },
+                        callback: async (closure: { name: string }, ctx: unknown) =>
+                          catalogueApprovalRequest(closure.name,ctx,valueOf(closure.name).approval),
+                      }),
+                      response: defineDurableCallback({
+                        closure: { name },
+                        callback: async (closure: { name: string }, ctx: unknown) =>
+                          catalogueApprovalResponse(closure.name,ctx),
+                      }),
+                    },
                   }
                 : {}),
               // Reaching the module-level `CATALOGUE` through the captured string `name` — the one
@@ -101,7 +106,7 @@ export default defineDynamic({
               execute: defineDurableCallback({
                 closure: { name },
                 callback: async (closure: { name: string }, input: unknown, toolCtx: unknown) => {
-                  await guardConsoleToolContext(toolCtx);
+                  await guardCatalogueExecution(toolCtx,closure.name,input);
                   return valueOf(closure.name).execute(input, toolCtx);
                 },
               }),

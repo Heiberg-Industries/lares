@@ -114,6 +114,7 @@
     "./durable-dynamic-tools": "./src/durable-dynamic-tools.ts",
     "./release-stale-workflow-locks": "./src/release-stale-workflow-locks.ts",
     "./repairs": "./src/repairs.ts",
+    "./approval-execution": "./src/approval-execution.ts",
     "./approval-ledger": "./src/approval-ledger.ts",
     "./approval-record-hook": "./src/approval-record-hook.ts",
     "./approval-supersede":"./src/approval-supersede.ts",
