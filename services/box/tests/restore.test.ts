@@ -448,3 +448,40 @@ exit 0`);
     expect(idx(/ up -d$/)).toBe(-1);
   });
 });
+
+it('refuses a missing prepared financial custody before stopping services or replacing any database',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('financial custody');expect(changes()).toEqual([]);
+});
+it('freezes prepared custody before the keeper stop while PostgreSQL stays running',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  const result=run(base());expect(result.code).toBe(0);
+  expect(idx(/budget-financial.ts freeze --host/)).toBeGreaterThanOrEqual(0);
+  expect(idx(/budget-financial.ts freeze --host/)).toBeLessThan(idx(/compose.* stop/));
+  expect(logLines().some(line=>/compose.* stop.*\bdb\b/.test(line))).toBe(false);
+});
+it('does not freeze prepared custody on dry-run',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  const result=run([...base(),'--dry-run']);expect(result.code).toBe(0);expect(idx(/budget-financial.ts/)).toBe(-1);expect(changes()).toEqual([]);
+});
+it('refuses a failed live and fallback financial freeze before service stop or drop',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  stub('docker','case " $* " in *" budget-financial.ts "*|*" /app/services/keeper/bin/budget-financial.ts "*) exit 1 ;; *" psql "*) echo "0 0 0" ;; *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE" ;; esac');
+  stub('pnpm','exit 1');
+  const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('not durably acknowledged');
+  expect(logLines().filter(line=>/compose.* stop|dropdb|createdb|pg_restore.* -d /.test(line))).toEqual([]);
+});
+it('refuses an unbound existing financial directory instead of treating it as a legacy installation',()=>{
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('financial custody');expect(changes()).toEqual([]);
+});
+
+it('reports prepared restored data as recovery-required without keeper or runtime readiness instructions',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('keeper startup refuses');
+  expect(result.all).not.toContain('Sign in to the console');expect(result.all).not.toContain('Apply each agent');expect(result.all).not.toContain('keeper started');expect(result.all).toContain('Keep agents stopped');
+});

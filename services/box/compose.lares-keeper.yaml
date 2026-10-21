@@ -24,6 +24,9 @@ services:
     cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
     command: [/app/services/keeper/node_modules/.bin/tsx, /app/services/keeper/bin/keeper.ts, serve]
     volumes:
+      # Dedicated host-only state namespace: never under ordinary /etc or /srv backups.
+      # The custody child is created ONLY by the explicit fresh-install ceremony.
+      - /var/lib/lares:/var/lib/lares
       - /var/run/docker.sock:/var/run/docker.sock
       - ${LARES_ROOT:?absolute keeper-owned root}:${LARES_ROOT:?absolute keeper-owned root}
       - ${LARES_KEEPER_CONFIG:?absolute config file}:/etc/lares/keeper.json:ro

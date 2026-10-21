@@ -325,6 +325,16 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
   });
 });
 describe('inactive journal-owned financial transactions on real PostgreSQL',()=>{
+  const expectUncertainHistory=(kind:'begin'|'proposal')=>{
+    const records=files.records(),firstFreeze=records.findIndex(frame=>frame.record.kind==='freeze');
+    expect(firstFreeze).toBeGreaterThanOrEqual(0);
+    const freezeTail=records.slice(firstFreeze);
+    expect(freezeTail.length).toBeGreaterThan(0);
+    expect(freezeTail.every(frame=>frame.record.kind==='freeze')).toBe(true);
+    for(const frame of freezeTail)expect(frame.record).toMatchObject({kind:'freeze',reason:'uncertain'});
+    expect(records.slice(0,firstFreeze).at(-1)?.record.kind).toBe(kind);
+    expect(records.some(frame=>frame.record.kind==='commit'||frame.record.kind==='abort')).toBe(false);
+  };
   let files:ReturnType<typeof journalFixture>,journal:HostFinancialJournal,writer:JournalBudgetFinancialWriter,selected:PgBudgetAdmissionStore;
   let faultKind:'proposal'|'commit'|undefined,delayProposal=false;
   beforeEach(()=>{
@@ -397,12 +407,14 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     const p=await prepared(),broken=loseAck('COMMIT');
     expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');expect(broken()).toBeTruthy();
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('admitted');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toHaveLength(1);
-    expect(files.records().at(-1).record.kind).toBe('proposal');await expect(selected.markUnknown((await db.query('SELECT id FROM budget_attempts')).rows[0].id)).rejects.toThrow('closed');
+    expectUncertainHistory('proposal');
+    await expect(selected.markUnknown((await db.query('SELECT id FROM budget_attempts')).rows[0].id)).rejects.toThrow('closed');
     journal.close();expect(()=>files.open()).toThrow('unavailable');
   });
   it('does not turn an uncertain BEGIN into a known abort after cleanup',async()=>{
     const p=await prepared(),broken=loseAck('BEGIN');expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
-    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect(files.records().at(-1).record.kind).toBe('begin');
+    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+    expectUncertainHistory('begin');expect(files.records().some(f=>f.record.kind==='proposal')).toBe(false);
     journal.close();expect(()=>files.open()).toThrow('unavailable');
   });
   it('records a known not-started abort when the actual pool refuses checkout',async()=>{
@@ -416,7 +428,8 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     await expect(writer.run('admit',boundary=>consoleSourceTransaction(db,async client=>{
       await client.query("UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1",[attempt]);noteBudgetFinancialChange(client,'budget_attempts',attempt);throw new Error('work failure');
     },boundary))).rejects.toThrow();
-    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect(files.records().at(-1).record.kind).toBe('begin');
+    expect(broken()).toBeTruthy();expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
+    expectUncertainHistory('begin');expect(files.records().some(f=>f.record.kind==='proposal')).toBe(false);
     expect((await selected.admit(p.ticket,p.observation,recovery())).state).toBe('unavailable');
   });
   it('a lost revoke-only COMMIT never finishes the financial proposal',async()=>{
@@ -426,7 +439,7 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
     writer.run=(async(operation,work)=>{loseAck('COMMIT');return originalRun(operation,work);}) as typeof writer.run;
     await expect(expiringFinancialWrite()).rejects.toThrow('could not be confirmed');
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');expect((await db.query('SELECT * FROM budget_financial_checkpoints')).rows).toEqual([]);
-    expect(files.records().at(-1).record.kind).toBe('proposal');expect(files.records().some(f=>f.record.kind==='commit'||f.record.kind==='abort')).toBe(false);
+    expectUncertainHistory('proposal');
     journal.close();expect(()=>files.open()).toThrow('unavailable');
   });
   it.each(['proposal','commit'] as const)('exposes no result after %s fsync failure',async phase=>{
