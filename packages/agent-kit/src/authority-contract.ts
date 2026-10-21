@@ -96,7 +96,7 @@ export const newConnectedAccountViewSchema = connectedAccountViewSchema.refine(a
   a.owner.kind !== 'organisation' || a.automationMode === 'draft-and-ask',
   'New company accounts begin draft-and-ask');
 export const resourceBindingSchema = z.strictObject({
-  id, connectedAccountId: id, resourceKind: id, externalId: id, providerLabel: id,
+  id, connectedAccountId: id, resourceKind: id, externalId: providerId, providerLabel: id,
   boundTo: z.strictObject({ kind: z.enum(['member', 'brand', 'organisation']), id }),
 });
 export type ResourceBinding = z.infer<typeof resourceBindingSchema>;
