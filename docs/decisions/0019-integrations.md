@@ -43,7 +43,7 @@ as an injected dependency rather than building its own client.
 
 **The connections list was hand-maintained and drifted.** `packages/agent-kit/src/connections.ts`
 was a hand-written array describing credential custody, secrets and instances per vendor, and
-comments elsewhere pointed at a registry file that no longer exists. Stale comments are exactly
+comments elsewhere pointed at `lib/integrations/registry.ts`, a file that no longer exists. Stale comments are exactly
 the drift a generated registry removes by construction.
 
 **A region field already exists and is enforced.** `packages/agent-kit/src/persona/capability-docs.ts`
