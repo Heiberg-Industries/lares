@@ -72,7 +72,7 @@ const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
   new Request(`https://console.example.invalid/api/chat/helper/${path}`, {
     method,
     headers: { cookie: `lares_session=abc; ${cookie}` },
-    ...(method === "POST" ? { body: '{"message":"hello"}' } : {}),
+    ...(method === "POST" ? { body: /\/(cancel|clear|compact|reset)$/.test(path) ? "{}" : '{"message":"hello"}' } : {}),
   });
 
 describe("the console's chat proxy", () => {
@@ -470,7 +470,7 @@ describe("stable console session binding", () => {
     const request = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({message:"hello",inputResponses:[]})});
     expect((await forwardChat(request,"helper",path,d)).status).toBe(400);
     expect(d.fetch).not.toHaveBeenCalled();
-    const resolver = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({inputResponses:[]})});
+    const resolver = new Request(mixed.url,{method:"POST",headers:mixed.headers,body:JSON.stringify({inputResponses:[{requestId:"fixture-card",optionId:"approve"}]})});
     expect((await forwardChat(resolver,"helper",path,d)).status).toBe(200);
     expect((d.fetch.mock.calls[0]![1]!.headers as Headers).get("x-lares-purpose")).toBe("resolver");
   });
@@ -489,4 +489,10 @@ describe("stable console session binding", () => {
     const path="eve/v1/session/wrun_A/stream";
     expect((await forwardChat(sessionRequest(path),"helper",path,d)).status).toBe(403);
   });
+});
+
+it('refuses callback destinations, observers, unknown fields and attachments before an upstream call',async()=>{
+ for(const payload of [{message:'hello',callback:{url:'https://example.invalid/output'}},{message:'hello',activityObserver:{}},{message:'hello',clientContext:'injected'},{message:'hello',mode:'task'},{message:'hello',outputSchema:{}},{message:'hello',unknown:true},{message:[{type:'file',mediaType:'text/plain',data:'https://example.invalid/file'}]}]){
+  const d=deps();expect((await forwardChat(post(JSON.stringify(payload)),'helper','eve/v1/session',d)).status).toBe(400);expect(d.fetch).not.toHaveBeenCalled();
+ }
 });

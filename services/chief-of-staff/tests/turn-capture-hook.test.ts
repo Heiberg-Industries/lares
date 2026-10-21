@@ -906,3 +906,17 @@ describe("turn-capture hook — origin (ADR-0020)", () => {
     expect(onlyEntry().principal).toBe(configuredOwnerId());
   });
 });
+
+it('suppresses every tagged private event, including normal, resumed, failed and cancelled exchanges', async()=>{
+ const privateAuth={authenticator:'lares-console',attributes:{lares_member_id:'synthetic-member',lares_admission_nonce:'a'.repeat(43),lares_purpose:'human'}};
+ const c=ctx({kind:'http',current:privateAuth});
+ await hook.onTurnStarted(started('private-turn'),c);
+ await hook.onMessageReceived(received('private-turn','PRIVATE_CANARY'),c);
+ await hook.onActionsRequested(actions('private-turn',[toolCall('gmail_read')]),c);
+ await hook.onMessageCompleted(completed('private-turn','stop','PRIVATE_REPLY_CANARY'),c);
+ await hook.onTurnCompleted(turnCompleted('private-turn'),c);
+ await hook.onTurnStarted(started('resumed-turn'),c);
+ await hook.onTurnDiscarded(turnFailed('resumed-turn'),c);
+ await hook.onTurnDiscarded(turnCancelled('resumed-turn'),c);
+ expect(capture).not.toHaveBeenCalled();
+});

@@ -31,6 +31,7 @@
  * other project. Query from inside the box; see
  * the traces write-up.
  */
+import { privateConsoleTracePolicy } from "@lares/agent-kit/private-console-surface";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import { resourceFromAttributes } from "@opentelemetry/resources";
@@ -162,5 +163,5 @@ export default defineInstrumentation({
   // someone else's data.
   //
   // Must be deterministic: eve documents that it may be invoked more than once per session.
-  tracePolicy: () => ({ emit: true, recordInputs: true, recordOutputs: true }),
+  tracePolicy: privateConsoleTracePolicy,
 });

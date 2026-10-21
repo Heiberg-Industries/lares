@@ -43,6 +43,14 @@ describe('actual Eve HTTP routes enforce authority independently of onMessage',(
     expect(response.status).toBe(401);expect(attachSession).not.toHaveBeenCalled();
    }
   });
+  it(`${role}: callback, observer, unknown modes and file input are rejected before Eve dispatch`,async()=>{
+   const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[boundRow()]});
+   const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');
+   const attachSession=vi.fn();
+   const payloads=[{message:'hello',callback:{url:'https://example.invalid/output'}},{message:'hello',activityObserver:{}},{message:'hello',clientContext:'injected'},{message:'hello',mode:'task'},{message:'hello',outputSchema:{}},{message:'hello',unknown:true},{message:[{type:'file',mediaType:'text/plain',data:'internalref:private'}]}];
+   for(const payload of payloads)expect((await route.handler(request('/eve/v1/session/wrun_test',payload),{params:{sessionId:'wrun_test'},attachSession})).status).toBe(401);
+   expect(attachSession).not.toHaveBeenCalled();expect(fake.query).not.toHaveBeenCalled();
+  });
   it(`${role}: approval-only continuation is a resolver and cannot be mixed with speech`,async()=>{
    const mod=await roleModule(role);fake.query.mockResolvedValue({rows:[boundRow()]});
    const route=mod.default.routes.find((r:any)=>r.method==='POST'&&r.path==='/eve/v1/session/:sessionId');

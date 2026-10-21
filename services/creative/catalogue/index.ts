@@ -15,6 +15,8 @@
 import type { Catalogue } from "@lares/agent-kit/catalogue";
 import { ALWAYS_PRESENT_CAPABILITY } from "@lares/agent-kit/catalogue";
 
+import agent_kit_signals_recent from "./agent-kit__signals_recent.js";
+import agent_kit_transit_plan from "./agent-kit__transit_plan.js";
 import set_language from "./set_language.js";
 import studio_ideate from "./studio_ideate.js";
 import vault_list from "./vault_list.js";
@@ -23,6 +25,8 @@ import vault_search from "./vault_search.js";
 import vault_write from "./vault_write.js";
 
 export const CATALOGUE: Catalogue = {
+  "agent-kit__signals_recent": { capability: "signals", tool: agent_kit_signals_recent },
+  "agent-kit__transit_plan": { capability: "transit", tool: agent_kit_transit_plan },
   // Not a capability: has no grant and no capability doc — `capabilityOfTool` returns
   // undefined for it by design. `ALWAYS_PRESENT` short-circuits it before any grant lookup.
   set_language: { capability: ALWAYS_PRESENT_CAPABILITY, tool: set_language },

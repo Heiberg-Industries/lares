@@ -1,3 +1,4 @@
+import { assertPrivateConsoleTool } from "../../src/private-console-surface.js";
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
@@ -32,7 +33,8 @@ export function createSignalsRecentTool(deps: SignalsRecentDeps) {
       project: z.string().optional(),
       limit: z.number().int().min(1).max(100).default(50),
     }),
-    async execute(query) {
+    async execute(query, ctx) {
+      assertPrivateConsoleTool(ctx, "creative", "agent-kit__signals_recent");
       try {
         const rows = await deps.recent(query);
         return { cards: rows.map(signalCard) };

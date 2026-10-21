@@ -466,47 +466,40 @@ describe("the depth rule", () => {
     expect(files.some((f) => f.endsWith("/src/google-auth.ts"))).toBe(false);
   });
 
-  it("treats a service's extension re-export as a re-export, not a hop — the kit body joins it", () => {
-    // NOT chief-of-staff: it answers `agent-kit__transit_plan` from its own catalogue and its
-    // copy of THIS EXACT mount is an unconditional `disableTool()` sentinel — a shape the
-    // "resolves a prefixed tool from the SERVICE'S OWN CATALOGUE…" case just below this one
-    // covers (using the chief of staff's tree). Creative is the one service that does not
-    // answer any agent-kit-prefixed tool itself — its `catalogue/` holds only its own authored tools
-    // (atlas_*, set_language, studio_ideate; no `agent-kit__*` entries at all) — so its
-    // `agent/extensions/agent-kit/tools/transit_plan.ts` mount is still a genuinely LIVE,
-    // unmoved re-export (`resolveExtensionTool(manifest, "transit", transit_plan)`, not a
-    // `disableTool()` sentinel — the depth rule's static read does not care that the creative agent's own
-    // `agent.json` never grants "transit" and so never actually exposes it at runtime; the lint
-    // inspects reachable CODE, not what one agent's declaration happens to grant today), which
-    // is exactly the shape this test's premise needs.
-    const found = sourcesForTool(
-      new URL("../../../services/creative", import.meta.url).pathname,
-      "agent-kit__transit_plan",
-    );
-    expect(found).not.toBeNull();
-    const files = found!.map((s) => s.file);
-    expect(files.some((f) => f.endsWith("/agent/extensions/agent-kit/tools/transit_plan.ts"))).toBe(true);
-    expect(files.some((f) => f.endsWith("/extension/tools/transit_plan.ts"))).toBe(true);
-    // entur-client is imported by the kit body — one hop from it.
-    expect(files.some((f) => f.endsWith("/src/entur-client.ts"))).toBe(true);
+  it("treats a live extension re-export as a re-export, not a hop — the kit body joins it", () => {
+    // Keep the live-mount branch independent of shipped roles: both now answer transit from
+    // their guarded catalogue and leave a disabled mount behind. The fixture still joins the
+    // real kit body and its real one-hop transport dependency.
+    const agentDir = mkdtempSync(join(tmpdir(), "write-shape-lint-mount-"));
+    try {
+      const tools = join(agentDir, "agent", "extensions", "agent-kit", "tools");
+      mkdirSync(tools, { recursive: true });
+      writeFileSync(join(tools, "transit_plan.ts"), 'import { transit_plan } from "@lares/agent-kit/tools";\nexport default transit_plan;\n');
+      const found = sourcesForTool(agentDir, "agent-kit__transit_plan");
+      expect(found).not.toBeNull();
+      const files = found!.map((source) => source.file);
+      expect(files.some((file) => file.endsWith("/agent/extensions/agent-kit/tools/transit_plan.ts"))).toBe(true);
+      expect(files.some((file) => file.endsWith("/extension/tools/transit_plan.ts"))).toBe(true);
+      expect(files.some((file) => file.endsWith("/src/entur-client.ts"))).toBe(true);
+    } finally {
+      rmSync(agentDir, { recursive: true, force: true });
+    }
   });
 
   it("returns null for a disableTool() sentinel", () => {
     expect(sourcesForTool(new URL("../../../services/chief-of-staff", import.meta.url).pathname, "bash")).toBeNull();
   });
 
-  it(
-    "resolves a prefixed tool from the SERVICE'S OWN CATALOGUE when the mount is a disabled " +
-      "sentinel — not from the dead mount",
-    () => {
-      // The chief of staff's real, committed shape: agent/extensions/agent-kit/tools/transit_plan.ts is
-      // an unconditional disableTool(), and agent-kit__transit_plan is answered instead
-      // from services/chief-of-staff/catalogue/agent-kit__transit_plan.ts. Before the fix this returned
-      // `null` — "disabled, skip" — because sourcesForTool only ever looked at the mount.
-      const found = sourcesForTool(new URL("../../../services/chief-of-staff", import.meta.url).pathname, "agent-kit__transit_plan");
+  it.each(["chief-of-staff", "creative"])(
+    "%s: resolves a prefixed tool from its catalogue when the mount is disabled",
+    (role) => {
+      // Both shipped roles keep the mount disabled and expose the guarded catalogue entry.
+      // The scanner must inspect that live entry instead of skipping the tool as disabled.
+      const found = sourcesForTool(new URL(`../../../services/${role}`, import.meta.url).pathname, "agent-kit__transit_plan");
       expect(found).not.toBeNull();
       const files = found!.map((s) => s.file);
       expect(files.some((f) => f.endsWith("/catalogue/agent-kit__transit_plan.ts"))).toBe(true);
+      expect(files.some((f) => f.endsWith("/agent/extensions/agent-kit/tools/transit_plan.ts"))).toBe(false);
       // The kit body still joins at depth 0, exactly as it does when the mount itself is live —
       // a thin re-export is a thin re-export whichever directory it sits in.
       expect(files.some((f) => f.endsWith("/extension/tools/transit_plan.ts"))).toBe(true);

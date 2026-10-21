@@ -40,3 +40,10 @@ it('a schedule-opened session joins only once it asks the owner something, then 
  expect(db.query.mock.calls[0][0]).toMatch(/^UPDATE agent_conversations/);
  expect(db.query.mock.calls[0][1]).toEqual(['example',env.LARES_AGENT_INCARNATION,'wrun_push',true]);
 });
+
+it('never projects tagged private lifecycle or approval events',async()=>{
+ const db={query:vi.fn()};const auth={attributes:{lares_member_id:'synthetic-private'}};
+ const ctx={session:{id:'private',auth:{initiator:auth}},channel:{kind:'http'}};
+ for(const type of ['session.started','input.requested','session.waiting','session.completed','session.failed','session.reset'])await observeConversation({type},ctx as never,db,env);
+ expect(db.query).not.toHaveBeenCalled();
+});

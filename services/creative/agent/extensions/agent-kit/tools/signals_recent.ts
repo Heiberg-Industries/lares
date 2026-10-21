@@ -1,6 +1,3 @@
-import { signals_recent } from "@lares/agent-kit/tools";
-import { resolveExtensionTool } from "@lares/agent-kit/manifest";
-
-import manifest from "../../../../agent.json";
-
-export default resolveExtensionTool(manifest, "signals", signals_recent);
+// Contributed through the session-scoped, guarded catalogue instead.
+import { disableTool } from "eve/tools";
+export default disableTool();

@@ -1,4 +1,5 @@
 // Public eve hook/route seam; no workflow table access and no address-based reset.
+import { hasConsoleTurnAuthorityTag } from './console-turn-authority.js';
 import { getPool } from './db.js';
 type Database = { query(sql:string, values?:unknown[]):Promise<{rows:Record<string,unknown>[]}> };
 interface Context { session:{id:string;parent?:unknown;auth?:{initiator?:{principalId?:string;principalType?:string}|null}};channel:{kind?:string} }
@@ -11,6 +12,7 @@ function identity(env:NodeJS.ProcessEnv) {
 const LIFECYCLE=['session.started','session.waiting','session.completed','session.failed','session.reset'];
 const TERMINAL=['session.completed','session.failed','session.reset'];
 export async function observeConversation(event:{type:string},ctx:Context,db?:Database,env:NodeJS.ProcessEnv=process.env):Promise<void> {
+  if (hasConsoleTurnAuthorityTag(ctx)) return;
   const door = ctx.channel.kind?.replace(/^channel:/, '');
   const own=identity(env);if(!own||ctx.session.parent||!['slack','telegram','http'].includes(door??''))return;
   const terminal=TERMINAL.includes(event.type);
@@ -27,7 +29,8 @@ export async function observeConversation(event:{type:string},ctx:Context,db?:Da
     if(!terminal)return;
     try {
       await (db??getPool()).query(`UPDATE agent_conversations SET observed_at=now(),terminal=terminal OR $4
-        WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3`,[own.name,own.incarnation,ctx.session.id,terminal]);
+        WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3
+        AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3)`,[own.name,own.incarnation,ctx.session.id,terminal]);
     } catch { console.warn('[conversations] projection unavailable'); }
     return;
   }
@@ -38,6 +41,7 @@ async function upsert(own:{name:string;incarnation:string},sessionId:string,door
   try {
     await (db??getPool()).query(`INSERT INTO agent_conversations(agent,incarnation,session_id,door,terminal)
       SELECT $1,$2::uuid,$3,$4,$5 WHERE EXISTS(SELECT 1 FROM agent_resources WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token AND state='ready')
+      AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=$1 AND b.incarnation=$2::uuid AND b.session_id=$3)
       ON CONFLICT(agent,incarnation,session_id) DO UPDATE SET observed_at=now(),terminal=agent_conversations.terminal OR EXCLUDED.terminal`,[own.name,own.incarnation,sessionId,door,terminal]);
     await (db??getPool()).query(`DELETE FROM agent_conversations WHERE agent=$1 AND incarnation=$2::uuid AND session_id IN (SELECT session_id FROM agent_conversations WHERE agent=$1 AND incarnation=$2::uuid ORDER BY observed_at DESC OFFSET 500)`,[own.name,own.incarnation]);
   } catch { console.warn('[conversations] projection unavailable'); }
@@ -49,7 +53,8 @@ export async function resetConversation(input:ResetInput,attach:(id:string)=>Res
   if(!own||input.incarnation!==own.incarnation) throw new Error('Runtime incarnation mismatch');
   if(input.confirm!==true||!/^wrun_[A-Za-z0-9_-]{1,200}$/.test(input.sessionId))throw new Error('Confirmed exact session required');
   const {rows}=await db.query(`SELECT c.session_id FROM agent_conversations c JOIN agent_resources r ON r.name=c.agent AND r.ownership_token=c.incarnation
-    WHERE c.agent=$1 AND c.incarnation=$2::uuid AND c.session_id=$3 AND r.runtime_control_token=r.ownership_token AND NOT r.pending AND r.state='ready'`,[own.name,own.incarnation,input.sessionId]);
+    WHERE c.agent=$1 AND c.incarnation=$2::uuid AND c.session_id=$3 AND r.runtime_control_token=r.ownership_token AND NOT r.pending AND r.state='ready'
+    AND NOT EXISTS(SELECT 1 FROM console_session_bindings b WHERE b.agent=c.agent AND b.incarnation=c.incarnation AND b.session_id=c.session_id)`,[own.name,own.incarnation,input.sessionId]);
   if(!rows.length)throw new Error('Session is not owned by this runtime');
   // reset retires exactly this handle. It may cancel work/approvals; the owner explicitly confirms.
   const result=await attach(input.sessionId).reset({reason:'Owner requested a fresh conversation from the console'});

@@ -15,6 +15,7 @@
 //
 // Never throws: a failed resolver takes its turn's instructions with it, and there is nothing
 // here worth a lost turn.
+import { verifyPrivateConsoleSession } from "@lares/agent-kit/private-console-surface";
 import { defineState } from "eve/context";
 import { defineDynamic, defineInstructions } from "eve/instructions";
 
@@ -30,6 +31,7 @@ const language = defineState<string | null>(LANGUAGE_STATE_KEY, () => null);
 export default defineDynamic({
   events: {
     "turn.started": async (_event: unknown, ctx?: ResolveCtx) => {
+      if (await verifyPrivateConsoleSession(ctx)) return defineInstructions({ markdown: languageInstruction(language.get(), undefined) });
       try {
         const { loaded } = await thisAgent(ctx?.session?.id);
         return defineInstructions({
