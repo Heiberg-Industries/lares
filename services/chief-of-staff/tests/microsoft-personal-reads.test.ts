@@ -60,6 +60,17 @@ describe('private Microsoft reads, real SDKs',()=>{
     expect(String(refresh.body)).toContain('grant_type=refresh_token');expect(String(refresh.body)).not.toContain('.default');
     expect(resourceCalls()[0].url.searchParams.get('$top')).toBe('2');
   });
+  it('preserves positive-offset window instants in actual SDK mail and calendar queries',async()=>{
+    const operation=personalReadOperationSchema.parse({kind:'mailWindow',window:{from:'2026-10-01T00:00:00+02:00',until:'2026-10-02T00:00:00+02:00',limit:1}});
+    if(operation.kind!=='mailWindow')throw new Error('Unexpected fixture operation');
+    const adapter=await open();
+    await adapter.listMail(operation.window);
+    await adapter.listCalendar('selected-calendar',operation.window);
+    const [mailRequest,calendarRequest]=resourceCalls();
+    expect(mailRequest.url.searchParams.get('$filter')).toBe('receivedDateTime ge 2026-09-30T22:00:00.000Z and receivedDateTime lt 2026-10-01T22:00:00.000Z');
+    expect(calendarRequest.url.searchParams.get('startDateTime')).toBe('2026-09-30T22:00:00.000Z');
+    expect(calendarRequest.url.searchParams.get('endDateTime')).toBe('2026-10-01T22:00:00.000Z');
+  });
   it('validates a returned signed refresh ID token without using sub or email as account authority',async()=>{
     idToken=true;claims={sub:'different-sub',email:'another@example.invalid'};
     await expect(open()).resolves.toBeDefined();expect(calls.some(c=>c.url.pathname.endsWith('/keys'))).toBe(true);

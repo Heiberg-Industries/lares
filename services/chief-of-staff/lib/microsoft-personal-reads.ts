@@ -92,8 +92,9 @@ export async function microsoftPersonalReads(args:{settings:MicrosoftReadSetting
   if(tokens.refresh_token)await args.persistRotation(encryptSecret(tokens.refresh_token,settings.tokenKeyHex));
   return {
     async listMail(window) {
+      // Graph SDK query values are not escaped; UTC avoids '+' offset decoding as a space.
       const page=await get<{value?:Message[];'@odata.nextLink'?:string}>('/me/messages','id,receivedDateTime',{
-        '$filter':`receivedDateTime ge ${window.from} and receivedDateTime lt ${window.until}`,'$top':window.limit+1,'$orderby':'receivedDateTime asc'});
+        '$filter':`receivedDateTime ge ${timestamp(window.from)} and receivedDateTime lt ${timestamp(window.until)}`,'$top':window.limit+1,'$orderby':'receivedDateTime asc'});
       if(!Array.isArray(page.value))throw new PersonalReadError();
       const refs=page.value.slice(0,window.limit+1).map(m=>({id:requiredId(m.id),receivedAt:timestamp(m.receivedDateTime)}));
       if(refs.some(m=>!inWindow(m.receivedAt,window)))throw new PersonalReadError();
@@ -111,7 +112,7 @@ export async function microsoftPersonalReads(args:{settings:MicrosoftReadSetting
     async listCalendar(input,window) {
       const id=requiredId(input);
       const page=await get<{value?:Event[];'@odata.nextLink'?:string}>(`/me/calendars/${encodeURIComponent(id)}/calendarView`,
-        'id,subject,start,end,isAllDay,location,isCancelled',{startDateTime:window.from,endDateTime:window.until,'$top':window.limit+1});
+        'id,subject,start,end,isAllDay,location,isCancelled',{startDateTime:timestamp(window.from),endDateTime:timestamp(window.until),'$top':window.limit+1});
       if(!Array.isArray(page.value))throw new PersonalReadError();
       const items:PrivateEvent[]=page.value.slice(0,window.limit).map(e=>({id:requiredId(e.id),summary:optionalText(e.subject),
         start:eventTime(e.start),end:eventTime(e.end),startTimeZone:e.start?.timeZone??null,endTimeZone:e.end?.timeZone??null,
