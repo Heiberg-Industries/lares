@@ -68,7 +68,7 @@ import {
 // a READ tool can resolve a Drive client without importing this file, which also
 // holds Gmail send and Calendar writes — the write-shape lint follows imports.
 export { GoogleUnenrolledError, type GoogleOrgConfig } from "./google-orgs.js";
-import { GoogleUnenrolledError, orgConfig, type GoogleOrgConfig } from "./google-orgs.js";
+import { GoogleUnenrolledError, orgConfig, personalOrgConfig, type GoogleOrgConfig } from "./google-orgs.js";
 
 // -----------------------------------------------------------------------------------------
 // Gmail — client construction + adapter + MIME. The egress-proxy pinning lives inside the
@@ -151,7 +151,7 @@ export function bindPersonalGoogleDeadline(auth: ReturnType<typeof buildOAuth2Cl
  * The narrow client never leaves the account store's locked callback.
  */
 export function personalGmailReader(credential: { refreshTokenEnc: string; orgId: string }, signal: AbortSignal): Pick<GmailClient, "search" | "read"> {
-  const cfg = orgConfig(credential.orgId);
+  const cfg = personalOrgConfig(credential.orgId);
   const refreshToken = decryptSecret(credential.refreshTokenEnc, readTokenEncKey());
   const auth = buildOAuth2Client(cfg, refreshToken);
   bindPersonalGoogleDeadline(auth, signal);

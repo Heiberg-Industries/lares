@@ -13,6 +13,7 @@ import { WorkflowStorage } from './workflow-storage.js';
 import { KeeperRefusedError } from './actions.js';
 import { verifyCurrentStateSchema, deleteAgentCurrentState } from './agent-current-state.js';
 import { runtimeSecret, verifySecretRoot } from './secret-permissions.js';
+import { googleSecretFiles, personalGoogleConfig, personalGoogleEnabled, verifyGoogleSecretSources } from './personal-google.js';
 import { bindingsFor, verifyBindingSources, INTEGRATION_SECRET_FILES, isRetiredRole } from './runtime-bindings.js';
 import { LiteLLMGatewayKeys, gatewayModels, type GatewayKeyProvisioner } from './gateway-keys.js';
 import { readSetting } from './settings.js';
@@ -38,7 +39,7 @@ function outsideTokensOf(d: AgentDefinition): { outsideTokens?: string[] } {
     return names.length ? { outsideTokens: names } : {};
 }
 const outsideTokenFiles = (secretsDir: string, name: string, tokens?: readonly string[]) => (tokens ?? []).map(t => join(secretsDir, outsideSecretName(name, t)));
-function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d), ...outsideTokensOf(d) })).digest('hex'); }
+function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JSON.stringify({ role: d.role, doors: doorsOf(d), personalGoogle: personalGoogleEnabled(d), ...outsideTokensOf(d) })).digest('hex'); }
 /** All callers run within the audited definition action AND namespace advisory lock.
  * Partial failures leave resources and pending state for an explicit reconcile; never auto replay. */
 export class AgentLifecycle {
@@ -130,12 +131,13 @@ export class AgentLifecycle {
             if (notionRevision)
                 binding = { ...binding, secrets: { ...binding.secrets, NOTION_TOKEN_FILE: join(this.paths.secretsDir, INTEGRATION_SECRET_FILES.NOTION_TOKEN_FILE) } };
         }
+        const personalGoogle = personalGoogleEnabled(d) ? personalGoogleConfig(r.google) : undefined;
         const managedRevision = binding?.secrets.NOTION_TOKEN_FILE ? notionRevision : undefined;
         if (binding?.secrets.NOTION_TOKEN_FILE && notionRevision === null) {
             const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
             binding = { ...binding, secrets };
         }
-        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, endpoints: c.egress.endpoints } };
+        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, endpoints: c.egress.endpoints } };
     }
     private async render(override?: {
         name: string;
@@ -264,6 +266,7 @@ export class AgentLifecycle {
             if(!token.rows.length)throw new KeeperRefusedError('Selected Google mailbox is no longer connected');
             a.email={principal:e.principal,org:e.org,mailbox:e.mailbox,revision:e.revision,owner:e.owner_email,tokenKeyFile:config.tokenKeyFile,...client};
         }
+        verifyGoogleSecretSources(a);
         // One approver per agent: the owner of the earliest claim among the connections in use.
         // The rows are already in claim order, so this is the same answer whatever order they arrive in.
         const used=rows.filter(c=>c.kind==='email'?!!a.email:a.claims!.some(x=>x.kind===c.kind));
@@ -329,6 +332,7 @@ export class AgentLifecycle {
         const candidate=this.container(row ?? { name, address: '192.0.2.2', workflow_database: 'lares_preflight' }, d, await this.notionRevision(), await this.notionGranted());
         verifyBindingSources(candidate.bindings);
         if(doorsOf(d).some(x=>x.kind==='email'&&x.enabled))await this.connections(candidate,true);
+        verifyGoogleSecretSources(candidate);
         // Build the allow-list now so a refusal happens before the definition is stored. A new agent has no resource row yet.
         if (create) this.refuseUnknownGrants(name, d); else await this.plan({ name, definition: d });
     }
@@ -377,12 +381,13 @@ export class AgentLifecycle {
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Runtime reconciliation in progress',updated_at=now() WHERE name=$1", [name]);
         const a = await this.connections(this.container(row, d, await this.notionRevision(), await this.notionGranted()),true);
         verifyBindingSources(a.bindings);
+        verifyGoogleSecretSources(a);
         this.verifySecrets(this.paths.secretsDir);
         const controlSecret = join(this.paths.secretsDir, `${name}-runtime-control`);
         try { const fd = openSync(controlSecret, 'wx', 0o600); try { writeFileSync(fd, randomBytes(32).toString('hex')); fsyncSync(fd); } finally { closeSync(fd); } }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
         this.provisionSecret(controlSecret);
-        for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, ...Object.values(a.bindings?.secrets ?? {}), ...(a.email?[a.email.tokenKeyFile,a.email.clientIdFile,a.email.clientSecretFile]:[]), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
+        for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, ...Object.values(a.bindings?.secrets ?? {}), ...googleSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
@@ -411,7 +416,7 @@ export class AgentLifecycle {
             const a = await this.connections(this.container(row, row.applied_definition, null, await this.notionGranted()), false);
             verifyBindingSources(a.bindings);
             for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
-                ...Object.values(a.bindings?.secrets ?? {}), ...(a.email ? [a.email.tokenKeyFile, a.email.clientIdFile, a.email.clientSecretFile] : []),
+                ...Object.values(a.bindings?.secrets ?? {}), ...googleSecretFiles(a),
                 ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)]) {
                 const st = lstatSync(path);
                 if (!st.isFile() || st.isSymbolicLink() || st.nlink !== 1 || !st.size) throw new KeeperRefusedError('Existing runtime secrets unavailable');

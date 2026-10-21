@@ -90,3 +90,24 @@ it("accepts only the named generated slot and one explicit administrator", () =>
     expect(error.message).not.toContain("synthetic-secret");
   }
 });
+
+it('loads digit-leading canonical Google orgs while preserving exact legacy keys', () => {
+  const f=fixture(), image='example/runtime@sha256:'+'a'.repeat(64);
+  const client={clientIdFile:join(f.dir,'client-id'),clientSecretFile:join(f.dir,'client-secret')};
+  const lifecycle={network:'fixture_default',subnet:'172.18.0.0/24',reservedAddresses:[],
+    composeFile:join(f.dir,'compose.yaml'),egressDir:f.dir,imageByRole:{'chief-of-staff':image,creative:image},
+    proxyContainer:'lares-proxy',squidImage:image,firewallImage:image,adminDb:f.config.db,
+    workflowTemplate:'template',workflowOwner:'lares',installationPrepared:true,
+    runtime:{databaseUrl:'postgres://lares@db/lares',workflowServer:'postgres://lares@db/',gatewayUrl:'https://gateway.example',
+      proxyUrl:'http://proxy:8888',passwordFile:join(f.dir,'password'),gatewayKeys:{},
+      google:{tokenKeyFile:join(f.dir,'token-key'),clients:{'123':client,'1acme':client,ac_me:client,'old-client':client,['legacy'+'a'.repeat(40)]:client}}},
+    egress:{endpoints:{},legacyConsumers:[],internalNetworks:[],directDestinations:[],infrastructureHosts:[]}};
+  const load=(clients:Record<string,typeof client>)=>{
+    writeFileSync(f.file,JSON.stringify({...f.config,lifecycle:{...lifecycle,runtime:{...lifecycle.runtime,google:{...lifecycle.runtime.google,clients}}}}));
+    return loadKeeperConfig(f.file).lifecycle!.runtime.google!;
+  };
+  const clients=lifecycle.runtime.google.clients, loaded=load(clients);
+  expect(loaded.clients).toEqual(clients);expect(loaded.principal).toBeUndefined();
+  for(const org of ['123','1acme','0','1'.repeat(32)])expect(load({[org]:client}).clients).toEqual({[org]:client});
+  for(const org of ['1ac-me','1_acme','ACME','../acme','1'.repeat(33)])expect(()=>load({[org]:client})).toThrow('invalid configuration');
+});

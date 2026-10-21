@@ -18,6 +18,15 @@ import gmailSearch from '../catalogue/gmail_search.js';
 import { __setTestGmailApiFactory } from '../lib/google.js';
 import { PERSONAL_MAILBOX_REFUSED } from '../lib/personal-gmail.js';
 import { quiet } from './helpers/quiet-pool.js';
+vi.mock('node:fs', async importOriginal => {
+  const original = await importOriginal<typeof import('node:fs')>();
+  return { ...original, readFileSync: (path: Parameters<typeof original.readFileSync>[0], ...args: unknown[]) => {
+    const fixed: Record<string,string> = { '/run/secrets/google-token-key': '1'.repeat(64),
+      '/run/secrets/personal-google-acme-id': 'fixture-client', '/run/secrets/personal-google-acme-secret': 'fixture-secret' };
+    if (typeof path === 'string' && Object.hasOwn(fixed,path)) return fixed[path];
+    return (original.readFileSync as (...args: unknown[]) => unknown)(path,...args);
+  } };
+});
 
 const incarnation = '11111111-1111-4111-8111-111111111111';
 const nonce = 'a'.repeat(43);
@@ -66,7 +75,8 @@ beforeEach(async () => {
   vi.stubEnv('LARES_AGENT_NAME', 'helper'); vi.stubEnv('LARES_AGENT_INCARNATION', incarnation);
   vi.stubEnv('AGENT_OWNER_USER_ID', 'member-a'); vi.stubEnv('LARES_EMAIL_ORG', 'acme');
   vi.stubEnv('LARES_GOOGLE_CLIENT_ID_FILE', join(dir, 'client')); vi.stubEnv('LARES_GOOGLE_CLIENT_SECRET_FILE', join(dir, 'secret'));
-  vi.stubEnv('TOKEN_ENC_KEY_FILE', join(dir, 'key'));
+  vi.stubEnv('TOKEN_ENC_KEY_FILE', '/run/secrets/google-token-key');
+  vi.stubEnv('LARES_PERSONAL_GOOGLE_CLIENTS',JSON.stringify({acme:{clientIdFile:'/run/secrets/personal-google-acme-id',clientSecretFile:'/run/secrets/personal-google-acme-secret'}}));
   // Tempting legacy defaults must never choose the mailbox in tagged console context.
   vi.stubEnv('GMAIL_PRIMARY_EMAIL', 'another@example.invalid'); vi.stubEnv('GOOGLE_PRINCIPAL_ID', 'member-b');
   await getPool().query('DELETE FROM console_session_bindings; DELETE FROM connected_accounts; DELETE FROM oauth_tokens; DELETE FROM agent_resources; DELETE FROM agent_definitions');
@@ -148,7 +158,7 @@ describe('private console Gmail catalogue execution', () => {
   it.each(['connector','scope','custody-generation','org-client','subject'])('refuses wrong %s before SDK construction', async kind => {
     const own = await account('member-a', 'subject-a', kind === 'connector' ? 'other' : 'google', kind === 'scope' ? ['openid'] : [scope]);
     if (kind === 'custody-generation') await getPool().query('UPDATE connected_account_credentials SET account_generation=1');
-    if (kind === 'org-client') vi.stubEnv('LARES_EMAIL_ORG', 'different');
+    if (kind === 'org-client') vi.stubEnv('LARES_PERSONAL_GOOGLE_CLIENTS', '{}');
     if (kind === 'subject') await getPool().query("UPDATE connected_resource_bindings SET external_id='different' WHERE resource_kind='mailbox'");
     await expect(gmailSearch.execute({ query: 'x', selection: own.selection }, ctx())).rejects.toThrow(PERSONAL_MAILBOX_REFUSED);
     expect(credentials).toEqual([]);
