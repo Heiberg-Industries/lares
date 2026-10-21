@@ -56,6 +56,43 @@ async function window(accountId:string,member:string|null,opening='0'){
   const id=randomUUID();await db.query(`INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,$3,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',$4,1,0)`,[id,accountId,member,opening]);
   await db.query('UPDATE budget_accounts SET active_window_id=$2 WHERE id=$1',[accountId,id]);return id;
 }
+/** Observe entry to the budget lock only after the real authority checks completed. */
+async function admitAcrossDeadline(p:Awaited<ReturnType<typeof prepared>>,validUntil:string){
+  const other=quiet(new Pool({connectionString:container.getConnectionUri(),max:1})),locker=await other.connect();
+  let entered!:()=>void;const budgetLock=new Promise<void>(resolve=>{entered=resolve;});
+  const observed={connect:async()=>{const client=await db.connect();return {release:()=>client.release(),query:(sql:string,values?:unknown[])=>{
+    if(sql.startsWith("SELECT * FROM budget_accounts WHERE id=$1 AND kind='installation' FOR UPDATE"))entered();
+    return client.query(sql,values);
+  }};}} as unknown as Pool;
+  let pending:ReturnType<PgBudgetAdmissionStore['admit']>|undefined;
+  try{
+    await locker.query('BEGIN');await locker.query('SELECT id FROM budget_accounts WHERE id=$1 FOR UPDATE',[installation]);
+    pending=new PgBudgetAdmissionStore(observed,env()).admit(p.ticket,p.observation,recovery());
+    await Promise.race([budgetLock,pending.then(()=>{throw new Error('Admission stopped before the budget lock');})]);
+    await locker.query("SELECT pg_sleep(GREATEST(0,extract(epoch FROM ($1::timestamptz-clock_timestamp())))+0.025)",[validUntil]);
+    await locker.query('COMMIT');return await pending;
+  }finally{
+    await locker.query('ROLLBACK');locker.release();await pending;await other.end();
+  }
+}
+async function resumeFixture(deadline:'action'|'approval',option:'approve'|'cancel'='approve'){
+  const callId=randomUUID(),requestId=randomUUID(),actionId=randomUUID(),payloadHash=h('expiry-payload');
+  const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId:context().session.id,originalTurnId:'turn-1',originalCallId:callId,accountId:'expiry-account',accountGeneration:0,resourceBindingId:'mailbox',connectorId:'example',kind:'mail.send' as const};
+  const delay=option==='approve'?1500:-1000;
+  // This immutable fixture is born with a short deadline; no evidence/clock is rewritten.
+  const row=(await db.query(`INSERT INTO personal_actions(id,payload_version,actor_member_id,agent,incarnation,session_id,original_turn_id,original_call_id,original_call_hash,account_id,account_generation,resource_binding_id,connector_id,kind,payload_hash,payload_ciphertext,approval_call_id,approval_request_id,state,created_at,expires_at)
+    SELECT $1,1,'member-a','helper',$2,$3,'turn-1',$4,$5,'expiry-account',0,'mailbox','example','mail.send',$6,'opaque-fixture',NULL,NULL,'awaiting_approval',t-interval '1 hour',t+(CASE WHEN $7='action' THEN $8 ELSE 3600000 END*interval '1 millisecond') FROM(SELECT clock_timestamp() AS t)c RETURNING *`,
+    [actionId,incarnation,selection.sessionId,callId,h(callId),payloadHash,deadline,delay])).rows[0];
+  const action={actionId,payloadHash,expiresAt:row.expires_at.toISOString(),state:row.state,attemptId:null,receipt:null};
+  await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,asked_at,answered_at)
+    SELECT $1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,$7,clock_timestamp()-interval '24 hours'+(CASE WHEN $8='approval' THEN $9 ELSE 3600000 END*interval '1 millisecond'),clock_timestamp()`,
+    [callId,requestId,PERSONAL_MAIL_SEND_TOOL,payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('policy'))),selection.sessionId,option==='approve'?'approved':'cancelled',deadline,delay]);
+  await db.query('UPDATE personal_actions SET approval_call_id=$2,approval_request_id=$3,state=$4 WHERE id=$1',[actionId,callId,requestId,option==='approve'?'awaiting_dispatch':'cancelled']);
+  const human=context(),resume={session:{...human.session,turn:{id:'resume-turn',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:option,lares_purpose:'resolver'}}}}};
+  const current=await requirePrivateConsoleResume(resume,'model',{db,env:env()}),requestHash=h(randomUUID()),bindingId=bindings['member-a:helper']!;
+  const ticket=await store.prepareIntent(resume,{bindingId,requestHash,profileHash:profile});
+  return {ticket,bindingId,validUntil:current.validUntil,observation:{requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent:'helper',incarnation,purposeAlias:'standard'}};
+}
 beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   db=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:1000}));
@@ -203,6 +240,32 @@ describe('inactive budget admission on real PostgreSQL',()=>{
       const q=await prepared(),writer=await other.connect();await writer.query('BEGIN');await writer.query("SELECT id FROM orgs WHERE id='org' FOR UPDATE");
       const pending=store.admit(q.ticket,q.observation,recovery());await writer.query("UPDATE org_member_policy SET spend_cap_usd_month=0 WHERE user_id='member-a'");await writer.query('COMMIT');writer.release();expect((await pending).state).toBe('denied');
     }finally{await other.end();}
+  });
+  it('refuses a delegated member whose locked grant expires during the installation lock wait',async()=>{
+    const grants=new PgGrantStore(db),current=await grants.agentAccess('member-a','helper');
+    await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:current!.accessRevision,grants:[{principal:{kind:'member',id:'member-b'},permission:'use',expiresAt:new Date(Date.now()+1500).toISOString()}]});
+    await freshConsoleSessions();const p=await prepared('member-b');
+    const deadline=(await db.query("SELECT expires_at::text FROM resource_grants WHERE principal_member_id='member-b' AND revoked_at IS NULL")).rows[0].expires_at;
+    expect(await admitAcrossDeadline(p,deadline)).toEqual({state:'denied',reason:'Budget authority is unavailable or changed'});
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
+    expect((await store.readStatus(context('member-a'),'installation')).liability).toBe('0');
+  });
+  it.each(['action','approval'] as const)('refuses model approval continuation when its locked %s expires during the budget wait',async deadline=>{
+    const p=await resumeFixture(deadline);
+    expect(await admitAcrossDeadline(p,p.validUntil)).toEqual({state:'denied',reason:'Budget authority is unavailable or changed'});
+    expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('retired');
+  });
+  it.each(['action','approval'] as const)('preserves model cancellation continuation after %s expiry',async deadline=>{
+    const p=await resumeFixture(deadline,'cancel');expect((await store.admit(p.ticket,p.observation,recovery())).state).toBe('allowed');
+  });
+  it('gives the same generic denial for member and installation cap exhaustion',async()=>{
+    await db.query("UPDATE users SET org_role='member' WHERE id='member-b'");await freshConsoleSessions();
+    await db.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+    await admitted('member-a');const p=await prepared('member-b');
+    const denied={state:'denied',reason:'Budget authority is unavailable or changed'};
+    expect(await store.admit(p.ticket,p.observation,recovery())).toEqual(denied);
+    await expect(store.readStatus(context('member-b'),'installation')).rejects.toThrow('scope denied');
+    await cap('member-b','0');const q=await prepared('member-b');expect(await store.admit(q.ticket,q.observation,recovery())).toEqual(denied);
   });
   it('never mints a permit when commit succeeded but its acknowledgement was lost',async()=>{
     const p=await prepared();

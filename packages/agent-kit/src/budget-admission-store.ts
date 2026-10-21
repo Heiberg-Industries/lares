@@ -6,6 +6,7 @@ import type { Pool, PoolClient } from 'pg';
 import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAuthority,
   type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
 import { privateResolverAdmission, requirePrivateConsoleResume, requirePersistedPrivateConsoleModelResume } from './private-console-resume.js';
+import { PgGrantStore } from './grant-store.js';
 import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
 
@@ -73,16 +74,23 @@ export class PgBudgetAdmissionStore {
     const binding=await requireConsoleSessionBinding({agent:own.name,incarnation:own.incarnation,sessionId:session.id,...admission},db,this.env);
     return {kind:'human',binding,turnId:session.turn.id,turnSequence:session.turn.sequence!};
   }
-  private async validate(db:PoolClient,ref:Ref):Promise<void> {
+  private async validate(db:PoolClient,ref:Ref):Promise<string|null> {
+    let resumeValidUntil:string|null=null;
     const own=managedIdentity(this.env);
     if(!own||own.name!==ref.binding.agent||own.incarnation!==ref.binding.incarnation)throw new Error('Stale runtime');
     if(ref.kind==='resume') {
       if(!ref.resume)throw new Error('Missing resume');
-      await requirePersistedPrivateConsoleModelResume({binding:ref.binding,...ref.resume},{db,env:this.env});
+      const current=await requirePersistedPrivateConsoleModelResume({binding:ref.binding,...ref.resume},{db,env:this.env});
+      if(ref.resume.optionId==='approve')resumeValidUntil=current.validUntil;
     }else if(ref.kind==='human'){
       const current=await requireConsoleSessionBinding(ref.binding,db,this.env);
       if(payloadFingerprint('budget-binding',current)!==payloadFingerprint('budget-binding',ref.binding))throw new Error('Stale authority');
     }else throw new Error('Unsupported authority');
+    const grant=await new PgGrantStore().captureUseWithExpiry(ref.binding.memberId,ref.binding.agent,{expectedRevision:ref.binding.agentAccessRevision,db});
+    if(!grant)throw new Error('Stale grant');
+    // All authority evidence is locked before budget locks. Only immutable time deadlines
+    // cross the lock wait; the final transition compares them using the database clock.
+    return (await db.query('SELECT LEAST($1::timestamptz,$2::timestamptz)::text AS valid_until',[grant.validUntil,resumeValidUntil])).rows[0].valid_until;
   }
   private async locks(db:PoolClient,installationId:string,memberId:string,bindingId?:string):Promise<{installation:Row;member:Row;binding?:Row}> {
     const installation=(await db.query('SELECT * FROM budget_accounts WHERE id=$1 AND kind=\'installation\' FOR UPDATE',[installationId])).rows[0];
@@ -139,7 +147,8 @@ export class PgBudgetAdmissionStore {
         if(!discovered||discovered.state!=='prepared'||!discovered.authority_reference)return undefined;
         const ref=discovered.authority_reference as Ref;
         if(payloadFingerprint('budget-authority',ref)!==discovered.authority_hash)return undefined;
-        try{await this.validate(db,ref);}catch{
+        let authorityValidUntil:string|null;
+        try{authorityValidUntil=await this.validate(db,ref);}catch{
           await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1 AND state='prepared'",[discovered.id]);return undefined;
         }
         await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[ref.binding.memberId]);
@@ -147,7 +156,7 @@ export class PgBudgetAdmissionStore {
         await db.query('SELECT id FROM budget_attempts WHERE id=$1 FOR UPDATE',[discovered.id]);
         const a=(await db.query('SELECT *,expires_at>clock_timestamp() AS fresh FROM budget_attempts WHERE id=$1',[discovered.id])).rows[0];
         if(a.state!=='prepared')return undefined;
-        const deny=async(reason?:string)=>{await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1",[a.id]);return reason?{reason}:undefined;};
+        const deny=async()=>{await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1",[a.id]);return undefined;};
         if(!a.fresh||!b||b.state!=='active'||m.live_member_id!==ref.binding.memberId||b.live_member_id!==m.live_member_id||!await this.ready(db,i)||!await this.ready(db,m)||
           i.policy_generation!==a.installation_policy_generation||m.policy_generation!==a.member_policy_generation||i.active_window_id!==a.installation_window_id||m.active_window_id!==a.member_window_id||
           i.selected_endpoint!==a.endpoint_hash||i.endpoint_generation!==a.endpoint_generation||i.recovery_epoch!==a.recovery_epoch||
@@ -156,18 +165,18 @@ export class PgBudgetAdmissionStore {
           observation.agent!==b.agent||observation.incarnation!==b.incarnation||observation.purposeAlias!==b.purpose_alias||b.profile_hash!==a.profile_hash||b.endpoint_hash!==a.endpoint_hash||b.credential_generation!==a.credential_generation)return deny();
         const iCap=await this.cap(db,i),mCap=await this.cap(db,m),iLiability=await this.liability(db,i),mLiability=await this.liability(db,m);
         if(iCap===null||mCap===null||iLiability===null||mLiability===null)return deny();
-        if(totalUnits(mLiability)+units(a.reserved_amount)>units(mCap))return deny('Member spend cap reached');
-        if(totalUnits(iLiability)+units(a.reserved_amount)>units(iCap))return deny('Installation spend cap reached');
+        if(totalUnits(mLiability)+units(a.reserved_amount)>units(mCap))return deny();
+        if(totalUnits(iLiability)+units(a.reserved_amount)>units(iCap))return deny();
         const admitted=await db.query(`UPDATE budget_attempts SET state='admitted',admitted_at=clock_timestamp() WHERE id=$1 AND expires_at>clock_timestamp()
+          AND ($4::timestamptz IS NULL OR $4::timestamptz>clock_timestamp())
           AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$2 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp())
-          AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$3 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp()) RETURNING id`,[a.id,i.active_window_id,m.active_window_id]);
+          AND EXISTS(SELECT 1 FROM budget_windows WHERE id=$3 AND starts_at<=clock_timestamp() AND ends_at>clock_timestamp()) RETURNING id`,[a.id,i.active_window_id,m.active_window_id,authorityValidUntil]);
         if(admitted.rows.length!==1)return deny();
         return {attemptId:a.id as string,bindingId:b.id as string,requestHash:a.request_hash as string};
       });
       if(!admitted)return DENIED;
       // Denial carries no account/aggregate metadata. The caller may separately ask
       // readStatus using its current authenticated context and authorised scope.
-      if('reason' in admitted)return {state:'denied',reason:admitted.reason};
       // Only acknowledged COMMIT reaches this statement. An admitted retry NEVER mints again.
       const permit=Object.freeze({kind:'budget-dispatch-permit' as const});permits.set(permit,admitted);
       return {state:'allowed',permit,attemptId:admitted.attemptId};
