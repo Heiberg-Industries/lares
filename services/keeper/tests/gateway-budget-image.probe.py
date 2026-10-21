@@ -26,13 +26,15 @@ ALIAS = "lares-brain"
 TOKENS = 1000
 CONCURRENCY = 4
 ERROR_CODES = frozenset(("none", "unclassified", "transport_failure", "budget_exceeded", "authentication_error", "invalid_request_error", "rate_limit_exceeded", "model_not_found", "permission_denied", "not_found", "api_error"))
-STAGES = frozenset(("fixture-provisioning", "serial-sdk-anthropic", "serial-sdk-openai-compatible", "serial-spend-reconcile", "serial-member-refusal", "serial-installation-refusal", "sdk-refusal-seed", "sdk-refusal-reconcile", "sdk-refusal-anthropic", "sdk-refusal-openai-compatible", "restore-seed", "restore-reconcile", "restore-dump", "restore-stop", "restore-drop-database", "restore-create-database", "restore-import", "restore-start", "restore-ready", "restore-spend-reconcile", "restore-budget-refusal"))
+STAGES = frozenset(("fixture-provisioning", "serial-sdk-anthropic", "serial-sdk-openai-compatible", "serial-spend-reconcile", "serial-member-refusal", "serial-installation-refusal", "sdk-refusal-seed", "sdk-refusal-reconcile", "sdk-refusal-policy-read", "sdk-refusal-policy-write", "sdk-refusal-policy-verify", "sdk-refusal-restart", "sdk-refusal-ready", "sdk-refusal-anthropic", "sdk-refusal-openai-compatible", "restore-seed", "restore-reconcile", "restore-policy-read", "restore-policy-write", "restore-policy-verify", "restore-dump", "restore-stop", "restore-drop-database", "restore-create-database", "restore-import", "restore-start", "restore-ready", "restore-spend-reconcile", "restore-budget-refusal"))
+ROUTES = ("chat-completions", "messages", "other")
 
 # Runs from the built role image, using only Node's standard library. No
 # mock_response: LiteLLM's real OpenAI adapter parses these usage fields.
 UPSTREAM = r"""
 import http from 'node:http';
 let count=0, held=[], mode='normal', streams=0, trapCount=0;
+const routes={'chat-completions':0,messages:0,other:0};
 const reply=(r,b)=>{
  const id='chatcmpl-fixture-'+count;
  if(b.stream){
@@ -53,8 +55,10 @@ http.createServer(async(q,r)=>{
   const b=raw?JSON.parse(raw):{};
   if(b.mode)mode=b.mode;
   if(b.release){const pending=held;held=[];mode='normal';for(const f of pending)f();}
-  r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({count,held:held.length,streams,trapCount}));return;
+  r.writeHead(200,{'content-type':'application/json'});r.end(JSON.stringify({count,held:held.length,streams,trapCount,routes}));return;
  }
+ const route=q.url==='/v1/chat/completions'?'chat-completions':q.url==='/v1/messages'?'messages':'other';
+ routes[route]++;
  if(q.url!=='/v1/chat/completions'){r.writeHead(404);r.end();return;}
  count++;reply(r,JSON.parse(raw));
 }).listen(8080,'0.0.0.0');
@@ -72,9 +76,15 @@ import {setTimeout as delay} from 'node:timers/promises';
 const x=JSON.parse(readFileSync(0,'utf8'));
 const base='/app/services/chief-of-staff/';
 const require=createRequire(base+'package.json');
-let requests=0;
+let requests=0;const httpRequests=[];
 const original=globalThis.fetch;
-globalThis.fetch=async(...a)=>{requests++;return original(...a);};
+globalThis.fetch=async(...a)=>{
+ requests++;
+ let route='other';
+ try{const path=new URL(typeof a[0]==='string'||a[0] instanceof URL?a[0]:a[0].url).pathname;route=path==='/v1/messages'?'messages':path==='/v1/chat/completions'?'chat-completions':'other';}catch{}
+ const entry={route,status:0};if(httpRequests.length<100)httpRequests.push(entry);
+ const response=await original(...a);entry.status=response.status;return response;
+};
 const errorCodes=new Set(['budget_exceeded','authentication_error','invalid_request_error','rate_limit_exceeded','model_not_found','permission_denied','not_found','api_error']);
 const diagnostic=(error)=>{
  let current=error,status=null,errorCode='unclassified',sdkFailure='unclassified';
@@ -121,7 +131,7 @@ if(x.kind==='classify'){
    const fn=new Function('classifyModelCallError','setTimeout','log','return ('+source.slice(start,end)+')')(classifyModelCallError,delay,{warn(){}});
    await fn(one,{sessionId:'fixture',turnId:'fixture'},new AbortController().signal);
   }else await one();
-  console.log(JSON.stringify({ok:true,requests,attempts}));
+  console.log(JSON.stringify({ok:true,requests,attempts,httpRequests}));
  }catch(e){
   if(e.message==='installed outer retry function moved'){
    console.log(JSON.stringify({harnessFailure:'installed-retry-layout-changed'}));
@@ -129,7 +139,7 @@ if(x.kind==='classify'){
   }
   const options={refusalText:'FIXED_BUDGET_REFUSAL',dialect:'telegram'};
   const first=respondToTurnFailed(e,options),second=respondToSessionFailed(e,options);
-  console.log(JSON.stringify({ok:false,requests,attempts,...diagnostic(e),recognized:isBudgetExceeded(e),classification:classifyModelCallError(e),visibleRefusals:[first,second].filter(v=>v.kind==='budget-refusal').length,silentSession:second.kind==='silent'}));
+  console.log(JSON.stringify({ok:false,requests,attempts,httpRequests,...diagnostic(e),recognized:isBudgetExceeded(e),classification:classifyModelCallError(e),visibleRefusals:[first,second].filter(v=>v.kind==='budget-refusal').length,silentSession:second.kind==='silent'}));
  }
 }
 """
@@ -154,6 +164,19 @@ class InfrastructureError(ProbeError):
     """Setup/API failures must not be presented as proven enforcement failures."""
 
 
+class CommandError(InfrastructureError):
+    def __init__(self, returncode, stderr):
+        super().__init__("disposable command failed (raw diagnostics withheld)")
+        # Classify in memory; persist only this closed vocabulary and exit code.
+        reasons = (("is being accessed by other users", "database-in-use"),
+                   ("connection refused", "connection-refused"),
+                   ("password authentication failed", "authentication-failed"),
+                   ("permission denied", "permission-denied"),
+                   ("is not running", "container-not-running"))
+        reason = next((label for marker,label in reasons if marker in stderr.lower()), "unclassified")
+        self.diagnostic = {"exitClass":"signal" if returncode<0 else "exit", "exitCode":returncode if -255<=returncode<=255 else None, "reason":reason}
+
+
 def require(condition, message):
     if not condition:
         raise ProbeError(message)
@@ -163,7 +186,7 @@ def shell(*args, input=None, timeout=120, check=True):
     result = subprocess.run(args, input=input, capture_output=True, text=True, timeout=timeout)
     if check and result.returncode:
         # Container/SDK diagnostics may contain full keys, fragments or bodies.
-        raise InfrastructureError("disposable command failed (raw diagnostics withheld)")
+        raise CommandError(result.returncode, result.stderr)
     return result.stdout.strip()
 
 
@@ -252,9 +275,21 @@ def sdk_diagnostic(result):
     out["classification"]=result.get("classification") if result.get("classification") in ("terminal","retry","recoverable") else "unclassified"
     out["recognized"]=result.get("recognized") is True
     out["silentSession"]=result.get("silentSession") is True
+    entries=result.get("httpRequests")
+    out["httpRequests"]=[]
+    for entry in entries[:100] if isinstance(entries,list) else []:
+        if isinstance(entry,dict):
+            out["httpRequests"].append({"route":entry.get("route") if entry.get("route") in ROUTES else "other", "status":http_diagnostic(entry)["status"]})
     if result.get("harnessFailure")=="installed-retry-layout-changed":
         out["harnessFailure"]="installed-retry-layout-changed"
     return out
+
+
+def route_counts(control):
+    counts=control.get("routes",{})
+    if not isinstance(counts,dict) or any(type(counts.get(route)) is not int or not 0<=counts[route]<=1000000 for route in ROUTES):
+        raise InfrastructureError("synthetic route counters are missing or invalid")
+    return {route:counts[route] for route in ROUTES}
 
 
 def quote(value):
@@ -442,12 +477,36 @@ class Topology:
 
     def staged_shell(self, stage, *args, **kwargs):
         self.stage(stage)
-        return shell(*args,**kwargs)
+        try:
+            return shell(*args,**kwargs)
+        except CommandError as error:
+            self.proof["cases"][-1]["commandDiagnostic"]=error.diagnostic
+            raise
 
     def sdk(self, mode, key, lane, outer=False):
+        before=route_counts(self.control())
         result=sdk_diagnostic(self.node({"kind":"sdk","url":"http://"+mode+":4000","key":key,"lane":lane,"outer":outer}))
+        after=route_counts(self.control())
+        result["upstreamRouteDelta"]={route:after[route]-before[route] for route in ROUTES}
         self.proof["cases"][-1].setdefault("sdkRequests",[]).append({"stage":self.proof["cases"][-1]["stage"],"lane":lane,"outer":outer,**result})
         return result
+
+    def exhaust_member_policy(self, mode, team, member, stage_prefix):
+        # Pinned v1.101.6 schema: litellm/proxy/schema.prisma, BudgetTable and
+        # TeamMembership. Verify the actual linked policy before/after mutation;
+        # never manufacture spend or infer cache invalidation from this change.
+        query=f'''SELECT json_build_object('spend',m.spend,'maxBudget',b.max_budget) FROM "LiteLLM_TeamMembership" m JOIN "LiteLLM_BudgetTable" b ON m.budget_id=b.budget_id WHERE m.team_id={quote(team)} AND m.user_id={quote(member)};'''
+        self.stage(stage_prefix+"-policy-read")
+        before=json.loads(self.sql(mode,query))
+        if not (type(before.get("spend")) in (int,float) and type(before.get("maxBudget")) in (int,float) and math.isclose(before["spend"],self.cost,rel_tol=1e-5) and math.isclose(before["maxBudget"],100*self.cost,rel_tol=1e-5)):
+            raise InfrastructureError("seeded member spend or linked usable policy differs from fixture")
+        self.stage(stage_prefix+"-policy-write")
+        self.sql(mode,f'''UPDATE "LiteLLM_BudgetTable" b SET max_budget={self.cost*.5} FROM "LiteLLM_TeamMembership" m WHERE m.budget_id=b.budget_id AND m.team_id={quote(team)} AND m.user_id={quote(member)};''')
+        self.stage(stage_prefix+"-policy-verify")
+        after=json.loads(self.sql(mode,query))
+        if not (type(after.get("spend")) in (int,float) and type(after.get("maxBudget")) in (int,float) and after["spend"]==before["spend"] and math.isclose(after["maxBudget"],self.cost*.5,rel_tol=1e-5) and after["spend"]>after["maxBudget"]):
+            raise InfrastructureError("exhausted member policy did not persist with seed spend unchanged")
+        self.proof["cases"][-1]["fixturePolicy"]={"source":"disposable linked member policy", "initialCapUsd":before["maxBudget"], "exhaustedCapUsd":after["maxBudget"], "persistedMemberSpendUsd":after["spend"], "spendUnchanged":True, "cacheInvalidation":"not asserted; subsequent refusal uses a cold gateway"}
 
     def serial(self, mode):
         team,members,keys = self.fixture(mode,3.5,1.5)
@@ -479,18 +538,22 @@ class Topology:
         return {"pricedCalls":count,"persistedUsd":totals,"memberAggregatesTwoAgents":True,"installationAggregatesMembers":True,"observedRefusalStatus":result["status"]}
 
     def sdk_refusal(self, mode):
-        team,members,keys = self.fixture(mode,100,.5)
+        team,members,keys = self.fixture(mode,100,100)
         key = keys[members[0],"alpha"]
         require(self.diagnostic_call(mode,key,"sdk-refusal-seed")["status"]==200,"initial priced call failed")
         self.stage("sdk-refusal-reconcile")
         self.settled(mode,team,1)
+        self.exhaust_member_policy(mode,team,members[0],"sdk-refusal")
+        self.staged_shell("sdk-refusal-restart","docker","restart",self.name+"-"+mode)
+        self.stage("sdk-refusal-ready")
+        eventually(lambda:self.ready(mode),"gateway did not restart for cold SDK refusal",timeout=180,timeout_error=InfrastructureError)
         evidence = {}
         for lane in ("anthropic","openai-compatible"):
             self.stage("sdk-refusal-"+lane)
             before = self.count()
             result = self.sdk(mode,key,lane,outer=True)
             evidence[lane] = result
-            require(self.count()==before,"capped SDK retry reached upstream")
+            require(self.count()==before and all(delta==0 for delta in result["upstreamRouteDelta"].values()),"capped SDK retry reached upstream")
         # Preserve evidence even when the existing matcher/retry policy fails.
         self.proof["cases"][-1]["observations"] = evidence
         for result in evidence.values():
@@ -669,11 +732,12 @@ class Topology:
         return observations
 
     def restore(self, mode):
-        team,members,keys=self.fixture(mode,100,.5)
+        team,members,keys=self.fixture(mode,100,100)
         key=keys[members[0],"alpha"]
         require(self.diagnostic_call(mode,key,"restore-seed")["status"]==200,"pre-restore priced call failed")
         self.stage("restore-reconcile")
         self.settled(mode,team,1)
+        self.exhaust_member_policy(mode,team,members[0],"restore")
         db=self.name+"-"+mode+"-db"
         gateway=self.name+"-"+mode
         # Logical backup/restore of the gateway's OWN schema only. No engine SQL.

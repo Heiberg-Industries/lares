@@ -1,6 +1,7 @@
 """Offline guard regressions; no Docker, database, gateway or provider calls."""
 import importlib.util
 import pathlib
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
@@ -86,6 +87,7 @@ class BudgetProofGuards(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             topology=self.topology(folder)
             topology.node=Mock(return_value={"ok":False,"requests":1,"attempts":1,"status":400,"errorCode":"invalid_request_error","sdkFailure":"api-call","message":"sk-private-value","body":{"key":"sk-private-value"}})
+            topology.control=Mock(side_effect=[{"routes":{"chat-completions":0,"messages":0,"other":0}},{"routes":{"chat-completions":0,"messages":1,"other":0}}])
 
             def initial_sdk():
                 topology.stage("serial-sdk-anthropic")
@@ -98,6 +100,7 @@ class BudgetProofGuards(unittest.TestCase):
             self.assertEqual(row["stage"],"serial-sdk-anthropic")
             self.assertEqual(row["sdkRequests"][0]["status"],400)
             self.assertEqual(row["sdkRequests"][0]["errorCode"],"invalid_request_error")
+            self.assertEqual(row["sdkRequests"][0]["upstreamRouteDelta"],{"chat-completions":0,"messages":1,"other":0})
             self.assertNotIn("sk-private-value",topology.artifact.read_text())
 
     def test_seed_http_failure_is_preserved_without_response_body(self):
@@ -132,6 +135,7 @@ class BudgetProofGuards(unittest.TestCase):
             topology.count=Mock(return_value=0)
             topology.call=Mock(return_value={"status":200,"body":{}})
             topology.settled=Mock(return_value={})
+            topology.exhaust_member_policy=Mock()
 
             def command(*args,**kwargs):
                 if "dropdb" in args:
@@ -144,6 +148,84 @@ class BudgetProofGuards(unittest.TestCase):
             self.assertEqual(row["status"],"FAIL")
             self.assertEqual(row["stage"],"restore-drop-database")
             self.assertEqual(row["failureKind"],"harness-or-api-compatibility")
+
+    def test_command_diagnostics_keep_only_exit_and_fixed_reason(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            completed=subprocess.CompletedProcess([],1,"sk-private-output",'dropdb: error: database "private-db" is being accessed by other users sk-private-value')
+            with patch.object(probe.subprocess,"run",return_value=completed):
+                topology.case("fixture","restore",lambda:topology.staged_shell("restore-drop-database","docker","exec","private-container","dropdb"))
+            row=topology.proof["cases"][-1]
+            self.assertEqual(row["commandDiagnostic"],{"exitClass":"exit","exitCode":1,"reason":"database-in-use"})
+            self.assertEqual(row["failureKind"],"harness-or-api-compatibility")
+            for private in ("sk-private-output","private-db","sk-private-value","private-container"):
+                self.assertNotIn(private,topology.artifact.read_text())
+        unknown=probe.CommandError(-9,"sk-private-value")
+        self.assertEqual(unknown.diagnostic,{"exitClass":"signal","exitCode":-9,"reason":"unclassified"})
+        self.assertNotIn("sk-private-value",str(unknown))
+
+    def test_sdk_routes_are_bounded_and_unknown_paths_are_not_copied(self):
+        result=probe.sdk_diagnostic({"ok":False,"httpRequests":[{"route":"messages","status":404,"url":"sk-private-value"},{"route":"sk-private-value","status":700}]*100})
+        self.assertEqual(len(result["httpRequests"]),100)
+        self.assertEqual(result["httpRequests"][:2],[{"route":"messages","status":404},{"route":"other","status":0}])
+        self.assertNotIn("sk-private-value",str(result))
+        for bad in ({},{"routes":{"chat-completions":0,"messages":0,"other":"sk-private-value"}},{"routes":{"chat-completions":0,"messages":0,"other":-1}}):
+            with self.assertRaises(probe.InfrastructureError):
+                probe.route_counts(bad)
+        self.assertEqual(probe.route_counts({"routes":{"chat-completions":0,"messages":1,"other":2,"sk-private-value":3}}),{"chat-completions":0,"messages":1,"other":2})
+
+    def test_refusal_policy_changes_verified_cap_without_manufacturing_spend(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            topology.cost=1
+            topology.sql=Mock(side_effect=['{"spend":1,"maxBudget":100}',"UPDATE 1",'{"spend":1,"maxBudget":0.5}'])
+            topology.case("fixture","policy",lambda:topology.exhaust_member_policy("fixture","team","member","sdk-refusal"))
+            row=topology.proof["cases"][-1]
+            self.assertEqual(row["status"],"PASS")
+            self.assertEqual(row["fixturePolicy"]["persistedMemberSpendUsd"],1)
+            self.assertEqual(row["fixturePolicy"]["exhaustedCapUsd"],.5)
+            update=topology.sql.call_args_list[1].args[1]
+            self.assertIn('UPDATE "LiteLLM_BudgetTable"',update)
+            self.assertNotIn("SET spend",update)
+            self.assertEqual(topology.sql.call_args_list[0],topology.sql.call_args_list[2])
+
+    def test_missing_or_changed_policy_cannot_prove_exhaustion(self):
+        for initial,after in (({"spend":1,"maxBudget":.5},{"spend":1,"maxBudget":.5}),({"spend":1,"maxBudget":100},{"spend":2,"maxBudget":.5}),({"spend":1,"maxBudget":100},{"spend":1,"maxBudget":100})):
+            with self.subTest(initial=initial,after=after),tempfile.TemporaryDirectory() as folder:
+                topology=self.topology(folder)
+                topology.cost=1
+                topology.sql=Mock(side_effect=[probe.json.dumps(initial),"UPDATE 1",probe.json.dumps(after)])
+                topology.case("fixture","policy",lambda:topology.exhaust_member_policy("fixture","team","member","sdk-refusal"))
+                self.assertEqual(topology.proof["cases"][-1]["status"],"FAIL")
+                self.assertEqual(topology.proof["cases"][-1]["failureKind"],"harness-or-api-compatibility")
+
+    def test_sdk_refusal_seeds_usable_policy_and_restarts_before_testing(self):
+        with tempfile.TemporaryDirectory() as folder:
+            topology=self.topology(folder)
+            topology.name="fixture"
+            topology.fixture=Mock(return_value=("team",["member"],{("member","alpha"):"fixture-key"}))
+            topology.diagnostic_call=Mock(return_value={"status":200})
+            topology.settled=Mock()
+            topology.exhaust_member_policy=Mock()
+            topology.ready=Mock(return_value=True)
+            topology.count=Mock(return_value=0)
+            response={"ok":False,"recognized":True,"classification":"terminal","requests":1,"attempts":1,"visibleRefusals":1,"silentSession":True,"upstreamRouteDelta":dict.fromkeys(probe.ROUTES,0)}
+            def sdk(*args,**kwargs):
+                self.assertTrue(topology.ready.called)
+                topology.exhaust_member_policy.assert_called_once_with("fixture","team","member","sdk-refusal")
+                return response
+            topology.sdk=Mock(side_effect=sdk)
+            with patch.object(probe,"shell",return_value="") as command:
+                topology.case("fixture","sdk",lambda:topology.sdk_refusal("fixture"))
+            topology.fixture.assert_called_once_with("fixture",100,100)
+            command.assert_called_once_with("docker","restart","fixture-fixture")
+            self.assertEqual(topology.proof["cases"][-1]["status"],"PASS")
+            response["upstreamRouteDelta"]["messages"]=1
+            with patch.object(probe,"shell",return_value=""):
+                topology.exhaust_member_policy.reset_mock()
+                topology.case("fixture","sdk",lambda:topology.sdk_refusal("fixture"))
+            self.assertEqual(topology.proof["cases"][-1]["status"],"FAIL")
+            self.assertEqual(topology.proof["cases"][-1]["reason"],"capped SDK retry reached upstream")
 
     def test_unknown_member_server_error_is_not_a_safe_rejection(self):
         for status in (0, 500, 503):
