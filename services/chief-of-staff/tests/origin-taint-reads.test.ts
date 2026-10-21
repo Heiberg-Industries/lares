@@ -37,6 +37,7 @@ beforeEach(() => { vi.resetModules(); });
 // Notion mock was still active and read_url.ts checks the Notion branch first).
 afterEach(() => {
   vi.doUnmock("../lib/google.js");
+  vi.doUnmock("../lib/personal-gmail.js");
   vi.doUnmock("@lares/agent-kit/readability-client");
   vi.doUnmock("../lib/notion-page.js");
   vi.doUnmock("../lib/google-doc.js");
@@ -113,6 +114,15 @@ describe("read_url taints at the level the branch earned", () => {
     }));
     const tool = (await import("../catalogue/read_url.js")).default;
     await tool.execute({ url: "https://docs.google.com/document/d/doc-1" }, ctx);
+    expect((await freshTaint()).currentTaint(key)).toBe("third_party");
+  });
+});
+
+describe("personal mailbox listing taints provider-supplied labels", () => {
+  it("marks a successful listing as third_party", async () => {
+    vi.doMock("../lib/personal-gmail.js", () => ({ listPersonalMailboxes: async () => [{ label: "Provider-supplied label" }] }));
+    const tool = (await import("../catalogue/gmail_accounts.js")).default;
+    await tool.execute({}, ctx);
     expect((await freshTaint()).currentTaint(key)).toBe("third_party");
   });
 });
@@ -251,6 +261,7 @@ function catalogueToolNames(...serviceDirParts: string[]): string[] {
 const TAINTS: Record<string, ReadonlySet<string>> = {
   "chief-of-staff": new Set<string>([
     ...TAINTING_TOOLS.keys(), // gmail_read, gmail_search, read_url — the hook's own blanket coverage
+    "gmail_accounts", // self-taints provider-supplied account/mailbox labels
     "calendar_list_events", // self-taints on calendarId/account
     "person_lookup", // self-taints when the mail source finds something
     "calendar_conflicts", // self-taints unconditionally — reads beyond the primary calendar by design
