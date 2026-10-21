@@ -33,6 +33,8 @@ export const KNOWN_CAPABILITIES = [
   // definition.
   "outside",
   "person",
+  "personal_mailbox",
+  "personal_calendar",
   "read_url",
   "remind",
   // Read-only access to the persisted operational

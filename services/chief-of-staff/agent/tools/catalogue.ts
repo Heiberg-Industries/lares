@@ -1,4 +1,4 @@
-import { verifyPrivateConsoleSession, privateToolAllowed } from "@lares/agent-kit/private-console-surface";
+import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
@@ -69,7 +69,7 @@ export default defineDynamic({
     "session.started": async (_event: unknown, ctx?: ResolveCtx) => {
       const privateSession = await verifyPrivateConsoleSession(ctx);
       const { loaded } = await thisAgent(ctx?.session?.id);
-      const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => !privateSession || privateToolAllowed("chief-of-staff", name));
+      const names = grantedToolNames(CATALOGUE, loaded.definition).filter(name => privateSession ? privateToolAllowed("chief-of-staff", name) : !privateOnlyTool(name));
       // Eve requires authenticated button responses whenever this descriptor exists.
       // Native Telegram deliberately resumes with auth:null; its legacy executor check stays
       // authoritative. Bound console sessions retain their tagged initiator on cold replay.

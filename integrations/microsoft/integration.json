@@ -1,12 +1,15 @@
 {
   "id": "microsoft",
-  "name": "Microsoft work data consent",
+  "name": "Microsoft work mailbox and calendar",
   "provenance": "core",
   "concept": [
     "mailbox",
     "calendar"
   ],
-  "capability": [],
+  "capability": [
+    "personal_mailbox",
+    "personal_calendar"
+  ],
   "region": "global",
   "data_path": "non_eu_cloud",
   "outbound_hosts": [

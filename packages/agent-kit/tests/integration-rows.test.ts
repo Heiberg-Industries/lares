@@ -19,7 +19,8 @@ describe("the Connections rows", () => {
   });
 
   it("lists what the agent can do from the capability docs, never from the manifest's prose", () => {
-    expect([...rows.find((r) => r.id === "google")!.capabilities].sort()).toEqual(["calendar", "gmail"]);
+    expect([...rows.find((r) => r.id === "google")!.capabilities].sort()).toEqual(["calendar", "gmail", "personal_calendar", "personal_mailbox"]);
+    expect([...rows.find((r) => r.id === "microsoft")!.capabilities].sort()).toEqual(["personal_calendar", "personal_mailbox"]);
     expect(rows.find((r) => r.id === "slack")!.capabilities).toEqual([]);
   });
 

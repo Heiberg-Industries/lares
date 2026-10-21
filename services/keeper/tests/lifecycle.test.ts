@@ -10,7 +10,7 @@ import { WorkflowStorage } from '../lib/workflow-storage.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
-import { initialCredentialRecord } from '../lib/credential-state.js';
+import { credentialRecordSchema, initialCredentialRecord } from '../lib/credential-state.js';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
 let pg:StartedPostgreSqlContainer,pool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
 const definition:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/agent.json'),'utf8')),name:'bookkeeper',role:'creative',doors:[],grants:[]};
@@ -664,7 +664,7 @@ it('preflights all personal files before a definition save without affecting unr
  rmSync(google.clients.acme!.clientSecretFile);
  await expect(l.create('bookkeeper',definition)).resolves.toMatchObject({healthy:true});
  const before=readFileSync(config.composeFile,'utf8');events=[];
- await expect(l.prepare('bookkeeper',personalChief(),false)).rejects.toThrow('Google runtime files unavailable');
+ await expect(l.prepare('bookkeeper',personalChief(),false)).rejects.toThrow('Personal-read runtime files unavailable');
  expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
  const noGmail={...personalChief(),autonomy:{gmail:'never'}};
  await expect(l.prepare('bookkeeper',noGmail,false)).resolves.toBeUndefined();
@@ -711,4 +711,44 @@ it('preserves an all-legacy native email client and adds only canonical personal
  } finally {
   await pool.query("DELETE FROM agent_door_connections WHERE agent='bookkeeper'; DELETE FROM oauth_tokens WHERE principal='legacy-member'; DELETE FROM users WHERE id='legacy-member'");
  }
+});
+
+function personalMicrosoftFixture(tokenKeyFile=join(root,'secrets/personal-ms-key')) {
+ const configFiles={tenantIdFile:join(root,'secrets/ms-tenant'),clientIdFile:join(root,'secrets/ms-id'),clientSecretFile:join(root,'secrets/ms-secret'),tokenKeyFile};
+ for(const file of Object.values(configFiles))writeFileSync(file,'fixture');
+ config.runtime.microsoft=configFiles;return configFiles;
+}
+it('reconciles explicit neutral grants, retains applied mounts during pending changes and preserves rollback sources',async()=>{
+ const ms=personalMicrosoftFixture(),google=personalGoogleFixture();config.runtime.microsoft!.tokenKeyFile=google.tokenKeyFile;
+ const base={...definition,role:'chief-of-staff',grants:[],autonomy:{}},chief={...base,grants:[{capability:'personal_mailbox',scope:'read'},{capability:'personal_calendar',scope:'read'}]};
+ const l=lifecycle();writeFileSync(config.runtime.passwordFile,'fixture');writeFileSync(config.runtime.gatewayKeys.bookkeeper!,'fixture');
+ await l.create('bookkeeper',base);
+ const current=()=>parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ expect(current().environment.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE).toBeUndefined();
+ await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='bookkeeper'",[JSON.stringify(chief)]);
+ expect((await l.saved('bookkeeper',chief)).pending).toBe(true);expect(current().environment.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE).toBeUndefined();
+ await l.reconcile('bookkeeper',chief);
+ expect(current().environment.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE).toBe('/run/secrets/personal-microsoft-client-id');
+ expect(current().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeDefined();
+ const before=current();
+ const disconnecting=credentialRecordSchema.parse({...initialCredentialRecord(),phase:'disconnecting',
+  operation:{id:'11111111-1111-4111-8111-111111111111',kind:'disconnect'},effectiveRevision:null,
+  activationIntent:{previousRevision:null,targetRevision:null,inventoryRevision:'a'.repeat(64),prepared:true,finishing:false}});
+ l.setCredentialState(async()=>disconnecting);
+ await l.credentialPreflight(['bookkeeper']);await l.reconcileCredential('bookkeeper',null);
+ expect(current().secrets).toEqual(before.secrets);
+ for(const file of Object.values(ms).filter(file=>file!==ms.tokenKeyFile)) {
+  const content=readFileSync(file);rmSync(file);events=[];
+  await expect(l.credentialPreflight(['bookkeeper'])).rejects.toThrow();expect(events).toEqual([]);writeFileSync(file,content);
+ }
+ await pool.query("UPDATE agent_definitions SET definition=$1 WHERE name='bookkeeper'",[JSON.stringify(base)]);await l.saved('bookkeeper',base);await l.reconcile('bookkeeper',base);
+ expect(current().environment.LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE).toBeUndefined();expect(current().environment.LARES_PERSONAL_GOOGLE_CLIENTS).toBeUndefined();
+});
+it('preflights Microsoft-only sources before save and ignores unavailable ungranted sources',async()=>{
+ const ms=personalMicrosoftFixture(),l=lifecycle();await l.create('bookkeeper',definition);
+ const chief={...definition,role:'chief-of-staff',grants:[{capability:'personal_calendar',scope:'read'}],autonomy:{}};
+ await expect(l.prepare('bookkeeper',chief,false)).resolves.toBeUndefined();
+ rmSync(ms.clientSecretFile);const before=readFileSync(config.composeFile,'utf8');events=[];
+ await expect(l.prepare('bookkeeper',chief,false)).rejects.toThrow('Personal-read runtime files');expect(events).toEqual([]);expect(readFileSync(config.composeFile,'utf8')).toBe(before);
+ await expect(l.prepare('bookkeeper',{...chief,autonomy:{personal_calendar:'never'}},false)).resolves.toBeUndefined();
 });

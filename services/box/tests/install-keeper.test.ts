@@ -395,6 +395,15 @@ describe("the keeper the installer configures and starts", () => {
       expect(recreates()).toBe(0);
     });
 
+    it("preserves explicit Microsoft-only runtime settings on installer rerun", () => {
+      expect(install().code).toBe(0);
+      const config=readKeeperConfig();
+      const microsoft={tenantIdFile:"/srv/secrets/ms-tenant",clientIdFile:"/srv/secrets/ms-id",clientSecretFile:"/srv/secrets/ms-secret",tokenKeyFile:"/srv/secrets/token-key"};
+      config.lifecycle.runtime.microsoft=microsoft;
+      writeFileSync(keeperConfigPath(),JSON.stringify(config,null,2)+"\n");keeperIsRunning();
+      expect(install().code).toBe(0);expect(readKeeperConfig().lifecycle.runtime.microsoft).toEqual(microsoft);expect(recreates()).toBe(0);
+    });
+
     it("restarts a running keeper when its settings changed", () => {
       expect(install().code).toBe(0);
       keeperIsRunning();

@@ -547,8 +547,33 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Personal Gmail read and search refuse without the keeper-generated client-to-file mapping; unrelated capabilities can still start.",
+    breaksWithout: "Personal Google mailbox and calendar reads refuse without the keeper-generated client-to-file mapping; unrelated capabilities can still start.",
     readAt: ["services/chief-of-staff/lib/google-orgs.ts:95", "services/keeper/lib/compose-agents.ts:167"],
+  },
+
+  {
+    name: "LARES_PERSONAL_MICROSOFT_TENANT_ID_FILE",
+    readers: ["chief-of-staff"], source: "installer", requiredFor: [], fallback: null, secret: false,
+    breaksWithout: "Private Microsoft reads refuse without the keeper-mounted tenant ID; stored status is not provider health.",
+    readAt: ["services/chief-of-staff/lib/personal-read-runtime.ts", "services/keeper/lib/compose-agents.ts"],
+  },
+  {
+    name: "LARES_PERSONAL_MICROSOFT_CLIENT_ID_FILE",
+    readers: ["chief-of-staff"], source: "installer", requiredFor: [], fallback: null, secret: false,
+    breaksWithout: "Private Microsoft reads refuse without the keeper-mounted client ID; stored status is not provider health.",
+    readAt: ["services/chief-of-staff/lib/personal-read-runtime.ts", "services/keeper/lib/compose-agents.ts"],
+  },
+  {
+    name: "LARES_PERSONAL_MICROSOFT_CLIENT_SECRET_FILE",
+    readers: ["chief-of-staff"], source: "installer", requiredFor: [], fallback: null, secret: false,
+    breaksWithout: "Private Microsoft reads refuse without the keeper-mounted client secret; stored status is not provider health.",
+    readAt: ["services/chief-of-staff/lib/personal-read-runtime.ts", "services/keeper/lib/compose-agents.ts"],
+  },
+  {
+    name: "LARES_PERSONAL_MICROSOFT_TOKEN_KEY_FILE",
+    readers: ["chief-of-staff"], source: "installer", requiredFor: [], fallback: null, secret: false,
+    breaksWithout: "Private Microsoft reads refuse without the keeper-mounted shared custody encryption key; stored status is not provider health.",
+    readAt: ["services/chief-of-staff/lib/personal-read-runtime.ts", "services/keeper/lib/compose-agents.ts"],
   },
 
   // ── The managed Google email flow (keeper-written) ────────────────────────────────────────
@@ -1184,7 +1209,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: false,
-    breaksWithout: "Microsoft own-account data consent requires this fixed work tenant UUID; separate from console sign-in. No runtime Graph access is enabled.",
+    breaksWithout: "Microsoft own-account data consent requires this fixed work tenant UUID; separate from console sign-in. Private runtime reads require separate explicit grants and fixed mounts.",
     readAt: ["services/console/lib/microsoft-account-oauth.ts (microsoftDataSettings through readSecret)"],
   },
   {
@@ -1204,7 +1229,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: true,
-    breaksWithout: "Microsoft own-account data consent requires this owner-supplied data client id; separate from console sign-in. No runtime Graph access is enabled.",
+    breaksWithout: "Microsoft own-account data consent requires this owner-supplied data client id; separate from console sign-in. Private runtime reads require separate explicit grants and fixed mounts.",
     readAt: ["services/console/lib/microsoft-account-oauth.ts (microsoftDataSettings through readSecret)"],
   },
   {
@@ -1224,7 +1249,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: null,
     secret: true,
-    breaksWithout: "Microsoft own-account data consent requires this owner-supplied data client secret; separate from console sign-in. No runtime Graph access is enabled.",
+    breaksWithout: "Microsoft own-account data consent requires this owner-supplied data client secret; separate from console sign-in. Private runtime reads require separate explicit grants and fixed mounts.",
     readAt: ["services/console/lib/microsoft-account-oauth.ts (microsoftDataSettings through readSecret)"],
   },
   {

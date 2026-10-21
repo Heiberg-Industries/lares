@@ -1,11 +1,11 @@
-# Consent preparation only; provider acceptance is still unverified.
+# Consent and explicit private read wiring; live provider acceptance is still unverified.
 tier: none
 rules:
   live-probe: done             # Committed manual read-only consent probe; not run without a controlled work account.
   region-declared: done        # Integration manifest declares global / non_eu_cloud.
-  outbound-declared: done      # Fixed login.microsoftonline.com and graph.microsoft.com consent endpoints.
-  secrets-declared: done       # Data-client secret files declared in manifest and settings inventory, distinct from console login.
+  outbound-declared: done      # Fixed login.microsoftonline.com and graph.microsoft.com consent and private read endpoints.
+  secrets-declared: done       # Data-client secret files declared in manifest and settings inventory, distinct from console login; runtime uses explicit fixed mounts.
   no-telemetry: done           # SDK custom middleware excludes telemetry; local transport test asserts no sdkversion header.
-  contract-tests: done         # Offline OIDC signature/claims and official Graph SDK boundary tests.
+  contract-tests: done         # Offline OIDC/Graph transport, current authority/custody, private tool and mount tests.
   shared-request-path: done    # openid-client and official Microsoft Graph SDK; no hosted token broker.
   credential-tested: todo      # Live tenant consent and actual own resources deferred to first technical-user pilot.
