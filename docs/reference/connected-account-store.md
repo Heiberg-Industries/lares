@@ -113,10 +113,47 @@ a second pool connection. Errors contain no provider or credential details.
 Mail bodies retain quoted, bounded pages and third-party taint. Personal console reads report
 sender history as `I could not check`; they do not consult another account's sent mailbox.
 This slice enables only read/search. Signatures, calendar, drafting/sending and shared/company
-accounts have no personal-account execution path here. The matching stored OAuth client must
-already be mounted in the runtime; an unavailable or different client refuses, with no account
-or credential fallback. A successful consent alone does not establish that every runtime can
-use that connection. Runtime mounting and full connection acceptance remain separate work.
+accounts have no personal-account execution path here. A successful consent alone does not
+establish live provider health or complete connection acceptance.
+
+### Keeper-managed personal client files
+
+The root-owned keeper configuration `lifecycle.runtime.google` supplies `tokenKeyFile` and
+`clients`, each client carrying `clientIdFile` and `clientSecretFile` host sources. Values stay
+in files. The legacy `principal` field is optional for personal-only configuration and remains
+required for the separate selected email-door path; it never identifies the actor of a personal
+read. Agent definitions and tool inputs cannot supply these file sources. The
+`configure-google-keeper.py` setup helper configures legacy email-door access only and refuses
+an existing personal-only Google configuration; do not add a principal to satisfy that helper.
+
+Only a chief-of-staff definition with an effective Gmail grant receives personal client mounts:
+its scope must not be `none` and its autonomy must not be `never`. Explicit reconciliation uses
+the desired definition. Rendering other agents or credential rollback uses their applied
+definitions, so saving a pending capability change never silently changes another runtime's
+mounts. Adding/removing Gmail creates a pending runtime change requiring explicit reconciliation.
+An absent Google configuration leaves other capabilities running and personal reads unavailable.
+
+The personal registry contains at most 32 exact lowercase alphanumeric org IDs, each at most
+32 characters, matching canonical IDs stored by personal consent. Historical underscore/hyphen
+keys remain available to the legacy selected email door; they are not renamed, discovered or
+mounted as personal clients. An all-legacy client configuration emits no personal registry.
+Over-capacity canonical configuration refuses rather than silently truncating.
+
+Compose mounts each canonical client at deterministic `personal-google-<org>-id` and
+`personal-google-<org>-secret` files under the container's secrets directory. It emits only a
+bounded org-to-container-path registry in `LARES_PERSONAL_GOOGLE_CLIENTS`, plus the shared
+`TOKEN_ENC_KEY_FILE` path. No host paths, raw secret values or account/member principal enter
+that registry. A coexisting email door shares one `google-token-key` mount only when its
+source is identical; conflicting sources refuse. Every client and key source is included in
+reconciliation and credential preflight/rollback checks, including missing, empty and linked
+file refusal before a runtime is stopped.
+
+The personal reader selects the exact credential's org only from this registry, checks all
+metadata paths against the fixed container naming contract and refuses missing/noncanonical
+orgs. It has no email-door, environment-default, owner or other-client fallback. Native
+`orgConfig` and selected email-door restrictions remain separate. Host configuration changes
+still need explicit runtime reconciliation and restart; they do not reconnect a provider or
+alter account ownership. Full provider and connection acceptance remain separate work.
 
 The manual read-only probe is `services/chief-of-staff/tests/live/personal-gmail.live.mts`.
 It requires a trusted server-captured current console context and exact selection in private

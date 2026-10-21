@@ -13,9 +13,9 @@ export const PLATFORM_SECRET_FILES = {
   TOKEN_ENC_KEY_FILE: 'token-enc-key',
 } as const;
 
-/** Platform secret files the engine reads at a fixed path (no environment variable binding in the
- *  keeper): the runtime-control password and the database password. */
-export const PLATFORM_FIXED_SECRET_FILES = ['runtime-control', 'database-password'] as const;
+/** Fixed target names used by managed runtimes. google-token-key is the shared Google
+ *  encryption-key mount; it is the same configured source when a legacy email door coexists. */
+export const PLATFORM_FIXED_SECRET_FILES = ['runtime-control', 'database-password', 'google-token-key'] as const;
 
 /** Per door kind: the environment variable that points at the secret file, and the file-name
  *  suffix the keeper mounts it under (`<agent>-<suffix>`). */

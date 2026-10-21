@@ -101,9 +101,9 @@ export const runtimeBindingsSchema = z.object({
     ctx.addIssue({code:'custom',message:'Git configuration must be read-only'});
   if (targets.some((t, i) => targets.some((other, j) => i !== j && (t === other || t.startsWith(other + '/')))))
     ctx.addIssue({code:'custom',message:'Overlapping runtime mounts'});
-  // Google authority comes only from the managed selected-mailbox contract.
+  // Google files come only from managed runtime configuration, not arbitrary bindings.
   if (Object.keys(b.environment).some(k => k.startsWith('GOOGLE_')) || Object.keys(b.secrets).some(k => k.startsWith('GOOGLE_CLIENT_') || k === 'TOKEN_ENC_KEY_FILE'))
-    ctx.addIssue({code:'custom',message:'Google bindings come only from the managed selected-mailbox contract'});
+    ctx.addIssue({code:'custom',message:'Google bindings come only from managed runtime configuration'});
   for (const [key,value] of Object.entries(b.environment)) {
     if (key === 'LARES_ARTICLE_AREA' && value !== 'shared' && value !== 'private')
       ctx.addIssue({code:'custom',message:'The article area must be shared or private'});
