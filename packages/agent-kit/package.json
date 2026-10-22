@@ -139,7 +139,8 @@
     "./model-usage": "./src/model-usage.ts",
     "./approval-stats": "./src/approval-stats.ts",
     "./untrusted-text": "./src/untrusted-text.ts",
-    "./bounded-text": "./src/bounded-text.ts"
+    "./bounded-text": "./src/bounded-text.ts",
+    "./public-docs": "./src/public-docs.ts"
   },
   "scripts": {
     "build": "eve extension build",
