@@ -195,9 +195,9 @@ import{{PgBudgetAdmissionStore,budgetIdentitySuppression,canonicalBudgetMoney}}f
 import{{captureModelInvocation,runModelInvocation}}from'/app/packages/agent-kit/src/model-invocation.ts';
 import{{bindConsoleSession}}from'/app/packages/agent-kit/src/console-turn-authority.ts';
 import{{PgGrantStore}}from'/app/packages/agent-kit/src/grant-store.ts';
-import{{GatewayBudgetAuthority}}from'{base}gateway-budget.ts';
+import{{productionGatewayBudgetAuthority}}from'{base}gateway-budget.ts';
 import{{GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature}}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';
-import{{readFileSync,writeFileSync}}from'node:fs';
+import{{chmodSync,readFileSync,writeFileSync}}from'node:fs';
 import{{createHash,randomUUID}}from'node:crypto';
 const pool=new Pool({{host:{json.dumps(host)},database:{json.dumps(database)},user:'lares_financial',password:readFileSync('/db-fixture/financial-password','utf8'),max:1,connectionTimeoutMillis:1500}});
 async function main(){{try{{{code}}}finally{{await pool.end();}}}}void main().catch(e=>{{console.error(e);process.exitCode=1;}});"""
@@ -385,8 +385,8 @@ await source.query("INSERT INTO budget_gateway_bindings(id,installation_account_
 },boundary));
 const store=new PgBudgetAdmissionStore(pool,env,30_000,writer),requestHash=hash('request'),invocation=captureModelInvocation({type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}},context.session,'standard');
 const ticket=await runModelInvocation(invocation,()=>store.prepareIntent({bindingId:binding,requestHash,profileHash:profile}));
-const key=Buffer.alloc(32,9),witness={observe:async()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled'})};
-const authority=new GatewayBudgetAuthority(pool,key,new JournalBudgetFinancialWriter(journal),witness);
+const key=Buffer.alloc(32,9),serviceKey='/proof/gateway-service-key';writeFileSync(serviceKey,key,{mode:0o600});chmodSync(serviceKey,0o600);
+const authority=productionGatewayBudgetAuthority(pool,serviceKey,journal);
 const document={version:1,nonce:hash('nonce'),ticket,requestHash,profileHash:profile,endpointHash:endpoint,keyFingerprint:fingerprint,purposeAlias:'standard'},raw=gatewayCanonical(document);
 const admitted=await authority.handle(GATEWAY_ADMIT_PATH,gatewaySignature(key,'request',GATEWAY_ADMIT_PATH,raw),raw);
 if(admitted.status!==200||!verifyGatewaySignature(key,admitted.headers['x-lares-signature'],'response',GATEWAY_ADMIT_PATH,admitted.body))throw Error('signed gateway admission failed');
@@ -400,9 +400,16 @@ for(const frame of proposals){const record=frame.record,row=(await pool.query('S
 if(!row||!control||row.journal_id!==control.journalId||row.proposal_sequence!==String(record.sequence)||row.proposal_digest!==frame.digest||commitIndex<0||observationIndex<=commitIndex||!observation||observation.checkpoint.operationId!==record.operationId||observation.checkpoint.journalId!==control.journalId||observation.checkpoint.sequence!==record.sequence||observation.checkpoint.digest!==frame.digest||JSON.stringify(observation.database)!==JSON.stringify(control.database))throw Error('gateway journal observation mismatch');}
 for(const frame of proposals){for(const atom of frame.record.atoms.filter(value=>value.kind==='account')){const generation=(await pool.query('SELECT policy_generation::text FROM budget_accounts WHERE id=$1',[atom.id])).rows[0]?.policy_generation;if(atom.policyGeneration!==generation)throw Error('journal account policy generation mismatch');}}
 const attempt=(await pool.query('SELECT state,actual_amount FROM budget_attempts WHERE id=$1',[grant.attemptId])).rows[0];if(attempt.state!=='settled'||canonicalBudgetMoney(String(attempt.actual_amount))!=='0.0098')throw Error('gateway source state mismatch');
-console.log('gateway journaled');
+const staleRequestHash=hash('request-after-sql-drift'),nextInvocation=captureModelInvocation({type:'step.started',data:{turnId:'turn-2',sequence:0,stepIndex:0}},context.session,'standard');
+const staleTicket=await runModelInvocation(nextInvocation,()=>store.prepareIntent({bindingId:binding,requestHash:staleRequestHash,profileHash:profile}));
+await pool.query('UPDATE budget_accounts SET endpoint_generation=1 WHERE id=$1',[installation]);
+const staleDocument={...document,nonce:hash('nonce-after-sql-drift'),ticket:staleTicket,requestHash:staleRequestHash},staleRaw=gatewayCanonical(staleDocument);
+const staleReply=await authority.handle(GATEWAY_ADMIT_PATH,gatewaySignature(key,'request',GATEWAY_ADMIT_PATH,staleRaw),staleRaw);
+const staleState=(await pool.query('SELECT state FROM budget_attempts WHERE ticket_hash=$1',[hash(staleTicket)])).rows[0]?.state;
+if(staleReply.status===200||staleState!=='prepared'||journal.observeGatewayRecoveryReference({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0'})!==undefined)throw Error('SQL-only financial drift did not fail closed');
+console.log('gateway journaled; SQL-only drift refused and journal frozen');
 }finally{await journal.drainForShutdown();journal.close();}"""
-    assert run(gateway, host='gateway-proof-db') == 'gateway journaled'
+    assert run(gateway, host='gateway-proof-db') == 'gateway journaled; SQL-only drift refused and journal frozen'
     discard_managed_cluster('gateway')
     # Exercise the production closed provisioner against real Keeper custody, real engine
     # PostgreSQL/journal, and the exact digest-pinned native LiteLLM admin API. No provider

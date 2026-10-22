@@ -186,6 +186,17 @@ exit unsuccessfully. It uses Keeper's host action and has no direct gateway-writ
 fallback. Cleanup is attempted only when the trusted configured gateway origin
 matches the origin recorded with that key.
 
+Keeper also has explicit library-level recovery for interrupted local publication
+and native plaintext cleanup. Publication repair uses only complete persisted
+snapshot/control pairs and exact retained files; ordinary `openExisting` remains
+unchanged. Cleanup recovery holds native ownership while it observes the current
+retired-account and revoked-binding projection on the same client and requires the
+fresh receipt to belong to the native operation's original financial journal.
+It removes only matching local plaintext, preserves the original revocation
+receipt, and leaves the open control record open. This path returns no runtime
+gate, store or key, and does not authorize gateway deletion, startup recovery or
+spending. Uncertain or incomplete evidence remains blocked.
+
 Native custody is excluded from ordinary backups and encrypted secret bundles.
 Restore refuses when configured custody is missing or cannot be opened. Keeper
 stops listeners and drains native work before draining the journal and closing
