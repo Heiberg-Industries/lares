@@ -40,7 +40,7 @@ function assertUniqueFinancialAtoms(atoms:readonly FinancialAtom[]):void {
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 const gatewayRecoveryReferenceSchema=z.object({installationAccountId:id,epoch:z.string().min(1).max(200),endpointGeneration:uint}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
-const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']);
+const operation=z.enum(['prepare','provision','native-activation','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),
@@ -125,8 +125,25 @@ function nativeCleanupProjectionCovers(atoms:readonly FinancialAtom[],binding:Bi
   const tombstone=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'tombstone'}>=>atom.kind==='tombstone'&&atom.accountId===binding.memberAccountId&&atom.state==='erased');
   return !!tombstone&&account.canonicalSuppressionHash===tombstone.canonicalSuppressionHash&&gatewayCanonical(account.providerSuppressionHashes).equals(gatewayCanonical(tombstone.providerSuppressionHashes));
 }
+function nativeActivationProjectionCovers(atoms:readonly FinancialAtom[],requirement:Extract<FinancialReceiptRequirement,{kind:'native-activation'}>):boolean {
+  const binding=requirement.binding;
+  if(binding.state!=='active'||!atoms.some(atom=>atom.kind==='binding'&&gatewayCanonical(atom).equals(gatewayCanonical(binding))))return false;
+  const installation=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'account'}>=>atom.kind==='account'&&atom.id===binding.installationAccountId);
+  const member=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'account'}>=>atom.kind==='account'&&atom.id===binding.memberAccountId);
+  const installationWindow=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'window'}>=>atom.kind==='window'&&atom.id===requirement.installationWindowId);
+  const memberWindow=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'window'}>=>atom.kind==='window'&&atom.id===requirement.memberWindowId);
+  return !!installation&&installation.accountKind==='installation'&&installation.installationAccountId===installation.id&&installation.state==='open'&&installation.reason==='approved'&&
+    installation.selectedEndpointHash===binding.endpointHash&&installation.endpointGeneration===requirement.endpointGeneration&&installation.recoveryEpochHash===requirement.recoveryEpochHash&&
+    installation.activeWindowId===requirement.installationWindowId&&installation.installationCap===requirement.installationCap&&
+    !!member&&member.accountKind==='member'&&member.installationAccountId===installation.id&&member.state==='open'&&member.reason==='approved'&&
+    member.selectedEndpointHash===null&&member.recoveryEpochHash===null&&member.activeWindowId===requirement.memberWindowId&&
+    !!installationWindow&&installationWindow.accountId===installation.id&&installationWindow.openingCap===requirement.installationCap&&
+    installationWindow.startsAt===requirement.monthStartsAt&&installationWindow.endsAt===requirement.monthEndsAt&&
+    !!memberWindow&&memberWindow.accountId===member.id&&memberWindow.openingCap===requirement.memberWindowCap&&memberWindow.startsAt===requirement.monthStartsAt&&memberWindow.endsAt===requirement.monthEndsAt;
+}
 export type FinancialReceiptRequirement=
   |{kind:'bound-closed';binding:BindingAtom}
+  |{kind:'native-activation';binding:BindingAtom;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpochHash:string;monthStartsAt:string;monthEndsAt:string;installationCap:string;memberWindowCap:string}
   |{kind:'pending-revocation'|'bound-revocation';binding:BindingAtom}
   |{kind:'account-erasure';accountId:string;installationAccountId?:string}
   |{kind:'native-cleanup-recovery';binding:BindingAtom};
@@ -145,6 +162,7 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
   else if(requirement.kind==='native-cleanup-recovery'){
     covered=evidence.operation==='native-cleanup-recovery'&&!!observedProjection&&nativeCleanupProjectionCovers(observedProjection,requirement.binding);
   }
+  else if(requirement.kind==='native-activation')covered=evidence.operation==='native-activation'&&!!observedProjection&&nativeActivationProjectionCovers(observedProjection,requirement);
   else {
     const binding=requirement.binding,exact=atoms.some(a=>a.kind==='binding'&&gatewayCanonical(a).equals(gatewayCanonical(binding)));
     if(requirement.kind==='bound-closed')covered=evidence.operation==='provision'&&binding.state==='active'&&exact&&[binding.installationAccountId,binding.memberAccountId].every(accountId=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.installationAccountId===binding.installationAccountId&&a.accountKind===(accountId===binding.installationAccountId?'installation':'member')&&a.state==='closed'&&a.reason==='unreconciled'&&a.selectedEndpointHash===null&&a.recoveryEpochHash===null));
@@ -340,7 +358,7 @@ export class HostFinancialJournal {
     const receipt=this.committed(operationId);if(!receipt)return undefined;
     this.append({kind:'observation',observation},operationId);
     const saved=committedReceipts.get(receipt);
-    if(saved?.evidence.operation==='native-cleanup-recovery'){
+    if(saved?.evidence.operation==='native-cleanup-recovery'||saved?.evidence.operation==='native-activation'){
       const freeze=(value:unknown):unknown=>{
         if(!value||typeof value!=='object'||Object.isFrozen(value))return value;
         for(const child of Object.values(value))freeze(child);

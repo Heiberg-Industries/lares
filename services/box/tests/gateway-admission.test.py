@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, NATIVE_LOOKUP_ROUTES, MAX_NATIVE_LOOKUP_BODY
+from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY
 
 
 class ContractTests(unittest.TestCase):
@@ -588,8 +588,8 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.profile = types.SimpleNamespace(document={"maxBodyBytes":4096}, check_body=lambda path, raw: {"model":"fixture"})
         self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None, master_key="fixture-master-key")
         self.namespace = {"asyncio":asyncio,"time":time,"hmac":__import__("hmac"),"re":__import__("re"),"current_request":self.request_context,"runtime":self.runtime,
-            "CONTROL_ROUTES":frozenset(),"NATIVE_LOOKUP_ROUTES":NATIVE_LOOKUP_ROUTES,"MAX_NATIVE_LOOKUP_BODY":MAX_NATIVE_LOOKUP_BODY,
-            "native_lookup_query":native_lookup_query,"native_lookup_key_hash":native_lookup_key_hash,
+            "CONTROL_ROUTES":frozenset(),"NATIVE_LOOKUP_ROUTES":NATIVE_LOOKUP_ROUTES,"NATIVE_MASTER_ROUTES":NATIVE_MASTER_ROUTES,"MAX_NATIVE_LOOKUP_BODY":MAX_NATIVE_LOOKUP_BODY,
+            "native_lookup_query":native_lookup_query,"native_lookup_key_hash":native_lookup_key_hash,"native_unblock_key_hash":native_unblock_key_hash,
             "MODEL_ROUTES":frozenset(("/v1/messages",)),"TICKET":__import__("re").compile(r"[A-Za-z0-9_-]{43}\Z"),
             "Refused":Refused,"RequestState":RequestState,"canonical":lambda value:json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode(),
             "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
@@ -605,7 +605,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.native_body = None
 
     async def native(self, scope, receive, send):
-        if (scope.get("method"), scope.get("path")) in NATIVE_LOOKUP_ROUTES:
+        if (scope.get("method"), scope.get("path")) in NATIVE_MASTER_ROUTES:
             self.native_calls += 1
             self.native_scope = scope
             self.native_body = await receive()
@@ -653,12 +653,13 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         await self.app(scope,get_message,send)
         return sent
 
-    async def test_master_lookup_routes_are_narrow_and_still_use_native_auth(self):
+    async def test_master_routes_are_narrow_and_still_use_native_auth(self):
         valid=(
             ("GET","/team/info",b"team_id=team-123",b""),
             ("GET","/key/list",b"user_id=user-123",b""),
             ("GET","/user/info",b"user_id=user-123",b""),
             ("POST","/v2/key/info",b"",b'{"keys":["'+b"a"*64+b'"]}'),
+            ("POST","/key/unblock",b"",b'{"key":"'+b"a"*64+b'"}'),
         )
         for method,path,query,body in valid:
             with self.subTest(path=path):
@@ -707,6 +708,24 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
                 sent=await self.call_lookup(method,path,query=query,body=body,headers=headers,auth=None if len([h for h in headers if h[0]==b"authorization"])>0 else b"Bearer fixture-master-key")
                 self.assertEqual(sent[0]["status"],400)
                 self.assertEqual(self.native_calls,0)
+        invalid_unblock=(
+            b'{"key":"'+b"A"*64+b'"}',
+            b'{"key":"'+b"a"*64+b'","extra":true}',
+            b'{"key":"'+b"a"*64+b'","key":"'+b"a"*64+b'"}',
+            b'{"key":"not-a-hash"}',
+        )
+        for body in invalid_unblock:
+            with self.subTest(unblock_body=body[:32]):
+                self.native_calls=0
+                sent=await self.call_lookup("POST","/key/unblock",body=body)
+                self.assertEqual(sent[0]["status"],400)
+                self.assertEqual(self.native_calls,0)
+        sent=await self.call_lookup("POST","/key/unblock",body=b" "*(MAX_NATIVE_LOOKUP_BODY+1))
+        self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
+        sent=await self.call_lookup("POST","/key/unblock",query=b"key_id=key-123",body=b'{"key":"'+b"a"*64+b'"}')
+        self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
+        sent=await self.call_lookup("POST","/key/unblock",body=b'{"key":"'+b"a"*64+b'"}',auth=b"Bearer wrong-master-key")
+        self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
         missing=await self.call_lookup("GET","/team/info",query=b"team_id=team-123",auth=None)
         self.assertEqual(missing[0]["status"],400);self.assertEqual(self.native_calls,0)
         oversized=b" "*(MAX_NATIVE_LOOKUP_BODY+1)

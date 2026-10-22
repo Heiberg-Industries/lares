@@ -15,6 +15,7 @@ export const NATIVE_CUSTODY_DIRECTORY='/var/lib/lares/budget-native';
 export const NATIVE_CUSTODY_MAX_RECORDS=128,NATIVE_CUSTODY_MAX_BYTES=1_048_576,NATIVE_CUSTODY_POLICY_BYTES=16_384;
 const CONTROL_BYTES=1024,INTENT_BYTES=2048,KEY_BYTES=46;
 const uuid=z.string().uuid(),hash=z.string().regex(/^[a-f0-9]{64}$/);
+const instant=z.iso.datetime({precision:6});
 // PostgreSQL credential_generation is a nonnegative signed bigint. Retain canonical
 // decimal strings throughout; Number would lose precision at this boundary.
 const generation=z.string().regex(/^(0|[1-9][0-9]{0,18})$/).refine(value=>BigInt(value)<=9_223_372_036_854_775_807n);
@@ -35,15 +36,18 @@ export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatew
   if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==p.capability.provider||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
 });
 export type BudgetNativeReviewedPolicy=z.infer<typeof budgetNativeReviewedPolicySchema>;
-const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
+const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','native-activation','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
+const activationIntent=z.object({financialOperationId:uuid,journalId:uuid,originalBindingReceiptHash:hash,installationAccountId:uuid,memberAccountId:uuid,endpointHash:hash,installationCap:money,memberWindowCap:money,
+  installationWindowId:uuid,memberWindowId:uuid,endpointGeneration:generation,recoveryEpochHash:hash,monthStartsAt:instant,monthEndsAt:instant,unblockAttempt:writeAttempt}).strict();
 const team=z.object({kind:z.literal('team'),ownershipId:uuid,installationAccountId:uuid,endpoint,nativeTeamId:nativeId,capabilityHash:hash,policy:teamPolicy,createAttempt:writeAttempt}).strict();
 const user=z.object({kind:z.literal('user'),ownershipId:uuid,installationAccountId:uuid,accountId:uuid,endpoint,teamOwnershipId:uuid,nativeUserId:nativeId,policy:userPolicy,membership:membershipPolicy,userCreateAttempt:writeAttempt,membershipCreateAttempt:writeAttempt}).strict();
 const erasedUser=z.object({kind:z.literal('erased-user'),accountCommitment:hash,coordinateCommitment:hash,erasureReceiptHash:hash}).strict();
 const operation=z.object({kind:z.literal('operation'),operationId:uuid,bindingId:uuid,credentialGeneration:generation,userOwnershipId:uuid,
   association:z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,definitionHash:hash,purposeAlias:alias}).strict(),
   reviewedPolicy:budgetNativeReviewedPolicySchema,policyDigest:hash,keyFingerprint:hash,
-  phase:z.enum(['prepared','provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked']),keyCreateAttempt:writeAttempt,
+  phase:z.enum(['prepared','provisioning','native-blocked-verified','bound-closed','activation-pending','active','uncertain','revoke-pending','revoked']),keyCreateAttempt:writeAttempt,
   financialOperationId:uuid.nullable(),financialJournalId:uuid.nullable(),bindingReceipt:receipt.nullable(),revocationReceipt:receipt.nullable(),
+  activationIntent:activationIntent.nullable().default(null),activationReceipt:receipt.nullable().default(null),
   plaintext:z.enum(['present','removal-pending','removed']),nativeDeletion:z.enum(['unverified','verified']),
 }).strict();
 const cleanup=z.object({kind:z.literal('cleanup'),accountCommitment:hash,coordinateCommitment:hash,operationCommitment:hash,endpoint,keyFingerprint:hash,policyDigest:hash,revocationReceiptHash:hash,erasureReceiptHash:hash,phase:z.enum(['revoke-pending','revoked']),plaintext:z.literal('removed'),nativeDeletion:z.enum(['unverified','verified'])}).strict();
@@ -52,6 +56,7 @@ type Snapshot=z.infer<typeof snapshotSchema>;
 export type NativeTeamOwnership=z.infer<typeof team>;
 export type NativeUserOwnership=z.infer<typeof user>;
 export type NativeOperation=z.infer<typeof operation>;
+export type NativeActivationIntent=z.infer<typeof activationIntent>;
 export type NativeCleanupReceipt=z.infer<typeof cleanup>;
 export interface NativeAbsenceRequest {readonly origin:string;readonly fingerprint:string;readonly challenge:string}
 const controlSchema=z.object({version:z.literal(1),storeId:uuid,state:z.enum(['open','closed','uncertain']),revision:z.number().int().nonnegative().safe(),snapshotDigest:hash}).strict();
@@ -97,6 +102,10 @@ export interface NativeCustodyGate {
   recordNativeBlockedVerification(operationId:string):void;
   linkFinancialOperation(operationId:string,financialOperationId:string,journalId:string):void;
   recordBoundClosed(operationId:string,evidence:CommittedFinancialReceipt):void;
+  beginActivation(operationId:string,activation:{financialOperationId:string;journalId:string;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpochHash:string;monthStartsAt:string;monthEndsAt:string;installationCap:string;memberWindowCap:string}):NativeOperation;
+  claimActivationUnblock(operationId:string):NativeOperation;
+  verifyActivationUnblocked(operationId:string):void;
+  recordActive(operationId:string,evidence:CommittedFinancialReceipt):void;
   recordUncertain(operationId:string):void;
   recordRevocation(operationId:string,evidence:CommittedFinancialReceipt):void;
   removePlaintext(operationId:string):void;
@@ -113,7 +122,7 @@ export interface NativeCleanupRecoveryCandidate {
   readonly accountId:string;
   readonly installationAccountId:string;
   readonly binding:Extract<FinancialAtom,{kind:'binding'}>;
-  readonly phase:'bound-closed'|'revoke-pending';
+  readonly phase:'bound-closed'|'activation-pending'|'active'|'revoke-pending';
   readonly plaintext:'present'|'removal-pending'|'removed';
 }
 export interface NativeCleanupRecoverySession {
@@ -180,7 +189,7 @@ export class BudgetNativeCustodyStore {
       }
       owner.verify();
       const candidates=owner.snapshot.operations.flatMap(row=>{
-        if(row.kind!=='operation'||(row.phase!=='bound-closed'&&row.phase!=='revoke-pending')||(row.plaintext!=='present'&&row.plaintext!=='removal-pending'&&row.plaintext!=='removed')||row.nativeDeletion!=='unverified')return [];
+        if(row.kind!=='operation'||!(row.phase==='bound-closed'||row.phase==='activation-pending'||row.phase==='active'||row.phase==='revoke-pending')||(row.plaintext!=='present'&&row.plaintext!=='removal-pending'&&row.plaintext!=='removed')||row.nativeDeletion!=='unverified')return [];
         const user=owner.snapshot.users.find((candidate):candidate is NativeUserOwnership=>candidate.kind==='user'&&candidate.ownershipId===row.userOwnershipId);
         if(!user)return [];
         return [{operationId:row.operationId,accountId:user.accountId,installationAccountId:user.installationAccountId,binding:{...owner.bindingAtom(row,'revoked'),state:'revoked' as const},phase:row.phase,plaintext:row.plaintext}];
@@ -385,6 +394,8 @@ export class BudgetNativeCustodyStore {
       beginProvisioning:id=>call(()=>this.beginProvisioning(id)),
       recordNativeBlockedVerification:id=>call(()=>this.recordNativeBlockedVerification(id)),
       linkFinancialOperation:(id,financialId,journalId)=>call(()=>this.linkFinancialOperation(id,financialId,journalId)),recordBoundClosed:(id,r)=>call(()=>this.recordBoundClosed(id,r)),
+      beginActivation:(id,value)=>call(()=>this.beginActivation(id,value)),claimActivationUnblock:id=>call(()=>this.claimActivationUnblock(id)),
+      verifyActivationUnblocked:id=>call(()=>this.verifyActivationUnblocked(id)),recordActive:(id,r)=>call(()=>this.recordActive(id,r)),
       recordUncertain:id=>call(()=>{const op=this.operation(id);if(['revoked','revoke-pending'].includes(op.phase))throw refused();this.updateOperation({...op,phase:'uncertain'});this.freeze();throw unavailable();}),
       recordRevocation:(id,r)=>call(()=>this.recordRevocation(id,r)),removePlaintext:id=>call(()=>this.removePlaintext(id)),
       eraseAccountAssociation:(id,r)=>call(()=>this.eraseAccountAssociation(id,r)),inventory:()=>call(()=>clone(this.snapshot)),
@@ -431,7 +442,8 @@ export class BudgetNativeCustodyStore {
     const immutable={bindingId:input.bindingId,credentialGeneration:input.credentialGeneration,userOwnershipId:u.ownershipId,association,reviewedPolicy:p,policyDigest:gatewayHash(gatewayCanonical(p)),keyFingerprint:digest(Buffer.from(plaintext))};
     if(found){if(found.phase!=='prepared'||Object.entries(immutable).some(([key,value])=>!same(found[key as keyof NativeOperation],value))||this.readKey(found.operationId)!==plaintext)throw refused();return clone(found);}
     if(this.snapshot.operations.some(o=>o.keyFingerprint===immutable.keyFingerprint))throw refused();
-    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',keyCreateAttempt:'not-attempted',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
+    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',keyCreateAttempt:'not-attempted',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,
+      activationIntent:null,activationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
     // The tuple and its key are one locally recorded publication. The intent is durable
     // before either becomes visible and remains until both are verified together.
     const next={...this.snapshot,operations:[...this.snapshot.operations,row]};
@@ -465,20 +477,55 @@ export class BudgetNativeCustodyStore {
     if(op.phase==='bound-closed'&&same(op.bindingReceipt,r))return;
     if(op.phase!=='native-blocked-verified'||op.financialOperationId!==r.operationId||op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'bound-closed',bindingReceipt:r});
   }
+  private beginActivation(id:string,value:Parameters<NativeCustodyGate['beginActivation']>[1]):NativeOperation {
+    const op=this.operation(id),user=this.userOwnership(op.userOwnershipId),team=this.teamOwnership(user.teamOwnershipId);
+    if(op.phase!=='bound-closed'||!op.bindingReceipt||!op.financialOperationId||!op.financialJournalId||op.activationIntent||op.activationReceipt||
+      value.financialOperationId===op.financialOperationId||value.journalId!==op.financialJournalId||op.bindingReceipt.journalId!==op.financialJournalId||
+      op.bindingReceipt.operationId!==op.financialOperationId||op.bindingReceipt.operation!=='provision'||user.installationAccountId!==team.installationAccountId||
+      !same(user.endpoint,team.endpoint)||user.endpoint.hash!==team.endpoint.hash||op.policyDigest!==gatewayHash(gatewayCanonical(op.reviewedPolicy))||
+      op.keyCreateAttempt!=='verified'||user.userCreateAttempt!=='verified'||user.membershipCreateAttempt!=='verified'||team.createAttempt!=='verified'||
+      op.plaintext!=='present'||op.nativeDeletion!=='unverified')throw refused();
+    const intent=activationIntent.parse({...value,originalBindingReceiptHash:gatewayHash(gatewayCanonical(op.bindingReceipt)),installationAccountId:team.installationAccountId,
+      memberAccountId:user.accountId,endpointHash:user.endpoint.hash,unblockAttempt:'not-attempted'});
+    if(Date.parse(intent.monthStartsAt)>=Date.parse(intent.monthEndsAt))throw refused();
+    this.updateOperation({...op,phase:'activation-pending',activationIntent:intent});return frozenClone(this.operation(id));
+  }
+  private claimActivationUnblock(id:string):NativeOperation {
+    const op=this.operation(id),intent=op.activationIntent;
+    if(op.phase!=='activation-pending'||!intent||intent.unblockAttempt!=='not-attempted'||op.activationReceipt)throw refused();
+    this.updateOperation({...op,activationIntent:{...intent,unblockAttempt:'attempted'}});return frozenClone(this.operation(id));
+  }
+  private verifyActivationUnblocked(id:string):void {
+    const op=this.operation(id),intent=op.activationIntent;
+    if(op.phase!=='activation-pending'||!intent||intent.unblockAttempt!=='attempted'||op.activationReceipt)throw refused();
+    this.updateOperation({...op,activationIntent:{...intent,unblockAttempt:'verified'}});
+  }
+  private recordActive(id:string,raw:CommittedFinancialReceipt):void {
+    try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
+    const op=this.operation(id),intent=op.activationIntent;
+    if(op.phase!=='activation-pending'||!intent||intent.unblockAttempt!=='verified'||op.activationReceipt||!op.bindingReceipt||
+      intent.originalBindingReceiptHash!==gatewayHash(gatewayCanonical(op.bindingReceipt))||intent.journalId!==op.financialJournalId||
+      intent.financialOperationId!==raw.operationId||intent.journalId!==raw.journalId||raw.operation!=='native-activation'||
+      op.bindingReceipt.journalId!==raw.journalId)throw refused();
+    const evidence=committedFinancialEvidence(raw,{kind:'native-activation',binding:this.bindingAtom(op,'active'),installationWindowId:intent.installationWindowId,
+      memberWindowId:intent.memberWindowId,endpointGeneration:intent.endpointGeneration,recoveryEpochHash:intent.recoveryEpochHash,
+      monthStartsAt:intent.monthStartsAt,monthEndsAt:intent.monthEndsAt,installationCap:intent.installationCap,memberWindowCap:intent.memberWindowCap});
+    if(!evidence)throw refused();this.updateOperation({...op,phase:'active',activationReceipt:evidence});
+  }
   private recordRevocation(id:string,raw:CommittedFinancialReceipt):void {
     try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
     const op=this.operation(id),r=committedFinancialEvidence(raw,{kind:op.bindingReceipt?'bound-revocation':'pending-revocation',binding:this.bindingAtom(op,'revoked')});if(!r)throw refused();
     if(['revoke-pending','revoked'].includes(op.phase)&&same(op.revocationReceipt,r))return;
-    if(['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId||op.financialJournalId!==null&&op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});
+    if(!['provisioning','bound-closed','activation-pending','active','uncertain','native-blocked-verified','prepared'].includes(op.phase)||['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId||op.financialJournalId!==null&&op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});
   }
   private publishNativeCleanupRecovery(id:string,raw:CommittedFinancialReceipt):void {
     try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
     const op=this.operation(id);
-    if((op.phase!=='bound-closed'&&op.phase!=='revoke-pending')||op.nativeDeletion!=='unverified'||!['present','removal-pending','removed'].includes(op.plaintext))throw refused();
+    if(!['bound-closed','activation-pending','active','revoke-pending'].includes(op.phase)||op.nativeDeletion!=='unverified'||!['present','removal-pending','removed'].includes(op.plaintext))throw refused();
     if(op.financialJournalId!==null&&raw.journalId!==op.financialJournalId)throw refused();
     const evidence=committedFinancialEvidence(raw,{kind:'native-cleanup-recovery',binding:this.bindingAtom(op,'revoked')});if(!evidence)throw refused();
     this.recoveryProof=raw;
-    try{if(op.phase==='bound-closed')this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:evidence});this.removePlaintext(id,true);}
+    try{if(op.phase==='bound-closed'||op.phase==='activation-pending'||op.phase==='active')this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:evidence});this.removePlaintext(id,true);}
     finally{this.recoveryProof=undefined;}
   }
   private accountOperations(accountId:string):readonly NativeOperation[] {
@@ -596,7 +643,16 @@ export class BudgetNativeCustodyStore {
       uniqueId('operation:'+op.operationId);uniqueId('operation-coordinate:'+this.operationCoordinate(op.bindingId,op.credentialGeneration));uniqueId('key:'+op.keyFingerprint);
       const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId),t=u&&this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId),p=this.checkedPolicy(op.reviewedPolicy);
       if((op.financialOperationId===null)!==(op.financialJournalId===null)||op.bindingReceipt&&(op.bindingReceipt.operation!=='provision'||op.bindingReceipt.journalId!==op.financialJournalId)||op.revocationReceipt&&(!['member-remove','erase-person','native-cleanup-recovery'].includes(op.revocationReceipt.operation)||op.financialJournalId!==null&&op.revocationReceipt.journalId!==op.financialJournalId))throw unavailable();
-      if(!u||!t||op.keyCreateAttempt!=='not-attempted'&&u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted'&&!['provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked'].includes(op.phase)||['native-blocked-verified','bound-closed'].includes(op.phase)&&(op.keyCreateAttempt!=='verified'||u.membershipCreateAttempt!=='verified'||u.userCreateAttempt!=='verified'||t.createAttempt!=='verified')||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
+      const activation=op.activationIntent,activationPhases=['activation-pending','active'].includes(op.phase);
+      if(!u||!t||op.keyCreateAttempt!=='not-attempted'&&u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted'&&!['provisioning','native-blocked-verified','bound-closed','activation-pending','active','uncertain','revoke-pending','revoked'].includes(op.phase)||['native-blocked-verified','bound-closed','activation-pending','active'].includes(op.phase)&&(op.keyCreateAttempt!=='verified'||u.membershipCreateAttempt!=='verified'||u.userCreateAttempt!=='verified'||t.createAttempt!=='verified')||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt)||
+        activationPhases&&!activation||!activation&&op.activationReceipt!==null||activation&&!['activation-pending','active','uncertain','revoke-pending','revoked'].includes(op.phase)||
+        op.phase==='active'&&op.activationReceipt===null||op.activationReceipt!==null&&!['active','revoke-pending','revoked'].includes(op.phase)||
+        activation&&(!op.bindingReceipt||activation.financialOperationId===op.financialOperationId||activation.journalId!==op.financialJournalId||activation.journalId!==op.bindingReceipt.journalId||
+          activation.originalBindingReceiptHash!==gatewayHash(gatewayCanonical(op.bindingReceipt))||activation.installationAccountId!==u.installationAccountId||activation.memberAccountId!==u.accountId||
+          activation.endpointHash!==u.endpoint.hash||
+          op.phase==='active'&&(activation.unblockAttempt!=='verified'||!op.activationReceipt||op.activationReceipt.operation!=='native-activation'||
+            op.activationReceipt.operationId!==activation.financialOperationId||op.activationReceipt.journalId!==activation.journalId))||
+        op.activationReceipt&&(!activation||op.activationReceipt.operation!=='native-activation'||op.activationReceipt.operationId!==activation.financialOperationId||op.activationReceipt.journalId!==activation.journalId))throw unavailable();
       if(op.plaintext!=='removed'){
         const name=this.keyName(op.operationId);if(missingKeys.has(op.operationId))continue;expected.add(name);
         const keyFiles=recovery.keyFiles??this.recoveryKeyFiles;
