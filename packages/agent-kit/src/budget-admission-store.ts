@@ -56,7 +56,7 @@ export interface BudgetDispatchPermit {readonly kind:'budget-dispatch-permit'}
 export interface BudgetGatewayTicket {
   agent:string;incarnation:string;credentialGeneration:string;installationAccountId:string;
   epoch:string;endpointGeneration:string;bindingId:string;requestHash:string;profileHash:string;
-  endpointHash:string;maximumLiability:string;pricingProfile:unknown;
+  endpointHash:string;keyFingerprint:string;purposeAlias:string;expiresAt:number;maximumLiability:string;pricingProfile:unknown;
 }
 export interface BudgetGatewaySettlement {
   attemptId:string;bindingId:string;requestHash:string;profileHash:string;endpointHash:string;
@@ -86,10 +86,14 @@ export class PgBudgetAdmissionStore {
   /** Unlocked routing only; the pool query releases its client before owned admission. */
   async discoverGatewayTicket(ticket:string):Promise<BudgetGatewayTicket|undefined> {
     if(typeof ticket!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(ticket))return undefined;
-    const r=(await this.pool.query(`SELECT a.*,b.agent,b.incarnation,b.maximum_liability,b.pricing_profile
+    const r=(await this.pool.query(`SELECT a.*,b.agent,b.incarnation,b.maximum_liability,b.pricing_profile,b.key_fingerprint,b.purpose_alias,
+      floor(extract(epoch FROM a.expires_at)*1000)::bigint AS expires_at_ms
       FROM budget_attempts a JOIN budget_gateway_bindings b ON b.id=a.binding_id WHERE a.ticket_hash=$1 AND a.state='prepared'`,[hash(ticket)])).rows[0];
     if(!r)return undefined;
-    return {agent:r.agent,incarnation:r.incarnation,credentialGeneration:r.credential_generation,installationAccountId:r.installation_account_id,epoch:r.recovery_epoch,endpointGeneration:r.endpoint_generation,bindingId:r.binding_id,requestHash:r.request_hash,profileHash:r.profile_hash,endpointHash:r.endpoint_hash,maximumLiability:r.maximum_liability,pricingProfile:r.pricing_profile};
+    const expiresAt=Number(r.expires_at_ms);
+    if(!Number.isSafeInteger(expiresAt)||typeof r.key_fingerprint!=='string'||!validHash(r.key_fingerprint)||
+      typeof r.purpose_alias!=='string'||!/^[A-Za-z0-9_-]{1,100}$/.test(r.purpose_alias))return undefined;
+    return {agent:r.agent,incarnation:r.incarnation,credentialGeneration:r.credential_generation,installationAccountId:r.installation_account_id,epoch:r.recovery_epoch,endpointGeneration:r.endpoint_generation,bindingId:r.binding_id,requestHash:r.request_hash,profileHash:r.profile_hash,endpointHash:r.endpoint_hash,keyFingerprint:r.key_fingerprint,purposeAlias:r.purpose_alias,expiresAt,maximumLiability:r.maximum_liability,pricingProfile:r.pricing_profile};
   }
   /** Called AFTER acknowledged admission and synchronous permit consumption. A duplicate or
    * uncertain COMMIT never recovers a grant or reissues an allow. No client is borrowed. */

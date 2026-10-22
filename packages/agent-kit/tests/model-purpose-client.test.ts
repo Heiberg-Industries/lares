@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server, type Socket } from 'node:net';
+import { createServer as createHttpServer, type Server as HttpServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,8 +46,11 @@ const keyFile = join(root, 'runtime-key');
 const sockets = new Set<Socket>();
 const key = Buffer.from(fixture.keyText, 'hex');
 let server: Server;
+let dispatchServer: HttpServer;
 let mode = 'valid';
 let connections = 0;
+const dispatchSeen: Array<{path:string;headers:Record<string,string|string[]|undefined>;body:Buffer}> = [];
+let dispatchMode:'complete'|'stall'='complete',dispatchClosed=false;
 
 const result = { capability: 'C'.repeat(43), expiresAt: Date.now() + 30_000 };
 function responseFor(envelope: ModelPurposeRuntimeEnvelope, responseResult = result) {
@@ -98,13 +102,24 @@ beforeAll(async () => {
     });
   });
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
+  const dispatchSocketPath=join(root,'gateway.sock');
+  dispatchServer=createHttpServer((req,res)=>{
+    const chunks:Buffer[]=[];req.on('data',chunk=>chunks.push(Buffer.from(chunk)));req.on('end',()=>{
+      dispatchSeen.push({path:req.url??'',headers:req.headers,body:Buffer.concat(chunks)});
+      res.once('close',()=>{dispatchClosed=true;});
+      if(dispatchMode==='stall'){res.writeHead(200,{'content-type':'text/event-stream'});res.write('data: start\n\n');return;}
+      res.writeHead(200,{'content-type':'text/event-stream','cache-control':'no-store'});res.end('data: FIXTURE_OK\n\n');
+    });
+  });
+  await new Promise<void>((resolve,reject)=>{dispatchServer.once('error',reject);dispatchServer.listen(dispatchSocketPath,resolve);});
 });
 
-beforeEach(() => { mode = 'valid'; fixture.fileMode = 0o100440; fixture.fileUid = 0; fixture.fileGid = 10_001; });
+beforeEach(() => { mode = 'valid';dispatchMode='complete';dispatchClosed=false; fixture.fileMode = 0o100440; fixture.fileUid = 0; fixture.fileGid = 10_001; });
 afterEach(() => { vi.restoreAllMocks(); });
 afterAll(async () => {
   for (const socket of sockets) socket.destroy();
   if (server) await new Promise<void>(resolve => server.close(() => resolve()));
+  if (dispatchServer) await new Promise<void>(resolve => dispatchServer.close(() => resolve()));
   for (const name of ['LARES_AGENT_NAME', 'LARES_AGENT_INCARNATION', 'LARES_RUNTIME_CONTROL_SECRET_FILE', 'LARES_MODEL_PURPOSE_RUNTIME_SOCKET']) delete process.env[name];
   rmSync(root, { recursive: true, force: true });
 });
@@ -150,5 +165,46 @@ describe('bounded runtime model-purpose client', () => {
       Object.assign(fixture, invalid);
       await expect(modelPurposeRequest('turn.open', { pendingReceipt: 'P'.repeat(43) })).rejects.toThrow();
     }
+  });
+
+  it('sends an exact body over the fixed authenticated dispatch socket and returns a streamed response', async()=>{
+    const {modelPurposeDispatchRequest}=await import('../src/model-purpose-client.js');
+    const body=Buffer.from('{"model":"fixture-brain","stream":true}');
+    const response=await modelPurposeDispatchRequest({ticket:'T'.repeat(43),method:'POST',path:'/v1/messages',rawBody:body,
+      deadline:Date.now()+10_000,headers:{'accept':'text/event-stream','anthropic-version':'2023-06-01'}});
+    await expect(response.text()).resolves.toContain('FIXTURE_OK');
+    const seen=dispatchSeen.at(-1)!;
+    expect(seen.path).toBe('/v1/messages');expect(seen.body).toEqual(body);
+    expect(seen.headers['x-lares-purpose-agent']).toBe('neutral-helper');
+    expect(seen.headers['x-lares-purpose-incarnation']).toBe('123e4567-e89b-42d3-a456-426614174000');
+    expect(seen.headers['x-lares-budget-intent']).toBe('T'.repeat(43));
+    expect(seen.headers['x-api-key']).toBeUndefined();expect(seen.headers.authorization).toBeUndefined();
+    const expected=(await import('../src/gateway-admission-protocol.js')).gatewayRawRequestHash('POST','/v1/messages',body);
+    expect(seen.headers['x-lares-purpose-request-hash']).toBe(expected);
+    const fields={method:'POST' as const,path:'/v1/messages' as const,requestHash:expected,ticket:'T'.repeat(43),agent:'neutral-helper',
+      incarnation:'123e4567-e89b-42d3-a456-426614174000',nonce:String(seen.headers['x-lares-purpose-nonce']),deadline:Number(seen.headers['x-lares-purpose-deadline'])};
+    const {modelPurposeDispatchMac}=await import('../src/model-purpose-protocol.js');
+    expect(seen.headers['x-lares-purpose-mac']).toBe(modelPurposeDispatchMac(key,fields).toString('base64url'));
+  });
+
+  it('refuses over-limit bodies before opening the dispatch socket',async()=>{
+    const {modelPurposeDispatchRequest,MODEL_PURPOSE_DISPATCH_BODY_MAX}=await import('../src/model-purpose-client.js');
+    const count=dispatchSeen.length;
+    await expect(modelPurposeDispatchRequest({ticket:'T'.repeat(43),method:'POST',path:'/v1/messages',rawBody:new Uint8Array(MODEL_PURPOSE_DISPATCH_BODY_MAX+1),deadline:Date.now()+10_000})).rejects.toThrow('Model purpose authority is not available');
+    expect(dispatchSeen).toHaveLength(count);
+  });
+
+  it('keeps AbortSignal connected after response headers so cancellation stops a live stream',async()=>{
+    dispatchMode='stall';
+    const {modelPurposeDispatchRequest}=await import('../src/model-purpose-client.js');
+    const controller=new AbortController();
+    const response=await modelPurposeDispatchRequest({ticket:'T'.repeat(43),method:'POST',path:'/v1/messages',rawBody:Buffer.from('{}'),
+      deadline:Date.now()+10_000,signal:controller.signal});
+    const reader=response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain('data: start');
+    controller.abort();
+    await expect(reader.read()).rejects.toThrow();
+    await delay(50);
+    expect(dispatchClosed).toBe(true);
   });
 });
