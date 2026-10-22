@@ -32,7 +32,7 @@ from admission_contract import (
     ADMIT_PATH, SETTLE_PATH, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
     NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash,
     RPC_TIMEOUT, TICKET, VERSION, Profile, Refused, RequestState, TerminalEvidence, WireEvidence, canonical,
-    https_url, parse_json, protected_key, sign, verify,
+    https_url, native_route_allowed, parse_json, protected_key, sign, verify,
     PHYSICAL_HEADER_SECONDS, PHYSICAL_BODY_SECONDS, TERMINAL_TAIL_SECONDS, CLEANUP_SECONDS, NATIVE_POLICY_SECONDS,
 )
 
@@ -198,7 +198,7 @@ class NativePolicy:
                 models = entity.get("models") or []
                 if models and alias not in models: raise Refused()
             if b.get("allowed_models") and alias not in b["allowed_models"]: raise Refused()
-            if k.get("allowed_routes") and request.path not in k["allowed_routes"]: raise Refused()
+            if not native_route_allowed(k.get("allowed_routes"), request.path): raise Refused()
             # Native caches are not authority. Missing member cap or missing configured
             # key/user/team caps do not become an implicit unlimited budget.
             for entity in (k, u, t, b):

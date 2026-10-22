@@ -565,10 +565,16 @@ exec litellm --config "$CONFIG_FILE_PATH"
         if exact:user["user_role"]="internal_user"
         self.admin(url,"/user/new",user)
         self.admin(url,"/team/member_add",{"team_id":team,"max_budget_in_team":100,"member":{"role":"user","user_id":member}})
-        key_request={"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"}
-        if exact:key_request.update({"blocked":False,"key_type":"llm_api"})
+        key_request={"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d","key_type":"llm_api"}
+        if exact:key_request.update({"blocked":False})
         result=self.admin(url,"/key/generate",key_request)
         self.disposable_secrets.append(result["key"].encode())
+        fingerprint=hashlib.sha256(result["key"].encode()).hexdigest()
+        readback=self.admin(url,"/v2/key/info",{"keys":[fingerprint]})
+        rows=readback.get("info",[])
+        require(readback.get("key")==[fingerprint] and len(rows)==1 and type(rows[0]) is dict and
+            rows[0].get("key_type")=="llm_api" and rows[0].get("allowed_routes")==["llm_api_routes"],
+            "Native model key did not retain the exact pinned llm_api_routes grant")
         return result["key"],team,member
 
     def sdk(self,url,key,lane,**opts):

@@ -31,6 +31,7 @@ TERMINAL_TAIL_SECONDS = 2
 CLEANUP_SECONDS = 2
 NATIVE_POLICY_SECONDS = PHYSICAL_HEADER_SECONDS + 5
 MODEL_ROUTES = frozenset(("/v1/messages", "/v1/chat/completions"))
+NATIVE_MODEL_ROUTE_GROUP = "llm_api_routes"
 # Every forwarded route still executes LiteLLM's native authentication. /health is paid.
 CONTROL_ROUTES = frozenset((
     ("GET", "/health/liveliness"), ("GET", "/health/readiness"),
@@ -103,6 +104,19 @@ def native_unblock_key_hash(raw):
     key = body.get("key")
     if set(body) != {"key"} or not isinstance(key, str) or not HASH.fullmatch(key): raise Refused()
     return key
+
+
+def native_route_allowed(allowed_routes, path):
+    """Match the native model-route group without widening gateway route access."""
+    if path not in MODEL_ROUTES or not isinstance(allowed_routes, list) or not allowed_routes:
+        return False
+    if any(type(route) is not str or route not in MODEL_ROUTES | {NATIVE_MODEL_ROUTE_GROUP} for route in allowed_routes):
+        return False
+    if len(set(allowed_routes)) != len(allowed_routes):
+        return False
+    if NATIVE_MODEL_ROUTE_GROUP in allowed_routes:
+        return allowed_routes == [NATIVE_MODEL_ROUTE_GROUP]
+    return path in allowed_routes
 
 
 def request_hash(method, path, raw):
@@ -210,8 +224,9 @@ class Profile:
             kind = tool.get("type")
             if path == "/v1/chat/completions" and kind != "function": raise Refused()
             if path == "/v1/messages" and kind not in (None, "custom"): raise Refused()
-            allowed = {"type", "function"} if path == "/v1/chat/completions" else {"type", "name", "description", "input_schema", "cache_control"}
+            allowed = {"type", "function"} if path == "/v1/chat/completions" else {"type", "name", "description", "input_schema", "cache_control", "eager_input_streaming"}
             if set(tool) - allowed: raise Refused()
+            if "eager_input_streaming" in tool and (path != "/v1/messages" or type(tool["eager_input_streaming"]) is not bool): raise Refused()
             cache(tool.get("cache_control"))
         return body
 

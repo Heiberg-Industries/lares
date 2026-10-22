@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY
+from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed
 
 
 class ContractTests(unittest.TestCase):
@@ -96,6 +96,37 @@ class ContractTests(unittest.TestCase):
             with self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps({**body,"messages":[{"role":"user","content":content}]}).encode())
         with self.assertRaises(TypeError): profile.document["maxOutputTokens"] = 999
         with self.assertRaises(TypeError): profile.document["aliases"][0] = "changed"
+
+    def test_profile_accepts_only_bounded_anthropic_eager_tool_streaming(self):
+        profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
+        # Networkless capture from the pinned @ai-sdk/anthropic 4.0.72 serializer.
+        body = {"model":"lares-brain","max_tokens":16384,"messages":[{"role":"user","content":[{"type":"text","text":"Local serialization check"}]}],"tools":[{"name":"ask_question","input_schema":{"type":"object","properties":{},"additionalProperties":False},"eager_input_streaming":True}],"stream":True}
+        self.assertEqual(profile.check_body("/v1/messages", json.dumps(body).encode()), body)
+        for value in (None, 0, 1, "true", [], {}):
+            invalid = {**body,"tools":[{"name":"ask_question","input_schema":{},"eager_input_streaming":value}]}
+            with self.subTest(value=value), self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps(invalid).encode())
+        for tool in (
+            {"name":"ask_question","input_schema":{},"unknown":True},
+            {"type":"web_search_20250305","name":"web_search","input_schema":{},"eager_input_streaming":True},
+        ):
+            invalid = {**body,"tools":[tool]}
+            with self.subTest(tool=tool), self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps(invalid).encode())
+        openai_body = {"model":"lares-brain","max_tokens":10,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","eager_input_streaming":True}]}
+        with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(openai_body).encode())
+
+    def test_native_model_route_group_is_confined_to_model_routes(self):
+        for path in MODEL_ROUTES:
+            with self.subTest(path=path): self.assertTrue(native_route_allowed(["llm_api_routes"], path))
+        for path in ("/key/generate", "/v1/gateway-budget/admit", "/v1/unknown"):
+            with self.subTest(path=path): self.assertFalse(native_route_allowed(["llm_api_routes"], path))
+        for grant in (
+            ["management_routes"], ["llm_api_routes","management_routes"],
+            ["llm_api_routes","unknown_routes"], ["/v1/messages","unknown_routes"],
+            ["llm_api_routes","llm_api_routes"], [], None, "llm_api_routes",
+        ):
+            with self.subTest(grant=grant): self.assertFalse(native_route_allowed(grant, "/v1/messages"))
+        self.assertTrue(native_route_allowed(["/v1/messages"], "/v1/messages"))
+        self.assertFalse(native_route_allowed(["/key/generate"], "/key/generate"))
 
     def test_only_exact_terminal_anthropic_stream_settles(self):
         start = {"type":"message_start","message":{"id":"msg_fixture","usage":{"input_tokens":12,"output_tokens":0,"cache_read_input_tokens":0}}}
