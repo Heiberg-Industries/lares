@@ -27,6 +27,7 @@ import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
 import {productionGatewayBudgetAuthority} from '../lib/gateway-budget.js';
+import {preparedModelPurposeConsumer} from '../lib/budget-financial-writer.js';
 import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
@@ -157,10 +158,12 @@ async function main(): Promise<void> {
         // The dedicated model-purpose signer enables its independent, bounded broker. A
         // configured but unusable signer fails startup rather than silently allowing unsigned
         // private requests; absent optional custody leaves ordinary private chat unchanged.
-        if(modelPurposePool&&modelPurposeKeyPath)stops.push(await serveModelPurposeBroker(modelPurposePool,{
-            consoleSigningKeyFile:modelPurposeKeyPath,runtimeSecretsDir:config.secretsDir,
-            consoleSocket:"/run/lares/model-purpose-console.sock",runtimeSocket:"/run/lares/model-purpose/model-purpose.sock",
-        }));
+        if(modelPurposePool&&modelPurposeKeyPath){
+            stops.push(await serveModelPurposeBroker(modelPurposePool,{
+                consoleSigningKeyFile:modelPurposeKeyPath,runtimeSecretsDir:config.secretsDir,
+                consoleSocket:"/run/lares/model-purpose-console.sock",runtimeSocket:"/run/lares/model-purpose/model-purpose.sock",
+            },preparedModelPurposeConsumer(financialPool,financialJournal)));
+        }
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();

@@ -5,7 +5,21 @@ export const GATEWAY_RPC_BYTES=8192;
 export const GATEWAY_RPC_MS=3000;
 export const GATEWAY_ADMIT_PATH='/v1/gateway-budget/admit';
 export const GATEWAY_SETTLE_PATH='/v1/gateway-budget/settle';
+export const GATEWAY_ANTHROPIC_MODEL_PATH='/v1/messages';
+export const GATEWAY_OPENAI_MODEL_PATH='/v1/chat/completions';
 export const gatewayRpcPath=(path:string):path is typeof GATEWAY_ADMIT_PATH|typeof GATEWAY_SETTLE_PATH=>path===GATEWAY_ADMIT_PATH||path===GATEWAY_SETTLE_PATH;
+export type GatewayModelFormat='anthropic'|'openai';
+export type GatewayModelPath=typeof GATEWAY_ANTHROPIC_MODEL_PATH|typeof GATEWAY_OPENAI_MODEL_PATH;
+export function gatewayModelPath(format:unknown):GatewayModelPath|undefined {
+  return format==='anthropic'?GATEWAY_ANTHROPIC_MODEL_PATH:format==='openai'?GATEWAY_OPENAI_MODEL_PATH:undefined;
+}
+/** Hash the exact request bytes that the gateway later checks. The method and path
+ * are fixed model routes; query strings, redirects and alternate paths are refused. */
+export function gatewayRawRequestHash(method:string,path:string,rawBody:Uint8Array):string {
+  if(method!=='POST'||(path!==GATEWAY_ANTHROPIC_MODEL_PATH&&path!==GATEWAY_OPENAI_MODEL_PATH)||
+    !(rawBody instanceof Uint8Array))throw new Error('Invalid gateway model request');
+  return createHash('sha256').update('lares.gateway.raw-request.v1\0POST\0').update(path).update('\0').update(rawBody).digest('hex');
+}
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().regex(/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
 const echoed={version:z.literal(1),nonce:hash,requestHash:hash,profileHash:hash,endpointHash:hash,keyFingerprint:hash,purposeAlias:z.string().regex(/^[A-Za-z0-9_-]{1,100}$/)};
 export const gatewayAdmitSchema=z.object({...echoed,ticket:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict();

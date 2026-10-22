@@ -3,6 +3,7 @@ import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange
 import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
 import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
+import type {Pool} from 'pg';
 /** Keeper-owned adapter. The production gateway authority receives this prepared journal;
  * no runtime or configuration switch can supply an alternate writer. It never checks out a
  * second pool client. */
@@ -59,6 +60,12 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
     }).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
   }
+}
+/** The model-purpose broker can prepare tickets only when Keeper startup has both the
+ * owned financial pool and an already prepared, verified journal. Ordinary private chat
+ * remains available when this optional custody pair is absent. */
+export function preparedModelPurposeConsumer(pool:Pool|undefined,journal:HostFinancialJournal|undefined):{pool:Pool;writer:JournalBudgetFinancialWriter}|undefined {
+  return pool&&journal?.prepared?{pool,writer:new JournalBudgetFinancialWriter(journal)}:undefined;
 }
 /** Exact post-mutation financial atoms, read on the SAME owned transaction. No generic
  * row serialization: erased identity, authority, tickets and provider bodies have no field. */

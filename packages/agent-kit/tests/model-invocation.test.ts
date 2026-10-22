@@ -7,7 +7,8 @@ import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureModelInvocation, claimModelDispatch, currentModelInvocation, currentModelPurposeClaim, requestAndAttachModelPurposeClaim, runModelInvocation } from '../src/model-invocation.js';
+import { captureModelInvocation, claimModelDispatch, currentModelInvocation, currentModelPurposeClaim, prepareCurrentModelPurposeIntent, requestAndAttachModelPurposeClaim, runModelInvocation } from '../src/model-invocation.js';
+import { gatewayRawRequestHash } from '../src/gateway-admission-protocol.js';
 import { createGatewayProvider, type GatewayLane } from '../src/gateway-provider.js';
 import { guardDefinitionModel, refuseModelCompaction } from '../src/definition-model.js';
 
@@ -47,6 +48,66 @@ it('stops exposing an attached claim as soon as its lease expires', async () => 
     expect(currentModelPurposeClaim()).toEqual({ claim: 'c'.repeat(43), expiresAt: base + 100 });
     clock.mockReturnValue(base + 101);
     expect(currentModelPurposeClaim()).toBeUndefined();
+  });
+});
+
+it('prepares one ticket from the captured invocation and exact final request bytes before dispatch', async () => {
+  const rawBody = Buffer.from('{"model":"fixture-brain","messages":[]}');
+  const expiresAt = Date.now() + 10_000;
+  purposeRequest.mockResolvedValueOnce({ claim: 'c'.repeat(43), expiresAt: expiresAt + 10_000 })
+    .mockResolvedValueOnce({ ticket: 't'.repeat(43), expiresAt });
+  const actual = { type: 'step.started', data: { turnId: '', sequence: 0, stepIndex: 4 } };
+  const resume = { id: 'approval-session', auth: { initiator: { authenticator: 'lares-console', principalId: 'original', principalType: 'user' as const, attributes: { lares_member_id: 'original' } },
+    current: { authenticator: 'lares-console', principalId: 'resolver', principalType: 'user' as const,
+      attributes: { lares_resolver_member_id: 'resolver', lares_purpose: 'resolver' } } } };
+  const invocation = captureModelInvocation(actual, resume, 'session-alias');
+  await requestAndAttachModelPurposeClaim(invocation, 'k'.repeat(43), () => true);
+  await runModelInvocation(invocation, async () => {
+    const prepared = await prepareCurrentModelPurposeIntent('POST', '/v1/messages', rawBody);
+    expect(prepared).toEqual({ ticket: 't'.repeat(43), expiresAt });
+    expect(purposeRequest).toHaveBeenLastCalledWith('step.consume', {
+      claim: 'c'.repeat(43), request: { method: 'POST', path: '/v1/messages', requestHash: gatewayRawRequestHash('POST', '/v1/messages', rawBody) },
+    });
+    expect(claimModelDispatch()).toBe(invocation);
+    await expect(prepareCurrentModelPurposeIntent('POST', '/v1/messages', rawBody)).rejects.toThrow('fresh trusted');
+  });
+});
+
+it('burns a purpose claim after an uncertain consume response and blocks physical dispatch', async () => {
+  purposeRequest.mockResolvedValueOnce({ claim: 'c'.repeat(43), expiresAt: Date.now() + 10_000 })
+    .mockRejectedValueOnce(new Error('uncertain reply'));
+  const invocation = capture();
+  await requestAndAttachModelPurposeClaim(invocation, 'k'.repeat(43), () => true);
+  await runModelInvocation(invocation, async () => {
+    await expect(prepareCurrentModelPurposeIntent('POST', '/v1/messages', Buffer.from('{}'))).rejects.toThrow('uncertain reply');
+    await expect(prepareCurrentModelPurposeIntent('POST', '/v1/messages', Buffer.from('{}'))).rejects.toThrow('fresh trusted');
+    expect(() => claimModelDispatch()).toThrow('fresh trusted');
+  });
+});
+
+it('burns the claim and refuses dispatch when Keeper returns a malformed prepared ticket', async () => {
+  purposeRequest.mockResolvedValueOnce({ claim: 'c'.repeat(43), expiresAt: Date.now() + 20_000 })
+    .mockResolvedValueOnce({ ticket: 'not-a-ticket', expiresAt: Date.now() + 10_000 });
+  const invocation = capture();
+  await requestAndAttachModelPurposeClaim(invocation, 'k'.repeat(43), () => true);
+  await runModelInvocation(invocation, async () => {
+    await expect(prepareCurrentModelPurposeIntent('POST', '/v1/messages', Buffer.from('{}'))).rejects.toThrow('fresh trusted');
+    await expect(prepareCurrentModelPurposeIntent('POST', '/v1/messages', Buffer.from('{}'))).rejects.toThrow('fresh trusted');
+    expect(() => claimModelDispatch()).toThrow('fresh trusted');
+  });
+});
+
+it('does not dispatch a prepared ticket after the captured turn closes', async () => {
+  const expiresAt = Date.now() + 10_000;
+  purposeRequest.mockResolvedValueOnce({ claim: 'c'.repeat(43), expiresAt: expiresAt + 10_000 })
+    .mockResolvedValueOnce({ ticket: 't'.repeat(43), expiresAt });
+  const invocation = capture();
+  let active = true;
+  await requestAndAttachModelPurposeClaim(invocation, 'k'.repeat(43), () => active);
+  await runModelInvocation(invocation, async () => {
+    await prepareCurrentModelPurposeIntent('POST', '/v1/messages', Buffer.from('{}'));
+    active = false;
+    expect(() => claimModelDispatch()).toThrow('fresh trusted');
   });
 });
 

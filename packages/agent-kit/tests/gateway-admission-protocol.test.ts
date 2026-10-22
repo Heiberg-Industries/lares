@@ -1,10 +1,18 @@
 import {describe,it,expect} from 'vitest';
 import {execFileSync} from 'node:child_process';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash} from '../src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewayRawRequestHash,gatewaySignature,verifyGatewaySignature,parseGatewayDocument,gatewayAdmitSchema,gatewayGrantHash} from '../src/gateway-admission-protocol.js';
 import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '../src/gateway-pricing.js';
 const request={version:1 as const,nonce:'1'.repeat(64),requestHash:'2'.repeat(64),profileHash:'3'.repeat(64),endpointHash:'4'.repeat(64),keyFingerprint:'5'.repeat(64),purposeAlias:'example-brain',ticket:'a'.repeat(43)};
 const key=Buffer.alloc(32,7);
 describe('canonical signed gateway protocol',()=>{
+  it('hashes the exact supported model method, path and final body bytes',()=>{
+    const body=Buffer.from('{"messages":[]}'),path='/v1/messages';
+    const expected=execFileSync('python3',['-c',`import hashlib,sys
+print(hashlib.sha256(b'lares.gateway.raw-request.v1\\0POST\\0/v1/messages\\0'+sys.stdin.buffer.read()).hexdigest())`],{input:body,encoding:'utf8'}).trim();
+    expect(gatewayRawRequestHash('POST',path,body)).toBe(expected);
+    expect(()=>gatewayRawRequestHash('GET',path,body)).toThrow();
+    expect(()=>gatewayRawRequestHash('POST','/v1/messages?x=1',body)).toThrow();
+  });
   it('matches independent Python JSON/HMAC bytes including ASCII escaping',()=>{
     const document={...request,nested:['\u007f','\u00e6','\ud83d\ude00']};
     const expected=JSON.parse(execFileSync('python3',['-c',`import json,hashlib,hmac,sys

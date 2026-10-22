@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { DynamicResolveContext } from 'eve/tools';
 import { modelPurposeRequest } from './model-purpose-client.js';
+import { gatewayRawRequestHash, type GatewayModelPath } from './gateway-admission-protocol.js';
 
 export const MODEL_INVOCATION_REFUSED = 'A fresh trusted model invocation is required';
 
@@ -21,7 +22,7 @@ export interface ModelInvocation {
   readonly alias: string;
 }
 interface ModelPurposeClaim { readonly claim: string; readonly expiresAt: number }
-interface Claim { entered: boolean; dispatched: boolean; purpose?: ModelPurposeClaim; purposeActive?: () => boolean; purposeRequest?: Promise<void> }
+interface Claim { entered: boolean; dispatched: boolean; purpose?: ModelPurposeClaim; purposeActive?: () => boolean; purposeRequest?: Promise<void>; consumeRequested?: boolean; intentPrepared?: boolean }
 const claims = new WeakMap<ModelInvocation, Claim>();
 // A repeated resolver event must share its burned claim even if it constructs a new model.
 // Never evict tombstones and silently rearm an old event. This bounded process-local guard
@@ -102,6 +103,31 @@ export function currentModelPurposeClaim(): ModelPurposeClaim | undefined {
   return claim?.purpose && claim.purpose.expiresAt > Date.now() && claim.purposeActive?.() ? claim.purpose : undefined;
 }
 
+/** Burn this invocation's opaque claim before the authenticated Keeper exchange. The
+ * gateway adapter supplies the exact final request bytes after its normal body shaping;
+ * neither model input nor a caller-selected member, binding, profile, or endpoint enters
+ * this request. A timeout is uncertain and the local claim stays burned. */
+export async function prepareCurrentModelPurposeIntent(
+  method: 'POST', path: GatewayModelPath, rawBody: Uint8Array,
+): Promise<{ ticket: string; expiresAt: number }> {
+  const invocation = current.getStore();
+  const state = invocation && claims.get(invocation);
+  const purpose = state?.purpose;
+  if (!invocation || !state?.entered || state.consumeRequested || !purpose ||
+      purpose.expiresAt <= Date.now() || !state.purposeActive?.()) return refuse();
+  const requestHash = gatewayRawRequestHash(method, path, rawBody);
+  state.consumeRequested = true;
+  const result = await modelPurposeRequest<{ ticket?: unknown; expiresAt?: unknown }>('step.consume', {
+    claim: purpose.claim, request: { method, path, requestHash },
+  });
+  if (!state.purposeActive?.() || purpose.expiresAt <= Date.now() ||
+      typeof result.ticket !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.ticket) ||
+      typeof result.expiresAt !== 'number' || !Number.isSafeInteger(result.expiresAt) ||
+      result.expiresAt <= Date.now() || result.expiresAt > purpose.expiresAt) return refuse();
+  state.intentPrepared = true;
+  return Object.freeze({ ticket: result.ticket, expiresAt: result.expiresAt });
+}
+
 /** Enter once, before any asynchronous verification or provider work. Eve's outer retries
  * and recovery reuse the selected model and cannot acquire a fresh invocation this way. */
 export function runModelInvocation<T>(invocation: ModelInvocation, call: () => Promise<T>): Promise<T> {
@@ -119,7 +145,8 @@ export function currentModelInvocation(): ModelInvocation | undefined { return c
 export function claimModelDispatch(): ModelInvocation {
   const invocation = current.getStore();
   const claim = invocation && claims.get(invocation);
-  if (!invocation || !claim?.entered || claim.dispatched) refuse();
+  if (!invocation || !claim?.entered || claim.dispatched ||
+      (claim.purpose && (!claim.intentPrepared || claim.purpose.expiresAt <= Date.now() || !claim.purposeActive?.()))) refuse();
   claim!.dispatched = true;
   return invocation!;
 }

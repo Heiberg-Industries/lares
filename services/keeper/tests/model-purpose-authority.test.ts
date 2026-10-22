@@ -10,6 +10,7 @@ import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession, requireConsoleSessionBinding } from '@lares/agent-kit/console-turn-authority';
 import { consoleSourceTransaction } from '@lares/agent-kit/console-source-transaction';
 import { captureBudgetAuthorityReference, validateBudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import { gatewayRawRequestHash } from '@lares/agent-kit/gateway-admission-protocol';
 import { assertPrivateConsoleRequest, PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, verifiedPrivateConsoleModelMessageReceipt } from '@lares/agent-kit/private-console-envelope';
 import { PgPersonalActionStore } from '@lares/agent-kit/personal-action-store';
 import { serveModelPurposeBroker, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest } from '../lib/model-purpose-broker.js';
@@ -224,6 +225,16 @@ describe('Keeper model-purpose socket handlers',()=>{
       const event={type:'step.started',data:{turnId:'eve-turn-7',sequence:7,stepIndex:0}};
       const claim=await socketRequest(running.runtimeSocket,runtimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'lares-brain',event},files.runtimeKey,{payloadDigest:modelPurposeDigest(event)}));
       expect(claim.ok).toBe(true);expect(claim.claim).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+      // This broker has no prepared financial writer. Consumption fails closed and burns
+      // the exact claim, so adding custody later cannot make the same claim replayable.
+      const rawBody=Buffer.from('{"model":"lares-brain","messages":[]}');
+      const gatewayRequest={method:'POST',path:'/v1/messages',requestHash:gatewayRawRequestHash('POST','/v1/messages',rawBody)};
+      const validConsume=runtimeEnvelope('step.consume',{claim:claim.claim,request:gatewayRequest},files.runtimeKey);
+      const invalidMac={...validConsume,mac:`${String(validConsume.mac).slice(0,-1)}${String(validConsume.mac).endsWith('A')?'B':'A'}`};
+      expect((await socketRequest(running.runtimeSocket,invalidMac)).ok).toBe(false);
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('step.consume',{claim:claim.claim,request:gatewayRequest},files.runtimeKey))).ok).toBe(false);
+      expect((await socketRequest(running.runtimeSocket,runtimeEnvelope('step.consume',{claim:claim.claim,request:gatewayRequest},files.runtimeKey))).ok).toBe(false);
 
       const close=runtimeEnvelope('turn.close',{turnCapability:capability,turnId:'eve-turn-7',sequence:7},files.runtimeKey);
       expect((await socketRequest(running.runtimeSocket,{...close,timestamp:Number(close.timestamp)+1})).ok).toBe(false);
