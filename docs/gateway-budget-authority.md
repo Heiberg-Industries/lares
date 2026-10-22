@@ -12,12 +12,17 @@ is root-owned and regular, and cannot be writable by its group or accessible to
 others. This code never generates or copies a key. Missing or unsafe custody
 refuses the service. No console environment variable contains that key.
 
-The production factory has **no recovery witness implementation** and therefore
-cannot allow spending. An open database account or matching database epoch does
-not override this. Test constructors can inject an independent witness; there is
-no production configuration or environment switch that supplies one. Actual
-account provisioning, reviewed prices, runtime ticket preparation after final
-prompt-cache shaping, and restore-safe recovery remain activation dependencies.
+The production factory binds its recovery observation to the same prepared
+financial journal used by its admission writer. It matches a persisted ticket's
+installation account, endpoint generation and raw epoch against the journal's
+committed open and approved installation account and active window. A matching
+database epoch alone never establishes recovery authority. This observation is
+discovery only: the writer still checks the complete database projection inside
+its owned transaction before mutation. The test constructor can inject a witness
+for focused tests; there is no production setting for one. This does not open a
+closed account, unfreeze a journal, activate spending, or establish restore
+acceptance. Reviewed prices, runtime ticket preparation after final prompt-cache
+shaping and the remaining activation dependencies are still required.
 
 ## Wire and transaction boundary
 

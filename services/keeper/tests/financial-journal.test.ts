@@ -1,7 +1,7 @@
 import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
-import {randomUUID} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
@@ -16,6 +16,43 @@ function preparedJournal(sync?:(fd:number)=>void){
   const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
   const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,...(sync?{sync}:{})});journals.push(j);return j;
 }
+type InstallationAtom=Extract<FinancialAtom,{kind:'account'}>;
+type WindowAtom=Extract<FinancialAtom,{kind:'window'}>;
+const recoveryEpoch='recovery-epoch-fixture';
+function recoveryAccount(id=randomUUID(),overrides:Partial<InstallationAtom>={}):InstallationAtom{return {kind:'account',id,installationAccountId:id,accountKind:'installation',state:'open',reason:'approved',activeWindowId:null,installationCap:'10',policyGeneration:'1',selectedEndpointHash:'a'.repeat(64),endpointGeneration:'2',recoveryEpochHash:createHash('sha256').update(recoveryEpoch).digest('hex'),canonicalSuppressionHash:null,providerSuppressionHashes:[],...overrides};}
+function recoveryWindow(account:InstallationAtom,overrides:Partial<WindowAtom>={}):WindowAtom{return {kind:'window',id:account.activeWindowId??randomUUID(),accountId:account.id,startsAt:'2026-10-21T00:00:00.000000Z',endsAt:'2026-11-21T00:00:00.000000Z',openingLiability:'0',openingCap:account.installationCap??'10',policyRevision:'1',...overrides};}
+async function commitRecoveryProjection(journal:HostFinancialJournal,atoms:readonly FinancialAtom[]):Promise<void>{await journal.operation('provision',async id=>{journal.propose(id,atoms);journal.committed(id);});}
+const recoveryInput=(id:string,values:Partial<{epoch:string;endpointGeneration:string}>={})=>({installationAccountId:id,epoch:values.epoch??recoveryEpoch,endpointGeneration:values.endpointGeneration??'2'});
+it('observes only the exact committed open installation reference from its prepared journal',async()=>{
+  const j=preparedJournal(),id=randomUUID(),base=recoveryAccount(id),window=recoveryWindow(base),account={...base,activeWindowId:window.id};
+  await commitRecoveryProjection(j,[account,window]);
+  const reference=j.observeGatewayRecoveryReference(recoveryInput(id));
+  expect(reference).toEqual({installationAccountId:id,epoch:recoveryEpoch,endpointGeneration:'2',state:'reconciled'});
+  expect(Object.isFrozen(reference)).toBe(true);
+  expect(j.observeGatewayRecoveryReference(recoveryInput(randomUUID()))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(id,{epoch:'other'}))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(id,{endpointGeneration:'3'}))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference({...recoveryInput(id),unexpected:'field'} as never)).toBeUndefined();
+});
+it('does not observe uncommitted, busy, incomplete or non-usable installation state',async()=>{
+  const j=preparedJournal(),unprepared=open(fixture()),id=randomUUID(),base=recoveryAccount(id),window=recoveryWindow(base),account={...base,activeWindowId:window.id};
+  expect(unprepared.observeGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();
+  await j.operation('provision',async operationId=>{j.propose(operationId,[account,window]);expect(j.observeGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();j.committed(operationId);});
+  expect(j.observeGatewayRecoveryReference(recoveryInput(id))).toEqual({installationAccountId:id,epoch:recoveryEpoch,endpointGeneration:'2',state:'reconciled'});
+  const closedId=randomUUID(),closed=recoveryAccount(closedId,{state:'closed',reason:'unreconciled',recoveryEpochHash:null});
+  const unapprovedId=randomUUID(),unapproved=recoveryAccount(unapprovedId,{reason:'unreconciled'});
+  const noEndpointId=randomUUID(),noEndpoint=recoveryAccount(noEndpointId,{selectedEndpointHash:null});
+  const noWindowId=randomUUID(),noWindow=recoveryAccount(noWindowId,{activeWindowId:null});
+  await commitRecoveryProjection(j,[closed,unapproved,noEndpoint,noWindow]);
+  expect(j.observeGatewayRecoveryReference(recoveryInput(closedId))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(unapprovedId))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(noEndpointId))).toBeUndefined();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(noWindowId))).toBeUndefined();
+  await j.drainForShutdown();
+  expect(j.observeGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();
+  const closedJournal=preparedJournal();closedJournal.close();
+  expect(closedJournal.observeGatewayRecoveryReference(recoveryInput(id))).toBeUndefined();
+});
 function journalFailingAfterObserverCommit(kind:'commit'|'control'|'observation'){
   const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database=testDatabase;
   const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
