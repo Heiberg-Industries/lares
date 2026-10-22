@@ -7,6 +7,8 @@ import {z} from 'zod';
 import {canonicalBudgetMoney,budgetIdentitySuppression,type BudgetFinancialOperation} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayPricingSchema} from '@lares/agent-kit/gateway-pricing';
+import {consumeSourceObservationCommit,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
+import {consumeFinancialObservationHandle,type FinancialObservationHandle} from './financial-continuity.js';
 const hash=z.string().regex(/^[a-f0-9]{64}$/),id=z.string().uuid(),uint=z.string().regex(/^(0|[1-9][0-9]{0,18})$/);
 const money=z.string().refine(v=>{try{return canonicalBudgetMoney(v)===v;}catch{return false;}});
 const instant=z.iso.datetime({precision:6}),zero='0'.repeat(64);
@@ -26,6 +28,9 @@ export type FinancialControl=z.infer<typeof controlSchema>;
 export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
 export interface FinancialProjection {checkpoints:FinancialCheckpoint[];atoms:FinancialAtom[]}
+const observationCounts=z.object({accounts:z.number().int().nonnegative().safe(),windows:z.number().int().nonnegative().safe(),bindings:z.number().int().nonnegative().safe(),attempts:z.number().int().nonnegative().safe(),grants:z.number().int().nonnegative().safe(),checkpoints:z.number().int().positive().safe()}).strict();
+export const FINANCIAL_OBSERVATION_SCHEMA=z.object({operationId:id,checkpoint:FINANCIAL_CHECKPOINT_SCHEMA,database:FINANCIAL_DATABASE_SCHEMA,projectionDigest:hash,checkpointDigest:hash,counts:observationCounts}).strict();
+export type FinancialObservation=z.infer<typeof FINANCIAL_OBSERVATION_SCHEMA>;
 export function financialAtomKey(atom:FinancialAtom):string {
   return atom.kind==='grant'?`${atom.kind}:${atom.attemptId}`:atom.kind==='tombstone'?`${atom.kind}:${atom.accountId}`:`${atom.kind}:${atom.id}`;
 }
@@ -46,6 +51,7 @@ export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('begin'),operation}).strict(),
   z.object({...base,kind:z.literal('proposal'),atoms:z.array(FINANCIAL_ATOM_SCHEMA).max(128)}).strict(),
   z.object({...base,kind:z.literal('commit'),proposalDigest:hash}).strict(),
+  z.object({...base,kind:z.literal('observation'),observation:FINANCIAL_OBSERVATION_SCHEMA}).strict(),
   z.object({...base,kind:z.literal('abort'),proposalDigest:hash.nullable(),reason:z.enum(['not-started','rollback-acknowledged','source-retirement-acknowledged','source-retirement-rolled-back'])}).strict(),
 ]);
 type JournalRecord=z.infer<typeof FINANCIAL_JOURNAL_RECORD_SCHEMA>;
@@ -81,6 +87,14 @@ export interface CommittedFinancialEvidence {readonly journalId:string;readonly 
 declare const committedReceiptBrand:unique symbol;
 export interface CommittedFinancialReceipt extends CommittedFinancialEvidence {readonly [committedReceiptBrand]:true}
 const committedReceipts=new WeakMap<object,{evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[]}>();
+interface PublicationProof {journal:HostFinancialJournal;operationId:string;receipt:CommittedFinancialReceipt;used:boolean;active:boolean}
+const publicationProofs=new WeakMap<object,PublicationProof>();
+let activePublicationProof:PublicationProof|undefined;
+/** Native receipt mutations are accepted only inside the current journal-owned batch. */
+export function requireCurrentFinancialPublicationProof(receipt:CommittedFinancialReceipt):void {
+  const proof=receipt&&typeof receipt==='object'?publicationProofs.get(receipt):undefined;
+  if(!proof||proof!==activePublicationProof||!proof.active||proof.receipt!==receipt||!proof.journal.publicationProofIsCurrent(proof.operationId))throw new Error('Current financial publication proof unavailable');
+}
 export type FinancialAbortOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back';
 declare const durableAbortReceiptBrand:unique symbol;
 export interface DurableFinancialAbortReceipt {readonly [durableAbortReceiptBrand]:true;readonly journalId:string;readonly operationId:string;readonly operation:BudgetFinancialOperation;readonly outcome:FinancialAbortOutcome;readonly terminalSequence:number;readonly terminalDigest:string}
@@ -127,7 +141,7 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
 }
 export class HostFinancialJournal {
   #key:Buffer;
-  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
+  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
   private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
   /** No mkdir, key creation, restore adoption, tail repair or automatic initialization. */
@@ -216,6 +230,9 @@ export class HostFinancialJournal {
         if(!this.pending?.proposal||this.pending.id!==r.operationId||this.pending.proposal!==r.proposalDigest||!this.pending.atoms)throw new Error('Journal commit mismatch');
         this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.checkpoints.push(this.lastCheckpoint);this.applyAtoms(this.pending.atoms);this.pending=undefined;
       }
+      else if(r.kind==='observation'){
+        if(this.pending||!this.control||!this.lastCheckpoint||r.operationId!==r.observation.operationId||JSON.stringify(r.observation.checkpoint)!==JSON.stringify(this.lastCheckpoint)||JSON.stringify(r.observation.database)!==JSON.stringify(this.control.database))throw new Error('Financial observation mismatch');
+      }
       else if(r.kind==='abort'){if(!this.pending||this.pending.id!==r.operationId||(this.pending.proposal??null)!==r.proposalDigest)throw new Error('Journal abort mismatch');this.pending=undefined;}
       else throw new Error('Repeated journal genesis');
       this.sequence++;this.head=frame.digest;
@@ -245,7 +262,7 @@ export class HostFinancialJournal {
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
     this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
-    this.busy=true;this.pendingAbortReceipt=undefined;const operationId=randomUUID();
+    this.busy=true;this.pendingAbortReceipt=undefined;const operationId=randomUUID();this.activeOperationId=operationId;
     try{
       this.append({kind:'begin',operation:operation.parse(kind)},operationId);this.pending={id:operationId,operation:kind};
       const result=await work(operationId);
@@ -259,7 +276,7 @@ export class HostFinancialJournal {
       }
       if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof){proof.failure=error;if(error&&typeof error==='object')currentAbortFailures.set(error,this.pendingAbortReceipt);}}throw error;
     }
-    finally{this.busy=false;if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof)proof.finished=!this.pending&&!this.frozen;this.pendingAbortReceipt=undefined;}for(const resolve of this.idle)resolve();this.idle.clear();}
+    finally{this.busy=false;this.activeOperationId=undefined;if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof)proof.finished=!this.pending&&!this.frozen;this.pendingAbortReceipt=undefined;}for(const resolve of this.idle)resolve();this.idle.clear();}
   }
   propose(operationId:string,atoms:readonly FinancialAtom[]):FinancialJournalProposal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
@@ -284,6 +301,47 @@ export class HostFinancialJournal {
     if(!this.control)return undefined;
     const evidence=Object.freeze({journalId:this.journalId,operationId,operation:kind,proposalSequence:sequence,proposalDigest:proposal});
     const receipt=evidence as CommittedFinancialReceipt;committedReceipts.set(receipt,{evidence,atoms});return receipt;
+  }
+  /** Commit source-observed evidence only after terminal and control records are fsynced. */
+  committedObserved(operationId:string,handle:FinancialObservationHandle):CommittedFinancialReceipt|undefined {
+    const verified=consumeFinancialObservationHandle(this,operationId,handle),commit=verified.commit,raw=verified.observation;
+    consumeSourceObservationCommit(commit,operationId);
+    const observation=FINANCIAL_OBSERVATION_SCHEMA.parse(raw),pending=this.pending;
+    if(!pending?.proposal||pending.id!==operationId||!this.control||observation.operationId!==operationId||observation.checkpoint.operationId!==operationId||
+      observation.checkpoint.journalId!==this.journalId||observation.checkpoint.sequence!==this.sequence-1||observation.checkpoint.digest!==pending.proposal||
+      JSON.stringify(observation.database)!==JSON.stringify(this.control.database))throw new Error('Financial observation unavailable');
+    const projection=this.expectedProjection(true),atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
+    const counts={accounts:atoms.filter(atom=>atom.kind==='account').length,windows:atoms.filter(atom=>atom.kind==='window').length,
+      bindings:atoms.filter(atom=>atom.kind==='binding').length,attempts:atoms.filter(atom=>atom.kind==='attempt').length,
+      grants:atoms.filter(atom=>atom.kind==='grant').length,checkpoints:projection.checkpoints.length};
+    if(JSON.stringify(counts)!==JSON.stringify(observation.counts)||observation.checkpointDigest!==digest(gatewayCanonical(projection.checkpoints))||
+      observation.projectionDigest!==digest(gatewayCanonical({checkpoints:projection.checkpoints,atoms:projection.atoms})))throw new Error('Financial observation unavailable');
+    const receipt=this.committed(operationId);if(!receipt)return undefined;
+    this.append({kind:'observation',observation},operationId);
+    const proof:PublicationProof={journal:this,operationId,receipt,used:false,active:false};publicationProofs.set(receipt,proof);
+    return receipt;
+  }
+  /** Opens one synchronous native publication batch for this exact current operation. */
+  withPublicationProof<T>(receipt:CommittedFinancialReceipt,publish:(receipt:CommittedFinancialReceipt)=>T):T {
+    const proof=receipt&&typeof receipt==='object'?publicationProofs.get(receipt):undefined;
+    if(!proof||proof.journal!==this||proof.receipt!==receipt||proof.used||!this.publicationProofIsCurrent(proof.operationId)||activePublicationProof)throw new Error('Current financial publication proof unavailable');
+    proof.used=true;
+    if(publish.constructor?.name==='AsyncFunction'){proof.active=false;try{this.persistFreeze('uncertain');}catch{}throw new Error('Financial publication must be synchronous');}
+    proof.active=true;activePublicationProof=proof;
+    try{
+      const result=publish(receipt);
+      if(result&&typeof (result as {then?:unknown}).then==='function'){
+        void Promise.resolve(result).catch(()=>undefined);throw new Error('Financial publication must be synchronous');
+      }
+      if(result!==undefined)throw new Error('Financial publication must not return a value');
+      return result;
+    }catch(error){try{this.persistFreeze('uncertain');}catch{}throw error;}
+    finally{proof.active=false;if(activePublicationProof===proof)activePublicationProof=undefined;}
+  }
+  /** Rechecked by each native mutation so a callback cannot freeze or close custody
+   * and then continue publishing under a stale batch capability. */
+  publicationProofIsCurrent(operationId:string):boolean {
+    return !this.closed&&!this.frozen&&!this.stopping&&this.busy&&this.activeOperationId===operationId;
   }
   aborted(operationId:string,reason:FinancialAbortOutcome):DurableFinancialAbortReceipt|undefined {
     if(this.pending?.id!==operationId||!this.pending.operation)throw new Error('Financial operation unavailable');

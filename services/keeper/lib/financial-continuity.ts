@@ -1,7 +1,18 @@
 /** Server-only observation on the caller's actual owned PostgreSQL connection. */
-import type {SourceDatabase} from '@lares/agent-kit/console-source-transaction';
-import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,HostFinancialJournal,financialAtomKey,type FinancialAtom,type FinancialCheckpoint,type FinancialProjection} from './financial-journal.js';
+import {querySourceBounded,sourceObservationCommit,type SourceDatabase,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
+import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
+import {FINANCIAL_DATABASE_SCHEMA,FINANCIAL_CHECKPOINT_SCHEMA,HostFinancialJournal,financialAtomKey,type FinancialAtom,type FinancialCheckpoint,type FinancialProjection,type FinancialObservation} from './financial-journal.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
+declare const financialObservationHandleBrand:unique symbol;
+export interface FinancialObservationHandle {readonly [financialObservationHandleBrand]:true}
+const verifiedObservations=new WeakMap<object,{journal:HostFinancialJournal;operationId:string;commit:SourceObservationCommit;observation:FinancialObservation}>();
+/** Only the completed observer can mint this handle. The journal consumes it once, for
+ * this exact operation, after its terminal and control records are durable. */
+export function consumeFinancialObservationHandle(journal:HostFinancialJournal,operationId:string,handle:FinancialObservationHandle):{commit:SourceObservationCommit;observation:FinancialObservation} {
+  const proof=handle&&typeof handle==='object'?verifiedObservations.get(handle):undefined;
+  if(!proof||proof.journal!==journal||proof.operationId!==operationId)throw new Error('Financial observation unavailable');
+  verifiedObservations.delete(handle as object);return {commit:proof.commit,observation:proof.observation};
+}
 export async function observeFinancialDatabase(db:SourceDatabase){
   const rows=(await db.query(`SELECT (pg_control_system()).system_identifier::text AS "systemIdentifier",
     to_char(pg_postmaster_start_time() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "postmasterStartedAt",
@@ -63,6 +74,32 @@ export async function verifyFinancialContinuity(journal:HostFinancialJournal,db:
     journal.verifyContinuity(database,observed.checkpoints,observed.atoms,proposed);
   }
   catch{journal.freeze();throw new Error('Financial continuity requires recovery');}
+}
+/** Fresh, same-client read-only observation after the source mutation COMMIT. The caller
+ * keeps this exact checked-out client owned until the observer COMMIT is acknowledged. */
+export async function observeCommittedFinancialProjection(journal:HostFinancialJournal,db:SourceDatabase,operationId:string):Promise<FinancialObservationHandle>{
+  let open=false,commitAttempted=false;
+  const bounded:SourceDatabase={query:(sql,values)=>querySourceBounded(db,sql,values,1000)};
+  try{
+    if((await querySourceBounded(db,'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',undefined,1000)).command!=='BEGIN')throw new Error('Financial observation unavailable');open=true;
+    await querySourceBounded(db,"SET LOCAL statement_timeout='1000ms'",undefined,1000);
+    await querySourceBounded(db,"SET LOCAL lock_timeout='500ms'",undefined,1000);
+    const projection=journal.expectedProjection(true),database=await observeFinancialDatabase(bounded),observed=await observeFinancialProjection(bounded,projection);
+    journal.verifyContinuity(database,observed.checkpoints,observed.atoms,true);
+    const checkpoint=projection.checkpoints.at(-1);if(!checkpoint||checkpoint.operationId!==operationId)throw new Error('Financial observation checkpoint unavailable');
+    const counts={accounts:observed.atoms.filter(atom=>atom.kind==='account').length,windows:observed.atoms.filter(atom=>atom.kind==='window').length,
+      bindings:observed.atoms.filter(atom=>atom.kind==='binding').length,attempts:observed.atoms.filter(atom=>atom.kind==='attempt').length,
+      grants:observed.atoms.filter(atom=>atom.kind==='grant').length,checkpoints:observed.checkpoints.length};
+    const observation:FinancialObservation={operationId,checkpoint,database,
+      projectionDigest:gatewayHash(gatewayCanonical({checkpoints:observed.checkpoints,atoms:projection.atoms})),
+      checkpointDigest:gatewayHash(gatewayCanonical(observed.checkpoints)),counts};
+    commitAttempted=true;
+    if((await querySourceBounded(db,'COMMIT',undefined,1000)).command!=='COMMIT')throw new Error('Financial observation commit unavailable');open=false;
+    const handle=Object.freeze({});verifiedObservations.set(handle,{journal,operationId,observation,commit:sourceObservationCommit(db)});return handle as FinancialObservationHandle;
+  }catch(error){
+    if(open&&!commitAttempted){try{await querySourceBounded(db,'ROLLBACK',undefined,1000);}catch{}}
+    throw error;
+  }
 }
 /** The explicit fresh-install ceremony owns all SIX tables while recording the host receipt.
  * A restored empty DB is refused when any earlier ceremony exists on this host. A new host

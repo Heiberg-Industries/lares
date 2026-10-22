@@ -1,7 +1,7 @@
 import {type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {HostFinancialJournal,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
-import {verifyFinancialContinuity} from './financial-continuity.js';
+import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 import {financialAtomFromRow,FINANCIAL_UTC_TIMESTAMP} from './financial-projection.js';
 /** Keeper-owned adapter. The production gateway authority receives this prepared journal;
  * no runtime or configuration switch can supply an alternate writer. It never checks out a
@@ -30,15 +30,17 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
           // consoleSourceTransaction rechecks source deadlines AFTER this fsync and
           // checkpoint, before choosing its financial COMMIT or revoke-only branch.
         },
-        settled:async outcome=>{
+        ...(this.journal.prepared?{afterCommitObservation:async db=>observeCommittedFinancialProjection(this.journal,db,operationId)}:{}),
+        settled:async (outcome,observation)=>{
           if(outcome==='commit-acknowledged'){
             if(!proposed){this.journal.freeze();throw new Error('Financial checkpoint missing');}
-            receipt=this.journal.committed(operationId);
+            if(this.journal.prepared){if(!observation){this.journal.freeze();throw new Error('Financial commit observation unavailable');}receipt=this.journal.committedObserved(operationId,observation as Awaited<ReturnType<typeof observeCommittedFinancialProjection>>);}
+            else receipt=this.journal.committed(operationId);
           }else if(outcome==='unknown'){this.journal.freeze();throw new Error('Financial commit could not be confirmed');}
           else abortReceipt=this.journal.aborted(operationId,outcome);
           settled=true;
         },
-      });
+      },operationId);
       try{
         let result:T;
         try{result=await work(boundary,operationId);}
@@ -51,10 +53,7 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         if(!settled)throw new Error('Financial transaction did not durably settle');
         if(publish&&receipt){
           // Only this writer's just-committed receipt crosses the held barrier.
-          try{
-            const publicationResult:unknown=publish(receipt,result);
-            if(publicationResult!==undefined){void Promise.resolve(publicationResult).catch(()=>undefined);throw new Error('Receipt publication must be synchronous');}
-          }catch(error){try{this.journal.freeze();}catch{/* Preserve the publication failure; custody remains closed. */}throw error;}
+          this.journal.withPublicationProof(receipt,()=>publish(receipt!,result));
         }
         return {value:result,receipt};
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}

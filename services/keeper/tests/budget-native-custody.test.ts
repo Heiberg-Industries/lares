@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate} from '../lib/budget-native-custody.js';
 import {HostFinancialJournal,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
+import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
+import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
 import {BudgetNativeCredentialClient,type NativeHashAbsenceReceipt} from '../lib/budget-native-client.js';
 import {platformTestJournalLock} from './helpers/financial-journal.js';
 
@@ -42,6 +44,14 @@ async function receipt(p?:ReturnType<typeof prepare>,kind:'provision'|'member-re
   const atoms=override??(p?[accountAtom(p,kind),...(kind==='provision'?[accountAtom(p,kind,true),bindingAtom(p,'active')]:[]),...(kind==='erase-person'?[{kind:'tombstone' as const,accountId:p.accountId,canonicalSuppressionHash:'d'.repeat(64),providerSuppressionHashes:['e'.repeat(64)],state:'erased' as const}]:[])]:[]);
   await j.operation(kind,async id=>{j.propose(id,atoms);result=j.committed(id);});if(!result)throw new Error('Prepared receipt fixture failed');return result;
 }
+async function publishReceipt(gate:NativeCustodyGate,p:ReturnType<typeof prepare>,kind:'provision'|'member-remove'|'erase-person',publish:(receipt:CommittedFinancialReceipt)=>void,override?:FinancialAtom[]):Promise<void>{
+  if(!financial)await receipt();const j=financial!;
+  const atoms=override??[accountAtom(p,kind),...(kind==='provision'?[accountAtom(p,kind,true),bindingAtom(p,'active')]:[]),...(kind==='erase-person'?[{kind:'tombstone' as const,accountId:p.accountId,canonicalSuppressionHash:'d'.repeat(64),providerSuppressionHashes:['e'.repeat(64)],state:'erased' as const}]:[])];
+  await j.operation(kind,async operationId=>{
+    j.propose(operationId,atoms);
+    const committed=j.committedObserved(operationId,await ownedObservationHandle(j,operationId))!;j.withPublicationProof(committed,()=>publish(committed));
+  });
+}
 function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId?:string;bindingId?:string;key?:string;policy?:BudgetNativeReviewedPolicy}={}){
   const policy=values.policy??reviewed(),installationId=values.installationId??randomUUID(),accountId=values.accountId??randomUUID();
   let team=gate.reserveTeam(installationId,target,policy),user=gate.reserveUser(accountId,team.ownershipId,policy);
@@ -55,6 +65,22 @@ function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId
   const operation=gate.prepareOperation(input,values.key??secret());return {team,user,input,operation,accountId,installationId};
 }
 const bytes=(directory:string)=>Object.fromEntries(readdirSync(directory).map(name=>[name,readFileSync(join(directory,name))]));
+async function ownedObservationHandle(journal:HostFinancialJournal,operationId:string):Promise<Awaited<ReturnType<typeof observeCommittedFinancialProjection>>>{
+  const client={async query(value:string|{text:string}){
+    const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
+    const projection=journal.expectedProjection(true),atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
+    if(sql.includes('pg_control_system'))rows=[{systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'}];
+    else if(sql.includes('FROM budget_accounts) AS accounts'))rows=[{accounts:String(atoms.filter(a=>a.kind==='account').length),windows:String(atoms.filter(a=>a.kind==='window').length),bindings:String(atoms.filter(a=>a.kind==='binding').length),attempts:String(atoms.filter(a=>a.kind==='attempt').length),grants:String(atoms.filter(a=>a.kind==='grant').length),checkpoints:String(projection.checkpoints.length)}];
+    else if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))rows=projection.checkpoints.map(c=>({...c,sequence:String(c.sequence)}));
+    else if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))rows=projection.checkpoints.slice(-1).map(c=>({...c,sequence:String(c.sequence)}));
+    else if(sql.includes('FROM budget_accounts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account').map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:null,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
+    else if(sql.includes('FROM budget_gateway_bindings WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'binding'}>=>a.kind==='binding').map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,profile_hash:a.profileHash,maximum_liability:a.maximumLiability,pricing_profile:a.pricingProfile,state:a.state}));
+    return {rows,command};
+  },release(){}};
+  const pool={async query(){return {rows:[]};},async connect(){return client;}};let handle:Awaited<ReturnType<typeof observeCommittedFinancialProjection>>|undefined;
+  const boundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
+  await consoleSourceTransaction(pool,async()=>undefined,boundary);if(!handle)throw new Error('Owned financial observer fixture unavailable');return handle;
+}
 async function absence(fingerprint:string,challenge:string,origin=target.origin):Promise<NativeHashAbsenceReceipt> {
   const client=new BudgetNativeCredentialClient(origin,'sk-master-fixture-0123456789',async()=>new Response(JSON.stringify({key:[fingerprint],info:[]} ),{headers:{'content-type':'application/json'}}));
   const result=await client.lookupKeyHashOnly(fingerprint,challenge);if(result.kind!=='absent')throw new Error('Absence fixture failed');return result.receipt;
@@ -65,51 +91,52 @@ describe('protected native custody foundation',()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),r=await receipt(p),unrelated=await receipt({...p,accountId:randomUUID()}),wrongKind=await receipt(p,'provision'),before=bytes(directory);
       for(const invalid of [{...r},JSON.parse(JSON.stringify(r)),unrelated,wrongKind] as CommittedFinancialReceipt[]){expect(()=>gate.recordRevocation(p.operation.operationId,invalid)).toThrow('refused');expect(bytes(directory)).toEqual(before);}
-      expect(gate.accountOperations(p.accountId)).toEqual([p.operation]);expect(gate.accountOperations(randomUUID())).toEqual([]);gate.recordRevocation(p.operation.operationId,r);
+      expect(gate.accountOperations(p.accountId)).toEqual([p.operation]);expect(gate.accountOperations(randomUUID())).toEqual([]);await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(p.operation.operationId,current));
     });
   });
   it('requires exact binding policy and closed account atoms for binding completion',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId;
       gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
-      const badBinding={...bindingAtom(p,'active'),maximumLiability:'0.004'} as FinancialAtom,bad=await receipt(p,'provision',[accountAtom(p,'provision'),accountAtom(p,'provision',true),badBinding]);
-      gate.linkFinancialOperation(id,bad.operationId,bad.journalId);const before=bytes(directory);expect(()=>gate.recordBoundClosed(id,bad)).toThrow('refused');expect(bytes(directory)).toEqual(before);
+      const badBinding={...bindingAtom(p,'active'),maximumLiability:'0.004'} as FinancialAtom;
+      await publishReceipt(gate,p,'provision',bad=>{gate.linkFinancialOperation(id,bad.operationId,bad.journalId);const before=bytes(directory);expect(()=>gate.recordBoundClosed(id,bad)).toThrow('refused');expect(bytes(directory)).toEqual(before);},[accountAtom(p,'provision'),accountAtom(p,'provision',true),badBinding]);
     });
   });
   it('requires exact erased tombstone and account before removing account linkage',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
-      const p=prepare(gate);gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);
+      const p=prepare(gate);await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(p.operation.operationId,current));gate.removePlaintext(p.operation.operationId);
       const noTombstone=await receipt(p,'erase-person',[accountAtom(p,'erase-person')]),before=bytes(directory);
       expect(()=>gate.eraseAccountAssociation(p.accountId,noTombstone)).toThrow('refused');expect(bytes(directory)).toEqual(before);
-      gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+      await publishReceipt(gate,p,'erase-person',current=>gate.eraseAccountAssociation(p.accountId,current));
     });
   });
   it('requires the revoked binding for a bound operation, with erased-account closure for omitted historical bindings',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
-      const p=prepare(gate),id=p.operation.operationId,bound=await receipt(p,'provision');gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);gate.linkFinancialOperation(id,bound.operationId,bound.journalId);gate.recordBoundClosed(id,bound);
+      const p=prepare(gate),id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',bound=>{gate.linkFinancialOperation(id,bound.operationId,bound.journalId);gate.recordBoundClosed(id,bound);});
       const accountOnly=await receipt(p),mismatched=await receipt(p,'member-remove',[{...bindingAtom(p,'revoked'),endpointHash:'f'.repeat(64)} as FinancialAtom,accountAtom(p,'member-remove')]),before=bytes(directory);
       for(const invalid of [accountOnly,mismatched]){expect(()=>gate.recordRevocation(id,invalid)).toThrow('refused');expect(bytes(directory)).toEqual(before);}
       // Erasure projects all member account retirement/tombstone facts even when an
       // already-revoked historical binding was excluded from its mutation projection.
-      const erased=await receipt(p,'erase-person');gate.recordRevocation(id,erased);gate.removePlaintext(id);gate.eraseAccountAssociation(p.accountId,erased);
+      await publishReceipt(gate,p,'erase-person',erased=>{gate.recordRevocation(id,erased);gate.removePlaintext(id);gate.eraseAccountAssociation(p.accountId,erased);return undefined;});
     });
   });
   it.each([false,true])('records only a genuine exact native absence after durable revocation and plaintext removal (erased %s)',async erased=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId,early=await absence(p.operation.keyFingerprint,'1'.repeat(64));
-      expect(()=>gate.prepareNativeAbsence(id)).toThrow('refused');expect(()=>gate.recordNativeAbsence(id,early)).toThrow('refused');gate.recordRevocation(id,await receipt(p));
+      expect(()=>gate.prepareNativeAbsence(id)).toThrow('refused');expect(()=>gate.recordNativeAbsence(id,early)).toThrow('refused');await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(id,current));
       expect(()=>gate.prepareNativeAbsence(id)).toThrow('refused');expect(()=>gate.recordNativeAbsence(id,early)).toThrow('refused');gate.removePlaintext(id);
-      if(erased)gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+      if(erased)await publishReceipt(gate,p,'erase-person',current=>gate.eraseAccountAssociation(p.accountId,current));
       const request=erased?gate.prepareErasedNativeAbsence(p.operation.keyFingerprint):gate.prepareNativeAbsence(id),proof=await absence(request.fingerprint,request.challenge),wrong=await absence(request.fingerprint,request.challenge,'http://other.invalid:4000'),wrongChallenge=await absence(request.fingerprint,'2'.repeat(64));
       const finish=(r:NativeHashAbsenceReceipt)=>erased?gate.recordErasedNativeAbsence(p.operation.keyFingerprint,r):gate.recordNativeAbsence(id,r),before=bytes(directory);
       for(const invalid of [{} as NativeHashAbsenceReceipt,early,wrong,wrongChallenge]){expect(()=>finish(invalid)).toThrow('refused');expect(bytes(directory)).toEqual(before);}
       finish(proof);expect(gate.inventory().operations[0]).toMatchObject({phase:'revoked',plaintext:'removed',nativeDeletion:'verified'});expect(()=>finish(proof)).toThrow('refused');
-      if(!erased){gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));expect(gate.inventory().operations[0]).toMatchObject({kind:'cleanup',phase:'revoked',nativeDeletion:'verified'});}
+      if(!erased){await publishReceipt(gate,p,'erase-person',current=>gate.eraseAccountAssociation(p.accountId,current));expect(gate.inventory().operations[0]).toMatchObject({kind:'cleanup',phase:'revoked',nativeDeletion:'verified'});}
     });store.close();await open(directory).withGate(async gate=>expect(gate.inventory().operations[0].nativeDeletion).toBe('verified'));
   });
   it('discards absence challenges when the gate ends and when a fresh request replaces one',async()=>{
     const {directory,store}=fixture();let id!:string,old!:NativeHashAbsenceReceipt;
-    await store.withGate(async gate=>{const p=prepare(gate);id=p.operation.operationId;gate.recordRevocation(id,await receipt(p));gate.removePlaintext(id);const request=gate.prepareNativeAbsence(id);old=await absence(request.fingerprint,request.challenge);});
+    await store.withGate(async gate=>{const p=prepare(gate);id=p.operation.operationId;await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(id,current));gate.removePlaintext(id);const request=gate.prepareNativeAbsence(id);old=await absence(request.fingerprint,request.challenge);});
     await store.withGate(async gate=>{
       const before=bytes(directory);expect(()=>gate.recordNativeAbsence(id,old)).toThrow('refused');const replaced=gate.prepareNativeAbsence(id),replacedProof=await absence(replaced.fingerprint,replaced.challenge),fresh=gate.prepareNativeAbsence(id);
       for(const invalid of [old,replacedProof])expect(()=>gate.recordNativeAbsence(id,invalid)).toThrow('refused');expect(bytes(directory)).toEqual(before);
@@ -118,7 +145,7 @@ describe('protected native custody foundation',()=>{
   });
   it('retains evidence and refuses reopen after a native-absence publication fsync failure',async()=>{
     let fail=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(fail)throw new Error('synthetic fsync failure');}});
-    await expect(store.withGate(async gate=>{const p=prepare(gate),id=p.operation.operationId;gate.recordRevocation(id,await receipt(p));gate.removePlaintext(id);const request=gate.prepareNativeAbsence(id),proof=await absence(request.fingerprint,request.challenge);fail=true;gate.recordNativeAbsence(id,proof);})).rejects.toThrow('reconciliation');fail=false;
+    await expect(store.withGate(async gate=>{const p=prepare(gate),id=p.operation.operationId;await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(id,current));gate.removePlaintext(id);const request=gate.prepareNativeAbsence(id),proof=await absence(request.fingerprint,request.challenge);fail=true;gate.recordNativeAbsence(id,proof);})).rejects.toThrow('reconciliation');fail=false;
     expect(()=>store.close()).not.toThrow();const before=bytes(directory);expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
   });
 
@@ -133,10 +160,10 @@ describe('protected native custody foundation',()=>{
       const created=observed.get('key-create');expect(created).toBeDefined();expect(created.key).toEqual({operationId:p.operation.operationId,keyFingerprint:p.operation.keyFingerprint});
       expect(JSON.stringify(created)).not.toContain(secret());expect(JSON.stringify(created)).not.toContain(p.team.nativeTeamId);expect(JSON.stringify(created)).not.toContain(p.user.nativeUserId);
       expect(created.next.controlDigest).toBe(gatewayHash(gatewayCanonical(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')))));
-      gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);
+      await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(p.operation.operationId,current));gate.removePlaintext(p.operation.operationId);
       const removed=observed.get('key-remove');expect(removed).toBeDefined();expect(removed.key).toEqual(created.key);expect(removed.next.revision).toBeGreaterThan(created.next.revision);
       expect(readdirSync(directory)).not.toContain('publication-intent.json');
-      gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+      await publishReceipt(gate,p,'erase-person',current=>gate.eraseAccountAssociation(p.accountId,current));
       const erasure=observed.get('snapshot');expect(erasure).toBeDefined();expect(JSON.stringify(erasure)).not.toContain(p.accountId);expect(JSON.stringify(erasure)).not.toContain(p.user.nativeUserId);
     });
     store.close();expect(readdirSync(directory)).not.toContain('publication-intent.json');const reopened=open(directory);reopened.close();
@@ -184,8 +211,8 @@ describe('protected native custody foundation',()=>{
   it('retains the exact erasure intent and refuses reopen after an interrupted snapshot rename',async()=>{
     let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===4)throw new Error('synthetic erasure snapshot sync failure');}});
     await expect(store.withGate(async gate=>{
-      const p=prepare(gate);gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);
-      enabled=true;gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+      const p=prepare(gate);await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(p.operation.operationId,current));gate.removePlaintext(p.operation.operationId);
+      enabled=true;await publishReceipt(gate,p,'erase-person',current=>gate.eraseAccountAssociation(p.accountId,current));
     })).rejects.toThrow('reconciliation');enabled=false;const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
     expect(intent.kind).toBe('snapshot');expect(JSON.stringify(intent)).not.toContain('accountId');
     const before=bytes(directory);store.close();expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
@@ -256,7 +283,7 @@ describe('protected native custody foundation',()=>{
       const policy=reviewed(),installationId=randomUUID();accountId=randomUUID();const team=gate.reserveTeam(installationId,target,policy),user=gate.reserveUser(accountId,team.ownershipId,policy),input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
       const operation=gate.prepareOperation(input,secret());opId=operation.operationId;gate.beginProvisioning(opId);const before=bytes(directory);
       expect(()=>gate.claimKeyCreate(opId)).toThrow('refused');expect(bytes(directory)).toEqual(before);
-      const p={team,user,input,operation,accountId,installationId};gate.recordRevocation(opId,await receipt(p));gate.removePlaintext(opId);gate.eraseAccountAssociation(accountId,await receipt(p,'erase-person'));
+      const p={team,user,input,operation,accountId,installationId};await publishReceipt(gate,p,'erase-person',current=>{gate.recordRevocation(opId,current);gate.removePlaintext(opId);gate.eraseAccountAssociation(accountId,current);return undefined;});
       const cleanup=gate.inventory().operations[0];expect(cleanup.kind).toBe('cleanup');if(cleanup.kind==='cleanup'){
         expect(cleanup).not.toHaveProperty('nativeUserId');expect(cleanup).not.toHaveProperty('userCreateAttempt');expect(cleanup).not.toHaveProperty('membershipCreateAttempt');expect(cleanup).not.toHaveProperty('keyCreateAttempt');
       }
@@ -301,7 +328,7 @@ describe('protected native custody foundation',()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const original=prepare(gate);let survivor=original;
       if(kind==='cleanup'){
-        gate.recordRevocation(original.operation.operationId,await receipt(original));gate.removePlaintext(original.operation.operationId);gate.eraseAccountAssociation(original.accountId,await receipt(original,'erase-person'));
+        await publishReceipt(gate,original,'erase-person',current=>{gate.recordRevocation(original.operation.operationId,current);gate.removePlaintext(original.operation.operationId);gate.eraseAccountAssociation(original.accountId,current);return undefined;});
         survivor=prepare(gate,{key:`sk-${'y'.repeat(43)}`});
       }
       const before=bytes(directory);
@@ -341,12 +368,14 @@ describe('protected native custody foundation',()=>{
 
   it('enforces monotonic phases, immutable financial linkage and exact acknowledged binding',async()=>{
     const {store}=fixture();await store.withGate(async gate=>{
-      const p=prepare(gate),id=p.operation.operationId,r=await receipt(p,'provision'),unrelated=await receipt();
-      expect(()=>gate.recordNativeBlockedVerification(id)).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,r.operationId,r.journalId)).toThrow('refused');
+      const p=prepare(gate),id=p.operation.operationId,unrelated=await receipt();
+      expect(()=>gate.recordNativeBlockedVerification(id)).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,randomUUID(),randomUUID())).toThrow('refused');
       gate.beginProvisioning(id);gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
-      gate.linkFinancialOperation(id,r.operationId,r.journalId);gate.linkFinancialOperation(id,r.operationId,r.journalId);
-      expect(()=>gate.linkFinancialOperation(id,r.operationId,randomUUID())).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,randomUUID(),r.journalId)).toThrow('refused');expect(()=>gate.recordBoundClosed(id,unrelated)).toThrow('refused');
-      gate.recordBoundClosed(id,r);gate.recordBoundClosed(id,r);expect(gate.readOperation(id).phase).toBe('bound-closed');
+      await publishReceipt(gate,p,'provision',current=>{
+        gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.linkFinancialOperation(id,current.operationId,current.journalId);
+        expect(()=>gate.linkFinancialOperation(id,current.operationId,randomUUID())).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,randomUUID(),current.journalId)).toThrow('refused');expect(()=>gate.recordBoundClosed(id,unrelated)).toThrow('refused');
+        gate.recordBoundClosed(id,current);gate.recordBoundClosed(id,current);return undefined;
+      });expect(gate.readOperation(id).phase).toBe('bound-closed');
       expect(()=>gate.beginProvisioning(id)).toThrow('refused');expect(()=>gate.prepareOperation(p.input,secret())).toThrow('refused');
     });
   });
@@ -355,7 +384,7 @@ describe('protected native custody foundation',()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId,unrelated=await receipt();
       expect(()=>gate.removePlaintext(id)).toThrow('refused');expect(()=>gate.eraseAccountAssociation(p.accountId,unrelated)).toThrow('refused');
-      const r=await receipt(p);gate.recordRevocation(id,r);gate.recordRevocation(id,r);expect(()=>gate.recordRevocation(id,unrelated)).toThrow('refused');
+      await publishReceipt(gate,p,'member-remove',current=>{gate.recordRevocation(id,current);gate.recordRevocation(id,current);return undefined;});expect(()=>gate.recordRevocation(id,unrelated)).toThrow('refused');
       gate.removePlaintext(id);gate.removePlaintext(id);expect(readdirSync(directory)).not.toContain(`${id}.key`);
       const op=gate.readOperation(id);expect(op.phase).toBe('revoke-pending');expect(op.plaintext).toBe('removed');expect(op.nativeDeletion).toBe('unverified');
       expect(()=>gate.readKey(id)).toThrow('refused');expect(gate.inventory().users).toEqual([p.user]);
@@ -365,14 +394,13 @@ describe('protected native custody foundation',()=>{
   it('erases account/private associations into domain-separated tombstones while preserving minimal cleanup receipts',async()=>{
     const {directory,store}=fixture();let p!:ReturnType<typeof prepare>;
     await store.withGate(async gate=>{
-      p=prepare(gate);const erasure=await receipt(p,'erase-person'),unrelated=await receipt();gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);gate.eraseAccountAssociation(p.accountId,erasure);
+      p=prepare(gate);const unrelated=await receipt();await publishReceipt(gate,p,'erase-person',erasure=>{gate.recordRevocation(p.operation.operationId,erasure);gate.removePlaintext(p.operation.operationId);gate.eraseAccountAssociation(p.accountId,erasure);gate.eraseAccountAssociation(p.accountId,erasure);return undefined;});
       const s=gate.inventory(),u=s.users[0],cleanup=s.operations[0];expect(u.kind).toBe('erased-user');expect(cleanup.kind).toBe('cleanup');
       expect(cleanup).toMatchObject({phase:'revoke-pending',plaintext:'removed',nativeDeletion:'unverified',keyFingerprint:p.operation.keyFingerprint,policyDigest:p.operation.policyDigest,endpoint:target});
       const disk=readFileSync(join(directory,'snapshot.json'),'utf8');
       for(const value of [p.accountId,p.user.nativeUserId,p.user.ownershipId,p.input.bindingId,p.input.association.agent,p.input.association.incarnation,secret()])expect(disk).not.toContain(value);
       if(u.kind==='erased-user'&&cleanup.kind==='cleanup')expect(new Set([u.accountCommitment,u.coordinateCommitment,cleanup.coordinateCommitment,cleanup.operationCommitment]).size).toBe(4);
-      expect(()=>gate.reserveUser(p.accountId,p.team.ownershipId,reviewed())).toThrow('refused');gate.eraseAccountAssociation(p.accountId,erasure);
-      expect(()=>gate.eraseAccountAssociation(p.accountId,unrelated)).toThrow('refused');
+      expect(()=>gate.reserveUser(p.accountId,p.team.ownershipId,reviewed())).toThrow('refused');expect(()=>gate.eraseAccountAssociation(p.accountId,unrelated)).toThrow('refused');
       const other=gate.reserveTeam(p.installationId,{...target,hash:'d'.repeat(64)},reviewed());
       expect(()=>gate.reserveUser(p.accountId,other.ownershipId,reviewed())).toThrow('refused');
     });store.close();await open(directory).withGate(async gate=>{expect(()=>gate.reserveUser(p.accountId,p.team.ownershipId,reviewed())).toThrow('refused');expect(gate.inventory().teams).toContainEqual(p.team);});
@@ -381,10 +409,9 @@ describe('protected native custody foundation',()=>{
   it('requires every pending operation to be revoked and plaintext-free before erasure',async()=>{
     const {store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),other=gate.prepareOperation({...p.input,bindingId:randomUUID()},`sk-${'y'.repeat(43)}`);
-      const erasure=await receipt(p,'erase-person'),revocation=await receipt(p);
-      gate.recordRevocation(p.operation.operationId,revocation);gate.removePlaintext(p.operation.operationId);
-      expect(()=>gate.eraseAccountAssociation(p.accountId,erasure)).toThrow('refused');gate.recordRevocation(other.operationId,revocation);
-      expect(()=>gate.eraseAccountAssociation(p.accountId,erasure)).toThrow('refused');gate.removePlaintext(other.operationId);gate.eraseAccountAssociation(p.accountId,erasure);
+      await publishReceipt(gate,p,'erase-person',erasure=>{gate.recordRevocation(p.operation.operationId,erasure);gate.removePlaintext(p.operation.operationId);return undefined;});
+      const incomplete=await receipt(p,'erase-person');expect(()=>gate.eraseAccountAssociation(p.accountId,incomplete)).toThrow('refused');
+      await publishReceipt(gate,{...p,operation:{...p.operation,operationId:other.operationId}},'erase-person',erasure=>{gate.recordRevocation(other.operationId,erasure);gate.removePlaintext(other.operationId);gate.eraseAccountAssociation(p.accountId,erasure);return undefined;});
       expect(gate.inventory().operations.every(o=>o.kind==='cleanup')).toBe(true);
     });
   });
@@ -480,7 +507,7 @@ describe('protected native custody foundation',()=>{
 
   it.each([1,5,6,7,8,9,10,12,15])('does not claim plaintext erasure after cleanup fsync failure %i',async failAt=>{
     let count=0,enabled=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic failure');}});let id='';
-    await expect(store.withGate(async gate=>{const p=prepare(gate);id=p.operation.operationId;gate.recordRevocation(id,await receipt(p));enabled=true;gate.removePlaintext(id);})).rejects.toThrow('reconciliation');enabled=false;
+    await expect(store.withGate(async gate=>{const p=prepare(gate);id=p.operation.operationId;await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(id,current));enabled=true;gate.removePlaintext(id);})).rejects.toThrow('reconciliation');enabled=false;
     const s=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')),row=s.operations[0];
     if(row.plaintext==='removed')expect(()=>statSync(join(directory,`${id}.key`))).toThrow();
     expect(row.nativeDeletion).toBe('unverified');expect(row.phase).toBe('revoke-pending');
