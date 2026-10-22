@@ -30,7 +30,7 @@ from openai import AsyncOpenAI
 
 from admission_contract import (
     ADMIT_PATH, SETTLE_PATH, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
-    NATIVE_LOOKUP_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash,
+    NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash,
     RPC_TIMEOUT, TICKET, VERSION, Profile, Refused, RequestState, TerminalEvidence, WireEvidence, canonical,
     https_url, parse_json, protected_key, sign, verify,
     PHYSICAL_HEADER_SECONDS, PHYSICAL_BODY_SECONDS, TERMINAL_TAIL_SECONDS, CLEANUP_SECONDS, NATIVE_POLICY_SECONDS,
@@ -653,12 +653,12 @@ class GatewayApp:
         try:
             if scope["type"] != "http" or scope.get("raw_path", scope["path"].encode()) != scope["path"].encode(): raise Refused()
             route = (scope["method"], scope["path"])
-            if route in NATIVE_LOOKUP_ROUTES:
+            if route in NATIVE_MASTER_ROUTES:
                 query = scope.get("query_string", b"")
                 if route[0] == "GET": native_lookup_query(route[1], query)
                 elif query: raise Refused()
 
-                # These native reads expose account identity and key state. Only
+                # These native operations expose or change key state. Only
                 # the configured gateway master Bearer may reach LiteLLM's own auth.
                 # A role-bearing virtual key is still a virtual key and is refused here.
                 headers = {}
@@ -689,7 +689,8 @@ class GatewayApp:
                         if len(raw) > maximum: raise Refused()
                         if not message.get("more_body", False): break
                 if length is not None and int(length) != len(raw): raise Refused()
-                if route[0] == "POST": native_lookup_key_hash(bytes(raw))
+                if route == ("POST", "/key/unblock"): native_unblock_key_hash(bytes(raw))
+                elif route[0] == "POST": native_lookup_key_hash(bytes(raw))
                 consumed = False
                 async def replay_lookup():
                     nonlocal consumed

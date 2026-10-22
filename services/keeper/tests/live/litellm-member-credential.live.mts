@@ -46,6 +46,7 @@ const CASES = [
   "atomic-blocked-create",
   "blocked-key-readback-and-native-auth",
   "client-blocked-key-policy-readback",
+  "client-unblock-and-exact-unblocked-readback",
   "unblocked-key-readback-and-native-auth",
   "lost-create-response-reconciles-by-hash",
   "lost-client-blocked-create-response-reconciles-original-key",
@@ -605,7 +606,12 @@ const run = async () => {
     const blockedStatus = await authStatus(normalKey);
     mark("block-unblock-readback-only", blockedReadback.kind === "present" && blockedReadback.row.blocked === true &&
       (validBeforeBlock === 200 || validBeforeBlock === 204) && (blockedStatus === 401 || blockedStatus === 403) ? "PASS" : "UNKNOWN");
-    await call("POST", "/key/unblock", { key: normalHash });
+    const unblock = await nativeClient.unblockKey(normalHash);
+    const clientUnblockedReadback = await nativeClient.lookupUnblockedKey(normalHash, {
+      keyAlias: alias, teamId, userId, maxBudget: 1, budgetDuration: "1d", models: [model!],
+    });
+    mark("client-unblock-and-exact-unblocked-readback", unblock.kind === "acknowledged" && clientUnblockedReadback.kind === "match" ? "PASS" :
+      clientUnblockedReadback.kind === "mismatch" || clientUnblockedReadback.kind === "malformed" ? "FAIL" : "UNKNOWN");
     const unblockedReadback = classifyLookup(await hashLookup(normalHash), normalHash);
     const unblockedStatus = await authStatus(normalKey);
     mark("unblocked-key-readback-and-native-auth", unblockedReadback.kind === "present" && unblockedReadback.row.blocked === false &&

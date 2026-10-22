@@ -281,7 +281,22 @@ export class BudgetNativeCredentialClient {
       max_budget:input.maxBudget,budget_duration:input.budgetDuration,models:input.models,blocked:true},'key',undefined,undefined,input.key);
   }
 
+  /** Request unblocking a key by its fingerprint. The acknowledgement is not state proof;
+   * callers must perform a separate exact `lookupUnblockedKey` readback. */
+  async unblockKey(hash:string):Promise<NativeWrite>{
+    if(!validHash(hash))return {kind:'malformed'};
+    return this.write('/key/unblock',{key:hash},'ack');
+  }
+
   async lookupKey(hash:string,expected:NativeKeyExpectation):Promise<NativeRead<true>>{
+    return this.lookupKeyState(hash,expected,true);
+  }
+
+  async lookupUnblockedKey(hash:string,expected:NativeKeyExpectation):Promise<NativeRead<true>>{
+    return this.lookupKeyState(hash,expected,false);
+  }
+
+  private async lookupKeyState(hash:string,expected:NativeKeyExpectation,blocked:boolean):Promise<NativeRead<true>>{
     if(!validHash(hash)||!validId(expected.keyAlias)||!validId(expected.teamId)||!validId(expected.userId)||!validateBudgetPolicy(expected))
       return {kind:'malformed'};
     const result=await this.read('/v2/key/info',{keys:[hash]});
@@ -290,7 +305,7 @@ export class BudgetNativeCredentialClient {
     if(!Array.isArray(body.key)||body.key.length!==1||body.key[0]!==hash||!Array.isArray(body.info))return {kind:'malformed'};
     if(body.info.length===0)return {kind:'absent'};
     if(body.info.length!==1||!isObject(body.info[0])||!validKeyRow(body.info[0]))return {kind:'malformed'};
-    return exactKeyRow(body.info[0],expected,true)?{kind:'match',value:true}:{kind:'mismatch'};
+    return exactKeyRow(body.info[0],expected,blocked)?{kind:'match',value:true}:{kind:'mismatch'};
   }
 
   async lookupKeyHashOnly(hash:string,challenge:string):Promise<NativeHashRead>{
@@ -354,7 +369,7 @@ export class BudgetNativeCredentialClient {
   }
 
   private async send(path:string,body?:unknown):Promise<{kind:'response';value:Response}|{kind:'unavailable'}>{
-    const fixedRoute=['/team/new','/user/new','/team/member_add','/v2/key/info','/key/generate','/key/delete'].includes(path);
+    const fixedRoute=['/team/new','/user/new','/team/member_add','/v2/key/info','/key/generate','/key/delete','/key/unblock'].includes(path);
     const fixedQueryRoute=/^\/team\/info\?team_id=[A-Za-z0-9-]{1,80}$/.test(path)||/^\/(?:key\/list|user\/info)\?user_id=[A-Za-z0-9-]{1,80}$/.test(path);
     if(!fixedRoute&&!fixedQueryRoute)return {kind:'unavailable'};
     let raw:Uint8Array|undefined;

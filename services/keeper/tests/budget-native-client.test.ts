@@ -131,6 +131,31 @@ describe('fixed native gateway client',()=>{
     await expect(wrongHash.client.lookupKey(HASH,keyExpected)).resolves.toEqual({kind:'malformed'});
   });
 
+  it('unblocks only by fingerprint and requires an exact separate unblocked readback',async()=>{
+    const request=vi.fn(async(input:RequestInfo|URL,init?:RequestInit)=>{
+      const path=new URL(String(input)).pathname;
+      if(path==='/key/unblock')return json({ok:true});
+      if(path==='/v2/key/info')return json(info(HASH,[{...keyRow,blocked:false}]));
+      return json({},404);
+    });
+    const client=new BudgetNativeCredentialClient('https://gateway.example:4000/',MASTER,request as unknown as typeof fetch,1000);
+    await expect(client.unblockKey(HASH)).resolves.toEqual({kind:'acknowledged'});
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(String(request.mock.calls[0]![0])).toBe('https://gateway.example:4000/key/unblock');
+    expect(request.mock.calls[0]![1]!.method).toBe('POST');
+    expect(JSON.parse(request.mock.calls[0]![1]!.body as string)).toEqual({key:HASH});
+    await expect(client.lookupUnblockedKey(HASH,keyExpected)).resolves.toEqual({kind:'match',value:true});
+    expect(request).toHaveBeenCalledTimes(2);
+
+    const unchanged=setup(async()=>json(info(HASH,[keyRow])));
+    await expect(unchanged.client.lookupUnblockedKey(HASH,keyExpected)).resolves.toEqual({kind:'mismatch'});
+    for(const invalid of ['A'.repeat(64),'a'.repeat(63),'../'+HASH])
+      await expect(client.unblockKey(invalid)).resolves.toEqual({kind:'malformed'});
+    expect(request).toHaveBeenCalledTimes(2);
+    const refused=setup(async()=>new Response('secret',{status:403}));
+    await expect(refused.client.unblockKey(HASH)).resolves.toEqual({kind:'refused'});
+  });
+
   it('issues one-use absence evidence only for exact hash echoes and binds it to origin and fingerprint',async()=>{
     const invalidChallenge=setup(async()=>json(info(HASH,[])));
     await expect(invalidChallenge.client.lookupKeyHashOnly(HASH,'caller-selected')).resolves.toEqual({kind:'malformed'});
