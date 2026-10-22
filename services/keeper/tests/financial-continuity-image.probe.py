@@ -13,12 +13,18 @@ native_fixture = native_temp / 'fixture'
 native_fixture.mkdir(mode=0o700)
 db_fixture = native_temp / 'database-credentials'
 db_fixture.mkdir(mode=0o700)
+offline_fixture = native_temp / 'offline-operator-credentials'
+offline_fixture.mkdir(mode=0o700)
 application_password = secrets.token_urlsafe(32)
 financial_password = secrets.token_urlsafe(32)
+operator_password = secrets.token_urlsafe(32)
 for filename, value in [('application-password', application_password), ('financial-password', financial_password)]:
     path = db_fixture / filename
     path.write_text(value)
     path.chmod(0o600)
+operator_path = offline_fixture / 'operator-password'
+operator_path.write_text(operator_password)
+operator_path.chmod(0o600)
 native_custody = native_temp / 'budget-native'
 managed_databases = []
 tsx = '/app/services/keeper/node_modules/.bin/tsx'
@@ -44,6 +50,35 @@ def ready():
             return
         time.sleep(.2)
     raise RuntimeError('Disposable PostgreSQL did not become ready')
+
+def offline_prepare_fresh(database, journal_directory, host='proof-db'):
+    """Run the production root-only ceremony with a one-shot operator secret mount."""
+    config = offline_fixture / f'financial-setup-{journal_directory}.json'
+    config.write_text(json.dumps({'mode':'overlay','project':'proof','dir':'/tmp','files':['config'],
+        'agentsDir':'/tmp','retiredDir':'/tmp','secretsDir':'/tmp','rolesDir':'/tmp',
+        'templatesDir':'/tmp','backupDir':'/tmp','db':{'host':host,'port':5432,'database':database,
+        'user':'lares_app','passwordFile':'/fixtures/application-password'}}))
+    invocation = ('set -eu; cp /operator-source/operator-password /operator-secrets/operator-password; '
+        'chmod 600 /operator-secrets/operator-password; '
+        '/app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts '
+        'prepare-fresh --confirm-fresh-installation --operator-password-file '
+        f'/operator-secrets/operator-password /operator-source/{config.name}; '
+        f'test ! -e /var/lib/lares/{journal_directory}; '
+        f'mv /var/lib/lares/budget-financial /var/lib/lares/{journal_directory}')
+    args = ['docker','run','--rm','--network',name,'--mount',
+        f'type=volume,src={volume},dst=/var/lib/lares',
+        '--mount',f'type=bind,src={db_fixture},dst=/fixtures,readonly',
+        '--mount',f'type=bind,src={offline_fixture},dst=/operator-source,readonly',
+        '--tmpfs','/operator-secrets:rw,noexec,nosuid,nodev,mode=0700',
+        '--entrypoint','sh',image,'-c',invocation]
+    result = command(*args)
+    lines = result.stdout.strip().splitlines()
+    try:
+        binding = json.loads(lines[-1])['budgetFinancial']
+    except (IndexError, KeyError, json.JSONDecodeError):
+        raise RuntimeError('Production fresh-custody command did not return its binding') from None
+    if not lines[-2].startswith('Fresh financial custody prepared.') or binding['directory'] != '/var/lib/lares/budget-financial' or binding['db']['user'] != 'lares_financial':
+        raise RuntimeError('Production fresh-custody command returned an unexpected binding')
 
 def bounded_native_command(*args, timeout=120):
     """Native-provisioning helpers never return raw process output or request data."""
@@ -149,7 +184,7 @@ def run_native_provisioning(code):
 def run(code, database='proof', host='proof-db'):
     prefix = f"""import{{Pool}}from'pg';
 import{{HostFinancialJournal}}from'{base}financial-journal.ts';
-import{{prepareFinancialCustody,verifyFinancialContinuity,observeFinancialDatabase}}from'{base}financial-continuity.ts';
+import{{verifyFinancialContinuity,observeFinancialDatabase}}from'{base}financial-continuity.ts';
 import{{JournalBudgetFinancialWriter}}from'{base}budget-financial-writer.ts';
 import{{provisionBudgetAccounts}}from'{base}budget-account-provisioning.ts';
 import{{consoleSourceTransaction}}from'/app/packages/agent-kit/src/console-source-transaction.ts';
@@ -195,9 +230,13 @@ def setup_managed_cluster(label, host, journal_directory):
         '--workdir','/app/services/keeper','--entrypoint',tsx,image,f'/app/services/keeper/{privilege_setup.name}')
     if result.stdout.strip() != 'engine-privileges-ready':
         raise RuntimeError('Isolated positive engine privileges were not prepared')
-    prepared = run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{journal_directory}',db);}}finally{{db.release();}}console.log('prepared');", host=host)
+    command('docker','exec','-i',container,'psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d','proof',
+        input=f"CREATE ROLE lares_operator LOGIN SUPERUSER PASSWORD '{operator_password}';")
+    assert run("const db=await pool.connect();let code='';try{await db.query('BEGIN');try{await db.query('LOCK TABLE budget_accounts,budget_windows,budget_gateway_bindings,budget_attempts,budget_gateway_grants,budget_financial_checkpoints IN ACCESS EXCLUSIVE MODE');}catch(error){code=error.code;}finally{await db.query('ROLLBACK');}}finally{db.release();}if(code!=='42501')throw Error('online financial role unexpectedly acquired exclusive custody locks');console.log('financial-lock-denied:42501');", host=host) == 'financial-lock-denied:42501'
+    offline_prepare_fresh('proof',journal_directory,host)
+    prepared = run(f"const j=HostFinancialJournal.openExisting('/proof/{journal_directory}',{{requirePrepared:true}});j.close();console.log('prepared');", host=host)
     if prepared != 'prepared':
-        raise RuntimeError('Isolated positive financial custody was not prepared')
+        raise RuntimeError('Production offline command did not prepare isolated financial custody')
 
 
 def discard_managed_cluster(label):
@@ -224,10 +263,14 @@ try:
         '--mount',f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges.mts,readonly',
         '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges.mts')
     assert privilege_result.stdout.strip() == 'engine-privileges-ready', 'Production engine database privileges were not prepared'
+    sql(f"CREATE ROLE lares_operator LOGIN SUPERUSER PASSWORD '{operator_password}';")
     # Each scenario uses the real empty migrated schema, not guessed fixture tables.
     sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE native_litellm;')
     for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash')]:
-        assert run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{directory}',db);}}finally{{db.release();}}console.log('prepared');", database) == 'prepared'
+        if database == 'proof':
+            assert run("const db=await pool.connect();let code='';try{await db.query('BEGIN');try{await db.query('LOCK TABLE budget_accounts,budget_windows,budget_gateway_bindings,budget_attempts,budget_gateway_grants,budget_financial_checkpoints IN ACCESS EXCLUSIVE MODE');}catch(error){code=error.code;}finally{await db.query('ROLLBACK');}}finally{db.release();}if(code!=='42501')throw Error('online financial role unexpectedly acquired exclusive custody locks');console.log('financial-lock-denied:42501');", database) == 'financial-lock-denied:42501'
+        offline_prepare_fresh(database,directory)
+        assert run(f"const j=HostFinancialJournal.openExisting('/proof/{directory}',{{requirePrepared:true}});j.close();console.log('prepared');", database) == 'prepared'
     # Actual killed prepared writer: no caller explicitly freezes it before death.
     holder = f"import{{HostFinancialJournal}}from'{base}financial-journal.ts';const j=HostFinancialJournal.openExisting('/proof/crash',{{requirePrepared:true}});console.log('locked');setInterval(()=>{{}},1000);"
     command('docker', 'run', '--detach', '--rm', '--name', name + '-holder', '--network', 'none', '--mount',
@@ -506,6 +549,7 @@ await j.drainForShutdown();j.close();console.log('clean');"""
         '--mount',f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges-fresh.mts,readonly',
         '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges-fresh.mts')
     assert privilege_result.stdout.strip() == 'engine-privileges-ready', 'Fresh-cluster engine roles were not prepared'
+    sql(f"CREATE ROLE lares_operator LOGIN SUPERUSER PASSWORD '{operator_password}';")
     sql('CREATE DATABASE clusterproof TEMPLATE proof;')
     assert run("const j=HostFinancialJournal.openExisting('/proof/cluster',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('fresh cluster resumed');console.log('closed');", 'clusterproof') == 'closed'
     print(json.dumps({'preparedWriterCrashPermanentFreeze': True, 'sameRunningPostgresCleanRestart': True, 'ownedPoolOneContinuity': True,

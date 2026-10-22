@@ -98,9 +98,8 @@ async function operatorFinancialClient(config:ReturnType<typeof loadKeeperConfig
     client=await pool.connect();
     const identity=await client.query<{user:string;session:string;database:string;superuser:boolean}>(`SELECT current_user AS user,session_user AS session,current_database() AS database,r.rolsuper AS superuser FROM pg_roles r WHERE r.rolname=session_user`);
     if(identity.rows[0]?.user!=='lares_operator'||identity.rows[0]?.session!=='lares_operator'||identity.rows[0]?.database!==config.db.database||identity.rows[0]?.superuser!==true)throw new Error('Explicit operator credential is not the expected superuser for this engine database');
-    await client.query('SET ROLE lares_financial');
-    const role=await client.query<{user:string;session:string}>(`SELECT current_user AS user,session_user AS session`);
-    if(role.rows[0]?.user!=='lares_financial'||role.rows[0]?.session!=='lares_operator')throw new Error('Could not assume the fixed financial database role');
+    // Fresh setup locks all six financial tables, which the restricted online role cannot do.
+    // Keep the already-verified operator identity only for these explicit offline ceremonies.
     return {pool,client};
   }catch(error){client?.release(true);await pool.end();throw error;}
 }
