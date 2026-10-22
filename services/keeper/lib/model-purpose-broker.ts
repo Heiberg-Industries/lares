@@ -251,6 +251,17 @@ async function protectedKey(path:string,parentUid:number,policy:KeyPolicy,afterO
     return Buffer.from(value,'hex');
   }finally{await handle.close();}
 }
+/** Keeper-internal access to the same protected per-agent key used by runtime control.
+ * The path is derived from the configured secrets directory and a validated runtime name. */
+export async function readModelPurposeRuntimeControlKey(
+  runtimeSecretsDir:string, agent:string,
+  options:{rootUid?:number;runtimeKeyUid?:number;runtimeKeyGid?:number}={},
+):Promise<Buffer>{
+  if(!/^[a-z][a-z0-9-]{1,30}$/.test(agent))throw deny();
+  const rootUid=options.rootUid??0;
+  return protectedKey(join(runtimeSecretsDir,`${agent}-runtime-control`),rootUid,
+    {uid:options.runtimeKeyUid??rootUid,gid:options.runtimeKeyGid??10001,mode:0o440});
+}
 async function prepareSocketDirectory(path:string,rootUid:number,socketGid:number){if(!isAbsolute(path))throw deny();let cursor='/';for(const part of path.split('/').filter(Boolean)){cursor=join(cursor,part);try{const st=await lstat(cursor);if(st.isSymbolicLink()||!st.isDirectory())throw deny();}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')break;throw deny();}}await mkdir(path,{recursive:true,mode:0o750});cursor='/';for(const part of path.split('/').filter(Boolean)){cursor=join(cursor,part);const st=await lstat(cursor);if(st.isSymbolicLink()||!st.isDirectory())throw deny();}let st=await lstat(path);if(st.uid!==rootUid)throw deny();await chown(path,rootUid,socketGid);await chmod(path,0o750);st=await lstat(path);if(st.uid!==rootUid||(st.mode&0o777)!==0o750)throw deny();}
 async function removeStaleSocket(path:string,rootUid:number){try{const st=await lstat(path);if(!st.isSocket()||st.uid!==rootUid)throw deny();const live=await new Promise<boolean>(resolve=>{const c=createConnection(path);c.setTimeout(300,()=>{c.destroy();resolve(false);});c.once('connect',()=>{c.destroy();resolve(true);});c.once('error',(e:NodeJS.ErrnoException)=>resolve(e.code!=='ECONNREFUSED'));});if(live)throw deny();await unlink(path);}catch(e){if((e as NodeJS.ErrnoException).code!=='ENOENT')throw deny();}}
 async function listen(server:ReturnType<typeof createServer>,path:string,uid:number,gid:number){await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(path,()=>{server.off('error',reject);resolve();});});await chown(path,uid,gid);await chmod(path,0o660);const st=await lstat(path);if(!st.isSocket()||st.uid!==uid||st.gid!==gid||(st.mode&0o777)!==0o660)throw deny();}

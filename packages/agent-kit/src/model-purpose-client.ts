@@ -1,7 +1,10 @@
 import { constants, openSync, closeSync, fstatSync, lstatSync, readSync } from 'node:fs';
 import { createConnection } from 'node:net';
+import { request as httpRequest } from 'node:http';
+import { Readable } from 'node:stream';
 import { isAbsolute, dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { gatewayRawRequestHash } from './gateway-admission-protocol.js';
 import {
   MODEL_PURPOSE_EMPTY_DIGEST,
   modelPurposeAckFields,
@@ -9,10 +12,15 @@ import {
   modelPurposeMac,
   modelPurposeRuntimePayloadDigest,
   modelPurposeRuntimeRequestFields,
+  modelPurposeDispatchMac,
+  MODEL_PURPOSE_DISPATCH_BODY_MAX,
+  type ModelPurposeDispatchFields,
   type ModelPurposeRuntimeEnvelope,
 } from './model-purpose-protocol.js';
 
 export const DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET = '/run/lares/model-purpose/model-purpose.sock';
+export const DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET = join(dirname(DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET),'gateway.sock');
+export { MODEL_PURPOSE_DISPATCH_BODY_MAX };
 const FRAME_LIMIT = 32_768;
 const REQUEST_TIMEOUT_MS = 2_000;
 const REQUEST_TOMBSTONE_MS = 60_000;
@@ -141,5 +149,83 @@ export async function modelPurposeRequest<T extends Record<string, unknown>>(
         finish(error);
       }
     });
+  });
+}
+
+/** Route a prepared model call through Keeper. The destination is a fixed local socket;
+ * only the exact request bytes and a ticket already issued to this runtime are carried. */
+export async function modelPurposeDispatchRequest(input: {
+  ticket: string;
+  method: 'POST';
+  path: '/v1/messages' | '/v1/chat/completions';
+  rawBody: Uint8Array;
+  deadline: number;
+  headers?: HeadersInit;
+  signal?: AbortSignal;
+}): Promise<Response> {
+  if (input.rawBody.byteLength > MODEL_PURPOSE_DISPATCH_BODY_MAX ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.ticket) || !Number.isSafeInteger(input.deadline) ||
+      input.deadline <= Date.now() || input.signal?.aborted) throw denied();
+  const { agent, incarnation, key } = identity();
+  const nonce = randomBytes(32).toString('base64url');
+  const rawBody = Buffer.from(input.rawBody);
+  const requestHash = gatewayRawRequestHash(input.method, input.path, rawBody);
+  const fields: ModelPurposeDispatchFields = {
+    method: input.method, path: input.path, requestHash, ticket: input.ticket,
+    agent, incarnation, nonce, deadline: input.deadline,
+  };
+  let mac:string;
+  try { mac=modelPurposeDispatchMac(key, fields).toString('base64url'); }
+  finally { key.fill(0); }
+  const headers = new Headers(input.headers);
+  const outgoing: Record<string, string> = {
+    'content-type': 'application/json',
+    'content-length': String(rawBody.length),
+    'x-lares-budget-intent': input.ticket,
+    'x-lares-purpose-agent': agent,
+    'x-lares-purpose-incarnation': incarnation,
+    'x-lares-purpose-request-hash': requestHash,
+    'x-lares-purpose-nonce': nonce,
+    'x-lares-purpose-deadline': String(input.deadline),
+    'x-lares-purpose-mac': mac!,
+  };
+  for (const name of ['accept', 'accept-encoding', 'anthropic-version', 'anthropic-beta'] as const) {
+    const value = headers.get(name);
+    if (value && value.length <= 512 && /^[\x20-\x7e]+$/.test(value)) outgoing[name] = value;
+  }
+  const runtimeSocket=process.env.LARES_MODEL_PURPOSE_RUNTIME_SOCKET??DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET;
+  const socketPath=join(dirname(runtimeSocket),'gateway.sock');
+  return new Promise<Response>((resolve, reject) => {
+    let settled=false,incomingResponse:import('node:http').IncomingMessage|undefined;
+    let request:ReturnType<typeof httpRequest>;
+    let headerDeadline:NodeJS.Timeout|undefined;
+    const cleanup = () => {
+      if(headerDeadline)clearTimeout(headerDeadline);
+      input.signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {request.destroy(denied());incomingResponse?.destroy();};
+    request = httpRequest({ socketPath, method: input.method, path: input.path, headers: outgoing,
+      agent: false, timeout: 20_000 }, incoming => {
+      incomingResponse=incoming;if(headerDeadline)clearTimeout(headerDeadline);
+      const responseHeaders = new Headers();
+      for (const name of ['content-type', 'cache-control', 'retry-after', 'anthropic-version', 'x-request-id'] as const) {
+        const value = incoming.headers[name];
+        if (typeof value === 'string' && value.length <= 2_048) responseHeaders.set(name, value);
+      }
+      incoming.once('end',cleanup);
+      incoming.once('close',()=>{if(!incoming.complete)request.destroy();cleanup();});
+      incoming.once('error',cleanup);
+      settled=true;
+      const body=incoming.statusCode===204||incoming.statusCode===205||incoming.statusCode===304?null:Readable.toWeb(incoming) as ReadableStream<Uint8Array>;
+      resolve(new Response(body, {
+        status: incoming.statusCode ?? 502, headers: responseHeaders,
+      }));
+    });
+    headerDeadline=setTimeout(() => request.destroy(denied()), Math.max(1, input.deadline - Date.now()));
+    request.once('error', error => { cleanup();if(!settled)reject(denied());else incomingResponse?.destroy(); });
+    request.once('timeout', () => request.destroy(denied()));
+    input.signal?.addEventListener('abort', abort, { once: true });
+    if(input.signal?.aborted){abort();return;}
+    request.end(rawBody);
   });
 }

@@ -53,6 +53,33 @@ is not a replacement. The keeper uses a separate small pool with bounded
 connection, lock and statement waits. Expiring HTTP work cannot authorize a late
 allow even if the database subsequently finishes an uncertain admission.
 
+## Managed model credential transport
+
+After the SDK has shaped a managed-purpose request, the agent prepares one exact
+request identity and receives a short-lived ticket. It burns the invocation before
+opening a separate authenticated Unix socket to Keeper. That request is bound by a
+domain-separated runtime-control HMAC to the POST path, exact body hash, ticket,
+agent incarnation, nonce and deadline. Keeper looks up the persisted prepared ticket
+and rechecks its request identity before using native custody. Only the two fixed
+routes `/v1/messages` and `/v1/chat/completions` are accepted; query strings,
+alternate methods and redirects are refused.
+
+The socket accepts request bodies up to 8 MiB, has bounded connections and a small
+dispatch queue, and gives each dispatch a deadline. Keeper selects the endpoint and
+credential from the matching native binding. The ticket may cross into the agent
+because the agent already received it during preparation; the native credential
+stays in Keeper and is never returned to the runtime. Non-success upstream bodies
+and credential-bearing headers are discarded. Successful responses stream with
+backpressure and client cancellation; the request is not retried and cannot fall
+back to the legacy gateway key after managed-purpose preparation begins.
+
+The transport only accepts the existing `bound-closed` native state: the account
+and key remain blocked. Production still has no recovery witness and cannot allow
+spending. The focused source tests exercise the local socket and controlled gateway
+fixture, but the compiled chief-runtime-to-Keeper image proof remains outstanding.
+This transport therefore does not establish provider readiness, account activation,
+spending, or restore safety.
+
 ## Immutable fixed pricing
 
 SQL024 adds a nullable `pricing_profile` to each immutable gateway binding. Legacy

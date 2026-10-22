@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
-import { claimModelDispatch } from "./model-invocation.js";
+import { claimModelDispatch, hasModelPurposeInvocation, prepareCurrentModelPurposeIntent } from "./model-invocation.js";
+import { modelPurposeDispatchRequest, MODEL_PURPOSE_DISPATCH_BODY_MAX } from "./model-purpose-client.js";
+import { GATEWAY_ANTHROPIC_MODEL_PATH, GATEWAY_OPENAI_MODEL_PATH } from "./gateway-admission-protocol.js";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import type { LanguageModel } from "ai";
@@ -147,6 +149,9 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     return {
       get apiKey(): string | undefined {
         if (!constructed) return undefined;
+        // The managed-purpose transport authenticates with the protected runtime-control
+        // key. This placeholder is removed before the request leaves the agent process.
+        if (hasModelPurposeInvocation()) return "lares-managed-purpose";
         return gatewayKey();
       },
       markConstructed(): void {
@@ -164,6 +169,7 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
     const headers = new Headers(init?.headers);
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
     const request = { ...reshapeJsonBody(init, shapeAnthropicBody), headers };
+    if (hasModelPurposeInvocation()) return dispatchModelPurpose(input, request, GATEWAY_ANTHROPIC_MODEL_PATH);
     claimModelDispatch();
     return globalThis.fetch(input, { ...request, redirect: "error" });
   };
@@ -224,12 +230,44 @@ export function createGatewayProvider(opts: GatewayProviderOptions): GatewayProv
   const openaiCompatibleFetch: typeof globalThis.fetch = async (input, init) => {
     const headers = new Headers(init?.headers);
     headers.set("Accept-Encoding", IDENTITY_ENCODING_HEADERS["Accept-Encoding"]);
-    headers.set("Authorization", `Bearer ${gatewayKey()}`);
     // This lane cannot carry `cache_control`; only the boundary marker is removed (`./prompt-cache.ts`).
     const request = { ...reshapeJsonBody(init, stripBoundaryFromChatBody), headers };
+    if (hasModelPurposeInvocation()) return dispatchModelPurpose(input, request, GATEWAY_OPENAI_MODEL_PATH);
+    headers.set("Authorization", `Bearer ${gatewayKey()}`);
     claimModelDispatch();
     return globalThis.fetch(input, { ...request, redirect: "error" });
   };
+
+  async function dispatchModelPurpose(
+    input: RequestInfo | URL,
+    request: RequestInit & { headers: Headers },
+    expectedPath: typeof GATEWAY_ANTHROPIC_MODEL_PATH | typeof GATEWAY_OPENAI_MODEL_PATH,
+  ): Promise<Response> {
+    let path: string;
+    try {
+      const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+      if (url.search || url.hash) throw new Error("invalid route");
+      path = url.pathname;
+    }
+    catch { throw new Error("Model purpose authority is not available"); }
+    const body = request.body;
+    const bytes = typeof body === "string" ? Buffer.from(body, "utf8")
+      : body instanceof Uint8Array ? Buffer.from(body)
+      : body instanceof ArrayBuffer ? Buffer.from(body)
+      : undefined;
+    if (path !== expectedPath || request.method !== "POST" || !bytes || bytes.length > MODEL_PURPOSE_DISPATCH_BODY_MAX)
+      throw new Error("Model purpose authority is not available");
+    const prepared = await prepareCurrentModelPurposeIntent("POST", expectedPath, bytes);
+    // The local claim burns synchronously before opening the UDS request. A failed or
+    // uncertain transport is never retried through the ordinary gateway key.
+    claimModelDispatch();
+    request.headers.delete("authorization");
+    request.headers.delete("x-api-key");
+    return modelPurposeDispatchRequest({
+      ticket: prepared.ticket, method: "POST", path: expectedPath, rawBody: bytes,
+      deadline: prepared.expiresAt, headers: request.headers, signal: request.signal ?? undefined,
+    });
+  }
 
   /** Builds a model on the openai-compatible lane — same gateway, same /v1 base URL, the
    *  gateway's `/chat/completions` route instead of `/v1/messages`. `name: "lares-gateway"`

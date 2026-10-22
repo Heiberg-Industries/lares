@@ -32,7 +32,21 @@ export interface ModelPurposeRuntimeEnvelope {
   mac?: unknown;
 }
 
+/** A separate MAC domain for the bounded model-dispatch hop. It deliberately signs the
+ * gateway's canonical exact-request hash, rather than JSON-decoding and re-encoding a body. */
+export interface ModelPurposeDispatchFields {
+  method: 'POST';
+  path: string;
+  requestHash: string;
+  ticket: string;
+  agent: string;
+  incarnation: string;
+  nonce: string;
+  deadline: number;
+}
+
 export const MODEL_PURPOSE_EMPTY_DIGEST = createHash('sha256').update('').digest('hex');
+export const MODEL_PURPOSE_DISPATCH_BODY_MAX = 8 * 1024 * 1024;
 
 export function modelPurposeCanonical(value: unknown): string {
   const encoded = JSON.stringify(value);
@@ -51,6 +65,20 @@ export function modelPurposeMac(key: Buffer, fields: ModelPurposeMacFields): Buf
     'lares-model-purpose-v1', fields.direction, fields.domain, fields.agent,
     fields.incarnation, fields.operation, fields.requestId, fields.requestDigest,
     fields.outcomeDigest, fields.payloadDigest,
+  ])).digest();
+}
+
+export function modelPurposeDispatchMac(key: Buffer, fields: ModelPurposeDispatchFields): Buffer {
+  if (key.length !== 32 || fields.method !== 'POST' ||
+      (fields.path !== '/v1/messages' && fields.path !== '/v1/chat/completions') ||
+      !/^[a-f0-9]{64}$/.test(fields.requestHash) || !/^[A-Za-z0-9_-]{43}$/.test(fields.ticket) ||
+      !/^[a-z][a-z0-9-]{1,30}$/.test(fields.agent) || !/^[a-f0-9-]{36}$/.test(fields.incarnation) ||
+      !/^[A-Za-z0-9_-]{43}$/.test(fields.nonce) || !Number.isSafeInteger(fields.deadline)) {
+    throw new Error('Invalid model-purpose dispatch authentication');
+  }
+  return createHmac('sha256', key).update(modelPurposeCanonical([
+    'lares-model-purpose-dispatch-v1', 'runtime-to-keeper', fields.method, fields.path,
+    fields.requestHash, fields.ticket, fields.agent, fields.incarnation, fields.nonce, fields.deadline,
   ])).digest();
 }
 

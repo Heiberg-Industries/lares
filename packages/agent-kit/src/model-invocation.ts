@@ -103,6 +103,13 @@ export function currentModelPurposeClaim(): ModelPurposeClaim | undefined {
   return claim?.purpose && claim.purpose.expiresAt > Date.now() && claim.purposeActive?.() ? claim.purpose : undefined;
 }
 
+/** Read-only routing hint for the provider adapter. It remains true for an expired or
+ * cancelled purpose so that failure cannot fall through to the legacy gateway key. */
+export function hasModelPurposeInvocation(): boolean {
+  const invocation = current.getStore();
+  return Boolean(invocation && claims.get(invocation)?.purpose);
+}
+
 /** Burn this invocation's opaque claim before the authenticated Keeper exchange. The
  * gateway adapter supplies the exact final request bytes after its normal body shaping;
  * neither model input nor a caller-selected member, binding, profile, or endpoint enters
