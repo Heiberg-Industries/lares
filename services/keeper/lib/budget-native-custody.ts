@@ -13,7 +13,7 @@ import {consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt} from './b
 
 export const NATIVE_CUSTODY_DIRECTORY='/var/lib/lares/budget-native';
 export const NATIVE_CUSTODY_MAX_RECORDS=128,NATIVE_CUSTODY_MAX_BYTES=1_048_576,NATIVE_CUSTODY_POLICY_BYTES=16_384;
-const CONTROL_BYTES=1024,KEY_BYTES=46;
+const CONTROL_BYTES=1024,INTENT_BYTES=2048,KEY_BYTES=46;
 const uuid=z.string().uuid(),hash=z.string().regex(/^[a-f0-9]{64}$/);
 // PostgreSQL credential_generation is a nonnegative signed bigint. Retain canonical
 // decimal strings throughout; Number would lose precision at this boundary.
@@ -56,6 +56,14 @@ export type NativeCleanupReceipt=z.infer<typeof cleanup>;
 export interface NativeAbsenceRequest {readonly origin:string;readonly fingerprint:string;readonly challenge:string}
 const controlSchema=z.object({version:z.literal(1),storeId:uuid,state:z.enum(['open','closed','uncertain']),revision:z.number().int().nonnegative().safe(),snapshotDigest:hash}).strict();
 type Control=z.infer<typeof controlSchema>;
+const publicationIntentSchema=z.object({version:z.literal(1),storeId:uuid,kind:z.enum(['snapshot','key-create','key-remove']),
+  previous:z.object({controlDigest:hash,controlState:z.enum(['open','closed','uncertain']),revision:z.number().int().nonnegative().safe(),snapshotDigest:hash}).strict(),
+  next:z.object({controlDigest:hash,revision:z.number().int().nonnegative().safe(),snapshotDigest:hash}).strict(),
+  key:z.object({operationId:uuid,keyFingerprint:hash}).strict().nullable(),
+}).strict().superRefine((value,ctx)=>{
+  if((value.kind==='key-create'||value.kind==='key-remove')!==Boolean(value.key))ctx.addIssue({code:'custom',message:'Publication key target mismatch'});
+});
+type PublicationIntent=z.infer<typeof publicationIntentSchema>;
 interface Options {ownershipUid?:number;ownershipGid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void}
 type Handle={fd:number;stat:BigIntStats;bytes:Buffer};
 const unavailable=()=>new Error('Native custody unavailable; explicit reconciliation is required');
@@ -101,6 +109,7 @@ export interface NativeCustodyGate {
 export class BudgetNativeCustodyStore {
   private frozen=false;private stopping=false;private closed=false;private busy=false;private idle=new Set<()=>void>();
   private snapshot!:Snapshot;private control!:Control;private lock!:Handle;private snapshotFile!:Handle;private controlFile!:Handle;
+  private publicationIntent?:Handle;private publicationIntentRecord?:PublicationIntent;
   private rootFd!:number;private rootStat!:BigIntStats;
   private readonly uid:number;private readonly gid:number;private readonly sync:(fd:number)=>void;
   private constructor(private directory:string,private options:Options){this.uid=options.ownershipUid??0;this.gid=options.ownershipGid??0;this.sync=options.sync??fsyncSync;}
@@ -191,10 +200,13 @@ export class BudgetNativeCustodyStore {
     if(found){if(found.phase!=='prepared'||Object.entries(immutable).some(([key,value])=>!same(found[key as keyof NativeOperation],value))||this.readKey(found.operationId)!==plaintext)throw refused();return clone(found);}
     if(this.snapshot.operations.some(o=>o.keyFingerprint===immutable.keyFingerprint))throw refused();
     const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',keyCreateAttempt:'not-attempted',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
-    // The complete tuple is durable first. A crash before its secret is durable leaves
-    // missing custody and a writer-open receipt; reopening cannot promote that partial state.
-    this.publish({...this.snapshot,operations:[...this.snapshot.operations,row]},new Set([row.operationId]));
-    const key=this.createFile(this.keyName(row.operationId),Buffer.from(plaintext));key.bytes.fill(0);closeSync(key.fd);this.syncRoot();this.verify();return clone(row);
+    // The tuple and its key are one locally recorded publication. The intent is durable
+    // before either becomes visible and remains until both are verified together.
+    const next={...this.snapshot,operations:[...this.snapshot.operations,row]};
+    this.beginPublicationIntent(next,'key-create',{operationId:row.operationId,keyFingerprint:row.keyFingerprint});
+    this.publishSnapshotUnderIntent(next,new Set([row.operationId]));
+    const key=this.createFile(this.keyName(row.operationId),Buffer.from(plaintext));key.bytes.fill(0);closeSync(key.fd);
+    this.syncRoot();this.verify();this.clearPublicationIntent();return clone(row);
   }
   private operation(id:string):NativeOperation {try{uuid.parse(id);}catch{throw refused();}const op=this.snapshot.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.operationId===id);if(!op)throw refused();return op;}
   private readKey(id:string):string {const op=this.operation(id);if(op.plaintext!=='present')throw refused();const file=this.openFile(this.keyName(id),KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();return file.bytes.toString('ascii');}finally{file.bytes.fill(0);closeSync(file.fd);}}
@@ -240,11 +252,14 @@ export class BudgetNativeCustodyStore {
   }
   private removePlaintext(id:string):void {
     const op=this.operation(id);if(op.phase!=='revoke-pending'||!op.revocationReceipt)throw refused();if(op.plaintext==='removed')return;if(op.plaintext!=='present')throw unavailable();
-    // Snapshot already retains the exact endpoint/fingerprint/policy and revocation
-    // receipt before unlink. Neither this unlink nor this store proves native absence.
+    // First make the revocation and pending removal durable. The second intent then binds
+    // unlink to the exact snapshot that records plaintext as removed.
     this.updateOperation({...op,plaintext:'removal-pending'});const file=this.openFile(this.keyName(id),KEY_BYTES);
-    try{this.assertHandle(this.keyName(id),file,KEY_BYTES);if(digest(file.bytes)!==op.keyFingerprint)throw unavailable();unlinkSync(join(this.directory,this.keyName(id)));this.syncRoot();}finally{file.bytes.fill(0);closeSync(file.fd);}
-    this.updateOperation({...op,plaintext:'removed'});
+    const next={...this.snapshot,operations:this.snapshot.operations.map(value=>value.kind==='operation'&&value.operationId===id?{...value,plaintext:'removed' as const}:value)};
+    try{this.beginPublicationIntent(next,'key-remove',{operationId:id,keyFingerprint:op.keyFingerprint});
+      this.assertHandle(this.keyName(id),file,KEY_BYTES);if(digest(file.bytes)!==op.keyFingerprint)throw unavailable();unlinkSync(join(this.directory,this.keyName(id)));this.syncRoot();
+      this.publishSnapshotUnderIntent(next,new Set([id]));this.clearPublicationIntent();}
+    finally{file.bytes.fill(0);closeSync(file.fd);}
   }
   private eraseAccountAssociation(accountId:string,raw:CommittedFinancialReceipt):void {
     try{uuid.parse(accountId);}catch{throw refused();}
@@ -265,16 +280,61 @@ export class BudgetNativeCustodyStore {
     const s=snapshotSchema.parse(value);if(s.teams.length+s.users.length+s.operations.length>NATIVE_CUSTODY_MAX_RECORDS)throw refused();const bytes=gatewayCanonical(s);if(bytes.length>NATIVE_CUSTODY_MAX_BYTES)throw refused();return bytes;
   }
   private publish(next:Snapshot,missingKeys=new Set<string>()):void {
-    next={...next,revision:this.snapshot.revision+1};const bytes=this.snapshotBytes(next);
-    this.snapshotFile=this.replaceFile('snapshot.json',this.snapshotFile,bytes);this.snapshot=next;
-    this.publishControl({...this.control,revision:next.revision,snapshotDigest:digest(bytes)});this.verify(missingKeys);
+    this.beginPublicationIntent(next,'snapshot',null);this.publishSnapshotUnderIntent(next,missingKeys);this.clearPublicationIntent();
   }
-  private publishControl(next:Control):void {const bytes=gatewayCanonical(controlSchema.parse(next));if(bytes.length>CONTROL_BYTES)throw unavailable();this.controlFile=this.replaceFile('control.json',this.controlFile,bytes);this.control=next;}
+  private publishControl(next:Control):void {
+    const bytes=gatewayCanonical(controlSchema.parse(next));if(bytes.length>CONTROL_BYTES)throw unavailable();
+    this.controlFile=this.replaceFile('control.json',this.controlFile,bytes);this.control=next;
+  }
+  private beginPublicationIntent(nextSnapshot:Snapshot,kind:PublicationIntent['kind'],key:PublicationIntent['key']):void {
+    if(this.publicationIntent||this.publicationIntentRecord)throw unavailable();
+    const revision=this.snapshot.revision+1;
+    const next={...nextSnapshot,revision},snapshotBytes=this.snapshotBytes(next);
+    const nextControl=controlSchema.parse({...this.control,revision,snapshotDigest:digest(snapshotBytes)});
+    const record:PublicationIntent=publicationIntentSchema.parse({version:1,storeId:this.snapshot.storeId,kind,
+      previous:{controlDigest:digest(this.controlFile.bytes),controlState:this.control.state,revision:this.snapshot.revision,snapshotDigest:digest(this.snapshotFile.bytes)},
+      next:{controlDigest:digest(gatewayCanonical(nextControl)),revision,snapshotDigest:digest(snapshotBytes)},key});
+    const bytes=gatewayCanonical(record);if(bytes.length>INTENT_BYTES)throw unavailable();
+    // O_EXCL on the final path refuses a foreign intent instead of replacing it. A failed
+    // file or directory sync leaves a refusal artifact; no snapshot/key write follows it.
+    const file=this.createFile('publication-intent.json',bytes);
+    this.publicationIntent=file;this.publicationIntentRecord=record;this.syncRoot();
+  }
+  private publishSnapshotUnderIntent(nextSnapshot:Snapshot,missingKeys=new Set<string>()):void {
+    const record=this.publicationIntentRecord;if(!record||!this.publicationIntent)throw unavailable();
+    const next={...nextSnapshot,revision:this.snapshot.revision+1},bytes=this.snapshotBytes(next);
+    if(record.next.revision!==next.revision||record.next.snapshotDigest!==digest(bytes))throw unavailable();
+    this.snapshotFile=this.replaceFile('snapshot.json',this.snapshotFile,bytes);this.snapshot=next;
+    const nextControl=controlSchema.parse({...this.control,revision:next.revision,snapshotDigest:digest(bytes)});
+    this.writeControlUnderIntent(nextControl);this.verify(missingKeys);
+  }
+  private writeControlUnderIntent(next:Control):void {
+    const record=this.publicationIntentRecord;if(!record||!this.publicationIntent)throw unavailable();
+    const parsed=controlSchema.parse(next),bytes=gatewayCanonical(parsed);
+    if(bytes.length>CONTROL_BYTES||digest(bytes)!==record.next.controlDigest||parsed.revision!==record.next.revision||parsed.snapshotDigest!==record.next.snapshotDigest)throw unavailable();
+    this.controlFile=this.replaceFile('control.json',this.controlFile,bytes);this.control=parsed;
+  }
+  private clearPublicationIntent():void {
+    const file=this.publicationIntent;if(!file||!this.publicationIntentRecord)throw unavailable();
+    this.assertHandle('publication-intent.json',file,INTENT_BYTES);unlinkSync(join(this.directory,'publication-intent.json'));
+    // Keep the in-memory intent until the directory sync acknowledges its removal. If
+    // that sync is unknown, the caller freezes and cannot claim publication succeeded.
+    this.syncRoot(true);file.bytes.fill(0);closeSync(file.fd);this.publicationIntent=undefined;this.publicationIntentRecord=undefined;
+    // Recheck the complete store after the unlink sync and before returning permission.
+    // This catches a concurrent insertion or path replacement at that exact boundary.
+    this.verify();
+  }
   private decode<T>(schema:z.ZodType<T>,bytes:Buffer):T {const value=schema.parse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));if(!gatewayCanonical(value).equals(bytes))throw unavailable();return value;}
   private verify(missingKeys=new Set<string>()):void {
     this.assertRoot();this.assertHandle('writer.lock',this.lock,0);this.assertHandle('snapshot.json',this.snapshotFile,NATIVE_CUSTODY_MAX_BYTES);this.assertHandle('control.json',this.controlFile,CONTROL_BYTES);
     if(this.control.storeId!==this.snapshot.storeId||this.control.revision!==this.snapshot.revision||this.control.snapshotDigest!==digest(this.snapshotFile.bytes)||this.control.state==='uncertain'||!this.snapshotBytes(this.snapshot).equals(this.snapshotFile.bytes))throw unavailable();
+    if(this.publicationIntent){
+      if(!this.publicationIntentRecord)throw unavailable();this.assertHandle('publication-intent.json',this.publicationIntent,INTENT_BYTES);
+      const stored=this.decode(publicationIntentSchema,this.publicationIntent.bytes);
+      if(!same(stored,this.publicationIntentRecord)||stored.storeId!==this.snapshot.storeId||stored.next.revision!==this.snapshot.revision||stored.next.snapshotDigest!==digest(this.snapshotFile.bytes)||stored.next.controlDigest!==digest(this.controlFile.bytes))throw unavailable();
+    }
     const expected=new Set(['writer.lock','snapshot.json','control.json']),unique=new Set<string>();
+    if(this.publicationIntent){expected.add('publication-intent.json');}
     const uniqueId=(value:string)=>{if(unique.has(value))throw unavailable();unique.add(value);};
     for(const t of this.snapshot.teams){uniqueId('team:'+t.ownershipId);uniqueId('team-coordinate:'+t.installationAccountId+':'+t.endpoint.hash);uniqueId('native-team:'+t.endpoint.hash+':'+t.nativeTeamId);}
     for(const u of this.snapshot.users){if(u.kind==='erased-user'){uniqueId('erased-user:'+u.coordinateCommitment);continue;}uniqueId('user:'+u.ownershipId);uniqueId('user-coordinate:'+u.accountId+':'+u.endpoint.hash);uniqueId('native-user:'+u.endpoint.hash+':'+u.nativeUserId);const t=this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId);if(!t||t.installationAccountId!==u.installationAccountId||!same(t.endpoint,u.endpoint)||u.userCreateAttempt!=='not-attempted'&&t.createAttempt!=='verified'||u.membershipCreateAttempt!=='not-attempted'&&u.userCreateAttempt!=='verified'||this.snapshot.users.some(v=>v.kind==='erased-user'&&(v.coordinateCommitment===this.userCoordinate(u.accountId,u.endpoint.hash)||v.accountCommitment===commitment('erased-account',this.snapshot.storeId,u.accountId))))throw unavailable();}
@@ -291,7 +351,7 @@ export class BudgetNativeCustodyStore {
     }
     const names=this.inventoryNames();if(names.length!==expected.size||names.some(name=>!expected.has(name)))throw unavailable();
   }
-  private inventoryNames():string[] {const names:string[]=[];const directory=opendirBounded(this.directory,NATIVE_CUSTODY_MAX_RECORDS+3);for(const name of directory)names.push(name);return names;}
+  private inventoryNames():string[] {const names:string[]=[];const directory=opendirBounded(this.directory,NATIVE_CUSTODY_MAX_RECORDS+5);for(const name of directory)names.push(name);return names;}
   private keyName(id:string):string{return `${id}.key`;}
   private verifyAncestors(directory:string):void {
     if(!isAbsolute(directory)||normalize(directory)!==directory)throw unavailable();let part=parse(directory).root;
@@ -323,10 +383,13 @@ export class BudgetNativeCustodyStore {
       published=true;next.stat=fstatSync(next.fd,{bigint:true});this.assertHandle(name,next,bytes.length);this.syncRoot();return next;
     }finally{if(published)closeSync(current.fd);else closeSync(next.fd);}
   }
-  private assertOwner():void {this.assertRoot();if(this.lock)this.assertHandle('writer.lock',this.lock,0);}
-  private syncRoot():void {this.assertOwner();this.sync(this.rootFd);this.assertOwner();}
-  private freeze():void {if(this.closed||this.frozen)return;this.frozen=true;try{this.publishControl({...this.control,state:'uncertain'});}catch{/* Writer-open/partial/mismatched files still refuse later adoption. */}}
-  private release():void {if(this.closed)return;this.closed=true;for(const file of [this.snapshotFile,this.controlFile,this.lock])if(file){file.bytes.fill(0);try{closeSync(file.fd);}catch{}}if(this.rootFd!==undefined)try{closeSync(this.rootFd);}catch{}}
+  private assertOwner(skipIntentCheck=false):void {
+    this.assertRoot();if(this.lock)this.assertHandle('writer.lock',this.lock,0);
+    if(this.publicationIntent&&!skipIntentCheck){this.assertHandle('publication-intent.json',this.publicationIntent,INTENT_BYTES);if(!this.publicationIntentRecord||!this.publicationIntent.bytes.equals(gatewayCanonical(this.publicationIntentRecord)))throw unavailable();}
+  }
+  private syncRoot(skipIntentCheck=false):void {this.assertOwner(skipIntentCheck);this.sync(this.rootFd);this.assertOwner(skipIntentCheck);}
+  private freeze():void {if(this.closed||this.frozen)return;this.frozen=true;if(this.publicationIntent)return;try{this.publishControl({...this.control,state:'uncertain'});}catch{/* Writer-open/partial/mismatched files still refuse later adoption. */}}
+  private release():void {if(this.closed)return;this.closed=true;for(const file of [this.snapshotFile,this.controlFile,this.lock,this.publicationIntent])if(file){file.bytes.fill(0);try{closeSync(file.fd);}catch{}}if(this.rootFd!==undefined)try{closeSync(this.rootFd);}catch{}}
 }
 
 // Bound enumeration before materializing the inventory, including unexpected entries.
