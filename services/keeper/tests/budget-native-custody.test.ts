@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
-import {HostFinancialJournal,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
+import {HostFinancialJournal,committedFinancialEvidence,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
 import {BudgetNativeCredentialClient,type NativeHashAbsenceReceipt} from '../lib/budget-native-client.js';
@@ -29,7 +29,7 @@ const secret=()=>`sk-${'x'.repeat(43)}`;
 function accountAtom(p:ReturnType<typeof prepare>,kind:'provision'|'member-remove'|'erase-person',installation=false):FinancialAtom {
   return {kind:'account',id:installation?p.installationId:p.accountId,installationAccountId:p.installationId,accountKind:installation?'installation':'member',state:kind==='provision'?'closed':'retired',reason:kind==='provision'?'unreconciled':kind==='erase-person'?'member_erased':'member_removed',activeWindowId:null,installationCap:installation?'100':null,policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:kind==='erase-person'?'d'.repeat(64):null,providerSuppressionHashes:kind==='erase-person'?['e'.repeat(64)]:[]};
 }
-function bindingAtom(p:ReturnType<typeof prepare>,state:'active'|'revoked'):FinancialAtom {
+function bindingAtom(p:ReturnType<typeof prepare>,state:'active'|'revoked'):Extract<FinancialAtom,{kind:'binding'}> {
   const policy=p.input.reviewedPolicy;return {kind:'binding',id:p.input.bindingId,installationAccountId:p.installationId,memberAccountId:p.accountId,endpointHash:target.hash,credentialGeneration:p.input.credentialGeneration,profileHash:policy.pricing.capabilityHash,maximumLiability:policy.maximumLiability,pricingProfile:policy.pricing,state};
 }
 // Real journal operations mint every positive fixture; copied JSON has no authority.
@@ -66,6 +66,10 @@ function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId
 }
 const bytes=(directory:string)=>Object.fromEntries(readdirSync(directory).map(name=>[name,readFileSync(join(directory,name))]));
 const digestForTest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
+function restoreOpenControl(directory:string):void {
+  const path=join(directory,'control.json'),control=JSON.parse(readFileSync(path,'utf8'));control.state='open';
+  writeFileSync(path,gatewayCanonical(control),{mode:0o600});chmodSync(path,0o600);
+}
 async function ownedObservationHandle(journal:HostFinancialJournal,operationId:string):Promise<Awaited<ReturnType<typeof observeCommittedFinancialProjection>>>{
   const client={async query(value:string|{text:string}){
     const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
@@ -82,12 +86,187 @@ async function ownedObservationHandle(journal:HostFinancialJournal,operationId:s
   const boundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
   await consoleSourceTransaction(pool,async()=>undefined,boundary);if(!handle)throw new Error('Owned financial observer fixture unavailable');return handle;
 }
+async function cleanupRecoveryFixture(options:{revokePending?:boolean;secondKey?:boolean}={}){
+  const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,other!:ReturnType<typeof prepare>;
+  await store.withGate(async gate=>{
+    p=prepare(gate);const id=p.operation.operationId;
+    gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+    await publishReceipt(gate,p,'provision',current=>{gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+      [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+    if(options.revokePending)await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(id,current),[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+    if(options.secondKey)other=prepare(gate);
+  });
+  store.close();restoreOpenControl(directory);
+  return {directory,id:p.operation.operationId,p,otherId:other?.operation.operationId};
+}
+async function publishCleanupProof(journal:HostFinancialJournal,recovery:ReturnType<typeof BudgetNativeCustodyStore.openCleanupRecovery>,id:string,after?:()=>void):Promise<void>{
+  await journal.operation('native-cleanup-recovery',async operationId=>{
+    journal.propose(operationId,[]);const current=journal.committedObserved(operationId,await ownedObservationHandle(journal,operationId));if(!current)throw new Error('Observed recovery fixture unavailable');
+    journal.withPublicationProof(current,()=>{recovery.publishLocalPlaintextCleanup(id,current);after?.();});
+  });
+}
 async function absence(fingerprint:string,challenge:string,origin=target.origin):Promise<NativeHashAbsenceReceipt> {
   const client=new BudgetNativeCredentialClient(origin,'sk-master-fixture-0123456789',async()=>new Response(JSON.stringify({key:[fingerprint],info:[]} ),{headers:{'content-type':'application/json'}}));
   const result=await client.lookupKeyHashOnly(fingerprint,challenge);if(result.kind!=='absent')throw new Error('Absence fixture failed');return result.receipt;
 }
 
 describe('protected native custody foundation',()=>{
+  it('uses only a fresh observed cleanup proof for exact raw operations and leaves the control open',async()=>{
+    const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{bindingReceipt=current;gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'member-remove',()=>undefined,[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+    });
+    store.close();restoreOpenControl(directory);
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,options);
+    try{
+      const candidates=recovery.candidates();expect(candidates).toHaveLength(1);
+      expect(candidates[0]).toMatchObject({operationId:id,accountId:p.accountId,phase:'bound-closed',plaintext:'present',binding:bindingAtom(p,'revoked')});
+      expect(Object.keys(recovery).sort()).toEqual(['candidates','close','publishLocalPlaintextCleanup']);
+      const before=bytes(directory);expect(()=>recovery.publishLocalPlaintextCleanup(id,bindingReceipt)).toThrow('refused');expect(bytes(directory)).toEqual(before);
+      const journal=financial!;
+      await journal.operation('native-cleanup-recovery',async operationId=>{
+        journal.propose(operationId,[]);
+        const current=journal.committedObserved(operationId,await ownedObservationHandle(journal,operationId));if(!current)throw new Error('Observed recovery fixture unavailable');
+        expect(committedFinancialEvidence(current,{kind:'native-cleanup-recovery',binding:bindingAtom(p,'revoked')})?.operation).toBe('native-cleanup-recovery');
+        journal.withPublicationProof(current,()=>recovery.publishLocalPlaintextCleanup(id,current));
+      });
+      expect(readdirSync(directory)).not.toContain(`${id}.key`);
+      const snapshot=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8'));
+      expect(snapshot.operations[0]).toMatchObject({phase:'revoke-pending',plaintext:'removed',revocationReceipt:{operation:'native-cleanup-recovery'}});
+      expect(snapshot.operations[0].bindingReceipt).toEqual(bindingReceipt);
+      expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');
+    }finally{recovery.close();}
+    expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');
+    expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it('preserves an existing revoke receipt while a current cleanup proof resumes pending local removal',async()=>{
+    const {directory,store}=fixture();
+    let p!:ReturnType<typeof prepare>,id='',originalRevocation!:CommittedFinancialReceipt;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'member-remove',current=>{originalRevocation=current;gate.recordRevocation(id,current);},
+        [accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+    });
+    store.close();
+    const raw=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8'));raw.operations[0].plaintext='removal-pending';
+    const snapshotBytes=gatewayCanonical(raw),snapshotPath=join(directory,'snapshot.json');writeFileSync(snapshotPath,snapshotBytes,{mode:0o600});chmodSync(snapshotPath,0o600);
+    const controlPath=join(directory,'control.json'),control=JSON.parse(readFileSync(controlPath,'utf8'));control.state='open';control.snapshotDigest=digestForTest(snapshotBytes);
+    writeFileSync(controlPath,gatewayCanonical(control),{mode:0o600});chmodSync(controlPath,0o600);
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,options);
+    try{
+      expect(recovery.candidates()[0]).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending'});
+      const journal=financial!;
+      await journal.operation('native-cleanup-recovery',async operationId=>{
+        journal.propose(operationId,[]);
+        const current=journal.committedObserved(operationId,await ownedObservationHandle(journal,operationId));if(!current)throw new Error('Observed recovery fixture unavailable');
+        journal.withPublicationProof(current,()=>recovery.publishLocalPlaintextCleanup(id,current));
+      });
+      const next=JSON.parse(readFileSync(snapshotPath,'utf8')).operations[0];
+      expect(next).toMatchObject({phase:'revoke-pending',plaintext:'removed'});expect(next.revocationReceipt).toEqual(originalRevocation);
+      expect(JSON.parse(readFileSync(controlPath,'utf8')).state).toBe('open');expect(readdirSync(directory)).not.toContain(`${id}.key`);
+    }finally{recovery.close();}
+  });
+
+  it('closes an early partially opened recovery owner without changing custody files',()=>{
+    const {directory,store}=fixture();store.close();restoreOpenControl(directory);const before=bytes(directory);
+    expect(()=>BudgetNativeCustodyStore.openCleanupRecovery(directory,{...options,lock:()=>{throw new Error('synthetic lock failure');}}))
+      .toThrow('Native custody unavailable; explicit reconciliation is required');
+    expect(bytes(directory)).toEqual(before);
+  });
+
+  it('stops before unlink when the exact retained inventory changes at the intent sync boundary',async()=>{
+    let directory='';let injected=false;
+    const {directory:created,store}=fixture();directory=created;let p!:ReturnType<typeof prepare>,other!:ReturnType<typeof prepare>;
+    await store.withGate(async gate=>{
+      p=prepare(gate);const id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},[accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'member-remove',()=>undefined,[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+      other=prepare(gate,{key:`sk-${'y'.repeat(43)}`});
+    });store.close();restoreOpenControl(directory);
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,{...options,sync:fd=>{
+      fsyncSync(fd);if(injected||!fstatSync(fd).isDirectory())return;
+      let intent:any;try{intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));}catch{return;}
+      if(intent.kind==='key-remove'){injected=true;writeFileSync(join(directory,'unexpected'),Buffer.from('foreign'),{mode:0o600});}
+    }});
+    try{
+      const journal=financial!;
+      await expect(publishCleanupProof(journal,recovery,p.operation.operationId)).rejects.toThrow();
+      const row=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')).operations.find((value:any)=>value.operationId===p.operation.operationId);
+      expect(injected).toBe(true);expect(readdirSync(directory)).toContain(`${p.operation.operationId}.key`);
+      expect(row).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending'});
+      expect(readFileSync(join(directory,`${other.operation.operationId}.key`))).toEqual(Buffer.from(`sk-${'y'.repeat(43)}`));
+      expect(readdirSync(directory)).toContain('unexpected');
+    }finally{recovery.close();}
+  });
+
+  it('refuses an identical-byte replacement of a different retained key before unlink',async()=>{
+    let directory='';let injected=false;let secondKey='';
+    const {directory:created,store}=fixture();directory=created;let p!:ReturnType<typeof prepare>,other!:ReturnType<typeof prepare>;
+    await store.withGate(async gate=>{
+      p=prepare(gate);const id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},[accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'member-remove',()=>undefined,[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+      other=prepare(gate,{key:`sk-${'y'.repeat(43)}`});secondKey=other.operation.operationId;
+    });store.close();restoreOpenControl(directory);const secondInode=lstatSync(join(directory,`${secondKey}.key`)).ino;
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,{...options,sync:fd=>{
+      fsyncSync(fd);if(injected||!fstatSync(fd).isDirectory())return;
+      let intent:any;try{intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));}catch{return;}
+      if(intent.kind==='key-remove'){
+        injected=true;const path=join(directory,`${secondKey}.key`),replacement=join(directory,'.foreign-key');
+        copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);
+      }
+    }});
+    try{
+      await expect(publishCleanupProof(financial!,recovery,p.operation.operationId)).rejects.toThrow();
+      const row=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')).operations.find((value:any)=>value.operationId===p.operation.operationId);
+      expect(injected).toBe(true);expect(readdirSync(directory)).toContain(`${p.operation.operationId}.key`);
+      expect(row).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending'});
+      expect(lstatSync(join(directory,`${secondKey}.key`)).ino).not.toBe(secondInode);
+      expect(readFileSync(join(directory,`${secondKey}.key`))).toEqual(Buffer.from(`sk-${'y'.repeat(43)}`));
+    }finally{recovery.close();}
+  });
+
+  it('withdraws cleanup proof at intent sync and prevents the following unlink',async()=>{
+    let directory='';let injected=false;let publicationReturned=false;const journalForFault=()=>financial!;
+    const {directory:created,store}=fixture();directory=created;
+    let p!:ReturnType<typeof prepare>;
+    await store.withGate(async gate=>{
+      p=prepare(gate);const id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},[accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'member-remove',()=>undefined,[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+    });store.close();restoreOpenControl(directory);
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,{...options,sync:fd=>{
+      fsyncSync(fd);if(injected||!fstatSync(fd).isDirectory())return;
+      let intent:any;try{intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));}catch{return;}
+      if(intent.kind==='key-remove'){injected=true;journalForFault().freeze();}
+    }});
+    try{
+      await expect(publishCleanupProof(financial!,recovery,p.operation.operationId,()=>{publicationReturned=true;})).rejects.toThrow();
+      const row=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')).operations[0];
+      expect(injected).toBe(true);expect(publicationReturned).toBe(false);expect(readdirSync(directory)).toContain(`${p.operation.operationId}.key`);
+      expect(row).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending'});
+    }finally{recovery.close();}
+  });
+
+  it.each([false,true])('rejects a fresh cleanup proof from another journal for %s revocation state',async revokePending=>{
+    const {directory,id,p}=await cleanupRecoveryFixture({revokePending});const originalJournal=financial!.id;financial!.close();financial=undefined;
+    const foreign=await receipt(p,'member-remove',[accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);expect(foreign.journalId).not.toBe(originalJournal);
+    const recovery=BudgetNativeCustodyStore.openCleanupRecovery(directory,options);
+    try{
+      const before=bytes(directory);await expect(publishCleanupProof(financial!,recovery,id)).rejects.toThrow('refused');
+      expect(bytes(directory)).toEqual(before);
+      const row=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')).operations[0];
+      expect(row.financialJournalId).toBe(originalJournal);
+      if(revokePending)expect(row.revocationReceipt.journalId).toBe(originalJournal);
+    }finally{recovery.close();}
+  });
+
   it('refuses forged, copied, unrelated and wrong-kind financial receipts without publishing',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),r=await receipt(p),unrelated=await receipt({...p,accountId:randomUUID()}),wrongKind=await receipt(p,'provision'),before=bytes(directory);
