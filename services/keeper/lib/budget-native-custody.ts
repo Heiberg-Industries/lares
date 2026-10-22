@@ -27,6 +27,7 @@ const teamPolicy=z.object({maxBudget:money,models,budgetDuration:z.literal('1d')
 const userPolicy=z.object({maxBudget:money,userRole:z.literal('internal_user'),autoCreateKey:z.literal(false)}).strict();
 const membershipPolicy=z.object({maxBudget:money,allowedModels:models,budgetDuration:z.literal('1d'),role:z.literal('user')}).strict();
 const keyPolicy=z.object({maxBudget:money,models,budgetDuration:z.literal('1d'),keyType:z.literal('llm_api'),blocked:z.literal(true)}).strict();
+const writeAttempt=z.enum(['not-attempted','attempted','verified']);
 // Same bounded capability document and canonical hash as the gateway's Profile. Prices
 // and native caps remain explicit reviewed inputs; neither this schema nor the store defaults them.
 const capability=z.object({version:z.literal(1),provider:z.enum(['openai','anthropic']),model:z.string().regex(/^[A-Za-z0-9_.:-]{1,160}$/),providerBaseUrl:z.string().max(512).refine(value=>{try{const u=new URL(value);return u.protocol==='https:'&&!u.username&&!u.password&&!u.search&&!u.hash&&!value.endsWith('/');}catch{return false;}}),aliases:models.refine(values=>values.length===4),maxBodyBytes:z.number().int().min(1).max(1_048_576),maxOutputTokens:z.number().int().min(1).max(1_000_000)}).strict();
@@ -35,13 +36,13 @@ export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatew
 });
 export type BudgetNativeReviewedPolicy=z.infer<typeof budgetNativeReviewedPolicySchema>;
 const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
-const team=z.object({kind:z.literal('team'),ownershipId:uuid,installationAccountId:uuid,endpoint,nativeTeamId:nativeId,capabilityHash:hash,policy:teamPolicy}).strict();
-const user=z.object({kind:z.literal('user'),ownershipId:uuid,installationAccountId:uuid,accountId:uuid,endpoint,teamOwnershipId:uuid,nativeUserId:nativeId,policy:userPolicy,membership:membershipPolicy}).strict();
+const team=z.object({kind:z.literal('team'),ownershipId:uuid,installationAccountId:uuid,endpoint,nativeTeamId:nativeId,capabilityHash:hash,policy:teamPolicy,createAttempt:writeAttempt}).strict();
+const user=z.object({kind:z.literal('user'),ownershipId:uuid,installationAccountId:uuid,accountId:uuid,endpoint,teamOwnershipId:uuid,nativeUserId:nativeId,policy:userPolicy,membership:membershipPolicy,userCreateAttempt:writeAttempt,membershipCreateAttempt:writeAttempt}).strict();
 const erasedUser=z.object({kind:z.literal('erased-user'),accountCommitment:hash,coordinateCommitment:hash,erasureReceiptHash:hash}).strict();
 const operation=z.object({kind:z.literal('operation'),operationId:uuid,bindingId:uuid,credentialGeneration:generation,userOwnershipId:uuid,
   association:z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,definitionHash:hash,purposeAlias:alias}).strict(),
   reviewedPolicy:budgetNativeReviewedPolicySchema,policyDigest:hash,keyFingerprint:hash,
-  phase:z.enum(['prepared','provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked']),
+  phase:z.enum(['prepared','provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked']),keyCreateAttempt:writeAttempt,
   financialOperationId:uuid.nullable(),financialJournalId:uuid.nullable(),bindingReceipt:receipt.nullable(),revocationReceipt:receipt.nullable(),
   plaintext:z.enum(['present','removal-pending','removed']),nativeDeletion:z.enum(['unverified','verified']),
 }).strict();
@@ -62,6 +63,7 @@ const refused=()=>new Error('Native custody operation refused');
 const same=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const digest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
 const clone=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
+const frozenClone=<T>(value:T):T=>{const copy=clone(value);const freeze=(item:unknown):void=>{if(!item||typeof item!=='object'||Object.isFrozen(item))return;for(const child of Object.values(item))freeze(child);Object.freeze(item);};freeze(copy);return copy;};
 const commitment=(domain:string,...values:string[])=>gatewayHash(gatewayCanonical([`lares.native-custody.${domain}.v1`,...values]));
 
 export interface NativeCustodyGate {
@@ -70,6 +72,14 @@ export interface NativeCustodyGate {
   prepareOperation(input:{bindingId:string;credentialGeneration:string;userOwnershipId:string;association:NativeOperation['association'];reviewedPolicy:BudgetNativeReviewedPolicy},plaintext:string):NativeOperation;
   readOperation(operationId:string):NativeOperation;
   readKey(operationId:string):string;
+  claimTeamCreate(ownershipId:string):NativeTeamOwnership;
+  verifyTeamCreated(ownershipId:string):void;
+  claimUserCreate(ownershipId:string):NativeUserOwnership;
+  verifyUserCreated(ownershipId:string):void;
+  claimMembershipCreate(ownershipId:string):NativeUserOwnership;
+  verifyMembershipCreated(ownershipId:string):void;
+  claimKeyCreate(operationId:string):NativeOperation;
+  verifyKeyCreated(operationId:string):void;
   beginProvisioning(operationId:string):void;
   recordNativeBlockedVerification(operationId:string):void;
   linkFinancialOperation(operationId:string,financialOperationId:string,journalId:string):void;
@@ -127,8 +137,12 @@ export class BudgetNativeCustodyStore {
     const gate:NativeCustodyGate={
       reserveTeam:(a,e,p)=>call(()=>this.reserveTeam(a,e,p)),reserveUser:(a,t,p)=>call(()=>this.reserveUser(a,t,p)),
       prepareOperation:(i,k)=>call(()=>this.prepareOperation(i,k)),readOperation:id=>call(()=>clone(this.operation(id))),readKey:id=>call(()=>this.readKey(id)),
-      beginProvisioning:id=>call(()=>this.advance(id,'prepared','provisioning')),
-      recordNativeBlockedVerification:id=>call(()=>this.advance(id,'provisioning','native-blocked-verified')),
+      claimTeamCreate:id=>call(()=>this.claimTeamCreate(id)),verifyTeamCreated:id=>call(()=>this.verifyTeamCreated(id)),
+      claimUserCreate:id=>call(()=>this.claimUserCreate(id)),verifyUserCreated:id=>call(()=>this.verifyUserCreated(id)),
+      claimMembershipCreate:id=>call(()=>this.claimMembershipCreate(id)),verifyMembershipCreated:id=>call(()=>this.verifyMembershipCreated(id)),
+      claimKeyCreate:id=>call(()=>this.claimKeyCreate(id)),verifyKeyCreated:id=>call(()=>this.verifyKeyCreated(id)),
+      beginProvisioning:id=>call(()=>this.beginProvisioning(id)),
+      recordNativeBlockedVerification:id=>call(()=>this.recordNativeBlockedVerification(id)),
       linkFinancialOperation:(id,financialId,journalId)=>call(()=>this.linkFinancialOperation(id,financialId,journalId)),recordBoundClosed:(id,r)=>call(()=>this.recordBoundClosed(id,r)),
       recordUncertain:id=>call(()=>{const op=this.operation(id);if(['revoked','revoke-pending'].includes(op.phase))throw refused();this.updateOperation({...op,phase:'uncertain'});this.freeze();throw unavailable();}),
       recordRevocation:(id,r)=>call(()=>this.recordRevocation(id,r)),removePlaintext:id=>call(()=>this.removePlaintext(id)),
@@ -151,7 +165,7 @@ export class BudgetNativeCustodyStore {
     try{uuid.parse(installationAccountId);target=endpoint.parse(target);}catch{throw refused();}const p=this.checkedPolicy(raw);
     const found=this.snapshot.teams.find(t=>t.installationAccountId===installationAccountId&&t.endpoint.hash===target.hash);
     if(found){if(!same(found.endpoint,target)||!same(found.policy,p.team)||found.capabilityHash!==p.pricing.capabilityHash)throw refused();return clone(found);}
-    const row:NativeTeamOwnership={kind:'team',ownershipId:randomUUID(),installationAccountId,endpoint:target,nativeTeamId:randomUUID(),capabilityHash:p.pricing.capabilityHash,policy:p.team};
+    const row:NativeTeamOwnership={kind:'team',ownershipId:randomUUID(),installationAccountId,endpoint:target,nativeTeamId:randomUUID(),capabilityHash:p.pricing.capabilityHash,policy:p.team,createAttempt:'not-attempted'};
     this.publish({...this.snapshot,teams:[...this.snapshot.teams,row]});return clone(row);
   }
   private reserveUser(accountId:string,teamOwnershipId:string,raw:BudgetNativeReviewedPolicy):NativeUserOwnership {
@@ -161,7 +175,7 @@ export class BudgetNativeCustodyStore {
     if(this.snapshot.users.some(u=>u.kind==='erased-user'&&(u.coordinateCommitment===coordinate||u.accountCommitment===accountCommitment)))throw refused();
     const found=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.accountId===accountId&&u.endpoint.hash===t.endpoint.hash);
     if(found){if(found.teamOwnershipId!==t.ownershipId||!same(found.policy,p.user)||!same(found.membership,p.membership))throw refused();return clone(found);}
-    const row:NativeUserOwnership={kind:'user',ownershipId:randomUUID(),installationAccountId:t.installationAccountId,accountId,endpoint:t.endpoint,teamOwnershipId:t.ownershipId,nativeUserId:randomUUID(),policy:p.user,membership:p.membership};
+    const row:NativeUserOwnership={kind:'user',ownershipId:randomUUID(),installationAccountId:t.installationAccountId,accountId,endpoint:t.endpoint,teamOwnershipId:t.ownershipId,nativeUserId:randomUUID(),policy:p.user,membership:p.membership,userCreateAttempt:'not-attempted',membershipCreateAttempt:'not-attempted'};
     this.publish({...this.snapshot,users:[...this.snapshot.users,row]});return clone(row);
   }
   private prepareOperation(input:Parameters<NativeCustodyGate['prepareOperation']>[0],plaintext:string):NativeOperation {
@@ -176,7 +190,7 @@ export class BudgetNativeCustodyStore {
     const immutable={bindingId:input.bindingId,credentialGeneration:input.credentialGeneration,userOwnershipId:u.ownershipId,association,reviewedPolicy:p,policyDigest:gatewayHash(gatewayCanonical(p)),keyFingerprint:digest(Buffer.from(plaintext))};
     if(found){if(found.phase!=='prepared'||Object.entries(immutable).some(([key,value])=>!same(found[key as keyof NativeOperation],value))||this.readKey(found.operationId)!==plaintext)throw refused();return clone(found);}
     if(this.snapshot.operations.some(o=>o.keyFingerprint===immutable.keyFingerprint))throw refused();
-    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
+    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',keyCreateAttempt:'not-attempted',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
     // The complete tuple is durable first. A crash before its secret is durable leaves
     // missing custody and a writer-open receipt; reopening cannot promote that partial state.
     this.publish({...this.snapshot,operations:[...this.snapshot.operations,row]},new Set([row.operationId]));
@@ -184,7 +198,18 @@ export class BudgetNativeCustodyStore {
   }
   private operation(id:string):NativeOperation {try{uuid.parse(id);}catch{throw refused();}const op=this.snapshot.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.operationId===id);if(!op)throw refused();return op;}
   private readKey(id:string):string {const op=this.operation(id);if(op.plaintext!=='present')throw refused();const file=this.openFile(this.keyName(id),KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();return file.bytes.toString('ascii');}finally{file.bytes.fill(0);closeSync(file.fd);}}
-  private advance(id:string,from:NativeOperation['phase'],to:NativeOperation['phase']):void {const op=this.operation(id);if(op.phase===to)return;if(op.phase!==from)throw refused();this.updateOperation({...op,phase:to});}
+  private claimTeamCreate(id:string):NativeTeamOwnership {const t=this.teamOwnership(id);if(t.createAttempt!=='not-attempted')throw refused();const next={...t,createAttempt:'attempted' as const};this.publish({...this.snapshot,teams:this.snapshot.teams.map(v=>v.ownershipId===id?next:v)});return frozenClone(next);}
+  private verifyTeamCreated(id:string):void {const t=this.teamOwnership(id);if(t.createAttempt!=='attempted')throw refused();this.publish({...this.snapshot,teams:this.snapshot.teams.map(v=>v.ownershipId===id?{...v,createAttempt:'verified' as const}:v)});}
+  private claimUserCreate(id:string):NativeUserOwnership {const u=this.userOwnership(id),t=this.teamOwnership(u.teamOwnershipId);if(t.createAttempt!=='verified'||u.userCreateAttempt!=='not-attempted')throw refused();const next={...u,userCreateAttempt:'attempted' as const};this.publish({...this.snapshot,users:this.snapshot.users.map(v=>v.kind==='user'&&v.ownershipId===id?next:v)});return frozenClone(next);}
+  private verifyUserCreated(id:string):void {const u=this.userOwnership(id);if(u.userCreateAttempt!=='attempted'||this.teamOwnership(u.teamOwnershipId).createAttempt!=='verified')throw refused();this.publish({...this.snapshot,users:this.snapshot.users.map(v=>v.kind==='user'&&v.ownershipId===id?{...v,userCreateAttempt:'verified' as const}:v)});}
+  private claimMembershipCreate(id:string):NativeUserOwnership {const u=this.userOwnership(id);if(this.teamOwnership(u.teamOwnershipId).createAttempt!=='verified'||u.userCreateAttempt!=='verified'||u.membershipCreateAttempt!=='not-attempted')throw refused();const next={...u,membershipCreateAttempt:'attempted' as const};this.publish({...this.snapshot,users:this.snapshot.users.map(v=>v.kind==='user'&&v.ownershipId===id?next:v)});return frozenClone(next);}
+  private verifyMembershipCreated(id:string):void {const u=this.userOwnership(id);if(u.userCreateAttempt!=='verified'||u.membershipCreateAttempt!=='attempted')throw refused();this.publish({...this.snapshot,users:this.snapshot.users.map(v=>v.kind==='user'&&v.ownershipId===id?{...v,membershipCreateAttempt:'verified' as const}:v)});}
+  private claimKeyCreate(id:string):NativeOperation {const op=this.operation(id),u=this.userOwnership(op.userOwnershipId);if(op.phase!=='provisioning'||u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted')throw refused();this.updateOperation({...op,keyCreateAttempt:'attempted'});return frozenClone(this.operation(id));}
+  private verifyKeyCreated(id:string):void {const op=this.operation(id);if(op.phase!=='provisioning'||op.keyCreateAttempt!=='attempted')throw refused();this.updateOperation({...op,keyCreateAttempt:'verified'});}
+  private beginProvisioning(id:string):void {const op=this.operation(id);if(op.phase==='provisioning')return;if(op.phase!=='prepared')throw refused();this.updateOperation({...op,phase:'provisioning'});}
+  private recordNativeBlockedVerification(id:string):void {const op=this.operation(id);if(op.phase==='native-blocked-verified')return;if(op.phase!=='provisioning'||op.keyCreateAttempt!=='verified')throw refused();this.updateOperation({...op,phase:'native-blocked-verified'});}
+  private teamOwnership(id:string):NativeTeamOwnership {try{uuid.parse(id);}catch{throw refused();}const row=this.snapshot.teams.find(t=>t.ownershipId===id);if(!row)throw refused();return row;}
+  private userOwnership(id:string):NativeUserOwnership {try{uuid.parse(id);}catch{throw refused();}const row=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===id);if(!row)throw refused();return row;}
   private linkFinancialOperation(id:string,financialId:string,journalId:string):void {try{uuid.parse(financialId);uuid.parse(journalId);}catch{throw refused();}const op=this.operation(id);if(op.phase!=='native-blocked-verified'||op.financialOperationId!==null&&(op.financialOperationId!==financialId||op.financialJournalId!==journalId))throw refused();if(op.financialOperationId===financialId)return;this.updateOperation({...op,financialOperationId:financialId,financialJournalId:journalId});}
   private bindingAtom(op:NativeOperation,state:'active'|'revoked'):Extract<FinancialAtom,{kind:'binding'}> {
     const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId);if(!u)throw unavailable();
@@ -252,13 +277,13 @@ export class BudgetNativeCustodyStore {
     const expected=new Set(['writer.lock','snapshot.json','control.json']),unique=new Set<string>();
     const uniqueId=(value:string)=>{if(unique.has(value))throw unavailable();unique.add(value);};
     for(const t of this.snapshot.teams){uniqueId('team:'+t.ownershipId);uniqueId('team-coordinate:'+t.installationAccountId+':'+t.endpoint.hash);uniqueId('native-team:'+t.endpoint.hash+':'+t.nativeTeamId);}
-    for(const u of this.snapshot.users){if(u.kind==='erased-user'){uniqueId('erased-user:'+u.coordinateCommitment);continue;}uniqueId('user:'+u.ownershipId);uniqueId('user-coordinate:'+u.accountId+':'+u.endpoint.hash);uniqueId('native-user:'+u.endpoint.hash+':'+u.nativeUserId);const t=this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId);if(!t||t.installationAccountId!==u.installationAccountId||!same(t.endpoint,u.endpoint)||this.snapshot.users.some(v=>v.kind==='erased-user'&&(v.coordinateCommitment===this.userCoordinate(u.accountId,u.endpoint.hash)||v.accountCommitment===commitment('erased-account',this.snapshot.storeId,u.accountId))))throw unavailable();}
+    for(const u of this.snapshot.users){if(u.kind==='erased-user'){uniqueId('erased-user:'+u.coordinateCommitment);continue;}uniqueId('user:'+u.ownershipId);uniqueId('user-coordinate:'+u.accountId+':'+u.endpoint.hash);uniqueId('native-user:'+u.endpoint.hash+':'+u.nativeUserId);const t=this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId);if(!t||t.installationAccountId!==u.installationAccountId||!same(t.endpoint,u.endpoint)||u.userCreateAttempt!=='not-attempted'&&t.createAttempt!=='verified'||u.membershipCreateAttempt!=='not-attempted'&&u.userCreateAttempt!=='verified'||this.snapshot.users.some(v=>v.kind==='erased-user'&&(v.coordinateCommitment===this.userCoordinate(u.accountId,u.endpoint.hash)||v.accountCommitment===commitment('erased-account',this.snapshot.storeId,u.accountId))))throw unavailable();}
     for(const op of this.snapshot.operations){
       if(op.kind==='cleanup'){uniqueId('operation-coordinate:'+op.coordinateCommitment);uniqueId('cleanup-operation:'+op.operationCommitment);uniqueId('key:'+op.keyFingerprint);if((op.phase==='revoked')!==(op.nativeDeletion==='verified')||!this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===op.accountCommitment&&u.erasureReceiptHash===op.erasureReceiptHash))throw unavailable();continue;}
       uniqueId('operation:'+op.operationId);uniqueId('operation-coordinate:'+this.operationCoordinate(op.bindingId,op.credentialGeneration));uniqueId('key:'+op.keyFingerprint);
       const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId),t=u&&this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId),p=this.checkedPolicy(op.reviewedPolicy);
       if((op.financialOperationId===null)!==(op.financialJournalId===null)||op.bindingReceipt&&(op.bindingReceipt.operation!=='provision'||op.bindingReceipt.journalId!==op.financialJournalId)||op.revocationReceipt&&(!['member-remove','erase-person'].includes(op.revocationReceipt.operation)||op.financialJournalId!==null&&op.revocationReceipt.journalId!==op.financialJournalId))throw unavailable();
-      if(!u||!t||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
+      if(!u||!t||op.keyCreateAttempt!=='not-attempted'&&u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted'&&!['provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked'].includes(op.phase)||['native-blocked-verified','bound-closed'].includes(op.phase)&&(op.keyCreateAttempt!=='verified'||u.membershipCreateAttempt!=='verified'||u.userCreateAttempt!=='verified'||t.createAttempt!=='verified')||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
       if(op.plaintext!=='removed'){
         const name=this.keyName(op.operationId);if(missingKeys.has(op.operationId))continue;expected.add(name);
         const file=this.openFile(name,KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}finally{file.bytes.fill(0);closeSync(file.fd);}

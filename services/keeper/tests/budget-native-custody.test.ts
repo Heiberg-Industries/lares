@@ -44,7 +44,13 @@ async function receipt(p?:ReturnType<typeof prepare>,kind:'provision'|'member-re
 }
 function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId?:string;bindingId?:string;key?:string;policy?:BudgetNativeReviewedPolicy}={}){
   const policy=values.policy??reviewed(),installationId=values.installationId??randomUUID(),accountId=values.accountId??randomUUID();
-  const team=gate.reserveTeam(installationId,target,policy),user=gate.reserveUser(accountId,team.ownershipId,policy);
+  let team=gate.reserveTeam(installationId,target,policy),user=gate.reserveUser(accountId,team.ownershipId,policy);
+  if(team.createAttempt==='not-attempted'){gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);}
+  team=gate.reserveTeam(installationId,target,policy);user=gate.reserveUser(accountId,team.ownershipId,policy);
+  if(user.userCreateAttempt==='not-attempted'){gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);}
+  user=gate.reserveUser(accountId,team.ownershipId,policy);
+  if(user.membershipCreateAttempt==='not-attempted'){gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);}
+  user=gate.reserveUser(accountId,team.ownershipId,policy);
   const input={bindingId:values.bindingId??randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
   const operation=gate.prepareOperation(input,values.key??secret());return {team,user,input,operation,accountId,installationId};
 }
@@ -65,7 +71,7 @@ describe('protected native custody foundation',()=>{
   it('requires exact binding policy and closed account atoms for binding completion',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId;
-      gate.beginProvisioning(id);gate.recordNativeBlockedVerification(id);
+      gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
       const badBinding={...bindingAtom(p,'active'),maximumLiability:'0.004'} as FinancialAtom,bad=await receipt(p,'provision',[accountAtom(p,'provision'),accountAtom(p,'provision',true),badBinding]);
       gate.linkFinancialOperation(id,bad.operationId,bad.journalId);const before=bytes(directory);expect(()=>gate.recordBoundClosed(id,bad)).toThrow('refused');expect(bytes(directory)).toEqual(before);
     });
@@ -80,7 +86,7 @@ describe('protected native custody foundation',()=>{
   });
   it('requires the revoked binding for a bound operation, with erased-account closure for omitted historical bindings',async()=>{
     const {directory,store}=fixture();await store.withGate(async gate=>{
-      const p=prepare(gate),id=p.operation.operationId,bound=await receipt(p,'provision');gate.beginProvisioning(id);gate.recordNativeBlockedVerification(id);gate.linkFinancialOperation(id,bound.operationId,bound.journalId);gate.recordBoundClosed(id,bound);
+      const p=prepare(gate),id=p.operation.operationId,bound=await receipt(p,'provision');gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);gate.linkFinancialOperation(id,bound.operationId,bound.journalId);gate.recordBoundClosed(id,bound);
       const accountOnly=await receipt(p),mismatched=await receipt(p,'member-remove',[{...bindingAtom(p,'revoked'),endpointHash:'f'.repeat(64)} as FinancialAtom,accountAtom(p,'member-remove')]),before=bytes(directory);
       for(const invalid of [accountOnly,mismatched]){expect(()=>gate.recordRevocation(id,invalid)).toThrow('refused');expect(bytes(directory)).toEqual(before);}
       // Erasure projects all member account retirement/tombstone facts even when an
@@ -133,6 +139,74 @@ describe('protected native custody foundation',()=>{
       const second=gate.prepareOperation({...first.input,bindingId:randomUUID(),credentialGeneration:'1'},`sk-${'y'.repeat(43)}`);
       expect(second.userOwnershipId).toBe(user.ownershipId);expect(gate.inventory().teams).toHaveLength(1);expect(gate.inventory().users).toHaveLength(1);
     });store.close();await open(directory).withGate(async gate=>{expect(gate.reserveTeam(installationId,target,reviewed())).toEqual(first.team);expect(gate.reserveUser(accountId,first.team.ownershipId,reviewed())).toEqual(first.user);});
+  });
+
+  it('persists fixed write attempts before returning permission and refuses repeats without dirtying clean custody',async()=>{
+    const {directory,store}=fixture(),installationId=randomUUID(),accountId=randomUUID(),policy=reviewed();let teamId='',userId='',operationId='';let expectedTeam!:ReturnType<NativeCustodyGate['reserveTeam']>,expectedUser!:ReturnType<NativeCustodyGate['reserveUser']>;
+    await store.withGate(async gate=>{
+      const team=gate.reserveTeam(installationId,target,policy),beforeTeam=bytes(directory);
+      expect(()=>gate.verifyTeamCreated(team.ownershipId)).toThrow('refused');expect(bytes(directory)).toEqual(beforeTeam);
+      const teamIntent=gate.claimTeamCreate(team.ownershipId);expect(teamIntent).toMatchObject({nativeTeamId:team.nativeTeamId,endpoint:target,policy:policy.team,createAttempt:'attempted'});
+      expect(Object.isFrozen(teamIntent)&&Object.isFrozen(teamIntent.endpoint)&&Object.isFrozen(teamIntent.policy)).toBe(true);
+      const afterTeam=bytes(directory);expect(afterTeam).not.toEqual(beforeTeam);expect(()=>gate.claimTeamCreate(team.ownershipId)).toThrow('refused');expect(bytes(directory)).toEqual(afterTeam);
+      teamId=team.ownershipId;gate.verifyTeamCreated(teamId);expect(()=>gate.verifyTeamCreated(teamId)).toThrow('refused');
+      const user=gate.reserveUser(accountId,teamId,policy),beforeUser=bytes(directory);
+      expect(()=>gate.claimMembershipCreate(user.ownershipId)).toThrow('refused');expect(bytes(directory)).toEqual(beforeUser);
+      expect(()=>gate.verifyUserCreated(user.ownershipId)).toThrow('refused');expect(bytes(directory)).toEqual(beforeUser);
+      const userIntent=gate.claimUserCreate(user.ownershipId);expect(userIntent).toMatchObject({nativeUserId:user.nativeUserId,teamOwnershipId:teamId,policy:policy.user,membership:policy.membership,userCreateAttempt:'attempted'});
+      expect(Object.isFrozen(userIntent)&&Object.isFrozen(userIntent.policy)&&Object.isFrozen(userIntent.membership)).toBe(true);
+      const afterUser=bytes(directory);expect(()=>gate.claimUserCreate(user.ownershipId)).toThrow('refused');expect(bytes(directory)).toEqual(afterUser);
+      userId=user.ownershipId;gate.verifyUserCreated(userId);expect(()=>gate.verifyMembershipCreated(userId)).toThrow('refused');gate.claimMembershipCreate(userId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:userId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy},p=gate.prepareOperation(input,secret());
+      operationId=p.operationId;const beforeProvision=bytes(directory);expect(()=>gate.claimKeyCreate(operationId)).toThrow('refused');expect(bytes(directory)).toEqual(beforeProvision);gate.beginProvisioning(operationId);
+      const beforeKey=bytes(directory);expect(()=>gate.claimKeyCreate(operationId)).toThrow('refused');expect(()=>gate.verifyKeyCreated(operationId)).toThrow('refused');expect(()=>gate.recordNativeBlockedVerification(operationId)).toThrow('refused');expect(bytes(directory)).toEqual(beforeKey);
+      gate.verifyMembershipCreated(userId);expectedTeam=gate.reserveTeam(installationId,target,policy);expectedUser=gate.reserveUser(accountId,teamId,policy);
+      const keyIntent=gate.claimKeyCreate(operationId);expect(keyIntent).toMatchObject({operationId,keyFingerprint:p.keyFingerprint,reviewedPolicy:policy,keyCreateAttempt:'attempted'});
+      expect(Object.isFrozen(keyIntent)&&Object.isFrozen(keyIntent.reviewedPolicy)&&Object.isFrozen(keyIntent.reviewedPolicy.key)).toBe(true);
+      const afterKey=bytes(directory);expect(()=>gate.claimKeyCreate(operationId)).toThrow('refused');expect(bytes(directory)).toEqual(afterKey);
+    });
+    store.close();const reopened=open(directory);
+    await reopened.withGate(async gate=>{
+      const before=bytes(directory),inventory=gate.inventory(),persistedTeam=inventory.teams.find(t=>t.ownershipId===teamId),persistedUser=inventory.users.find(u=>u.kind==='user'&&u.ownershipId===userId),persistedOperation=inventory.operations.find(o=>o.kind==='operation'&&o.operationId===operationId);
+      expect(persistedTeam).toEqual(expectedTeam);expect(persistedUser).toEqual(expectedUser);expect(persistedOperation).toMatchObject({keyCreateAttempt:'attempted',phase:'provisioning',reviewedPolicy:policy});
+      expect(gate.reserveTeam(installationId,target,policy)).toEqual(expectedTeam);expect(gate.reserveUser(accountId,teamId,policy)).toEqual(expectedUser);
+      expect(()=>gate.claimKeyCreate(operationId)).toThrow('refused');expect(bytes(directory)).toEqual(before);
+    });
+  });
+
+  it('allows durable preparation before any native write, blocks key claims until prerequisites, and erases never-attempted identities',async()=>{
+    const {directory,store}=fixture();let opId='',accountId='';
+    await store.withGate(async gate=>{
+      const policy=reviewed(),installationId=randomUUID();accountId=randomUUID();const team=gate.reserveTeam(installationId,target,policy),user=gate.reserveUser(accountId,team.ownershipId,policy),input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
+      const operation=gate.prepareOperation(input,secret());opId=operation.operationId;gate.beginProvisioning(opId);const before=bytes(directory);
+      expect(()=>gate.claimKeyCreate(opId)).toThrow('refused');expect(bytes(directory)).toEqual(before);
+      const p={team,user,input,operation,accountId,installationId};gate.recordRevocation(opId,await receipt(p));gate.removePlaintext(opId);gate.eraseAccountAssociation(accountId,await receipt(p,'erase-person'));
+      const cleanup=gate.inventory().operations[0];expect(cleanup.kind).toBe('cleanup');if(cleanup.kind==='cleanup'){
+        expect(cleanup).not.toHaveProperty('nativeUserId');expect(cleanup).not.toHaveProperty('userCreateAttempt');expect(cleanup).not.toHaveProperty('membershipCreateAttempt');expect(cleanup).not.toHaveProperty('keyCreateAttempt');
+      }
+    });
+    store.close();await open(directory).withGate(async gate=>{expect(gate.inventory().operations).toMatchObject([{kind:'cleanup',phase:'revoke-pending',nativeDeletion:'unverified'}]);expect(()=>gate.readOperation(opId)).toThrow('refused');});
+  });
+
+  it.each(['team','user','membership','key'] as const)('does not return a %s write intent when its durable publication fails',async stage=>{
+    let fail=false,returned=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(fail)throw new Error('synthetic fsync failure');}});
+    await expect(store.withGate(async gate=>{
+      const policy=reviewed(),team=gate.reserveTeam(randomUUID(),target,policy),user=gate.reserveUser(randomUUID(),team.ownershipId,policy);
+      if(stage!=='team'){gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);}
+      if(stage==='user'||stage==='membership'||stage==='key'){if(stage!=='user'){gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);}}
+      if(stage==='key')gate.claimMembershipCreate(user.ownershipId);
+      if(stage==='key'){
+        gate.verifyMembershipCreated(user.ownershipId);
+        const operation=gate.prepareOperation({bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy},secret());gate.beginProvisioning(operation.operationId);
+      }
+      fail=true;
+      if(stage==='team')gate.claimTeamCreate(team.ownershipId);
+      else if(stage==='user')gate.claimUserCreate(user.ownershipId);
+      else if(stage==='membership')gate.claimMembershipCreate(user.ownershipId);
+      else {const operation=gate.inventory().operations[0];if(operation?.kind!=='operation')throw new Error('Expected key attempt fixture');gate.claimKeyCreate(operation.operationId);}
+      returned=true;
+    })).rejects.toThrow('reconciliation');
+    expect(returned).toBe(false);fail=false;store.close();const before=bytes(directory);expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
   });
 
   it('accepts only exact repeated preparation and never regenerates or changes a policy',async()=>{
@@ -193,7 +267,7 @@ describe('protected native custody foundation',()=>{
     const {store}=fixture();await store.withGate(async gate=>{
       const p=prepare(gate),id=p.operation.operationId,r=await receipt(p,'provision'),unrelated=await receipt();
       expect(()=>gate.recordNativeBlockedVerification(id)).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,r.operationId,r.journalId)).toThrow('refused');
-      gate.beginProvisioning(id);gate.beginProvisioning(id);gate.recordNativeBlockedVerification(id);
+      gate.beginProvisioning(id);gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
       gate.linkFinancialOperation(id,r.operationId,r.journalId);gate.linkFinancialOperation(id,r.operationId,r.journalId);
       expect(()=>gate.linkFinancialOperation(id,r.operationId,randomUUID())).toThrow('refused');expect(()=>gate.linkFinancialOperation(id,randomUUID(),r.journalId)).toThrow('refused');expect(()=>gate.recordBoundClosed(id,unrelated)).toThrow('refused');
       gate.recordBoundClosed(id,r);gate.recordBoundClosed(id,r);expect(gate.readOperation(id).phase).toBe('bound-closed');
@@ -315,6 +389,7 @@ describe('protected native custody foundation',()=>{
     let count=0,enabled=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic failure');}});
     await expect(store.withGate(async gate=>{
       const p=reviewed(),team=gate.reserveTeam(randomUUID(),target,p),user=gate.reserveUser(randomUUID(),team.ownershipId,p);
+      gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
       enabled=true;gate.prepareOperation({bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:p},secret());
     })).rejects.toThrow('reconciliation');enabled=false;
     const before=bytes(directory);store.close();expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
