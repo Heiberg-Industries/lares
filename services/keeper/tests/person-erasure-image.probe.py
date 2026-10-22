@@ -72,7 +72,7 @@ try:
     privilege_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
         "const pool=new Pool({host:'proof-db',database:'eraseproof',user:'proof',password:'" + password + "',max:1});try{const client=await pool.connect();try{const result=await provisionEngineDatabasePrivileges(client,{expectedDatabase:'eraseproof',passwords:{application:readFileSync('/probe/secrets/app-password'),financial:readFileSync('/probe/secrets/financial-password')}});if(!['applied','verified'].includes(result.status))throw Error();}finally{client.release();}console.log('engine-privileges-ready');}finally{await pool.end();}\n")
     privilege_run = ['docker','run','--rm','--platform','linux/amd64','--network',network,'--read-only','--user','0:0',
-                     '--mount',f'type=bind,src={root},dst=/probe,readonly','--mount',
+                     '--tmpfs','/tmp','--mount',f'type=bind,src={root},dst=/probe,readonly','--mount',
                      f'type=bind,src={root}/secrets,dst=/probe/secrets,readonly','--mount',
                      f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges.mts,readonly',
                      '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges.mts']

@@ -133,8 +133,9 @@ import{ensureDreamTables,makeDreamStore}from'/app/services/chief-of-staff/lib/dr
 import{ensureObligationsTable,upsertSeen,dismissedThreads,dismissObligation}from'/app/services/chief-of-staff/lib/obligations-store.ts';
 import{makePgSeenStore}from'/app/services/chief-of-staff/lib/karakeep.ts';
 import{ensureRouteTables,makeRouteStore}from'/app/services/chief-of-staff/lib/route-store.ts';
-const db=new Pool({connectionString:process.env.MEMORY_PROOF_DATABASE_URL,password:readFileSync('/secrets/app-password','utf8'),max:1,connectionTimeoutMillis:3000});
-async function main(){try{
+const databaseUrl=new URL(process.env.MEMORY_PROOF_DATABASE_URL);
+const db=new Pool({host:databaseUrl.hostname,port:Number(databaseUrl.port||5432),database:decodeURIComponent(databaseUrl.pathname.slice(1)),user:decodeURIComponent(databaseUrl.username),password:readFileSync('/secrets/app-password','utf8'),max:1,connectionTimeoutMillis:3000});
+async function main(){let stage='role privileges';try{
 const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
  (SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid)::int AS memberships,
  has_schema_privilege(current_user,'public','USAGE') AS schema_usage,has_schema_privilege(current_user,'public','CREATE') AS schema_create,
@@ -169,31 +170,36 @@ const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcrea
  has_table_privilege(current_user,'public.route_proposals','DELETE') AS route_delete,
  has_table_privilege(current_user,'public.route_proposals','TRUNCATE') AS route_truncate
  FROM pg_roles r WHERE r.rolname=current_user`);
-const identity=role.rows[0];if(!identity||identity.current_user!=='lares_app'||identity.session_user!=='lares_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
+stage='role identity constraints';const identity=role.rows[0];if(!identity||identity.current_user!=='lares_app'||identity.session_user!=='lares_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
+stage='ordinary CRUD grants';
 for(const table of ['observation','preference','obligation'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
 for(const table of ['seen','cursor','route'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
+stage='truncate denied';
 if(identity.observation_truncate||identity.preference_truncate||identity.obligation_truncate||identity.seen_truncate||identity.cursor_truncate||identity.route_truncate)throw Error();
+stage='memory schema readiness';
 await ensureDreamTables(db);await ensureObligationsTable(db);
+stage='dream observation and recurrence';
 const dream=makeDreamStore(db,'fixture-owner'),observation=await dream.record({text:'prefers concise status updates',kind:'preference',subject:'communication',confidence:0.5,evidenceRefs:[]},'runtime-image-proof','owner');
 if(observation.origin!=='owner'||observation.owner!=='fixture-owner'||await dream.ownerRecurrenceCount('PREFERS concise status updates!')!==1)throw Error();
-const old=await dream.addPreference({text:'prefers weekly updates',kind:'preference',subject:'communication',confidence:0.6,origin:'owner'});
+stage='preference lifecycle';const old=await dream.addPreference({text:'prefers weekly updates',kind:'preference',subject:'communication',confidence:0.6,origin:'owner'});
 const current=await dream.addPreference({text:'prefers brief weekly updates',kind:'preference',subject:'communication',confidence:0.8,origin:'owner'});
 await dream.supersede(old.id,current.id);const active=await dream.activePreferences();if(active.length!==1||active[0].id!==current.id||active[0].owner!=='fixture-owner')throw Error();
-const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
+stage='obligation write';const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
 await upsertSeen(db,obligation,now,'fixture-principal');if((await dismissedThreads(db)).has(threadId))throw Error();
-const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
-const seen=makePgSeenStore(db);await seen.ensure();if(await seen.isSeen('runtime-image-bookmark-proof'))throw Error();await seen.markSeen('runtime-image-bookmark-proof');await seen.markSeen('runtime-image-bookmark-proof');if(!await seen.isSeen('runtime-image-bookmark-proof'))throw Error();
-const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
+stage='obligation dismissal';const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
+stage='bookmark seen store';const seen=makePgSeenStore(db);await seen.ensure();if(await seen.isSeen('runtime-image-bookmark-proof'))throw Error();await seen.markSeen('runtime-image-bookmark-proof');await seen.markSeen('runtime-image-bookmark-proof');if(!await seen.isSeen('runtime-image-bookmark-proof'))throw Error();
+stage='route cursor';const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
 const cursor='2026-10-22T12:00:00.000Z';await routes.setCursor(cursor);if(await routes.getCursor()!==cursor)throw Error();
+stage='route proposal persistence';
 const proposalArgs={personId:'runtime-image-person-proof',opportunityId:'runtime-image-opportunity-proof',brand:'runtime-image-brand-proof',proposedStage:'QUALIFIED',signalRef:'runtime-image-signal-proof',confidence:0.75};
 if(await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
 const proposal=await routes.recordProposal(proposalArgs);if(!proposal.id||!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||!await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
 await routes.markResolved(proposal.id,'skipped');if(!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef}))throw Error();
-const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
+stage='memory row cleanup';const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
 await db.query('DELETE FROM dream_preferences WHERE id=ANY($1::uuid[])',[[old.id,current.id]]);await db.query('DELETE FROM obligation_threads WHERE thread_id=$1',[threadId]);
-for(const ddl of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads','ALTER TABLE public.karakeep_seen ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.karakeep_seen','ALTER TABLE public.route_cursor ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_cursor','ALTER TABLE public.route_proposals ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_proposals']){let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
+for(const [index,ddl] of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads','ALTER TABLE public.karakeep_seen ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.karakeep_seen','ALTER TABLE public.route_cursor ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_cursor','ALTER TABLE public.route_proposals ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_proposals'].entries()){stage='denied DDL '+index;let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
 console.log('memory-schema-proof:complete');
-}catch{console.log('memory-schema-proof:failed');process.exitCode=1;}finally{await db.end();}}
+}catch(error){const code=typeof error?.code==='string'&&/^[0-9A-Z]{5}$/.test(error.code)?error.code:'none';console.log('memory-schema-proof:failed stage='+stage+' sqlstate='+code);process.exitCode=1;}finally{await db.end();}}
 void main();"""
  memory_access_output=cmd('docker','run','--rm','--user','10001:10001','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://lares_app@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
  assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and store proof'
