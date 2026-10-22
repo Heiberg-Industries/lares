@@ -92,6 +92,8 @@ try:
 
     state = root / 'erase-state'
     state.mkdir(mode=0o700)
+    command('sudo', 'chown', '0:0', str(state))
+    command('sudo', 'chmod', '0700', str(state))
     config_data = {'mode':'rendered','project':'probe','dir':'/probe','files':['agent.json'],'agentsDir':'/probe',
                    'retiredDir':'/probe/retired','secretsDir':'/probe/secrets','rolesDir':'/probe','templatesDir':'/probe',
                    'backupDir':'/probe','db':{'host':'proof-db','port':5432,'database':'eraseproof','user':'lares_app',

@@ -11,6 +11,7 @@ import { Pool } from 'pg';
 import { afterAll, beforeAll, expect, it } from 'vitest';
 import { WorkflowStorage } from '../lib/workflow-storage.js';
 import { applyWorkflowRuntimePrivileges, verifyWorkflowRuntimePrivileges } from '../../box/lib/workflow-database-privileges.js';
+import { releaseStaleWorkflowLocks } from '@lares/agent-kit/release-stale-workflow-locks';
 import { quiet } from './helpers/quiet-pool.js';
 
 const execFileAsync = promisify(execFile);
@@ -19,7 +20,7 @@ const creativeDir = join(repo, 'services/creative');
 const creativeRequire = createRequire(join(creativeDir, 'package.json'));
 const worldEntry = creativeRequire.resolve('@workflow/world-postgres');
 const graphile = createRequire(worldEntry)('graphile-worker') as {
-  makeWorkerUtils(options: { connectionString: string }): Promise<{ addJob(name: string, payload: object): Promise<{ id: number }>; release(): Promise<void> }>;
+  makeWorkerUtils(options: { connectionString: string }): Promise<{ addJob(name: string, payload: object, spec?: { queueName?: string }): Promise<{ id: number }>; release(): Promise<void> }>;
   runOnce(options: { connectionString: string; concurrency: number }, tasks: Record<string, () => Promise<void>>): Promise<void>;
 };
 
@@ -172,6 +173,15 @@ it('clones verified workflow storage and starts the pinned world as the DML-only
   await asOwner(row.workflow_database, client => client.query('DROP POLICY startup_gate_review ON graphile_worker._private_jobs').then(() => undefined));
   await storage.verifyReadyDatabases();
 
+  await asOwner(row.workflow_database, client => client.query('REVOKE EXECUTE ON FUNCTION graphile_worker.force_unlock_workers(text[]) FROM lares_workflow').then(() => undefined));
+  await expect(storage.verifyReadyDatabases()).rejects.toThrow('function privileges are incomplete');
+  await asOwner(row.workflow_database, async client => {
+    const missingGrant = await client.query<{ allowed: boolean }>(`SELECT has_function_privilege($1,$2,'EXECUTE') AS allowed`, [runtime, 'graphile_worker.force_unlock_workers(text[])']);
+    expect(missingGrant.rows[0]?.allowed).toBe(false);
+  });
+  await asOwner(row.workflow_database, client => applyWorkflowRuntimePrivileges(client));
+  await storage.verifyReadyDatabases();
+
   const engineDb = pool('lares_state', runtime, runtimePassword);
   try { await expect(engineDb.query('SELECT 1')).rejects.toMatchObject({ code: '42501' }); }
   finally { await engineDb.end(); pools.splice(pools.indexOf(engineDb), 1); }
@@ -202,6 +212,38 @@ it('clones verified workflow storage and starts the pinned world as the DML-only
     });
     expect(completed).toBe(true);
     expect((await selectedRuntime.query('SELECT id FROM graphile_worker._private_jobs WHERE id=$1', [job.id])).rows).toHaveLength(0);
+
+    const lockWorker = await graphile.makeWorkerUtils({ connectionString: runtimeUrl });
+    let staleJob: { id: number };
+    let recentJob: { id: number };
+    try {
+      staleJob = await lockWorker.addJob('workflow-stale-lock-proof', { proof: 'stale' }, { queueName: 'stale-lock-proof' });
+      recentJob = await lockWorker.addJob('workflow-stale-lock-proof', { proof: 'recent' }, { queueName: 'recent-lock-proof' });
+    } finally { await lockWorker.release(); }
+    await selectedRuntime.query(`UPDATE graphile_worker._private_jobs SET locked_by='stale-worker-proof',locked_at=now()-interval '2 minutes',attempts=3 WHERE id=$1`, [staleJob.id]);
+    await selectedRuntime.query(`UPDATE graphile_worker._private_job_queues SET locked_by='stale-worker-proof',locked_at=now()-interval '2 minutes' WHERE queue_name='stale-lock-proof'`);
+    await selectedRuntime.query(`UPDATE graphile_worker._private_jobs SET locked_by='recent-worker-proof',locked_at=now(),attempts=2 WHERE id=$1`, [recentJob.id]);
+    await selectedRuntime.query(`UPDATE graphile_worker._private_job_queues SET locked_by='recent-worker-proof',locked_at=now() WHERE queue_name='recent-lock-proof'`);
+
+    const recoveryLogs: string[] = [];
+    const released = await releaseStaleWorkflowLocks({
+      env: { WORKFLOW_POSTGRES_URL: runtimeUrl },
+      uptimeSeconds: () => 60,
+      log: line => recoveryLogs.push(line),
+      warn: line => { throw new Error(line); },
+    });
+    expect(released).toBe(1);
+    expect(recoveryLogs).toHaveLength(1);
+    const lockState = await selectedRuntime.query(`SELECT id,locked_by,locked_at,attempts FROM graphile_worker._private_jobs WHERE id=ANY($1::bigint[]) ORDER BY id`, [[staleJob.id, recentJob.id]]);
+    expect(lockState.rows).toEqual([
+      { id: staleJob.id, locked_by: null, locked_at: null, attempts: 3 },
+      { id: recentJob.id, locked_by: 'recent-worker-proof', locked_at: expect.any(Date), attempts: 2 },
+    ]);
+    const queueState = await selectedRuntime.query(`SELECT queue_name,locked_by,locked_at FROM graphile_worker._private_job_queues WHERE queue_name=ANY($1::text[]) ORDER BY queue_name`, [['recent-lock-proof', 'stale-lock-proof']]);
+    expect(queueState.rows).toEqual([
+      { queue_name: 'recent-lock-proof', locked_by: 'recent-worker-proof', locked_at: expect.any(Date) },
+      { queue_name: 'stale-lock-proof', locked_by: null, locked_at: null },
+    ]);
 
     for (const sql of [
       'CREATE SCHEMA runtime_must_not_create',

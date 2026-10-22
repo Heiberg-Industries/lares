@@ -15,11 +15,11 @@ const GRAPHILE_SEQUENCES = ["job_queues_id_seq", "jobs_id_seq1", "tasks_id_seq"]
 const GRAPHILE_FUNCTIONS = [
   "add_job(text,json,text,timestamptz,integer,text,integer,text[],text)",
   "add_jobs(graphile_worker.job_spec[],boolean)",
+  "force_unlock_workers(text[])",
 ] as const;
 const GRAPHILE_FUNCTION_INVENTORY = [
   ...GRAPHILE_FUNCTIONS,
   "complete_jobs(bigint[])",
-  "force_unlock_workers(text[])",
   "permanently_fail_jobs(bigint[],text)",
   "remove_job(text)",
   "reschedule_jobs(bigint[],timestamptz,integer,integer,integer)",
