@@ -22,6 +22,14 @@ it('mounts Keeper-prepared Vault sockets only for the chief runtime',()=>{
  expect(withVault.volumes).toContainEqual({type:'bind',source:'/srv/lares/run/vault',target:'/run/lares-vault',read_only:true,bind:{create_host_path:false}});
  expect(JSON.stringify(withVault)).not.toContain('/srv/lares/vault');
 });
+it('mounts the Keeper model-purpose runtime socket directory read-only only for the chief',()=>{
+ const chief={...agent,role:'chief-of-staff' as const},chiefOpts={...opts,imageByRole:{'chief-of-staff':image}};
+ const path='/run/lares/model-purpose';
+ const withSocket=parse(renderAgentsCompose([chief],{...chiefOpts,modelPurposeRuntimeDir:path})).services['lares-bookkeeper'];
+ expect(withSocket.volumes).toContainEqual({type:'bind',source:path,target:'/run/lares/model-purpose',read_only:true,bind:{create_host_path:false}});
+ const creative=parse(renderAgentsCompose([agent],{...opts,modelPurposeRuntimeDir:path})).services['lares-bookkeeper'];
+ expect(creative.volumes).not.toContainEqual(expect.objectContaining({source:path}));
+});
 it('hands every agent the installation model prefix and refuses a missing or invalid one',()=>{
  expect(parse(renderAgentsCompose([agent],{...opts,modelPrefix:'home'})).services['lares-bookkeeper'].environment.LARES_MODEL_PREFIX).toBe('home');
  for(const bad of ['','Home','a-b','installation',undefined as unknown as string])

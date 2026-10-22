@@ -113,6 +113,17 @@ function ChatSession({
     role: "",
   };
   const failed = useRef(false);
+  const preserveFailedDraft = useRef(false);
+  const firstSendInFlight = useRef(false);
+  const mounted = useRef(false);
+  const lifetime = useRef(0);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      lifetime.current++;
+    };
+  }, []);
   const agent = useEveAgent({
     host: `/api/chat/${name}`,
     initialSession: initialSession ?? undefined,
@@ -125,6 +136,7 @@ function ChatSession({
   useEffect(() => {
     if (agent.status === 'error') failed.current = true;
     if (failed.current) for (const key of [storageKey, `${storageKey}:draft`, `${storageKey}:scroll`]) {
+      if (preserveFailedDraft.current && key === `${storageKey}:draft`) continue;
       try { tabStorage()?.removeItem(key); } catch {}
     }
   }, [agent.status, storageKey]);
@@ -145,12 +157,28 @@ function ChatSession({
       return "";
     }
   });
+  const [preparingFirstSession, setPreparingFirstSession] = useState(false);
+  const currentDraft = useRef(text);
+  const draftRevision = useRef(0);
   function setText(value: string) {
+    draftRevision.current++;
+    currentDraft.current = value;
     updateText(value);
     try {
       const storage = failed.current ? null : tabStorage();
       if (value) storage?.setItem(`${storageKey}:draft`, value);
       else storage?.removeItem(`${storageKey}:draft`);
+    } catch {}
+  }
+  function restoreUnsentDraft(value: string, submittedRevision: number) {
+    // A newer keystroke wins. The caller also checks the mounted ChatSession lifetime, since
+    // a replacement conversation can reuse this same member-and-agent storage key.
+    if (currentDraft.current !== "" || draftRevision.current !== submittedRevision) return;
+    draftRevision.current++;
+    currentDraft.current = value;
+    updateText(value);
+    try {
+      tabStorage()?.setItem(`${storageKey}:draft`, value);
     } catch {}
   }
   const [answering, setAnswering] = useState<string | null>(null);
@@ -200,6 +228,42 @@ function ChatSession({
       })
       .finally(() => setAnswering(null));
   };
+
+  async function sendMessage(
+    value: string,
+    options?: { turnPolicy: "steer" },
+    submittedRevision?: number,
+    onSendEntered?: () => void,
+  ) {
+    const submittedLifetime = lifetime.current;
+    const isCurrentSession = () => mounted.current && lifetime.current === submittedLifetime;
+    if (!isCurrentSession()) return;
+    // Create an empty, already-bound session on the first send. The actual message then uses
+    // the session route, which lets the server sign its exact bytes against that binding.
+    if (!agent.session) {
+      preserveFailedDraft.current = true;
+      try {
+        await agent.prewarm();
+      } catch {
+        if (!isCurrentSession()) return;
+        // No message was submitted. Eve exposes the failed creation through its hook error;
+        // preserve the unsent text for this chat without overwriting newer typing.
+        if (submittedRevision !== undefined) restoreUnsentDraft(value, submittedRevision);
+        return;
+      }
+      if (!isCurrentSession()) return;
+      preserveFailedDraft.current = false;
+    }
+    if (!isCurrentSession()) return;
+    try {
+      const sending = agent.send(value, options);
+      onSendEntered?.();
+      await sending;
+    } catch {
+      // A send may already have been accepted. Eve owns the visible error state; never replay
+      // a message here or tell the user that it was not dispatched.
+    }
+  }
 
   return (
     <div className="lares-page lares-chat">
@@ -348,6 +412,11 @@ function ChatSession({
           {composer.say}
         </p>
       ) : null}
+      {preparingFirstSession ? (
+        <p role="status" className="mono" style={{ fontSize: 12, color: "var(--mist)", marginBottom: 8 }}>
+          Preparing your conversation. Your draft is saved.
+        </p>
+      ) : null}
 
       {agent.data.messages.length === 0 && (
         <div className="lares-suggestions">
@@ -370,9 +439,26 @@ function ChatSession({
         onSubmit={(event) => {
           event.preventDefault();
           const value = text.trim();
-          if (value.length === 0 || composer.disabled) return;
+          if (value.length === 0 || composer.disabled || firstSendInFlight.current) return;
+          const needsFirstSession = !agent.session;
+          const submittedLifetime = lifetime.current;
+          if (needsFirstSession) {
+            firstSendInFlight.current = true;
+            setPreparingFirstSession(true);
+          }
           setText("");
-          void agent.send(value, isBusy ? { turnPolicy: "steer" } : undefined);
+          const submittedRevision = draftRevision.current;
+          const releasePreparation = () => {
+            if (!needsFirstSession || !mounted.current || lifetime.current !== submittedLifetime) return;
+            firstSendInFlight.current = false;
+            setPreparingFirstSession(false);
+          };
+          void sendMessage(
+            value,
+            isBusy ? { turnPolicy: "steer" } : undefined,
+            submittedRevision,
+            releasePreparation,
+          ).finally(releasePreparation);
         }}
         className="lares-composer"
       >

@@ -85,7 +85,15 @@ describe("fresh install settings", () => {
     expect(config.publicDoorOrigin).toBe("https://lares.example.com");
     expect(config.designatedOwnerId).toBe(OPTS.ownerId);
     expect(config.vaultConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-vault-signing-key");
+    expect(config.modelPurposeConsoleSigningKeyFile).toBeUndefined();
     expect(loadAsKeeperWould(config).publicDoorOrigin).toBe("https://lares.example.com");
+  });
+
+  it("preserves a separately configured model-purpose signer path", () => {
+    const config = renderKeeperConfig(MANIFEST, { ...OPTS, modelPurposeConsoleSigningKeyFile: "/etc/lares/secrets/console-model-purpose-signing-key", modelPurposeRuntimeDir: "/run/lares/model-purpose" });
+    expect(config.modelPurposeConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-model-purpose-signing-key");
+    expect(config.modelPurposeRuntimeDir).toBe("/run/lares/model-purpose");
+    expect(loadAsKeeperWould(config).modelPurposeConsoleSigningKeyFile).toBe(config.modelPurposeConsoleSigningKeyFile);
   });
 
   it("turns schedules on by default and keeps an earlier value", () => {

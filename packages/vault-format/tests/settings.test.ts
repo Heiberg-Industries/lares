@@ -52,6 +52,23 @@ describe("the settings list", () => {
     expect(settingByName("SLACK_TOKEN_PRINCIPAL_ID")!.breaksWithout).toMatch(/refuses before querying/);
   });
 
+  it("keeps model-purpose signer custody optional and independent from Vault", () => {
+    const signer = settingByName("CONSOLE_MODEL_PURPOSE_SIGNING_KEY_FILE")!;
+    expect(signer.readers).toEqual(["console"]);
+    expect(signer.requiredFor).toEqual([]);
+    expect(signer.fallback).toBe("/run/secrets/console-model-purpose-signing-key");
+    expect(signer.secret).toBe(false);
+    expect(signer.breaksWithout).toMatch(/configured.*fail closed/i);
+    expect(signer.breaksWithout).toMatch(/ordinary private chat remains available only when that custody is absent/i);
+  });
+
+  it("documents the isolated chief-only runtime socket and configured failure behavior", () => {
+    const runtime = settingByName("LARES_MODEL_PURPOSE_RUNTIME_SOCKET")!;
+    expect(runtime.fallback).toBe("/run/lares/model-purpose/model-purpose.sock");
+    expect(runtime.breaksWithout).toMatch(/configured.*fail closed/i);
+    expect(runtime.breaksWithout).toMatch(/only when that custody is absent/i);
+  });
+
   it("declares the article area: read by the chief of staff, shared unless the installation says private", () => {
     const area = settingByName("LARES_ARTICLE_AREA")!;
     expect(area).toBeDefined();

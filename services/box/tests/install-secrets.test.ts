@@ -32,7 +32,7 @@ function markDatabaseBootstrapComplete() {
  *  it is ASKED for by the wizard, and a generated placeholder would be indistinguishable
  *  from a real key to every check that comes after. */
 const EXPECTED = [
-  "console-session-secret", "console-vault-signing-key", "database-password", "eve-route-password",
+  "console-session-secret", "console-vault-signing-key", "console-model-purpose-signing-key", "database-password", "eve-route-password",
   "financial-database-password", "gateway-database-password", "gateway-key", "gateway-master-key",
   "token-enc-key", "workflow-password", "workflow-provisioner-password",
 ].sort();

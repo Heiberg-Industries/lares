@@ -1,22 +1,59 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+const { purposeRequest } = vi.hoisted(() => ({ purposeRequest: vi.fn() }));
+vi.mock('../src/model-purpose-client.js', () => ({ modelPurposeRequest: purposeRequest }));
 import { generateText } from 'ai';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { captureModelInvocation, claimModelDispatch, currentModelInvocation, runModelInvocation } from '../src/model-invocation.js';
+import { captureModelInvocation, claimModelDispatch, currentModelInvocation, currentModelPurposeClaim, requestAndAttachModelPurposeClaim, runModelInvocation } from '../src/model-invocation.js';
 import { createGatewayProvider, type GatewayLane } from '../src/gateway-provider.js';
 import { guardDefinitionModel, refuseModelCompaction } from '../src/definition-model.js';
 
 const event = { type: 'step.started', data: { turnId: 'turn', sequence: 1, stepIndex: 2 } };
 const session = () => ({ id: 'session', auth: { current: { authenticator: 'fixture', principalId: 'fixture-person', principalType: 'user' as const, attributes: { actor: 'original' } }, initiator: null } });
 const capture = () => captureModelInvocation({ ...event, data: { ...event.data, turnId: randomUUID() } }, session(), 'fixture-brain');
-afterEach(() => { vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+afterEach(() => { purposeRequest.mockReset(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); });
+
+it('attaches only a Keeper-verified claim to the captured invocation and stops exposing it when the turn closes', async () => {
+  purposeRequest.mockResolvedValue({ claim: 'c'.repeat(43), expiresAt: Date.now() + 30_000 });
+  const invocation = captureModelInvocation(event, session(), 'validated-session-alias');
+  let active = true;
+  await requestAndAttachModelPurposeClaim(invocation, 't'.repeat(43), () => active);
+  expect(purposeRequest).toHaveBeenCalledWith('step.claim', expect.objectContaining({ purposeAlias: 'validated-session-alias', event }));
+  await runModelInvocation(invocation, async () => {
+    expect(currentModelPurposeClaim()).toEqual({ claim: 'c'.repeat(43), expiresAt: expect.any(Number) });
+    active = false;
+    expect(currentModelPurposeClaim()).toBeUndefined();
+  });
+  expect('setModelPurposeClaim' in await import('../src/model-invocation.js')).toBe(false);
+});
+
+it('rejects an expired Keeper acknowledgement before attaching its claim', async () => {
+  purposeRequest.mockResolvedValue({ claim: 'c'.repeat(43), expiresAt: Date.now() - 1 });
+  const invocation = capture();
+  await expect(requestAndAttachModelPurposeClaim(invocation, 't'.repeat(43), () => true)).rejects.toThrow('fresh trusted');
+  await runModelInvocation(invocation, async () => expect(currentModelPurposeClaim()).toBeUndefined());
+});
+
+it('stops exposing an attached claim as soon as its lease expires', async () => {
+  const base = Date.now();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(base);
+  purposeRequest.mockResolvedValue({ claim: 'c'.repeat(43), expiresAt: base + 100 });
+  const invocation = capture();
+  await requestAndAttachModelPurposeClaim(invocation, 't'.repeat(43), () => true);
+  await runModelInvocation(invocation, async () => {
+    expect(currentModelPurposeClaim()).toEqual({ claim: 'c'.repeat(43), expiresAt: base + 100 });
+    clock.mockReturnValue(base + 101);
+    expect(currentModelPurposeClaim()).toBeUndefined();
+  });
+});
 
 it('clones and recursively freezes exact event and auth without replacing actor by resolver', async () => {
   const ctx = session();
-  const invocation = captureModelInvocation(event, ctx, 'fixture-brain');
+  const actual = { ...event, data: { ...event.data, turnId: randomUUID() } };
+  const invocation = captureModelInvocation(actual, ctx, 'fixture-brain');
   ctx.auth.current.attributes.actor = 'changed';
   expect(invocation.session.auth.current?.attributes).toEqual({ actor: 'original' });
   expect(Object.isFrozen(invocation.session.auth.current?.attributes)).toBe(true);

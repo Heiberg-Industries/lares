@@ -241,7 +241,10 @@ describe("the keeper the installer configures and starts", () => {
     const vaultRequired = new Set(
       [...readFileSync(COMMITTED_KEEPER_VAULT_COMPOSE, "utf8").matchAll(/\$\{([A-Z_]+):\?/g)].map((m) => m[1]!),
     );
-    expect(Object.keys(env).sort()).toEqual([...new Set([...required, ...vaultRequired, "COMPOSE_FILE"])].sort());
+    const optional = new Set(
+      [...`${readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")}\n${readFileSync(COMMITTED_KEEPER_VAULT_COMPOSE, "utf8")}`.matchAll(/\$\{([A-Z_]+):-/g)].map((m) => m[1]!),
+    );
+    expect(Object.keys(env).sort()).toEqual([...new Set([...required, ...vaultRequired, ...optional, "COMPOSE_FILE"])].sort());
     expect(env.LARES_KEEPER_IMAGE).toBe(D("keeper"));
     expect(env.LARES_SQUID_IMAGE).toBe(D("egress-proxy"));
     expect(env.LARES_KEEPER_CONFIG).toBe(keeperConfigPath());
@@ -271,8 +274,10 @@ describe("the keeper the installer configures and starts", () => {
     const doc = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
 
     /** `${NAME:?why}` → the value the rendered env file gives NAME. */
-    const expand = (s: string) => s.replace(/\$\{([A-Z_]+)(?::\?[^}]*)?\}/g, (_, name) => {
+    const expand = (s: string) => s.replace(/\$\{([A-Z_]+)(?::([?-][^}]*))?\}/g, (_, name, fallback) => {
       const value = env[name];
+      if (value) return value;
+      if (typeof fallback === "string" && fallback.startsWith("-")) return fallback.slice(1);
       expect(value, `${name} is used by compose.lares-keeper.yaml and set nowhere`).toBeTruthy();
       return value!;
     });
@@ -291,19 +296,29 @@ describe("the keeper the installer configures and starts", () => {
       else if (Array.isArray(value)) value.forEach(walk);
       else if (value && typeof value === "object") Object.values(value).forEach(walk);
     };
-    walk(readKeeperConfig());
+    const config = readKeeperConfig();
+    walk(config);
     expect(paths.length).toBeGreaterThan(5);
 
     // The in-container side of a runtime binding is a path inside the AGENT's container, not the
     // keeper's; only those exact values (mount targets and DEADLINE_CALENDAR_FILE) are exempt.
     const chief = readKeeperConfig().lifecycle.defaultBindings["chief-of-staff"];
+    const keeperHostMountSources = new Set<string>();
+    if (config.modelPurposeRuntimeDir) {
+      // This is a host path passed to Docker when Keeper renders the chief's Compose file. It
+      // need not exist inside Keeper at the same absolute path; the keeper compose mounts the
+      // host socket root at /run/lares, while the role compose uses this exact host source.
+      expect(config.modelPurposeRuntimeDir).toBe(join(env.LARES_SOCKET_DIR!, "model-purpose"));
+      expect(mounted).toContain("/run/lares");
+      keeperHostMountSources.add(config.modelPurposeRuntimeDir);
+    }
     const agentSide = new Set<string>([
       ...chief.mounts.map((m: { target: string }) => m.target),
       ...(chief.environment.DEADLINE_CALENDAR_FILE ? [chief.environment.DEADLINE_CALENDAR_FILE] : []),
     ]);
 
     for (const path of paths) {
-      if (agentSide.has(path)) continue;
+      if (agentSide.has(path) || keeperHostMountSources.has(path)) continue;
       // `/app/...` is the keeper's OWN image (rolesDir, templatesDir) — inside the container by
       // construction, never a host path, so no mount can or should cover it.
       if (path.startsWith("/app/")) continue;

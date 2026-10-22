@@ -55,6 +55,8 @@ export interface ComposeOptions {
     /** Keeper-prepared Vault socket directory. Omitted when its dedicated mount path is unsafe
      *  or unavailable; this only disables Vault calls for the chief runtime. */
     vaultRuntimeDir?: string | null;
+    /** Keeper-owned model-purpose runtime socket directory. Only the chief runtime needs it. */
+    modelPurposeRuntimeDir?: string | null;
     /** The installation's gateway model-name prefix (setting models.alias_prefix). Every agent
      * derives its purpose names from it as LARES_MODEL_PREFIX. */
     modelPrefix: string;
@@ -220,6 +222,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         // Only the chief runtime receives the read-only Vault broker socket. The Keeper owns
         // the listener and managed-root mounts; role containers receive no Vault roots.
         if (a.role === 'chief-of-staff' && opts.vaultRuntimeDir) dataMounts.push({type:'bind',source:absolute(opts.vaultRuntimeDir),target:'/run/lares-vault',read_only:true,bind:{create_host_path:false}});
+        if (a.role === 'chief-of-staff' && opts.modelPurposeRuntimeDir) dataMounts.push({type:'bind',source:absolute(opts.modelPurposeRuntimeDir),target:'/run/lares/model-purpose',read_only:true,bind:{create_host_path:false}});
         for (const m of bindings?.mounts ?? []) dataMounts.push({type:'bind',source:m.source,target:m.target,read_only:m.readOnly,bind:{create_host_path:false}});
         if (bindings?.workflowVolume) {
             const key = `${a.name}-workflow-files`;

@@ -35,6 +35,8 @@ import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
 import { createHash } from "node:crypto";
 import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
+import { signPrivateModelPurposeRequest, modelPurposeRawBodyHash, modelPurposeSigningConfigured } from "./model-purpose-capsule";
+import { PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-console-envelope";
 
 /**
  * The username the agent's own door answers to (`ROUTE_USERNAME` in every role's
@@ -66,6 +68,7 @@ export const ROUTE_USERNAME = "eve";
  * declares one.
  */
 export const MEMBER_HEADER = "x-lares-member";
+export const MODEL_PURPOSE_REQUIRED_HEADER = "x-lares-model-purpose-required";
 
 /** eve's own session surface, by method and by path. Anything else on the agent is not relayed. */
 const ALLOWED: readonly { readonly methods: readonly string[]; readonly path: RegExp }[] = [
@@ -242,6 +245,9 @@ export async function forwardChat(request: Request, name: string, path: string, 
       if (payload.message !== undefined && payload.inputResponses !== undefined) return refuse(400,"Send a message or an approval answer separately.");
       if (payload.inputResponses !== undefined) purpose = "resolver";
     }
+    if (modelPurposeSigningConfigured() && body?.length && (purpose === "human" || purpose === "resolver") && !sessionId) {
+      return refuse(409, "Create the conversation before sending a private message.");
+    }
     const headers = new Headers();
     for (const key of REQUEST_HEADERS) {
       const value = request.headers.get(key);
@@ -268,6 +274,48 @@ export async function forwardChat(request: Request, name: string, path: string, 
           definitionHash:rows[0]!.definition_hash as string});
         headers.set(PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER,capsule);
       } catch { /* Missing broker/key custody disables only the private Vault reader. */ }
+    }
+
+    // Model authority is independent from Vault authority. Bind both human messages and
+    // approval resumes to the exact bytes sent to Eve. If a signer has been provisioned,
+    // any failure refuses this request instead of forwarding an unsigned private turn.
+    const modelPurposeMessage = sessionId && body?.length && (purpose === "human" || purpose === "resolver") &&
+      /^eve\/v1\/session\/[A-Za-z0-9_-]{1,64}$/.test(path);
+    if (modelPurposeMessage && modelPurposeSigningConfigured()) {
+      // A provisioned signer makes every tagged human/resume request accountable. Missing
+      // validated session data or a role without the private claim adapter must stop here.
+      if (rows[0]!.role !== "chief-of-staff" || !tuple || typeof rows[0]!.definition_hash !== "string") {
+        return refuse(503, "Private model authorization is unavailable.");
+      }
+      let modelResume: { requestId: string; optionId: "approve" | "cancel" } | undefined;
+      if (purpose === "resolver") {
+        const payload = JSON.parse(new TextDecoder().decode(body)) as { inputResponses?: unknown };
+        const response = Array.isArray(payload.inputResponses) ? payload.inputResponses[0] as { requestId?: unknown; optionId?: unknown } | undefined : undefined;
+        if (!response || typeof response.requestId !== "string" ||
+            (response.optionId !== "approve" && response.optionId !== "cancel")) return refuse(400, "Private approval response is not supported.");
+        modelResume = { requestId: response.requestId, optionId: response.optionId };
+      }
+      const modelRequest = {
+        agent: name,
+        incarnation: rows[0]!.incarnation as string,
+        session: sessionId,
+        member: stableMember.id,
+        admissionNonce: nonce,
+        method: "POST" as const,
+        path: `/${path}`,
+        rawBodyHash: modelPurposeRawBodyHash(body),
+        policyRevision: tuple.policyRevision,
+        definitionHash: rows[0]!.definition_hash as string,
+        purpose: purpose === "resolver" ? "resume" as const : "human" as const,
+        requestId: randomBytes(32).toString("base64url"),
+        ...(modelResume ? { resume: modelResume } : {}),
+      };
+      try {
+        headers.set(MODEL_PURPOSE_REQUIRED_HEADER, "1");
+        headers.set(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, await signPrivateModelPurposeRequest(modelRequest));
+      } catch {
+        return refuse(503, "Private model authorization is unavailable.");
+      }
     }
 
     const search = new URLSearchParams();

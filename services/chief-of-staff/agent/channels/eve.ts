@@ -1,6 +1,10 @@
-import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage, verifiedPrivateConsoleMessageReceipt } from "@lares/agent-kit/private-console-envelope";
+import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage, verifiedPrivateConsoleMessageReceipt,
+  verifiedPrivateConsoleModelMessageReceipt, verifiedPrivateConsoleModelResponseReceipt,
+  PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER } from "@lares/agent-kit/private-console-envelope";
+import type { UserContent } from "ai";
 import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
 import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
+import { modelPurposeRequest } from "@lares/agent-kit/model-purpose-client";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
 import {
@@ -76,6 +80,7 @@ function routePassword(): string {
  * approve anything, and an unset list admits nobody.
  */
 export const MEMBER_HEADER = "x-lares-member";
+const MODEL_PURPOSE_REQUIRED_HEADER = "x-lares-model-purpose-required";
 
 /** eve's own `SessionAuthContext`, named without a second import path: it is exactly what an
  *  `AuthFn` may return. */
@@ -109,6 +114,18 @@ function withConsoleMember(sessionAuth: DoorSessionAuth, supplied: string | null
   };
 }
 
+async function admitModelPurpose(receipt: ReturnType<typeof verifiedPrivateConsoleModelMessageReceipt> |
+  ReturnType<typeof verifiedPrivateConsoleModelResponseReceipt>): Promise<string> {
+  const result = await modelPurposeRequest<{ pendingReceipt?: unknown }>('request.admit', {
+    capsule: receipt.modelCapsule,
+    receipt,
+  });
+  if (typeof result.pendingReceipt !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt)) {
+    throw new Error('Model purpose authority is not available');
+  }
+  return result.pendingReceipt;
+}
+
 /** HTTP Basic against the box secret. Returns null (skip, → 401) on a missing or wrong
  *  credential; never throws for a bad credential, so the walk stays a walk. Tries every
  *  accepted username with eve's own constant-time comparison — never a comparison by hand.
@@ -132,28 +149,55 @@ export const basicFromSecretFile: AuthFn<Request> = async (request) => {
         if (request.headers.has("x-lares-member-id") || request.headers.has("x-lares-admission") || request.headers.has("x-lares-purpose")) await assertPrivateConsoleRequest(request);
         const attributes = await consoleRouteAdmission(request);
         if (!attributes) return legacy;
+        const modelRequiredHeader = request.headers.get(MODEL_PURPOSE_REQUIRED_HEADER);
+        if (modelRequiredHeader !== null && modelRequiredHeader !== '1') return null;
+        const modelRequired = modelRequiredHeader === '1';
+        const hasModelCapsule = request.headers.has(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER);
+        if (modelRequired && !hasModelCapsule) return null;
+        if (hasModelCapsule && attributes.lares_purpose === 'human') {
+          // Validate the exact raw human envelope now; onMessage performs admission with
+          // the parsed message matched against this same Request's WeakMap receipt.
+          const body = await request.clone().json() as { message?: unknown };
+          verifiedPrivateConsoleModelMessageReceipt(request, body.message);
+        }
+        let modelPending: string | undefined;
+        // Approval responses skip onMessage. Admit them here, only after the raw Request has
+        // passed its exact-envelope check and the current resolver was authenticated above.
+        if (attributes.lares_purpose === 'resolver' && request.headers.has(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER)) {
+          modelPending = await admitModelPurpose(verifiedPrivateConsoleModelResponseReceipt(request));
+        }
         return { ...legacy, authenticator: CONSOLE_AUTHENTICATOR,
           ...(attributes.lares_member_id ? {principalId:attributes.lares_member_id,principalType:'user' as const}:{}),
-          attributes: { ...legacy.attributes, ...attributes } };
+          attributes: { ...legacy.attributes, ...attributes,
+            ...(modelRequired ? { lares_model_purpose_required: '1' } : {}),
+            ...(modelPending ? { lares_model_pending_receipt: modelPending } : {}) } };
       } catch { return null; }
     }
   }
   return null;
 };
 
-export default eveChannel({
-  onMessage: async (ctx, message) => {
+export async function onPrivateConsoleMessage(ctx: { eve: { caller?: DoorSessionAuth | null; request: Request } }, message: string | UserContent) {
     const caller = ctx.eve.caller;
     const tagged = caller?.attributes?.lares_member_id !== undefined;
+    if (tagged && typeof message !== "string") throw new Error("Private console messages must be plain text");
     if (tagged) assertVerifiedPrivateConsoleMessage(ctx.eve.request, message);
     if (tagged && consoleAdmission(caller)?.purpose !== "human") throw new Error("Conversation authority is not available");
     if(tagged){
+      let modelPending:string|undefined;
+      if (ctx.eve.request.headers.has(PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER)) {
+        modelPending = await admitModelPurpose(verifiedPrivateConsoleModelMessageReceipt(ctx.eve.request,message));
+      }
       let vaultPending:string|undefined;
       try{const receipt=verifiedPrivateConsoleMessageReceipt(ctx.eve.request,message);const result=await vaultBrokerRequest<{pendingReceipt?:unknown}>('request.admit',{capsule:receipt.vaultCapsule,receipt});if(typeof result.pendingReceipt==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt))vaultPending=result.pendingReceipt;}catch{/* Broker absence disables only Vault reads. */}
-      return {auth:vaultPending?{...caller,attributes:{...caller?.attributes,lares_vault_pending:vaultPending}}:caller};
+      const attributes={...caller?.attributes,...(modelPending?{lares_model_pending_receipt:modelPending}:{}),...(vaultPending?{lares_vault_pending:vaultPending}:{})};
+      return {auth:modelPending||vaultPending?{...caller,attributes}:caller};
     }
-    return { auth: caller };
-  },
+    return { auth: caller ?? null };
+}
+
+export default eveChannel({
+  onMessage: onPrivateConsoleMessage,
   auth: [
     // Open on localhost for `eve dev` and the REPL; inert under `eve start`.
     localDev(),

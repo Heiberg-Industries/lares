@@ -1085,7 +1085,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: [],
     fallback: "/run/secrets/console-model-purpose-signing-key",
     secret: false,
-    breaksWithout: "Nothing breaks until Console calls the model-purpose signer; an unset path uses the protected default key file. If that file is missing or unreadable, signing fails closed while ordinary console chat remains available.",
+    breaksWithout: "When model-purpose custody is configured, a missing, unreadable or malformed key makes tagged private model requests fail closed; ordinary private chat remains available only when that custody is absent.",
     readAt: ["services/console/lib/model-purpose-capsule.ts:15", "services/console/lib/model-purpose-capsule.ts:126"],
   },
   {
@@ -1103,9 +1103,9 @@ export const SETTINGS: readonly SettingDef[] = [
     readers: ["agent-kit"],
     source: "installer",
     requiredFor: [],
-    fallback: "/run/lares/run/model-purpose.sock",
+    fallback: "/run/lares/model-purpose/model-purpose.sock",
     secret: false,
-    breaksWithout: "Nothing breaks until the model-purpose runtime client is called; it uses the default Keeper socket when unset. If that socket is unavailable, the model-purpose request fails closed while ordinary model chat remains available.",
+    breaksWithout: "When model-purpose custody is configured, a missing or unavailable chief-only Keeper socket makes tagged private model requests fail closed; ordinary private chat remains available only when that custody is absent.",
     readAt: ["packages/agent-kit/src/model-purpose-client.ts:15", "packages/agent-kit/src/model-purpose-client.ts:101"],
   },
   {
