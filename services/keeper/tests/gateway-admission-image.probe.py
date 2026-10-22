@@ -321,7 +321,8 @@ class Proof:
         # The client receives only the probe source, protected master-key file, and fixed phase barrier.
         client_mounts=[
             "--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly",
-            "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/tmp/litellm-member-credential.live.mts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/app/services/keeper/tests/live/litellm-member-credential.live.mts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/keeper/lib/budget-native-client.ts,dst=/app/services/keeper/lib/budget-native-client.ts,readonly",
             "--mount",f"type=bind,src={self.root/'master'},dst=/tmp/gateway-master-key,readonly",
             "--mount",f"type=bind,src={self.native_barrier},dst=/run/lares-native-probe-barrier",
             "--mount",f"type=bind,src={self.native_expected},dst=/run/lares-native-probe-expected",
@@ -464,18 +465,20 @@ exec litellm --config "$CONFIG_FILE_PATH"
         self.artifact["nativeCredentialContract"]=report
         expected=("fixture-guard","member-create-without-key","user-current-identity-global-cap-and-role",
             "user-info-no-auto-key","user-info-absent-is-not-refusal","user-info-refused-is-not-absence",
-            "lost-user-create-response-reconciles-original-id","team-membership-and-caps","caller-key-exact-and-hash-lookup",
-            "hash-lookup-absent-is-not-error","hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite",
-            "atomic-blocked-create","blocked-key-readback-and-native-auth","unblocked-key-readback-and-native-auth",
+            "lost-user-create-response-reconciles-original-id","team-membership-and-caps","client-empty-key-inventory",
+            "caller-key-exact-and-hash-lookup","client-populated-key-inventory","hash-lookup-absent-is-not-error",
+            "hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite","atomic-blocked-create",
+            "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","unblocked-key-readback-and-native-auth",
             "lost-create-response-reconciles-by-hash","block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
-            "already-deleted-remains-absent","fixture-cleanup")
+            "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
         try:
             native_url=self.start_native_admin()
             self.native_barrier.write_text("idle")
             args=["docker","exec","-i","-e","CI=true","-e","LARES_DISPOSABLE_GATEWAY=1","-e","LARES_PROBE_CI_BARRIER=1",
                 "-e","GATEWAY_URL="+native_url,"-e","GATEWAY_MASTER_KEY_FILE=/tmp/gateway-master-key","-e","GATEWAY_PROBE_MODEL=lares-brain",
                 "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/run/lares-native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/run/lares-native-probe-expected",self.name+"-client","node",
-                "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs","/tmp/litellm-member-credential.live.mts"]
+                "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs",
+                "/app/services/keeper/tests/live/litellm-member-credential.live.mts"]
             process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             deadline=time.monotonic()+180
             checked_members=False;checked_key=False

@@ -23,6 +23,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import { BudgetNativeCredentialClient } from "../../lib/budget-native-client.js";
 
 const CASES = [
   "fixture-guard",
@@ -33,17 +34,21 @@ const CASES = [
   "user-info-refused-is-not-absence",
   "lost-user-create-response-reconciles-original-id",
   "team-membership-and-caps",
+  "client-empty-key-inventory",
   "caller-key-exact-and-hash-lookup",
+  "client-populated-key-inventory",
   "hash-lookup-absent-is-not-error",
   "hash-lookup-refused-is-not-absence",
   "duplicate-key-create-does-not-overwrite",
   "atomic-blocked-create",
   "blocked-key-readback-and-native-auth",
+  "client-blocked-key-policy-readback",
   "unblocked-key-readback-and-native-auth",
   "lost-create-response-reconciles-by-hash",
   "block-unblock-readback-only",
   "delete-by-hash-and-reconcile-lost-response",
   "already-deleted-remains-absent",
+  "client-team-duration-and-membership-policy",
   "fixture-cleanup",
 ] as const;
 type CaseName = typeof CASES[number];
@@ -313,6 +318,7 @@ const run = async () => {
     return;
   }
   mark("fixture-guard", "PASS");
+  const nativeClient = new BudgetNativeCredentialClient(origin!, master!);
   const suffix = randomUUID();
   const teamId = suffix;
   const userId = `probe-${randomUUID()}`;
@@ -343,6 +349,9 @@ const run = async () => {
     mark("member-create-without-key", createUser?.status === 200 && createUser.parsed && object(createUser.body) &&
       createUser.body.user_id === userId && createUser.body.max_budget === 3 && noAutoKey?.status === 200 &&
       object(noAutoKeyBody) && Array.isArray(noAutoKeyBody.keys) && noAutoKeyBody.keys.length === 0 ? "PASS" : "FAIL");
+    const emptyInventory = await nativeClient.listOwnedKeys(userId);
+    mark("client-empty-key-inventory", emptyInventory.kind === "match" && emptyInventory.value.length === 0 ? "PASS" :
+      emptyInventory.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     const userReadback = await userLookup(userId);
     const currentUser = classifyUserLookup(userReadback, userId);
     mark("user-current-identity-global-cap-and-role", exactUserPolicy(currentUser, userId, 3) ? "PASS" : currentUser.kind === "present" ? "FAIL" : "UNKNOWN");
@@ -385,6 +394,9 @@ const run = async () => {
     const createdExactly = generated?.status === 200 && generated.parsed && object(generated.body) && generated.body.key === normalKey &&
       row !== undefined && exactKey(row, expected);
     mark("caller-key-exact-and-hash-lookup", createdExactly ? "PASS" : lookup.kind === "malformed" ? "UNKNOWN" : "FAIL");
+    const populatedInventory = await nativeClient.listOwnedKeys(userId);
+    mark("client-populated-key-inventory", populatedInventory.kind === "match" && populatedInventory.value.length === 1 &&
+      populatedInventory.value[0] === normalHash ? "PASS" : populatedInventory.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     if (ciBarrier && barrierFile) {
       writeCiFile(expectedFile!, `${normalHash}\n${teamId}\n${userId}\n`, "key-expected-write-failed");
       writeCiFile(barrierFile, "key-ready", "key-barrier-write-failed");
@@ -402,6 +414,10 @@ const run = async () => {
       ? teamRecord.members_with_roles.filter((entry): entry is Record<string, unknown> => object(entry) && entry.user_id === userId)
       : undefined;
     const teamReadbackAvailable = teamReadback?.status === 200 && teamRecord !== undefined;
+    const clientTeamPolicy = await nativeClient.readTeam({teamId, teamMaxBudget:4, teamBudgetDuration:"1d", teamModels:[model!],
+      memberUserId:userId, memberMaxBudget:2, memberBudgetDuration:"1d", memberModels:[model!], memberRole:"user"});
+    mark("client-team-duration-and-membership-policy", clientTeamPolicy.kind === "match" ? "PASS" :
+      clientTeamPolicy.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     mismatch("member-match-unique", memberships === undefined ? undefined : memberships.length === 1);
     mismatch("budget-cap-exact", memberBudget ? memberBudget.max_budget === 2 : memberRecord ? undefined : memberships ? false : undefined);
     mismatch("budget-duration-exact", memberBudget ? memberBudget.budget_duration === "1d" : memberRecord ? undefined : memberships ? false : undefined);
@@ -453,6 +469,11 @@ const run = async () => {
     const blockedExact = blockedLookup.kind === "present" && exactKey(blockedLookup.row, {
       keyAlias: blockedAlias, teamId, userId, blocked: true, budget: 1,
     });
+    const clientBlockedLookup = await nativeClient.lookupKey(blockedHash, {
+      keyAlias: blockedAlias, teamId, userId, maxBudget: 1, budgetDuration: "1d", models: [model!],
+    });
+    mark("client-blocked-key-policy-readback", clientBlockedLookup.kind === "match" ? "PASS" :
+      clientBlockedLookup.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     if (blockedGenerate?.status === 200 && blockedExact) {
       const status = await authStatus(blockedKey);
       mark("atomic-blocked-create", status === 401 || status === 403 ? "PASS" : status === 200 ? "FAIL" : "UNKNOWN");
