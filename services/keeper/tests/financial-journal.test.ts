@@ -75,10 +75,64 @@ it('runWithReceipt returns actual committed coordinates and refuses a positively
   expect(result.value).toBe('done');const proposal=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).find(f=>f.record.kind==='proposal');
   expect(result.receipt).toMatchObject({journalId:j.id,operation:'member-remove',operationId:proposal.record.operationId,proposalSequence:proposal.record.sequence,proposalDigest:proposal.digest});expect(Object.isFrozen(result.receipt)).toBe(true);
   expect(committedFinancialEvidence({...result.receipt},{kind:'account-erasure',accountId:randomUUID()})).toBeUndefined();
-  const aborted=writer.runWithReceipt('member-remove',async()=>{await hooks.settled('rollback-acknowledged');return 'aborted';});
+  let abortPublished=false;
+  const aborted=writer.runWithReceipt('member-remove',async()=>{await hooks.settled('rollback-acknowledged');return 'aborted';},()=>{abortPublished=true;return undefined;});
   await expect(aborted).rejects.toThrow('receipt unavailable');const missingReceipt=await aborted.catch(error=>error);
+  expect(abortPublished).toBe(false);
   expect(isJournaledAbort(missingReceipt,{journalId:j.id,operation:'member-remove'})).toBe(false);
   await expect(writer.run('member-remove',async()=>{await hooks.settled('rollback-acknowledged');return 'existing behavior';})).resolves.toBe('existing behavior');
+});
+it('keeps the real journal barrier through current-receipt publication',async()=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j);
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  let competing:Promise<void>|undefined,published:CommittedFinancialReceipt|undefined;
+  const result=await writer.runWithReceipt('provision',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';},receipt=>{
+    published=receipt;expect(receipt.operation).toBe('provision');expect(receipt.journalId).toBe(j.id);
+    // This is the same journal gate used by gateway-budget writes and member removal.
+    competing=j.operation('member-remove',async()=>undefined);
+    return undefined;
+  });
+  expect(result.value).toBe('bound');expect(published).toBe(result.receipt);expect(competing).toBeDefined();
+  await expect(competing).rejects.toThrow('busy');
+  await expect(j.operation('member-remove',async operationId=>{j.propose(operationId,[]);j.committed(operationId);})).resolves.toBeUndefined();
+});
+it('durably freezes when current-receipt publication fails inside the barrier',async()=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),publicationFailure=new Error('native receipt publication failed');
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  await expect(writer.runWithReceipt('provision',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';},()=>{throw publicationFailure;})).rejects.toBe(publicationFailure);
+  const records=readFileSync(join(fixtures.at(-1)!.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
+  expect(records.slice(-2)).toEqual(['control','freeze']);
+  await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
+it('freezes when acknowledged COMMIT is followed by a withheld transaction result',async()=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),postCommitFailure=new Error('post-commit result failure');
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  let published=false;
+  await expect(writer.runWithReceipt('member-remove',async()=>{
+    await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');throw postCommitFailure;
+  },()=>{published=true;return undefined;})).rejects.toBe(postCommitFailure);
+  expect(published).toBe(false);
+  const records=readFileSync(join(fixtures.at(-1)!.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
+  expect(records.slice(-2)).toEqual(['control','freeze']);
+  await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
+it.each(['resolved','rejected'] as const)('freezes and consumes an invalid async receipt publication (%s)',async mode=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),unhandled:string[]=[];
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  const onUnhandled=(reason:unknown)=>unhandled.push(reason instanceof Error?reason.message:String(reason));process.on('unhandledRejection',onUnhandled);
+  try{
+    await expect(writer.runWithReceipt('provision',async()=>{
+      await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';
+    },()=> (mode==='resolved'?Promise.resolve('late'):Promise.reject(new Error('async publication failed'))) as never))
+      .rejects.toThrow('Receipt publication must be synchronous');
+    await new Promise<void>(resolve=>setImmediate(resolve));
+    expect(unhandled).toEqual([]);
+    await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+  }finally{process.off('unhandledRejection',onUnhandled);}
 });
 it('withholds receipt authority from an unprepared journal and refuses receipt work before mutation',async()=>{
   const f=fixture(),j=open(f),writer=new JournalBudgetFinancialWriter(j);let result:CommittedFinancialReceipt|undefined,called=false;

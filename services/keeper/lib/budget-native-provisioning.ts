@@ -195,8 +195,7 @@ export class BudgetNativeProvisioner {
             if(!row||row.id!==request.bindingId)throw refuse();noteBudgetFinancialChange(db,'budget_gateway_bindings',request.bindingId);
             return {state:'bound-closed' as const,bindingId:request.bindingId,credentialGeneration:request.credentialGeneration};
           },boundary);
-        });
-        gate.recordBoundClosed(operationId,committed.receipt);
+        },receipt=>{gate.recordBoundClosed(operationId,receipt);return undefined;});
         return {kind:'bound-closed' as const,value:committed.value};
       });
       if(result.kind==='initial-preflight-refused')throw result.error;

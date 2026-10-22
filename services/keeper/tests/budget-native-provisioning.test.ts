@@ -11,7 +11,7 @@ import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
-import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
+import {BudgetNativeCustodyStore,type NativeCustodyGate} from '../lib/budget-native-custody.js';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
@@ -79,22 +79,30 @@ afterAll(async()=>{
 });
 
 it('reuses verified team and membership, reconciles exact reads, and freezes ambiguous failures',async()=>{
-  const member=id(),secondMember=id(),unknownMember=id(),changedMember=id(),rollbackMember=id(),custodyFailureMember=id(),unknownCommitMember=id(),incarnation=id();
-  const [agentA,agentB,agentC,agentD,agentE,agentF,agentG,agentH,agentI]=['neutral-helper','neutral-author','neutral-pilot','neutral-inventory','neutral-source','neutral-rollback','neutral-custody','neutral-commit','neutral-expiring'];
+  const member=id(),secondMember=id(),unknownMember=id(),changedMember=id(),rollbackMember=id(),custodyFailureMember=id(),incarnation=id();
+  const [agentA,agentB,agentC,agentD,agentE,agentF,agentG,agentI]=['neutral-helper','neutral-author','neutral-pilot','neutral-inventory','neutral-source','neutral-rollback','neutral-custody','neutral-expiring'];
   const selected=await seed(member,[agentA,agentB,agentI],incarnation);
   await seed(secondMember,[agentC],incarnation,selected.org);await seed(unknownMember,[agentD],incarnation,selected.org);
   await seed(changedMember,[agentE],incarnation,selected.org);await seed(rollbackMember,[agentF],incarnation,selected.org);
-  await seed(custodyFailureMember,[agentG],incarnation,selected.org);await seed(unknownCommitMember,[agentH],incarnation,selected.org);
+  await seed(custodyFailureMember,[agentG],incarnation,selected.org);
   const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-provision-'));chmodSync(root,0o700);roots.push(root);
   const directory=join(root,'journal'),db=await pool.connect();
   try{await prepareFinancialCustody(directory,db,journalOptions);}finally{db.release();}
   const journal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(journal);
-  await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:[member,secondMember,unknownMember,changedMember,rollbackMember,custodyFailureMember,unknownCommitMember]});
+  await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:[member,secondMember,unknownMember,changedMember,rollbackMember,custodyFailureMember]});
   const custody=createNativeTestCustody(join(root,'native'));
   const fake=nativeFake(),service=new BudgetNativeProvisioner(pool,journal,custody,fake.native,nativeTestTarget,policy);
   const firstBinding=id(),secondBinding=id();
   try{
+    const originalWithGate=custody.withGate,publicationAttempts:Promise<string>[]=[];
+    const ownedWithGate=custody.withGate.bind(custody);
+    custody.withGate=async <T>(work:(gate:NativeCustodyGate)=>Promise<T>)=>ownedWithGate(gate=>work({...gate,recordBoundClosed:(operationId,receipt)=>{
+        publicationAttempts.push(journal.operation('member-remove',async()=>undefined).then(()=> 'entered',error=>error instanceof Error?error.message:'failed'));
+        return gate.recordBoundClosed(operationId,receipt);
+      }}));
     await expect(service.provision({bindingId:firstBinding,credentialGeneration:'0',memberId:member,agent:agentA,incarnation,purposeAlias:'lares-brain'})).resolves.toEqual({state:'bound-closed',bindingId:firstBinding,credentialGeneration:'0'});
+    custody.withGate=originalWithGate;
+    await expect(Promise.all(publicationAttempts)).resolves.toEqual(['Financial journal is closed or busy']);
     const beforeReplay={...fake.calls};
     await expect(service.provision({bindingId:firstBinding,credentialGeneration:'0',memberId:member,agent:agentA,incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
     expect(fake.calls).toEqual(beforeReplay);
@@ -196,18 +204,37 @@ it('reuses verified team and membership, reconciles exact reads, and freezes amb
   }finally{postCommitStore.close();}
   const {BudgetNativeCustodyStore:Custody}=await import('../lib/budget-native-custody.js');
   expect(()=>Custody.openExisting(join(root,'native-post-commit'),{ownershipUid:testJournalUid,ownershipGid:process.getgid!(),lock})).toThrow();
+  await expect(journal.operation('member-remove',async()=>undefined)).rejects.toThrow();
 
-  let hideNextCommit=false;
-  const unknownCommitSource={query:pool.query.bind(pool),connect:async()=>{const client=await pool.connect();return {
-    query:async(sql:string,values?:unknown[])=>{const result=await (client.query as (query:string,parameters?:unknown[])=>Promise<{rows:any[];command?:string}>)(sql,values);
-      if(/^INSERT INTO budget_gateway_bindings/i.test(sql))hideNextCommit=true;
-      if(/^COMMIT$/i.test(sql)&&hideNextCommit){hideNextCommit=false;return {...result,command:'UNKNOWN'};}return result;},
-    release:client.release.bind(client),
-  };}} as unknown as typeof pool;
-  const unknownCommitStore=createNativeTestCustody(join(root,'native-unknown-commit')),unknownCommitFake=nativeFake();
-  const unknownCommitService=new BudgetNativeProvisioner(unknownCommitSource,journal,unknownCommitStore,unknownCommitFake.native,nativeTestTarget,policy);
-  try{
-    await expect(unknownCommitService.provision({bindingId:id(),credentialGeneration:'0',memberId:unknownCommitMember,agent:agentH,incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
-    expect((await pool.query('SELECT count(*)::int AS count FROM budget_gateway_bindings')).rows[0]!.count).toBe(4);
-  }finally{unknownCommitStore.close();}
 },20_000);
+
+it('keeps an unknown financial commit unpublished in fresh custody',async()=>{
+  await pool.end();await container.stop();
+  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
+  pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));await migrate();
+  let isolatedJournal:HostFinancialJournal|undefined,unknownCommitStore:BudgetNativeCustodyStore|undefined;
+  const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-unknown-commit-'));chmodSync(root,0o700);roots.push(root);
+  try{
+    const member=id(),incarnation=id(),agent='neutral-unknown-commit';await seed(member,[agent],incarnation);
+    const directory=join(root,'financial'),client=await pool.connect();
+    try{await prepareFinancialCustody(directory,client,journalOptions);}finally{client.release();}
+    isolatedJournal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(isolatedJournal);
+    await provisionBudgetAccounts(pool,isolatedJournal,{installationCap:'100',memberIds:[member]});
+    let hideNextCommit=false;
+    const unknownCommitSource={query:pool.query.bind(pool),connect:async()=>{const owned=await pool.connect();return {
+      query:async(sql:string,values?:unknown[])=>{const result=await (owned.query as (query:string,parameters?:unknown[])=>Promise<{rows:any[];command?:string}>)(sql,values);
+        if(/^INSERT INTO budget_gateway_bindings/i.test(sql))hideNextCommit=true;
+        if(/^COMMIT$/i.test(sql)&&hideNextCommit){hideNextCommit=false;return {...result,command:'UNKNOWN'};}return result;},
+      release:owned.release.bind(owned),
+    };}} as unknown as typeof pool;
+    const custodyPath=join(root,'native'),fake=nativeFake();unknownCommitStore=createNativeTestCustody(custodyPath);
+    const service=new BudgetNativeProvisioner(unknownCommitSource,isolatedJournal,unknownCommitStore,fake.native,nativeTestTarget,policy),bindingId=id();
+    await expect(service.provision({bindingId,credentialGeneration:'0',memberId:member,agent,incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
+    expect((await pool.query('SELECT count(*)::int AS count FROM budget_gateway_bindings')).rows[0]!.count).toBe(1);
+    const custody=JSON.parse(readFileSync(join(custodyPath,'snapshot.json'),'utf8'));
+    expect(custody.operations).toHaveLength(1);expect(custody.operations[0]).toMatchObject({phase:'native-blocked-verified',bindingReceipt:null});
+    await expect(isolatedJournal.operation('member-remove',async()=>undefined)).rejects.toThrow();
+  }finally{
+    unknownCommitStore?.close();
+  }
+},120_000);
