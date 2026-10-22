@@ -1,4 +1,4 @@
-const MAX_REQUEST_BYTES=1024;
+export const MAX_BUDGET_NATIVE_REQUEST_BYTES=1024;
 const MAX_RESPONSE_BYTES=65_536;
 const MAX_LIST_KEYS=10;
 const MAX_MODELS=16;
@@ -218,6 +218,9 @@ export class BudgetNativeCredentialClient {
     this.origin=url.origin;
   }
 
+  /** The configured native origin, for trusted provisioning preflight only. */
+  get gatewayOrigin():string{return this.origin;}
+
   async createTeam(input:NativeTeamCreate):Promise<NativeWrite>{
     if(!validId(input.teamId)||!validateBudgetPolicy(input))return {kind:'malformed'};
     return this.write('/team/new',{team_id:input.teamId,max_budget:input.maxBudget,models:input.models,budget_duration:input.budgetDuration},'ack');
@@ -334,7 +337,7 @@ export class BudgetNativeCredentialClient {
   private async write(path:string,body:unknown,responseShape:ResponseShape,expectedUserId?:string,expectedUserBudget?:number,expectedKey?:string):Promise<NativeWrite>{
     let raw:Uint8Array;
     try{raw=new TextEncoder().encode(JSON.stringify(body));}catch{return {kind:'malformed'};}
-    if(raw.byteLength>MAX_REQUEST_BYTES)return {kind:'malformed'};
+    if(raw.byteLength>MAX_BUDGET_NATIVE_REQUEST_BYTES)return {kind:'malformed'};
     const sent=await this.send(path,body);
     if(sent.kind!=='response')return {kind:'uncertain'};
     const response=sent.value;
@@ -355,7 +358,7 @@ export class BudgetNativeCredentialClient {
     const fixedQueryRoute=/^\/team\/info\?team_id=[A-Za-z0-9-]{1,80}$/.test(path)||/^\/(?:key\/list|user\/info)\?user_id=[A-Za-z0-9-]{1,80}$/.test(path);
     if(!fixedRoute&&!fixedQueryRoute)return {kind:'unavailable'};
     let raw:Uint8Array|undefined;
-    if(body!==undefined){try{raw=new TextEncoder().encode(JSON.stringify(body));}catch{return {kind:'unavailable'};}if(raw.byteLength>MAX_REQUEST_BYTES)return {kind:'unavailable'};}
+    if(body!==undefined){try{raw=new TextEncoder().encode(JSON.stringify(body));}catch{return {kind:'unavailable'};}if(raw.byteLength>MAX_BUDGET_NATIVE_REQUEST_BYTES)return {kind:'unavailable'};}
     const method=body===undefined?'GET':'POST';
     try{
       const response=await this.request(`${this.origin}${path}`,{method,redirect:'manual',signal:AbortSignal.timeout(this.timeoutMs),

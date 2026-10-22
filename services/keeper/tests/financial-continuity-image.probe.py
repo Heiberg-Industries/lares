@@ -1,10 +1,17 @@
 """Actual Linux kernel + PostgreSQL continuity/restore proof; CI only, disposable data."""
-import json, pathlib, subprocess, sys, time, uuid
+import json, os, pathlib, secrets, shutil, subprocess, sys, tempfile, time, uuid
 
 image = sys.argv[1]
 repo = pathlib.Path(__file__).resolve().parents[3]
+if os.environ.get('CI') != 'true':
+    raise SystemExit('Keeper image proof runs only in disposable CI')
 name = 'lares-continuity-proof-' + uuid.uuid4().hex[:10]
 volume = name + '-custody'
+native_admin = name + '-native-admin'
+native_temp = pathlib.Path(tempfile.mkdtemp(prefix='lares-native-provision-proof-'))
+native_fixture = native_temp / 'fixture'
+native_fixture.mkdir(mode=0o700)
+native_custody = native_temp / 'budget-native'
 tsx = '/app/services/keeper/node_modules/.bin/tsx'
 base = '/app/services/keeper/lib/'
 
@@ -28,6 +35,106 @@ def ready():
             return
         time.sleep(.2)
     raise RuntimeError('Disposable PostgreSQL did not become ready')
+
+def bounded_native_command(*args, timeout=120):
+    """Native-provisioning helpers never return raw process output or request data."""
+    try:
+        result = subprocess.run(args, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('Native provisioning fixture timed out') from None
+    if len(result.stdout.encode('utf-8', errors='replace')) > 8192:
+        raise RuntimeError('Native provisioning fixture output exceeded its bound')
+    if result.returncode:
+        raise RuntimeError('Native provisioning fixture failed')
+    return result.stdout.strip()
+
+
+def initialize_native_custody():
+    initializer = name + '-native-custody-init'
+    code = f"""import{{mkdirSync}}from'node:fs';
+import{{BudgetNativeCustodyStore}}from'{base}budget-native-custody.ts';
+mkdirSync('/var/lib/lares',{{recursive:true,mode:0o755}});
+const store=BudgetNativeCustodyStore.createNew('/var/lib/lares/budget-native');store.close();console.log('custody-ready');"""
+    bounded_native_command('docker', 'create', '--name', initializer, '--network', 'none',
+                           '--entrypoint', tsx, image, '-e', code)
+    try:
+        output = bounded_native_command('docker', 'start', '--attach', initializer, timeout=30)
+        if output != 'custody-ready':
+            raise RuntimeError('Native custody initializer returned an unexpected result')
+        # The production store is initialized in Keeper itself, then staged as a closed,
+        # protected fixture and mounted at its exact runtime path for the proof process.
+        bounded_native_command('docker', 'cp', initializer + ':/var/lib/lares/budget-native',
+                               str(native_temp))
+        bounded_native_command('docker', 'run', '--rm', '--network', 'none',
+                               '--mount', f'type=bind,src={native_custody},dst=/native-custody',
+                               '--entrypoint', 'sh', image, '-c',
+                               'chown -R 0:0 /native-custody && chmod 700 /native-custody && chmod 600 /native-custody/*')
+    finally:
+        bounded_native_command('docker', 'rm', '--force', initializer, timeout=30)
+
+
+def start_native_admin():
+    master = 'sk-' + secrets.token_urlsafe(32)
+    # Match the isolated disposable PostgreSQL fixture role created by this probe.
+    password = 'disposable-proof-only'
+    (native_fixture / 'master').write_text(master)
+    (native_fixture / 'password').write_text(password)
+    for filename in ('master', 'password'):
+        (native_fixture / filename).chmod(0o600)
+    config = {
+        'model_list': [],
+        'litellm_settings': {'telemetry': False, 'disable_aiohttp_transport': True},
+        'general_settings': {'master_key': 'os.environ/LARES_GATEWAY_MASTER_KEY',
+                             'background_health_checks': False},
+    }
+    (native_fixture / 'native-config.yaml').write_text(json.dumps(config))
+    (native_fixture / 'native-admin-start.sh').write_text("""#!/bin/sh
+set -eu
+LARES_GATEWAY_MASTER_KEY=$(cat /fixture/master); export LARES_GATEWAY_MASTER_KEY
+LARES_DATABASE_PASSWORD=$(cat /fixture/password)
+DATABASE_URL=\"postgresql://proof:${LARES_DATABASE_PASSWORD}@proof-db:5432/native_litellm\"; export DATABASE_URL
+LARES_DATABASE_PASSWORD=
+CONFIG_FILE_PATH=/fixture/native-config.yaml; export CONFIG_FILE_PATH
+LITELLM_RUST=False; DISABLE_AIOHTTP_TRANSPORT=True; LITELLM_TELEMETRY=False; export LITELLM_RUST DISABLE_AIOHTTP_TRANSPORT LITELLM_TELEMETRY
+litellm --config \"$CONFIG_FILE_PATH\" --skip_server_startup --enforce_prisma_migration_check
+exec litellm --config \"$CONFIG_FILE_PATH\"
+""")
+    (native_fixture / 'native-admin-start.sh').chmod(0o700)
+    bounded_native_command('docker', 'run', '-d', '--name', native_admin,
+                           '--network', name, '--network-alias', 'native-admin',
+                           '--mount', f'type=bind,src={native_fixture},dst=/fixture,readonly',
+                           '--entrypoint', '/bin/sh',
+                           '-e', 'PGHOST=proof-db', '-e', 'PGPORT=5432', '-e', 'PGUSER=proof',
+                           '-e', 'PGDATABASE=native_litellm', '-e', 'LITELLM_TELEMETRY=False',
+                           '-e', 'LITELLM_LOCAL_MODEL_COST_MAP=True',
+                           json.loads((repo / 'releases/2026-10-21-rc.12.json').read_text())['images']['lares-gateway'],
+                           '/fixture/native-admin-start.sh')
+    ready_script = """let ready=false;for(let i=0;i<360;i++){try{const r=await fetch('http://native-admin:4000/health/liveliness',{signal:AbortSignal.timeout(1000)});if(r.status===200){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,250));}if(!ready)process.exit(2);console.log('native-ready');"""
+    output = bounded_native_command('docker', 'run', '--rm', '--network', name,
+                                    '--entrypoint', 'node', image, '-e', ready_script, timeout=120)
+    if output != 'native-ready':
+        raise RuntimeError('Pinned native listener did not become ready')
+    version = bounded_native_command('docker', 'exec', native_admin, 'python', '-c',
+                                     "import importlib.metadata;print(importlib.metadata.version('litellm'))")
+    if version != '1.101.6':
+        raise RuntimeError('Pinned native listener has an unexpected LiteLLM version')
+
+
+def run_native_provisioning(code):
+    container = name + '-native-provision'
+    args = ('docker', 'run', '--name', container, '--network', name,
+            '--mount', 'type=volume,src=' + volume + ',dst=/proof',
+            '--mount', f'type=bind,src={native_custody},dst=/var/lib/lares/budget-native',
+            '--mount', f'type=bind,src={native_fixture},dst=/native-fixture,readonly',
+            '-w', '/app/services/keeper', '--entrypoint', tsx, image, '-e', code)
+    try:
+        output = bounded_native_command(*args, timeout=120)
+    finally:
+        bounded_native_command('docker', 'rm', '--force', container, timeout=30)
+    if output != 'native-provisioning-proof:complete':
+        raise RuntimeError('Native provisioning proof returned an unexpected result')
+
 
 def run(code, database='proof'):
     prefix = f"""import{{Pool}}from'pg';
@@ -54,7 +161,7 @@ async function main(){{try{{{code}}}finally{{await pool.end();}}}}void main().ca
                    '/app/services/keeper', '--entrypoint', tsx, image, '-e', prefix).stdout.strip()
 
 try:
-    command('docker', 'network', 'create', name)
+    command('docker', 'network', 'create', '--internal', name)
     command('docker', 'volume', 'create', volume)
     command('docker', 'run', '-d', '--name', name + '-db', '--network', name,
             '--network-alias', 'proof-db', '-e', 'POSTGRES_USER=proof', '-e',
@@ -64,8 +171,8 @@ try:
     for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
         sql(migration.read_text())
     # Each scenario uses the real empty migrated schema, not guessed fixture tables.
-    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE provisionproof TEMPLATE proof; CREATE DATABASE gatewayproof TEMPLATE proof;')
-    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash'), ('provisionproof', 'provision'), ('gatewayproof', 'gateway')]:
+    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE provisionproof TEMPLATE proof; CREATE DATABASE gatewayproof TEMPLATE proof; CREATE DATABASE nativeproof TEMPLATE proof; CREATE DATABASE native_litellm;')
+    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash'), ('provisionproof', 'provision'), ('gatewayproof', 'gateway'), ('nativeproof', 'native-provision')]:
         assert run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{directory}',db);}}finally{{db.release();}}console.log('prepared');", database) == 'prepared'
     # Actual killed prepared writer: no caller explicitly freezes it before death.
     holder = f"import{{HostFinancialJournal}}from'{base}financial-journal.ts';const j=HostFinancialJournal.openExisting('/proof/crash',{{requirePrepared:true}});console.log('locked');setInterval(()=>{{}},1000);"
@@ -191,6 +298,114 @@ const attempt=(await pool.query('SELECT state,actual_amount FROM budget_attempts
 console.log('gateway journaled');
 }finally{await journal.drainForShutdown();journal.close();}"""
     assert run(gateway, 'gatewayproof') == 'gateway journaled'
+    # Exercise the production closed provisioner against real Keeper custody, real engine
+    # PostgreSQL/journal, and the exact digest-pinned native LiteLLM admin API. No provider
+    # route is configured or called. The one dropped key response follows an actual write.
+    initialize_native_custody()
+    start_native_admin()
+    native_provision = r"""import{Pool}from'pg';
+import{HostFinancialJournal}from'/app/services/keeper/lib/financial-journal.ts';
+import{provisionBudgetAccounts}from'/app/services/keeper/lib/budget-account-provisioning.ts';
+import{BudgetNativeCustodyStore,NATIVE_CUSTODY_DIRECTORY}from'/app/services/keeper/lib/budget-native-custody.ts';
+import{BudgetNativeProvisioner}from'/app/services/keeper/lib/budget-native-provisioning.ts';
+import{BudgetNativeCredentialClient}from'/app/services/keeper/lib/budget-native-client.ts';
+import{PgGrantStore}from'/app/packages/agent-kit/src/grant-store.ts';
+import{definitionSchema,hashOf}from'/app/packages/agent-kit/src/definition.ts';
+import{gatewayCanonical,gatewayHash}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';
+import{gatewayMaximumLiability}from'/app/packages/agent-kit/src/gateway-pricing.ts';
+import{readFileSync}from'node:fs';
+import{createHash}from'node:crypto';
+const pool=new Pool({host:'proof-db',database:'nativeproof',user:'proof',password:'disposable-proof-only',max:1,connectionTimeoutMillis:1500});
+const owner='native-proof-owner',member='native-proof-member',org='native-proof-org',agent='helper',alias='lares-brain';
+const bindingId='c6c32c7a-4a25-4d25-8b0b-79b83a137440',incarnation='f9c463e1-8e7b-4dd9-b9fa-1f6586631cc1',generation='0';
+const origin='http://native-admin:4000',endpoint={origin,hash:createHash('sha256').update('native-provision-proof-endpoint').digest('hex')};
+const capability={version:1,provider:'openai',model:'synthetic-model',providerBaseUrl:'https://provider.invalid/v1',aliases:['lares-brain','lares-writer','lares-utility','lares-gate'],maxBodyBytes:1048576,maxOutputTokens:1000};
+const pricing={version:1,capabilityHash:gatewayHash(gatewayCanonical(capability)),format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'1',output:'2',cacheRead:'0',cacheWrite:'0'}};
+const policy={capability,pricing,maximumLiability:gatewayMaximumLiability(pricing),team:{maxBudget:'100',models:capability.aliases,budgetDuration:'1d'},
+  user:{maxBudget:'30',userRole:'internal_user',autoCreateKey:false},membership:{maxBudget:'20',allowedModels:capability.aliases,budgetDuration:'1d',role:'user'},
+  key:{maxBudget:'10',models:[alias],budgetDuration:'1d',keyType:'llm_api',blocked:true}};
+const definition=definitionSchema.parse({name:agent,model:alias,grants:[]}),duties='',voice='Neutral CI fixture voice.';
+const definitionHash=hashOf({definition,dutiesMd:duties,voiceMd:voice});
+let journal, custody;
+async function main(){
+  try{
+    await pool.query("INSERT INTO orgs(id,display_name) VALUES($1,'Neutral proof organization')",[org]);
+    await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Neutral proof owner',$2,'owner','active'),($3,'Neutral proof member',$2,'member','active')",[owner,org,member]);
+    await pool.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid','subject','tenant')",[member]);
+    await pool.query("INSERT INTO org_member_policy(user_id,allowed_capabilities,spend_cap_usd_month) VALUES($1,NULL,20),($2,NULL,20)",[member,owner]);
+    await pool.query("INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2::jsonb,$3,$4,$5,'valid')",
+      [agent,JSON.stringify(definition),duties,voice,definitionHash]);
+    await pool.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,'127.0.0.2',$1,'owned',$2,$2,'ready',$3::jsonb,false)",
+      [agent,incarnation,JSON.stringify(definition)]);
+    const grants=new PgGrantStore(pool),adopted=await grants.adoptAgent(owner,{agentName:agent,expectedDefinitionHash:definitionHash},{designatedOwnerMemberId:owner});
+    await grants.updateAgentAccess(owner,{agentName:agent,expectedRevision:adopted.accessRevision,
+      grants:[{principal:{kind:'organisation',id:org},permission:'use',expiresAt:null}]});
+    journal=HostFinancialJournal.openExisting('/proof/native-provision',{requirePrepared:true});
+    const accounts=await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:[member]});
+    if(accounts.state!=='closed'||accounts.reason!=='unreconciled'||accounts.members!==1||accounts.accountsCreated!==2||accounts.windowsCreated!==2)throw new Error();
+    custody=BudgetNativeCustodyStore.openExisting(NATIVE_CUSTODY_DIRECTORY);
+    const master=readFileSync('/native-fixture/master','utf8');
+    let keyCreateRequests=0,lostResponseObserved=false;
+    const actualFetch=globalThis.fetch.bind(globalThis);
+    const observeActualFetch=async(input,init)=>{
+      const url=new URL(typeof input==='string'?input:input instanceof URL?input.href:input.url);
+      if(url.origin===origin&&url.pathname==='/key/generate'){
+        keyCreateRequests++;
+        if(keyCreateRequests!==1)throw new Error();
+        const response=await actualFetch(input,init);
+        if(response.body){
+          const reader=response.body.getReader();let size=0;
+          try{while(true){const part=await reader.read();if(part.done)break;size+=part.value.byteLength;
+            if(size>65536){await reader.cancel().catch(()=>{});throw new Error();}}}
+          finally{reader.releaseLock();}
+        }
+        lostResponseObserved=true;
+        throw new Error('Native response was lost after the actual write');
+      }
+      return actualFetch(input,init);
+    };
+    const native=new BudgetNativeCredentialClient(origin,master,observeActualFetch);
+    const service=new BudgetNativeProvisioner(pool,journal,custody,native,endpoint,policy);
+    const result=await service.provision({bindingId,credentialGeneration:generation,memberId:member,agent,incarnation,purposeAlias:alias});
+    if(result.state!=='bound-closed'||result.bindingId!==bindingId||result.credentialGeneration!==generation||keyCreateRequests!==1||!lostResponseObserved)throw new Error();
+    const binding=(await pool.query(`SELECT b.state AS binding_state,b.key_fingerprint,i.state AS install_state,i.reason AS install_reason,
+      i.selected_endpoint AS install_endpoint,i.recovery_epoch AS install_recovery,m.state AS member_state,m.reason AS member_reason,
+      m.selected_endpoint AS member_endpoint,m.recovery_epoch AS member_recovery
+      FROM budget_gateway_bindings b JOIN budget_accounts i ON i.id=b.installation_account_id
+      JOIN budget_accounts m ON m.id=b.member_account_id WHERE b.id=$1`,[bindingId])).rows;
+    if(binding.length!==1||binding[0].binding_state!=='active'||binding[0].install_state!=='closed'||binding[0].install_reason!=='unreconciled'||
+      binding[0].install_endpoint!==null||binding[0].install_recovery!==null||binding[0].member_state!=='closed'||binding[0].member_reason!=='unreconciled'||
+      binding[0].member_endpoint!==null||binding[0].member_recovery!==null)throw new Error();
+    const custodyProof=await custody.withGate(gate=>{
+      const op=gate.inventory().operations.find(o=>o.kind==='operation'&&o.bindingId===bindingId&&o.credentialGeneration===generation);
+      if(!op)return undefined;
+      return {op,key:gate.readKey(op.operationId)};
+    });
+    if(!custodyProof||custodyProof.op.phase!=='bound-closed'||custodyProof.op.keyCreateAttempt!=='verified'||
+      !custodyProof.op.bindingReceipt||custodyProof.op.bindingReceipt.operation!=='provision'||
+      custodyProof.op.financialJournalId!==journal.id||custodyProof.op.financialOperationId!==custodyProof.op.bindingReceipt.operationId||
+      binding[0].key_fingerprint!==custodyProof.op.keyFingerprint||createHash('sha256').update(custodyProof.key).digest('hex')!==custodyProof.op.keyFingerprint)throw new Error();
+    const frames=readFileSync('/proof/native-provision/journal.jsonl','utf8').trimEnd().split('\n').map(line=>JSON.parse(line));
+    const receipt=custodyProof.op.bindingReceipt,proposal=frames.find(frame=>frame.record.kind==='proposal'&&frame.record.operationId===receipt.operationId);
+    const commit=frames.find(frame=>frame.record.kind==='commit'&&frame.record.operationId===receipt.operationId);
+    const checkpoint=(await pool.query('SELECT journal_id,proposal_sequence::text,proposal_digest FROM budget_financial_checkpoints WHERE operation_id=$1',[receipt.operationId])).rows;
+    if(!proposal||!commit||proposal.record.sequence!==receipt.proposalSequence||proposal.digest!==receipt.proposalDigest||
+      commit.record.proposalDigest!==receipt.proposalDigest||checkpoint.length!==1||checkpoint[0].journal_id!==receipt.journalId||
+      checkpoint[0].proposal_sequence!==String(receipt.proposalSequence)||checkpoint[0].proposal_digest!==receipt.proposalDigest)throw new Error();
+    const auth=await actualFetch(origin+'/v1/models',{headers:{authorization:'Bearer '+custodyProof.key},redirect:'manual',signal:AbortSignal.timeout(5000)});
+    await auth.body?.cancel().catch(()=>{});
+    if(auth.status!==401&&auth.status!==403)throw new Error();
+    console.log('native-provisioning-proof:complete');
+  }catch{
+    console.log('native-provisioning-proof:failed');process.exitCode=1;
+  }finally{
+    try{if(custody)custody.close();}catch{}
+    try{if(journal){await journal.drainForShutdown();journal.close();}}catch{}
+    await pool.end();
+  }
+}
+void main();"""
+    run_native_provisioning(native_provision)
     # Actual pool max=1: start check, checkpoint and pre-COMMIT check must use the owner.
     clean = """const j=HostFinancialJournal.openExisting('/proof/restart',{requirePrepared:true});
 const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}
@@ -229,9 +444,20 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     print(json.dumps({'preparedWriterCrashPermanentFreeze': True, 'sameRunningPostgresCleanRestart': True, 'ownedPoolOneContinuity': True,
                       'supportedRestoreStaysFrozenWithoutPostgresRestart': True,
                       'unknownObservationPermanent': True, 'retainedDataPostgresRestartFrozen': True,
-                      'freshClusterFrozen': True}))
+                      'freshClusterFrozen': True, 'nativeProvisioningBoundClosed': True,
+                      'nativeFinancialReceiptVerified': True, 'nativeAccountsRemainClosed': True,
+                      'nativeKeyBlockedAuth': True, 'nativeLostReplyReconciledOriginalKey': True}))
 finally:
     command('docker', 'rm', '--force', name + '-holder', check=False)
+    command('docker', 'rm', '--force', name + '-native-provision', check=False)
+    command('docker', 'rm', '--force', name + '-native-custody-init', check=False)
+    command('docker', 'rm', '--force', native_admin, check=False)
+    if native_custody.exists():
+        command('docker', 'run', '--rm', '--network', 'none',
+                '--mount', f'type=bind,src={native_custody},dst=/native-custody',
+                '--entrypoint', 'chown', image, '-R', f'{os.getuid()}:{os.getgid()}',
+                '/native-custody', check=False)
     command('docker', 'rm', '--force', name + '-db', check=False)
     command('docker', 'volume', 'rm', volume, check=False)
     command('docker', 'network', 'rm', name, check=False)
+    shutil.rmtree(native_temp, ignore_errors=True)
