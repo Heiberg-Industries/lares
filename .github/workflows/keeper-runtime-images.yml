@@ -91,6 +91,9 @@ jobs:
       - name: Run the agent-declaration conformance suite against the compiled manifest
         if: matrix.role != 'chief-of-staff'
         run: pnpm --filter "lares-${{ matrix.role }}" exec vitest run tests/agent-declaration.test.ts
+      - name: Prove studio run ownership in the final creative image
+        if: matrix.role == 'creative'
+        run: python3 -B services/keeper/tests/studio-owner-image.probe.py lares-runtime:test
       - uses: docker/build-push-action@v6
         with:
           context: .

@@ -41,7 +41,7 @@ import { gatewayComplete } from "../lib/llm-complete.js";
 import { makeAtlasConsensus } from "../lib/studio/atlas-consensus.js";
 import { runStudioPipeline } from "../lib/studio/pipeline.js";
 import { renderSpread } from "../lib/studio/render.js";
-import { ensureStudioTables, makeStudioStore } from "../lib/studio/store.js";
+import { makeStudioStore } from "../lib/studio/store.js";
 
 /** The Atlas-backed grounding step. Constructed once; it reads no env until it is called. */
 const consensus = makeAtlasConsensus();
@@ -77,6 +77,10 @@ export default defineTool({
     await assertApproval(ctx, "studio_ideate", input);
     const { brief } = input;
     const approver = approverFrom(ctx.session.auth);
+    // Resolve and capture the Slack claim's current member before any paid model work. The
+    // capture is single-use and is checked again in a fresh short transaction after generation.
+    const store = makeStudioStore(getPool());
+    const ownerCapture = await store.captureOwner(approver);
 
     // The model is NOT named here: `gatewayComplete`'s own precedence is STUDIO_MODEL →
     // AGENT_MODEL → <prefix>-brain (studio stages are the brain purpose).
@@ -86,27 +90,19 @@ export default defineTool({
       llm: (prompt: string) => gatewayComplete(prompt, { maxOutputTokens: STUDIO_MAX_OUTPUT_TOKENS }),
     });
 
-    // Best-effort record, exactly as the old integration did (registry.ts:190, a bare
-    // `.catch(console.error)`): a database hiccup must not cost the owner the spread the model
-    // has already been paid to produce. `ensureStudioTables` is idempotent and the table
-    // already exists — `DATABASE_URL` still points at `lares_state`, so this is the SAME
-    // `studio_runs` table the old agent-runtime wrote to, and the history carries.
+    // A refusal here cannot undo paid generation. Preserve the spread, while saying plainly
+    // that the history save could not be confirmed. The log contains no brief, generated content or error details.
+    let historyConfirmed = true;
     try {
-      const db = getPool();
-      await ensureStudioTables(db);
-      // The approver, not a hardcoded name: `assertApprover` has already refused anything that
-      // is not an allowlisted, channel-verified Slack user, so this is a real identity. The
-      // string SHAPE changes at the cutover — old rows carry the old principal-id setting's
-      // `U_OWNER`, new ones carry the Slack user id — and that is the honest record of who
-      // actually authorised each run. The `??` is for the type checker only; the assert above
-      // makes an empty userId unreachable.
-      await makeStudioStore(db).recordRun(run, { principal: approver.userId ?? "unknown" });
-    } catch (e) {
-      console.error("studio: recordRun failed", e);
+      await store.recordRun(run, ownerCapture);
+    } catch {
+      historyConfirmed = false;
+      console.error("studio: run history save could not be confirmed");
     }
 
     // The RENDERED spread, never the raw StudioRun. The grounding line it carries is the only
     // Atlas ground truth the narrating model gets; hand it JSON instead and it guesses.
-    return renderSpread(run);
+    const rendered = renderSpread(run);
+    return historyConfirmed ? rendered : `${rendered}\n\n*I couldn't confirm this run was saved to history.*`;
   },
 });

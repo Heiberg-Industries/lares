@@ -1,68 +1,29 @@
-/**
- * `lib/studio/store.ts` — the run-history writer the tool calls after every spread.
- *
- * These use a recording fake pool, and that is a deliberate limit: per the lesson a fake
- * that never executes SQL cannot prove the statement is VALID Postgres. It is not trying to.
- * What it proves is the two things the PORT could have broken — that the inlined `MiniPool`
- * type still accepts a pool-shaped object without the old runtime's `heartbeat.ts`, and that the
- * insert still writes the same four columns into the same unqualified `studio_runs` table that
- * the old agent-runtime wrote to on `lares_state`. The statement itself is unchanged from
- * a table that already exists and is already in daily use, so the remaining risk is the wiring,
- * which is what is checked here. A container test would earn its place the day the SQL changes.
- */
+/** Fixed-column startup check: migrations own the schema; runtime only verifies it exists. */
 import { describe, it, expect } from "vitest";
-import { ensureStudioTables, makeStudioStore, type MiniPool } from "../lib/studio/store.js";
-import type { StudioRun } from "../lib/studio/types.js";
+import { ensureStudioTables } from "../lib/studio/store.js";
 
 function fakeDb() {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
-  const db: MiniPool & { calls: typeof calls } = {
+  const db = {
     calls,
     query: async (sql: string, params?: unknown[]) => {
       calls.push({ sql, params });
-      return { rows: /INSERT INTO studio_runs/.test(sql) ? [{ id: "run-1" }] : [] };
+      return { rows: [] };
     },
   };
   return db;
 }
 
-const run: StudioRun = {
-  brief: "three wedges for another-product",
-  consensus: "another-product turns meetings into structured notes",
-  spread: [{
-    id: "l1-0", lens: "l1", title: "An idea", body: "why", oddsTypical: 0.2,
-    coherence: 0.9, novelty: 0.8, relevance: 0.7, kind: "outlier", rationale: "bold",
-  }],
-};
-
-describe("studio store (ported)", () => {
-  /** Idempotent by construction — it runs on every startup, and on the box the table already
-   *  exists because the old agent-runtime created it. `IF NOT EXISTS` is why no hand-applied DDL is
-   *  needed for this table (unlike sql/001-eve-workflow.sql, which does need applying). */
-  it("ensureStudioTables issues an idempotent, UNQUALIFIED create", async () => {
+describe("studio store schema check", () => {
+  it("checks fixed columns without creating or altering tables", async () => {
     const db = fakeDb();
     await ensureStudioTables(db);
 
     expect(db.calls).toHaveLength(1);
-    expect(db.calls[0]!.sql).toMatch(/CREATE TABLE IF NOT EXISTS studio_runs/);
-    // No schema prefix: the table lands in whatever database DATABASE_URL points at, which the
-    // port keeps on lares_state so the run history carries across the cutover.
+    expect(db.calls[0]!.sql).toMatch(/SELECT id, brief, consensus, spread, picks, principal, created_at, owner_member_id/);
+    expect(db.calls[0]!.sql).toMatch(/LIMIT 0/);
+    expect(db.calls[0]!.sql).not.toMatch(/\b(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE)\b/i);
     expect(db.calls[0]!.sql).not.toMatch(/studio_runs\s*\./);
     expect(db.calls[0]!.sql).not.toMatch(/\w+\.studio_runs/);
-  });
-
-  /** The row the tool writes. `spread` must be serialised — handing the array straight to pg
-   *  writes a Postgres array literal into a jsonb column and fails at runtime, not at compile. */
-  it("recordRun writes brief, consensus, serialised spread and principal, returning the id", async () => {
-    const db = fakeDb();
-    const { id } = await makeStudioStore(db).recordRun(run, { principal: "U_owner1" });
-
-    expect(id).toBe("run-1");
-    const insert = db.calls.find((c) => /INSERT INTO studio_runs/.test(c.sql))!;
-    expect(insert.sql).toMatch(/\(brief, consensus, spread, principal\)/);
-    expect(insert.params).toEqual([
-      run.brief, run.consensus, JSON.stringify(run.spread), "U_owner1",
-    ]);
-    expect(JSON.parse(String(insert.params![2])) as unknown).toEqual(run.spread);
   });
 });
