@@ -746,7 +746,7 @@ say "secrets (files under $SECRETS_DIR, owner 0:$LARES_RUNTIME_GID 0440 — neve
 # generated placeholder here would look exactly like a real key to every check after it.
 lares_secret console-session-secret 32 base64url  # writes $SECRETS_DIR/console-session-secret
 lares_secret console-vault-signing-key 32 hex     # writes $SECRETS_DIR/console-vault-signing-key (console/Keeper request capsule key)
-lares_secret console-model-purpose-signing-key 32 hex # dedicated Console/Keeper model-purpose request capsule key
+lares_secret console-model-purpose-signing-key 32 hex # writes $SECRETS_DIR/console-model-purpose-signing-key (dedicated Console/Keeper model-purpose request capsule key)
 lares_secret database-password      32 base64url  # writes $SECRETS_DIR/database-password
 lares_secret financial-database-password 32 base64url
 lares_secret workflow-provisioner-password 32 base64url
