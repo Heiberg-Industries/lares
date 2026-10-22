@@ -79,9 +79,10 @@ try:
     invalid.write_text(json.dumps({**config_data,'db':{**config_data['db'],'host':'does-not-exist.invalid'}}))
     prepare = root / 'prepare-erase-custody.mts'
     prepare.write_text("import {loadKeeperConfig,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
+                       "import {ensureDreamTables} from '/app/services/chief-of-staff/lib/dream/store.ts';\n"
                        "import {prepareFinancialCustody} from '/app/services/keeper/lib/financial-continuity.ts';\n"
                        "const c=loadKeeperConfig();const p=keeperPool(c.db),db=await p.connect();"
-                       "try{await prepareFinancialCustody(c.budgetFinancial.directory,db);}"
+                       "try{await ensureDreamTables(db);await prepareFinancialCustody(c.budgetFinancial.directory,db);}"
                        "finally{db.release();await p.end();}\n")
 
     # CI initializes this disposable tree as root so the real root-only CLI can meet the
