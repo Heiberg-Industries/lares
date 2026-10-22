@@ -4,6 +4,7 @@ import { mkdtempSync,readFileSync,writeFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PgGrantStore } from '../src/grant-store.js';
+import { consoleSourceTransaction } from '../src/console-source-transaction.js';
 import { closePool } from '../src/db.js';
 import { searchTool,readTool,listTool,backlinksTool } from '../src/note-tools.js';
 import { vi } from 'vitest';
@@ -105,7 +106,14 @@ describe('durable console authority on disposable PostgreSQL',()=>{
  });
  it('uses one connection and serializes capture before concurrent access revocation',async()=>{
   const single=new Pool({connectionString:process.env.DATABASE_URL,max:1,connectionTimeoutMillis:500});
-  try{await bindConsoleSession(tuple,single,env);await requireConsoleSessionBinding(tuple,single,env);}finally{await single.end();}
+  try{
+   await bindConsoleSession(tuple,single,env);await requireConsoleSessionBinding(tuple,single,env);
+   const realConnect=single.connect.bind(single);let checkedOut:any,originalQuery:any;
+   single.connect=(async()=>{checkedOut=await realConnect();originalQuery=checkedOut.query;return checkedOut;}) as typeof single.connect;
+   let workClient:any;
+   await consoleSourceTransaction(single as never,async client=>{workClient=client;await client.query('SELECT 1');},undefined,{deadlineAtMs:Date.now()+5000});
+   expect(workClient).toBe(checkedOut);expect(checkedOut.query).toBe(originalQuery);expect(single.totalCount).toBe(1);expect(single.idleCount).toBe(1);
+  }finally{await single.end();}
   await db.query('DELETE FROM console_session_bindings');
   let revoked!:Promise<void>;
   await authorityTransaction(db,async client=>{

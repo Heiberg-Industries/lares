@@ -13,6 +13,9 @@ const configSchema = z.object({
   publicDoorOrigin: z.string().url().optional(),
   // Optional protected gateway service key only. No recovery bypass or console copy.
   gatewayBudget: z.object({serviceKeyFile:absolute}).strict().optional(),
+  // Optional installer-owned Vault signer. Kept separate from the Keeper's writable secrets
+  // directory so the same protected file is never copied into role custody.
+  vaultConsoleSigningKeyFile: absolute.optional(),
   mode: z.enum(["overlay", "rendered"]), project: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
   dir: absolute, files: z.array(z.string().min(1).refine(s => !s.includes("\u0000"))).min(1),
   agentsDir: absolute, retiredDir: absolute, secretsDir: absolute,

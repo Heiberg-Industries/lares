@@ -11,9 +11,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, rmSync, existsSync, symlinkSync, statSync,
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, rmSync, existsSync, symlinkSync, statSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,7 +52,7 @@ function ledger(...names: string[]) {
 
 /** System tools the script needs, linked into the stub directory so PATH holds nothing else. */
 const SYSTEM_TOOLS = ["bash", "sh", "env", "cat", "sed", "grep", "awk", "tr", "head", "tail", "sort", "ls", "basename", "dirname",
-  "mkdir", "cp", "rm", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3"];
+  "mkdir", "cp", "mv", "rm", "mktemp", "chmod", "find", "wc", "cut", "date", "sleep", "python3", "cmp"];
 function linkSystemTools() {
   for (const t of SYSTEM_TOOLS) {
     const found = spawnSync("/bin/sh", ["-c", `command -v ${t}`], { encoding: "utf8" }).stdout.trim();
@@ -82,9 +83,9 @@ const scratchLeft = () => readdirSync(scratchParent);
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-restore-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   archive = join(dir, "archive"); mkdirSync(archive);
-  scratchParent = join(dir, "scratch"); mkdirSync(scratchParent);
+  scratchParent = join(dir, "scratch"); mkdirSync(scratchParent); scratchParent = realpathSync(scratchParent);
   ledgerFile = join(dir, "ledger.txt");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   linkSystemTools();
@@ -141,16 +142,16 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("restore.sh: a good restore", () => {
   it("does the steps in order: stop, drop and restore, migrate, copy folders, start the keeper last", () => {
-    const r = run(base());
+    const r = run(base(), { env: { COMPOSE_FILE: "/untrusted/override.yaml" } });
     expect(r.code, r.all).toBe(0);
 
-    const stopKeeper = idx(/compose --env-file \S+keeper\.env -f \S+compose\.lares-keeper\.yaml stop/);
+    const stopKeeper = idx(/compose --env-file \S+keeper\.env stop$/);
     const stopRest = idx(/compose -f \S+compose\.yaml stop console caddy lares-gateway/);
     const firstDrop = idx(/dropdb/);
     const lastRestore = lastIdx(/pg_restore .*--exit-on-error/);
     const migrate = idx(/^pnpm -C \S+ migrate$/);
     const baseUp = idx(/compose -f \S+compose\.yaml up -d$/);
-    const keeperUp = idx(/compose\.lares-keeper\.yaml up -d$/);
+    const keeperUp = idx(/compose --env-file \S+keeper\.env up -d$/);
     expect(stopKeeper).toBeGreaterThan(-1);
     expect(stopRest).toBeGreaterThan(stopKeeper);
     expect(firstDrop).toBeGreaterThan(stopRest);
@@ -158,9 +159,35 @@ describe("restore.sh: a good restore", () => {
     expect(baseUp).toBeGreaterThan(migrate);
     expect(keeperUp).toBeGreaterThan(baseUp);
     expect(logLines().length - 1).toBe(keeperUp); // the keeper is the very last command
+    expect(readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8")).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}"`);
+    expect(logLines().filter((line) => /compose --env-file .*keeper\.env/.test(line)).every((line) => !line.includes("/untrusted/override.yaml"))).toBe(true);
     expect(r.all).toContain("Start agent (applies saved definition)");
     expect(r.all).toContain("Apply connection changes (restarts agent)");
     expect(r.all).toContain("configure-google-keeper.py --org");
+  });
+
+  it("restores the prepared Vault overlay and keeps it selected for the keeper recreate", () => {
+    const areaId = randomUUID(), backingId = randomUUID(), planId = randomUUID();
+    const inventory = {
+      version: 1, planId, organisationId: "org.example.invalid", provisionerMemberId: "owner",
+      backing: { id: backingId, kind: "git", root: "/srv" },
+      areas: [{ areaId, kind: "private", owner: { kind: "member", id: "owner" }, relativePath: `vault/private/${areaId}`, origin: `/var/lib/lares-vault-git/${areaId}.git` }],
+    };
+    writeArchive("srv/lares/installation/vault-storage.json", `${JSON.stringify(inventory)}\n`);
+    const work = `srv/vault/private/${areaId}`;
+    writeArchive(`${work}/.lares-vault-area.json`, `${JSON.stringify({ version: 1, areaId, backingStoreId: backingId, relativePath: `vault/private/${areaId}`, kind: "private", owner: { kind: "member", id: "owner" } })}\n`);
+    mkdirSync(join(archive, work, ".git"), { recursive: true });
+    mkdirSync(join(archive, "srv/vault/shared"), { recursive: true });
+    mkdirSync(join(archive, `var/lib/lares-vault-git/${areaId}.git`), { recursive: true });
+
+    const r = run(base(), { env: { LARES_ENGINE_IMAGE: `registry.example/keeper@sha256:${"a".repeat(64)}` } });
+    expect(r.code, r.all).toBe(0);
+    const env = readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8");
+    expect(env).toContain(`LARES_VAULT_WORKING_ROOT="${join(prefix, "srv/vault")}"`);
+    expect(env).toContain(`LARES_VAULT_BARE_ROOT="${join(prefix, "var/lib/lares-vault-git")}"`);
+    expect(env).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}:${join(prefix, "opt/lares/compose.lares-keeper-vault.yaml")}"`);
+    expect(readFileSync(join(prefix, "opt/lares/compose.lares-keeper-vault.yaml"), "utf8")).toBe(readFileSync(join(BOX, "compose.lares-keeper-vault.yaml"), "utf8"));
+    expect(lastIdx(/compose --env-file .*keeper\.env up -d$/)).toBe(logLines().length - 1);
   });
 
   it("restores every dump except postgres into a dropped-and-recreated database, and postgres.dump into postgres", () => {

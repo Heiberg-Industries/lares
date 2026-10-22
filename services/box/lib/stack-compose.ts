@@ -5,12 +5,15 @@
  * both up together); this file never mentions the keeper.
  */
 import { stringify } from "yaml";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 
 export interface StackComposeOptions {
   /** Absolute path to the secrets directory ($PREFIX/etc/lares/secrets). */
   readonly secretsDir: string;
+  /** Exact regular-file custody path selected by render-stack, absent when Vault signing
+   *  custody is not prepared. Omission keeps ordinary console startup independent of Vault. */
+  readonly consoleVaultSigningKeyFile?: string | null;
   /** Host directory shared with keeper for the console's private Unix socket. */
   readonly socketDir: string;
   /** Host-owned Preferences store, writable by the console's uid 10001. */
@@ -61,6 +64,11 @@ export const DEADLINE_CALENDAR_IN_CONTAINER = "/srv/lares/installation/deadline-
  *  them. Never mentions the keeper — F7 appends that service with a second file. */
 export function renderStackCompose(manifest: ReleaseManifest, opts: StackComposeOptions): string {
   const secret = (name: string) => ({ file: `${opts.secretsDir}/${name}` });
+  const consoleVaultSigningKeyFile = opts.consoleVaultSigningKeyFile ?? null;
+  if (consoleVaultSigningKeyFile !== null && (!isAbsolute(consoleVaultSigningKeyFile) || /[\n\r\0]/.test(consoleVaultSigningKeyFile)))
+    throw new Error("Console Vault signing-key path must be absolute");
+  if (consoleVaultSigningKeyFile !== null && consoleVaultSigningKeyFile !== join(opts.secretsDir, "console-vault-signing-key"))
+    throw new Error("Console Vault signing-key path must name its custody file");
   // Where the gateway's start script is executed inside the container. Named ONCE and used
   // twice below (the mount target and the entrypoint) so the two can never drift — a mismatch
   // between them is a container whose entrypoint does not exist, which Docker reports long
@@ -95,6 +103,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       ],
       secrets: [
         "console-session-secret",
+        ...(consoleVaultSigningKeyFile ? ["console-vault-signing-key"] : []),
         "eve-route-password",
         "database-password",
         "token-enc-key",
@@ -111,6 +120,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         CONSOLE_OAUTH_REDIRECT: `https://${opts.domain}/api/auth/callback`,
         LARES_PUBLIC_DOOR_ORIGIN: `https://${opts.domain}`,
         CONSOLE_SESSION_SECRET_FILE: "/run/secrets/console-session-secret",
+        ...(consoleVaultSigningKeyFile ? { CONSOLE_VAULT_SIGNING_KEY_FILE: "/run/secrets/console-vault-signing-key" } : {}),
         EVE_ROUTE_PASSWORD_FILE: "/run/secrets/eve-route-password",
         // The console encrypts the Google refresh token with the SAME key the agents decrypt
         // with (`services/console/lib/accounts.ts` → readSecret("TOKEN_ENC_KEY")); without it,
@@ -223,6 +233,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
   const secrets: Record<string, unknown> = {
     "database-password": secret("database-password"),
     "console-session-secret": secret("console-session-secret"),
+    ...(consoleVaultSigningKeyFile ? { "console-vault-signing-key": { file: consoleVaultSigningKeyFile } } : {}),
     "eve-route-password": secret("eve-route-password"),
     "gateway-key": secret("gateway-key"),
     "gateway-master-key": secret("gateway-master-key"),

@@ -111,6 +111,7 @@ PREFIX="${PREFIX_ARG:-${LARES_PREFIX:-/}}"
 # P: where a logical path (/etc/lares/...) really lives, given the prefix.
 export LARES_PREFIX="${PREFIX%/}"
 P() { printf '%s%s' "${PREFIX%/}" "$1"; }
+keeper_dc() { env -u COMPOSE_FILE docker compose --env-file "$KEEPER_ENV" "$@"; }
 
 if [ -z "$SNAPSHOT" ]; then
   echo "restore: --snapshot <id|latest> is required, so I have not done anything." >&2
@@ -125,6 +126,8 @@ SRV_LARES=$(P /srv/lares)
 TASTE_DIR=$(P /srv/taste)
 COMPOSE_FILE="$OPT_LARES/compose.yaml"
 KEEPER_COMPOSE="$OPT_LARES/compose.lares-keeper.yaml"
+KEEPER_VAULT_COMPOSE="$OPT_LARES/compose.lares-keeper-vault.yaml"
+KEEPER_VAULT_COMPOSE_SOURCE="$BOX_DIR/compose.lares-keeper-vault.yaml"
 KEEPER_ENV="$ETC_LARES/keeper.env"
 KEEPER_JSON="$ETC_LARES/keeper.json"
 AGENTS_COMPOSE="$SRV_LARES/compose.lares-agents.yaml"
@@ -414,12 +417,36 @@ midway() { # midway <what failed>
 # valid_name: the last guard in front of any database command.
 valid_name() { printf '%s' "$1" | grep -Eq '^[a-z0-9_]+$'; }
 
+# Persist the exact, trusted compose selection in keeper.env. Future `docker compose
+# --env-file /etc/lares/keeper.env` calls therefore keep the prepared Vault overlay selected.
+write_keeper_compose_selection() { # 0 base only; 1 verified Vault inventory and overlay
+  local include_vault="$1" temporary
+  temporary=$(mktemp "$ETC_LARES/.keeper.env.XXXXXX") || midway 'Could not prepare the keeper compose selection.'
+  if ! awk -F= '$1 != "COMPOSE_FILE" && $1 != "LARES_VAULT_WORKING_ROOT" && $1 != "LARES_VAULT_BARE_ROOT"' "$KEEPER_ENV" > "$temporary"; then
+    rm -f "$temporary"
+    midway 'Could not read the existing keeper environment while selecting its compose files.'
+  fi
+  if [ "$include_vault" = 1 ]; then
+    [ -f "$KEEPER_VAULT_COMPOSE_SOURCE" ] || midway 'The release is missing the optional keeper Vault compose file.'
+    if [ -e "$KEEPER_VAULT_COMPOSE" ]; then
+      cmp -s "$KEEPER_VAULT_COMPOSE_SOURCE" "$KEEPER_VAULT_COMPOSE" || midway 'The installed keeper Vault compose file differs from this release; reconcile it before restore.'
+    else
+      cp -p "$KEEPER_VAULT_COMPOSE_SOURCE" "$KEEPER_VAULT_COMPOSE" || midway 'Could not install the verified keeper Vault compose file.'
+    fi
+    printf 'LARES_VAULT_WORKING_ROOT="%s"\nLARES_VAULT_BARE_ROOT="%s"\nCOMPOSE_FILE="%s:%s"\n' \
+      "$(P /srv/vault)" "$(P /var/lib/lares-vault-git)" "$KEEPER_COMPOSE" "$KEEPER_VAULT_COMPOSE" >> "$temporary" || midway 'Could not save the prepared keeper compose selection.'
+  else
+    printf 'COMPOSE_FILE="%s"\n' "$KEEPER_COMPOSE" >> "$temporary" || midway 'Could not save the base keeper compose selection.'
+  fi
+  chmod 0640 "$temporary" && mv -f "$temporary" "$KEEPER_ENV" || midway 'Could not install the selected keeper compose environment.'
+}
+
 # A host-only action stops admission synchronously, drains the current owner boundedly,
 # fsyncs a permanent freeze under the lifetime kernel lock, then acknowledges. If the keeper
 # is unavailable, the host command must acquire that SAME lock; contention stops restore.
 if [ "$FINANCIAL_PREPARED" = 1 ];then
   say 'permanently freezing prepared financial custody before stopping any service'
-  if ! docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" exec -T lares-keeper \
+  if ! keeper_dc exec -T lares-keeper \
     /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
     if [ "$ENGINE_MODE" = image ];then
       engine_run --ro "$KEEPER_JSON" --rw "$(P /var/lib/lares)" ../keeper/bin/budget-financial.ts freeze --host "$KEEPER_JSON" </dev/null \
@@ -433,7 +460,7 @@ if [ "$FINANCIAL_PREPARED" = 1 ];then
 fi
 
 say "stopping the keeper, then console, caddy and the model gateway (the database stays up)"
-docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" stop </dev/null || midway "Could not stop the keeper."
+keeper_dc stop </dev/null || midway "Could not stop the keeper."
 CHANGED="the keeper is stopped"
 dc stop console caddy lares-gateway </dev/null || midway "Could not stop console, caddy and the gateway."
 CHANGED="the keeper, console, caddy and gateway are stopped"
@@ -510,6 +537,7 @@ fi
 if [ -r "$HERE/vault-storage.sh" ];then
   vault_storage_load "${PREFIX%/}" || midway 'Restored Vault inventory is incomplete.'
   vault_storage_verify "${PREFIX%/}" "$DB_NAME" verify >/dev/null || midway 'Restored Vault database, files, ownership or Git pairing did not verify.'
+  write_keeper_compose_selection "$VAULT_STORAGE_PRESENT"
 fi
 PRESERVE_SCRATCH=0
 
@@ -520,7 +548,7 @@ else
 fi
 dc up -d </dev/null || midway "Could not start the base stack."
 CHANGED="$CHANGED; base stack started"
-docker compose --env-file "$KEEPER_ENV" -f "$KEEPER_COMPOSE" up -d </dev/null || midway "Could not start the keeper."
+keeper_dc up -d </dev/null || midway "Could not start the keeper."
 if [ "$FINANCIAL_PREPARED" = 1 ];then
   CHANGED="$CHANGED; keeper start requested (financial recovery required)"
   say "restored snapshot $SNAPSHOT: ${#DUMPS[@]} database(s), ${#AGENT_NAMES[@]} agent folder(s)."
@@ -539,7 +567,7 @@ say "What is left, in this order:"
 step=1
 say "  $step. Google connection, once per organisation: add GOOGLE_CLIENT_ID_<ORG> and GOOGLE_CLIENT_SECRET_<ORG> to /etc/lares/console-oauth.env if they are not already there, then run:"
 say "       python3 $HERE/configure-google-keeper.py --org <org>"
-say "       and restart only the keeper: docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart"
+say "       and restart only the keeper: env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env restart"
 step=$((step + 1))
 say "  $step. Point DNS for $RESTORED_DOMAIN at THIS server (the old server must stay off)."
 # The installer only mounts the deadline calendar when the file is there when it runs, and the

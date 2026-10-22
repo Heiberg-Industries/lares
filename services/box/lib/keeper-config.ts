@@ -107,6 +107,9 @@ export function renderKeeperConfig(
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
     ...(opts.previousBudgetFinancial?{budgetFinancial:opts.previousBudgetFinancial}:{}),
+    // The installer owns this signer in its protected secrets directory. Keeper reads the
+    // exact file through the existing read-only installer-secrets mount; it is never copied.
+    vaultConsoleSigningKeyFile: join(opts.secretsDir, "console-vault-signing-key"),
     // Definitions resolved at runtime on neutral engine images (ADR-0015). "overlay" is the
     // older per-agent-image machinery; a fresh install is never that.
     mode: "rendered",

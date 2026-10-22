@@ -63,6 +63,7 @@ export class AgentLifecycle {
     constructor(private pool: Pool, admin: Pool, private config: LifecycleConfig, private paths: {
         agentsDir: string;
         secretsDir: string;
+        vaultRuntimeDir?: string;
         credentials?: { administrator?: string };
     }, private docker: DockerBoundary, private provisionSecret = runtimeSecret, private verifySecrets = verifySecretRoot,
     private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys()) {
@@ -300,7 +301,7 @@ export class AgentLifecycle {
                 agents[i] = this.container(row, row.applied_definition, agents[i]!.notionRevision, granted);
         }
         for (let i=0;i<agents.length;i++) agents[i]=await this.connections(agents[i],agents[i].name===override?.name);
-        atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, agentsDir: this.paths.agentsDir, secretsDir: this.paths.secretsDir, modelPrefix, consoleAdministrator: this.paths.credentials?.administrator }));
+        atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, agentsDir: this.paths.agentsDir, secretsDir: this.paths.secretsDir, vaultRuntimeDir: this.paths.vaultRuntimeDir, modelPrefix, consoleAdministrator: this.paths.credentials?.administrator }));
         await this.docker.config();
     }
     async prepare(name: string, d: AgentDefinition, create: boolean) {

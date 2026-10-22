@@ -39,6 +39,7 @@ describe("unpack-engine.sh", () => {
       ...filesIn("services/box/ops"),
       ...filesIn("services/box/sql"),
       "services/box/compose.lares-keeper.yaml",
+      "services/box/compose.lares-keeper-vault.yaml",
       "services/box/engine-image",
       "services/creative/sql/001-eve-workflow.sql",
     ].sort();
@@ -62,6 +63,7 @@ describe("unpack-engine.sh", () => {
       cpSync(join(REPO, "services/box/ops"), join(fake, "services/box/ops"), { recursive: true });
       cpSync(join(REPO, "services/box/sql"), join(fake, "services/box/sql"), { recursive: true });
       cpSync(join(REPO, "services/box/compose.lares-keeper.yaml"), join(fake, "services/box/compose.lares-keeper.yaml"));
+      cpSync(join(REPO, "services/box/compose.lares-keeper-vault.yaml"), join(fake, "services/box/compose.lares-keeper-vault.yaml"));
       // the creative workflow schema is deliberately absent
       const r = run(["rel-1", DIGEST], fake);
       expect(r.status).not.toBe(0);

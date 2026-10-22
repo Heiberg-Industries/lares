@@ -3,10 +3,17 @@ import {currentMember} from './member-store.js';
 export interface SourceDatabase {query(sql:string,values?:any[]):Promise<{rows:any[];command?:string}>}
 export interface SourcePool extends SourceDatabase {connect():Promise<SourceDatabase & {release(error?:boolean):void}>}
 export interface SourceBinding {agent:string;incarnation:string;sessionId:string;memberId:string;admissionNonce:string}
+export interface SourceTransactionOptions {
+  deadlineAtMs?:number;
+  /** Synchronous denial-only guard immediately before an acknowledged COMMIT. */
+  beforeCommit?:()=>void;
+  /** Synchronous denial-only guard after COMMIT acknowledgement and before exposing buffered output. */
+  afterCommit?:()=>void;
+}
 const REFUSED='Conversation authority is not available';
 export class SourceAuthorityDenied extends Error {constructor(){super(REFUSED);}}
 export class SourceAuthorityUnavailable extends Error {constructor(){super('Conversation authority could not be confirmed');}}
-interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>}
+interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;deadlineAtMs?:number}
 export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'unknown';
 export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gateway_bindings'|'budget_attempts'|'budget_gateway_grants';
 export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
@@ -76,21 +83,66 @@ export async function checkConsoleSourceDeadlines(db:SourceDatabase):Promise<str
   // PostgreSQL retains sub-millisecond precision when choosing the earliest deadline.
   return (await db.query('SELECT min(deadline)::text AS deadline FROM unnest($1::timestamptz[]) deadline',[[...state.deadlines.values()].map(v=>v.deadline)])).rows[0].deadline;
 }
-export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db:SourceDatabase)=>Promise<T>,boundary?:SourceTransactionBoundary):Promise<T>{
-  if(owners.has(source)){if(boundary)throw new Error(REFUSED);return work(source);}
+const MAX_OWNED_QUERY_TIMEOUT_MS=1000;
+async function connectUntil(source:SourcePool,deadlineAtMs:number):Promise<SourceDatabase&{release(error?:boolean):void}>{
+  const connection=source.connect();let timer:ReturnType<typeof setTimeout>|undefined;
+  let acquired=false;
+  try{const client=await Promise.race([connection,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(REFUSED)),Math.max(0,deadlineAtMs-Date.now()));})]);acquired=true;if(deadlineAtMs<=Date.now()){client.release(true);throw new Error(REFUSED);}return client;}
+  catch(error){if(!acquired)void connection.then(client=>client.release(true),()=>{});throw error;}
+  finally{if(timer)clearTimeout(timer);}
+}
+export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db:SourceDatabase)=>Promise<T>,boundary?:SourceTransactionBoundary,options:SourceTransactionOptions={}):Promise<T>{
+  if(options.deadlineAtMs!==undefined&&(!Number.isFinite(options.deadlineAtMs)||options.deadlineAtMs<=Date.now()))throw new Error(REFUSED);
+  if(owners.has(source)){
+    if(boundary||options.beforeCommit||options.afterCommit)throw new Error(REFUSED);
+    const parent=owner(source);
+    if(options.deadlineAtMs!==undefined){if(parent.deadlineAtMs===undefined||options.deadlineAtMs>parent.deadlineAtMs)throw new Error(REFUSED);parent.deadlineAtMs=Math.min(parent.deadlineAtMs,options.deadlineAtMs);}
+    return work(source);
+  }
   if(!('connect' in source)||'release' in source)throw new Error(REFUSED);
   const selected=boundary?boundaries.get(boundary):undefined;
   if(boundary&&(!selected||selected.used))throw new Error(REFUSED);
   if(selected)selected.used=true;
   let db:(SourceDatabase&{release(error?:boolean):void})|undefined;
-  const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map()};
-  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false;
+  const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map(),...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})};
+  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false;
+  let originalQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,queryDescriptor:PropertyDescriptor|undefined;
+  const remaining=()=>state.deadlineAtMs===undefined?undefined:Math.max(0,state.deadlineAtMs-Date.now());
+  const boundedQueryTimeout=()=>{const left=remaining();if(left===undefined)return undefined;if(left<=0)throw new Error(REFUSED);return Math.max(1,Math.min(MAX_OWNED_QUERY_TIMEOUT_MS,Math.ceil(left)));};
+  const rawQuery=async(sql:string,values?:any[],timeout=MAX_OWNED_QUERY_TIMEOUT_MS)=>originalQuery!({text:sql,...(values===undefined?{}:{values}),query_timeout:timeout});
+  const installQueryBound=()=>{
+    if(options.deadlineAtMs===undefined)return;
+    originalQuery=db!.query.bind(db!) as typeof originalQuery;queryDescriptor=Object.getOwnPropertyDescriptor(db!,'query');
+    Object.defineProperty(db!,'query',{configurable:true,writable:true,value:async(sql:string,values?:any[])=>{
+      const timeout=boundedQueryTimeout()!;
+      const command=/^\s*(BEGIN|COMMIT|ROLLBACK)\b/i.exec(sql)?.[1]?.toUpperCase();
+      try{
+        if(txOpen&&command!=='COMMIT'&&command!=='ROLLBACK'){
+          const before=boundedQueryTimeout()!;
+          await rawQuery("SELECT set_config('statement_timeout',$1,true)",[`${before}ms`],before);
+        }
+        const queryTimeout=boundedQueryTimeout()!;
+        const result=await rawQuery(sql,values,queryTimeout);
+        if(command==='BEGIN'){
+          txOpen=true;const afterBegin=boundedQueryTimeout()!;
+          await rawQuery("SELECT set_config('statement_timeout',$1,true)",[`${afterBegin}ms`],afterBegin);
+          await rawQuery("SELECT set_config('lock_timeout','500ms',true)",undefined,boundedQueryTimeout()!);
+        }
+        if(command==='COMMIT'||command==='ROLLBACK')txOpen=false;
+        // Once PostgreSQL has acknowledged COMMIT, a crossed wall-clock deadline can
+        // withhold the buffered result but must not rewrite the durable outcome as unknown.
+        if(command!=='COMMIT'&&remaining()===0)throw new Error(REFUSED);
+        return result;
+      }catch(e){if(e&&typeof e==='object'&&(('code'in e&&String((e as {code?:unknown}).code)==='QUERY_TIMEOUT')||('message'in e&&String((e as {message?:unknown}).message)==='Query read timeout')))broken=true;throw e;}
+    }});
+  };
+  const restoreQueryBound=()=>{if(!db||!originalQuery)return;if(queryDescriptor)Object.defineProperty(db,'query',queryDescriptor);else delete (db as {query?:unknown}).query;originalQuery=undefined;};
   const rollback=async()=>{
-    try{if((await db!.query('ROLLBACK')).command!=='ROLLBACK')throw new Error(REFUSED);originalOpen=false;outcome='rollback-acknowledged';}
+    try{const result=options.deadlineAtMs===undefined?await db!.query('ROLLBACK'):await rawQuery('ROLLBACK',undefined,MAX_OWNED_QUERY_TIMEOUT_MS);if(result.command!=='ROLLBACK')throw new Error(REFUSED);txOpen=false;originalOpen=false;outcome='rollback-acknowledged';}
     catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
   };
   try{
-    db=await (source as SourcePool).connect();owners.set(db,state);if(selected)financialChanges.set(db,new Map());
+    db=options.deadlineAtMs===undefined?await (source as SourcePool).connect():await connectUntil(source as SourcePool,options.deadlineAtMs);installQueryBound();owners.set(db,state);if(selected)financialChanges.set(db,new Map());
     outcome='unknown';
     if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();originalOpen=true;
     try{
@@ -103,39 +155,44 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
         // branch below, never a late financial COMMIT after those observations.
         await checkConsoleSourceDeadlines(db);
       }
+      if(!state.retire.size)options.beforeCommit?.();
     }catch(e){error=e;failed=true;}
     if(state.retire.size){
       await rollback();
       // Only exact revoke-only updates survive, on this same checked-out client.
       try{
         outcome='unknown';
-        if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();compensationOpen=true;
-        for(const b of state.retire.values())await db.query(`UPDATE console_session_bindings SET revoked_at=COALESCE(revoked_at,clock_timestamp())
+        const compensationQuery=(sql:string,values?:any[])=>options.deadlineAtMs===undefined?db!.query(sql,values):rawQuery(sql,values,MAX_OWNED_QUERY_TIMEOUT_MS);
+        if((await compensationQuery('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();compensationOpen=true;
+        if(options.deadlineAtMs!==undefined){await compensationQuery("SELECT set_config('statement_timeout','900ms',true)");await compensationQuery("SELECT set_config('lock_timeout','500ms',true)");}
+        for(const b of state.retire.values())await compensationQuery(`UPDATE console_session_bindings SET revoked_at=COALESCE(revoked_at,clock_timestamp())
           WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3 AND member_id=$4 AND admission_nonce=$5`,[b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce]);
       }catch{
-        if(compensationOpen){try{if((await db.query('ROLLBACK')).command!=='ROLLBACK')throw new Error(REFUSED);compensationOpen=false;outcome='source-retirement-rolled-back';}catch{broken=true;outcome='unknown';}}
+        if(compensationOpen){try{const result=options.deadlineAtMs===undefined?await db.query('ROLLBACK'):await rawQuery('ROLLBACK',undefined,MAX_OWNED_QUERY_TIMEOUT_MS);if(result.command!=='ROLLBACK')throw new Error(REFUSED);compensationOpen=false;outcome='source-retirement-rolled-back';}catch{broken=true;outcome='unknown';}}
         else{broken=true;outcome='unknown';}
         throw new SourceAuthorityUnavailable();
       }
       // A lost compensation COMMIT acknowledgement is permanently unknown, even if
       // a later cleanup ROLLBACK succeeds. It cannot complete a financial proposal.
-      try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();compensationOpen=false;outcome='source-retirement-acknowledged';}
+      try{const result=options.deadlineAtMs===undefined?await db.query('COMMIT'):await rawQuery('COMMIT',undefined,MAX_OWNED_QUERY_TIMEOUT_MS);if(result.command!=='COMMIT')throw new SourceAuthorityUnavailable();compensationOpen=false;outcome='source-retirement-acknowledged';}
       catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
       throw new SourceAuthorityDenied();
     }
     if(failed){await rollback();throw error;}
     try{if((await db.query('COMMIT')).command!=='COMMIT')throw new SourceAuthorityUnavailable();originalOpen=false;outcome='commit-acknowledged';}
     catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
+    options.afterCommit?.();
+    if(state.deadlineAtMs!==undefined&&Date.now()>=state.deadlineAtMs)throw new Error(REFUSED);
     return result as T;
   }catch(e){
     if(db&&(originalOpen||compensationOpen||outcome==='unknown')){
       // Cleanup never converts an earlier unknown COMMIT/BEGIN/ROLLBACK into known abort.
-      await db.query('ROLLBACK').catch(()=>{broken=true;});
+      try{const result=options.deadlineAtMs===undefined?await db.query('ROLLBACK'):await rawQuery('ROLLBACK',undefined,MAX_OWNED_QUERY_TIMEOUT_MS);if(result.command!=='ROLLBACK')broken=true;}catch{broken=true;}
       if(outcome==='unknown')broken=true;
     }
     throw e;
   }finally{
-    if(db){owners.delete(db);financialChanges.delete(db);db.release(broken);}
+    if(db){try{restoreQueryBound();}catch{broken=true;}finally{owners.delete(db);financialChanges.delete(db);try{db.release(broken);}catch{broken=true;}}}
     if(selected){try{await selected.hooks.settled(outcome);}catch{throw new SourceAuthorityUnavailable();}}
   }
 }

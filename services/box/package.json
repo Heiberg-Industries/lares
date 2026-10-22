@@ -11,6 +11,7 @@
     "./lib/notion-proposals.js": "./lib/notion-proposals.ts",
     "./lib/atlas-proposals.js": "./lib/atlas-proposals.ts",
     "./lib/crypto.js": "./lib/crypto.ts",
+    "./lib/vault-storage.js": "./lib/vault-storage.ts",
     "./lib/migration-ledger.js": "./lib/migration-ledger.ts",
     "./lib/migration-runner.js": "./lib/migration-runner.ts",
     "./tests/helpers/pg.js": "./tests/helpers/pg.ts"

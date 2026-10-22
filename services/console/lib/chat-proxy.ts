@@ -33,6 +33,8 @@ import type { Member } from "@lares/agent-kit/authority-contract";
  */
 import { isIP } from "node:net";
 import { chatSessionCapabilityCookie, hasChatSessionCapability, validChatSessionId } from "./chat-session-capability";
+import { createHash } from "node:crypto";
+import { signPrivateVaultRequest, PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER } from "./vault-capsule";
 
 /**
  * The username the agent's own door answers to (`ROUTE_USERNAME` in every role's
@@ -200,7 +202,7 @@ export async function forwardChat(request: Request, name: string, path: string, 
     // 3. The address comes from the console's own registry, by bound parameter — never from the
     //    request. An agent this console cannot vouch for is a 404 with no call made.
     const { rows } = await deps.query(
-      `SELECT host(r.address) AS address, r.state, a.status, r.runtime_control_token,
+      `SELECT host(r.address) AS address, r.state, a.status, a.hash AS definition_hash, r.runtime_control_token,
         r.ownership_token AS incarnation, r.applied_definition->>'role' AS role
         FROM agent_resources r JOIN agent_definitions a ON a.name = r.name
         WHERE r.name = $1 AND r.state = 'ready' AND NOT r.pending AND a.status = 'valid'`,
@@ -254,6 +256,18 @@ export async function forwardChat(request: Request, name: string, path: string, 
       headers.set(CONSOLE_MEMBER_ID_HEADER, stableMember.id);
       headers.set(CONSOLE_ADMISSION_HEADER, nonce);
       headers.set(CONSOLE_PURPOSE_HEADER, purpose);
+    }
+
+    // The browser never supplies this capability. It is available only for a non-empty human
+    // message to an already-bound session; an empty create and ordinary chat remain unchanged.
+    if (sessionId && body?.length && purpose === "human" && /^eve\/v1\/session\/[A-Za-z0-9_-]{1,64}$/.test(path) && tuple && typeof rows[0]!.definition_hash === "string") {
+      try {
+        const capsule=await signPrivateVaultRequest({agent:name,incarnation:rows[0]!.incarnation as string,session:sessionId,
+          member:stableMember.id,admissionNonce:nonce,method:request.method,path:`/${path}`,
+          rawBodyHash:createHash("sha256").update(body).digest("hex"),policyRevision:tuple.policyRevision,
+          definitionHash:rows[0]!.definition_hash as string});
+        headers.set(PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER,capsule);
+      } catch { /* Missing broker/key custody disables only the private Vault reader. */ }
     }
 
     const search = new URLSearchParams();

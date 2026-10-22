@@ -217,7 +217,7 @@ docker compose -f /opt/lares/compose.yaml logs --tail 200 console caddy
 
 You should see `db`, `console`, `lares-gateway` and `caddy` running. The keeper and the egress
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
-`docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml ps`.
+`env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps`.
 
 **Before the first owner sign-in**, complete the explicit
 [provider-identity adoption](member-authority.md#provider-setup-and-existing-owner-adoption).
@@ -597,7 +597,7 @@ Ubuntu server with the tools from section 1, plus `restic` (`apt-get install -y 
    1. Google, once per organisation: add `GOOGLE_CLIENT_ID_<ORG>` and `GOOGLE_CLIENT_SECRET_<ORG>`
       to `/etc/lares/console-oauth.env` if they are not already there, then run
       `python3 /opt/lares/current/services/box/ops/configure-google-keeper.py --org <org>` and restart only the
-      keeper: `docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml restart`.
+      keeper: `env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env restart`.
    2. Point DNS for your domain at this server. You already did in step 2; check it still holds.
    3. Only when the snapshot held a deadline calendar: run the installer again with the same
       release so it mounts the calendar:

@@ -4,7 +4,10 @@ import {currentVaultArea,vaultAreaAllows} from './vault-area-store.js';
 import {grantedVaultAreas} from './manifest.js';
 import {hashOf,type LoadedDefinition} from './definition.js';
 import {invalidateConsoleSource,requireConsoleSourceOwner,requireNewConsoleSourcesBeforeBinding,retainConsoleSourceDeadline,type SourceBinding,type SourceDatabase} from './console-source-transaction.js';
-export interface RequestedVaultSources {sessionDefinition:LoadedDefinition;areaIds:readonly string[]}
+/** Only canonical definition material crosses the role/Keeper boundary. A local `dir` is never
+ * needed to validate the trusted loaded-definition hash and must not cross that boundary. */
+export type SessionDefinitionMaterial=Pick<LoadedDefinition,'definition'|'dutiesMd'|'voiceMd'|'hash'>;
+export interface RequestedVaultSources {sessionDefinition:SessionDefinitionMaterial;areaIds:readonly string[]}
 interface Capture {area_id:string;access_revision:string;session_definition_hash:string;original_valid_until:string|null}
 const values=(b:SourceBinding)=>[b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce];
 export async function retainedConsoleSources(db:SourceDatabase,b:SourceBinding):Promise<Capture[]>{

@@ -11,8 +11,8 @@ import { vaultAreaBindingSchema, vaultWriteBindingSchema, type VaultAreaBinding,
 import type { GrantDatabase } from './grant-store.js';
 import type { PgVaultStore } from './vault-area-store.js';
 import { findBacklinks, listNotes, NoteNotFoundError, NotePathEscapesStoreError, resolveInStore, searchNotes } from './notes-store.js';
-import { withVaultRepositoryLock } from './note-lock.js';
-import { commitNote, moveNote, removeNote, runVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultGitGuard } from './vault-git.js';
+import { withGuardedVaultRepositoryLock } from './note-lock.js';
+import { commitNote, moveNote, removeNote, runGuardedVaultGit, vaultCompanionOf, vaultContentRevision, VaultContentChangedError, VaultPushFailedError, VaultStagedChangesError, type VaultGitGuard } from './vault-git.js';
 import { articleCompanionPath } from '@lares/vault-format/article';
 
 export const VAULT_AREA_MARKER = '.lares-vault-area.json';
@@ -92,8 +92,8 @@ export class GuardedVaultFiles {
       const origin=directory(originEntry.origin);
       if(under(origin,root)||under(root,origin))throw new VaultFilesUnavailableError();
       const gitDir=join(root,'.git');
-      if(directory(gitDir)!==join(root,'.git') || runVaultGit(root,['rev-parse','--show-toplevel']).trim()!==root ||
-        runVaultGit(root,['rev-parse','--path-format=absolute','--git-common-dir']).trim()!==gitDir) throw new VaultFilesUnavailableError();
+      if(directory(gitDir)!==join(root,'.git') || runGuardedVaultGit(root,origin,['rev-parse','--show-toplevel']).trim()!==root ||
+        runGuardedVaultGit(root,origin,['rev-parse','--path-format=absolute','--git-common-dir']).trim()!==gitDir) throw new VaultFilesUnavailableError();
       // An alternate object store could expose another area's retained history.
       try {lstatSync(join(gitDir,'objects/info/alternates'));throw new VaultFilesUnavailableError();}
       catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
@@ -105,10 +105,10 @@ export class GuardedVaultFiles {
         throw new VaultFilesUnavailableError();
       // No external origin is needed for basic notes, including reads of initialized areas.
       for(const args of [['remote','get-url','--all','origin'],['remote','get-url','--push','--all','origin']]){
-        const urls=runVaultGit(root,args).trim().split('\n');
+        const urls=runGuardedVaultGit(root,origin,args).trim().split('\n');
         if(urls.length!==1||!isAbsolute(urls[0])||realpathSync(urls[0])!==origin)throw new VaultFilesUnavailableError();
       }
-      if(runVaultGit(origin,['rev-parse','--is-bare-repository']).trim()!=='true'||runVaultGit(origin,['rev-parse','--path-format=absolute','--git-common-dir']).trim()!==origin)throw new VaultFilesUnavailableError();
+      if(runGuardedVaultGit(root,origin,['-C',origin,'rev-parse','--is-bare-repository']).trim()!=='true'||runGuardedVaultGit(root,origin,['-C',origin,'rev-parse','--path-format=absolute','--git-common-dir']).trim()!==origin)throw new VaultFilesUnavailableError();
       try {lstatSync(join(origin,'objects/info/alternates'));throw new VaultFilesUnavailableError();}
       catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
       return {root,origin};
@@ -116,7 +116,7 @@ export class GuardedVaultFiles {
   }
   private async readArea<T>(ctx:VaultFilesContext,fn:(root:string)=>T):Promise<T> {
     const binding=await this.authorize(ctx,'use'),area=this.area(binding);
-    return withVaultRepositoryLock(area.root,async()=>{
+    return withGuardedVaultRepositoryLock(area.root,area.origin,async()=>{
       const current=await this.authorize(ctx,'use');
       const checked=this.area(current);
       if(checked.root!==area.root||checked.origin!==area.origin)throw new VaultFilesUnavailableError();

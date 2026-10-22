@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { parse } from "yaml";
 import { denylistPatterns } from "./helpers/denylist.js";
 import { renderStackCompose } from "../lib/stack-compose.js";
+import { optionalRegularFile } from "../bin/render-stack.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
 const D = (n: string) => `example.invalid/lares-${n}@sha256:${"a".repeat(64)}`;
@@ -35,6 +36,23 @@ const OPTS = {
 };
 
 describe("the generated stack compose file", () => {
+  it("mounts only an existing regular Vault key file, never a symlink or directory", async () => {
+    const { mkdtemp, mkdir, rm, symlink, writeFile } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const root = await mkdtemp(join(tmpdir(), "lares-vault-render-"));
+    try {
+      const missing = join(root, "missing");
+      expect(optionalRegularFile(missing)).toBeNull();
+      const key = join(root, "key"); await writeFile(key, "fixture");
+      expect(optionalRegularFile(key)).toBe(key);
+      const folder = join(root, "folder"); await mkdir(folder);
+      expect(optionalRegularFile(folder)).toBeNull();
+      const link = join(root, "link"); await symlink(key, link);
+      expect(optionalRegularFile(link)).toBeNull();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("gives the console the deadline calendar read-only, with the setting naming it, only when the file exists", () => {
     const host = "/srv/lares/installation/deadline-calendar.json";
     const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, deadlineCalendarFile: host })) as any;
@@ -102,6 +120,7 @@ describe("the generated stack compose file", () => {
     expect(env.DATABASE_URL).toBeUndefined();
     // services/console/lib/accounts.ts throws without it when an account is connected.
     expect(env.TOKEN_ENC_KEY_FILE).toBe("/run/secrets/token-enc-key");
+    expect(env.CONSOLE_VAULT_SIGNING_KEY_FILE).toBeUndefined();
     for (const name of [
       "database-password",
       "token-enc-key",
@@ -111,6 +130,18 @@ describe("the generated stack compose file", () => {
       expect(doc.services.console.secrets).toContain(name);
       expect(doc.secrets[name].file).toBe(`${OPTS.secretsDir}/${name}`);
     }
+    expect(doc.services.console.secrets).not.toContain("console-vault-signing-key");
+    expect(doc.secrets["console-vault-signing-key"]).toBeUndefined();
+  });
+
+  it("mounts the Vault signing key only when render-stack supplies its exact regular-file custody path", () => {
+    const keyFile = `${OPTS.secretsDir}/console-vault-signing-key`;
+    const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, consoleVaultSigningKeyFile: keyFile })) as any;
+    expect(doc.services.console.environment.CONSOLE_VAULT_SIGNING_KEY_FILE).toBe("/run/secrets/console-vault-signing-key");
+    expect(doc.services.console.secrets).toContain("console-vault-signing-key");
+    expect(doc.secrets["console-vault-signing-key"].file).toBe(keyFile);
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleVaultSigningKeyFile: "relative/key" })).toThrow("absolute");
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleVaultSigningKeyFile: `${OPTS.secretsDir}/other` })).toThrow("custody file");
   });
 
   it("turns the gateway's local cost map on, so it loads costs without a network fetch at start", () => {

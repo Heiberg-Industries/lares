@@ -737,6 +737,7 @@ say "secrets (files under $SECRETS_DIR, owner 0:$LARES_RUNTIME_GID 0440 — neve
 # wizard and written straight to etc/lares/secrets/model-provider-key from the answer. A
 # generated placeholder here would look exactly like a real key to every check after it.
 lares_secret console-session-secret 32 base64url  # writes $SECRETS_DIR/console-session-secret
+lares_secret console-vault-signing-key 32 hex     # console/Keeper request capsule key
 lares_secret database-password      32 base64url  # writes $SECRETS_DIR/database-password
 lares_secret eve-route-password     32 base64url  # writes $SECRETS_DIR/eve-route-password
 lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/gateway-key
@@ -1647,6 +1648,10 @@ run_keeper() {
   local keeper_config="$PREFIX/etc/lares/keeper.json"
   local keeper_env="$PREFIX/etc/lares/keeper.env"
   local keeper_compose="$PREFIX/opt/lares/compose.lares-keeper.yaml"
+  local keeper_vault_compose="$PREFIX/opt/lares/compose.lares-keeper-vault.yaml"
+  local vault_ready=""
+  local vault_mounts=""
+  local -a compose_cmd
   local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
   local gateway_url tmp env_tmp before_sum="" after_sum="" keeper_running=""
 
@@ -1729,19 +1734,62 @@ run_keeper() {
   do_or_say cp "$BOX_DIR/compose.lares-keeper.yaml" "$keeper_compose"
   do_or_say chmod 0640 "$keeper_compose"
 
+  # A separate exact-path overlay gives Keeper access only to the already prepared managed
+  # roots. Validate the published inventory and every canonical directory before activating it.
+  # Missing custody disables Vault mounts while leaving ordinary Keeper startup available.
+  # If an older exact overlay exists but its inventory is unreadable, preserve that evidence
+  # and its mounts while Keeper's broker independently refuses Vault requests.
+  if [ "$DRY" -eq 0 ]; then
+    vault_ready=$(python3 "$BOX_DIR/ops/keeper-vault-roots.py" validate "$PREFIX" 2>/dev/null) || vault_ready=""
+  fi
+  if [ "$vault_ready" = ready ] && [ -r "$BOX_DIR/compose.lares-keeper-vault.yaml" ]; then
+    do_or_say cp "$BOX_DIR/compose.lares-keeper-vault.yaml" "$keeper_vault_compose"
+    do_or_say chmod 0640 "$keeper_vault_compose"
+    vault_mounts=ready
+  elif [ -f "$keeper_vault_compose" ] && [ -r "$BOX_DIR/compose.lares-keeper-vault.yaml" ] && cmp -s "$keeper_vault_compose" "$BOX_DIR/compose.lares-keeper-vault.yaml"; then
+    # Keep a previously prepared exact overlay mounted if its inventory is temporarily
+    # unreadable. The broker validates the inventory on every request and refuses Vault reads;
+    # preserving these mounts avoids silently changing custody evidence during recovery.
+    if python3 "$BOX_DIR/ops/keeper-vault-roots.py" roots "$PREFIX" >/dev/null 2>&1; then vault_mounts=preserved; fi
+  fi
+  if [ -n "$vault_mounts" ]; then
+    # Persist only the two canonical host paths, so a later compose recreate using keeper.env
+    # can retain the optional exact overlay. No secret value is added.
+    if [ "$DRY" -eq 0 ]; then
+      do_or_say cp "$keeper_env" "$keeper_env.partial"
+      printf 'LARES_VAULT_WORKING_ROOT="%s/srv/vault"\nLARES_VAULT_BARE_ROOT="%s/var/lib/lares-vault-git"\n' "$PREFIX" "$PREFIX" >> "$keeper_env.partial"
+      printf 'COMPOSE_FILE="%s:%s"\n' "$keeper_compose" "$keeper_vault_compose" >> "$keeper_env.partial"
+      do_or_say chmod 0640 "$keeper_env.partial"
+      do_or_say mv "$keeper_env.partial" "$keeper_env"
+      compose_cmd=(env -u COMPOSE_FILE docker compose --env-file "$keeper_env")
+    else
+      compose_cmd=(docker compose --env-file "$keeper_env" -f "$keeper_compose" -f "$keeper_vault_compose")
+    fi
+  else
+    if [ "$DRY" -eq 0 ]; then
+      do_or_say cp "$keeper_env" "$keeper_env.partial"
+      printf 'COMPOSE_FILE="%s"\n' "$keeper_compose" >> "$keeper_env.partial"
+      do_or_say chmod 0640 "$keeper_env.partial"
+      do_or_say mv "$keeper_env.partial" "$keeper_env"
+      compose_cmd=(env -u COMPOSE_FILE docker compose --env-file "$keeper_env")
+    else
+      compose_cmd=(docker compose --env-file "$keeper_env" -f "$keeper_compose")
+    fi
+  fi
+
   # The keeper reads keeper.json only when it starts, so a keeper that is already running keeps
   # its old settings until it is recreated. Recreate it only when this run changed the file;
   # an unchanged file leaves a healthy keeper alone.
   if [ "$DRY" -eq 0 ] && [ -n "$before_sum" ] && [ "$before_sum" != "$after_sum" ]; then
-    keeper_running=$(docker compose --env-file "$keeper_env" -f "$keeper_compose" ps -q lares-keeper 2>/dev/null || true)
+    keeper_running=$("${compose_cmd[@]}" ps -q lares-keeper 2>/dev/null || true)
   fi
   if [ -n "$keeper_running" ]; then
     say "keeper.json changed and the keeper is running, so it is being restarted to read it."
-    if ! docker compose --env-file "$keeper_env" -f "$keeper_compose" up -d --force-recreate lares-keeper; then
+    if ! "${compose_cmd[@]}" up -d --force-recreate lares-keeper; then
       die "the keeper could not be restarted with its new settings (docker's own message is above). $keeper_config has been updated and everything else is left exactly as it is; fix what it named, then run this again." "$EX_REFUSED"
     fi
   fi
-  if ! do_or_say docker compose --env-file "$keeper_env" -f "$keeper_compose" up -d; then
+  if ! do_or_say "${compose_cmd[@]}" up -d; then
     die "the keeper did not come up (docker's own message is above). Everything generated so far — every secret, $INSTALL_ENV, the stack, the database, the owner and $keeper_config — is left exactly as it is; fix what it named, then run this again." "$EX_REFUSED"
   fi
   say "the keeper is up, and this installation's first-agent role defaults are bound to $OWNER_ID."

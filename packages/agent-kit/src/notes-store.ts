@@ -416,7 +416,7 @@ export function narrowestScope(scopes: NoteScope[]): NoteScope {
   return n;
 }
 
-function visibleTo(raw: string, reader: Reader): boolean {
+export function visibleTo(raw: string, reader: Reader): boolean {
   const info = noteScope(raw, reader.store);
   if (info.scope === "org") return true;
   if (info.scope === "participants") return info.participants.includes(reader.userId);

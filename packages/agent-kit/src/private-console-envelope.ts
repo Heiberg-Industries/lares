@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto';
+
 /** Only the browser console's text and exact approval envelopes may enter private sessions.
  * Check the original request before Eve parses attachments or public callback destinations. */
 // Only fully validated raw requests receive a minimal, immutable pre-dispatch receipt.
 const verifiedResponses = new WeakMap<Request,Readonly<{requestId:string;optionId:'approve'|'cancel'}>>();
-const verifiedMessages = new WeakMap<Request, Readonly<{message:string}>>();
+const verifiedMessages = new WeakMap<Request, Readonly<{message:string;method:string;path:string;rawBodyHash:string;vaultCapsule?:string}>>();
+/** Opaque, console-signed authority capsule. Its contents are not trusted until Keeper verifies it. */
+export const PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER = 'x-lares-vault-capsule';
+const MAX_VAULT_CAPSULE_CHARS = 8192;
 const denied = (): never => { throw new Error('Private conversation request is not supported'); };
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const keys = (v: Record<string, unknown>, allowed: string[]) => { if (Object.keys(v).some(k => !allowed.includes(k))) denied(); };
@@ -45,7 +50,10 @@ export async function assertPrivateConsoleRequest(request: Request): Promise<voi
     verifiedResponses.set(request,Object.freeze({requestId:answer.requestId,optionId:answer.optionId}));
   }
   if (/\/session(?:\/[^/]+)?$/.test(path) && typeof body.message==='string') {
-    verifiedMessages.set(request,Object.freeze({message:body.message}));
+    const capsule=request.headers.get(PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER)??undefined;
+    if(capsule!==undefined&&(capsule.length>MAX_VAULT_CAPSULE_CHARS||!/^[A-Za-z0-9_.-]+$/.test(capsule)))denied();
+    verifiedMessages.set(request,Object.freeze({message:body.message,method:request.method,path,
+      rawBodyHash:createHash('sha256').update(raw).digest('hex'),...(capsule===undefined?{}:{vaultCapsule:capsule})}));
   }
 }
 
@@ -55,6 +63,16 @@ export function assertVerifiedPrivateConsoleMessage(request:Request,message:unkn
   if(request.method!=='POST'||!/\/session(?:\/[^/]+)?$/.test(new URL(request.url).pathname))denied();
   const receipt=verifiedMessages.get(request);
   if(!receipt||typeof message!=='string'||message!==receipt.message)denied();
+}
+
+/** A broker may consume only the exact Request that passed raw-envelope validation and whose
+ * parsed Eve message matches. This does not authenticate the capsule: Keeper must verify its
+ * independent console signature, challenge, tuple and expiry. */
+export function verifiedPrivateConsoleMessageReceipt(request:Request,message:unknown):Readonly<{method:string;path:string;rawBodyHash:string;vaultCapsule:string}> {
+  assertVerifiedPrivateConsoleMessage(request,message);
+  const receipt=verifiedMessages.get(request);
+  if(!receipt?.vaultCapsule)denied();
+  return Object.freeze({method:receipt!.method,path:receipt!.path,rawBodyHash:receipt!.rawBodyHash,vaultCapsule:receipt!.vaultCapsule!});
 }
 
 /** Same Request object only, after strict raw-envelope validation. Browser-supplied attributes

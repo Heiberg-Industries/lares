@@ -1,5 +1,5 @@
 import {describe,expect,it} from 'vitest';
-import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage,verifiedPrivateConsoleResponse} from '../src/private-console-envelope.js';
+import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage,verifiedPrivateConsoleResponse,verifiedPrivateConsoleMessageReceipt,PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER} from '../src/private-console-envelope.js';
 describe('private console envelope',()=>{
  const path='/eve/v1/session/private';
  it('accepts current browser text, create operation IDs and exact card answers',()=>{
@@ -29,6 +29,28 @@ it('requires the exact validated Request and scalar text after Eve consumes its 
  expect(()=>assertVerifiedPrivateConsoleMessage(request,parsed.message)).not.toThrow();
  for(const message of ['changed',[{type:'text',text:parsed.message}],undefined])expect(()=>assertVerifiedPrivateConsoleMessage(request,message)).toThrow();
  expect(()=>assertVerifiedPrivateConsoleMessage(other,parsed.message)).toThrow();
+});
+it('binds an opaque broker capsule to the exact validated raw request and parsed message',async()=>{
+ const body=JSON.stringify({message:'vault question'}),capsule='signed_capsule_v1';
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER]:capsule},body});
+ await assertPrivateConsoleRequest(request);const parsed=await request.json();
+ expect(verifiedPrivateConsoleMessageReceipt(request,parsed.message)).toEqual({
+  method:'POST',path:'/eve/v1/session/existing',
+  rawBodyHash:await import('node:crypto').then(({createHash})=>createHash('sha256').update(body).digest('hex')),
+  vaultCapsule:capsule,
+ });
+ expect(()=>verifiedPrivateConsoleMessageReceipt(request,'changed')).toThrow();
+ expect(()=>verifiedPrivateConsoleMessageReceipt(request.clone(),'vault question')).toThrow();
+ const noCapsule=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body});
+ await assertPrivateConsoleRequest(noCapsule);const noCapsuleBody=await noCapsule.json();
+ expect(()=>verifiedPrivateConsoleMessageReceipt(noCapsule,noCapsuleBody.message)).toThrow();
+});
+it('rejects malformed or oversized opaque capsules before recording a message receipt',async()=>{
+ for(const capsule of ['not base64!', 'x'.repeat(8193)]){
+  const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER]:capsule},body:JSON.stringify({message:'hello'})});
+  await expect(assertPrivateConsoleRequest(request)).rejects.toThrow();
+  expect(()=>assertVerifiedPrivateConsoleMessage(request,'hello')).toThrow();
+ }
 });
 it('does not issue receipts for empty creates, controls, non-POST requests or failed raw validation',async()=>{
  for(const [path,method,body,message]of [

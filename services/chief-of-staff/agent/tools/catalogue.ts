@@ -1,4 +1,4 @@
-import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool } from "@lares/agent-kit/private-console-surface";
+import { verifyPrivateConsoleSession, privateToolAllowed, privateOnlyTool, isPrivateConsoleContext } from "@lares/agent-kit/private-console-surface";
 import { isExactApprovalContext } from "@lares/agent-kit/approval-execution";
 import { catalogueApprovalRequest, catalogueApprovalResponse, guardCatalogueExecution } from "../../lib/approvals.js";
 // The one seam that turns a definition into a toolset (ADR-0015 rule 4).
@@ -38,6 +38,10 @@ import { grantedToolNames } from "@lares/agent-kit/catalogue";
 
 import { CATALOGUE } from "../../catalogue/index.js";
 import { thisAgent } from "../../lib/definition.js";
+import { consoleAdmission } from "@lares/agent-kit/console-turn-authority";
+import { managedIdentity } from "@lares/agent-kit/door-authority";
+import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
+import { vaultTurnCapability } from "../lib/vault-turn.js";
 
 /** Only the field this resolver needs off eve's `DynamicResolveContext`. Optional-chained for the
  *  same reason the instructions resolver's is (agent/instructions/aa-definition.ts). */
@@ -116,6 +120,18 @@ export default defineDynamic({
                 closure: { name },
                 callback: async (closure: { name: string }, input: unknown, toolCtx: unknown) => {
                   await guardCatalogueExecution(toolCtx,closure.name,input);
+                  if(closure.name==='agent-kit__vault_list'||closure.name==='agent-kit__vault_read'){
+                    const c=toolCtx as {session?:{id?:string;turn?:{id?:string;sequence?:number};auth?:{current?:unknown}|null}};
+                    if(isPrivateConsoleContext(toolCtx)){
+                      const admission=consoleAdmission(c.session?.auth?.current),own=managedIdentity(process.env),turnId=c.session?.turn?.id,sequence=c.session?.turn?.sequence;
+                      if(admission?.purpose!=='human'||!own||!c.session?.id||typeof turnId!=='string'||!Number.isSafeInteger(sequence))throw new Error('Conversation authority is not available');
+                      const turn=vaultTurnCapability({sessionId:c.session.id,turnId,sequence:sequence as number,incarnation:own.incarnation});
+                      if(!turn||turn.expiresAt<=Date.now()||turn.turnId!==turnId||turn.sequence!==sequence)throw new Error('Conversation authority is not available');
+                      const args=input as {area?:unknown;path?:unknown};
+                      if((args.area!=='private'&&args.area!=='shared')||(closure.name==='agent-kit__vault_read'&&typeof args.path!=='string'))throw new Error('Vault access refused');
+                      return vaultBrokerRequest('vault.read',{turnCapability:turn.capability,turnId,sequence,sessionId:c.session.id,memberId:admission.memberId,admissionNonce:admission.admissionNonce,operation:closure.name==='agent-kit__vault_list'?'list':'read',area:args.area,...(typeof args.path==='string'?{path:args.path}:{}),...(Number.isSafeInteger((args as {offset?:unknown}).offset)?{offset:(args as {offset:number}).offset}:{})});
+                    }
+                  }
                   return valueOf(closure.name).execute(input, toolCtx);
                 },
               }),

@@ -30,7 +30,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 // this suite alongside other packages, so allow for process startup contention.
 vi.setConfig({ testTimeout: 20_000 });
 const SCRIPT = join(here, "..", "ops", "install.sh");
+const KEEPER_VAULT_ROOTS = join(here, "..", "ops", "keeper-vault-roots.py");
 const COMMITTED_KEEPER_COMPOSE = join(here, "..", "compose.lares-keeper.yaml");
+const COMMITTED_KEEPER_VAULT_COMPOSE = join(here, "..", "compose.lares-keeper-vault.yaml");
 
 const REAL_PNPM = execFileSync("/bin/sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).trim();
 
@@ -73,7 +75,7 @@ function stub(name: string, body = "exit 0") {
 const answers =
   ["lares.example.invalid", "owner@example.invalid", "A Name", "sk-disposable-fixture-only"].join("\n") + "\n";
 
-function run(args: string[] = ["--release", ""], input = answers) {
+function run(args: string[] = ["--release", ""], input = answers, extraEnv: Record<string, string> = {}) {
   try {
     const stdout = execFileSync("/bin/bash", [SCRIPT, "--yes", ...args], {
       input,
@@ -81,6 +83,7 @@ function run(args: string[] = ["--release", ""], input = answers) {
       env: {
         LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
+        ...extraEnv,
       },
     });
     return { code: 0, stdout, stderr: "" };
@@ -134,6 +137,11 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("the keeper the installer configures and starts", () => {
+  it("normalizes an empty or root host prefix without probing live host directories", () => {
+    expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "", "/srv/vault"], { encoding: "utf8" })).toBe("/srv/vault\n");
+    expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "/", "/var/lib/lares-vault-git"], { encoding: "utf8" })).toBe("/var/lib/lares-vault-git\n");
+  });
+
   it("writes role defaults that bind any first-agent name to the owner just created", () => {
     expect(install().code).toBe(0);
     const config = readKeeperConfig();
@@ -204,8 +212,8 @@ describe("the keeper the installer configures and starts", () => {
 
   it("brings the keeper up only after the owner it binds the agent to exists", () => {
     expect(install().code).toBe(0);
-    const owner = at(/pnpm .*first-owner/);
-    const up = at(/docker compose --env-file \S+ -f \S+compose\.lares-keeper\.yaml up -d/);
+    const owner = at(/first-owner\.ts --apply/);
+    const up = at(/docker compose --env-file \S+ up -d/);
     expect(owner, "the owner was never created").toBeGreaterThan(-1);
     expect(
       owner,
@@ -229,12 +237,18 @@ describe("the keeper the installer configures and starts", () => {
     // Exactly those, and nothing else — counted from both files rather than written down here,
     // so adding a mandatory variable to the compose file moves this test on its own, and a
     // variable the env file sets that nothing needs is caught too.
-    expect(Object.keys(env).sort()).toEqual([...required].sort());
+    const vaultRequired = new Set(
+      [...readFileSync(COMMITTED_KEEPER_VAULT_COMPOSE, "utf8").matchAll(/\$\{([A-Z_]+):\?/g)].map((m) => m[1]!),
+    );
+    expect(Object.keys(env).sort()).toEqual([...new Set([...required, ...vaultRequired, "COMPOSE_FILE"])].sort());
     expect(env.LARES_KEEPER_IMAGE).toBe(D("keeper"));
     expect(env.LARES_SQUID_IMAGE).toBe(D("egress-proxy"));
     expect(env.LARES_KEEPER_CONFIG).toBe(keeperConfigPath());
     expect(env.LARES_NETWORK).toBe("lares-network");
     expect(env.LARES_ROOT).toBe(join(prefix, "srv", "lares"));
+    expect(env.LARES_VAULT_WORKING_ROOT).toBe(`"${join(prefix, "srv", "vault")}"`);
+    expect(env.LARES_VAULT_BARE_ROOT).toBe(`"${join(prefix, "var", "lib", "lares-vault-git")}"`);
+    expect(env.COMPOSE_FILE).toBe(`"${join(prefix, "opt", "lares", "compose.lares-keeper.yaml")}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}"`);
   });
 
   // THE DEFECT THIS CATCHES, AND WHY NO OTHER TEST HERE COULD. `bin/keeper.ts` does
@@ -309,7 +323,39 @@ describe("the keeper the installer configures and starts", () => {
     const installed = join(prefix, "opt", "lares", "compose.lares-keeper.yaml");
     expect(existsSync(installed)).toBe(true);
     expect(readFileSync(installed, "utf8")).toBe(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8"));
-    expect(calls()).toMatch(new RegExp(`docker compose --env-file \\S+ -f ${installed} up -d`));
+    expect(keeperEnv().COMPOSE_FILE).toBe(`"${installed}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}"`);
+    expect(calls()).toMatch(/docker compose --env-file \S+ up -d/);
+  });
+
+  it("clears an inherited COMPOSE_FILE before applying the saved Keeper selection", () => {
+    stub("docker", 'case "$*" in *"compose --env-file"*) if [ -n "${COMPOSE_FILE:-}" ]; then echo "inherited COMPOSE_FILE reached Compose" >&2; exit 19; fi ;; esac\nexit 0');
+    const r = run(["--release", releaseFile], answers, { COMPOSE_FILE: "/untrusted/override.yaml" });
+    expect(r.code, r.stderr).toBe(0);
+    expect(keeperEnv().COMPOSE_FILE).toBe(`"${join(prefix, "opt", "lares", "compose.lares-keeper.yaml")}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}"`);
+    expect(r.stderr).not.toContain("inherited COMPOSE_FILE reached Compose");
+  });
+
+  it("activates exact Vault mounts only from a validated published inventory", () => {
+    expect(install().code).toBe(0);
+    const inventory = join(prefix, "srv", "lares", "installation", "vault-storage.json");
+    const workingRoot = join(prefix, "srv", "vault"), bareRoot = join(prefix, "var", "lib", "lares-vault-git");
+    const installed = join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml");
+    expect(existsSync(inventory)).toBe(true);
+    expect(existsSync(workingRoot)).toBe(true);
+    expect(existsSync(bareRoot)).toBe(true);
+    expect(readFileSync(installed, "utf8")).toBe(readFileSync(COMMITTED_KEEPER_VAULT_COMPOSE, "utf8"));
+    expect(keeperEnv().LARES_VAULT_WORKING_ROOT).toBe(`"${workingRoot}"`);
+    expect(keeperEnv().LARES_VAULT_BARE_ROOT).toBe(`"${bareRoot}"`);
+    expect(at(/vault-storage\.ts verify-plan/)).toBeLessThan(at(/docker compose --env-file \S+ up -d/));
+
+    const optional = parse(readFileSync(COMMITTED_KEEPER_VAULT_COMPOSE, "utf8")) as any;
+    const volumes = optional.services["lares-keeper"].volumes;
+    expect(volumes).toEqual([
+      { type: "bind", source: "${LARES_VAULT_WORKING_ROOT:?prepared Vault working root required}", target: "/srv/vault", bind: { create_host_path: false } },
+      { type: "bind", source: "${LARES_VAULT_BARE_ROOT:?prepared Vault bare root required}", target: "/var/lib/lares-vault-git", bind: { create_host_path: false } },
+    ]);
+    const base = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    expect(base.services["lares-keeper"].volumes.join("\n")).not.toMatch(/\/srv\/vault|lares-vault-git/);
   });
 
   it("refuses by name when the release names no image the keeper needs, and starts nothing", () => {
@@ -327,7 +373,7 @@ describe("the keeper the installer configures and starts", () => {
   });
 
   it("says what is left untouched when the keeper does not come up", () => {
-    stub("docker", 'printf "%s %s\\n" "docker" "$*" >> "$STUB_LOG"\ncase "$*" in *lares-keeper.yaml*) echo "docker: no such image" >&2; exit 1 ;; esac\nexit 0');
+    stub("docker", 'printf "%s %s\\n" "docker" "$*" >> "$STUB_LOG"\ncase "$*" in *"--env-file"*" up -d"*) echo "docker: no such image" >&2; exit 1 ;; esac\nexit 0');
     const r = install();
     expect(r.code).toBe(78);
     expect(r.stderr).toMatch(/left exactly as it is/);
@@ -411,7 +457,7 @@ describe("the keeper the installer configures and starts", () => {
       expect(install().code).toBe(0);
       expect(recreates()).toBe(1);
       expect(at(/--force-recreate lares-keeper/)).toBeLessThan(
-        calls().lastIndexOf("compose.lares-keeper.yaml up -d"),
+        calls().lastIndexOf("docker compose --env-file "),
       );
     });
 
