@@ -4,7 +4,7 @@ import {isAbsolute,join,normalize,parse,dirname} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {createHash,randomUUID,randomBytes} from 'node:crypto';
 import {z} from 'zod';
-import {canonicalBudgetMoney,budgetIdentitySuppression,type BudgetFinancialOperation} from '@lares/agent-kit/budget-admission-store';
+import {canonicalBudgetMoney,budgetIdentitySuppression,type BudgetFinancialOperation,type BudgetRecoveryReference} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayPricingSchema} from '@lares/agent-kit/gateway-pricing';
 import {consumeSourceObservationCommit,type SourceObservationCommit} from '@lares/agent-kit/console-source-transaction';
@@ -38,6 +38,7 @@ function assertUniqueFinancialAtoms(atoms:readonly FinancialAtom[]):void {
   const keys=new Set<string>();for(const atom of atoms){const key=financialAtomKey(atom);if(keys.has(key))throw new Error('Duplicate financial atom');keys.add(key);}
 }
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
+const gatewayRecoveryReferenceSchema=z.object({installationAccountId:id,epoch:z.string().min(1).max(200),endpointGeneration:uint}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
 const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
@@ -396,6 +397,23 @@ export class HostFinancialJournal {
       return {checkpoints,atoms:[...overlay.values()].sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
     }
     return {checkpoints,atoms:atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
+  }
+  /** Observe a persisted ticket against this prepared journal's committed installation
+   * fold. This is discovery only: the owned admission transaction still rechecks the
+   * complete database projection, account policy and current window before mutation. */
+  observeGatewayRecoveryReference(raw:Pick<BudgetRecoveryReference,'installationAccountId'|'epoch'|'endpointGeneration'>):BudgetRecoveryReference|undefined {
+    if(this.closed||this.frozen||this.stopping||this.busy||this.pending||!this.preparationComplete||!this.control)return undefined;
+    let reference:ReturnType<typeof gatewayRecoveryReferenceSchema.parse>;
+    try{reference=gatewayRecoveryReferenceSchema.parse(raw);}catch{return undefined;}
+    const account=this.projection.get(`account:${reference.installationAccountId}`);
+    if(!account||account.kind!=='account'||account.accountKind!=='installation'||account.id!==reference.installationAccountId||
+      account.installationAccountId!==account.id||account.state!=='open'||account.reason!=='approved'||account.installationCap===null||
+      account.selectedEndpointHash===null||account.endpointGeneration!==reference.endpointGeneration||
+      account.recoveryEpochHash!==digest(Buffer.from(reference.epoch,'utf8'))||account.activeWindowId===null)return undefined;
+    const window=this.projection.get(`window:${account.activeWindowId}`);
+    if(!window||window.kind!=='window'||window.id!==account.activeWindowId||window.accountId!==account.id||
+      window.openingCap!==account.installationCap||Date.parse(window.startsAt)>=Date.parse(window.endsAt))return undefined;
+    return Object.freeze({installationAccountId:account.id,epoch:reference.epoch,endpointGeneration:account.endpointGeneration,state:'reconciled'});
   }
   /** Startup, transaction-start and pre-COMMIT all compare the complete redacted fold.
    * A match never clears a previously durable freeze. */

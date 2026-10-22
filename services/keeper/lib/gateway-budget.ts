@@ -7,8 +7,8 @@ import {gatewayPricingSchema,gatewayMaximumLiability,gatewayActualAmount} from '
 import {HostFinancialJournal} from './financial-journal.js';
 import {JournalBudgetFinancialWriter} from './budget-financial-writer.js';
 
-/** A trusted, non-rollback observation, not an epoch reader on the billing database. There
- * is deliberately no production implementation or configuration switch for this seam. */
+/** Trusted non-rollback observation. Tests may exercise the constructor seam directly;
+ * production binds it privately to the exact prepared journal used by its writer. */
 export interface GatewayRecoveryWitness {
   observe(reference:Pick<BudgetGatewayTicket,'installationAccountId'|'epoch'|'endpointGeneration'>):Promise<BudgetRecoveryReference|undefined>;
 }
@@ -57,7 +57,8 @@ export class GatewayBudgetAuthority {
       const store=new PgBudgetAdmissionStore(this.pool,process.env,30_000,this.financialWriter);
       if(path===GATEWAY_ADMIT_PATH){
         const request=gatewayAdmitSchema.parse(document);
-        // Production remains closed until a real witness and provisioning adapter exist.
+        // The journal observation is discovery only; the owned store still decides whether
+        // current SQL policy, authority and full financial continuity allow admission.
         if(!this.recovery)return refused();
         const ticket=await store.discoverGatewayTicket(request.ticket);fresh();
         if(!ticket)return refused();
@@ -99,9 +100,12 @@ export class GatewayBudgetAuthority {
   }
 }
 
-/** Actual witness/provisioning integration is a follow-on. Never derive reconciled state
- * from the restored database or expose a test-witness environment/configuration switch. */
+/** Bind the recovery observation to the exact protected journal that owns admission writes.
+ * Never derive reconciled state from the restored database or expose a runtime witness
+ * setting. The witness is discovery only; the owned transaction repeats full continuity. */
 export function productionGatewayBudgetAuthority(pool:Pool,keyFile?:string,journal?:HostFinancialJournal):GatewayBudgetAuthority {
-  const writer=journal?.prepared?new JournalBudgetFinancialWriter(journal):undefined;
-  return new GatewayBudgetAuthority(pool,readGatewayServiceKey(keyFile),writer);
+  const prepared=journal?.prepared===true;
+  const writer=prepared&&journal?new JournalBudgetFinancialWriter(journal):undefined;
+  const recovery:GatewayRecoveryWitness|undefined=prepared&&journal?{observe:async reference=>journal.observeGatewayRecoveryReference(reference)}:undefined;
+  return new GatewayBudgetAuthority(pool,readGatewayServiceKey(keyFile),writer,recovery);
 }
