@@ -1,9 +1,10 @@
 import {describe,expect,it,vi} from 'vitest';
-import {BudgetNativeCredentialClient,type NativeKeyExpectation,type NativeTeamExpectation} from '../lib/budget-native-client.js';
+import {BudgetNativeCredentialClient,consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt,type NativeKeyExpectation,type NativeTeamExpectation} from '../lib/budget-native-client.js';
 
 const MASTER='sk-master-fixture-0123456789';
 const KEY='sk-caller-selected-fixture-0123456789';
 const HASH='a'.repeat(64);
+const CHALLENGE='c'.repeat(64);
 const TEAM='team-fixture-123';
 const USER='member-fixture-123';
 const POLICY={maxBudget:5,budgetDuration:'1d',models:['lares-brain'] as const};
@@ -73,6 +74,37 @@ describe('fixed native gateway client',()=>{
     await expect(durationMismatch.client.readTeam(teamExpected)).resolves.toEqual({kind:'mismatch'});
   });
 
+  it('checks an existing shared team policy before membership exists',async()=>{
+    const {request,client}=setup(async()=>json({team_info:{team_id:TEAM,max_budget:100,budget_duration:'1d',models:['lares-brain'],blocked:false,metadata:{}}}));
+    await expect(client.readTeamPolicy({teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain']})).resolves.toEqual({kind:'match',value:true});
+    expect(String(request.mock.calls[0]![0])).toBe(`https://gateway.example:4000/team/info?team_id=${TEAM}`);
+    const changed=setup(async()=>json({team_info:{team_id:TEAM,max_budget:99,budget_duration:'1d',models:['lares-brain'],blocked:false,metadata:{}}}));
+    await expect(changed.client.readTeamPolicy({teamId:TEAM,teamMaxBudget:100,teamBudgetDuration:'1d',teamModels:['lares-brain']})).resolves.toEqual({kind:'mismatch'});
+  });
+
+  it('reads exact current user identity and policy, with route-specific exact absence',async()=>{
+    const userInfo={user_id:USER,user_role:'internal_user',max_budget:25};
+    const present=setup(async()=>json({user_id:USER,user_info:userInfo,keys:[HASH],teams:[]}));
+    await expect(present.client.readUser({userId:USER,maxBudget:25,userRole:'internal_user'})).resolves.toEqual({kind:'match',value:true});
+    expect(String(present.request.mock.calls[0]![0])).toBe(`https://gateway.example:4000/user/info?user_id=${USER}`);
+    const exactMissing=setup(async()=>json({error:{message:`User ${USER} not found`,code:404,type:'not_found'}},404));
+    await expect(exactMissing.client.readUser({userId:USER,maxBudget:25,userRole:'internal_user'})).resolves.toEqual({kind:'absent'});
+    for(const body of [
+      {error:{message:'Not found',code:404}},
+      {error:{message:`User ${USER} not found`,code:403}},
+      {detail:`User ${USER} not found`},
+    ]){
+      const arbitrary=setup(async()=>json(body,404));
+      await expect(arbitrary.client.readUser({userId:USER,maxBudget:25,userRole:'internal_user'})).resolves.toEqual({kind:'malformed'});
+    }
+    const wrongRole=setup(async()=>json({user_id:USER,user_info:{...userInfo,user_role:'proxy_admin'},keys:[],teams:[]}));
+    await expect(wrongRole.client.readUser({userId:USER,maxBudget:25,userRole:'internal_user'})).resolves.toEqual({kind:'mismatch'});
+    for(const status of [401,403]){
+      const refused=setup(async()=>new Response('secret',{status}));
+      await expect(refused.client.readUser({userId:USER,maxBudget:25,userRole:'internal_user'})).resolves.toEqual({kind:'refused'});
+    }
+  });
+
   it('distinguishes exact key match, strict absence, mismatch and malformed readbacks',async()=>{
     const match=setup(async()=>json(info(HASH,[keyRow])));
     await expect(match.client.lookupKey(HASH,keyExpected)).resolves.toEqual({kind:'match',value:true});
@@ -97,6 +129,42 @@ describe('fixed native gateway client',()=>{
     await expect(malformed.client.lookupKey(HASH,keyExpected)).resolves.toEqual({kind:'malformed'});
     const wrongHash=setup(async()=>json(info('b'.repeat(64),[])));
     await expect(wrongHash.client.lookupKey(HASH,keyExpected)).resolves.toEqual({kind:'malformed'});
+  });
+
+  it('issues one-use absence evidence only for exact hash echoes and binds it to origin and fingerprint',async()=>{
+    const invalidChallenge=setup(async()=>json(info(HASH,[])));
+    await expect(invalidChallenge.client.lookupKeyHashOnly(HASH,'caller-selected')).resolves.toEqual({kind:'malformed'});
+    expect(invalidChallenge.request).not.toHaveBeenCalled();
+    const absent=setup(async()=>json(info(HASH,[])));
+    const result=await absent.client.lookupKeyHashOnly(HASH,CHALLENGE);
+    expect(result.kind).toBe('absent');
+    if(result.kind!=='absent')throw new Error('expected absence receipt');
+    expect(consumeNativeHashAbsenceReceipt(result.receipt,'https://other.example:4000',HASH,CHALLENGE)).toBe(false);
+    expect(consumeNativeHashAbsenceReceipt(result.receipt,'https://gateway.example:4000','b'.repeat(64),CHALLENGE)).toBe(false);
+    expect(consumeNativeHashAbsenceReceipt(result.receipt,'https://gateway.example:4000',HASH,'d'.repeat(64))).toBe(false);
+    expect(consumeNativeHashAbsenceReceipt(result.receipt,'https://gateway.example:4000',HASH,CHALLENGE)).toBe(true);
+    expect(consumeNativeHashAbsenceReceipt(result.receipt,'https://gateway.example:4000',HASH,CHALLENGE)).toBe(false);
+    expect(consumeNativeHashAbsenceReceipt({} as NativeHashAbsenceReceipt,'https://gateway.example:4000',HASH,CHALLENGE)).toBe(false);
+    const laterChallenge='e'.repeat(64);
+    const nextReceipt=await absent.client.lookupKeyHashOnly(HASH,laterChallenge);
+    expect(nextReceipt.kind).toBe('absent');
+    if(nextReceipt.kind!=='absent')throw new Error('expected fresh absence receipt');
+    expect(consumeNativeHashAbsenceReceipt(nextReceipt.receipt,'https://gateway.example:4000',HASH,CHALLENGE)).toBe(false);
+    expect(consumeNativeHashAbsenceReceipt(nextReceipt.receipt,'https://gateway.example:4000',HASH,laterChallenge)).toBe(true);
+    const wrongEcho=setup(async()=>json(info('b'.repeat(64),[])));
+    await expect(wrongEcho.client.lookupKeyHashOnly(HASH,CHALLENGE)).resolves.toEqual({kind:'malformed'});
+    const present=setup(async()=>json(info(HASH,[keyRow])));
+    await expect(present.client.lookupKeyHashOnly(HASH,CHALLENGE)).resolves.toEqual({kind:'present'});
+    const sparsePresent=setup(async()=>json(info(HASH,[{key_alias:'already-erased-user-key'}])));
+    await expect(sparsePresent.client.lookupKeyHashOnly(HASH,CHALLENGE)).resolves.toEqual({kind:'present'});
+    const tokenInRow=setup(async()=>json(info(HASH,[{token:KEY}])));
+    const tokenResult=await tokenInRow.client.lookupKeyHashOnly(HASH,CHALLENGE);
+    expect(tokenResult).toEqual({kind:'malformed'});expect(JSON.stringify(tokenResult)).not.toContain(KEY);
+    for(const [status,kind] of [[401,'refused'],[403,'refused'],[404,'unavailable'],[500,'unavailable']] as const){
+      const refused=setup(async()=>new Response('secret token body',{status}));
+      const lookup=await refused.client.lookupKeyHashOnly(HASH,CHALLENGE);
+      expect(lookup).toEqual({kind});expect(JSON.stringify(lookup)).not.toContain('secret token body');
+    }
   });
 
   it('never infers absence from refusal, server errors, redirects or malformed content',async()=>{

@@ -1,11 +1,13 @@
 import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 import {z} from 'zod';
-import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,retainSourceTransactionDeadline,SourceTransactionDeadlineExpired,type BudgetFinancialChange,type SourceDatabase,type SourcePool} from '@lares/agent-kit/console-source-transaction';
+import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,retainSourceTransactionDeadline,SourceTransactionDeadlineExpired,type BudgetFinancialChange,type SourceDatabase,type SourcePool,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {KeeperRefusedError,registerAction} from './actions.js';
 import {JournalBudgetFinancialWriter,collectFinancialAtoms} from './budget-financial-writer.js';
-import {HostFinancialJournal,type FinancialAtom} from './financial-journal.js';
+import {HostFinancialJournal,isJournaledAbort,type FinancialAtom} from './financial-journal.js';
+import type {BudgetNativeCustodyStore} from './budget-native-custody.js';
+import {recordCommittedNativeRetirement,type NativeCleanupStatus} from './budget-native-cleanup.js';
 
 const token=z.string().regex(/^[A-Za-z0-9_-]{43}$/),memberId=z.string().min(1).max(128).refine(value=>!/[\u0000-\u001f\u007f]/.test(value));
 export const memberRemovalInput=z.strictObject({sessionToken:token,targetMemberId:memberId});
@@ -31,7 +33,7 @@ function sameAtoms(a:readonly FinancialAtom[],b:readonly FinancialAtom[]):boolea
 }
 async function queryRows<T>(db:SourceDatabase,sql:string,values?:any[]):Promise<T[]>{return (await db.query(sql,values)).rows as T[];}
 
-async function removeOwned(db:SourceDatabase,journal:HostFinancialJournal,designatedOwnerId:string|undefined,input:MemberRemovalInput,operationId:string):Promise<{removed:true}>{
+async function removeOwned(db:SourceDatabase,journal:HostFinancialJournal,designatedOwnerId:string|undefined,input:MemberRemovalInput,operationId:string):Promise<{removed:true;accountIds:readonly string[]}>{
   if(!journal.prepared||!designatedOwnerId)throw refusal();
   const tokenHash=hash(input.sessionToken);
   // Read only to discover which organisation gate to acquire. All authority is locked and
@@ -75,21 +77,45 @@ async function removeOwned(db:SourceDatabase,journal:HostFinancialJournal,design
   const actual=await collectFinancialAtoms(db,changes);
   if(!sameAtoms(projected,actual))throw refusal();
   journal.validateProposal(operationId,actual);
-  return {removed:true};
+  return {removed:true,accountIds:accounts.map(row=>row.id)};
 }
 
-export function registerMemberRemovalAction(options:{pool:Pool;journal:HostFinancialJournal|undefined;designatedOwnerId:string|undefined}):void{
+export function registerMemberRemovalAction(options:{pool:Pool;journal:HostFinancialJournal|undefined;designatedOwnerId:string|undefined;nativeCustody?:BudgetNativeCustodyStore}):void{
   registerAction({name:'member.remove',input:memberRemovalInput,secretFields:['sessionToken'],run:async(input)=>{
     const journal=options.journal;
     if(!journal?.prepared||!options.designatedOwnerId)throw refusal();
     const writer=new JournalBudgetFinancialWriter(journal);
     // Journal ownership precedes the only transaction pool checkout. A short wall-clock
     // bound protects queueing; exact session expiry is retained from PostgreSQL inside it.
-    try{return await writer.run('member-remove',(boundary,operationId)=>consoleSourceTransaction(
+    let sqlCommitAcknowledged=false;
+    const work=(boundary:SourceTransactionBoundary,operationId:string)=>consoleSourceTransaction(
         options.pool as unknown as SourcePool,
         db=>removeOwned(db,journal,options.designatedOwnerId,input,operationId),
-        boundary,{deadlineAtMs:Date.now()+5_000},
-      ));
-    }catch(error){if(error instanceof SourceTransactionDeadlineExpired)throw refusal();throw error;}
-  },successDetail:()=> 'member access removed'});
+        boundary,{deadlineAtMs:Date.now()+5_000,afterCommit:()=>{sqlCommitAcknowledged=true;}},
+      );
+    let committed:{value:{removed:true;accountIds:readonly string[]};receipt:import('./financial-journal.js').CommittedFinancialReceipt}|undefined;
+    try{
+      if(!options.nativeCustody){const result=await writer.run('member-remove',work);return {removed:result.removed};}
+      const gated=await options.nativeCustody.withGate(async gate=>{
+        try{
+          const result=await writer.runWithReceipt('member-remove',work);
+          committed=result;
+          const nativeCleanup=recordCommittedNativeRetirement(gate,result.value.accountIds,result.receipt,false);
+          return {kind:'done' as const,result:{removed:true as const,nativeCleanup}};
+        }catch(error){
+          if(isJournaledAbort(error,{journalId:journal.id,operation:'member-remove'}))return {kind:'aborted' as const,error};
+          throw error;
+        }
+      });
+      if(gated.kind==='aborted')throw gated.error;
+      return gated.result;
+    }catch(error){
+      if(committed)return {removed:true,nativeCleanup:{status:'blocked',remaining:null}};
+      if(sqlCommitAcknowledged&&options.nativeCustody)return {removed:true,nativeCleanup:{status:'blocked',remaining:null}};
+      if(error instanceof SourceTransactionDeadlineExpired)throw refusal();
+      throw error;
+    }
+  },successDetail:(result)=>result.nativeCleanup?.status==='pending'
+    ?`member access removed; ${result.nativeCleanup.remaining} native key cleanup item(s) pending`
+    :result.nativeCleanup?.status==='blocked'?'member access removed; native cleanup needs inspection':'member access removed'});
 }

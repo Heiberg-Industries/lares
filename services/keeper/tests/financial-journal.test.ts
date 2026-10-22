@@ -2,14 +2,91 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS} from '../lib/financial-journal.js';
-import {journalFixture} from './helpers/financial-journal.js';
+import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome} from '../lib/financial-journal.js';
+import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 const fixtures:ReturnType<typeof journalFixture>[]=[],journals:HostFinancialJournal[]=[];
 const fixture=(options:Parameters<typeof journalFixture>[0]={})=>{const f=journalFixture(options);fixtures.push(f);return f;};
 const open=(f:ReturnType<typeof fixture>)=>{const j=f.open();journals.push(j);return j;};
+function preparedJournal(sync?:(fd:number)=>void){
+  const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
+  const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
+  const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,...(sync?{sync}:{})});journals.push(j);return j;
+}
 afterEach(()=>{vi.restoreAllMocks();for(const j of journals.splice(0))j.close();for(const f of fixtures.splice(0))rmSync(f.directory,{recursive:true,force:true});});
+it.each<FinancialAbortOutcome>(['not-started','rollback-acknowledged','source-retirement-acknowledged','source-retirement-rolled-back'])('marks only the original finished durable abort for %s',async outcome=>{
+  const j=preparedJournal(),error=new Error('synthetic refusal'),expected={journalId:j.id,operation:'erase-person' as const};let receipt:DurableFinancialAbortReceipt|undefined;
+  await expect(j.operation('erase-person',async id=>{
+    receipt=j.aborted(id,outcome);expect(receipt).toMatchObject({journalId:j.id,operationId:id,operation:'erase-person',outcome});
+    markJournaledAbort(error,receipt);expect(isJournaledAbort(error,expected)).toBe(false);throw error;
+  })).rejects.toBe(error);
+  const unrelated=new Error('unrelated failure');markJournaledAbort(unrelated,receipt);expect(isJournaledAbort(unrelated,expected)).toBe(false);
+  markJournaledAbort(error,receipt);expect(isJournaledAbort(error,expected)).toBe(true);expect(Object.isFrozen(receipt)).toBe(true);
+  expect(isJournaledAbort(error,{...expected,journalId:randomUUID()})).toBe(false);expect(isJournaledAbort(error,{...expected,operation:'member-remove'})).toBe(false);
+  const copiedError=Object.assign(new Error(error.message),error),other=new Error('different failure');expect(isJournaledAbort(copiedError,expected)).toBe(false);
+  for(const forged of [{...receipt},JSON.parse(JSON.stringify(receipt))] as DurableFinancialAbortReceipt[]){markJournaledAbort(other,forged);expect(isJournaledAbort(other,expected)).toBe(false);}
+  markJournaledAbort(other,receipt);expect(isJournaledAbort(other,expected)).toBe(false);
+});
+it('cannot mark a failure using proof from an operation that returned after its abort',async()=>{
+  const j=preparedJournal(),error=new Error('later unrelated failure');let receipt:DurableFinancialAbortReceipt|undefined;
+  await j.operation('erase-person',async id=>{receipt=j.aborted(id,'rollback-acknowledged');});markJournaledAbort(error,receipt);
+  expect(isJournaledAbort(error,{journalId:j.id,operation:'erase-person'})).toBe(false);
+});
+it.each([false,true])('invalidates an earlier abort when the same error is reused by an uncertain operation (marked %s)',async marked=>{
+  const j=preparedJournal(),error=new Error('reused refusal'),expected={journalId:j.id,operation:'erase-person' as const};let old:DurableFinancialAbortReceipt|undefined;
+  await expect(j.operation('erase-person',async id=>{old=j.aborted(id,'rollback-acknowledged');throw error;})).rejects.toBe(error);
+  if(marked)markJournaledAbort(error,old);expect(isJournaledAbort(error,expected)).toBe(marked);
+  await expect(j.operation('erase-person',async()=>{j.freeze();throw error;})).rejects.toBe(error);
+  expect(isJournaledAbort(error,expected)).toBe(false);markJournaledAbort(error,old);expect(isJournaledAbort(error,expected)).toBe(false);
+});
+it('mints no abort authority for an unprepared journal',async()=>{
+  const j=open(fixture()),error=new Error('synthetic refusal');let receipt:DurableFinancialAbortReceipt|undefined;
+  await j.operation('member-remove',async id=>{receipt=j.aborted(id,'rollback-acknowledged');});expect(receipt).toBeUndefined();
+  markJournaledAbort(error,receipt);expect(isJournaledAbort(error,{journalId:j.id,operation:'member-remove'})).toBe(false);
+});
+it.each(['rollback','abort-fsync','unknown','commit-callback-error'])('marks writer errors only after a durable abort (%s)',async mode=>{
+  let fail=false;const j=preparedJournal(fd=>{fsyncSync(fd);if(fail)throw new Error('synthetic terminal failure');}),writer=new JournalBudgetFinancialWriter(j),refusal=new Error('synthetic refusal');
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  const result=writer.runWithReceipt('member-remove',async()=>{
+    if(mode==='commit-callback-error'){await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');}
+    else{fail=mode==='abort-fsync';await hooks.settled(mode==='unknown'?'unknown':'rollback-acknowledged');}
+    throw refusal;
+  });
+  const error=await result.then(()=>{throw new Error('Failure fixture unexpectedly succeeded');},error=>error);fail=false;
+  expect(isJournaledAbort(error,{journalId:j.id,operation:'member-remove'})).toBe(mode==='rollback');if(mode==='rollback'||mode==='commit-callback-error')expect(error).toBe(refusal);
+});
+it.each([1,2])('mints no committed receipt when terminal/control fsync %s fails',async fault=>{
+  const f=fixture(),directory=join(f.directory,'prepared'),database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'},options={ownershipUid:testJournalUid,lock:platformTestJournalLock};
+  const preparation=HostFinancialJournal.prepareFresh(directory,database,options);preparation.complete();preparation.close();
+  let enabled=false,count=0,result:CommittedFinancialReceipt|undefined;
+  const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,sync:fd=>{fsyncSync(fd);if(enabled&&++count===fault)throw new Error('synthetic fsync failure');}});journals.push(j);
+  await expect(j.operation('member-remove',async id=>{j.propose(id,[]);enabled=true;result=j.committed(id);})).rejects.toThrow('unavailable');
+  enabled=false;expect(result).toBeUndefined();await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
+it('runWithReceipt returns actual committed coordinates and refuses a positively aborted transaction',async()=>{
+  const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
+  const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
+  const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});journals.push(j);const writer=new JournalBudgetFinancialWriter(j);
+  type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  const result=await writer.runWithReceipt('member-remove',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'done';});
+  expect(result.value).toBe('done');const proposal=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).find(f=>f.record.kind==='proposal');
+  expect(result.receipt).toMatchObject({journalId:j.id,operation:'member-remove',operationId:proposal.record.operationId,proposalSequence:proposal.record.sequence,proposalDigest:proposal.digest});expect(Object.isFrozen(result.receipt)).toBe(true);
+  expect(committedFinancialEvidence({...result.receipt},{kind:'account-erasure',accountId:randomUUID()})).toBeUndefined();
+  const aborted=writer.runWithReceipt('member-remove',async()=>{await hooks.settled('rollback-acknowledged');return 'aborted';});
+  await expect(aborted).rejects.toThrow('receipt unavailable');const missingReceipt=await aborted.catch(error=>error);
+  expect(isJournaledAbort(missingReceipt,{journalId:j.id,operation:'member-remove'})).toBe(false);
+  await expect(writer.run('member-remove',async()=>{await hooks.settled('rollback-acknowledged');return 'existing behavior';})).resolves.toBe('existing behavior');
+});
+it('withholds receipt authority from an unprepared journal and refuses receipt work before mutation',async()=>{
+  const f=fixture(),j=open(f),writer=new JournalBudgetFinancialWriter(j);let result:CommittedFinancialReceipt|undefined,called=false;
+  await j.operation('member-remove',async id=>{j.propose(id,[]);result=j.committed(id);});expect(result).toBeUndefined();
+  const before=readFileSync(join(f.directory,'journal.jsonl'));
+  await expect(writer.runWithReceipt('member-remove',async()=>{called=true;return 'must not run';})).rejects.toThrow('Prepared financial journal receipt unavailable');expect(called).toBe(false);expect(readFileSync(join(f.directory,'journal.jsonl'))).toEqual(before);
+  await expect(j.operation('member-remove',async id=>{j.propose(id,[]);j.committed(id);return 'generic commit';})).resolves.toBe('generic commit');
+});
 it('retains a stable protected suppression key and checks framed operations across a clean close',async()=>{
   const f=fixture(),j=open(f),identity={canonicalMemberId:'synthetic-member',providers:[{issuer:'https://issuer.invalid',subject:'synthetic-subject',tenantId:'synthetic-tenant'}]},suppression=j.suppression(identity);
   await j.operation('admit',async id=>{j.propose(id,[]);j.committed(id);});j.close();

@@ -6,12 +6,14 @@ import { lifecycleSchema } from "./lifecycle-config.js";
 import { credentialConfigSchema } from "./credential-state.js";
 const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial')}).strict();
+export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native')}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
   /** Trusted identity written by the installer from the same ownerId used in role bindings.
    * Older keeper configs may omit it; member removal then refuses closed. */
   designatedOwnerId: z.string().min(1).max(128).optional(),
   budgetFinancial: financialCustodyConfigSchema.optional(),
+  budgetNative: nativeCustodyConfigSchema.optional(),
   credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),
   // Optional protected gateway service key only. No recovery bypass or console copy.
@@ -24,7 +26,9 @@ const configSchema = z.object({
   agentsDir: absolute, retiredDir: absolute, secretsDir: absolute,
   rolesDir: absolute, templatesDir: absolute, backupDir: absolute,
   db: z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict(),
-}).strict();
+}).strict().superRefine((value,context)=>{
+  if(value.budgetNative&&!value.budgetFinancial)context.addIssue({code:'custom',path:['budgetNative'],message:'requires prepared financial custody'});
+});
 export type KeeperConfig = z.infer<typeof configSchema>;
 /**
  * Loads the file the keeper boots from. Three failures, three different sentences,

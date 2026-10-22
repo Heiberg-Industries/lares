@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {canonicalBudgetMoney,type BudgetFinancialOperation,type BudgetFinancialWriter} from '@lares/agent-kit/budget-admission-store';
 import {sourceTransactionBoundary,type SourceDatabase,type BudgetFinancialChange,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,type FinancialAtom} from './financial-journal.js';
+import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,markJournaledAbort,type FinancialAtom,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt} from './financial-journal.js';
 import {verifyFinancialContinuity} from './financial-continuity.js';
 const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
 const utc=(column:string)=>`to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
@@ -10,9 +10,18 @@ const utc=(column:string)=>`to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"H
  * second pool client. */
 export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   constructor(private journal:HostFinancialJournal){}
+  get journalId():string{return this.journal.id;}
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T> {
+    return this.execute(operation,work).then(result=>result.value);
+  }
+  runWithReceipt<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<{value:T;receipt:CommittedFinancialReceipt}> {
+    if(!this.journal.prepared)return Promise.reject(new Error('Prepared financial journal receipt unavailable'));
+    return this.execute(operation,work).then(result=>{if(!result.receipt)throw new Error('Financial commit receipt unavailable');return {value:result.value,receipt:result.receipt};});
+  }
+  private execute<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
+    let abortReceipt:DurableFinancialAbortReceipt|undefined;
     return this.journal.operation(operation,async operationId=>{
-      let settled=false,proposed=false;
+      let settled=false,proposed=false,receipt:CommittedFinancialReceipt|undefined;
       const boundary=sourceTransactionBoundary({
         started:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db);},
         readyToCommit:async db=>{if(this.journal.prepared)await verifyFinancialContinuity(this.journal,db,true);},
@@ -26,18 +35,18 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         settled:async outcome=>{
           if(outcome==='commit-acknowledged'){
             if(!proposed){this.journal.freeze();throw new Error('Financial checkpoint missing');}
-            this.journal.committed(operationId);
+            receipt=this.journal.committed(operationId);
           }else if(outcome==='unknown'){this.journal.freeze();throw new Error('Financial commit could not be confirmed');}
-          else this.journal.aborted(operationId,outcome);
+          else abortReceipt=this.journal.aborted(operationId,outcome);
           settled=true;
         },
       });
       try{
         const result=await work(boundary,operationId);
         if(!settled)throw new Error('Financial transaction did not durably settle');
-        return result;
+        return {value:result,receipt};
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
-    });
+    }).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
   }
 }
 /** Exact post-mutation financial atoms, read on the SAME owned transaction. No generic

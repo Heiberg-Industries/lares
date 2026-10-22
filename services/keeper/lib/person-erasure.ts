@@ -1,6 +1,6 @@
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {consoleSourceTransaction,sourceTransactionBoundary,type BudgetFinancialChange,type SourceDatabase,type SourcePool,type SourceTransactionOutcome} from '@lares/agent-kit/console-source-transaction';
-import {HostFinancialJournal,type FinancialAtom} from './financial-journal.js';
+import {HostFinancialJournal,markJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAtom} from './financial-journal.js';
 import {collectFinancialAtoms} from './budget-financial-writer.js';
 import {verifyFinancialContinuity} from './financial-continuity.js';
 
@@ -14,6 +14,8 @@ export interface PersonErasureClosure {
 export interface PersonErasureFinancialContext {
   prepare(db:SourceDatabase,memberId:string):Promise<PersonErasureClosure>;
   readonly owner:object;
+  /** Private cleanup coordinates captured by the locked closure, before redaction clears them. */
+  nativeAccountIds(closure:PersonErasureClosure):readonly string[];
   /** Re-read stable coordinates, verify complete metadata redaction, then stage the exact closure. */
   finalize(db:SourceDatabase,closure:PersonErasureClosure):Promise<void>;
 }
@@ -130,8 +132,10 @@ async function finalizeClosure(afterDb:SourceDatabase,closure:PersonErasureClosu
 /** Begins durable journal ownership before the first database checkout and owns one source
  * transaction through identity resolution, file work, redaction, proposal and commit. */
 export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostFinancialJournal,
-  work:(db:SourceDatabase,financial:PersonErasureFinancialContext)=>Promise<T>):Promise<{value:T;outcome:SourceTransactionOutcome}>{
+  work:(db:SourceDatabase,financial:PersonErasureFinancialContext)=>Promise<T>):Promise<{value:T;outcome:SourceTransactionOutcome;receipt?:CommittedFinancialReceipt}>{
   let outcome:SourceTransactionOutcome='not-started';
+  let receipt:CommittedFinancialReceipt|undefined;
+  let abortReceipt:DurableFinancialAbortReceipt|undefined;
   try{
   const value=await journal.operation('erase-person',async operationId=>{
     let proposal:readonly FinancialAtom[]|undefined;
@@ -141,6 +145,7 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
     const financial:PersonErasureFinancialContext={
       prepare:(db,memberId)=>{if(db!==activeSource||!isJournaledPersonErasureOwner(owner,db))throw refusal();return prepareClosure(db,journal,operationId,owner,pendingClosures,memberId);},
       owner,
+      nativeAccountIds:closure=>{const saved=closures.get(closure as object);if(!saved||saved.owner!==owner||saved.operationId!==operationId)throw refusal();return [...saved.memberAccountIds];},
       finalize:async(db,closure)=>{if(db!==activeSource||!isJournaledPersonErasureOwner(owner,db)||proposal)throw refusal();proposal=await finalizeClosure(db,closure,journal,operationId,owner);pendingClosures.delete(closure as object);},
     };
     let settled=false,proposed=false;
@@ -156,10 +161,10 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
         outcome=result;
         if(result==='commit-acknowledged'){
           if(!proposed){journal.freeze();throw refusal();}
-          journal.committed(operationId);
+          receipt=journal.committed(operationId);
         }else if(result==='unknown'){
           journal.freeze();throw new Error('Financial erasure outcome is unknown; inspection and recovery are required');
-        }else journal.aborted(operationId,result);
+        }else abortReceipt=journal.aborted(operationId,result);
         settled=true;
       },
     });
@@ -172,7 +177,7 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
       if(!settled)throw refusal();return result;
     }finally{journalOwners.delete(owner);for(const closure of pendingClosures)closures.delete(closure);pendingClosures.clear();if(!settled){try{journal.freeze();}catch{/* Preserve the original failure; custody remains recovery-only. */}}}
   });
-  return {value,outcome};
-  }catch(error){if(error&&typeof error==='object')Object.defineProperty(error,'outcome',{value:outcome,configurable:true});throw error;}
+  return receipt?{value,outcome,receipt}:{value,outcome};
+  }catch(error){markJournaledAbort(error,abortReceipt);if(error&&typeof error==='object')Object.defineProperty(error,'outcome',{value:outcome,configurable:true});throw error;}
 }
 

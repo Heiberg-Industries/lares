@@ -26,6 +26,7 @@
 // doing something irreversible, and is not necessarily a developer. `main` never throws.
 
 import { runErase, renderRunEraseReport } from "../lib/run-erase.js";
+import type {BudgetNativeCustodyStore} from '../../keeper/lib/budget-native-custody.js';
 import type { Pool } from "pg";
 import type {HostFinancialJournal} from "../../keeper/lib/financial-journal.js";
 
@@ -103,7 +104,7 @@ function messageOf(err: unknown): string {
 /** Exported so a test can drive it without spawning a process — migrate.ts's shape. */
 export async function main(
   argv: readonly string[],
-  deps: { db: Pool; out: (s: string) => void;journal?:HostFinancialJournal },
+  deps: { db: Pool; out: (s: string) => void;journal?:HostFinancialJournal;nativeCustody?:BudgetNativeCustodyStore },
 ): Promise<number> {
   let args: ParsedEraseArgs;
   try {
@@ -129,7 +130,7 @@ export async function main(
 
   let result;
   try {
-    result = await runErase({ db: deps.db, person: args.person, vaults: args.vaults, apply: args.apply,journal:deps.journal });
+    result = await runErase({ db: deps.db, person: args.person, vaults: args.vaults, apply: args.apply,journal:deps.journal,nativeCustody:deps.nativeCustody });
   } catch (err) {
     deps.out(
       "The erase stopped because the database could not be reached or answered unexpectedly. " +
@@ -139,11 +140,11 @@ export async function main(
   }
 
   deps.out(renderRunEraseReport(result));
-  return result.dbReport.refusals.length > 0 || result.vaultError !== undefined || result.journalWarning!==undefined || result.transactionOutcome==='unknown' ? 1 : 0;
+  return result.dbReport.refusals.length > 0 || result.vaultError !== undefined || result.journalWarning!==undefined || result.nativeCleanup?.status!=='complete'&&result.nativeCleanup!==undefined || result.transactionOutcome==='unknown' ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  let db:Pool|undefined,journal:HostFinancialJournal|undefined;
+  let db:Pool|undefined,journal:HostFinancialJournal|undefined,nativeCustody:BudgetNativeCustodyStore|undefined;
   const args=process.argv.slice(2);
   const apply=args.includes('--apply')&&!args.includes('--help');
   const rootRefusal=apply?rootApplyRefusal(process.platform,process.getuid?.()):undefined;
@@ -155,18 +156,21 @@ if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
       process.exitCode=await main(args,{db:{} as Pool,out:(s)=>process.stdout.write(s+"\n")});
     }else if(apply){
       const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
+      const {openConfiguredNativeCustody}=await import('../../keeper/lib/budget-native-cleanup.js');
       const {HostFinancialJournal}=await import('../../keeper/lib/financial-journal.js');
       const config=loadKeeperConfig();
+      nativeCustody=openConfiguredNativeCustody(config.budgetNative?.directory);
       if(config.budgetFinancial)journal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
       db=keeperPool(config.db);
     }else{
       const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
       const config=loadKeeperConfig();db=keeperPool(config.db);
     }
-    if(!args.includes('--help'))process.exitCode=await main(args, { db:db!,journal,out: (s) => process.stdout.write(s + "\n") });
+    if(!args.includes('--help'))process.exitCode=await main(args, { db:db!,journal,nativeCustody,out: (s) => process.stdout.write(s + "\n") });
   }
   catch(err){process.stdout.write(messageOf(err)+"\n");process.exitCode=1;}
   finally{
+    try{await nativeCustody?.drainForShutdown();nativeCustody?.close();}catch(err){process.stdout.write(`Native custody needs inspection: ${messageOf(err)}\n`);process.exitCode=1;}
     try{journal?.close();}catch(err){process.stdout.write(`Financial custody needs inspection: ${messageOf(err)}\n`);process.exitCode=1;}
     await db?.end().catch(()=>undefined);
   }

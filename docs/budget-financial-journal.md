@@ -159,6 +159,38 @@ and recovery fields remain empty. Provisioning does not create gateway bindings,
 open accounts, reconcile liability, or enable spending. The bounded response
 contains only state, reason and counts, never member or provider identities.
 
+## Native credential custody and cleanup
+
+Native credential custody is optional and requires prepared financial custody.
+Its configuration accepts only the engine's fixed protected host directory.
+Keeper opens and verifies it before starting actions that can change SQL rows or
+files. An unconfigured legacy installation is accepted only when no native
+custody directory exists; an unbound directory requires recovery.
+
+Fresh native custody requires an existing prepared journal, no existing row in
+the native binding table (including redacted history), no configured native
+binding and no existing custody directory. The root-only `prepare-native
+--confirm-fresh-native-custody` action holds journal ownership and an exclusive
+binding-table lock through creation. It never adopts or regenerates history.
+
+Member removal and person erasure durably revoke local credentials and remove
+their plaintext only after the database and prepared journal acknowledge the
+change. Erasure then keeps only a fingerprint and minimal cleanup commitments.
+These actions do not call the gateway or delete shared teams or users. They
+report pending or blocked native cleanup separately from the acknowledged
+database change.
+
+The root-only `cleanup-native --host` action attempts at most one pending key
+per invocation and reports the remaining count. Pending and blocked results
+exit unsuccessfully. It uses Keeper's host action and has no direct gateway-write
+fallback. Cleanup is attempted only when the trusted configured gateway origin
+matches the origin recorded with that key.
+
+Native custody is excluded from ordinary backups and encrypted secret bundles.
+Restore refuses when configured custody is missing or cannot be opened. Keeper
+stops listeners and drains native work before draining the journal and closing
+database pools and custody owners.
+
 ## Permanent freeze before restore
 
 `restore.sh` inspects binding without opening custody on dry-run. No binding and
@@ -183,9 +215,8 @@ There is no unfreeze or reconciliation shortcut.
 
 ## Remaining activation boundaries and verification
 
-Provisioning/window/binding owners, runtime preparation, authentic owner removal,
-erasure tombstones and policy/removal/erasure whole-operation barriers remain
-unintegrated. Distinct nonowner application and keeper financial database logins,
+Native shared-team/user provisioning and spending activation remain closed.
+Distinct nonowner application and keeper financial database logins,
 admin host-only access, privilege guards and comprehensive mutation guards remain
 required. SQL025's immutable checkpoint is an integration aid, not database role
 isolation. Never bypass existing triggers to simulate readiness.
