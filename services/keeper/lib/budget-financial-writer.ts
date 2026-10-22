@@ -10,7 +10,7 @@ const utc=(column:string)=>`to_char(${column} AT TIME ZONE 'UTC','YYYY-MM-DD"T"H
  * second pool client. */
 export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   constructor(private journal:HostFinancialJournal){}
-  run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T> {
+  run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T> {
     return this.journal.operation(operation,async operationId=>{
       let settled=false,proposed=false;
       const boundary=sourceTransactionBoundary({
@@ -33,7 +33,7 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         },
       });
       try{
-        const result=await work(boundary);
+        const result=await work(boundary,operationId);
         if(!settled)throw new Error('Financial transaction did not durably settle');
         return result;
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}

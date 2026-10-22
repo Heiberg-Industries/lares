@@ -70,7 +70,7 @@ describe("the keeper client", () => {
       { check: "model-alias", message: "Choose an available model" },
       { check: "door", message: "Connect Slack first" },
     ];
-    await fakeKeeper((_request, socket) => reply(socket, { ok: false, error: "invalid definition", findings }));
+    await fakeKeeper((_request, socket) => reply(socket, { ok: false, outcome:"refused", error: "invalid definition", findings }));
 
     await expect(keeper("definition.save", {}, "b@h.co")).rejects.toMatchObject({
       name: "KeeperRefusedError", message: "invalid definition", findings,
@@ -80,12 +80,21 @@ describe("the keeper client", () => {
   it("preserves a generic action failure without claiming that its effects were rolled back", async () => {
     await fakeKeeper((_request, socket) => reply(socket, {
       ok: false,
-      error: "keeper: response serialization failed; action may have completed",
+      outcome:"unknown",
+      error: "keeper could not confirm the action outcome",
     }));
 
     await expect(keeper("definition.save", {}, "b@h.co")).rejects.toMatchObject({
-      name: "KeeperRefusedError",
-      message: "keeper: response serialization failed; action may have completed",
+      name: "KeeperUnavailableError",
+      outcomeMayBeUnknown:true,
+      message: expect.stringContaining("refresh before trying again"),
+    });
+  });
+
+  it("treats an error response without an outcome discriminator as unknown",async()=>{
+    await fakeKeeper((_request,socket)=>reply(socket,{ok:false,error:"legacy refusal"}));
+    await expect(keeper("definition.save",{},"b@h.co")).rejects.toMatchObject({
+      name:"KeeperUnavailableError",outcomeMayBeUnknown:true,
     });
   });
 

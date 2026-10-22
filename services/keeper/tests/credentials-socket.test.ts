@@ -33,7 +33,7 @@ it('independently enforces admin metadata access and mutations on the actual app
   const f=await fixture();
   for(const action of ['credential.status','credential.discard','credential.test_save','credential.test_current','credential.test_pending']) {
     const response=await request(join(f.dir,'app/keeper.sock'),{action,input:{slot:'notion:shared',...(action==='credential.status'?{}:{expectedRevision:0}),...(action==='credential.test_save'?{token:'synthetic-secret'}:{})},actor:'member@example.invalid'});
-    expect(response).toEqual({ok:false,error:'Credential administrator required'});
+    expect(response).toEqual({ok:false,outcome:'refused',error:'Credential administrator required'});
   }
   expect(f.read).not.toHaveBeenCalled();expect(f.locked).not.toHaveBeenCalled();
   expect(JSON.stringify(f.audit)).not.toContain('synthetic-secret');
@@ -43,7 +43,7 @@ it('independently enforces admin metadata access and mutations on the actual app
 it('host socket retains separate trusted authority; app cannot invoke host recovery or staging',async()=>{
   const f=await fixture();
   expect(await request(join(f.dir,'host/keeper.sock'),{action:'credential.status',input:{slot:'notion:shared'},actor:'member@example.invalid'})).toMatchObject({ok:true});
-  expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.recover',input:{slot:'notion:shared',expectedRevision:0},actor:'owner@example.invalid'})).toMatchObject({ok:false,error:'keeper: reachable only from the host command'});
-  expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.stage',input:{slot:'notion:shared',token:'synthetic-secret'},actor:'owner@example.invalid'})).toMatchObject({ok:false,error:'keeper: unknown action'});
+  expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.recover',input:{slot:'notion:shared',expectedRevision:0},actor:'owner@example.invalid'})).toMatchObject({ok:false,outcome:'refused',error:'keeper: reachable only from the host command'});
+  expect(await request(join(f.dir,'app/keeper.sock'),{action:'credential.stage',input:{slot:'notion:shared',token:'synthetic-secret'},actor:'owner@example.invalid'})).toMatchObject({ok:false,outcome:'refused',error:'keeper: unknown action'});
   expect(JSON.stringify(f.audit)).not.toContain('synthetic-secret');
 });

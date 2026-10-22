@@ -56,9 +56,9 @@ export interface BudgetGatewaySettlement {
   credentialGeneration:string;grantHash:string;pricingProfile:unknown;
 }
 export type BudgetAdmission = {state:'allowed';permit:BudgetDispatchPermit;attemptId:string}|{state:'denied'|'unavailable';reason:string};
-export type BudgetFinancialOperation='prepare'|'provision'|'admit'|'grant'|'unknown'|'settle';
+export type BudgetFinancialOperation='prepare'|'provision'|'admit'|'grant'|'unknown'|'settle'|'member-remove';
 export interface BudgetFinancialWriter {
-  run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T>;
+  run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T>;
 }
 type Ref={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();

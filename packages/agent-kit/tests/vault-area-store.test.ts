@@ -10,7 +10,6 @@ import { randomUUID } from 'node:crypto';
 import { afterAll,beforeAll,beforeEach,describe,expect,it } from 'vitest';
 import { PgGrantStore } from '../src/grant-store.js';
 import { PgVaultStore } from '../src/vault-area-store.js';
-import { PgMemberStore } from '../src/member-store.js';
 import { quiet } from './helpers/quiet-pool.js';
 const migration=(n:string)=>readFileSync(new URL(`../../../services/box/sql/${n}`,import.meta.url),'utf8');
 const authority={designatedOwnerMemberId:'owner'};
@@ -190,7 +189,7 @@ describe('Vault area current authority on disposable PostgreSQL',()=>{
   });
   it('invalidates on membership and preserves unrelated grants across revision changes',async()=>{
     await area();const before=await configure([named('second'),named('restricted')]);
-    await new PgMemberStore(db).removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     expect(await grants.can('second',resource(),'use')).toBe(false);expect(await grants.can('restricted',resource(),'use')).toBe(true);
     expect(await grants.can('restricted',resource(),'use',{expectedRevision:before.accessRevision})).toBe(false);
     await db.query("UPDATE users SET status='active' WHERE id='second'");expect(await grants.can('second',resource(),'use')).toBe(false);

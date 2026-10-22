@@ -33,10 +33,10 @@ function expiry(value: Date): void {
   if (!(value instanceof Date) || !Number.isFinite(value.getTime()) || value.getTime() <= Date.now()) throw new MemberStoreError('invalid');
 }
 
-/** A locked lookup belongs inside the caller's transaction. FOR SHARE prevents concurrent
- * removal/demotion until that transaction commits; a standalone lookup is only a snapshot. */
-export async function currentMember(db: Pick<PoolClient, 'query'>, id: string, options: { lock?: 'share' } = {}): Promise<Member | undefined> {
-  const { rows } = await db.query<MemberRow>(`SELECT ${columns} FROM users WHERE id=$1 AND status='active' AND org_id IS NOT NULL${options.lock === 'share' ? ' FOR SHARE' : ''}`, [id]);
+/** A locked lookup belongs inside the caller's transaction; a standalone lookup is only a snapshot. */
+export async function currentMember(db: Pick<PoolClient, 'query'>, id: string, options: { lock?: 'share'|'update' } = {}): Promise<Member | undefined> {
+  const lock=options.lock==='update'?' FOR UPDATE':options.lock==='share'?' FOR SHARE':'';
+  const { rows } = await db.query<MemberRow>(`SELECT ${columns} FROM users WHERE id=$1 AND status='active' AND org_id IS NOT NULL${lock}`, [id]);
   return rows[0] && view(rows[0]);
 }
 
@@ -180,12 +180,6 @@ export class PgMemberStore {
     await this.transaction(async db => {
       await this.authorized(db,actorId,targetId);
       await db.query('UPDATE member_sessions SET revoked_at=COALESCE(revoked_at,clock_timestamp()) WHERE member_id=$1',[targetId]);
-    });
-  }
-  async removeMember(actorId: string, targetId: string): Promise<void> {
-    await this.transaction(async db => {
-      await this.authorized(db,actorId,targetId,true);
-      await db.query("UPDATE users SET status='removed' WHERE id=$1",[targetId]);
     });
   }
   async revokeInvitation(actorId: string, invitationId: string): Promise<void> {

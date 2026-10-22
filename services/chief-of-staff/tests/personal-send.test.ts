@@ -7,7 +7,6 @@ import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontai
 import { readFileSync,readdirSync } from 'node:fs';
 import { Pool } from 'pg';
 import { PgAccountStore,type TrustedAccountAdapter } from '@lares/agent-kit/account-store';
-import { PgMemberStore } from '@lares/agent-kit/member-store';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import {assertPrivateConsoleRequest} from '@lares/agent-kit/private-console-envelope';
 import { bindConsoleSession,consoleRouteAdmission } from '@lares/agent-kit/console-turn-authority';
@@ -156,7 +155,7 @@ describe('personal mail current authority executor',()=>{
    const running=execute(ref);let mutation:Promise<unknown>|undefined;
    try{
      await readyToWrite;
-     mutation=change==='member-removal'?new PgMemberStore(other).removeMember('member-b','member-a'):change==='reconnect'?
+     mutation=change==='member-removal'?other.query("UPDATE users SET status='removed' WHERE id='member-a'"):change==='reconnect'?
        new PgAccountStore(other).beginUpdate('member-a',own.account.id,0).then(update=>new PgAccountStore(other).setStatus('member-a',update,'needs_reconsent')):
        other.query("INSERT INTO ratchet(agent,capability,level,updated_by) VALUES('helper','personal_mailbox','never','fixture')");
      const settled=mutation.then(()=>({ok:true}),error=>({error}));let blocked=false;

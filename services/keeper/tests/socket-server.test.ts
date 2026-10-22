@@ -113,9 +113,18 @@ it("never returns serializer exception text after an audited action", async () =
   const socket = await start(true);
   const response = await request(socket, '{"action":"serialize"}\n');
   expect(response.ok).toBe(false);
-  expect(response.error).toContain("may have completed");
+  expect(response.outcome).toBe("unknown");
+  expect(response.error).toBe("keeper could not confirm the action outcome");
   expect(response.error).not.toContain("serializer-secret");
   expect(audit.mock.calls.map(([r]) => r.outcome)).toEqual(["pending", "ok"]);
+});
+
+it("labels generic action failures as outcome-unknown and never returns the exception text",async()=>{
+  registerAction({name:"failure",input:z.object({}),run:async()=>{throw new Error("private failure detail");}});
+  const socket=await start(true),response=await request(socket,'{"action":"failure"}\n');
+  expect(response).toEqual({ok:false,outcome:"unknown",error:"keeper could not confirm the action outcome"});
+  expect(JSON.stringify(response)).not.toContain("private failure detail");
+  expect(audit.mock.calls.map(([r])=>r.outcome)).toEqual(["pending","failed"]);
 });
 
 it("recovers an owned socket after SIGKILL and refuses a regular file", async () => {
@@ -148,7 +157,7 @@ it("transports trusted structured refusal findings and audits refusal", async ()
     throw new KeeperRefusedError("invalid model", [{check: "model-alias", message: "Choose an available model"}]);
   }});
   const socket = await start(true);
-  expect(await request(socket, '{"action":"validate","actor":"host"}\n')).toEqual({ok:false,error:"invalid model",findings:[{check:"model-alias",message:"Choose an available model"}]});
+  expect(await request(socket, '{"action":"validate","actor":"host"}\n')).toEqual({ok:false,outcome:"refused",error:"invalid model",findings:[{check:"model-alias",message:"Choose an available model"}]});
   expect(audit.mock.calls.at(-1)![0].outcome).toBe("refused");
 });
 

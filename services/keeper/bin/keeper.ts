@@ -30,6 +30,7 @@ import {productionGatewayBudgetAuthority} from '../lib/gateway-budget.js';
 import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
+import { registerMemberRemovalAction } from "../lib/member-removal.js";
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
@@ -85,6 +86,7 @@ async function main(): Promise<void> {
             if(!financialJournal)throw new Error('Financial custody is not configured');
             return provisionBudgetAccounts(budgetPool,financialJournal,input);
         },successDetail:result=>`closed unreconciled accounts provisioned for ${result.members} members`});
+        registerMemberRemovalAction({pool:budgetPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,

@@ -39,7 +39,8 @@ export interface KeeperOptions {
 
 type KeeperResponse =
   | { ok: true; result: unknown }
-  | { ok: false; error: string; findings?: KeeperFinding[] };
+  | { ok: false; outcome: "refused"; error: string; findings?: KeeperFinding[] }
+  | { ok: false; outcome: "unknown"; error: string };
 
 function unavailableAfterSend(reason: string): KeeperUnavailableError {
   return new KeeperUnavailableError(`${reason}; the action outcome may be unknown`, true);
@@ -65,11 +66,12 @@ function parseResponse(line: Buffer): KeeperResponse {
   }
   if (!isRecord(parsed)) throw unavailableAfterSend("keeper returned an invalid response");
   if (parsed.ok === true && Object.hasOwn(parsed, "result")) return { ok: true, result: parsed.result };
-  if (parsed.ok === false && typeof parsed.error === "string") {
+  if (parsed.ok === false && (parsed.outcome === "refused" || parsed.outcome === "unknown") && typeof parsed.error === "string") {
     if (Object.hasOwn(parsed, "findings") && findings(parsed.findings) === undefined) {
       throw unavailableAfterSend("keeper returned an invalid response");
     }
-    return { ok: false, error: parsed.error, findings: findings(parsed.findings) };
+    if(parsed.outcome === "unknown")return {ok:false,outcome:"unknown",error:parsed.error};
+    return { ok: false, outcome:"refused", error: parsed.error, findings: findings(parsed.findings) };
   }
   throw unavailableAfterSend("keeper returned an invalid response");
 }
@@ -136,7 +138,8 @@ export function keeper<T>(action: string, input: unknown, actor: string, opts: K
       try {
         const response = parseResponse(received.subarray(0, newline));
         if (response.ok) finish(undefined, response.result as T);
-        else finish(new KeeperRefusedError(response.error, response.findings));
+        else if(response.outcome === "refused")finish(new KeeperRefusedError(response.error,response.findings));
+        else finish(new KeeperUnavailableError("keeper could not confirm the action outcome; refresh before trying again",true));
       } catch (error) {
         finish(error instanceof Error ? error : unavailableAfterSend("keeper returned an invalid response"));
       }

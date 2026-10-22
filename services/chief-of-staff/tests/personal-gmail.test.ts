@@ -233,7 +233,7 @@ describe('private console Gmail catalogue execution', () => {
     const running=gmailSearch.execute({query:'x',selection:own.selection},ctx());
     let removal:Promise<unknown>|undefined;
     try{
-      await ready;removal=new PgMemberStore(removalPool).removeMember('member-b','member-a');
+      await ready;removal=removalPool.query("UPDATE users SET status='removed' WHERE id='member-a'");
       const removed=removal.then(()=>({ok:true}),error=>({ok:false,error}));
       let blocked=false;
       for(let n=0;n<100;n++){

@@ -82,7 +82,7 @@ export async function serve(opts: ServeOptions): Promise<() => Promise<void>> {
         await refuse({ ...context, actor: opts.host ? "host" : "unverified" }, "protocol", detail);
       }
       catch (e) {
-        socket.end(JSON.stringify({ ok: false, error: (e as Error).message }) + "\n", () => socket.destroy());
+        socket.end(JSON.stringify({ ok: false, outcome: "refused", error: (e as Error).message }) + "\n", () => socket.destroy());
       }
     };
     const process = async () => {
@@ -127,13 +127,16 @@ export async function serve(opts: ServeOptions): Promise<() => Promise<void>> {
             result = await runAction(req.action, req.input ?? {}, { ...context, actor: opts.host ? "host" : req.actor as string }, { host: opts.host });
           }
           catch (e) {
-            socket.write(JSON.stringify({ ok: false, error: (e as Error).message, ...(e instanceof KeeperRefusedError ? { findings: e.findings } : {}) }) + "\n");
+            const refused=e instanceof KeeperRefusedError;
+            socket.write(JSON.stringify({ ok: false, outcome: refused?"refused":"unknown",
+              error: refused?e.message:"keeper could not confirm the action outcome",
+              ...(refused&&e.findings ? { findings: e.findings } : {}) }) + "\n");
             continue;
           }
           try {
             socket.write(JSON.stringify({ ok: true, result: result ?? null }) + "\n");
           } catch {
-            socket.write(JSON.stringify({ ok: false, error: "keeper: response serialization failed; action may have completed" }) + "\n");
+            socket.write(JSON.stringify({ ok: false, outcome: "unknown", error: "keeper could not confirm the action outcome" }) + "\n");
           }
         }
         if (ended && !terminal)
