@@ -448,12 +448,19 @@ describe("creative agent declaration ↔ authored tools", () => {
     // the lint's real complaint (`lintWriteShape`'s "unmapped-tool" kind) is that it maps to no
     // capability at all — true, and deliberate (ALWAYS_PRESENT_TOOLS above). Its only write is
     // `defineState(...).update()` on the session's own language slot, never a third party.
+    // The two instruction readers are also unmapped. Their real sources and their one-hop
+    // imports are checked by the agent-kit regression test; these reasons only exempt their
+    // intentionally instruction/read-only tool names from the capability join.
     expect(() =>
       assertNoUngatedWrites({
         agentDir: AGENT_DIR,
         manifest: declaration,
         label: "eve-creative-agent",
-        skip: { set_language: "ALWAYS_PRESENT, no capability, writes only its own session's language slot" },
+        skip: {
+          set_language: "ALWAYS_PRESENT, no capability, writes only its own session's language slot",
+          load_skill: "instruction loader; its deployed sources are checked read-only in agent-kit",
+          public_doc: "fixed-ID documentation reader; its deployed sources are checked read-only in agent-kit",
+        },
       }),
     ).not.toThrow();
   });

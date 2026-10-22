@@ -28,7 +28,8 @@ it('validates identical immutable admissions before any binding read; malformed 
  await expect(verifyPrivateConsoleSession({session:{auth:{current:null,initiator:null}}})).resolves.toBe(false);
 });
 it('private tools are an intersection and native/source-free controls keep their scope',()=>{
- expect(['gmail_accounts','gmail_search','gmail_read','gmail_send','vault_read','set_language'].filter(n=>privateToolAllowed('chief-of-staff',n))).toEqual(['gmail_accounts','gmail_search','gmail_read']);
+ expect(['gmail_accounts','gmail_search','gmail_read','gmail_send','vault_read','set_language','lares_read_public_doc'].filter(n=>privateToolAllowed('chief-of-staff',n))).toEqual(['gmail_accounts','gmail_search','gmail_read','lares_read_public_doc']);
+ expect(privateToolAllowed('creative','lares_read_public_doc')).toBe(true);
  expect(privateToolAllowed('creative','gmail_read')).toBe(false);
  expect(privateToolAllowed('creative','personal_mailbox_send')).toBe(false);
  expect(()=>assertPrivateConsoleTool({},'chief-of-staff','personal_mailbox_send')).toThrow('Conversation authority');

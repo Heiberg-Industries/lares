@@ -98,10 +98,9 @@ const DISABLED: Record<string, () => Promise<{ default: unknown }>> = {
 //                  re-injects it across compaction, so removing it would cost context on long
 //                  sessions for no gain.
 //   load_skill — pulls a declared skill's instructions into the turn. It adds NO execution
-//                  surface (behaviour still comes from the tools the agent already has), and eve
-//                  only registers it when the agent declares skills — the creative agent declares none
-//                  today, so it is currently absent anyway. Leaving it undisabled means a
-//                  future skill works without first deleting a file nobody remembers.
+//                  surface (behaviour still comes from the tools the agent already has). Creative
+//                  authors a narrow wrapper so its dynamic public-docs skill works without a
+//                  filesystem sandbox; the wrapper preserves Eve's loader for other native skills.
 const ENABLED = ["ask_question", "todo", "load_skill"] as const;
 
 // `connection_search` is neither disabled nor a free choice to enable: it is eve's one REQUIRED
@@ -168,14 +167,16 @@ describe("tool harness lockdown", () => {
     expect(disabled.sort()).toEqual(Object.keys(DISABLED).sort());
   });
 
-  it("ask_question / todo / load_skill are NOT disabled — they are the useful three", () => {
-    // eve disables by FILENAME, so "enabled" is proven by the ABSENCE of a file. Authored tools
-    // belong in `catalogue/`, not this directory; none of them may be named after these three.
+  it("keeps ask_question and todo on framework defaults and guards the authored load_skill", async () => {
     const slugs = toolFileSlugs();
-    for (const keep of ENABLED) {
+    for (const keep of ["ask_question", "todo"]) {
       expect(slugs, `${keep}.ts must NOT exist — its presence would remove a tool the agent uses`)
         .not.toContain(keep);
     }
+    expect(slugs).toContain("load_skill");
+    const authored = (await import("../agent/tools/load_skill.js")).default;
+    expect(isDisabledToolSentinel(authored)).toBe(false);
+    expect(authored.events).toHaveProperty("session.started");
   });
 
   it("every disable names a real framework tool, and the DISABLED+ENABLED+REQUIRED split covers eve's whole harness", () => {

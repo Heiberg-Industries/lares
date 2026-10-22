@@ -450,6 +450,34 @@ describe("stripComments keeps offsets exact", () => {
 });
 
 describe("the depth rule", () => {
+  it.each(["chief-of-staff", "creative"])(
+    "%s: skipped instruction readers resolve to real read-only sources",
+    (role) => {
+      const agentDir = new URL(`../../../services/${role}`, import.meta.url).pathname;
+      for (const tool of ["load_skill", "public_doc"]) {
+        const found = sourcesForTool(agentDir, tool);
+        expect(found, `${role}/${tool} must resolve to a deployed source`).not.toBeNull();
+        expect(found, `${role}/${tool} must resolve at least one source`).not.toHaveLength(0);
+        for (const source of found!) {
+          expect(
+            classifyWriteShape(source.source),
+            `${role}/${tool} has a write-shaped source at ${source.file}`,
+          ).toEqual([]);
+        }
+        if (tool === "public_doc") {
+          expect(
+            found!.some((source) => source.file.endsWith("/src/public-docs-runtime.ts")),
+            `${role}/${tool} must include the actual shared baked-document reader in its one-hop sources`,
+          ).toBe(true);
+        }
+      }
+
+      // Negative control: prove this exact classifier guard would fail if a reader acquired a
+      // representative external mutation, rather than passing vacuously on empty source lists.
+      expect(classifyWriteShape(MUTATING_TOOL).map((finding) => finding.rule)).toContain("http-mutation");
+    },
+  );
+
   it("reads the tool file plus what it imports directly, and no further", () => {
     // Run against the real tree. chief-of-staff's `read_url` lives in its own `catalogue/`
     // (`sourcesForTool`'s "local" candidate list looks in both `agent/tools/` and `catalogue/`).
