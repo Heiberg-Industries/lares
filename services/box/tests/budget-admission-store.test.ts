@@ -154,7 +154,8 @@ beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   db=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:1000}));
   for(const file of readdirSync(sql).filter(f=>f.endsWith('.sql')).sort())await db.query(readFileSync(new URL(file,sql),'utf8'));
-  await db.query('CREATE TABLE budget_test_owner(marker text NOT NULL); CREATE TABLE dream_observations(id bigserial PRIMARY KEY,owner text);CREATE TABLE dream_preferences(id bigserial PRIMARY KEY,owner text)');
+  // Migration 026 owns the real dream tables used by the shared identity inventory.
+  await db.query('CREATE TABLE budget_test_owner(marker text NOT NULL)');
   await db.query('INSERT INTO budget_test_owner VALUES($1)',[fixtureOwner]);
 },120_000);
 afterAll(async()=>{await db?.end();await container?.stop();});

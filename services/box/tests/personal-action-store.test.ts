@@ -63,8 +63,7 @@ beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   db=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
   for(const name of readdirSync(sqlDir).filter(n=>n.endsWith('.sql')).sort()) await db.query(readFileSync(join(sqlDir,name),'utf8'));
-  // Existing export/erase inventories include these runtime-created, member-scoped tables.
-  await db.query('CREATE TABLE dream_observations(id bigserial PRIMARY KEY,owner text); CREATE TABLE dream_preferences(id bigserial PRIMARY KEY,owner text)');
+  // Migration 026 already created the real dream tables used by export and erase inventories.
 },120_000);
 afterAll(async()=>{await db?.end();await container?.stop();});
 beforeEach(async()=>{

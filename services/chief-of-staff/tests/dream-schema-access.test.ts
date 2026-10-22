@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { Pool } from "pg";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { quiet } from "./helpers/quiet-pool.js";
 
 import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
 import type { Observation } from "../lib/dream/reflect.js";
@@ -15,7 +16,7 @@ describe("dream schema access for a non-owner login", () => {
 
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
-    schemaOwner = new Pool({ connectionString: container.getConnectionUri() });
+    schemaOwner = quiet(new Pool({ connectionString: container.getConnectionUri() }));
 
     // This login owns the schema objects. The application login receives ordinary DML grants only.
     await schemaOwner.query(DREAM_SCHEMA_SQL);
@@ -28,7 +29,7 @@ describe("dream schema access for a non-owner login", () => {
     const appUri = new URL(container.getConnectionUri());
     appUri.username = "dream_app";
     appUri.password = "fixture-only-password";
-    app = new Pool({ connectionString: appUri.toString() });
+    app = quiet(new Pool({ connectionString: appUri.toString() }));
   }, 120_000);
 
   afterAll(async () => {
