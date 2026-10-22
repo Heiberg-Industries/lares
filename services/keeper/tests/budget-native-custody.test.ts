@@ -1,10 +1,10 @@
 import {afterEach,describe,expect,it} from 'vitest';
-import {chmodSync,copyFileSync,fstatSync,fsyncSync,linkSync,mkdtempSync,mkdirSync,readFileSync,readdirSync,realpathSync,renameSync,rmSync,statSync,symlinkSync,unlinkSync,writeFileSync} from 'node:fs';
-import {randomUUID} from 'node:crypto';
+import {chmodSync,copyFileSync,fstatSync,fsyncSync,linkSync,lstatSync,mkdtempSync,mkdirSync,readFileSync,readdirSync,realpathSync,renameSync,rmSync,statSync,symlinkSync,unlinkSync,writeFileSync} from 'node:fs';
+import {createHash,randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
-import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate} from '../lib/budget-native-custody.js';
+import {BudgetNativeCustodyStore,NATIVE_CUSTODY_MAX_BYTES,NATIVE_CUSTODY_MAX_RECORDS,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
 import {HostFinancialJournal,type CommittedFinancialReceipt,type FinancialAtom} from '../lib/financial-journal.js';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
@@ -65,6 +65,7 @@ function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId
   const operation=gate.prepareOperation(input,values.key??secret());return {team,user,input,operation,accountId,installationId};
 }
 const bytes=(directory:string)=>Object.fromEntries(readdirSync(directory).map(name=>[name,readFileSync(join(directory,name))]));
+const digestForTest=(value:Uint8Array)=>createHash('sha256').update(value).digest('hex');
 async function ownedObservationHandle(journal:HostFinancialJournal,operationId:string):Promise<Awaited<ReturnType<typeof observeCommittedFinancialProjection>>>{
   const client={async query(value:string|{text:string}){
     const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
@@ -223,6 +224,260 @@ describe('protected native custody foundation',()=>{
       const {directory,store}=fixture();store.close();writeFileSync(join(directory,name),gatewayCanonical({version:1,unexpected:true}),{mode:0o600});const before=bytes(directory);
       expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
     }
+  });
+  it.each([5,6])('inspects and completes a persisted next snapshot/control pair after publication fsync boundary %i',async failAt=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const before=bytes(directory),inspected=BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options);
+    expect(inspected).toEqual({status:'recovery-available',action:'complete-publication',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'complete-publication',runtimeReady:false});
+    expect(readdirSync(directory)).not.toContain('publication-intent.json');expect(readdirSync(directory)).not.toContain('.snapshot.json.partial');expect(readdirSync(directory)).not.toContain('.control.json.partial');
+    expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it.each([
+    {failAt:5,name:'snapshot.json',field:'revision'},
+    {failAt:4,name:'control.json',field:'revision'},
+  ])('refuses a current $name that matches neither intent pair even when its partial is valid',async ({failAt,name,field})=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const value=JSON.parse(readFileSync(join(directory,name),'utf8'));value[field]=97;writeFileSync(join(directory,name),gatewayCanonical(value),{mode:0o600});const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+  });
+
+  it('keeps read-only inspection descriptor-clean across repeated calls',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const descriptorCount=()=>readdirSync('/dev/fd').length,before=descriptorCount();
+    for(let index=0;index<8;index++)expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'complete-publication',runtimeReady:false});
+    expect(descriptorCount()).toBe(before);
+  });
+
+  it.each(['file','root'] as const)('never reports repair success when the recovery %s sync fails',async failedSync=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory);
+    const descriptors=()=>readdirSync('/dev/fd').length,descriptorCount=descriptors();
+    const sync=(fd:number)=>{fsyncSync(fd);if(fstatSync(fd).isDirectory()===(failedSync==='root'))throw new Error(`synthetic recovery ${failedSync} sync failure`);};
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(descriptors()).toBe(descriptorCount);
+    if(failedSync==='file')expect(bytes(directory)).toEqual(before);
+    expect(()=>open(directory)).toThrow('reconciliation');
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'complete-publication',runtimeReady:false});
+    expect(descriptors()).toBe(descriptorCount);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'complete-publication',runtimeReady:false});
+    expect(descriptors()).toBe(descriptorCount);
+  });
+
+  it('never reports success when the final intent-removal directory sync fails',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();
+    let failed=false;const sync=(fd:number)=>{fsyncSync(fd);if(!failed&&fstatSync(fd).isDirectory()&&!readdirSync(directory).includes('publication-intent.json')){failed=true;throw new Error('synthetic final intent sync failure');}};
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});expect(failed).toBe(true);
+    expect(readdirSync(directory)).not.toContain('publication-intent.json');expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it('refuses to adopt a replacement directory observed between file sync and rename',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory),moved=`${directory}-moved`;
+    let swapped=false;const sync=(fd:number)=>{fsyncSync(fd);if(!swapped){swapped=true;renameSync(directory,moved);mkdirSync(directory,{mode:0o700});}};
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(bytes(moved)).toEqual(before);expect(readdirSync(directory)).toEqual([]);expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it.each(['control.json','publication-intent.json','writer.lock'] as const)('refuses a replaced %s after partial-file sync and before rename',async targetName=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory),originalInode=statSync(join(directory,targetName)).ino;
+    let swapped=false;const sync=(fd:number)=>{fsyncSync(fd);if(swapped)return;swapped=true;const path=join(directory,targetName),replacement=`${path}.replacement`;copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);};
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(bytes(directory)).toEqual(before);expect(statSync(join(directory,targetName)).ino).not.toBe(originalInode);
+  });
+
+  it.each(['cross-final','extra-entry','duplicate-partial'] as const)('retains every original item when recovery evidence changes during sync: %s',async scenario=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===5)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();
+    if(scenario==='duplicate-partial'){copyFileSync(join(directory,'snapshot.json'),join(directory,'.snapshot.json.partial'));chmodSync(join(directory,'.snapshot.json.partial'),0o600);}
+    const before=bytes(directory);let injected=false;const sync=(fd:number)=>{fsyncSync(fd);if(injected)return;injected=true;
+      if(scenario==='extra-entry')writeFileSync(join(directory,'unexpected'),Buffer.from('foreign'),{mode:0o600});
+      else{const path=join(directory,scenario==='cross-final'?'snapshot.json':'.snapshot.json.partial'),replacement=join(directory,'replacement');copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);}
+    };
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    for(const [name,value] of Object.entries(before))if(name!=='snapshot.json'&&name!=='.snapshot.json.partial')expect(readFileSync(join(directory,name))).toEqual(value);
+    expect(readdirSync(directory)).toContain('publication-intent.json');expect(readdirSync(directory)).toContain('.control.json.partial');expect(readFileSync(join(directory,'control.json'))).toEqual(before['control.json']);
+  });
+
+  it('keeps the cancellation intent when sync observes a replaced final after deleting its partial',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===3)throw new Error('synthetic publication sync failure');}});
+    await expect(store.withGate(async gate=>{
+      const team=gate.reserveTeam(randomUUID(),target,reviewed());gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,reviewed());gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);
+      gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:reviewed()};
+      enabled=true;gate.prepareOperation(input,secret());
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+    const before=bytes(directory);expect(readdirSync(directory)).toContain('.snapshot.json.partial');let swapped=false;
+    const sync=(fd:number)=>{fsyncSync(fd);if(swapped||!fstatSync(fd).isDirectory()||readdirSync(directory).includes('.snapshot.json.partial'))return;swapped=true;
+      const path=join(directory,'snapshot.json'),replacement=join(directory,'replacement');copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);
+    };
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(readdirSync(directory)).toContain('publication-intent.json');expect(readdirSync(directory)).not.toContain('.snapshot.json.partial');
+    expect(readFileSync(join(directory,'snapshot.json'))).toEqual(before['snapshot.json']);expect(JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'))).toEqual(intent);
+  });
+
+  it.each(['target','unrelated'] as const)('retains exact %s key evidence throughout key-create recovery',async replaced=>{
+    let directory='',enabled=false,failed=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||failed||!directory||fstatSync(fd).isDirectory()||!readdirSync(directory).includes('publication-intent.json'))return;
+      const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+      if(intent.kind==='key-create'&&intent.key&&readdirSync(directory).includes(`${intent.key.operationId}.key`)){failed=true;throw new Error('synthetic key sync failure');}
+    }});directory=join(roots[roots.length-1],'custody');let previousOperation!:NativeOperation;
+    await expect(store.withGate(async gate=>{
+      previousOperation=prepare(gate).operation;
+      const policy=reviewed(),installationId=randomUUID(),team=gate.reserveTeam(installationId,target,policy);gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,policy);gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);
+      gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
+      enabled=true;gate.prepareOperation(input,`sk-${'y'.repeat(43)}`);
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+    const name=replaced==='target'?`${intent.key.operationId}.key`:`${previousOperation.operationId}.key`,before=bytes(directory);let swapped=false;
+    const sync=(fd:number)=>{fsyncSync(fd);if(swapped)return;swapped=true;const path=join(directory,name),replacement=join(directory,'replacement');copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);};
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,{...options,sync})).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(readdirSync(directory)).toContain('publication-intent.json');for(const [file,value] of Object.entries(before))if(file!==name)expect(readFileSync(join(directory,file))).toEqual(value);
+    expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it('refuses a missing persisted next control without changing the interrupted bytes',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===4)throw new Error('synthetic publication sync failure');}});
+    enabled=true;await expect(store.withGate(async gate=>gate.reserveTeam(randomUUID(),target,reviewed()))).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+  });
+
+  it('cancels an unstarted key-create intent only with the exact old pair and absent key',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===2)throw new Error('synthetic key-create intent sync failure');}});let operationId='';
+    await expect(store.withGate(async gate=>{
+      const team=gate.reserveTeam(randomUUID(),target,reviewed());gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,reviewed());gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);
+      const latest=gate.reserveUser(user.accountId,team.ownershipId,reviewed());gate.claimMembershipCreate(latest.ownershipId);gate.verifyMembershipCreated(latest.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:reviewed()};
+      enabled=true;const op=gate.prepareOperation(input,secret());operationId=op.operationId;
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();operationId=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8')).key.operationId;
+    const before=bytes(directory);expect(readdirSync(directory)).not.toContain(`${operationId}.key`);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'cancel-unstarted-key-create',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'cancel-unstarted-key-create',runtimeReady:false});
+    expect(readdirSync(directory)).not.toContain('publication-intent.json');expect(readdirSync(directory)).not.toContain(`${operationId}.key`);
+  });
+
+  it('refuses to relabel a next snapshot as key creation for an operation present in the exact previous snapshot',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===3)throw new Error('synthetic publication sync failure');}});let existing!:NativeOperation;
+    await expect(store.withGate(async gate=>{
+      existing=prepare(gate).operation;const policy=reviewed(),team=gate.reserveTeam(randomUUID(),target,policy);gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,policy);gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
+      enabled=true;gate.prepareOperation(input,`sk-${'y'.repeat(43)}`);
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));intent.kind='key-create';intent.key={operationId:existing.operationId,keyFingerprint:existing.keyFingerprint};
+    writeFileSync(join(directory,'publication-intent.json'),gatewayCanonical(intent),{mode:0o600});const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+  });
+
+  it('completes a key-create publication only after verifying and syncing its exact key bytes',async()=>{
+    let directory='',enabled=false,failed=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||failed||!directory||fstatSync(fd).isDirectory()||!readdirSync(directory).some(name=>name.endsWith('.key')))return;
+      const intentPath=join(directory,'publication-intent.json');if(!readdirSync(directory).includes('publication-intent.json')||JSON.parse(readFileSync(intentPath,'utf8')).kind!=='key-create')return;
+      failed=true;throw new Error('synthetic key sync failure');
+    }});directory=join(roots[roots.length-1],'custody');
+    await expect(store.withGate(async gate=>{
+      const policy=reviewed(),installationId=randomUUID(),team=gate.reserveTeam(installationId,target,policy);gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,policy);gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);
+      gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
+      enabled=true;return gate.prepareOperation(input,secret());
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const before=bytes(directory);expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'complete-publication',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    const alteredIntent=JSON.parse(before['publication-intent.json'].toString());alteredIntent.key.operationId=randomUUID();writeFileSync(join(directory,'publication-intent.json'),gatewayCanonical(alteredIntent),{mode:0o600});const altered=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(altered);
+    writeFileSync(join(directory,'publication-intent.json'),before['publication-intent.json'],{mode:0o600});expect(bytes(directory)).toEqual(before);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'complete-publication',runtimeReady:false});
+    const snapshot=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')),operation=snapshot.operations.find((row:any)=>row.kind==='operation');
+    expect(operation).toMatchObject({phase:'prepared',plaintext:'present',keyCreateAttempt:'not-attempted'});expect(digestForTest(readFileSync(join(directory,`${operation.operationId}.key`)))).toBe(operation.keyFingerprint);
+    expect(readdirSync(directory)).not.toContain('publication-intent.json');expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it('refuses a key-create next pair when the required key has not reached disk',async()=>{
+    let directory='',enabled=false,failed=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||failed||!directory||!fstatSync(fd).isDirectory()||!readdirSync(directory).includes('publication-intent.json'))return;
+      const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+      if(intent.kind==='key-create'&&digestForTest(readFileSync(join(directory,'control.json')) )===intent.next.controlDigest&&!readdirSync(directory).includes(`${intent.key.operationId}.key`)){failed=true;throw new Error('synthetic key-not-created crash');}
+    }});directory=join(roots[roots.length-1],'custody');
+    await expect(store.withGate(async gate=>{
+      const policy=reviewed(),team=gate.reserveTeam(randomUUID(),target,policy);gate.claimTeamCreate(team.ownershipId);gate.verifyTeamCreated(team.ownershipId);
+      const user=gate.reserveUser(randomUUID(),team.ownershipId,policy);gate.claimUserCreate(user.ownershipId);gate.verifyUserCreated(user.ownershipId);gate.claimMembershipCreate(user.ownershipId);gate.verifyMembershipCreated(user.ownershipId);
+      const input={bindingId:randomUUID(),credentialGeneration:'0',userOwnershipId:user.ownershipId,
+        association:{agent:'neutral-helper',incarnation:randomUUID(),definitionHash:'c'.repeat(64),purposeAlias:'lares-brain'},reviewedPolicy:policy};
+      enabled=true;gate.prepareOperation(input,secret());
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+  });
+
+  it('completes a key-remove next pair only when the exact key is absent',async()=>{
+    let directory='',enabled=false,failed=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||failed||!directory||!fstatSync(fd).isDirectory()||!readdirSync(directory).includes('publication-intent.json'))return;
+      const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+      if(intent.kind==='key-remove'&&digestForTest(readFileSync(join(directory,'control.json')) )===intent.next.controlDigest&&!readdirSync(directory).includes(`${intent.key.operationId}.key`)){failed=true;throw new Error('synthetic key-removed crash');}
+    }});directory=join(roots[roots.length-1],'custody');let operationId='';
+    await expect(store.withGate(async gate=>{
+      const p=prepare(gate);operationId=p.operation.operationId;await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(operationId,current));enabled=true;gate.removePlaintext(operationId);
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();const before=bytes(directory);
+    expect(readdirSync(directory)).not.toContain(`${operationId}.key`);expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'complete-publication',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'complete-publication',runtimeReady:false});expect(readdirSync(directory)).not.toContain(`${operationId}.key`);expect(readdirSync(directory)).not.toContain('publication-intent.json');
+  });
+
+  it('cancels a key-remove intent only while removal-pending and the exact plaintext key remain',async()=>{
+    let directory='',enabled=false,failed=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||failed||!directory||!fstatSync(fd).isDirectory()||!readdirSync(directory).includes('publication-intent.json'))return;
+      if(JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8')).kind==='key-remove'){failed=true;throw new Error('synthetic key-remove intent sync failure');}
+    }});directory=join(roots[roots.length-1],'custody');let operationId='';
+    await expect(store.withGate(async gate=>{
+      const p=prepare(gate);operationId=p.operation.operationId;await publishReceipt(gate,p,'member-remove',current=>gate.recordRevocation(operationId,current));
+      enabled=true;gate.removePlaintext(operationId);
+    })).rejects.toThrow('reconciliation');enabled=false;store.close();
+    const before=bytes(directory),snapshot=JSON.parse(before['snapshot.json'].toString()),operation=snapshot.operations.find((row:any)=>row.operationId===operationId);
+    expect(operation).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending',nativeDeletion:'unverified'});
+    expect(digestForTest(readFileSync(join(directory,`${operationId}.key`)))).toBe(operation.keyFingerprint);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-available',action:'cancel-local-key-removal',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'repaired-locally',action:'cancel-local-key-removal',runtimeReady:false});
+    expect(JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')).operations.find((row:any)=>row.operationId===operationId)).toMatchObject({phase:'revoke-pending',plaintext:'removal-pending'});
+    expect(digestForTest(readFileSync(join(directory,`${operationId}.key`)))).toBe(operation.keyFingerprint);
+  });
+
+  it('refuses a foreign publication intent and preserves every byte',()=>{
+    const {directory,store}=fixture();store.close();writeFileSync(join(directory,'publication-intent.json'),gatewayCanonical({version:1,foreign:true}),{mode:0o600});const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});
+    expect(BudgetNativeCustodyStore.repairPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+  });
+
+  it('reports an unchanged open store with no intent without making it runtime-ready',()=>{
+    const {directory,store}=fixture();store.close();const control=JSON.parse(readFileSync(join(directory,'control.json'),'utf8'));control.state='open';writeFileSync(join(directory,'control.json'),gatewayCanonical(control),{mode:0o600});const before=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'no-intent',runtimeReady:false});expect(bytes(directory)).toEqual(before);
+    expect(()=>open(directory)).toThrow('reconciliation');
+    control.state='uncertain';writeFileSync(join(directory,'control.json'),gatewayCanonical(control),{mode:0o600});const uncertain=bytes(directory);
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,options)).toEqual({status:'recovery-required',runtimeReady:false});expect(bytes(directory)).toEqual(uncertain);
+  });
+
+  it.each(['mode','hardlink','symlink','owner'] as const)('refuses recovery files with altered %s protection',async scenario=>{
+    const {directory,store}=fixture();let keyName='';if(scenario==='hardlink')await store.withGate(async gate=>{const p=prepare(gate);keyName=`${p.operation.operationId}.key`;});store.close();
+    if(scenario==='mode')chmodSync(join(directory,'control.json'),0o640);
+    if(scenario==='hardlink')linkSync(join(directory,keyName),join(directory,`${keyName}.extra`));
+    if(scenario==='symlink'){renameSync(join(directory,'snapshot.json'),join(directory,'snapshot.saved'));symlinkSync(join(directory,'snapshot.saved'),join(directory,'snapshot.json'));}
+    const recoveryOptions=scenario==='owner'?{...options,ownershipUid:options.ownershipUid+1}:options;
+    expect(BudgetNativeCustodyStore.inspectPublicationRecovery(directory,recoveryOptions)).toEqual({status:'recovery-required',runtimeReady:false});
+    if(scenario==='symlink')expect(lstatSync(join(directory,'snapshot.json')).isSymbolicLink()).toBe(true);
   });
   it('requires explicit creation, clean close and exact protected files',async()=>{
     const missing=join(realpathSync(tmpdir()),`lares-native-missing-${randomUUID()}`);
