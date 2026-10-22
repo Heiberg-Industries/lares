@@ -119,6 +119,8 @@
     "./catalogue": "./src/catalogue.ts",
     "./private-console-surface": "./src/private-console-surface.ts",
     "./vault-broker-client": "./src/vault-broker-client.ts",
+    "./model-purpose-protocol": "./src/model-purpose-protocol.ts",
+    "./model-purpose-client": "./src/model-purpose-client.ts",
     "./private-console-resume": "./src/private-console-resume.ts",
     "./private-console-envelope": "./src/private-console-envelope.ts",
     "./console-turn-authority": "./src/console-turn-authority.ts",

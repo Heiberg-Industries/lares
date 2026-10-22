@@ -1,16 +1,17 @@
 import { createConnection, createServer, type Socket } from 'node:net';
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { chmod, chown, lstat, mkdir, open, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
 import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainSourceTransactionDeadline, type SourceDatabase, type SourcePool } from '@lares/agent-kit/console-source-transaction';
 import { consoleAdmission, requireConsoleSessionBinding, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
+import { MODEL_PURPOSE_EMPTY_DIGEST, modelPurposeAckFields, modelPurposeChallengeFields, modelPurposeConsoleRequestFields, modelPurposeDigest, modelPurposeEqualMac, modelPurposeMac, modelPurposeRuntimeRequestFields, type ModelPurposeMacFields } from '@lares/agent-kit/model-purpose-protocol';
 
 const DEFAULT_CONSOLE_SOCKET='/run/lares/model-purpose-console.sock';
 const DEFAULT_RUNTIME_SOCKET='/run/lares/run/model-purpose.sock';
 const FRAME_LIMIT=32_768,MAX_CLIENTS=32,MAX_LIVE=2048,CHALLENGE_MS=10_000,PENDING_MS=30_000,TURN_MS=5*60_000,CLAIM_MS=30_000,REQUEST_MS=60_000;
-const EMPTY_DIGEST=createHash('sha256').update('').digest('hex');
+const EMPTY_DIGEST=MODEL_PURPOSE_EMPTY_DIGEST;
 const deny=()=>new Error('Model purpose authority is not available');
 
 export type ModelPurposeRequest={
@@ -34,13 +35,12 @@ type Challenge={request:ModelPurposeRequest;digest:string;challenge:string;expir
 type Pending={request:ModelPurposeRequest;digest:string;expiresAt:number};
 type Turn={request:ModelPurposeRequest;reference:BudgetAuthorityReference;turnId:string;sequence:number;definitionHash:string;purposeAlias:string;expiresAt:number;closed:boolean;steps:Set<string>};
 type Claim={turn:Turn;stepId:string;expiresAt:number};
-type MacFields={direction:'console-to-keeper'|'runtime-to-keeper'|'keeper-to-runtime'|'keeper-to-console';domain:string;agent:string;incarnation:string;operation:string;requestId:string;requestDigest:string;outcomeDigest:string;payloadDigest:string};
+type MacFields=ModelPurposeMacFields;
 type RuntimeEnvelope={agent:unknown;incarnation:unknown;requestId:unknown;timestamp:unknown;op:unknown;input:unknown;outcomeDigest:unknown;payloadDigest:unknown;mac:unknown};
 
 const canonical=(value:unknown):string=>JSON.stringify(value);
-export function modelPurposeDigest(value:unknown):string{return createHash('sha256').update(canonical(value)).digest('hex');}
-export function modelPurposeMac(key:Buffer,fields:MacFields):Buffer{return createHmac('sha256',key).update(canonical(['lares-model-purpose-v1',fields.direction,fields.domain,fields.agent,fields.incarnation,fields.operation,fields.requestId,fields.requestDigest,fields.outcomeDigest,fields.payloadDigest])).digest();}
-function equalMac(given:unknown,expected:Buffer):boolean{if(typeof given!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(given))return false;const bytes=Buffer.from(given,'base64url');return bytes.length===expected.length&&timingSafeEqual(bytes,expected);}
+export { modelPurposeDigest, modelPurposeMac };
+function equalMac(given:unknown,expected:Buffer):boolean{return modelPurposeEqualMac(given,expected);}
 function requestIsValid(value:unknown):value is ModelPurposeRequest{
   if(!value||typeof value!=='object'||Array.isArray(value))return false;const x=value as ModelPurposeRequest;
   return /^[a-z][a-z0-9-]{1,30}$/.test(x.agent)&&/^[a-f0-9-]{36}$/.test(x.incarnation)&&/^[A-Za-z0-9_-]{1,64}$/.test(x.session)&&typeof x.member==='string'&&/^[^\s,;\x00-\x1f\x7f]{1,256}$/.test(x.member)&&/^[A-Za-z0-9_-]{43}$/.test(x.admissionNonce)&&x.method==='POST'&&/^\/eve\/v1\/session(?:\/[A-Za-z0-9_-]{1,64})?$/.test(x.path)&&/^[a-f0-9]{64}$/.test(x.rawBodyHash)&&Number.isSafeInteger(x.policyRevision)&&x.policyRevision>0&&/^[a-f0-9]{64}$/.test(x.definitionHash)&&(x.purpose==='human'||x.purpose==='resume')&&/^[A-Za-z0-9_-]{32,64}$/.test(x.requestId)&&((x.purpose==='human'&&x.resume===undefined)||(x.purpose==='resume'&&!!x.resume&&typeof x.resume.requestId==='string'&&x.resume.requestId.length>0&&(x.resume.optionId==='approve'||x.resume.optionId==='cancel')));
@@ -181,18 +181,18 @@ export class ModelPurposeBrokerState {
   }
 }
 
-function challengeFields(request:ModelPurposeRequest,digest:string,challenge:string,expiresAt:number):MacFields{return {direction:'keeper-to-console',domain:'model-purpose-challenge',agent:request.agent,incarnation:request.incarnation,operation:'request.challenge',requestId:request.requestId,requestDigest:digest,outcomeDigest:EMPTY_DIGEST,payloadDigest:modelPurposeDigest({challenge,expiresAt,requestDigest:digest})};}
+function challengeFields(request:ModelPurposeRequest,digest:string,challenge:string,expiresAt:number):MacFields{return modelPurposeChallengeFields(request,digest,challenge,expiresAt);}
 function signedPayload(request:ModelPurposeRequest,challenge:string,challengeMac:string,expiresAt:number){return {version:1,request,requestDigest:modelPurposeDigest(request),challenge,challengeMac,expiresAt};}
 export function signModelPurposeRequest(key:Buffer,request:ModelPurposeRequest,challenge:string,challengeMac:string,expiresAt:number):string{
   if(!requestIsValid(request)||!/^[A-Za-z0-9_-]{43}$/.test(challenge)||!/^[A-Za-z0-9_-]{43}$/.test(challengeMac)||!Number.isSafeInteger(expiresAt))throw deny();
   const expectedChallenge=modelPurposeMac(key,challengeFields(request,modelPurposeDigest(request),challenge,expiresAt));if(!equalMac(challengeMac,expectedChallenge))throw deny();
-  const payload=signedPayload(request,challenge,challengeMac,expiresAt),payloadDigest=modelPurposeDigest(payload),fields:MacFields={direction:'console-to-keeper',domain:'model-purpose-request',agent:request.agent,incarnation:request.incarnation,operation:'request.admit',requestId:request.requestId,requestDigest:payload.requestDigest,outcomeDigest:EMPTY_DIGEST,payloadDigest};
+  const payload=signedPayload(request,challenge,challengeMac,expiresAt),fields=modelPurposeConsoleRequestFields(request,payload.requestDigest,modelPurposeDigest(payload));
   return `${Buffer.from(canonical(payload)).toString('base64url')}.${modelPurposeMac(key,fields).toString('base64url')}`;
 }
 function verifySignedRequest(key:Buffer,state:ModelPurposeBrokerState,capsule:unknown,receipt:unknown,identity:{agent:string;incarnation:string},currentTime=Date.now()){
   if(typeof capsule!=='string'||capsule.length>12_000)throw deny();const parts=capsule.split('.');if(parts.length!==2||!/^[A-Za-z0-9_-]+$/.test(parts[0]!)||!/^[A-Za-z0-9_-]{43}$/.test(parts[1]!))throw deny();
   const payload=object(JSON.parse(Buffer.from(parts[0]!,'base64url').toString('utf8'))),request=payload.request as ModelPurposeRequest,digest=payload.requestDigest,challenge=payload.challenge,challengeMac=payload.challengeMac,expiresAt=payload.expiresAt;
-  if(payload.version!==1||!requestIsValid(request)||typeof digest!=='string'||typeof challenge!=='string'||typeof challengeMac!=='string'||typeof expiresAt!=='number'||!Number.isSafeInteger(expiresAt))throw deny();const fields:MacFields={direction:'console-to-keeper',domain:'model-purpose-request',agent:request.agent,incarnation:request.incarnation,operation:'request.admit',requestId:request.requestId,requestDigest:digest,outcomeDigest:EMPTY_DIGEST,payloadDigest:modelPurposeDigest(payload)};
+  if(payload.version!==1||!requestIsValid(request)||typeof digest!=='string'||typeof challenge!=='string'||typeof challengeMac!=='string'||typeof expiresAt!=='number'||!Number.isSafeInteger(expiresAt))throw deny();const fields=modelPurposeConsoleRequestFields(request,digest,modelPurposeDigest(payload));
   if(!equalMac(parts[1],modelPurposeMac(key,fields))||!equalMac(challengeMac,modelPurposeMac(key,challengeFields(request,digest,challenge,expiresAt)))||request.agent!==identity.agent||request.incarnation!==identity.incarnation||digest!==modelPurposeDigest(request)||expiresAt<=currentTime)throw deny();
   const r=object(receipt);if(r.method!==request.method||r.path!==request.path||r.rawBodyHash!==request.rawBodyHash||r.requestId!==request.requestId||r.purpose!==request.purpose||canonical(r.resume??undefined)!==canonical(request.resume))throw deny();
   const consumed=state.consumeChallenge(challenge,request,digest);if(consumed.expiresAt!==expiresAt)throw deny();return {request,digest};
@@ -233,11 +233,11 @@ async function closeServer(server:ReturnType<typeof createServer>){
   if(!server.listening)return;
   await new Promise<void>(resolve=>{try{server.close(()=>resolve());}catch{resolve();}});
 }
-function runtimeFields(req:RuntimeEnvelope,input:Record<string,unknown>):MacFields{
+function runtimeFields(req:RuntimeEnvelope,_input:Record<string,unknown>):MacFields{
   if(typeof req.agent!=='string'||!/^[a-z][a-z0-9-]{1,30}$/.test(req.agent)||typeof req.incarnation!=='string'||!/^[a-f0-9-]{36}$/.test(req.incarnation)||typeof req.requestId!=='string'||!/^[A-Za-z0-9_-]{32,64}$/.test(req.requestId)||typeof req.op!=='string'||!validDigest(req.outcomeDigest)||!validDigest(req.payloadDigest))throw deny();
-  const {mac:_mac,...signedEnvelope}=req;const requestDigest=modelPurposeDigest(signedEnvelope);return {direction:'runtime-to-keeper',domain:'model-purpose-runtime',agent:req.agent,incarnation:req.incarnation,operation:req.op,requestId:req.requestId,requestDigest,outcomeDigest:req.outcomeDigest,payloadDigest:req.payloadDigest};
+  try{return modelPurposeRuntimeRequestFields(req);}catch{throw deny();}
 }
-function signedAck(key:Buffer,req:RuntimeEnvelope,input:Record<string,unknown>,result:Record<string,unknown>){const request=runtimeFields(req,input),fields:MacFields={...request,direction:'keeper-to-runtime',domain:'model-purpose-ack',outcomeDigest:modelPurposeDigest({accepted:true,operation:req.op}),payloadDigest:modelPurposeDigest(result)};return {...result,responseMac:modelPurposeMac(key,fields).toString('base64url'),responseRequestDigest:fields.requestDigest,responseOutcomeDigest:fields.outcomeDigest,responsePayloadDigest:fields.payloadDigest};}
+function signedAck(key:Buffer,req:RuntimeEnvelope,input:Record<string,unknown>,result:Record<string,unknown>){runtimeFields(req,input);const fields=modelPurposeAckFields(req,result);return {...result,responseMac:modelPurposeMac(key,fields).toString('base64url'),responseRequestDigest:fields.requestDigest,responseOutcomeDigest:fields.outcomeDigest,responsePayloadDigest:fields.payloadDigest};}
 
 /** Start a standalone Keeper broker. It has no Vault dependency and is intentionally not wired into runtime consumers yet. */
 export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurposeBrokerOptions):Promise<()=>Promise<void>>{
