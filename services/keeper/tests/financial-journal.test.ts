@@ -2,9 +2,11 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome} from '../lib/financial-journal.js';
+import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome} from '../lib/financial-journal.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
+import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
+import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 const fixtures:ReturnType<typeof journalFixture>[]=[],journals:HostFinancialJournal[]=[];
 const fixture=(options:Parameters<typeof journalFixture>[0]={})=>{const f=journalFixture(options);fixtures.push(f);return f;};
@@ -13,6 +15,80 @@ function preparedJournal(sync?:(fd:number)=>void){
   const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
   const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
   const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,...(sync?{sync}:{})});journals.push(j);return j;
+}
+function journalFailingAfterObserverCommit(kind:'commit'|'control'|'observation'){
+  const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database=testDatabase;
+  const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
+  let armed=false;
+  const journal=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,sync:fd=>{
+    fsyncSync(fd);
+    if(armed){const last=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').at(-1);if(last&&JSON.parse(last).record.kind===kind)throw new Error(`synthetic ${kind} fsync failure`);}
+  }});journals.push(journal);
+  return {journal,directory,arm:()=>{armed=true;}};
+}
+const testDatabase={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
+async function observation(journal:HostFinancialJournal,operationId:string){
+  const client={async query(value:string|{text:string}){
+    const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
+    let projection;try{projection=journal.expectedProjection(true);}catch{projection=journal.expectedProjection(false);}
+    const atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
+    if(sql.includes('pg_control_system'))rows=[testDatabase];
+    else if(sql.includes('FROM budget_accounts) AS accounts'))rows=[{accounts:String(atoms.filter(a=>a.kind==='account').length),windows:String(atoms.filter(a=>a.kind==='window').length),bindings:String(atoms.filter(a=>a.kind==='binding').length),attempts:String(atoms.filter(a=>a.kind==='attempt').length),grants:String(atoms.filter(a=>a.kind==='grant').length),checkpoints:String(projection.checkpoints.length)}];
+    else if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))rows=projection.checkpoints.map(c=>({...c,sequence:String(c.sequence)}));
+    else if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))rows=projection.checkpoints.slice(-1).map(c=>({...c,sequence:String(c.sequence)}));
+    else if(sql.startsWith('SELECT')&&sql.includes('FROM budget_'))rows=[];
+    return {rows,command};
+  },release(){}};
+  const pool={async query(){return {rows:[]};},async connect(){return client;}};
+  let handle:unknown;const observingBoundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
+  await consoleSourceTransaction(pool,async()=>undefined,observingBoundary);if(!handle)throw new Error('Owned financial observer fixture failed');return handle;
+}
+type ObservationFault='begin'|'read'|'commit-reject'|'commit-unacknowledged'|'deadline'|'guard';
+async function runObservedWriter(journal:HostFinancialJournal,options:{fault?:ObservationFault;onObserverCommit?:()=>void}={}){
+  const writer=new JournalBudgetFinancialWriter(journal),queries:{text:string;command?:string;query_timeout?:number}[]=[],released:boolean[]=[],outcomes:string[]=[];
+  let published=false,observerBegins=0,checkpointRows:any[]=[];
+  let logicalNow=Date.now();const deadlineAtMs=options.fault==='deadline'?logicalNow+10_000:undefined;
+  const clock=options.fault==='deadline'?vi.spyOn(Date,'now').mockImplementation(()=>logicalNow):undefined;
+  const client={async query(value:string|{text:string;values?:any[];query_timeout?:number},suppliedValues?:any[]){
+    const config=typeof value==='string'?{text:value,...(suppliedValues?{values:suppliedValues}:{})}:value,sql=config.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();queries.push({...config,...(command?{command}:{})});
+    if(sql==='BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'){
+      observerBegins++;
+      if(options.fault==='begin')throw new Error('observer BEGIN failed');
+    }
+    if(options.fault==='deadline'&&command==='COMMIT'&&queries.filter(query=>query.command==='COMMIT').length===1)logicalNow=deadlineAtMs!-1;
+    if(options.fault==='deadline'&&sql==="SET LOCAL statement_timeout='1000ms'")logicalNow=deadlineAtMs!+1;
+    if(sql.includes('pg_control_system')){
+      if(options.fault==='read'&&observerBegins>0)throw new Error('observer projection read failed');
+      return {rows:[testDatabase]};
+    }
+    if(sql.includes('count(*)::text FROM budget_accounts')){
+      const projection=journal.expectedProjection(checkpointRows.length>0);
+      return {rows:[{accounts:String(projection.atoms.filter(atom=>atom.kind==='account').length),windows:String(projection.atoms.filter(atom=>atom.kind==='window').length),
+        bindings:String(projection.atoms.filter(atom=>atom.kind==='binding').length),attempts:String(projection.atoms.filter(atom=>atom.kind==='attempt').length),
+        grants:String(projection.atoms.filter(atom=>atom.kind==='grant').length),checkpoints:String(checkpointRows.length)}]};
+    }
+    if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpointRows};
+    if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))return {rows:checkpointRows.slice(-1)};
+    if(sql.startsWith('INSERT INTO budget_financial_checkpoints')){
+      const values=config.values??[];checkpointRows.push({operationId:values[0],journalId:values[1],sequence:String(values[2]),digest:values[3]});
+    }
+    if(command==='COMMIT'&&queries.filter(query=>query.command==='COMMIT').length===2){
+      options.onObserverCommit?.();
+      if(options.fault==='commit-reject')throw new Error('observer COMMIT acknowledgement lost');
+      if(options.fault==='commit-unacknowledged')return {rows:[],command:'ROLLBACK'};
+    }
+    return {rows:[],...(command==='BEGIN'||command==='COMMIT'||command==='ROLLBACK'?{command}:{})};
+  },release(error?:boolean){released.push(error===true);}};
+  const pool={async query(){return {rows:[]};},async connect(){return client;}};
+  const originalBoundary=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((hooks,operationId)=>originalBoundary({...hooks,settled:async(outcome,handle)=>{outcomes.push(outcome);await hooks.settled(outcome,handle);}},operationId));
+  const work=(boundary:sourceTransactions.SourceTransactionBoundary)=>consoleSourceTransaction(pool,async()=>({buffered:'private result'}),boundary,{
+    ...(deadlineAtMs===undefined?{}:{deadlineAtMs}),...(options.fault==='guard'?{afterCommit:()=>{throw new Error('post-COMMIT guard refused');}}:{}),
+  });
+  try{
+    const result=await writer.runWithReceipt('member-remove',work,()=>{published=true;return undefined;}).then(value=>({value}),error=>({error}));
+    return {result,queries,released,outcomes,published,observerBegins};
+  }finally{clock?.mockRestore();}
 }
 afterEach(()=>{vi.restoreAllMocks();for(const j of journals.splice(0))j.close();for(const f of fixtures.splice(0))rmSync(f.directory,{recursive:true,force:true});});
 it.each<FinancialAbortOutcome>(['not-started','rollback-acknowledged','source-retirement-acknowledged','source-retirement-rolled-back'])('marks only the original finished durable abort for %s',async outcome=>{
@@ -45,12 +121,17 @@ it('mints no abort authority for an unprepared journal',async()=>{
   await j.operation('member-remove',async id=>{receipt=j.aborted(id,'rollback-acknowledged');});expect(receipt).toBeUndefined();
   markJournaledAbort(error,receipt);expect(isJournaledAbort(error,{journalId:j.id,operation:'member-remove'})).toBe(false);
 });
+it('keeps the unprepared writer on its existing non-observer transaction path',async()=>{
+  const j=open(fixture()),writer=new JournalBudgetFinancialWriter(j);type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
+  await expect(writer.run('member-remove',async()=>{expect(hooks.afterCommitObservation).toBeUndefined();await hooks.settled('rollback-acknowledged');return 'unchanged';})).resolves.toBe('unchanged');
+});
 it.each(['rollback','abort-fsync','unknown','commit-callback-error'])('marks writer errors only after a durable abort (%s)',async mode=>{
   let fail=false;const j=preparedJournal(fd=>{fsyncSync(fd);if(fail)throw new Error('synthetic terminal failure');}),writer=new JournalBudgetFinancialWriter(j),refusal=new Error('synthetic refusal');
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
-  const result=writer.runWithReceipt('member-remove',async()=>{
-    if(mode==='commit-callback-error'){await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');}
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
+  const result=writer.runWithReceipt('member-remove',async(_boundary,operationId)=>{
+    if(mode==='commit-callback-error'){await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));}
     else{fail=mode==='abort-fsync';await hooks.settled(mode==='unknown'?'unknown':'rollback-acknowledged');}
     throw refusal;
   });
@@ -65,13 +146,41 @@ it.each([1,2])('mints no committed receipt when terminal/control fsync %s fails'
   await expect(j.operation('member-remove',async id=>{j.propose(id,[]);enabled=true;result=j.committed(id);})).rejects.toThrow('unavailable');
   enabled=false;expect(result).toBeUndefined();await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
 });
+it.each([
+  ['begin',1,0,0],['read',1,0,1],['commit-reject',1,1,0],['commit-unacknowledged',1,1,0],['deadline',1,0,0],
+] as const)('withholds publication after actual observer %s failure while retaining the source COMMIT acknowledgement',async(fault,observerBeginCount,observerCommitCount,rollbackCount)=>{
+  const j=preparedJournal(),f=fixtures.at(-1)!,run=await runObservedWriter(j,{fault});
+  expect('error' in run.result).toBe(true);expect(run.published).toBe(false);expect(run.outcomes).toEqual(['commit-acknowledged']);
+  expect(run.observerBegins).toBe(observerBeginCount);expect(run.queries.filter(query=>query.command==='COMMIT')).toHaveLength(1+observerCommitCount);
+  expect(run.queries.filter(query=>query.command==='ROLLBACK')).toHaveLength(rollbackCount);expect(run.released).toEqual([true]);
+  const records=readFileSync(join(f.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
+  expect(records.at(-1)).toBe('freeze');await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+  j.close();const reopened=HostFinancialJournal.openExisting(join(f.directory,'prepared'),{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});journals.push(reopened);
+  await expect(reopened.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
+it('does not start observation after a post-COMMIT synchronous guard refuses publication',async()=>{
+  const j=preparedJournal(),f=fixtures.at(-1)!,run=await runObservedWriter(j,{fault:'guard'});
+  expect('error' in run.result).toBe(true);expect(run.published).toBe(false);expect(run.outcomes).toEqual(['commit-acknowledged']);
+  expect(run.observerBegins).toBe(0);expect(run.queries.filter(query=>query.command==='COMMIT')).toHaveLength(1);expect(run.released).toEqual([false]);
+  const records=readFileSync(join(f.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
+  expect(records.at(-1)).toBe('freeze');await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
+it.each(['commit','control','observation'] as const)('withholds publication and leaves the reopened journal recovery-only after committedObserved %s fsync failure',async kind=>{
+  const {journal,directory,arm}=journalFailingAfterObserverCommit(kind),run=await runObservedWriter(journal,{onObserverCommit:arm});
+  expect('error' in run.result).toBe(true);expect(run.published).toBe(false);expect(run.outcomes).toEqual(['commit-acknowledged']);
+  expect(run.observerBegins).toBe(1);expect(run.queries.filter(query=>query.command==='COMMIT')).toHaveLength(2);expect(run.released).toEqual([false]);
+  expect(readFileSync(join(directory,'journal.jsonl'),'utf8')).toContain(`\"kind\":\"${kind}\"`);
+  await expect(journal.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');journal.close();
+  const reopened=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});journals.push(reopened);
+  await expect(reopened.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
 it('runWithReceipt returns actual committed coordinates and refuses a positively aborted transaction',async()=>{
   const f=fixture(),directory=join(f.directory,'prepared'),options={ownershipUid:testJournalUid,lock:platformTestJournalLock},database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
   const preparation=HostFinancialJournal.prepareFresh(directory,database,options);try{preparation.complete();}finally{preparation.close();}
   const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});journals.push(j);const writer=new JournalBudgetFinancialWriter(j);
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
-  const result=await writer.runWithReceipt('member-remove',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'done';});
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
+  const result=await writer.runWithReceipt('member-remove',async(_boundary,operationId)=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'done';});
   expect(result.value).toBe('done');const proposal=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line)).find(f=>f.record.kind==='proposal');
   expect(result.receipt).toMatchObject({journalId:j.id,operation:'member-remove',operationId:proposal.record.operationId,proposalSequence:proposal.record.sequence,proposalDigest:proposal.digest});expect(Object.isFrozen(result.receipt)).toBe(true);
   expect(committedFinancialEvidence({...result.receipt},{kind:'account-erasure',accountId:randomUUID()})).toBeUndefined();
@@ -85,9 +194,9 @@ it('runWithReceipt returns actual committed coordinates and refuses a positively
 it('keeps the real journal barrier through current-receipt publication',async()=>{
   const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j);
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
   let competing:Promise<void>|undefined,published:CommittedFinancialReceipt|undefined;
-  const result=await writer.runWithReceipt('provision',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';},receipt=>{
+  const result=await writer.runWithReceipt('provision',async(_boundary,operationId)=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'bound';},receipt=>{
     published=receipt;expect(receipt.operation).toBe('provision');expect(receipt.journalId).toBe(j.id);
     // This is the same journal gate used by gateway-budget writes and member removal.
     competing=j.operation('member-remove',async()=>undefined);
@@ -97,38 +206,57 @@ it('keeps the real journal barrier through current-receipt publication',async()=
   await expect(competing).rejects.toThrow('busy');
   await expect(j.operation('member-remove',async operationId=>{j.propose(operationId,[]);j.committed(operationId);})).resolves.toBeUndefined();
 });
+it('scopes observed publication proof to one held synchronous batch and exact receipt identity',async()=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j);type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});let outside:CommittedFinancialReceipt|undefined;
+  await writer.runWithReceipt('provision',async(_boundary,operationId)=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'bound';},receipt=>{
+    outside=receipt;expect(()=>requireCurrentFinancialPublicationProof(receipt)).not.toThrow();
+    expect(()=>requireCurrentFinancialPublicationProof({...receipt})).toThrow('proof unavailable');
+    expect(()=>j.withPublicationProof(receipt,()=>undefined)).toThrow('proof unavailable');return undefined;
+  });
+  expect(()=>requireCurrentFinancialPublicationProof(outside!)).toThrow('proof unavailable');
+  await expect(j.operation('member-remove',async operationId=>{j.propose(operationId,[]);j.committed(operationId);})).resolves.toBeUndefined();
+});
+it('invalidates an active publication proof immediately when the held journal freezes',async()=>{
+  const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j);type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
+  await expect(writer.runWithReceipt('provision',async(_boundary,operationId)=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'bound';},receipt=>{
+    expect(()=>requireCurrentFinancialPublicationProof(receipt)).not.toThrow();j.freeze();expect(()=>requireCurrentFinancialPublicationProof(receipt)).toThrow('proof unavailable');return undefined;
+  })).rejects.toThrow('Financial operation did not durably finish');
+  await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+});
 it('durably freezes when current-receipt publication fails inside the barrier',async()=>{
   const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),publicationFailure=new Error('native receipt publication failed');
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
-  await expect(writer.runWithReceipt('provision',async()=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';},()=>{throw publicationFailure;})).rejects.toBe(publicationFailure);
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
+  await expect(writer.runWithReceipt('provision',async(_boundary,operationId)=>{await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'bound';},()=>{throw publicationFailure;})).rejects.toBe(publicationFailure);
   const records=readFileSync(join(fixtures.at(-1)!.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
-  expect(records.slice(-2)).toEqual(['control','freeze']);
+  expect(records.slice(-2)).toEqual(['observation','freeze']);
   await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
 });
 it('freezes when acknowledged COMMIT is followed by a withheld transaction result',async()=>{
   const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),postCommitFailure=new Error('post-commit result failure');
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
   let published=false;
-  await expect(writer.runWithReceipt('member-remove',async()=>{
-    await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');throw postCommitFailure;
+  await expect(writer.runWithReceipt('member-remove',async(_boundary,operationId)=>{
+    await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));throw postCommitFailure;
   },()=>{published=true;return undefined;})).rejects.toBe(postCommitFailure);
   expect(published).toBe(false);
   const records=readFileSync(join(fixtures.at(-1)!.directory,'prepared','journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record.kind);
-  expect(records.slice(-2)).toEqual(['control','freeze']);
+  expect(records.slice(-2)).toEqual(['observation','freeze']);
   await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
 });
 it.each(['resolved','rejected'] as const)('freezes and consumes an invalid async receipt publication (%s)',async mode=>{
   const j=preparedJournal(),writer=new JournalBudgetFinancialWriter(j),unhandled:string[]=[];
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;const original=sourceTransactions.sourceTransactionBoundary;
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
   const onUnhandled=(reason:unknown)=>unhandled.push(reason instanceof Error?reason.message:String(reason));process.on('unhandledRejection',onUnhandled);
   try{
-    await expect(writer.runWithReceipt('provision',async()=>{
-      await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged');return 'bound';
+    await expect(writer.runWithReceipt('provision',async(_boundary,operationId)=>{
+      await hooks.beforeCommit({query:async()=>({rows:[]})},[]);await hooks.settled('commit-acknowledged',await observation(j,operationId));return 'bound';
     },()=> (mode==='resolved'?Promise.resolve('late'):Promise.reject(new Error('async publication failed'))) as never))
-      .rejects.toThrow('Receipt publication must be synchronous');
+      .rejects.toThrow('Financial publication must be synchronous');
     await new Promise<void>(resolve=>setImmediate(resolve));
     expect(unhandled).toEqual([]);
     await expect(j.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
@@ -199,7 +327,7 @@ it.each(['no-boundary','no-proposal','no-terminal','caught-unknown','caught-fsyn
   type Hooks=Parameters<typeof sourceTransactions.sourceTransactionBoundary>[0];let hooks!:Hooks;
   const original=sourceTransactions.sourceTransactionBoundary;
   // Unit owner fixture only. Real ownership/ACK/pool-one proofs live in box tests.
-  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation(value=>{hooks=value;return original(value);});
+  vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((value,operationId)=>{hooks=value;return original(value,operationId);});
   const result=writer.run('admit',async()=>{
     if(mode==='no-boundary')return 'must not escape';
     if(mode!=='no-proposal')await hooks.beforeCommit({query:async()=>({rows:[]})},[]);

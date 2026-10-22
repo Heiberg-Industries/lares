@@ -1,4 +1,5 @@
 /** Server-only private conversation transaction ownership; never a model-facing API. */
+import {randomUUID} from 'node:crypto';
 import {currentMember} from './member-store.js';
 export interface SourceDatabase {query(sql:string,values?:any[]):Promise<{rows:any[];command?:string}>}
 export interface SourcePool extends SourceDatabase {connect():Promise<SourceDatabase & {release(error?:boolean):void}>}
@@ -14,7 +15,7 @@ const REFUSED='Conversation authority is not available';
 export class SourceAuthorityDenied extends Error {constructor(){super(REFUSED);}}
 export class SourceAuthorityUnavailable extends Error {constructor(){super('Conversation authority could not be confirmed');}}
 export class SourceTransactionDeadlineExpired extends Error {constructor(){super(REFUSED);}}
-interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;genericDeadlines:Set<string>;deadlineAtMs?:number}
+interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;genericDeadlines:Set<string>;deadlineAtMs?:number;observationPhase?:boolean;observationOperationId?:string;observerBegan?:boolean;observerCommit?:SourceObservationCommit;boundedQuery?:(sql:string,values:unknown[]|undefined,timeoutMs:number)=>Promise<{rows:any[];command?:string}>}
 export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'unknown';
 export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gateway_bindings'|'budget_attempts'|'budget_gateway_grants';
 export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
@@ -23,13 +24,14 @@ interface BoundaryHooks {
   started?(db:SourceDatabase):Promise<void>;
   readyToCommit?(db:SourceDatabase):Promise<void>;
   beforeCommit(db:SourceDatabase,changes:readonly BudgetFinancialChange[]):Promise<void>;
-  settled(outcome:SourceTransactionOutcome):Promise<void>;
+  afterCommitObservation?(db:SourceDatabase,operationId:string):Promise<unknown>;
+  settled(outcome:SourceTransactionOutcome,observation?:unknown):Promise<void>;
 }
-const boundaries=new WeakMap<object,{hooks:BoundaryHooks;used:boolean}>();
+const boundaries=new WeakMap<object,{hooks:BoundaryHooks;used:boolean;operationId:string}>();
 const financialChanges=new WeakMap<object,Map<string,BudgetFinancialChange>>();
 /** Trusted server-only one-use owner context. JSON or a borrowed client cannot create it. */
-export function sourceTransactionBoundary(hooks:BoundaryHooks):SourceTransactionBoundary {
-  const boundary=Object.freeze({kind:'source-transaction-boundary' as const});boundaries.set(boundary,{hooks,used:false});return boundary;
+export function sourceTransactionBoundary(hooks:BoundaryHooks,operationId:string=randomUUID()):SourceTransactionBoundary {
+  const boundary=Object.freeze({kind:'source-transaction-boundary' as const});boundaries.set(boundary,{hooks,used:false,operationId});return boundary;
 }
 /** Only adapted financial writes are recorded here. This is not an active database guard;
  * the production gateway remains closed until every writer and privilege is integrated. */
@@ -38,10 +40,39 @@ export function noteBudgetFinancialChange(db:SourceDatabase,table:BudgetFinancia
   const changes=financialChanges.get(db);if(changes)changes.set(`${table}:${id}`,{table,id});
 }
 const owners=new WeakMap<object,Owner>();
+declare const sourceObservationCommitBrand:unique symbol;
+export interface SourceObservationCommit {readonly [sourceObservationCommitBrand]:true}
+const sourceObservationCommits=new WeakMap<object,{operationId:string;used:boolean}>();
 const key=(b:SourceBinding)=>JSON.stringify([b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce]);
 function owner(db:SourceDatabase):Owner {const value=owners.get(db);if(!value)throw new Error(REFUSED);return value;}
 /** Require this exact client to be registered to a live source transaction. */
 export function requireSourceTransactionOwner(db:SourceDatabase):void {owner(db);}
+/** Run one bounded query through this owned client's existing connection. */
+export function querySourceBounded(db:SourceDatabase,sql:string,values:unknown[]|undefined,timeoutMs=1000):Promise<{rows:any[];command?:string}> {
+  const state=owner(db);if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>5000)throw new Error(REFUSED);
+  if(!state.boundedQuery)throw new Error(REFUSED);
+  const command=/^\s*(BEGIN|COMMIT|ROLLBACK)\b/i.exec(sql)?.[1]?.toUpperCase();
+  if(state.observationPhase&&command==='BEGIN'&&!/^\s*BEGIN\s+ISOLATION\s+LEVEL\s+REPEATABLE\s+READ\s+READ\s+ONLY\s*$/i.test(sql))throw new Error(REFUSED);
+  if(state.observationPhase&&command==='COMMIT'&&!state.observerBegan)throw new Error(REFUSED);
+  return state.boundedQuery(sql,values,timeoutMs).then(result=>{
+    if(state.observationPhase&&command==='BEGIN'){if(result.command!=='BEGIN')throw new Error(REFUSED);state.observerBegan=true;}
+    if(state.observationPhase&&command==='COMMIT'){
+      if(result.command!=='COMMIT'||!state.observationOperationId||state.observerCommit)throw new Error(REFUSED);
+      const commit=Object.freeze({});sourceObservationCommits.set(commit,{operationId:state.observationOperationId,used:false});state.observerCommit=commit as SourceObservationCommit;
+    }
+    return result;
+  });
+}
+/** Retrieve the opaque one-use receipt minted only by an acknowledged read-only observer COMMIT. */
+export function sourceObservationCommit(db:SourceDatabase):SourceObservationCommit {
+  const state=owner(db),commit=state.observerCommit;
+  if(!state.observationPhase||!commit)throw new Error(REFUSED);return commit;
+}
+/** Consume after connection release; the private identity remains bound to this operation. */
+export function consumeSourceObservationCommit(commit:SourceObservationCommit,operationId:string):void {
+  const proof=commit&&typeof commit==='object'?sourceObservationCommits.get(commit):undefined;
+  if(!proof||proof.used||proof.operationId!==operationId)throw new Error(REFUSED);proof.used=true;
+}
 export function invalidateConsoleSource(db:SourceDatabase,binding:SourceBinding):never {
   const state=owner(db);if(!state.organisationId)throw new Error(REFUSED);
   state.retire.set(key(binding),{...binding});throw new SourceAuthorityDenied();
@@ -120,11 +151,16 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
   if(selected)selected.used=true;
   let db:(SourceDatabase&{release(error?:boolean):void})|undefined;
   const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map(),genericDeadlines:new Set(),...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})};
-  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false;
-  let originalQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,queryDescriptor:PropertyDescriptor|undefined;
+  let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false,observation:unknown;
+  let originalQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,boundedUnderlyingQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,queryDescriptor:PropertyDescriptor|undefined;
   const remaining=()=>state.deadlineAtMs===undefined?undefined:Math.max(0,state.deadlineAtMs-Date.now());
   const boundedQueryTimeout=()=>{const left=remaining();if(left===undefined)return undefined;if(left<=0)throw new Error(REFUSED);return Math.max(1,Math.min(MAX_OWNED_QUERY_TIMEOUT_MS,Math.ceil(left)));};
   const rawQuery=async(sql:string,values?:any[],timeout=MAX_OWNED_QUERY_TIMEOUT_MS)=>originalQuery!({text:sql,...(values===undefined?{}:{values}),query_timeout:timeout});
+  state.boundedQuery=async(sql,values,timeoutMs)=>{
+    const timeout=state.deadlineAtMs===undefined?timeoutMs:Math.min(timeoutMs,remaining()??timeoutMs);
+    if(timeout<1)throw new Error(REFUSED);
+    return boundedUnderlyingQuery!({text:sql,...(values===undefined?{}:{values}),query_timeout:timeout});
+  };
   const installQueryBound=()=>{
     if(options.deadlineAtMs===undefined)return;
     originalQuery=db!.query.bind(db!) as typeof originalQuery;queryDescriptor=Object.getOwnPropertyDescriptor(db!,'query');
@@ -157,7 +193,7 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
     catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
   };
   try{
-    db=options.deadlineAtMs===undefined?await (source as SourcePool).connect():await connectUntil(source as SourcePool,options.deadlineAtMs);installQueryBound();owners.set(db,state);if(selected)financialChanges.set(db,new Map());
+    db=options.deadlineAtMs===undefined?await (source as SourcePool).connect():await connectUntil(source as SourcePool,options.deadlineAtMs);boundedUnderlyingQuery=db.query.bind(db);installQueryBound();owners.set(db,state);if(selected)financialChanges.set(db,new Map());
     outcome='unknown';
     if((await db.query('BEGIN')).command!=='BEGIN')throw new SourceAuthorityUnavailable();originalOpen=true;
     try{
@@ -198,6 +234,16 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
     catch{broken=true;outcome='unknown';throw new SourceAuthorityUnavailable();}
     options.afterCommit?.();
     if(state.deadlineAtMs!==undefined&&Date.now()>=state.deadlineAtMs)throw new Error(REFUSED);
+    if(selected?.hooks.afterCommitObservation){
+      try{
+        state.observationPhase=true;state.observationOperationId=selected.operationId;state.observerBegan=false;state.observerCommit=undefined;
+        observation=await selected.hooks.afterCommitObservation(db,selected.operationId);
+        if(!state.observerCommit)throw new Error(REFUSED);
+      }
+      catch(e){broken=true;throw e;}
+      finally{state.observationPhase=false;}
+      if(state.deadlineAtMs!==undefined&&Date.now()>=state.deadlineAtMs){observation=undefined;throw new Error(REFUSED);}
+    }
     return result as T;
   }catch(e){
     if(db&&(originalOpen||compensationOpen||outcome==='unknown')){
@@ -208,6 +254,6 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
     throw e;
   }finally{
     if(db){try{restoreQueryBound();}catch{broken=true;}finally{owners.delete(db);financialChanges.delete(db);try{db.release(broken);}catch{broken=true;}}}
-    if(selected){try{await selected.hooks.settled(outcome);}catch{throw new SourceAuthorityUnavailable();}}
+    if(selected){try{await selected.hooks.settled(outcome,observation);}catch{throw new SourceAuthorityUnavailable();}}
   }
 }

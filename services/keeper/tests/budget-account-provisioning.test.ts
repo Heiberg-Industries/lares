@@ -219,25 +219,44 @@ it('serializes concurrent policy and member changes behind the selected-user rec
   let operation:ReturnType<typeof provisionBudgetAccounts>|undefined;
   let policyUpdate:Promise<unknown>|undefined,memberUpdate:Promise<unknown>|undefined;
   let policy:PoolClient|undefined,member:PoolClient|undefined;
+  let policyTransaction=false,memberTransaction=false;
   try{
     operation=provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:[users.a,users.b]},hold.readMonth);
     await hold.reached;
     policy=await other.connect();member=await other.connect();
     const policyPid=(await policy.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
     const memberPid=(await member.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    await policy.query('BEGIN');policyTransaction=true;
+    await member.query('BEGIN');memberTransaction=true;
     policyUpdate=policy.query('UPDATE org_member_policy SET spend_cap_usd_month=55 WHERE user_id=$1',[users.a]);
     memberUpdate=member.query("UPDATE users SET status='removed' WHERE id=$1",[users.b]);
     await waitForLocks(other,[policyPid,memberPid]);
     hold.resume();
     await expect(operation).resolves.toMatchObject({state:'closed',members:2});
-    await Promise.all([policyUpdate,memberUpdate]);
+    // Keep the released source writers uncommitted until the provisioning observer has
+    // published its own post-COMMIT projection. Then serialize their trigger-written account
+    // changes: member retirement takes the shared installation lock before its member account.
+    await policyUpdate;
+    await policy.query('COMMIT');policyTransaction=false;
+    await memberUpdate;
+    await member.query('COMMIT');memberTransaction=false;
     expect((await selected.query('SELECT spend_cap_usd_month::text AS cap FROM org_member_policy WHERE user_id=$1',[users.a])).rows[0].cap).toBe('55');
     expect((await selected.query("SELECT state,reason FROM budget_accounts WHERE live_member_id=$1",[users.b])).rows[0]).toEqual({state:'retired',reason:'member_removed'});
   }finally{
     hold.resume();
-    const pending=[operation,policyUpdate,memberUpdate].filter((value):value is Promise<unknown>=>Boolean(value));
-    if(pending.length)await boundedClose(()=>Promise.allSettled(pending),'Concurrent source writers',4000);
-    policy?.release();member?.release();
+    if(operation)await boundedClose(()=>Promise.allSettled([operation!]),'Provisioning observer',4000);
+    if(policy){
+      const rollback=policyTransaction?policy.query('ROLLBACK').then(()=>{policyTransaction=false;}):undefined;
+      const pending=[policyUpdate,rollback].filter((value):value is Promise<unknown>=>Boolean(value));
+      if(pending.length)await boundedClose(()=>Promise.allSettled(pending),'Policy source writer',4000);
+      policy.release();
+    }
+    if(member){
+      const pending=[memberUpdate].filter((value):value is Promise<unknown>=>Boolean(value));
+      if(pending.length)await boundedClose(()=>Promise.allSettled(pending),'Member source writer',4000);
+      if(memberTransaction)await boundedClose(()=>member!.query('ROLLBACK'),'Member source rollback',4000);
+      member.release();
+    }
   }
 },12_000);
 

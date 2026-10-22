@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { consoleSourceTransaction, gateConsoleOrganisation, invalidateConsoleSource, sourceTransactionBoundary,
-  retainSourceTransactionDeadline, type SourceDatabase, type SourceTransactionOutcome } from '../src/console-source-transaction.js';
+  querySourceBounded, sourceObservationCommit, consumeSourceObservationCommit, retainSourceTransactionDeadline, type SourceDatabase, type SourceTransactionOutcome } from '../src/console-source-transaction.js';
 
 type QueryConfig={text:string;values?:unknown[];query_timeout?:number};
 class Client {
@@ -66,6 +66,30 @@ it('withholds bytes after a post-ACK authority failure but settles the acknowled
   await expect(consoleSourceTransaction(pool,async()=>({content:'private bytes'}),boundary,{deadlineAtMs:Date.now()+5000,afterCommit:()=>{throw new Error('turn expired');}}))
     .rejects.toThrow('turn expired');
   expect(client.calls.filter(c=>c.text==='COMMIT')).toHaveLength(1);expect(settled).toBe('commit-acknowledged');expect(client.released).toEqual([false]);
+});
+
+it('keeps the same owned client through a bounded post-COMMIT observation and settles its result',async()=>{
+  const pool=new Pool(),client=new Client();pool.next=Promise.resolve(client);let settled:SourceTransactionOutcome|undefined,observed:unknown,observerClient:SourceDatabase|undefined;
+  const boundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async(db,operationId)=>{
+    observerClient=db;await querySourceBounded(db,'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY',undefined,250);
+    await querySourceBounded(db,'SELECT observer',undefined,250);await querySourceBounded(db,'COMMIT',undefined,250);
+    return {operationId,commit:sourceObservationCommit(db)};
+  },settled:async(outcome,value)=>{settled=outcome;observed=value;}});
+  await expect(consoleSourceTransaction(pool,async()=>"committed",boundary)).resolves.toBe('committed');
+  expect(observerClient).toBe(client);expect(settled).toBe('commit-acknowledged');expect(observed).toBeDefined();
+  expect(client.calls.find(call=>call.text==='SELECT observer')?.query_timeout).toBe(250);
+  expect(client.calls.findIndex(call=>call.text==='COMMIT')).toBeLessThan(client.calls.findIndex(call=>call.text==='SELECT observer'));
+  const proof=observed as {operationId:string;commit:Parameters<typeof consumeSourceObservationCommit>[0]};
+  expect(()=>consumeSourceObservationCommit(proof.commit,proof.operationId)).not.toThrow();
+  expect(()=>consumeSourceObservationCommit(proof.commit,proof.operationId)).toThrow();
+  expect(client.released).toEqual([false]);
+});
+
+it('keeps the acknowledged outcome when observation fails and discards its client',async()=>{
+  const pool=new Pool(),client=new Client();pool.next=Promise.resolve(client);let settled:SourceTransactionOutcome|undefined;
+  const boundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async()=>{throw new Error('observer commit unknown');},settled:async outcome=>{settled=outcome;}});
+  await expect(consoleSourceTransaction(pool,async()=>"committed",boundary)).rejects.toThrow('observer commit unknown');
+  expect(settled).toBe('commit-acknowledged');expect(client.calls.filter(call=>call.text==='ROLLBACK')).toHaveLength(0);expect(client.released).toEqual([true]);
 });
 
 it('withholds a result when the request deadline expires before a delayed COMMIT ACK without rewriting the ACK outcome',async()=>{
