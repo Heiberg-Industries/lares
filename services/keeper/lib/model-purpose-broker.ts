@@ -3,7 +3,10 @@ import { createHash, randomBytes } from 'node:crypto';
 import { chmod, chown, lstat, mkdir, open, unlink } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { dirname, isAbsolute, join } from 'node:path';
+import type {Pool} from 'pg';
 import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import {PgBudgetAdmissionStore,type BudgetFinancialWriter,type GatewayModelRequestIdentity,type ModelPurposeClaimSource} from '@lares/agent-kit/budget-admission-store';
+import {GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_PATH} from '@lares/agent-kit/gateway-admission-protocol';
 import { checkConsoleSourceDeadlines, consoleSourceTransaction, retainSourceTransactionDeadline, type SourceDatabase, type SourcePool } from '@lares/agent-kit/console-source-transaction';
 import { consoleAdmission, requireConsoleSessionBinding, type ConsoleAuthorityContext } from '@lares/agent-kit/console-turn-authority';
 import { MODEL_PURPOSE_EMPTY_DIGEST, modelPurposeAckFields, modelPurposeChallengeFields, modelPurposeConsoleRequestFields, modelPurposeDigest, modelPurposeEqualMac, modelPurposeMac, modelPurposeRuntimeRequestFields, type ModelPurposeMacFields } from '@lares/agent-kit/model-purpose-protocol';
@@ -34,7 +37,7 @@ export interface ModelPurposeBrokerOptions {
 type Challenge={request:ModelPurposeRequest;digest:string;challenge:string;expiresAt:number};
 type Pending={request:ModelPurposeRequest;digest:string;expiresAt:number};
 type Turn={request:ModelPurposeRequest;reference:BudgetAuthorityReference;turnId:string;sequence:number;definitionHash:string;purposeAlias:string;expiresAt:number;closed:boolean;steps:Set<string>};
-type Claim={turn:Turn;stepId:string;expiresAt:number};
+type Claim={turn:Turn;stepId:string;event:{turnId:string;sequence:number;stepIndex:number};purposeAlias:string;expiresAt:number;handle:object;consumed:boolean};
 type MacFields=ModelPurposeMacFields;
 type RuntimeEnvelope={agent:unknown;incarnation:unknown;requestId:unknown;timestamp:unknown;op:unknown;input:unknown;outcomeDigest:unknown;payloadDigest:unknown;mac:unknown};
 
@@ -63,6 +66,7 @@ export class ModelPurposeBrokerState {
   private pending=new Map<string,Pending>();
   private turns=new Map<string,Turn>();
   private claims=new Map<string,Claim>();
+  private claimHandles=new WeakMap<object,Claim>();
   private requests=new Map<string,number>();
 
   constructor(private readonly clock:()=>number=Date.now,private readonly maximum=MAX_LIVE){}
@@ -164,9 +168,30 @@ export class ModelPurposeBrokerState {
     if(turn.closed||turn.expiresAt<=now||!this.turnsHas(turn)||(authorityDeadlineMs!==null&&authorityDeadlineMs<=now))throw deny();
     this.capacity(this.claims);
     const expiresAt=Math.min(turn.expiresAt,now+CLAIM_MS,authorityDeadlineMs??Number.POSITIVE_INFINITY);
-    const claim=randomBytes(32).toString('base64url');
-    this.claims.set(claim,{turn,stepId:event.key,expiresAt});
+    const claim=randomBytes(32).toString('base64url'),handle=Object.freeze({});
+    const record:Claim={turn,stepId:event.key,event:{turnId:event.turnId,sequence:event.sequence,stepIndex:event.stepIndex},purposeAlias:turn.purposeAlias,expiresAt,handle,consumed:false};
+    this.claims.set(claim,record);this.claimHandles.set(handle,record);
     return {claim,expiresAt};
+  }
+
+  reserveClaimConsumption(token:string,identity:{agent:string;incarnation:string},request:GatewayModelRequestIdentity):object {
+    this.prune();
+    const claim=this.claims.get(token),turn=claim?.turn;
+    if(!claim||claim.consumed||!turn||turn.closed||turn.expiresAt<=this.clock()||claim.expiresAt<=this.clock()||!this.turnsHas(turn)||
+      turn.request.agent!==identity.agent||turn.request.incarnation!==identity.incarnation||
+      request.method!=='POST'||!(/^[a-f0-9]{64}$/.test(request.requestHash))||
+      (request.path!==GATEWAY_ANTHROPIC_MODEL_PATH&&request.path!==GATEWAY_OPENAI_MODEL_PATH))throw deny();
+    // The claim is irreversibly consumed synchronously, before source or financial I/O.
+    claim.consumed=true;this.claims.delete(token);
+    return claim.handle;
+  }
+
+  resolveConsumedClaim(handle:object):ModelPurposeClaimSource|undefined {
+    const claim=this.claimHandles.get(handle),turn=claim?.turn,now=this.clock();
+    if(!claim||!claim.consumed||!turn||turn.closed||turn.expiresAt<=now||claim.expiresAt<=now||!this.turnsHas(turn))return undefined;
+    return {agent:turn.request.agent,incarnation:turn.request.incarnation,reference:turn.reference,
+      definitionHash:turn.definitionHash,purposeAlias:claim.purposeAlias,event:claim.event,expiresAt:claim.expiresAt,
+      isActive:()=>{const current=this.claimHandles.get(handle);return current===claim&&claim.consumed&&!turn.closed&&turn.expiresAt>this.clock()&&claim.expiresAt>this.clock()&&this.turnsHas(turn);}};
   }
 
   burnRequest(requestId:string,expiresAt=this.clock()+REQUEST_MS){
@@ -240,13 +265,16 @@ function runtimeFields(req:RuntimeEnvelope,_input:Record<string,unknown>):MacFie
 function signedAck(key:Buffer,req:RuntimeEnvelope,input:Record<string,unknown>,result:Record<string,unknown>){runtimeFields(req,input);const fields=modelPurposeAckFields(req,result);return {...result,responseMac:modelPurposeMac(key,fields).toString('base64url'),responseRequestDigest:fields.requestDigest,responseOutcomeDigest:fields.outcomeDigest,responsePayloadDigest:fields.payloadDigest};}
 
 /** Start the independent Keeper broker for Console receipts and chief runtime claims. */
-export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurposeBrokerOptions):Promise<()=>Promise<void>>{
+export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurposeBrokerOptions,consumer?:{pool:Pool;writer:BudgetFinancialWriter}):Promise<()=>Promise<void>>{
   const rootUid=options.rootUid??0,socketUid=options.socketUid??rootUid,socketGid=options.socketGid??10001,now=options.now??Date.now;
   const consoleSocket=options.consoleSocket??DEFAULT_CONSOLE_SOCKET,runtimeSocket=options.runtimeSocket??DEFAULT_RUNTIME_SOCKET;
   const consoleKeyPolicy={uid:options.consoleKeyUid??rootUid,gid:options.consoleKeyGid??10001,mode:0o440};
   const signingKey=await protectedKey(options.consoleSigningKeyFile,rootUid,consoleKeyPolicy,()=>options.afterKeyOpenForTests?.(options.consoleSigningKeyFile));
   const runtimeKeyPolicy={uid:options.runtimeKeyUid??rootUid,gid:options.runtimeKeyGid??10001,mode:0o440};
   const state=new ModelPurposeBrokerState(now),clients=new Set<Socket>(),socketState:SocketState={clients,inFlight:0};
+  // Resolver is bound once to this broker's private claim registry. No per-request
+  // callback or remote object can establish source authority.
+  const purposeStore=consumer?new PgBudgetAdmissionStore(consumer.pool,process.env,30_000,consumer.writer,handle=>state.resolveConsumedClaim(handle)):undefined;
   async function runtimeKey(agent:string){const path=join(options.runtimeSecretsDir,`${agent}-runtime-control`);return protectedKey(path,rootUid,runtimeKeyPolicy,()=>options.afterKeyOpenForTests?.(path));}
   async function assertCurrentDefinition(db:SourceDatabase,request:ModelPurposeRequest){
     const row=await db.query("SELECT d.hash,d.definition->>'model' AS purpose_alias FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid' FOR SHARE OF r,d",[request.agent,request.incarnation]);
@@ -325,6 +353,17 @@ export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurpo
       },undefined,{deadlineAtMs});
       if(signal.aborted)throw deny();
       return signedAck(key,req,input,state.finishStep(reserved,authorityDeadlineMs));
+    }
+    if(req.op==='step.consume'){
+      if(req.outcomeDigest!==EMPTY_DIGEST||req.payloadDigest!==modelPurposeDigest(input)||
+        typeof input.claim!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(input.claim))throw deny();
+      const request=object(input.request);
+      if(Object.keys(request).sort().join(',')!=='method,path,requestHash'||request.method!=='POST'||typeof request.path!=='string'||!validDigest(request.requestHash))throw deny();
+      const handle=state.reserveClaimConsumption(input.claim,{agent:String(req.agent),incarnation:String(req.incarnation)},request as unknown as GatewayModelRequestIdentity);
+      if(!purposeStore)throw deny();
+      const prepared=await purposeStore.prepareModelPurposeIntent(handle,request as unknown as GatewayModelRequestIdentity,signal);
+      if(signal.aborted||prepared.expiresAt<=now()||!state.resolveConsumedClaim(handle))throw deny();
+      return signedAck(key,req,input,prepared);
     }
     if(req.op==='turn.close'){
       if(typeof input.turnCapability!=='string'||typeof input.turnId!=='string'||!Number.isSafeInteger(input.sequence))throw deny();
