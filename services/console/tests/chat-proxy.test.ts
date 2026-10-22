@@ -14,8 +14,10 @@ import { forwardChat, CHAT_PATHS, MEMBER_HEADER, ROUTE_USERNAME, type ChatDeps }
 import { chatSessionCapabilityCookie } from "../lib/chat-session-capability";
 
 const access=vi.hoisted(()=>({captureUse:vi.fn(async()=>1)}));
+const modelPurpose=vi.hoisted(()=>({configured:vi.fn(()=>false),sign:vi.fn(async()=>"signed-model-capsule")}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class {captureUse=access.captureUse;async captureUseWithExpiry(){const revision=await access.captureUse();return revision===undefined?undefined:{accessRevision:revision,validUntil:null};}}}));
-beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);});
+vi.mock('../lib/model-purpose-capsule',()=>({modelPurposeSigningConfigured:modelPurpose.configured,signPrivateModelPurposeRequest:modelPurpose.sign,modelPurposeRawBodyHash:()=>"a".repeat(64)}));
+beforeEach(()=>{vi.stubEnv('AGENT_OWNER_USER_ID','Owner-ID');access.captureUse.mockResolvedValue(1);modelPurpose.configured.mockReturnValue(false);modelPurpose.sign.mockClear();});
 afterAll(()=>vi.unstubAllEnvs());
 const PASSWORD = "disposable-fixture-only";
 
@@ -26,6 +28,7 @@ const row = {
   state: "ready",
   runtime_control_token: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
   incarnation: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  definition_hash: "b".repeat(64),
 };
 
 /**
@@ -78,6 +81,33 @@ const sessionRequest = (path: string, method = "GET", cookie = capability()) =>
   });
 
 describe("the console's chat proxy", () => {
+  it("prewarms an empty session, then signs and forwards the exact first human message", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    const d=deps();
+    const created=await forwardChat(new Request("https://console.example.invalid/api/chat/helper/eve/v1/session",{method:"POST",headers:{cookie:"lares_session=abc"}}),"helper","eve/v1/session",d);
+    expect(created.status).toBe(200);
+    expect((d.fetch.mock.calls[0]![1]?.body as Uint8Array).byteLength).toBe(0);
+    expect(modelPurpose.sign).not.toHaveBeenCalled();
+    const cookie=created.headers.get("set-cookie")!.split(";")[0]!;
+    const raw='{"message":"first chat"}';
+    const sent=await forwardChat(new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A",{method:"POST",body:raw,headers:{cookie:`lares_session=abc; ${cookie}`}}),"helper","eve/v1/session/wrun_A",d);
+    expect(sent.status).toBe(200);
+    expect(modelPurpose.sign).toHaveBeenCalledWith(expect.objectContaining({session:"wrun_A",purpose:"human",rawBodyHash:expect.any(String)}));
+    const [,init]=d.fetch.mock.calls[1]!;
+    expect(Buffer.from(init?.body as Uint8Array).toString("utf8")).toBe(raw);
+    expect(new Headers(init?.headers).get("x-lares-model-capsule")).toBe("signed-model-capsule");
+    expect(new Headers(init?.headers).get("x-lares-model-purpose-required")).toBe("1");
+  });
+  it("fails closed when configured model custody lacks validated definition data or a chief adapter", async () => {
+    modelPurpose.configured.mockReturnValue(true);
+    const cookie=capability();
+    const missingHash=deps({...row,definition_hash:undefined});
+    const first=await forwardChat(new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A",{method:"POST",body:'{"message":"hello"}',headers:{cookie:`lares_session=abc; ${cookie}`}}),"helper","eve/v1/session/wrun_A",missingHash);
+    expect(first.status).toBe(503);expect(missingHash.fetch).not.toHaveBeenCalled();
+    const unsupported=deps({...row,role:"creative"});
+    const second=await forwardChat(new Request("https://console.example.invalid/api/chat/helper/eve/v1/session/wrun_A",{method:"POST",body:'{"message":"hello"}',headers:{cookie:`lares_session=abc; ${cookie}`}}),"helper","eve/v1/session/wrun_A",unsupported);
+    expect(second.status).toBe(503);expect(unsupported.fetch).not.toHaveBeenCalled();
+  });
   it("denies missing adoption before reading address, route password or upstream",async()=>{
     const d=deps();access.captureUse.mockResolvedValueOnce(undefined as never);
     const response=await forwardChat(post(),'helper','eve/v1/session',d);

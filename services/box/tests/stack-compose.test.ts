@@ -120,6 +120,7 @@ describe("the generated stack compose file", () => {
     // services/console/lib/accounts.ts throws without it when an account is connected.
     expect(env.TOKEN_ENC_KEY_FILE).toBe("/run/secrets/token-enc-key");
     expect(env.CONSOLE_VAULT_SIGNING_KEY_FILE).toBeUndefined();
+    expect(env.CONSOLE_MODEL_PURPOSE_SIGNING_KEY_FILE).toBeUndefined();
     for (const name of [
       "database-password",
       "token-enc-key",
@@ -141,6 +142,16 @@ describe("the generated stack compose file", () => {
     expect(doc.secrets["console-vault-signing-key"].file).toBe(keyFile);
     expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleVaultSigningKeyFile: "relative/key" })).toThrow("absolute");
     expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleVaultSigningKeyFile: `${OPTS.secretsDir}/other` })).toThrow("custody file");
+  });
+
+  it("mounts a dedicated model-purpose signer only when its exact custody path is supplied", () => {
+    const keyFile = `${OPTS.secretsDir}/console-model-purpose-signing-key`;
+    const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, consoleModelPurposeSigningKeyFile: keyFile })) as any;
+    expect(doc.services.console.environment.CONSOLE_MODEL_PURPOSE_SIGNING_KEY_FILE).toBe("/run/secrets/console-model-purpose-signing-key");
+    expect(doc.services.console.secrets).toContain("console-model-purpose-signing-key");
+    expect(doc.secrets["console-model-purpose-signing-key"].file).toBe(keyFile);
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleModelPurposeSigningKeyFile: "relative/key" })).toThrow("absolute");
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleModelPurposeSigningKeyFile: `${OPTS.secretsDir}/other` })).toThrow("custody file");
   });
 
   it("turns the gateway's local cost map on, so it loads costs without a network fetch at start", () => {

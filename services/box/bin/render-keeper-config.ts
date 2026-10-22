@@ -113,8 +113,11 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
       );
   }
 
+  const modelPurposeKeyFile = optionalModelPurposeKey(join(at("secretsDir"), "console-model-purpose-signing-key"));
   const config = renderKeeperConfig(manifest, {
     ...(previous.budgetFinancial?{previousBudgetFinancial:previous.budgetFinancial}:{}),
+    modelPurposeConsoleSigningKeyFile: modelPurposeKeyFile,
+    modelPurposeRuntimeDir: modelPurposeKeyFile ? join(at("socketDir"), "model-purpose") : null,
     project: at("project"),
     network: at("network"),
     subnet: at("subnet"),
@@ -175,6 +178,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     `LARES_GATEWAY_MASTER_KEY_FILE=${join(at("secretsDir"), "gateway-master-key")}`,
     `LARES_EVE_ROUTE_PASSWORD_FILE=${join(at("secretsDir"), "eve-route-password")}`,
     `LARES_VAULT_SIGNING_KEY_FILE=${join(at("secretsDir"), "console-vault-signing-key")}`,
+    ...(config.modelPurposeConsoleSigningKeyFile ? [`LARES_MODEL_PURPOSE_SIGNING_KEY_FILE=${config.modelPurposeConsoleSigningKeyFile}`] : []),
     `LARES_PROXY_ADDRESS=${at("proxyAddress")}`,
     `LARES_NETWORK=${at("network")}`,
     "",
@@ -189,6 +193,18 @@ function isLink(path: string): boolean {
     return lstatSync(path).isSymbolicLink();
   } catch {
     return false;
+  }
+}
+
+function optionalModelPurposeKey(path: string): string | null {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size === 0)
+      throw new Error("Console model-purpose signing key is present but is not a non-empty regular file");
+    return path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
 

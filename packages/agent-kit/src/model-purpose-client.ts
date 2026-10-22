@@ -12,7 +12,7 @@ import {
   type ModelPurposeRuntimeEnvelope,
 } from './model-purpose-protocol.js';
 
-const DEFAULT_SOCKET = '/run/lares/run/model-purpose.sock';
+export const DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET = '/run/lares/model-purpose/model-purpose.sock';
 const FRAME_LIMIT = 32_768;
 const REQUEST_TIMEOUT_MS = 2_000;
 const REQUEST_TOMBSTONE_MS = 60_000;
@@ -98,7 +98,7 @@ export async function modelPurposeRequest<T extends Record<string, unknown>>(
   const envelope = { ...unsigned, mac: modelPurposeMac(key, fields).toString('base64url') };
   const frame = Buffer.from(JSON.stringify(envelope) + '\n', 'utf8');
   if (frame.length > FRAME_LIMIT) throw denied();
-  const socketPath = process.env.LARES_MODEL_PURPOSE_RUNTIME_SOCKET ?? DEFAULT_SOCKET;
+  const socketPath = process.env.LARES_MODEL_PURPOSE_RUNTIME_SOCKET ?? DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET;
 
   return new Promise<T>((resolve, reject) => {
     const socket = createConnection(socketPath);

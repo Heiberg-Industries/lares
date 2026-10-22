@@ -90,6 +90,10 @@ export interface KeeperConfigOptions {
   /** The schedules master switch of an earlier keeper.json, kept across installer runs. */
   readonly previousSchedulesLive?: boolean;
   readonly previousBudgetFinancial?: KeeperConfig["budgetFinancial"];
+  /** Optional Console model-purpose signer. Omit only when the installation has no custody file. */
+  readonly modelPurposeConsoleSigningKeyFile?: string | null;
+  /** Dedicated shared socket subdirectory for the chief-only model-purpose claim socket. */
+  readonly modelPurposeRuntimeDir?: string | null;
 }
 
 /** Refuses (throws `ReleaseManifestInvalid`, re-thrown from `imageFor`) when the release names
@@ -133,6 +137,8 @@ export function renderKeeperConfig(
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.
     vaultConsoleSigningKeyFile: join(opts.secretsDir, "console-vault-signing-key"),
+    ...(opts.modelPurposeConsoleSigningKeyFile ? { modelPurposeConsoleSigningKeyFile: opts.modelPurposeConsoleSigningKeyFile } : {}),
+    ...(opts.modelPurposeRuntimeDir ? { modelPurposeRuntimeDir: opts.modelPurposeRuntimeDir } : {}),
     // Definitions resolved at runtime on neutral engine images (ADR-0015). "overlay" is the
     // older per-agent-image machinery; a fresh install is never that.
     mode: "rendered",

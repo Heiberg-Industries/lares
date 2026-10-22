@@ -127,6 +127,7 @@
     "./door-authority": "./src/door-authority.ts",
     "./door-channels": "./src/door-channels.ts",
     "./definition-model": "./src/definition-model.ts",
+    "./model-invocation": "./src/model-invocation.ts",
     "./durable-dynamic-tools": "./src/durable-dynamic-tools.ts",
     "./release-stale-workflow-locks": "./src/release-stale-workflow-locks.ts",
     "./repairs": "./src/repairs.ts",

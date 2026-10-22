@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import type { DynamicResolveContext } from 'eve/tools';
+import { modelPurposeRequest } from './model-purpose-client.js';
 
 export const MODEL_INVOCATION_REFUSED = 'A fresh trusted model invocation is required';
 
@@ -19,7 +20,8 @@ export interface ModelInvocation {
   readonly session: Frozen<Session>;
   readonly alias: string;
 }
-interface Claim { entered: boolean; dispatched: boolean }
+interface ModelPurposeClaim { readonly claim: string; readonly expiresAt: number }
+interface Claim { entered: boolean; dispatched: boolean; purpose?: ModelPurposeClaim; purposeActive?: () => boolean; purposeRequest?: Promise<void> }
 const claims = new WeakMap<ModelInvocation, Claim>();
 // A repeated resolver event must share its burned claim even if it constructs a new model.
 // Never evict tombstones and silently rearm an old event. This bounded process-local guard
@@ -62,6 +64,42 @@ export function captureModelInvocation(event: unknown, session: Session | undefi
   }
   claims.set(invocation, claim);
   return invocation;
+}
+
+/** Ask Keeper to bind this real Eve invocation to its already-open turn. This narrow helper
+ * accepts no caller-made claim token: it performs the authenticated socket exchange itself,
+ * validates the signed opaque ACK, and stores it only against the captured invocation. */
+export async function requestAndAttachModelPurposeClaim(
+  invocation: ModelInvocation,
+  turnCapability: string,
+  remainsActive: () => boolean,
+): Promise<void> {
+  const local = claims.get(invocation);
+  if (!local || !/^[A-Za-z0-9_-]{43}$/.test(turnCapability) ||
+      local.purpose || local.purposeRequest || !remainsActive()) return refuse();
+  const state = local;
+  const request = (async () => {
+    const result = await modelPurposeRequest<{ claim?: unknown; expiresAt?: unknown }>('step.claim', {
+      turnCapability,
+      purposeAlias: invocation.alias,
+      event: invocation.event,
+    });
+    if (typeof result.claim !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(result.claim) ||
+        typeof result.expiresAt !== 'number' || !Number.isSafeInteger(result.expiresAt) ||
+        result.expiresAt <= Date.now() || !remainsActive()) return refuse();
+    state.purpose = Object.freeze({ claim: result.claim, expiresAt: result.expiresAt });
+    state.purposeActive = remainsActive;
+  })();
+  state.purposeRequest = request;
+  try { await request; }
+  catch (error) { state.purposeRequest = undefined; throw error; }
+}
+
+/** Read-only accessor for the later private budget-admission adapter. */
+export function currentModelPurposeClaim(): ModelPurposeClaim | undefined {
+  const invocation = current.getStore();
+  const claim = invocation && claims.get(invocation);
+  return claim?.purpose && claim.purpose.expiresAt > Date.now() && claim.purposeActive?.() ? claim.purpose : undefined;
 }
 
 /** Enter once, before any asynchronous verification or provider work. Eve's outer retries
