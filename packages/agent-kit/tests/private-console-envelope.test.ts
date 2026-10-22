@@ -1,5 +1,6 @@
 import {describe,expect,it} from 'vitest';
-import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage,verifiedPrivateConsoleResponse,verifiedPrivateConsoleMessageReceipt,PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER} from '../src/private-console-envelope.js';
+import {assertPrivateConsoleEnvelope,assertPrivateConsoleRequest,assertVerifiedPrivateConsoleMessage,verifiedPrivateConsoleResponse,verifiedPrivateConsoleMessageReceipt,verifiedPrivateConsoleModelMessageReceipt,verifiedPrivateConsoleModelResponseReceipt,PRIVATE_CONSOLE_VAULT_CAPSULE_HEADER,PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER} from '../src/private-console-envelope.js';
+const humanCapsule=(requestId='m'.repeat(43))=>`${Buffer.from(JSON.stringify({version:1,request:{requestId,purpose:'human'}})).toString('base64url')}.signature`;
 describe('private console envelope',()=>{
  const path='/eve/v1/session/private';
  it('accepts current browser text, create operation IDs and exact card answers',()=>{
@@ -69,13 +70,65 @@ it('does not issue receipts for empty creates, controls, non-POST requests or fa
 });
 
 it('issues one bounded response receipt only for the same validated Request',async()=>{
- const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body:JSON.stringify({inputResponses:[{requestId:'exact',optionId:'approve'}]})});
+ const body=JSON.stringify({inputResponses:[{requestId:'exact',optionId:'approve'}]});
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body});
  await assertPrivateConsoleRequest(request);const copy=request.clone();await request.json();
- expect(verifiedPrivateConsoleResponse(request)).toEqual({requestId:'exact',optionId:'approve'});
+ expect(verifiedPrivateConsoleResponse(request)).toEqual({requestId:'exact',optionId:'approve',method:'POST',path:'/eve/v1/session/existing',
+  rawBodyHash:await import('node:crypto').then(({createHash})=>createHash('sha256').update(body).digest('hex'))});
  expect(Object.isFrozen(verifiedPrivateConsoleResponse(request))).toBe(true);
  expect(()=>verifiedPrivateConsoleResponse(copy)).toThrow();
  for(const body of [{message:'human'},{inputResponses:[{requestId:'exact',optionId:'other'}]},{inputResponses:[{requestId:'one',optionId:'approve'},{requestId:'two',optionId:'approve'}]}]){
   const invalid=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body:JSON.stringify(body)});
   await assertPrivateConsoleRequest(invalid).catch(()=>undefined);expect(()=>verifiedPrivateConsoleResponse(invalid)).toThrow();
  }
+});
+
+it('binds a resume receipt to the model request id and the distinct approval card id',async()=>{
+ const payload={version:1,request:{requestId:'model-request-id-12345678901234567890',purpose:'resume',resume:{requestId:'eve-approval-card',optionId:'approve'}}};
+ const capsule=`${Buffer.from(JSON.stringify(payload)).toString('base64url')}.signature`;
+ const body=JSON.stringify({inputResponses:[{requestId:'eve-approval-card',optionId:'approve'}]});
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:capsule},body});
+ await assertPrivateConsoleRequest(request);
+ expect(verifiedPrivateConsoleModelResponseReceipt(request)).toEqual({method:'POST',path:'/eve/v1/session/existing',
+  rawBodyHash:await import('node:crypto').then(({createHash})=>createHash('sha256').update(body).digest('hex')),
+  requestId:payload.request.requestId,purpose:'resume',resume:{requestId:'eve-approval-card',optionId:'approve'},modelCapsule:capsule});
+ const forgedPayload={...payload,request:{...payload.request,resume:{requestId:'different-card',optionId:'approve'}}};
+ const forged=`${Buffer.from(JSON.stringify(forgedPayload)).toString('base64url')}.signature`;
+ const forgedRequest=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:forged},body});
+ await assertPrivateConsoleRequest(forgedRequest);
+ expect(()=>verifiedPrivateConsoleModelResponseReceipt(forgedRequest)).toThrow();
+});
+
+it('keeps the human message capsule receipt tied to the exact request and raw body',async()=>{
+ const capsule=humanCapsule();const body=JSON.stringify({message:'question'});
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:capsule},body});
+ await assertPrivateConsoleRequest(request);const parsed=await request.json();
+ expect(verifiedPrivateConsoleModelMessageReceipt(request,parsed.message)).toEqual({method:'POST',path:'/eve/v1/session/existing',
+  rawBodyHash:await import('node:crypto').then(({createHash})=>createHash('sha256').update(body).digest('hex')),
+  requestId:'m'.repeat(43),purpose:'human',modelCapsule:capsule});
+});
+
+it('requires the captured human capsule to carry a valid model request id and no resume authority',async()=>{
+ for(const requestPart of [
+  {requestId:'m'.repeat(43),purpose:'resume',resume:{requestId:'card',optionId:'approve'}},
+  {requestId:'short',purpose:'human'},
+  {purpose:'human'},
+  {requestId:'m'.repeat(43),purpose:'human',resume:{requestId:'card',optionId:'approve'}},
+ ]){
+  const capsule=`${Buffer.from(JSON.stringify({version:1,request:requestPart})).toString('base64url')}.signature`;
+  const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:capsule},body:JSON.stringify({message:'question'})});
+  await assertPrivateConsoleRequest(request);const parsed=await request.json();
+  expect(()=>verifiedPrivateConsoleModelMessageReceipt(request,parsed.message)).toThrow();
+ }
+});
+
+it('hashes the original request bytes even when text decoding would replace invalid UTF-8',async()=>{
+ const raw=Buffer.concat([Buffer.from('{"message":"'),Buffer.from([0xff]),Buffer.from('"}')]);
+ const request=new Request('https://example.invalid/eve/v1/session/existing',{method:'POST',body:raw,
+  headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:humanCapsule()}});
+ await assertPrivateConsoleRequest(request);const parsed=await request.json();
+ const receipt=verifiedPrivateConsoleModelMessageReceipt(request,parsed.message);
+ expect(receipt.requestId).toBe('m'.repeat(43));expect(receipt.purpose).toBe('human');
+ expect(receipt.rawBodyHash).toBe(await import('node:crypto').then(({createHash})=>createHash('sha256').update(raw).digest('hex')));
+ expect(receipt.rawBodyHash).not.toBe(await import('node:crypto').then(({createHash})=>createHash('sha256').update(raw.toString('utf8')).digest('hex')));
 });

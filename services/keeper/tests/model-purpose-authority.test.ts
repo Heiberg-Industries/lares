@@ -10,8 +10,10 @@ import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession, requireConsoleSessionBinding } from '@lares/agent-kit/console-turn-authority';
 import { consoleSourceTransaction } from '@lares/agent-kit/console-source-transaction';
 import { captureBudgetAuthorityReference, validateBudgetAuthorityReference } from '@lares/agent-kit/budget-model-authority';
+import { assertPrivateConsoleRequest, PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER, verifiedPrivateConsoleModelMessageReceipt } from '@lares/agent-kit/private-console-envelope';
 import { PgPersonalActionStore } from '@lares/agent-kit/personal-action-store';
 import { serveModelPurposeBroker, modelPurposeDigest, modelPurposeMac, signModelPurposeRequest, type ModelPurposeRequest } from '../lib/model-purpose-broker.js';
+import { modelPurposeRawBodyHash, signPrivateModelPurposeRequest } from '../../console/lib/model-purpose-capsule.js';
 
 const incarnation = '11111111-1111-4111-8111-111111111111';
 const nonce = 'a'.repeat(43);
@@ -155,6 +157,37 @@ describe('budget model authority source proof', () => {
 });
 
 describe('Keeper model-purpose socket handlers',()=>{
+  it('admits the Console-signed human raw receipt and rejects mismatched receipt purpose or request id',async()=>{
+    const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined;
+    try{
+      const running=await startBroker(db,files);stopBroker=running.stopBroker;
+      const createHumanEvidence=async()=>{
+        const body=JSON.stringify({message:'exact human request'});
+        const request=modelRequest({path:`/eve/v1/session/${sessionId}`,rawBodyHash:modelPurposeRawBodyHash(body)});
+        const capsule=await signPrivateModelPurposeRequest(request,{socketPath:running.consoleSocket,keyFile:files.consolePath,
+          expectedUid:process.getuid?.()??0,expectedGid:process.getgid?.()??0});
+        const rawRequest=new Request(`https://example.invalid${request.path}`,{method:'POST',
+          headers:{[PRIVATE_CONSOLE_MODEL_CAPSULE_HEADER]:capsule},body});
+        await assertPrivateConsoleRequest(rawRequest);
+        const parsed=await rawRequest.json();
+        const receipt=verifiedPrivateConsoleModelMessageReceipt(rawRequest,parsed.message);
+        return {request,capsule,receipt};
+      };
+      const submit=async(capsule:string,receipt:Record<string,unknown>)=>socketRequest(running.runtimeSocket,
+        runtimeEnvelope('request.admit',{capsule,receipt},files.runtimeKey));
+
+      const wrongId=await createHumanEvidence();
+      expect(wrongId.receipt.requestId).toBe(wrongId.request.requestId);
+      expect(wrongId.receipt.purpose).toBe('human');
+      expect((await submit(wrongId.capsule,{...wrongId.receipt,requestId:randomBytes(32).toString('base64url')})).ok).toBe(false);
+      expect((await submit(wrongId.capsule,wrongId.receipt)).ok).toBe(true);
+
+      const wrongPurpose=await createHumanEvidence();
+      expect((await submit(wrongPurpose.capsule,{...wrongPurpose.receipt,purpose:'resume'})).ok).toBe(false);
+      expect((await submit(wrongPurpose.capsule,wrongPurpose.receipt)).ok).toBe(true);
+    }finally{await stopBroker?.();rmSync(files.root,{recursive:true,force:true});}
+  });
+
   it('reads runtime keys in the provisioned 0440 mode and keeps the opened key across path replacement',async()=>{
     const files=brokerFiles();let stopBroker:(()=>Promise<void>)|undefined,replaced=false;
     try{
