@@ -26,6 +26,7 @@ import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary} from '../../../packages/agent-kit/src/console-source-transaction.js';
+import {captureBudgetAuthorityReference} from '../../../packages/agent-kit/src/budget-model-authority.js';
 import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
@@ -519,6 +520,9 @@ describe('inactive journal-owned financial transactions on real PostgreSQL',()=>
   });
 });
 describe('inactive budget admission on real PostgreSQL',()=>{
+  it('requires an already-owned source transaction for authority capture',async()=>{
+    await expect(captureBudgetAuthorityReference(db,context(),env())).rejects.toThrow();
+  });
   it('requires registered invocation authority and the actual selected alias',async()=>{
     const request={bindingId:bindings['member-a:helper']!,requestHash:h('request'),profileHash:profile};
     await expect(store.prepareIntent(request)).rejects.toThrow('fresh trusted');
