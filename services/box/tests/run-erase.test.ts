@@ -71,6 +71,7 @@ beforeEach(async () => {
 }, 180_000);
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   try{nativeCustody?.close();}catch{}nativeCustody=undefined;
   journal?.close();
   if(custodyParent)rmSync(custodyParent, { recursive: true, force: true });
