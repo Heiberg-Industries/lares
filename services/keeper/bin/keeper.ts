@@ -36,6 +36,9 @@ import { DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET, serveModelPurposeTransport } from
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
 import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
+import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
+import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
+import {createNativeCredentialClient,readBudgetNativePolicyDocument,selectBudgetNativeReviewedPolicy,registerBudgetNativeHostActions} from '../lib/budget-native-host.js';
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
@@ -116,6 +119,17 @@ async function main(): Promise<void> {
             if(!financialPool||!financialJournal)throw new Error('Financial custody is not configured');
             return provisionBudgetAccounts(financialPool,financialJournal,input);
         },successDetail:result=>`closed unreconciled accounts provisioned for ${result.members} members`});
+        registerBudgetNativeHostActions({provision:async input=>{
+            if(!financialPool||!financialJournal?.prepared||!nativeCustody||!config.budgetNative?.reviewedPolicyFile)throw new Error('Native budget provisioning is unavailable');
+            const document=readBudgetNativePolicyDocument(config.budgetNative.reviewedPolicyFile);
+            const policy=selectBudgetNativeReviewedPolicy(document,input.purposeAlias);
+            const native=createNativeCredentialClient(config.lifecycle?.runtime.gatewayUrl,config.lifecycle?.runtime.gatewayMasterKeyFile);
+            return new BudgetNativeProvisioner(financialPool,financialJournal,nativeCustody,native,{origin:native.gatewayOrigin,hash:document.endpointHash},policy).provision(input);
+        },activate:async input=>{
+            if(!financialPool||!financialJournal?.prepared||!nativeCustody)throw new Error('Native budget activation is unavailable');
+            const native=createNativeCredentialClient(config.lifecycle?.runtime.gatewayUrl,config.lifecycle?.runtime.gatewayMasterKeyFile);
+            return new BudgetNativeActivator(financialPool,financialJournal,nativeCustody,native).activate(input);
+        }});
         if(financialPool)registerMemberRemovalAction({pool:financialPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,

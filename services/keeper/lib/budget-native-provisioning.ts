@@ -6,7 +6,7 @@ import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {PgGrantStore} from '@lares/agent-kit/grant-store';
-import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,requireConsoleSourceOwner,retainSourceTransactionDeadline,type SourceDatabase,type SourcePool} from '@lares/agent-kit/console-source-transaction';
+import {consoleSourceTransaction,gateConsoleOrganisation,noteBudgetFinancialChange,requireConsoleSourceOwner,retainSourceTransactionDeadline,type SourceDatabase,type SourcePool,type SourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {BudgetNativeCredentialClient,MAX_BUDGET_NATIVE_REQUEST_BYTES,type NativeKeyExpectation,type NativeTeamExpectation,type NativeTeamPolicyExpectation,type NativeUserExpectation} from './budget-native-client.js';
 import {BudgetNativeCustodyStore,budgetNativeReviewedPolicySchema,type BudgetNativeReviewedPolicy,type NativeCustodyGate,type NativeOperation} from './budget-native-custody.js';
 import {HostFinancialJournal,isJournaledAbort} from './financial-journal.js';
@@ -19,8 +19,12 @@ const endpointSchema=z.object({origin:z.string().max(512),hash}).strict().superR
   try{const url=new URL(value.origin);if(!['http:','https:'].includes(url.protocol)||url.origin!==value.origin||url.username||url.password||url.pathname!=='/'||url.search||url.hash)ctx.addIssue({code:'custom',message:'Invalid endpoint origin'});}
   catch{ctx.addIssue({code:'custom',message:'Invalid endpoint origin'});}
 });
-const inputSchema=z.object({bindingId:uuid,credentialGeneration:generation,memberId,agent,incarnation:uuid,purposeAlias:purpose}).strict();
+export const budgetNativeProvisionRequestSchema=z.object({bindingId:uuid,credentialGeneration:generation,memberId,agent,incarnation:uuid,purposeAlias:purpose}).strict();
 const refuse=()=>new Error('Native budget provisioning refused; reconciliation may be required');
+export function nativeProvisioningDeadline(startedAt=Date.now()):{deadlineAtMs:number;check:(now?:number)=>void} {
+  const deadlineAtMs=startedAt+20_000;
+  return {deadlineAtMs,check:(now=Date.now())=>{if(!Number.isFinite(now)||now>=deadlineAtMs)throw refuse();}};
+}
 const exact=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
 const uuidString=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 type Target=z.infer<typeof endpointSchema>;
@@ -58,8 +62,10 @@ async function currentMonth(db:SourceDatabase):Promise<{startsAt:string;endsAt:s
     SELECT to_char(s,'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS starts_at,to_char(s+interval '1 month','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ends_at FROM m`)).rows[0];
   if(typeof row?.starts_at!=='string'||typeof row?.ends_at!=='string')throw refuse();return {startsAt:row.starts_at,endsAt:row.ends_at};
 }
-async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy:BudgetNativeReviewedPolicy,request:z.infer<typeof inputSchema>,expected?:Snapshot,keyFingerprint?:string):Promise<Snapshot> {
+async function sourceState(db:SourceDatabase,journal:HostFinancialJournal,policy:BudgetNativeReviewedPolicy,request:z.infer<typeof budgetNativeProvisionRequestSchema>,expected?:Snapshot,keyFingerprint?:string,deadlineAtMs?:number):Promise<Snapshot> {
+  if(deadlineAtMs!==undefined&&deadlineAtMs<=Date.now())throw refuse();
   await gateConsoleOrganisation(db,request.memberId,undefined,{lock:'update'});requireConsoleSourceOwner(db);
+  if(deadlineAtMs!==undefined)retainSourceTransactionDeadline(db,new Date(deadlineAtMs).toISOString());
   const userRows=(await db.query('SELECT id,org_id,status FROM users WHERE id=$1 FOR UPDATE',[request.memberId])).rows;
   if(userRows.length!==1||userRows[0]!.status!=='active'||typeof userRows[0]!.org_id!=='string')throw refuse();
   const providers=(await db.query(`SELECT issuer,subject,tenant_id FROM member_provider_identities WHERE member_id=$1 ORDER BY issuer,subject,tenant_id LIMIT 65 FOR UPDATE`,[request.memberId])).rows;
@@ -107,14 +113,19 @@ export class BudgetNativeProvisioner {
   }
 
   async provision(raw:unknown):Promise<{state:'bound-closed';bindingId:string;credentialGeneration:string}> {
-    const request=inputSchema.parse(raw),alias=request.purposeAlias;
+    const deadline=nativeProvisioningDeadline(),deadlineAtMs=deadline.deadlineAtMs,fresh=deadline.check;
+    const request=budgetNativeProvisionRequestSchema.parse(raw),alias=request.purposeAlias;
     if(!this.journal.prepared||!this.policy.capability.aliases.includes(alias)||this.policy.key.models.length!==1||this.policy.key.models[0]!==alias)throw refuse();
     validateNativeLimits(this.policy,alias,request.bindingId);
     const writer=new JournalBudgetFinancialWriter(this.journal);let operationId='',nativeWriteDispatched=false;
     try{
-      const result=await this.custody.withGate(async gate=>{
+      fresh();const result=await this.custody.withGate(async gate=>{
+        fresh();
+        const sourceTransaction=<T>(work:(db:SourceDatabase)=>Promise<T>,boundary:SourceTransactionBoundary)=>{
+          fresh();return consoleSourceTransaction(this.pool,work,boundary,{deadlineAtMs,beforeCommit:fresh});
+        };
         let first:Snapshot;
-        try{first=await writer.run('provision',boundary=>consoleSourceTransaction(this.pool,db=>sourceState(db,this.journal,this.policy,request),boundary));}
+        try{first=await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,undefined,undefined,deadlineAtMs),boundary));fresh();}
         catch(error){if(isJournaledAbort(error,{journalId:writer.journalId,operation:'provision'}))return {kind:'initial-preflight-refused' as const,error};throw error;}
         const inventory=gate.inventory(),prior=inventory.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration===request.credentialGeneration);
         if(inventory.operations.some(o=>o.kind==='operation'&&o.bindingId===request.bindingId&&o.credentialGeneration!==request.credentialGeneration))throw refuse();
@@ -137,56 +148,58 @@ export class BudgetNativeProvisioner {
         }
         const operation=gate.readOperation(operationId);
         if(operation.phase!=='prepared'||operation.keyCreateAttempt!=='not-attempted')throw refuse();
-        await writer.run('provision',boundary=>consoleSourceTransaction(this.pool,db=>sourceState(db,this.journal,this.policy,request,first,operation.keyFingerprint),boundary));
+        fresh();await writer.run('provision',boundary=>sourceTransaction(db=>sourceState(db,this.journal,this.policy,request,first,operation.keyFingerprint,deadlineAtMs),boundary));fresh();
         gate.beginProvisioning(operationId);
         const markUncertain=():never=>{try{gate.recordUncertain(operationId);}catch{}throw refuse();};
         const check=(result:{kind:string}):void=>{if(result.kind!=='match')markUncertain();};
+        const checkpoint=():void=>{try{fresh();}catch(error){if(nativeWriteDispatched)markUncertain();throw error;}};
 
         const teamExpectation={...this.expectations.team,teamId:team.nativeTeamId} satisfies NativeTeamPolicyExpectation;
-        if(team.createAttempt==='verified')check(await this.native.readTeamPolicy(teamExpectation));
+        if(team.createAttempt==='verified'){checkpoint();const read=await this.native.readTeamPolicy(teamExpectation);checkpoint();check(read);}
         else{
           if(team.createAttempt!=='not-attempted')throw refuse();
-          const claimed=gate.claimTeamCreate(team.ownershipId);
-          nativeWriteDispatched=true;try{await this.native.createTeam({teamId:claimed.nativeTeamId,maxBudget:teamExpectation.teamMaxBudget,budgetDuration:teamExpectation.teamBudgetDuration,models:teamExpectation.teamModels});}catch{}
-          check(await this.native.readTeamPolicy(teamExpectation));gate.verifyTeamCreated(team.ownershipId);
+          checkpoint();const claimed=gate.claimTeamCreate(team.ownershipId);checkpoint();
+          nativeWriteDispatched=true;try{await this.native.createTeam({teamId:claimed.nativeTeamId,maxBudget:teamExpectation.teamMaxBudget,budgetDuration:teamExpectation.teamBudgetDuration,models:teamExpectation.teamModels});}catch{}checkpoint();
+          const read=await this.native.readTeamPolicy(teamExpectation);checkpoint();check(read);gate.verifyTeamCreated(team.ownershipId);
         }
 
         const userExpectation={...this.expectations.user,userId:user.nativeUserId} satisfies NativeUserExpectation;
-        if(user.userCreateAttempt==='verified')check(await this.native.readUser(userExpectation));
+        if(user.userCreateAttempt==='verified'){checkpoint();const read=await this.native.readUser(userExpectation);checkpoint();check(read);}
         else{
           if(user.userCreateAttempt!=='not-attempted')throw refuse();
-          const claimed=gate.claimUserCreate(user.ownershipId);
-          nativeWriteDispatched=true;try{await this.native.createUser({userId:claimed.nativeUserId,maxBudget:userExpectation.maxBudget,userRole:userExpectation.userRole});}catch{}
-          check(await this.native.readUser(userExpectation));gate.verifyUserCreated(user.ownershipId);
+          checkpoint();const claimed=gate.claimUserCreate(user.ownershipId);checkpoint();
+          nativeWriteDispatched=true;try{await this.native.createUser({userId:claimed.nativeUserId,maxBudget:userExpectation.maxBudget,userRole:userExpectation.userRole});}catch{}checkpoint();
+          const read=await this.native.readUser(userExpectation);checkpoint();check(read);gate.verifyUserCreated(user.ownershipId);
         }
 
         const memberExpectation={...this.expectations.membership,teamId:team.nativeTeamId,memberUserId:user.nativeUserId} satisfies NativeTeamExpectation;
-        if(user.membershipCreateAttempt==='verified')check(await this.native.readTeam(memberExpectation));
+        if(user.membershipCreateAttempt==='verified'){checkpoint();const read=await this.native.readTeam(memberExpectation);checkpoint();check(read);}
         else{
           if(user.membershipCreateAttempt!=='not-attempted')throw refuse();
-          const claimed=gate.claimMembershipCreate(user.ownershipId);
+          checkpoint();const claimed=gate.claimMembershipCreate(user.ownershipId);checkpoint();
           nativeWriteDispatched=true;try{await this.native.addMember({teamId:team.nativeTeamId,userId:user.nativeUserId,maxBudget:memberExpectation.memberMaxBudget,
-            budgetDuration:memberExpectation.memberBudgetDuration,models:memberExpectation.memberModels,role:'user'});}catch{}
-          check(await this.native.readTeam(memberExpectation));gate.verifyMembershipCreated(user.ownershipId);
+            budgetDuration:memberExpectation.memberBudgetDuration,models:memberExpectation.memberModels,role:'user'});}catch{}checkpoint();
+          const read=await this.native.readTeam(memberExpectation);checkpoint();check(read);gate.verifyMembershipCreated(user.ownershipId);
         }
 
         const related=inventory.operations.filter((o):o is NativeOperation=>o.kind==='operation'&&o.userOwnershipId===user.ownershipId);
         if(related.some(o=>!['bound-closed','prepared'].includes(o.phase)))markUncertain();
         const known=[...new Set(related.filter(o=>o.phase==='bound-closed').map(o=>o.keyFingerprint))].filter(f=>f!==operation.keyFingerprint).sort();
-        const before=await this.native.listOwnedKeys(user.nativeUserId);
+        checkpoint();const before=await this.native.listOwnedKeys(user.nativeUserId);checkpoint();
         if(before.kind!=='match'||!exact([...before.value].sort(),known)||known.length>=10)markUncertain();
-        const claimed=gate.claimKeyCreate(operationId),secret=gate.readKey(operationId);
+        checkpoint();const claimed=gate.claimKeyCreate(operationId),secret=gate.readKey(operationId);checkpoint();
         nativeWriteDispatched=true;try{await this.native.createBlockedKey({key:secret,keyAlias:request.bindingId,teamId:team.nativeTeamId,userId:user.nativeUserId,maxBudget:this.expectations.key.maxBudget,
-          budgetDuration:this.expectations.key.budgetDuration,models:[alias]});}catch{}
+          budgetDuration:this.expectations.key.budgetDuration,models:[alias]});}catch{}checkpoint();
         const keyExpectation={...this.expectations.key,keyAlias:request.bindingId,teamId:team.nativeTeamId,userId:user.nativeUserId} satisfies NativeKeyExpectation;
-        check(await this.native.lookupKey(claimed.keyFingerprint,keyExpectation));
-        const after=await this.native.listOwnedKeys(user.nativeUserId);
+        const lookup=await this.native.lookupKey(claimed.keyFingerprint,keyExpectation);checkpoint();check(lookup);
+        const after=await this.native.listOwnedKeys(user.nativeUserId);checkpoint();
         if(after.kind!=='match'||!exact([...after.value].sort(),[...known,operation.keyFingerprint].sort()))markUncertain();
         gate.verifyKeyCreated(operationId);gate.recordNativeBlockedVerification(operationId);
-        const committed=await writer.runWithReceipt('provision',async(boundary,financialOperationId)=>{
+        checkpoint();const committed=await writer.runWithReceipt('provision',async(boundary,financialOperationId)=>{
+          checkpoint();
           gate.linkFinancialOperation(operationId,financialOperationId,this.journal.id);
-          return consoleSourceTransaction(this.pool,async db=>{
-            const current=await sourceState(db,this.journal,this.policy,request,first,operation.keyFingerprint);
+          return sourceTransaction(async db=>{
+            const current=await sourceState(db,this.journal,this.policy,request,first,operation.keyFingerprint,deadlineAtMs);
             if(current.installationId!==first.installationId||current.memberAccountId!==first.memberAccountId)throw refuse();
             const row=(await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,native_team,native_user,purpose_alias,profile_hash,maximum_liability,pricing_profile,state)
               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15::jsonb,'active') RETURNING id`,

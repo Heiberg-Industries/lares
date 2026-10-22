@@ -100,7 +100,7 @@ export function consumeNativeHashAbsenceReceipt(receipt:NativeHashAbsenceReceipt
 }
 
 /** Scan JSON structure before JSON.parse so escaped duplicate object keys cannot be accepted. */
-function rejectDuplicateKeys(text:string):void {
+export function rejectDuplicateJsonKeys(text:string):void {
   let index=0;
   const whitespace=()=>{while(index<text.length&&/[\u0009\u000a\u000d\u0020]/.test(text[index]!))index++;};
   const string=():string=>{
@@ -159,7 +159,7 @@ async function boundedBytes(response:Response,retain:boolean):Promise<Uint8Array
 async function jsonBody(response:Response):Promise<unknown>{
   const bytes=await boundedBytes(response,true);
   const text=new TextDecoder('utf-8',{fatal:true}).decode(bytes);
-  rejectDuplicateKeys(text);
+  rejectDuplicateJsonKeys(text);
   const parsed:unknown=JSON.parse(text);
   const finite=(value:unknown,depth=0):boolean=>{
     if(depth>32)return false;

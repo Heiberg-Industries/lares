@@ -171,4 +171,11 @@ it('requires prepared financial custody for the fixed native custody path',()=>{
     writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative:invalid}));
     expect(()=>loadKeeperConfig(f.file)).toThrow('budgetNative');
   }
+  const withPolicy={...budgetNative,reviewedPolicyFile:'/etc/lares/native-policy.json'};
+  writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative:withPolicy}));
+  expect(loadKeeperConfig(f.file).budgetNative).toEqual(withPolicy);
+  for(const invalid of [{...withPolicy,reviewedPolicyFile:'relative.json'},{...withPolicy,reviewedPolicyFile:'/etc/lares/policy.json',inlinePolicy:{secret:true}}]){
+    writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative:invalid}));
+    expect(()=>loadKeeperConfig(f.file)).toThrow('budgetNative');
+  }
 });
