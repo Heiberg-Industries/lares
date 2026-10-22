@@ -8,9 +8,10 @@ import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {captureModelInvocation,runModelInvocation} from '../../../packages/agent-kit/src/model-invocation.js';
 import type {ConsoleAuthorityContext} from '../../../packages/agent-kit/src/console-turn-authority.js';
-import type {BudgetRequestReference} from '../../../packages/agent-kit/src/budget-admission-store.js';
-import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync,realpathSync} from 'node:fs';
-import {randomUUID,createHash} from 'node:crypto';
+import type {BudgetRequestReference,BudgetFinancialWriter} from '../../../packages/agent-kit/src/budget-admission-store.js';
+import {readFileSync,readdirSync,mkdtempSync,rmSync,fsyncSync,realpathSync,mkdirSync,writeFileSync,chmodSync} from 'node:fs';
+import {randomUUID,randomBytes,createHash} from 'node:crypto';
+import {createConnection} from 'node:net';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {PgBudgetAdmissionStore,consumeDispatchPermit,budgetIdentitySuppression,type BudgetGatewayObservation,type BudgetTerminalReceipt} from '../../../packages/agent-kit/src/budget-admission-store.js';
@@ -25,12 +26,14 @@ import {runErase} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
-import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
+import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,gatewayRawRequestHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary,type SourceDatabase,type SourcePool} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {captureBudgetAuthorityReference} from '../../../packages/agent-kit/src/budget-model-authority.js';
 import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
+import {serveModelPurposeBroker,modelPurposeDigest,modelPurposeMac,signModelPurposeRequest,type ModelPurposeRequest} from '../../keeper/lib/model-purpose-broker.js';
+import {MODEL_PURPOSE_EMPTY_DIGEST,modelPurposeAckFields,modelPurposeEqualMac,modelPurposeRuntimeRequestFields} from '../../../packages/agent-kit/src/model-purpose-protocol.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 const incarnation='11111111-1111-4111-8111-111111111111',endpoint='e'.repeat(64),profile='f'.repeat(64),fingerprint='d'.repeat(64);
@@ -67,6 +70,69 @@ async function gatewayCustody(pool:Pool,failOn?:'proposal'|'control',existingDir
   }
   armed=true;
   return {directory,journal,writer:new JournalBudgetFinancialWriter(journal),records:()=>readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line))};
+}
+const purposeEmptyDigest=MODEL_PURPOSE_EMPTY_DIGEST;
+function purposeRuntimeEnvelope(op:string,input:Record<string,unknown>,key:Buffer,overrides:Record<string,unknown>={}){
+  const requestId=randomBytes(32).toString('base64url');
+  const unsigned={agent:'helper',incarnation,requestId,timestamp:Date.now(),op,input,outcomeDigest:purposeEmptyDigest,
+    payloadDigest:op==='step.claim'?modelPurposeDigest(input.event):modelPurposeDigest(input),...overrides};
+  const fields=modelPurposeRuntimeRequestFields(unsigned as never);
+  return {...unsigned,mac:modelPurposeMac(key,fields).toString('base64url')};
+}
+async function purposeSocketRequest(path:string,request:unknown,key?:Buffer,onConnect?:(socket:ReturnType<typeof createConnection>)=>void):Promise<Record<string,unknown>>{
+  return new Promise((resolve,reject)=>{
+    const socket=createConnection(path);let buffer='',settled=false;const timer=setTimeout(()=>{socket.destroy();if(!settled)reject(new Error('socket timeout'));},2500);
+    socket.setEncoding('utf8');socket.on('connect',()=>{socket.write(JSON.stringify(request)+'\n');onConnect?.(socket);});
+    socket.on('data',chunk=>{buffer+=chunk;const newline=buffer.indexOf('\n');if(newline>=0){clearTimeout(timer);socket.end();try{
+      const response=JSON.parse(buffer.slice(0,newline)) as Record<string,unknown>;
+      if(response.ok===true&&typeof response.responseMac==='string'){
+        const {ok:_ok,responseMac,responseRequestDigest,responseOutcomeDigest,responsePayloadDigest,...result}=response;
+        const fields=modelPurposeAckFields(request as never,result);
+        if(responseRequestDigest!==fields.requestDigest||responseOutcomeDigest!==fields.outcomeDigest||responsePayloadDigest!==fields.payloadDigest||
+          !key||!modelPurposeEqualMac(responseMac,modelPurposeMac(key,fields)))throw new Error('Invalid signed purpose ACK');
+      }
+      settled=true;resolve(response);
+    }catch(error){reject(error);}}});
+    socket.on('error',error=>{clearTimeout(timer);reject(error);});
+    socket.on('close',()=>{clearTimeout(timer);if(!settled)reject(new Error('socket closed before response'));});
+  });
+}
+function purposeBrokerFiles(){
+  const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-purpose-consumer-')),secrets=join(root,'secrets');mkdirSync(secrets,{mode:0o700});
+  const consoleKey=Buffer.alloc(32,7),runtimeKey=Buffer.alloc(32,9),consolePath=join(secrets,'console-key');
+  writeFileSync(consolePath,consoleKey.toString('hex')+'\n',{mode:0o440});writeFileSync(join(secrets,'helper-runtime-control'),runtimeKey.toString('hex')+'\n',{mode:0o440});
+  chmodSync(consolePath,0o440);chmodSync(join(secrets,'helper-runtime-control'),0o440);chmodSync(secrets,0o700);
+  return {root,secrets,consoleKey,runtimeKey,consolePath,consoleSocket:join(root,'console.sock'),runtimeSocket:join(root,'runtime.sock')};
+}
+async function startPurposeBroker(files:ReturnType<typeof purposeBrokerFiles>,writer:BudgetFinancialWriter,consumerPool:Pool=db){
+  const uid=process.getuid?.()??0,gid=process.getgid?.()??0;
+  return serveModelPurposeBroker(db as unknown as SourcePool,{consoleSigningKeyFile:files.consolePath,runtimeSecretsDir:files.secrets,
+    consoleSocket:files.consoleSocket,runtimeSocket:files.runtimeSocket,rootUid:uid,consoleKeyUid:uid,consoleKeyGid:gid,
+    runtimeKeyUid:uid,runtimeKeyGid:gid,socketUid:uid,socketGid:gid},{pool:consumerPool,writer});
+}
+async function selectPurposeModel(definitionHash:string){
+  const sessionId=`${context().session.id}-model-purpose-${randomBytes(8).toString('hex')}`;
+  const admissionNonce=createHash('sha256').update(sessionId).digest('base64url');
+  await db.query('UPDATE agent_definitions SET definition=$1::jsonb,hash=$2 WHERE name=$3',[JSON.stringify({model:'standard',grants:[]}),definitionHash,'helper']);
+  await db.query("DELETE FROM resource_grants WHERE resource_kind='agent' AND resource_id='helper'; DELETE FROM agent_access WHERE agent_name='helper'");
+  const grants=new PgGrantStore(db),adopted=await grants.adoptAgent('member-a',{agentName:'helper',expectedDefinitionHash:definitionHash},{designatedOwnerMemberId:'member-a'});
+  await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:adopted.accessRevision,grants:[{principal:{kind:'organisation',id:'org'},permission:'use',expiresAt:null}]});
+  expect(await grants.captureUse('member-a','helper',{db})).toBeDefined();
+  expect((await db.query('SELECT 1 FROM agent_resources WHERE name=$1 AND ownership_token=$2::uuid AND runtime_control_token=ownership_token AND state=\'ready\' AND NOT pending',['helper',incarnation])).rowCount).toBe(1);
+  await bindConsoleSession({agent:'helper',incarnation,memberId:'member-a',admissionNonce,sessionId},db,env());
+  return {sessionId,admissionNonce};
+}
+async function purposeRequestAdmission(files:ReturnType<typeof purposeBrokerFiles>,request:ModelPurposeRequest){
+  const challenge=await purposeSocketRequest(files.consoleSocket,{op:'request.challenge',input:request});
+  expect(challenge.ok).toBe(true);
+  const capsule=signModelPurposeRequest(files.consoleKey,request,String(challenge.challenge),String(challenge.challengeMac),Number(challenge.expiresAt));
+  const receipt={method:request.method,path:request.path,rawBodyHash:request.rawBodyHash,requestId:request.requestId,purpose:request.purpose,...(request.resume?{resume:request.resume}:{})};
+  const admitted=await purposeSocketRequest(files.runtimeSocket,purposeRuntimeEnvelope('request.admit',{capsule,receipt},files.runtimeKey),files.runtimeKey);
+  expect(admitted.ok).toBe(true);return String(admitted.receipt);
+}
+function purposeRequest(overrides:Partial<ModelPurposeRequest>={}):ModelPurposeRequest{
+  return {agent:'helper',incarnation,session:context().session.id,member:'member-a',admissionNonce:nonce('member-a'),method:'POST',path:'/eve/v1/session',
+    rawBodyHash:h('private-console-request'),policyRevision:2,definitionHash:h('model-purpose-definition'),purpose:'human',requestId:randomBytes(32).toString('base64url'),...overrides};
 }
 let gatewayPreparedStore:PgBudgetAdmissionStore|undefined;
 async function journalGatewayFixture(writer:JournalBudgetFinancialWriter,work:(source:SourceDatabase)=>Promise<void>):Promise<void>{
@@ -269,6 +335,186 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const evidence={...echoes,kind:'terminal-usage',format:'openai',usage:{inputTokens:100,outputTokens,cacheReadTokens:40,cacheWriteTokens:0},...changes};
     return {...evidence,receiptHash:gatewayHash(gatewayCanonical(evidence))};
   }
+  it('consumes a signed Console human step through the real Keeper socket and prepared journal',async()=>{
+    const definitionHash=h('model-purpose-definition'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
+    const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
+    const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined,closeAfterPrepare=false,capability='';
+    try{
+      const writer:BudgetFinancialWriter={run:async<T>(operation:'prepare'|'provision'|'admit'|'grant'|'unknown'|'settle'|'member-remove'|'erase-person',work:(boundary:ReturnType<typeof sourceTransactionBoundary>,operationId:string)=>Promise<T>)=>{
+        const result=await files.writer.run(operation,work);
+        if(operation==='prepare'&&closeAfterPrepare){closeAfterPrepare=false;
+          const closed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.close',{turnCapability:capability,turnId:'turn-1',sequence:0},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+          expect(closed.ok).toBe(true);
+        }
+        return result;
+      }};
+      stop=await startPurposeBroker(purposeFiles,writer);
+      const request=purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash});
+      const pendingReceipt=await purposeRequestAdmission(purposeFiles,request);
+      const originalContext=context(),humanAuth={...originalContext.session.auth.current,attributes:{...originalContext.session.auth.current.attributes,lares_admission_nonce:admissionNonce}};
+      const humanContext={session:{...originalContext.session,id:sessionId,auth:{current:humanAuth,initiator:humanAuth}}};
+      const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:humanContext},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(turn.ok).toBe(true);
+      capability=String(turn.capability);
+      const event={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}};
+      const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{
+        turnCapability:turn.capability,purposeAlias:'standard',event,
+      },purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(claimed.ok).toBe(true);
+      const body=Buffer.from('{"model":"standard","messages":[]}'),identity={method:'POST',path:'/v1/chat/completions',requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',body)};
+      const validConsume=purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),validMac=String(validConsume.mac);
+      const badMac={...validConsume,mac:`${validMac.startsWith('A')?'B':'A'}${validMac.slice(1)}`};
+      expect((await purposeSocketRequest(purposeFiles.runtimeSocket,badMac,purposeFiles.runtimeKey)).ok).toBe(false);
+      // The authenticated retry uses the same request id; bad MACs never reserve the claim.
+      const consumed=await purposeSocketRequest(purposeFiles.runtimeSocket,validConsume,purposeFiles.runtimeKey);
+      expect(consumed).toMatchObject({ok:true,ticket:expect.stringMatching(/^[A-Za-z0-9_-]{43}$/),expiresAt:expect.any(Number)});
+      const attempt=(await db.query('SELECT state,request_hash,profile_hash,authority_reference,invocation_hash FROM budget_attempts')).rows[0];
+      expect(attempt).toMatchObject({state:'prepared',request_hash:identity.requestHash,profile_hash:profile});
+      expect(attempt.authority_reference).toMatchObject({kind:'human',binding:{memberId:'member-a',agent:'helper',incarnation},turnId:'turn-1',turnSequence:0});
+      expect(attempt.invocation_hash).toMatch(/^[a-f0-9]{64}$/);
+      expect(files.records().some(frame=>frame.record.kind==='begin'&&frame.record.operation==='prepare')).toBe(true);
+      const nextEvent={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:1}};
+      const nextClaim=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'standard',event:nextEvent},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(nextClaim.ok).toBe(true);closeAfterPrepare=true;
+      // The writer completes the real COMMIT, observer and journal publication before the
+      // injected terminal close. Keeper must withhold the late ACK while retaining that truth.
+      const late=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:nextClaim.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(late.ok).toBe(false);
+      expect((await db.query("SELECT state FROM budget_attempts ORDER BY created_at,id")).rows.map(row=>row.state)).toEqual(['prepared','prepared']);
+      const preparedOperationIds=files.records().filter(frame=>frame.record.kind==='begin'&&frame.record.operation==='prepare').map(frame=>frame.record.operationId);
+      expect(files.records().filter(frame=>frame.record.kind==='commit'&&preparedOperationIds.includes(frame.record.operationId))).toHaveLength(2);
+      expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(2);
+      const replay=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:{...identity,requestHash:h('changed-body')}},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(replay.ok).toBe(false);
+      await stop();stop=undefined;
+      const restartedFiles=purposeBrokerFiles();
+      try{
+        stop=await startPurposeBroker(restartedFiles,files.writer);
+        const restartedRequest=purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash,rawBodyHash:h('new-console-body')});
+        const restartedReceipt=await purposeRequestAdmission(restartedFiles,restartedRequest);
+        const restartedTurn=await purposeSocketRequest(restartedFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt:restartedReceipt,context:humanContext},restartedFiles.runtimeKey),restartedFiles.runtimeKey);
+        expect(restartedTurn.ok).toBe(true);
+        const sameStep={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}};
+        const restartedClaim=await purposeSocketRequest(restartedFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{
+          turnCapability:restartedTurn.capability,purposeAlias:'standard',event:sameStep,
+        },restartedFiles.runtimeKey),restartedFiles.runtimeKey);
+        expect(restartedClaim.ok).toBe(true);
+        const changedBody=Buffer.from('{"model":"standard","messages":[{"content":"changed"}]}');
+        const refused=await purposeSocketRequest(restartedFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:restartedClaim.claim,
+          request:{...identity,requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',changedBody)}},restartedFiles.runtimeKey),restartedFiles.runtimeKey);
+        expect(refused.ok).toBe(false);
+        expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(2);
+      expect(files.records().filter(frame=>frame.record.kind==='commit'&&preparedOperationIds.includes(frame.record.operationId))).toHaveLength(2);
+      }finally{await stop?.();stop=undefined;rmSync(restartedFiles.root,{recursive:true,force:true});}
+    }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+  });
+  it('consumes the real empty approval-resume step with resolver and human initiator preserved',async()=>{
+    const definitionHash=h('model-purpose-definition'),requestId=randomBytes(32).toString('base64url'),key='1'.repeat(64),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
+    await db.query("INSERT INTO connected_accounts(id,owner_member_id,connector_id,provider_issuer,provider_subject,provider_label,status) VALUES('purpose-account','member-a','example','https://issuer.invalid','purpose-subject','Example','ok')");
+    const selection={actorMemberId:'member-a',agentId:'helper',incarnation,sessionId,originalTurnId:'turn-1',originalCallId:'purpose-original-call',accountId:'purpose-account',accountGeneration:0,resourceBindingId:'purpose-mailbox',connectorId:'example',kind:'mail.send' as const};
+    const actions=new PgPersonalActionStore(db,{encrypt:s=>encryptSecret(s,key),decrypt:s=>decryptSecret(s,key)});
+    const action=await actions.prepareAction({...selection,payload:{to:['recipient@example.invalid'],subject:'Approval fixture',body:'Private fixture'}});
+    await db.query(`INSERT INTO approval_asks(call_id,request_id,agent,tool,payload_hash,original_authority,acting_member_id,resolved_by_member_id,session_id,outcome,answered_at)
+      VALUES($1,$2,'helper',$3,$4,$5::jsonb,'member-a','member-a',$6,'approved',clock_timestamp())`,
+      [selection.originalCallId,requestId,PERSONAL_MAIL_SEND_TOOL,action.payloadHash,JSON.stringify(personalActionApprovalDescriptor(action,selection,h('purpose-policy'))),selection.sessionId]);
+    await actions.attachApproval({actionId:action.actionId,actorMemberId:'member-a',approvalCallId:selection.originalCallId,requestId});
+    const originalContext=context(),humanAuth={...originalContext.session.auth.current,attributes:{...originalContext.session.auth.current.attributes,lares_admission_nonce:admissionNonce}};
+    const human={session:{...originalContext.session,id:sessionId,auth:{current:humanAuth,initiator:humanAuth}}},resume={session:{...human.session,turn:{id:'',sequence:1},auth:{initiator:human.session.auth.initiator,current:{authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:requestId,lares_resume_option:'approve',lares_purpose:'resolver'}}}}};
+    expect(resume.session.auth.current).not.toBe(resume.session.auth.initiator);
+    const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
+    const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined;
+    try{
+      stop=await startPurposeBroker(purposeFiles,files.writer);
+      const request=purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash,purpose:'resume',resume:{requestId,optionId:'approve'}});
+      const pendingReceipt=await purposeRequestAdmission(purposeFiles,request);
+      const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt,context:resume},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(turn.ok).toBe(true);
+      // Run the actual pinned Eve coordinator to obtain its approval continuation event.
+      // Its resolver context normalizes to turn_1 while the emitted event has raw turnId ''.
+      const eveRoot=new URL('../../chief-of-staff/node_modules/eve/dist/src/',import.meta.url);
+      const [{ContextContainer,contextStorage},keys,{sessionProvider},{createToolLoopHarness}]=await Promise.all([
+        import(new URL('context/container.js',eveRoot).href),import(new URL('context/keys.js',eveRoot).href),
+        import(new URL('context/providers/session.js',eveRoot).href),import(new URL('harness/tool-loop.js',eveRoot).href),
+      ]) as any;
+      const humanAuth=human.session.auth.initiator,resolverAuth={...resume.session.auth.current,attributes:{...resume.session.auth.current.attributes,
+        lares_model_purpose_required:'1',lares_model_pending_receipt:pendingReceipt}},contextStore=new ContextContainer();
+      contextStore.set(keys.AuthKey,resolverAuth);contextStore.set(keys.InitiatorAuthKey,humanAuth);contextStore.set(keys.SessionIdKey,human.session.id);
+      const harnessSession={agent:{dynamicModel:true,system:'',tools:[]},compaction:{recentWindowSize:10,threshold:100_000},
+        continuationToken:'eve:budget-purpose-resume',history:[],sessionId:human.session.id,state:{
+          'eve.harness.emission':{sessionStarted:true,sequence:1,stepIndex:0,turnId:''},
+          'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'turn_0'},requests:[{kind:'tool-approval',requestId,
+            prompt:'Approval fixture',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],
+            action:{kind:'tool-call',callId:selection.originalCallId,toolName:PERSONAL_MAIL_SEND_TOOL,input:{}}}],responseMessages:[],responseAuthRequiredRequestIds:[requestId]}],
+        }};
+      contextStore.set(keys.SessionKey,sessionProvider.create(contextStore,{state:harnessSession.state}).value);
+      const emitted:Array<{type:string;data?:any}>=[];
+      const harness=createToolLoopHarness({mode:'conversation',tools:new Map([[PERSONAL_MAIL_SEND_TOOL,{description:'Fixture',inputSchema:{type:'object'},approval:{response:async()=>({status:'allowed'})}}]]),
+        handleEvent:async(event:{type:string;data?:unknown})=>{emitted.push(event as never);},resolveModel:async()=>{throw new Error('No provider expected');},
+        dispatchDynamicModelEvent:async({event}:{event:{type:string;data?:any}})=>{emitted.push(event);throw new Error('Stop after actual SDK event');}});
+      const approvalInput={attributedInputResponses:[{auth:resolverAuth,response:{requestId,optionId:'approve'}}]};
+      const first=await contextStorage.run(contextStore,()=>harness(harnessSession,approvalInput));
+      expect(typeof first.next).toBe('function');
+      const second=await contextStorage.run(contextStore,()=>first.next!(first.session));
+      expect(second.next).toMatchObject({done:true});
+      const event=emitted.find(value=>value.type==='step.started');
+      expect(event).toMatchObject({type:'step.started',data:{turnId:'',sequence:1,stepIndex:0}});
+      const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{
+        turnCapability:turn.capability,purposeAlias:'standard',event,
+      },purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(claimed.ok).toBe(true);
+      const body=Buffer.from('{"model":"standard","messages":[]}'),identity={method:'POST',path:'/v1/chat/completions',requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',body)};
+      const consumed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(consumed).toMatchObject({ok:true,ticket:expect.stringMatching(/^[A-Za-z0-9_-]{43}$/)});
+      const reference=(await db.query('SELECT authority_reference FROM budget_attempts')).rows[0].authority_reference;
+      expect(reference).toMatchObject({kind:'resume',binding:{memberId:'member-a',agent:'helper',incarnation},turnId:'',turnSequence:1,resume:{requestId,optionId:'approve'}});
+      const close=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.close',{turnCapability:turn.capability,turnId:'',sequence:1},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(close.ok).toBe(true);
+      const duplicate=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(duplicate.ok).toBe(false);
+      expect((await db.query('SELECT count(*)::int n FROM budget_attempts')).rows[0].n).toBe(1);
+    }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+  });
+  it('rolls back and withholds the ticket when the turn closes and socket aborts before COMMIT',async()=>{
+    const definitionHash=h('model-purpose-precommit-abort'),selected=await selectPurposeModel(definitionHash),{sessionId,admissionNonce}=selected;
+    const bound=await requireConsoleSessionBinding({agent:'helper',incarnation,sessionId,memberId:'member-a',admissionNonce},db,env());
+    const purposeFiles=purposeBrokerFiles();let stop:(()=>Promise<void>)|undefined,capability='',pendingSocket:ReturnType<typeof createConnection>|undefined,armed=false;
+    const consumerPool={query:db.query.bind(db),connect:async()=>{
+      const client=await db.connect();
+      return {release:(error?:boolean)=>client.release(error),query:async(sql:string,values?:unknown[])=>{
+        const result=await client.query(sql,values);
+        if(armed&&sql.includes('INSERT INTO budget_financial_checkpoints')){
+          armed=false;
+          const closed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.close',{turnCapability:capability,turnId:'turn-1',sequence:0},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+          expect(closed.ok).toBe(true);
+          pendingSocket?.destroy();
+          await new Promise<void>(resolve=>setImmediate(resolve));
+        }
+        return result;
+      }};
+    }} as unknown as Pool;
+    try{
+      stop=await startPurposeBroker(purposeFiles,files.writer,consumerPool);
+      const request=purposeRequest({session:sessionId,admissionNonce,policyRevision:bound.policyRevision,definitionHash});
+      const pending=await purposeRequestAdmission(purposeFiles,request);
+      const original=context(),humanAuth={...original.session.auth.current,attributes:{...original.session.auth.current.attributes,lares_admission_nonce:admissionNonce}};
+      const humanContext={session:{...original.session,id:sessionId,auth:{current:humanAuth,initiator:humanAuth}}};
+      const turn=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('turn.open',{pendingReceipt:pending,context:humanContext},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(turn.ok).toBe(true);capability=String(turn.capability);
+      const event={type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}};
+      const claimed=await purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.claim',{turnCapability:capability,purposeAlias:'standard',event},purposeFiles.runtimeKey),purposeFiles.runtimeKey);
+      expect(claimed.ok).toBe(true);
+      const rawBody=Buffer.from('{"model":"standard","messages":[]}'),identity={method:'POST',path:'/v1/chat/completions',requestHash:gatewayRawRequestHash('POST','/v1/chat/completions',rawBody)};
+      armed=true;
+      const pendingConsume=purposeSocketRequest(purposeFiles.runtimeSocket,purposeRuntimeEnvelope('step.consume',{claim:claimed.claim,request:identity},purposeFiles.runtimeKey),purposeFiles.runtimeKey,
+        socket=>{pendingSocket=socket;});
+      await expect(pendingConsume).rejects.toThrow('socket closed before response');
+      expect((await db.query('SELECT count(*)::int AS n FROM budget_attempts')).rows[0].n).toBe(0);
+      const records=files.records(),preparedIds=records.filter(frame=>frame.record.kind==='begin'&&frame.record.operation==='prepare').map(frame=>frame.record.operationId);
+      expect(preparedIds).toHaveLength(1);
+      expect(records.some(frame=>frame.record.kind==='commit'&&preparedIds.includes(frame.record.operationId))).toBe(false);
+      expect(records.some(frame=>frame.record.kind==='abort'&&preparedIds.includes(frame.record.operationId))).toBe(true);
+    }finally{await stop?.();rmSync(purposeFiles.root,{recursive:true,force:true});}
+  });
   function lostCommit(nth:number):Pool {
     let commits=0;
     return {query:(text:string,values?:unknown[])=>db.query(text,values),connect:async()=>{

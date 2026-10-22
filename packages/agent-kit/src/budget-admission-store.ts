@@ -1,4 +1,4 @@
-import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDenied,noteBudgetFinancialChange,type SourceTransactionBoundary} from './console-source-transaction.js';
+import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDenied,noteBudgetFinancialChange,type SourceTransactionBoundary,type SourceTransactionOptions,retainSourceTransactionDeadline} from './console-source-transaction.js';
 /** Server-only, inactive budget admission. Parsing a reference is NOT authentication.
  * Trusted request/gateway/recovery adapters must supply the observations below. No runtime
  * hook, HTTP endpoint, model tool, account opener or recovery reset is exported here. */
@@ -9,6 +9,7 @@ import { PgGrantStore } from './grant-store.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
 import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from './budget-model-authority.js';
+import {gatewayModelPath} from './gateway-admission-protocol.js';
 
 const SCALE=10n**18n;
 /** At most 18 integral and 18 fractional digits, no exponent/sign/nonfinite values. */
@@ -35,6 +36,14 @@ export function budgetIdentitySuppression(key:Uint8Array,identity:{canonicalMemb
   }))].sort()};
 }
 export interface BudgetRequestReference {bindingId:string;requestHash:string;profileHash:string}
+export interface GatewayModelRequestIdentity {method:'POST';path:string;requestHash:string}
+/** Internal source returned only by the constructor-bound Keeper claim resolver. The
+ * object shape is not authority; callers must not accept or construct it from remote JSON. */
+export interface ModelPurposeClaimSource {
+  agent:string;incarnation:string;reference:BudgetAuthorityReference;definitionHash:string;purposeAlias:string;
+  event:{turnId:string;sequence:number;stepIndex:number};expiresAt:number;isActive:()=>boolean;
+}
+export type ModelPurposeClaimResolver=(handle:object)=>ModelPurposeClaimSource|undefined;
 /** Obtained from the actual selected gateway request, never its user-supplied billing tags. */
 export interface BudgetGatewayObservation {requestHash:string;profileHash:string;endpointHash:string;credentialGeneration:string;keyFingerprint:string;agent:string;incarnation:string;purposeAlias:string}
 /** MUST come from the trusted non-rollback recovery witness, outside this transaction. A DB
@@ -67,11 +76,11 @@ export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:st
 const DENIED={state:'denied',reason:'Budget authority is unavailable or changed'} as const;
 type Row=Record<string,any>;
 export class PgBudgetAdmissionStore {
-  constructor(private readonly pool:Pool,private readonly env:NodeJS.ProcessEnv=process.env,private readonly intentLifetimeMs=30_000,private readonly financialWriter?:BudgetFinancialWriter) {
+  constructor(private readonly pool:Pool,private readonly env:NodeJS.ProcessEnv=process.env,private readonly intentLifetimeMs=30_000,private readonly financialWriter?:BudgetFinancialWriter,private readonly resolvePurposeClaim?:ModelPurposeClaimResolver) {
     if(!Number.isSafeInteger(intentLifetimeMs)||intentLifetimeMs<1||intentLifetimeMs>30_000)throw new Error('Invalid intent lifetime');
   }
-  private async transaction<T>(fn:(db:PoolClient)=>Promise<T>,operation?:BudgetFinancialOperation):Promise<T> {
-    const work=(boundary?:SourceTransactionBoundary)=>consoleSourceTransaction(this.pool,db=>fn(db as PoolClient),boundary);
+  private async transaction<T>(fn:(db:PoolClient)=>Promise<T>,operation?:BudgetFinancialOperation,options:SourceTransactionOptions={}):Promise<T> {
+    const work=(boundary?:SourceTransactionBoundary)=>consoleSourceTransaction(this.pool,db=>fn(db as PoolClient),boundary,options);
     return operation&&this.financialWriter?this.financialWriter.run(operation,work):work();
   }
   /** Unlocked routing only; the pool query releases its client before owned admission. */
@@ -162,6 +171,70 @@ export class PgBudgetAdmissionStore {
       if(inserted.rows.length!==1)throw new Error('Budget authority is unavailable or changed');
       noteBudgetFinancialChange(db,'budget_attempts',inserted.rows[0].id);
     },'prepare');return raw;
+  }
+  /** Consume only a handle resolved by the Keeper broker's constructor-bound private
+   * registry. Remote JSON and caller-shaped authority records cannot resolve here. */
+  async prepareModelPurposeIntent(handle:object,request:GatewayModelRequestIdentity,signal:AbortSignal):Promise<{ticket:string;expiresAt:number}> {
+    const source=this.resolvePurposeClaim?.(handle);
+    if(!source||!this.financialWriter||!source.isActive()||signal.aborted||
+      request.method!=='POST'||!validHash(request.requestHash)||
+      (request.path!=='/v1/messages'&&request.path!=='/v1/chat/completions')||
+      !Number.isSafeInteger(source.expiresAt)||source.expiresAt<=Date.now())throw new Error('Budget authority is unavailable or changed');
+    const {reference,event}=source;
+    if(source.agent!==reference.binding.agent||source.incarnation!==reference.binding.incarnation||
+      reference.turnId!==event.turnId||reference.turnSequence!==event.sequence||
+      !Number.isSafeInteger(event.sequence)||event.sequence<0||!Number.isSafeInteger(event.stepIndex)||event.stepIndex<0||
+      (event.turnId!==''&&!/^[A-Za-z0-9._:-]{1,128}$/.test(event.turnId))||
+      (event.turnId===''&&reference.kind!=='resume'))throw new Error('Budget authority is unavailable or changed');
+    const env={...this.env,LARES_AGENT_NAME:source.agent,LARES_AGENT_INCARNATION:source.incarnation};
+    const raw=randomBytes(32).toString('base64url');
+    let authorityDeadlineMs:number|null=null;
+    const active=()=>source.isActive()&&!signal.aborted&&source.expiresAt>Date.now();
+    if(!active())throw new Error('Budget authority is unavailable or changed');
+    const result=await this.transaction(async db=>{
+      const validUntil=await validateBudgetAuthorityReference(db,reference,env);
+      const current=await db.query("SELECT d.hash,d.definition->>'model' AS purpose_alias FROM agent_resources r JOIN agent_definitions d ON d.name=r.name WHERE r.name=$1 AND r.ownership_token=$2::uuid AND r.runtime_control_token=r.ownership_token AND r.state='ready' AND NOT r.pending AND d.status='valid' FOR SHARE OF r,d",[source.agent,source.incarnation]);
+      if(current.rows.length!==1||current.rows[0]!.hash!==source.definitionHash||current.rows[0]!.purpose_alias!==source.purposeAlias||
+        typeof current.rows[0]!.purpose_alias!=='string'||! /^[a-z][a-z0-9-]{1,63}$/.test(current.rows[0]!.purpose_alias))throw new Error('Budget policy unavailable');
+      if(validUntil){
+        retainSourceTransactionDeadline(db,validUntil);
+        await checkConsoleSourceDeadlines(db);
+        authorityDeadlineMs=Number((await db.query('SELECT floor(extract(epoch from $1::timestamptz)*1000)::bigint AS ms',[validUntil])).rows[0]?.ms);
+        if(!Number.isSafeInteger(authorityDeadlineMs))throw new Error('Budget authority is unavailable or changed');
+      }
+      // Resolve exactly one active binding from source authority and the current definition.
+      const found=await db.query(`SELECT id,installation_account_id,member_account_id FROM budget_gateway_bindings
+        WHERE live_member_id=$1 AND agent=$2 AND incarnation=$3::uuid AND purpose_alias=$4 AND state='active' LIMIT 2`,
+        [reference.binding.memberId,source.agent,source.incarnation,source.purposeAlias]);
+      if(found.rows.length!==1)throw new Error('Budget policy unavailable');
+      const discovered=found.rows[0]!;
+      // Agent use locks the owner's policy before installation/member/binding financial rows.
+      await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[reference.binding.memberId]);
+      const {installation,member,binding:b}=await this.locks(db,discovered.installation_account_id,discovered.member_account_id,discovered.id);
+      const iCap=await this.cap(db,installation),mCap=await this.cap(db,member);
+      const format=(b?.pricing_profile as {format?:unknown}|null)?.format;
+      if(!b||b.state!=='active'||member.live_member_id!==reference.binding.memberId||b.live_member_id!==member.live_member_id||
+        b.agent!==source.agent||b.incarnation!==source.incarnation||b.purpose_alias!==source.purposeAlias||
+        gatewayModelPath(format)!==request.path||b.endpoint_hash!==installation.selected_endpoint||!b.profile_hash||!b.key_fingerprint||
+        !installation.recovery_epoch||!iCap||!mCap||!await this.ready(db,installation)||!await this.ready(db,member))throw new Error('Budget policy unavailable');
+      const invocationHash=createHmac('sha256',Buffer.from(member.canonical_suppression_hash,'hex')).update(JSON.stringify([
+        'lares.budget.invocation.v1','conversation-step',installation.id,member.id,reference.binding.memberId,
+        source.agent,source.incarnation,reference.binding.sessionId,reference.binding.admissionNonce,event.turnId,event.sequence,event.stepIndex,
+      ])).digest('hex');
+      const requestedExpiry=Math.min(Date.now()+this.intentLifetimeMs,source.expiresAt,
+        authorityDeadlineMs===null?Number.POSITIVE_INFINITY:authorityDeadlineMs);
+      if(requestedExpiry<=Date.now())throw new Error('Budget authority is unavailable or changed');
+      const inserted=await db.query(`INSERT INTO budget_attempts(invocation_hash,id,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,endpoint_generation,recovery_epoch,request_hash,authority_hash,authority_reference,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,created_at,expires_at)
+        SELECT $23,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,t,LEAST(t+($22::int*interval '1 millisecond'),$24::timestamptz) FROM(SELECT clock_timestamp() AS t) c ON CONFLICT(invocation_hash) DO NOTHING RETURNING id,expires_at`,
+        [randomUUID(),hash(raw),installation.id,member.id,b.id,member.live_member_id,installation.active_window_id,member.active_window_id,b.endpoint_hash,b.credential_generation,installation.policy_generation,member.policy_generation,installation.endpoint_generation,installation.recovery_epoch,request.requestHash,payloadFingerprint('budget-authority',reference),JSON.stringify(reference),b.profile_hash,b.maximum_liability,iCap,mCap,Math.max(1,Math.min(this.intentLifetimeMs,requestedExpiry-Date.now())),invocationHash,new Date(requestedExpiry).toISOString()]);
+      if(inserted.rows.length!==1)throw new Error('Budget authority is unavailable or changed');
+      noteBudgetFinancialChange(db,'budget_attempts',inserted.rows[0]!.id);
+      return {ticket:raw,expiresAt:new Date(inserted.rows[0]!.expires_at).getTime()};
+    },'prepare',{beforeCommit:()=>{if(!active())throw new Error('Budget authority is unavailable or changed');}});
+    // The financial writer's observer and durable journal settlement have completed here.
+    // A post-commit lifecycle refusal leaves a truthful unreachable attempt and no ACK.
+    if(!active()||result.expiresAt<=Date.now())throw new Error('Budget authority is unavailable or changed');
+    return result;
   }
   async admit(ticket:string,observation:BudgetGatewayObservation,recovery:BudgetRecoveryReference):Promise<BudgetAdmission> {
     if(typeof ticket!=='string'||!/^[A-Za-z0-9_-]{43}$/.test(ticket))return DENIED;
