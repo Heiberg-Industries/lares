@@ -42,6 +42,9 @@ let pgRestoreLog: string;
 let dockerArgsLog: string;
 let dockerStdinLog: string;
 let resticArgsLog: string;
+let operatorPasswordFile: string;
+let composeConfigLog: string;
+let timeoutLog: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "restore-drill-"));
@@ -64,6 +67,10 @@ beforeEach(() => {
   dockerArgsLog = join(dir, "docker-args.log");
   dockerStdinLog = join(dir, "docker-stdin.log");
   resticArgsLog = join(dir, "restic-args.log");
+  operatorPasswordFile = join(dir, "operator-password");
+  composeConfigLog = join(dir, "compose-config.log");
+  timeoutLog = join(dir, "timeout.log");
+  writeFileSync(operatorPasswordFile, "test-only-operator-password\n", { mode: 0o600 });
 
   writeFileSync(
     snapJsonFile,
@@ -129,6 +136,12 @@ sys.exit(0)
     `#!/usr/bin/env python3
 import sys, os, re, json
 argv = sys.argv[1:]
+
+if 'compose' in argv and 'config' in argv:
+    with open(os.environ['COMPOSE_CONFIG_LOG'], 'a') as f:
+        f.write(' '.join(argv) + '\\n')
+    print(json.dumps({'services': {'db': {'image': 'postgres:16'}}}))
+    sys.exit(0)
 
 def arg_after(flag):
     if flag in argv:
@@ -198,6 +211,13 @@ sys.exit(0)
 `,
   );
   chmodSync(docker, 0o755);
+
+  const stat = join(binDir, "stat");
+  writeFileSync(stat, `#!/usr/bin/env bash\nprintf '0:600\\n'\n`);
+  chmodSync(stat, 0o755);
+  const timeout = join(binDir, "timeout");
+  writeFileSync(timeout, `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> "$TIMEOUT_LOG"\nshift\nexec "$@"\n`);
+  chmodSync(timeout, 0o755);
 
   // Stub df: the script's free-space check reads `df -Pk <root>` and takes column 4
   // (Available, in 1024-byte blocks) of the second line — the same fixed shape on
@@ -276,6 +296,9 @@ function run(env: Record<string, string> = {}) {
         DOCKER_ARGS_LOG: dockerArgsLog,
         DOCKER_STDIN_LOG: dockerStdinLog,
         RESTIC_ARGS_LOG: resticArgsLog,
+        LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+        COMPOSE_CONFIG_LOG: composeConfigLog,
+        TIMEOUT_LOG: timeoutLog,
         ...env,
       },
       encoding: "utf8",
@@ -332,8 +355,10 @@ describe("restore-drill.sh", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("2 database dump(s) loaded");
     expect(lines(pgRestoreLog)).toHaveLength(2);
-    expect(recordedArgs()).toContain("-f /opt/lares/compose.yaml");
-    expect(recordedArgs()).not.toContain("compose.override.yaml");
+    expect(readFileSync(composeConfigLog, "utf8")).toContain("-f /opt/lares/compose.yaml");
+    expect(readFileSync(composeConfigLog, "utf8")).not.toContain("compose.override.yaml");
+    expect(recordedArgs()).toContain("-i");
+    expect(readFileSync(timeoutLog, "utf8")).toMatch(/20 docker run .* psql -U lares_operator -d lares_state/);
     expect(resticArgs()).toContain("/srv/lares/retired");
     expect(lines(dropLog)).toEqual(lines(createLog));
     expect(scratchLeftovers()).toEqual([]);

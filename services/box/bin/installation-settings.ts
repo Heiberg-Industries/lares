@@ -9,7 +9,7 @@ const HELP = [
   "pnpm -C services/box installation-settings [--help]",
   "",
   "Initializes the missing settings required by the first-agent screen. Existing settings are",
-  "preserved. Database access comes from PG* plus DATABASE_PASSWORD_FILE or PGPASSWORD.",
+  "preserved. Database access comes from PG* plus the app-only DATABASE_PASSWORD_FILE.",
 ].join("\n");
 
 function messageOf(error: unknown): string {

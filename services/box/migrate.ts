@@ -14,6 +14,7 @@
 // throws — see its own comment.
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { poolFromEnv, type Queryable } from "./lib/db.js";
 import { ensureLedger, listApplied } from "./lib/migration-ledger.js";
 import {
@@ -39,10 +40,14 @@ export interface ParsedMigrateArgs {
   adoptThrough?: string;
   /** Required alongside --adopt-through when adoption would leave files for the next run to apply. */
   confirmWillRun?: boolean;
+  /** Connect as the explicit operator, then keep one session under the schema owner. */
+  schemaOwner: boolean;
+  /** Apply the first baseline as the explicit superuser before engine roles exist. */
+  bootstrapOperator: boolean;
   help: boolean;
 }
 
-const KNOWN_FLAGS = "--dir <path> · --dry-run · --adopt-through <filename> · --confirm-will-run · --help";
+const KNOWN_FLAGS = "--dir <path> · --dry-run · --adopt-through <filename> · --confirm-will-run · --schema-owner · --bootstrap-operator · --help";
 
 const HELP_TEXT = [
   "pnpm -C services/box migrate [--dir <path>] [--dry-run] [--adopt-through <filename> [--confirm-will-run]] [--help]",
@@ -54,6 +59,8 @@ const HELP_TEXT = [
   "                           applied by hand before this tool existed.",
   "  --confirm-will-run       Required with --adopt-through when some files would still run after",
   "                           adoption. Read that list first, then add this flag.",
+  "  --schema-owner           Connect as lares_operator and SET ROLE lares_schema_owner.",
+  "  --bootstrap-operator     Apply the initial baseline as lares_operator before role setup.",
   "  --help                   Show this message.",
   "",
   "Exit codes:",
@@ -72,6 +79,8 @@ export function parseArgs(argv: readonly string[]): ParsedMigrateArgs {
   let adoptThrough: string | undefined;
   let confirmWillRun: boolean | undefined;
   let help = false;
+  let schemaOwner = false;
+  let bootstrapOperator = false;
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
@@ -84,6 +93,12 @@ export function parseArgs(argv: readonly string[]): ParsedMigrateArgs {
         break;
       case "--help":
         help = true;
+        break;
+      case "--schema-owner":
+        schemaOwner = true;
+        break;
+      case "--bootstrap-operator":
+        bootstrapOperator = true;
         break;
       case "--dir": {
         const value = argv[++i];
@@ -102,11 +117,14 @@ export function parseArgs(argv: readonly string[]): ParsedMigrateArgs {
     }
   }
 
+  if (schemaOwner && bootstrapOperator) throw new Error("migrate: choose one explicit database authority mode");
   return {
     ...(dir !== undefined ? { dir } : {}),
     dryRun,
     ...(adoptThrough !== undefined ? { adoptThrough } : {}),
     ...(confirmWillRun !== undefined ? { confirmWillRun } : {}),
+    schemaOwner,
+    bootstrapOperator,
     help,
   };
 }
@@ -126,7 +144,7 @@ function messageOf(err: unknown): string {
  */
 export async function main(
   argv: readonly string[],
-  deps: { db: Queryable; out: (s: string) => void },
+  deps: { db: Queryable & { connect?: () => Promise<Queryable & { release: () => void }> }; out: (s: string) => void },
 ): Promise<number> {
   let args: ParsedMigrateArgs;
   try {
@@ -139,6 +157,31 @@ export async function main(
   if (args.help) {
     deps.out(HELP_TEXT);
     return 0;
+  }
+
+  if (args.schemaOwner || args.bootstrapOperator) {
+    if (!deps.db.connect) {
+      deps.out("migrate: explicit authority mode needs a connection pool; nothing was applied.");
+      return 1;
+    }
+    let client: (Queryable & { release: () => void }) | undefined;
+    try {
+      client = await deps.db.connect();
+      const identity = (await client.query<{ session_user: string; is_superuser: boolean }>(
+        "SELECT session_user, r.rolsuper AS is_superuser FROM pg_roles r WHERE r.rolname=session_user",
+      )).rows[0];
+      if (identity?.session_user !== "lares_operator" || identity.is_superuser !== true) {
+        deps.out("migrate: explicit authority mode requires the lares_operator superuser connection; nothing was applied.");
+        return 1;
+      }
+      if (args.schemaOwner) await client.query('SET ROLE "lares_schema_owner"');
+      return await main(argv.filter((arg) => arg !== "--schema-owner" && arg !== "--bootstrap-operator"), { db: client, out: deps.out });
+    } catch {
+      deps.out("migrate: the requested database authority could not be established; nothing was applied.");
+      return 1;
+    } finally {
+      client?.release();
+    }
   }
 
   const dir = args.dir ?? sqlDir;
@@ -191,14 +234,30 @@ export async function main(
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const pool = poolFromEnv();
-  main(process.argv.slice(2), { db: pool, out: (s) => process.stdout.write(`${s}\n`) })
-    .then((code) => {
-      process.exitCode = code;
-    })
-    .catch((err: unknown) => {
-      console.error(err);
-      process.exitCode = 1;
-    })
-    .finally(() => pool.end());
+  const argv = process.argv.slice(2);
+  const authorityMode = argv.includes("--schema-owner") || argv.includes("--bootstrap-operator");
+  let authorityReady = true;
+  if (authorityMode) {
+    const operatorPath = process.env.LARES_OPERATOR_PASSWORD_FILE;
+    if (!operatorPath || process.env.DATABASE_PASSWORD_FILE !== operatorPath || process.env.PGUSER !== "lares_operator") {
+      process.stderr.write("migrate: an explicit operator password file and lares_operator role are required; nothing was applied.\n");
+      authorityReady = false;
+    } else {
+      try {
+        if (!readFileSync(operatorPath, "utf8").trim()) throw new Error();
+      } catch {
+        process.stderr.write("migrate: the explicit operator password file is unavailable; nothing was applied.\n");
+        authorityReady = false;
+      }
+    }
+  }
+  if (authorityReady) {
+    const pool = poolFromEnv();
+    main(argv, { db: pool, out: (s) => process.stdout.write(`${s}\n`) })
+      .then((code) => { process.exitCode = code; })
+      .catch((err: unknown) => { console.error(err); process.exitCode = 1; })
+      .finally(() => pool.end());
+  } else {
+    process.exitCode = 1;
+  }
 }

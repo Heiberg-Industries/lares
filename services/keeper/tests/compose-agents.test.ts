@@ -3,11 +3,12 @@ import { expect,it,vi,afterEach } from 'vitest';
 import { renderAgentsCompose,nextAddress,type AgentContainer } from '../lib/compose-agents.js';
 const image='ghcr.io/example/runtime@sha256:'+'a'.repeat(64);
 const opts={network:'test_default',imageByRole:{creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',modelPrefix:'lares'};
-const agent:AgentContainer={name:'bookkeeper',role:'creative',address:'172.18.0.24',doors:[{kind:'slack',enabled:true},{kind:'telegram',enabled:false}],runtime:{databaseUrl:'postgres://agent@db/domain',workflowUrl:'postgres://agent@db/owned',gatewayUrl:'https://brain.example.com',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/srv/secrets/bookkeeper-key',passwordFile:'/srv/secrets/db'}};
+const agent:AgentContainer={name:'bookkeeper',role:'creative',address:'172.18.0.24',doors:[{kind:'slack',enabled:true},{kind:'telegram',enabled:false}],runtime:{databaseUrl:'postgres://lares_app@db/domain',workflowUrl:'postgres://lares_workflow@db/owned',gatewayUrl:'https://brain.example.com',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/srv/secrets/bookkeeper-key',passwordFile:'/srv/secrets/db',workflowPasswordFile:'/srv/secrets/bookkeeper-workflow'}};
 it('renders real YAML with own identity, two Slack secrets and stable read-only directory mount',()=>{
  const doc=parse(renderAgentsCompose([agent],opts)),s=doc.services['lares-bookkeeper'];
  expect(s.image).toBe(image);expect(s.read_only).toBe(true);expect(s.user).toBe('10001:10001');
- expect(s.environment).toMatchObject({LARES_AGENT_NAME:'bookkeeper',LARES_DEFINITION_DIR:'/definition',SLACK_SIGNING_SECRET_FILE:'/run/secrets/bookkeeper-slack-signing-secret',WORKFLOW_POSTGRES_URL:'postgres://agent@db/owned'});
+ expect(s.environment).toMatchObject({LARES_AGENT_NAME:'bookkeeper',LARES_DEFINITION_DIR:'/definition',SLACK_SIGNING_SECRET_FILE:'/run/secrets/bookkeeper-slack-signing-secret',WORKFLOW_POSTGRES_URL:'postgres://lares_workflow@db/owned',WORKFLOW_POSTGRES_PASSWORD_FILE:'/run/secrets/workflow-password'});
+ expect(doc.secrets['bookkeeper-workflow-password']).toEqual({file:'/srv/secrets/bookkeeper-workflow'});
  expect(s.volumes).toEqual(['/srv/agents/bookkeeper:/definition:ro']);
  expect(JSON.stringify(doc)).not.toContain('telegram-token');expect(s.networks.test_default.ipv4_address).toBe(agent.address);
  expect(Object.keys(doc.services)).toEqual(['lares-bookkeeper']);
@@ -45,8 +46,8 @@ it('passes the actual Docker Compose config parser without contacting or changin
  const {tmpdir}=await import('node:os');const {join}=await import('node:path');const {execFileSync}=await import('node:child_process');
  const dir=mkdtempSync(join(tmpdir(),'lares-compose-parser-'));
  try {
-  mkdirSync(join(dir,'bookkeeper'));writeFileSync(join(dir,'key'),'test-only');writeFileSync(join(dir,'db'),'test-only');
-  const a={...agent,doors:[],runtime:{...agent.runtime,gatewayKeyFile:join(dir,'key'),passwordFile:join(dir,'db')}};
+  mkdirSync(join(dir,'bookkeeper'));writeFileSync(join(dir,'key'),'test-only');writeFileSync(join(dir,'db'),'test-only');writeFileSync(join(dir,'workflow-db'),'test-only');
+  const a={...agent,doors:[],runtime:{...agent.runtime,gatewayKeyFile:join(dir,'key'),passwordFile:join(dir,'db'),workflowPasswordFile:join(dir,'workflow-db')}};
   const file=join(dir,'compose.yaml');writeFileSync(file,renderAgentsCompose([a],{...opts,agentsDir:dir,secretsDir:dir}));
   const doc=JSON.parse(execFileSync('docker',['compose','--project-name','task14-parser','-f',file,'config','--format','json'],{encoding:'utf8',timeout:15000}));
   expect(doc.services['lares-bookkeeper'].read_only).toBe(true);expect(doc.services['lares-bookkeeper'].user).toBe('10001:10001');

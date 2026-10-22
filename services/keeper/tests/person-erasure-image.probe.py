@@ -1,5 +1,5 @@
 """Root-only offline person-erasure CLI proof against the final Keeper image; CI only."""
-import json, pathlib, subprocess, sys, tempfile, time, uuid
+import json, pathlib, secrets, subprocess, sys, tempfile, time, uuid
 
 repo = pathlib.Path(__file__).resolve().parents[3]
 root = pathlib.Path(tempfile.mkdtemp(prefix='lares-person-erasure-image-')).resolve()
@@ -7,6 +7,8 @@ name = 'lares-person-erasure-' + uuid.uuid4().hex[:10]
 network = name
 image = sys.argv[1]
 password = 'disposable-erasure-image-probe'
+application_password = secrets.token_urlsafe(32)
+financial_password = secrets.token_urlsafe(32)
 tsx = '/app/services/keeper/node_modules/.bin/tsx'
 
 def command(*args, input=None, check=True, timeout=120):
@@ -40,6 +42,10 @@ try:
     root.chmod(0o700)
     (root / 'secrets').mkdir()
     (root / 'secrets/password').write_text(password + '\n')
+    for filename, value in [('app-password', application_password), ('financial-password', financial_password)]:
+        path = root / 'secrets' / filename
+        path.write_text(value)
+        path.chmod(0o600)
     command('docker', 'network', 'create', network)
     command('docker', 'run', '-d', '--name', name + '-db', '--network', network, '--network-alias', 'proof-db',
             '-e', 'POSTGRES_USER=proof', '-e', 'POSTGRES_PASSWORD=' + password, '-e', 'POSTGRES_DB=proof',
@@ -55,12 +61,18 @@ try:
         raise RuntimeError('Disposable PostgreSQL database did not become ready')
 
     sql('proof', 'CREATE DATABASE eraseproof')
-    sql('proof', 'CREATE DATABASE legacyproof')
     for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
         sql('eraseproof', migration.read_text())
-        sql('legacyproof', migration.read_text())
-    sql('legacyproof', "INSERT INTO users(id,display_name) VALUES('legacy-proof-member','Legacy proof')")
-    sql('eraseproof', "INSERT INTO orgs(id,display_name) VALUES('erase-proof-org','Erase proof'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('erase-proof-owner','Owner','erase-proof-org','owner','active'),('erase-proof-member','Member','erase-proof-org','member','active'); INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('erase-proof-owner','https://identity.example.invalid','owner-subject','tenant'),('erase-proof-member','https://identity.example.invalid','member-subject','tenant'); INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('erase-proof-owner',40),('erase-proof-member',30)")
+    privilege_setup = root / 'prepare-engine-privileges.mts'
+    privilege_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
+        "const pool=new Pool({host:'proof-db',database:'eraseproof',user:'proof',password:'" + password + "',max:1});try{const client=await pool.connect();try{const result=await provisionEngineDatabasePrivileges(client,{expectedDatabase:'eraseproof',passwords:{application:readFileSync('/probe/secrets/app-password'),financial:readFileSync('/probe/secrets/financial-password')}});if(!['applied','verified'].includes(result.status))throw Error();}finally{client.release();}console.log('engine-privileges-ready');}finally{await pool.end();}\n")
+    privilege_run = ['docker','run','--rm','--platform','linux/amd64','--network',network,'--read-only','--user','0:0',
+                     '--mount',f'type=bind,src={root},dst=/probe,readonly','--mount',
+                     f'type=bind,src={root}/secrets,dst=/probe/secrets,readonly','--mount',
+                     f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges.mts,readonly',
+                     '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges.mts']
+    assert command(*privilege_run) == 'engine-privileges-ready', 'Production engine database privileges were not prepared'
+    sql('eraseproof', "INSERT INTO orgs(id,display_name) VALUES('erase-proof-org','Erase proof'); INSERT INTO users(id,display_name) VALUES('legacy-proof-member','Legacy proof'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('erase-proof-owner','Owner','erase-proof-org','owner','active'),('erase-proof-member','Member','erase-proof-org','member','active'); INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('erase-proof-owner','https://identity.example.invalid','owner-subject','tenant'),('erase-proof-member','https://identity.example.invalid','member-subject','tenant'); INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('erase-proof-owner',40),('erase-proof-member',30)")
 
     vault = root / 'erase-vault'
     (vault / 'people').mkdir(parents=True)
@@ -76,51 +88,46 @@ try:
     state.mkdir(mode=0o700)
     config_data = {'mode':'rendered','project':'probe','dir':'/probe','files':['agent.json'],'agentsDir':'/probe',
                    'retiredDir':'/probe/retired','secretsDir':'/probe/secrets','rolesDir':'/probe','templatesDir':'/probe',
-                   'backupDir':'/probe','db':{'host':'proof-db','port':5432,'database':'eraseproof','user':'proof',
-                   'passwordFile':'/probe/secrets/password'},'budgetFinancial':{'directory':'/var/lib/lares/budget-financial'},
+                   'backupDir':'/probe','db':{'host':'proof-db','port':5432,'database':'eraseproof','user':'lares_app',
+                   'passwordFile':'/probe/secrets/app-password'},'budgetFinancial':{'directory':'/var/lib/lares/budget-financial',
+                   'db':{'host':'proof-db','port':5432,'database':'eraseproof','user':'lares_financial',
+                   'passwordFile':'/probe/secrets/financial-password'}},
                    'budgetNative':{'directory':'/var/lib/lares/budget-native'}}
     config = root / 'erase-config.json'
     config.write_text(json.dumps(config_data))
-    legacy_config_data = {**config_data,'db':{**config_data['db'],'database':'legacyproof'}}
+    legacy_config_data = {**config_data}
     legacy_config_data.pop('budgetNative')
-    legacy_state = root / 'legacy-state'
-    legacy_state.mkdir(mode=0o700)
+    legacy_state = state
     unclean_state = root / 'unclean-state'
     unclean_state.mkdir(mode=0o700)
     legacy_config = root / 'legacy-erase-config.json'
     legacy_config.write_text(json.dumps(legacy_config_data))
     legacy_invalid = root / 'legacy-erase-invalid-db-config.json'
-    legacy_invalid.write_text(json.dumps({**legacy_config_data,'db':{**legacy_config_data['db'],'host':'does-not-exist.invalid'}}))
+    legacy_invalid.write_text(json.dumps({**legacy_config_data,'db':{**legacy_config_data['db'],'host':'does-not-exist.invalid'},'budgetFinancial':{**legacy_config_data['budgetFinancial'],'db':{**legacy_config_data['budgetFinancial']['db'],'host':'does-not-exist.invalid'}}}))
     invalid = root / 'erase-invalid-db-config.json'
-    invalid.write_text(json.dumps({**config_data,'db':{**config_data['db'],'host':'does-not-exist.invalid'}}))
+    invalid.write_text(json.dumps({**config_data,'db':{**config_data['db'],'host':'does-not-exist.invalid'},'budgetFinancial':{**config_data['budgetFinancial'],'db':{**config_data['budgetFinancial']['db'],'host':'does-not-exist.invalid'}}}))
     prepare = root / 'prepare-erase-custody.mts'
-    prepare.write_text("import {loadKeeperConfig,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
+    prepare.write_text("import {loadKeeperConfig,keeperFinancialPool,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
                        "import {ensureDreamTables} from '/app/services/chief-of-staff/lib/dream/store.ts';\n"
                        "import {prepareFinancialCustody} from '/app/services/keeper/lib/financial-continuity.ts';\n"
-                       "const c=loadKeeperConfig();const p=keeperPool(c.db),db=await p.connect();"
-                       "try{await ensureDreamTables(db);await prepareFinancialCustody(c.budgetFinancial.directory,db);}"
-                       "finally{db.release();await p.end();}\n")
-    prepare_legacy = root / 'prepare-legacy-erase-custody.mts'
-    prepare_legacy.write_text("import {loadKeeperConfig,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
-                              "import {ensureDreamTables} from '/app/services/chief-of-staff/lib/dream/store.ts';\n"
-                              "import {prepareFinancialCustody} from '/app/services/keeper/lib/financial-continuity.ts';\n"
-                              "const c=loadKeeperConfig(),p=keeperPool(c.db),db=await p.connect();"
-                              "try{await ensureDreamTables(db);await prepareFinancialCustody(c.budgetFinancial.directory,db);}finally{db.release();await p.end();}\n")
+                       "const c=loadKeeperConfig(),p=keeperPool(c.db),fp=keeperFinancialPool(c),db=await p.connect(),fdb=await fp.connect();"
+                       "try{await ensureDreamTables(db);await prepareFinancialCustody(c.budgetFinancial.directory,fdb);}"
+                       "finally{db.release();fdb.release();await Promise.all([p.end(),fp.end()]);}\n")
     provision = root / 'provision-erase-accounts.mts'
-    provision.write_text("import {loadKeeperConfig,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
+    provision.write_text("import {loadKeeperConfig,keeperFinancialPool} from '/app/services/keeper/lib/config.ts';\n"
                          "import {HostFinancialJournal} from '/app/services/keeper/lib/financial-journal.ts';\n"
                          "import {provisionBudgetAccounts} from '/app/services/keeper/lib/budget-account-provisioning.ts';\n"
-                         "const c=loadKeeperConfig(),p=keeperPool(c.db),j=HostFinancialJournal.openExisting(c.budgetFinancial.directory,{requirePrepared:true});"
+                         "const c=loadKeeperConfig(),p=keeperFinancialPool(c),j=HostFinancialJournal.openExisting(c.budgetFinancial.directory,{requirePrepared:true});"
                          "try{const r=await provisionBudgetAccounts(p,j,{installationCap:'100',memberIds:['erase-proof-owner','erase-proof-member']});"
                          "if(r.state!=='closed'||r.members!==2||r.accountsCreated!==3||r.windowsCreated!==3)throw Error('proof provisioning mismatch');}"
                          "finally{j.close();await p.end();}\n")
     prepare_native = root / 'prepare-erase-native.mts'
     prepare_native.write_text("import {createHash,randomBytes} from 'node:crypto';\n"
                               "import {writeFileSync} from 'node:fs';\n"
-                              "import {loadKeeperConfig,keeperPool} from '/app/services/keeper/lib/config.ts';\n"
+                              "import {loadKeeperConfig,keeperFinancialPool} from '/app/services/keeper/lib/config.ts';\n"
                               "import {BudgetNativeCustodyStore} from '/app/services/keeper/lib/budget-native-custody.ts';\n"
                               "import {gatewayCanonical,gatewayHash} from '/app/packages/agent-kit/src/gateway-admission-protocol.ts';\n"
-                              "const c=loadKeeperConfig(),p=keeperPool(c.db),store=BudgetNativeCustodyStore.createNew(c.budgetNative.directory);"
+                              "const c=loadKeeperConfig(),p=keeperFinancialPool(c),store=BudgetNativeCustodyStore.createNew(c.budgetNative.directory);"
                               "const policy=(()=>{const capability={version:1,provider:'openai',model:'synthetic-model',providerBaseUrl:'https://provider.invalid/v1',aliases:['lares-brain','lares-writer','lares-utility','lares-gate'],maxBodyBytes:1048576,maxOutputTokens:1000};"
                               "return {capability,pricing:{version:1,capabilityHash:gatewayHash(gatewayCanonical(capability)),format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'1',output:'2',cacheRead:'0',cacheWrite:'0'}},maximumLiability:'0.003',team:{maxBudget:'100',models:capability.aliases,budgetDuration:'1d'},user:{maxBudget:'30',userRole:'internal_user',autoCreateKey:false},membership:{maxBudget:'20',allowedModels:capability.aliases,budgetDuration:'1d',role:'user'},key:{maxBudget:'10',models:['lares-brain'],budgetDuration:'1d',keyType:'llm_api',blocked:true}}})();"
                               "try{const installation=(await p.query(\"SELECT id FROM budget_accounts WHERE kind='installation'\")).rows[0]?.id;"
@@ -178,13 +185,6 @@ try:
             f'type=bind,src={config},dst=/etc/lares/keeper.json,readonly','--mount',
             f'type=bind,src={state},dst=/var/lib/lares','--entrypoint',tsx,image,str(prepare)]
     command(*prep[:-1], '/probe/prepare-erase-custody.mts')
-    prep_legacy = ['docker','run','--rm','--platform','linux/amd64','--network',network,'--read-only','--user','0:0',
-                   '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp','--mount',
-                   f'type=bind,src={root},dst=/probe,readonly','--mount',
-                   f'type=bind,src={root}/secrets,dst=/probe/secrets,readonly','--mount',
-                   f'type=bind,src={legacy_config},dst=/etc/lares/keeper.json,readonly','--mount',
-                   f'type=bind,src={legacy_state},dst=/var/lib/lares','--entrypoint',tsx,image,'/probe/prepare-legacy-erase-custody.mts']
-    command(*prep_legacy)
     provision_run = ['docker','run','--rm','--platform','linux/amd64','--network',network,'--read-only','--user','0:0',
                      '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp','--mount',
                      f'type=bind,src={root},dst=/probe,readonly','--mount',
@@ -192,6 +192,8 @@ try:
                      f'type=bind,src={config},dst=/etc/lares/keeper.json,readonly','--mount',
                      f'type=bind,src={state},dst=/var/lib/lares','--entrypoint',tsx,image,'/probe/provision-erase-accounts.mts']
     command(*provision_run)
+    command('sudo','cp','-a',str(state / 'budget-financial'),str(unclean_state / 'budget-financial'))
+    command('sudo','chmod','0700',str(unclean_state / 'budget-financial'))
     native_run = ['docker','run','--rm','--platform','linux/amd64','--network',network,'--read-only','--user','0:0',
                   '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp','--mount',
                   f'type=bind,src={root},dst=/probe','--mount',
@@ -211,13 +213,14 @@ try:
     command('sudo','mkdir','-m','0700',str(native_directory))
     unclean_native_result = cli(invalid,'erase-proof-member','--vault','/vault','--apply',with_vault=True,state_root=unclean_state)
     assert unclean_native_result.returncode != 0 and 'Native custody unavailable' in unclean_native_result.stdout, 'Unclean configured native custody did not refuse before database access'
+    command('sudo','rmdir',str(native_directory))
     assert command('sudo','sha256sum',str(note)).split()[0] == before_hash, 'Native custody refusal changed file bytes'
     assert command('sudo','git','-c',f'safe.directory={vault}','-C',str(vault),'rev-parse','HEAD') == before_head, 'Native custody refusal changed Git HEAD'
     legacy_result = cli(legacy_config,'legacy-proof-member','--vault','/vault','--apply',with_vault=True,vault_root=legacy_vault,state_root=legacy_state)
     assert legacy_result.returncode == 0, 'Zero-account legacy erase failed'
     assert not root_exists(legacy_note), 'Legacy root CLI did not remove the selected vault note'
-    assert sql('legacyproof',"SELECT count(*) FROM users WHERE id='legacy-proof-member'") == '0', 'Legacy root CLI did not erase the member'
-    assert sql('legacyproof','SELECT count(*) FROM budget_accounts') == '0', 'Legacy zero-account erase created financial rows'
+    assert sql('eraseproof',"SELECT count(*) FROM users WHERE id='legacy-proof-member'") == '0', 'Zero-account legacy apply did not erase the member'
+    assert sql('eraseproof',"SELECT count(*) FROM budget_accounts WHERE live_member_id='legacy-proof-member'") == '0', 'Zero-account legacy apply created financial rows'
     if command(*native_run) != 'prepared':
         raise RuntimeError('Native image fixture did not prepare custody')
     nonroot = cli(config,'erase-proof-member','--apply',user='10001:10001')

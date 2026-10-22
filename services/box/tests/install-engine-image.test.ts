@@ -70,7 +70,7 @@ function ok(r: ReturnType<typeof run>) {
 
 const calls = () => readFileSync(log, "utf8");
 /** Every `docker run …` the installer made, one string per call. */
-const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker run "));
+const engineRuns = () => calls().split("\n").filter((l) => l.startsWith("docker run ") && l.includes("/app/services/box/"));
 const programOf = (line: string) => [...line.matchAll(/\/app\/services\/box\/(\S+)/g)].pop()![1]!.replace(/^bin\//, "");
 
 beforeEach(() => {
@@ -80,6 +80,7 @@ beforeEach(() => {
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, release());
   for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl", "lares-doctor"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // (a): the docker stub logs the engine's `docker run`, and lets the placeholder pnpm answer.
   stub("docker", READS_PIPED_PSQL);
   stub("pnpm",
@@ -110,6 +111,7 @@ describe("what install.sh asks the engine image to run", () => {
     ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const runs = engineRuns();
     expect(runs.map(programOf)).toEqual([
+      "render-database-bootstrap.ts", "database-setup.ts", "workflow-template.ts", "database-setup.ts",
       "render-stack.ts", "migrate.ts", "installation-settings.ts", "first-owner.ts",
       "first-organisation.ts", "vault-storage.ts", "vault-storage.ts", "vault-storage.ts", "render-keeper-config.ts",
     ]);
@@ -122,15 +124,23 @@ describe("what install.sh asks the engine image to run", () => {
     }
   });
 
-  it("hands the database password over as a file, never as a value", () => {
+  it("keeps app and offline database credentials in explicit file mounts", () => {
     ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const secrets = join(prefix, "etc", "lares", "secrets");
     const dbRuns = engineRuns().filter((l) => /migrate|installation-settings|first-owner|first-organisation/.test(programOf(l)));
     expect(dbRuns).toHaveLength(4);
     for (const line of dbRuns) {
-      expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
-      expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
       expect(line).not.toContain("PGPASSWORD");
+      if (programOf(line) === "migrate.ts") {
+        const operator = join(prefix, "etc", "lares", "operator", "database-password");
+        expect(line).toContain("--schema-owner");
+        expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${operator}`);
+        expect(line).toContain(`-v ${operator}:${operator}:ro`);
+        expect(line).not.toContain(`${secrets}/database-password`);
+      } else {
+        expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
+        expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+      }
     }
     // No secret value appears anywhere in anything any stub was given, stdin included.
     const text = calls();
@@ -147,6 +157,11 @@ describe("what install.sh asks the engine image to run", () => {
     expect(mounts.length).toBeGreaterThan(0);
     for (const m of mounts) {
       const [from, to, mode] = m.split(":");
+      if (to === "/run/secrets/workflow-provisioner") {
+        expect(from).toBe(join(prefix, "etc", "lares", "secrets", "workflow-provisioner-password"));
+        expect(mode).toBe("ro");
+        continue;
+      }
       expect(to, m).toBe(from);
       expect(from!.startsWith(prefix) || from === releaseFile, m).toBe(true);
       expect(["ro", undefined], m).toContain(mode);
@@ -257,7 +272,7 @@ describe("the renderers, run for real through the translated call", () => {
       .toBe(readFileSync(join(BOX, "..", "..", "images", "gateway-runtime", "start.sh"), "utf8"));
     // The same run went through the engine image for every helper, and the renderer was given
     // the folder keeper.json lives in (it reads the previous file there and writes beside it).
-    expect(engineRuns()).toHaveLength(9);
+    expect(engineRuns()).toHaveLength(13);
     const keeperRun = engineRuns().find((l) => l.includes("render-keeper-config"))!;
     expect(keeperRun).toContain(`-v ${join(prefix, "etc", "lares")}:${join(prefix, "etc", "lares")} `);
   });

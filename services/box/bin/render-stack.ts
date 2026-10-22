@@ -38,7 +38,6 @@ const ARGUMENTS = [
   "network",
   "subnet",
   "domain",
-  "pgUser",
   "pgDatabase",
   "alias",
   "providerModel",
@@ -133,7 +132,6 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     ownerId: at("ownerId"),
     ownerHomeTz: at("ownerHomeTz"),
     modelAlias: at("alias"),
-    pgUser: at("pgUser"),
     pgDatabase: at("pgDatabase"),
     // The calendar is mounted only when it is already there, so a stranger without one gets no
     // mount and an installation that added one keeps it on every re-run of the installer.

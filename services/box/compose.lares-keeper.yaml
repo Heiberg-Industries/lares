@@ -30,16 +30,15 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${LARES_ROOT:?absolute keeper-owned root}:${LARES_ROOT:?absolute keeper-owned root}
       - ${LARES_KEEPER_CONFIG:?absolute config file}:/etc/lares/keeper.json:ro
-      # Read-only. The keeper reads the database password itself, before it does
-      # anything else: bin/keeper.ts's first two statements are loadKeeperConfig() and
-      # keeperPool(config.db), and keeperPool reads `db.passwordFile` EAGERLY, inside the Pool
-      # constructor. Without this mount that readFileSync throws, the keeper exits with
-      # "keeper: database credentials unavailable", `restart: unless-stopped` restarts it for
-      # ever — and `docker compose up -d` still exits 0, so the installer reports a keeper that
-      # is up while it crash-loops. Read-only is the point: the keeper must READ
-      # database-password (and adminDb's, the same file), and nothing in this container should
-      # be able to write a secret.
-      - ${LARES_SECRETS_DIR:?absolute secrets directory}:${LARES_SECRETS_DIR:?absolute secrets directory}:ro
+      # Exact read-only credential files only. The privileged PostgreSQL operator file is in a
+      # separate host directory and is never included here or passed through keeper.json.
+      - ${LARES_DATABASE_PASSWORD_FILE:?app database password file required}:${LARES_DATABASE_PASSWORD_FILE:?app database password file required}:ro
+      - ${LARES_FINANCIAL_DATABASE_PASSWORD_FILE:?financial database password file required}:${LARES_FINANCIAL_DATABASE_PASSWORD_FILE:?financial database password file required}:ro
+      - ${LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE:?workflow provisioner password file required}:${LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE:?workflow provisioner password file required}:ro
+      - ${LARES_WORKFLOW_RUNTIME_PASSWORD_FILE:?workflow runtime password file required}:${LARES_WORKFLOW_RUNTIME_PASSWORD_FILE:?workflow runtime password file required}:ro
+      - ${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:ro
+      - ${LARES_EVE_ROUTE_PASSWORD_FILE:?route password file required}:${LARES_EVE_ROUTE_PASSWORD_FILE:?route password file required}:ro
+      - ${LARES_VAULT_SIGNING_KEY_FILE:?Vault signing key file required}:${LARES_VAULT_SIGNING_KEY_FILE:?Vault signing key file required}:ro
       - ${LARES_SOCKET_DIR:?absolute app socket directory}:/run/lares
       - ${LARES_HOST_SOCKET_DIR:?absolute host socket directory}:/run/lares-host
     tmpfs: [/tmp]

@@ -54,7 +54,7 @@ describe("the settings list and the code agree", () => {
   });
 
   it("the indirect list may only shrink, and every entry names its helper", () => {
-    // Running this scanner for real against the repository finds 33 indirect names,
+    // Running this scanner for real against the repository finds 50 indirect names,
     // 32 of which were already known by hand
     // (VAULT_PATH/ATLAS_PATH, TOKEN_ENC_KEY, the Slack/Telegram/Signal/Twenty/Notion/CRM
     // secret names, the GOOGLE_CLIENT_*_<ORG>/_CONSOLE family, HTTPS_PROXY/HTTP_PROXY,
@@ -89,7 +89,11 @@ describe("the settings list and the code agree", () => {
     // halves, and CONSOLE_ALLOWED_EMAILS now read only through the roles' ENV_VAR_FOR.
     // All use existing required/readSecret or ENV_VAR_FOR helpers, not new exemptions.
     // Microsoft data consent adds six file-first settings through the existing readSecret helper.
-    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(48);
+    //
+    // RAISED 48 -> 50: WORKFLOW_POSTGRES_PASSWORD_FILE is read by start.sh's Node bootstrap,
+    // while PGPASSWORD is exported by start.sh for the role process. Both are shell/process
+    // handoffs the TypeScript-only walk cannot see, and each points to that exact reader.
+    expect(Object.keys(READ_INDIRECTLY).length).toBeLessThanOrEqual(50);
     for (const [name, how] of Object.entries(READ_INDIRECTLY)) {
       expect(SETTING_NAMES.has(name), name).toBe(true);
       expect(how.length, name).toBeGreaterThan(10);

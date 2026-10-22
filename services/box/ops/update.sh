@@ -66,8 +66,9 @@ COMPOSE_FILES="${UPDATE_COMPOSE_FILES:-compose.yaml}"
 # backup-verify.sh runs at 05:00 against a 03:00 backup, so a passing check is normally under
 # 26h old. Older than this and the proof is last night's at best.
 MAX_AGE_HOURS="${UPDATE_BACKUP_MAX_AGE_HOURS:-26}"
-PG_USER="${PGUSER:-lares}"
+PG_USER="${PGUSER:-lares_app}"
 PG_DATABASE="${PGDATABASE:-lares_state}"
+OPERATOR_PASSWORD_FILE="${LARES_OPERATOR_PASSWORD_FILE:-${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/operator/database-password}"
 
 # 64 usage · 75 the backup failed · 78 refused before anything changed · 70 failed afterwards.
 EX_USAGE=64
@@ -157,6 +158,10 @@ SECRETS_DIR="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets"
 DB_ENV=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password"
   --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
   --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
+MIGRATION_ENV=(--env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE"
+  --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE"
+  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=lares_operator")
 
 # Reading a release file needs no database, only the file.
 release_program() {
@@ -175,7 +180,7 @@ recorder() {
   if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
     "$LARES_UPDATE_RECORDER" "$@"
   elif [ "$ENGINE_MODE" = image ]; then
-    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" bin/update-record.ts "$@"
+    engine_run --ro "$SECRETS_DIR/database-password" "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
     node "$BOX_DIR/bin/update-record.ts" "$@"
   fi
@@ -183,10 +188,15 @@ recorder() {
 
 # The migration runner: in the target release's engine image, or (on a checkout) through pnpm.
 run_migrations() {
+  [ -f "$OPERATOR_PASSWORD_FILE" ] && [ ! -L "$OPERATOR_PASSWORD_FILE" ] \
+    && [ "$(stat -c '%u:%a' "$OPERATOR_PASSWORD_FILE" 2>/dev/null || true)" = 0:600 ] \
+    || { echo "update: the explicit offline operator credential is missing or unsafe; migrations were not run." >&2; return 78; }
   if [ "$ENGINE_MODE" = image ]; then
-    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" migrate.ts
+    engine_run --ro "$OPERATOR_PASSWORD_FILE" "${MIGRATION_ENV[@]}" migrate.ts --schema-owner
   else
-    pnpm -C "$BOX_DIR" migrate
+    LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
+      PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$PG_DATABASE" PGUSER=lares_operator \
+      pnpm -C "$BOX_DIR" migrate -- --schema-owner
   fi
 }
 

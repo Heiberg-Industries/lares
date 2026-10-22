@@ -20,6 +20,12 @@ export const ENGINE_IMAGE = `example.invalid/lares-keeper@sha256:${"e".repeat(64
 /** Bash to put at the top of a `docker` stub's body (after its own logging line). */
 export function engineDockerPrelude(runner: "pnpm" | "tsx" = "pnpm"): string {
   return `
+if [ "\${1:-}" = compose ]; then
+  case " $* " in
+    *" ps -q db "*) case " $* " in *compose.bootstrap.yaml*) echo bootstrap-container ;; *) echo normal-container ;; esac; exit 0 ;;
+  esac
+fi
+if [ "\${1:-}" = inspect ] && [ "\${2:-}" = bootstrap-container ]; then exit 1; fi
 if [ "\${1:-}" = run ]; then
   engine_args=("$@"); engine_at=-1
   for ((i = 0; i < \${#engine_args[@]}; i++)); do
@@ -50,11 +56,12 @@ PYVAULTFIXTURE
     ${
       runner === "tsx"
         ? `case "$engine_script" in
-      bin/render-stack.ts|bin/render-keeper-config.ts) exec "${BOX_DIR}/node_modules/.bin/tsx" "${BOX_DIR}/$engine_script" "\${engine_rest[@]}" ;;
+      bin/render-stack.ts|bin/render-keeper-config.ts|bin/render-database-bootstrap.ts) exec node --import tsx/esm "${BOX_DIR}/$engine_script" "\${engine_rest[@]}" ;;
       *) exit 0 ;;
     esac`
         : `case "$engine_script" in
       bin/doctor.ts) exec pnpm -C "${BOX_DIR}" run doctor -- "\${engine_rest[@]}" ;;
+      bin/render-database-bootstrap.ts) printf 'services:\n  db: {}\n' > "\${engine_rest[1]}"; exit 0 ;;
       *) engine_name="\${engine_script#bin/}"; exec pnpm -C "${BOX_DIR}" "\${engine_name%.ts}" "\${engine_rest[@]}" ;;
     esac`
     }

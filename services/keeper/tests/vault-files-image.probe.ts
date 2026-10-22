@@ -29,7 +29,7 @@ function assertProductionKeyPath() {
   }, migrations: { box: '001_baseline.sql' }, breaking: [] }, {
     project: 'vault-proof', network: 'vault-proof-network', subnet: '172.30.0.0/24', proxyAddress: '172.30.0.2',
     dir: '/srv/lares', agentsDir: '/srv/lares/agents', retiredDir: '/srv/lares/retired', backupDir: '/srv/lares/backup',
-    egressDir: '/srv/lares/egress', secretsDir: '/etc/lares/secrets', pgUser: 'lares', pgDatabase: 'lares_state',
+    egressDir: '/srv/lares/egress', secretsDir: '/etc/lares/secrets', pgDatabase: 'lares_state',
     gatewayUrl: 'http://gateway:4000', ownerId: member, publicDoorOrigin: 'https://example.invalid',
   });
   if (config.vaultConsoleSigningKeyFile !== '/etc/lares/secrets/console-vault-signing-key')

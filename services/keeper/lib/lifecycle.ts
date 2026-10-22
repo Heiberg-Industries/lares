@@ -10,6 +10,8 @@ import { renderAgentsCompose, nextAddress, DOOR_FILES, ROLE_DOORS, type AgentCon
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from './docker.js';
 import type { LifecycleConfig } from './lifecycle-config.js';
 import { WorkflowStorage } from './workflow-storage.js';
+import type { WorkflowDatabaseConnections, WorkflowPrivilegeContract } from './workflow-storage.js';
+import { keeperPool } from './config.js';
 import { KeeperRefusedError } from './actions.js';
 import { verifyCurrentStateSchema, deleteAgentCurrentState } from './agent-current-state.js';
 import { runtimeSecret, verifySecretRoot } from './secret-permissions.js';
@@ -66,8 +68,15 @@ export class AgentLifecycle {
         vaultRuntimeDir?: string;
         credentials?: { administrator?: string };
     }, private docker: DockerBoundary, private provisionSecret = runtimeSecret, private verifySecrets = verifySecretRoot,
-    private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys()) {
-        this.storage = new WorkflowStorage(pool, admin, config.workflowTemplate, config.workflowOwner);
+    private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys(),
+    workflowConnections?: WorkflowDatabaseConnections,
+    workflowPrivileges?: WorkflowPrivilegeContract) {
+        const runtimeUrl = new URL(config.runtime.workflowServer);
+        const connections: WorkflowDatabaseConnections = workflowConnections ?? {
+            provisioner: database => keeperPool({ ...config.adminDb, database }),
+            runtime: database => keeperPool({ host: runtimeUrl.hostname, port: Number(runtimeUrl.port || 5432), database, user: 'lares_workflow', passwordFile: config.runtime.workflowPasswordFile }),
+        };
+        this.storage = new WorkflowStorage(pool, admin, config.workflowTemplate, config.workflowOwner, connections, workflowPrivileges);
     }
     private gatewayKeyFile(name: string): string {
         const exact = this.config.runtime.gatewayKeys[name];
@@ -140,7 +149,7 @@ export class AgentLifecycle {
             const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
             binding = { ...binding, secrets };
         }
-        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, endpoints: c.egress.endpoints } };
+        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, workflowPasswordFile: r.workflowPasswordFile, endpoints: c.egress.endpoints } };
     }
     private async render(override?: {
         name: string;
@@ -390,7 +399,7 @@ export class AgentLifecycle {
         try { const fd = openSync(controlSecret, 'wx', 0o600); try { writeFileSync(fd, randomBytes(32).toString('hex')); fsyncSync(fd); } finally { closeSync(fd); } }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
         this.provisionSecret(controlSecret);
-        for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
+        for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
@@ -418,7 +427,7 @@ export class AgentLifecycle {
             this.refuseUnknownGrants(name, row.applied_definition);
             const a = await this.connections(this.container(row, row.applied_definition, null, await this.notionGranted()), false);
             verifyBindingSources(a.bindings);
-            for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
+            for (const path of [a.runtime.gatewayKeyFile, a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
                 ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a),
                 ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)]) {
                 const st = lstatSync(path);

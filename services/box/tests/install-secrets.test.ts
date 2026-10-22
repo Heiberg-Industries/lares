@@ -6,7 +6,7 @@
 // command the script could call is a logging stub on PATH ahead of everything else, and the
 // only real entropy source is /dev/urandom (which is a read, not a write). The tests below
 // assert on what the stubs were asked to do — never on this machine's /etc.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, readdirSync, rmSync,
@@ -20,12 +20,21 @@ import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
 
-/** The six the installer is responsible for. The model PROVIDER key is deliberately NOT here:
+vi.setConfig({ testTimeout: 30_000 });
+
+function markDatabaseBootstrapComplete() {
+  const markerDir = join(prefix, "etc", "lares");
+  mkdirSync(markerDir, { recursive: true });
+  writeFileSync(join(markerDir, "database-bootstrap-complete"), "");
+}
+
+/** The installer-generated secrets. The model PROVIDER key is deliberately NOT here:
  *  it is ASKED for by the wizard, and a generated placeholder would be indistinguishable
  *  from a real key to every check that comes after. */
 const EXPECTED = [
   "console-session-secret", "console-vault-signing-key", "database-password", "eve-route-password",
-  "gateway-key", "gateway-master-key", "token-enc-key",
+  "financial-database-password", "gateway-database-password", "gateway-key", "gateway-master-key",
+  "token-enc-key", "workflow-password", "workflow-provisioner-password",
 ].sort();
 
 let dir: string, binDir: string, prefix: string, log: string, secretsDir: string;
@@ -35,7 +44,7 @@ let keyFile: string, releaseFile: string;
  *  itself is stubbed here (see RENDER_STACK). */
 const RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}` },
+  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}`, creative: `example.invalid/lares-creative@sha256:${"c".repeat(64)}` },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -122,6 +131,7 @@ beforeEach(() => {
   // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "getent", "lares-doctor"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // The only `getent` the installer may run is the DNS lookup for the domain; both
   // seams agree on one address so that check passes. It must never look up a GROUP.
   stub("getent", 'if [ "$1" = "hosts" ]; then echo "203.0.113.10 $2"; else exit 2; fi');
@@ -181,6 +191,7 @@ describe("the secrets the installer generates", () => {
     // See the fixture note on the test above — this needs a full run to succeed too.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
+    markDatabaseBootstrapComplete();
     okRun(run(["--yes"]));
     const asked = readFileSync(log, "utf8").split("\n").filter((l) => l.length > 0);
     expect(asked.filter((l) => l.startsWith("groupadd "))).toEqual([]);
@@ -212,6 +223,7 @@ describe("the secrets the installer generates", () => {
     // See the fixture note above — this needs two full runs to succeed.
     mkdirSync(join(prefix, "opt", "lares"), { recursive: true });
     writeFileSync(join(prefix, "opt", "lares", "compose.yaml"), "services:\n  db: {}\n");
+    markDatabaseBootstrapComplete();
     okRun(run(["--yes"]));
     const before = generatedValues();
     const mtimes = before.map((s) => statSync(join(secretsDir, s.name), { bigint: true }).mtimeNs);

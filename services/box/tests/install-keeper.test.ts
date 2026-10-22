@@ -122,6 +122,7 @@ beforeEach(() => {
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, release());
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   stub("lares-doctor");
   // Only the box's own renderers run for real; migrate and first-owner are logged and skipped.
   stub("pnpm", `case "$*" in *render-stack*|*render-keeper-config*) exec ${REAL_PNPM} "$@" ;; esac\nexit 0`);

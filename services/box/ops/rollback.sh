@@ -113,11 +113,11 @@ if [ -r "$HERE/engine-run.sh" ]; then
   . "$HERE/engine-run.sh"
   if engine_image_mode; then ENGINE_MODE=image; fi
 fi
-PG_USER="${PGUSER:-lares}"
+PG_USER=lares_app
 PG_DATABASE="${PGDATABASE:-lares_state}"
 # The database password is a FILE handed to the container, never a value in argv or the environment.
-SECRETS_DIR="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets"
-DB_ENV=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password"
+DATABASE_PASSWORD_FILE="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets/database-password"
+DB_ENV=(--ro "$DATABASE_PASSWORD_FILE" --env "DATABASE_PASSWORD_FILE=$DATABASE_PASSWORD_FILE"
   --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
   --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
 
@@ -136,9 +136,12 @@ recorder() {
   if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
     "$LARES_UPDATE_RECORDER" "$@"
   elif [ "$ENGINE_MODE" = image ]; then
-    engine_run --ro "$SECRETS_DIR" "${DB_ENV[@]}" bin/update-record.ts "$@"
+    engine_run "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
-    node "$BOX_DIR/bin/update-record.ts" "$@"
+    DATABASE_PASSWORD_FILE="$DATABASE_PASSWORD_FILE" \
+      PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" \
+      PGDATABASE="$PG_DATABASE" PGUSER="$PG_USER" \
+      node "$BOX_DIR/bin/update-record.ts" "$@"
   fi
 }
 

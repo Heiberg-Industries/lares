@@ -10,6 +10,7 @@ lares_require_file() { eval "p=\${$1-}"; [ -n "${p#"${p%%[![:space:]]*}"}" ] || 
 lares_require DATABASE_URL "The role image's own startup guard refuses to start at all, before any request is served."
 lares_require WORKFLOW_POSTGRES_URL "The role image's own startup guard refuses to start; eve has nowhere durable to keep a workflow's state."
 lares_require_file DATABASE_PASSWORD_FILE "The role image's own startup guard refuses to start; it is also what exports PGPASSWORD, so the database connection has no password."
+lares_require_file WORKFLOW_POSTGRES_PASSWORD_FILE "The role image's own startup guard refuses to start; workflow database credentials cannot be loaded from their protected file."
 lares_require GATEWAY_URL "The role image's own startup guard refuses to start; nothing can reach the model gateway to complete a turn."
 lares_require_file GATEWAY_KEY_FILE "The role image's own startup guard refuses to start; the gateway would refuse every request as unauthenticated."
 lares_require LARES_AGENT_NAME "The role image's own startup guard refuses to start; the agent has no identity to load a definition or a mailbox for."

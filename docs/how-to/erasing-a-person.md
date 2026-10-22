@@ -86,6 +86,13 @@ can write to the selected vaults. Do not use `budget.freeze`: that is a permanen
 If another journal writer still owns the lock, erasure refuses before connecting to PostgreSQL
 or reading the person's identity.
 
+When the installation has no prepared financial database binding, a full dry run needs an
+explicit offline operator credential. Mount that one protected file into the one-off command and
+add `--operator-password-file <path inside the container>`. The command checks it is the
+`lares_operator` superuser on the configured engine database. Do not mount the operator file into
+the normal Keeper service. Apply always requires prepared financial custody; the operator login
+does not replace its journal or transaction checks.
+
 The long lines are one command. Add one `-v` and one `--vault` for every vault. The compose file
 provides Keeper's normal configuration and credentials, plus only the selected vault mounts.
 

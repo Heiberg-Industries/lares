@@ -11,7 +11,16 @@ native_admin = name + '-native-admin'
 native_temp = pathlib.Path(tempfile.mkdtemp(prefix='lares-native-provision-proof-'))
 native_fixture = native_temp / 'fixture'
 native_fixture.mkdir(mode=0o700)
+db_fixture = native_temp / 'database-credentials'
+db_fixture.mkdir(mode=0o700)
+application_password = secrets.token_urlsafe(32)
+financial_password = secrets.token_urlsafe(32)
+for filename, value in [('application-password', application_password), ('financial-password', financial_password)]:
+    path = db_fixture / filename
+    path.write_text(value)
+    path.chmod(0o600)
 native_custody = native_temp / 'budget-native'
+managed_databases = []
 tsx = '/app/services/keeper/node_modules/.bin/tsx'
 base = '/app/services/keeper/lib/'
 
@@ -125,6 +134,7 @@ def run_native_provisioning(code):
     container = name + '-native-provision'
     args = ('docker', 'run', '--name', container, '--network', name,
             '--mount', 'type=volume,src=' + volume + ',dst=/proof',
+            '--mount', f'type=bind,src={db_fixture},dst=/db-fixture,readonly',
             '--mount', f'type=bind,src={native_custody},dst=/var/lib/lares/budget-native',
             '--mount', f'type=bind,src={native_fixture},dst=/native-fixture,readonly',
             '-w', '/app/services/keeper', '--entrypoint', tsx, image, '-e', code)
@@ -136,7 +146,7 @@ def run_native_provisioning(code):
         raise RuntimeError('Native provisioning proof returned an unexpected result')
 
 
-def run(code, database='proof'):
+def run(code, database='proof', host='proof-db'):
     prefix = f"""import{{Pool}}from'pg';
 import{{HostFinancialJournal}}from'{base}financial-journal.ts';
 import{{prepareFinancialCustody,verifyFinancialContinuity,observeFinancialDatabase}}from'{base}financial-continuity.ts';
@@ -154,11 +164,48 @@ import{{GatewayBudgetAuthority}}from'{base}gateway-budget.ts';
 import{{GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,verifyGatewaySignature}}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';
 import{{readFileSync,writeFileSync}}from'node:fs';
 import{{createHash,randomUUID}}from'node:crypto';
-const pool=new Pool({{host:'proof-db',database:{json.dumps(database)},user:'proof',password:'disposable-proof-only',max:1,connectionTimeoutMillis:1500}});
+const pool=new Pool({{host:{json.dumps(host)},database:{json.dumps(database)},user:'lares_financial',password:readFileSync('/db-fixture/financial-password','utf8'),max:1,connectionTimeoutMillis:1500}});
 async function main(){{try{{{code}}}finally{{await pool.end();}}}}void main().catch(e=>{{console.error(e);process.exitCode=1;}});"""
     return command('docker', 'run', '--rm', '--network', name, '--mount',
-                   'type=volume,src=' + volume + ',dst=/proof', '-w',
+                   'type=volume,src=' + volume + ',dst=/proof', '--mount',
+                   f'type=bind,src={db_fixture},dst=/db-fixture,readonly', '-w',
                    '/app/services/keeper', '--entrypoint', tsx, image, '-e', prefix).stdout.strip()
+
+
+def setup_managed_cluster(label, host, journal_directory):
+    """Prepare one isolated positive engine database under the production helper contract."""
+    container = name + '-' + label + '-db'
+    managed_databases.append(container)
+    command('docker','run','-d','--name',container,'--network',name,'--network-alias',host,
+        '-e','POSTGRES_USER=proof','-e','POSTGRES_PASSWORD=disposable-proof-only','-e','POSTGRES_DB=proof','pgvector/pgvector:pg16')
+    for _ in range(90):
+        ready_result = command('docker','exec','-e','PGPASSWORD=disposable-proof-only',container,'psql','-h','127.0.0.1','-U','proof','-d','proof','-Atc','SELECT 1',check=False)
+        if ready_result.returncode == 0:
+            break
+        time.sleep(.2)
+    else:
+        raise RuntimeError('Isolated positive PostgreSQL did not become ready')
+    for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
+        command('docker','exec','-i',container,'psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d','proof',input=migration.read_text())
+    privilege_setup = native_temp / f'prepare-{label}-engine-privileges.mts'
+    privilege_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
+        f"const pool=new Pool({{host:{json.dumps(host)},database:'proof',user:'proof',password:'disposable-proof-only',max:1}});try{{const client=await pool.connect();try{{const result=await provisionEngineDatabasePrivileges(client,{{expectedDatabase:'proof',passwords:{{application:readFileSync('/db-fixture/application-password'),financial:readFileSync('/db-fixture/financial-password')}}}});if(!['applied','verified'].includes(result.status))throw Error();}}finally{{client.release();}}console.log('engine-privileges-ready');}}finally{{await pool.end();}}\n")
+    result = command('docker','run','--rm','--network',name,'--mount',f'type=bind,src={db_fixture},dst=/db-fixture,readonly',
+        '--mount',f'type=bind,src={privilege_setup},dst=/app/services/keeper/{privilege_setup.name},readonly',
+        '--workdir','/app/services/keeper','--entrypoint',tsx,image,f'/app/services/keeper/{privilege_setup.name}')
+    if result.stdout.strip() != 'engine-privileges-ready':
+        raise RuntimeError('Isolated positive engine privileges were not prepared')
+    prepared = run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{journal_directory}',db);}}finally{{db.release();}}console.log('prepared');", host=host)
+    if prepared != 'prepared':
+        raise RuntimeError('Isolated positive financial custody was not prepared')
+
+
+def discard_managed_cluster(label):
+    container = name + '-' + label + '-db'
+    command('docker', 'rm', '--force', container, check=False)
+    if container in managed_databases:
+        managed_databases.remove(container)
+
 
 try:
     command('docker', 'network', 'create', '--internal', name)
@@ -170,9 +217,16 @@ try:
     ready()
     for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
         sql(migration.read_text())
+    privilege_setup = native_temp / 'prepare-engine-privileges.mts'
+    privilege_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
+        "const pool=new Pool({host:'proof-db',database:'proof',user:'proof',password:'disposable-proof-only',max:1});try{const client=await pool.connect();try{const result=await provisionEngineDatabasePrivileges(client,{expectedDatabase:'proof',passwords:{application:readFileSync('/db-fixture/application-password'),financial:readFileSync('/db-fixture/financial-password')}});if(!['applied','verified'].includes(result.status))throw Error();}finally{client.release();}console.log('engine-privileges-ready');}finally{await pool.end();}\n")
+    privilege_result = command('docker','run','--rm','--network',name,'--mount',f'type=bind,src={db_fixture},dst=/db-fixture,readonly',
+        '--mount',f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges.mts,readonly',
+        '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges.mts')
+    assert privilege_result.stdout.strip() == 'engine-privileges-ready', 'Production engine database privileges were not prepared'
     # Each scenario uses the real empty migrated schema, not guessed fixture tables.
-    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE provisionproof TEMPLATE proof; CREATE DATABASE gatewayproof TEMPLATE proof; CREATE DATABASE nativeproof TEMPLATE proof; CREATE DATABASE native_litellm;')
-    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash'), ('provisionproof', 'provision'), ('gatewayproof', 'gateway'), ('nativeproof', 'native-provision')]:
+    sql('CREATE DATABASE restoreproof TEMPLATE proof; CREATE DATABASE clusterproof TEMPLATE proof; CREATE DATABASE unknownproof TEMPLATE proof; CREATE DATABASE crashproof TEMPLATE proof; CREATE DATABASE native_litellm;')
+    for database, directory in [('proof', 'restart'), ('restoreproof', 'restore'), ('clusterproof', 'cluster'), ('unknownproof', 'unknown'), ('crashproof', 'crash')]:
         assert run(f"const db=await pool.connect();try{{await prepareFinancialCustody('/proof/{directory}',db);}}finally{{db.release();}}console.log('prepared');", database) == 'prepared'
     # Actual killed prepared writer: no caller explicitly freezes it before death.
     holder = f"import{{HostFinancialJournal}}from'{base}financial-journal.ts';const j=HostFinancialJournal.openExisting('/proof/crash',{{requirePrepared:true}});console.log('locked');setInterval(()=>{{}},1000);"
@@ -189,7 +243,8 @@ try:
     assert run("const records=()=>readFileSync('/proof/crash/journal.jsonl','utf8').trimEnd().split('\\n').map(line=>JSON.parse(line).record);if(records().at(-1).kind!=='writer-open'||records().some(r=>r.kind==='freeze'))throw Error('writer was not abandoned');const j=HostFinancialJournal.openExisting('/proof/crash',{requirePrepared:true});if(records().at(-1).kind!=='freeze')throw Error('abandoned writer was not durably frozen');const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('abandoned writer resumed');console.log('frozen');", 'crashproof') == 'frozen'
     # Real PostgreSQL provisioning at pool max=1 covers closed state, durable projection,
     # exact retries, explicit cap changes and UTC month rollover.
-    sql("INSERT INTO orgs(id,display_name) VALUES('provision-proof-org','Provision proof'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('provision-proof-a','A','provision-proof-org','owner','active'),('provision-proof-b','B','provision-proof-org','member','active'); INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('provision-proof-a','https://identity.example.invalid','subject-a','tenant'),('provision-proof-b','https://identity.example.invalid','subject-b','tenant'); INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('provision-proof-a',25),('provision-proof-b',40);", 'provisionproof')
+    setup_managed_cluster('provision', 'provision-proof-db', 'provision')
+    command('docker','exec','-i',name+'-provision-db','psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d','proof',input="INSERT INTO orgs(id,display_name) VALUES('provision-proof-org','Provision proof'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('provision-proof-a','A','provision-proof-org','owner','active'),('provision-proof-b','B','provision-proof-org','member','active'); INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('provision-proof-a','https://identity.example.invalid','subject-a','tenant'),('provision-proof-b','https://identity.example.invalid','subject-b','tenant'); INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('provision-proof-a',25),('provision-proof-b',40);")
     provision = """const j=HostFinancialJournal.openExisting('/proof/provision',{requirePrepared:true});
 const plan={installationCap:'100',memberIds:['provision-proof-a','provision-proof-b']};
 const first=await provisionBudgetAccounts(pool,j,plan);
@@ -207,7 +262,7 @@ const cliJournal=HostFinancialJournal.openExisting('/proof/provision',{requirePr
 registerAction({name:'budget.provision-accounts',hostOnly:true,input:budgetAccountProvisionPlanSchema,secretFields:['memberIds'],run:input=>provisionBudgetAccounts(pool,cliJournal,input)});
 const stop=await serve({socket:'/run/lares-host/keeper.sock',host:true,context:{actor:'host',audit:async()=>{}}});
 const configPath='/tmp/budget-financial-cli-proof.json';
-writeFileSync(configPath,JSON.stringify({mode:'overlay',project:'proof',dir:'/tmp',files:['config'],agentsDir:'/tmp',retiredDir:'/tmp',secretsDir:'/tmp',rolesDir:'/tmp',templatesDir:'/tmp',backupDir:'/tmp',db:{host:'proof-db',port:5432,database:'provisionproof',user:'proof',passwordFile:'/tmp/disposable-proof-password'},budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+writeFileSync(configPath,JSON.stringify({mode:'overlay',project:'proof',dir:'/tmp',files:['config'],agentsDir:'/tmp',retiredDir:'/tmp',secretsDir:'/tmp',rolesDir:'/tmp',templatesDir:'/tmp',backupDir:'/tmp',db:{host:'provision-proof-db',port:5432,database:'proof',user:'lares_app',passwordFile:'/db-fixture/application-password'},budgetFinancial:{directory:'/var/lib/lares/budget-financial',db:{host:'provision-proof-db',port:5432,database:'proof',user:'lares_financial',passwordFile:'/db-fixture/financial-password'}}}));
 const runCli=async(input)=>{
   const {spawn}=await import('node:child_process');
   const child=spawn('/app/services/keeper/node_modules/.bin/tsx',['/app/services/keeper/bin/budget-financial.ts','provision-accounts','--host',configPath],{stdio:['pipe','pipe','pipe']});
@@ -252,9 +307,11 @@ try{
   if(projection.filter(a=>a.kind==='account').some(a=>typeof a.policyGeneration!=='string'))throw Error('account policy generation missing from durable projection');
 }finally{try{await rolloverJournal.drainForShutdown();}finally{rolloverJournal.close();}}
 console.log(JSON.stringify({fresh:true,exactRetry:true,members:2,policyGeneration:true,sameMonthCapChange:true,actualRootCliHostSocket:true,utcRollover:true}));"""
-    print(run(provision, 'provisionproof'))
+    print(run(provision, host='provision-proof-db'))
+    discard_managed_cluster('provision')
     # Actual signed gateway requests drive admission, grant and settlement through the
     # prepared Keeper journal and the same one-connection PostgreSQL pool.
+    setup_managed_cluster('gateway', 'gateway-proof-db', 'gateway')
     gateway = r"""const journal=HostFinancialJournal.openExisting('/proof/gateway',{requirePrepared:true});
 try{
 const hash=value=>createHash('sha256').update(value).digest('hex'),env={LARES_AGENT_NAME:'helper',LARES_AGENT_INCARNATION:'11111111-1111-4111-8111-111111111111',AGENT_OWNER_USER_ID:'member-a'};
@@ -297,10 +354,12 @@ for(const frame of proposals){for(const atom of frame.record.atoms.filter(value=
 const attempt=(await pool.query('SELECT state,actual_amount FROM budget_attempts WHERE id=$1',[grant.attemptId])).rows[0];if(attempt.state!=='settled'||canonicalBudgetMoney(String(attempt.actual_amount))!=='0.0098')throw Error('gateway source state mismatch');
 console.log('gateway journaled');
 }finally{await journal.drainForShutdown();journal.close();}"""
-    assert run(gateway, 'gatewayproof') == 'gateway journaled'
+    assert run(gateway, host='gateway-proof-db') == 'gateway journaled'
+    discard_managed_cluster('gateway')
     # Exercise the production closed provisioner against real Keeper custody, real engine
     # PostgreSQL/journal, and the exact digest-pinned native LiteLLM admin API. No provider
     # route is configured or called. The one dropped key response follows an actual write.
+    setup_managed_cluster('native', 'native-proof-db', 'native-provision')
     initialize_native_custody()
     start_native_admin()
     native_provision = r"""import{Pool}from'pg';
@@ -315,7 +374,7 @@ import{gatewayCanonical,gatewayHash}from'/app/packages/agent-kit/src/gateway-adm
 import{gatewayMaximumLiability}from'/app/packages/agent-kit/src/gateway-pricing.ts';
 import{readFileSync}from'node:fs';
 import{createHash}from'node:crypto';
-const pool=new Pool({host:'proof-db',database:'nativeproof',user:'proof',password:'disposable-proof-only',max:1,connectionTimeoutMillis:1500});
+const pool=new Pool({host:'native-proof-db',database:'proof',user:'lares_financial',password:readFileSync('/db-fixture/financial-password','utf8'),max:1,connectionTimeoutMillis:1500});
 const owner='native-proof-owner',member='native-proof-member',org='native-proof-org',agent='helper',alias='lares-brain';
 const bindingId='c6c32c7a-4a25-4d25-8b0b-79b83a137440',incarnation='f9c463e1-8e7b-4dd9-b9fa-1f6586631cc1',generation='0';
 const origin='http://native-admin:4000',endpoint={origin,hash:createHash('sha256').update('native-provision-proof-endpoint').digest('hex')};
@@ -406,6 +465,7 @@ async function main(){
 }
 void main();"""
     run_native_provisioning(native_provision)
+    discard_managed_cluster('native')
     # Actual pool max=1: start check, checkpoint and pre-COMMIT check must use the owner.
     clean = """const j=HostFinancialJournal.openExisting('/proof/restart',{requirePrepared:true});
 const db=await pool.connect();try{await verifyFinancialContinuity(j,db);}finally{db.release();}
@@ -439,6 +499,13 @@ await j.drainForShutdown();j.close();console.log('clean');"""
     ready()
     for migration in sorted((repo / 'services/box/sql').glob('[0-9][0-9][0-9]_*.sql')):
         sql(migration.read_text())
+    privilege_setup = native_temp / 'prepare-engine-privileges-fresh.mts'
+    privilege_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
+        "const pool=new Pool({host:'proof-db',database:'proof',user:'proof',password:'disposable-proof-only',max:1});try{const client=await pool.connect();try{const result=await provisionEngineDatabasePrivileges(client,{expectedDatabase:'proof',passwords:{application:readFileSync('/db-fixture/application-password'),financial:readFileSync('/db-fixture/financial-password')}});if(!['applied','verified'].includes(result.status))throw Error();}finally{client.release();}console.log('engine-privileges-ready');}finally{await pool.end();}\n")
+    privilege_result = command('docker','run','--rm','--network',name,'--mount',f'type=bind,src={db_fixture},dst=/db-fixture,readonly',
+        '--mount',f'type=bind,src={privilege_setup},dst=/app/services/keeper/prepare-engine-privileges-fresh.mts,readonly',
+        '--workdir','/app/services/keeper','--entrypoint',tsx,image,'/app/services/keeper/prepare-engine-privileges-fresh.mts')
+    assert privilege_result.stdout.strip() == 'engine-privileges-ready', 'Fresh-cluster engine roles were not prepared'
     sql('CREATE DATABASE clusterproof TEMPLATE proof;')
     assert run("const j=HostFinancialJournal.openExisting('/proof/cluster',{requirePrepared:true});const db=await pool.connect();let denied=false;try{await verifyFinancialContinuity(j,db);}catch{denied=true;}finally{db.release();j.close();}if(!denied)throw Error('fresh cluster resumed');console.log('closed');", 'clusterproof') == 'closed'
     print(json.dumps({'preparedWriterCrashPermanentFreeze': True, 'sameRunningPostgresCleanRestart': True, 'ownedPoolOneContinuity': True,
@@ -451,6 +518,8 @@ finally:
     command('docker', 'rm', '--force', name + '-holder', check=False)
     command('docker', 'rm', '--force', name + '-native-provision', check=False)
     command('docker', 'rm', '--force', name + '-native-custody-init', check=False)
+    for container in managed_databases:
+        command('docker', 'rm', '--force', container, check=False)
     command('docker', 'rm', '--force', native_admin, check=False)
     if native_custody.exists():
         command('docker', 'run', '--rm', '--network', 'none',

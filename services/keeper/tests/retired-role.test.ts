@@ -13,9 +13,9 @@ const base = {
   network: 'n', subnet: '172.18.0.0/24', reservedAddresses: [], composeFile: '/srv/c.yaml', egressDir: '/srv/e',
   imageByRole: { 'chief-of-staff': image, creative: image },
   proxyContainer: 'lares-egress-proxy', squidImage: image, firewallImage: image,
-  adminDb: { host: 'db', port: 5432, user: 'lares', database: 'lares_state', passwordFile: '/secret' },
-  workflowTemplate: 'lares_workflow_template', workflowOwner: 'lares',
-  runtime: { schedulesLive: false, databaseUrl: 'postgres://lares@db/s', workflowServer: 'postgres://lares@db/', gatewayUrl: 'https://gw.example.test', proxyUrl: 'http://proxy:8888', passwordFile: '/p', gatewayKeys: {} },
+  adminDb: { host: 'db', port: 5432, user: 'lares_workflow_provisioner', database: 'postgres', passwordFile: '/secret' },
+  workflowTemplate: 'lares_workflow_template', workflowOwner: 'lares_workflow_owner',
+  runtime: { schedulesLive: false, databaseUrl: 'postgres://lares_app@db/s', workflowServer: 'postgres://lares_workflow@db/', gatewayUrl: 'https://gw.example.test', proxyUrl: 'http://proxy:8888', passwordFile: '/p', workflowPasswordFile:'/workflow-p', gatewayKeys: {} },
   egress: { endpoints: {}, legacyConsumers: [], internalNetworks: [], directDestinations: [], infrastructureHosts: [] },
   installationPrepared: true,
 };

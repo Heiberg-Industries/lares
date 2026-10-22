@@ -164,7 +164,7 @@ remove_scratch() {
     *) echo "restore: not removing '$SCRATCH': it is not under $SCRATCH_ROOT" >&2 ;;
   esac
 }
-cleanup() { local rc=$?; vault_storage_unlock; if [ -n "$VAULT_SNAPSHOT_DB" ];then dc exec -T db dropdb -U "$DB_USER" --if-exists "$VAULT_SNAPSHOT_DB" </dev/null >/dev/null 2>&1 || true;fi; remove_scratch; exit "$rc"; }
+cleanup() { local rc=$?; vault_storage_unlock; if [ -n "$VAULT_SNAPSHOT_DB" ];then db_run dropdb -U "$DB_USER" --if-exists "$VAULT_SNAPSHOT_DB" </dev/null >/dev/null 2>&1 || true;fi; remove_scratch; exit "$rc"; }
 trap cleanup EXIT INT TERM
 
 # --- 1. this must be a finished current-layout install ----------------------------------------
@@ -211,15 +211,48 @@ else
   die "/etc/lares/backup.env names no RESTIC_REPOSITORY, so I do not know where the backups are. Nothing was changed." "$EX_REFUSED"
 fi
 
-# The same overridable names install.sh and the backup scripts read, with the same defaults.
-DB_USER="${PGUSER:-lares}"
+# Restores retain the archived object owners and grants. A short-lived database client
+# authenticates with the explicit offline operator credential kept outside online mounts.
+DB_USER=lares_operator
 DB_NAME="${PGDATABASE:-lares_state}"
+OPERATOR_PASSWORD_FILE="${LARES_OPERATOR_PASSWORD_FILE:-$(P /etc/lares/operator/database-password)}"
+export LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE"
 REQUIRED_PATH="${BACKUP_REQUIRED_PATH:-/var/backups/pg}"
 # Same scratch settings as the monthly restore rehearsal, so one setting serves both.
 SCRATCH_ROOT="${RESTORE_SCRATCH_ROOT:-${DRILL_SCRATCH_ROOT:-/var/tmp}}"
 MIN_FREE_MB="${DRILL_MIN_FREE_MB:-5120}"
 
 dc() { docker compose -f "$COMPOSE_FILE" "$@"; }
+db_run() { operator_db_run -f "$COMPOSE_FILE" -- "$@"; }
+
+[ -f "$OPERATOR_PASSWORD_FILE" ] && [ ! -L "$OPERATOR_PASSWORD_FILE" ] \
+  && [ "$(stat -c '%u:%a' "$OPERATOR_PASSWORD_FILE" 2>/dev/null || true)" = 0:600 ] \
+  || die "the explicit offline operator credential is missing or unsafe. Nothing was changed." "$EX_REFUSED"
+
+# The engine roles are created at install time even when prepared financial custody is not
+# configured. Check both role password files before any restore side effect; the financial role
+# password stays in the protected install secret store and is not a Keeper config binding.
+ENGINE_APP_PASSWORD_FILE=$(python3 - "$KEEPER_JSON" <<'PYAPP'
+import json, sys
+try:
+    config=json.load(open(sys.argv[1]))
+    db=config['db']
+    if not isinstance(db,dict) or set(db)!={'host','port','database','user','passwordFile'} or db['user']!='lares_app':
+        raise ValueError()
+    if not isinstance(db['passwordFile'],str) or not db['passwordFile'].startswith('/'):
+        raise ValueError()
+    print(db['passwordFile'])
+except Exception:
+    raise SystemExit(1)
+PYAPP
+) || die 'Keeper configuration has no explicit application database credential.' "$EX_REFUSED"
+ENGINE_FINANCIAL_PASSWORD_FILE="$(P /etc/lares/secrets/financial-database-password)"
+for credential_file in "$ENGINE_APP_PASSWORD_FILE" "$ENGINE_FINANCIAL_PASSWORD_FILE"; do
+  [ -f "$credential_file" ] && [ ! -L "$credential_file" ] \
+    && [ -s "$credential_file" ] \
+    && [ "$(stat -c '%u:%g:%a' "$credential_file" 2>/dev/null || true)" = 0:10001:440 ] \
+    || die 'An engine role credential file is missing or unsafe. Nothing was changed.' "$EX_REFUSED"
+done
 
 # --- 3. the domain this server was installed with must match the restored one ---------------------
 read_env_value() { # read_env_value <NAME> <file>: the value, unquoted
@@ -237,10 +270,10 @@ if [ -n "$INSTALLED_DOMAIN" ] && [ "$INSTALLED_DOMAIN" != "$RESTORED_DOMAIN" ]; 
 fi
 
 # --- 4. the target must be fresh ------------------------------------------------------------------
-dc exec -T db pg_isready -U "$DB_USER" >/dev/null 2>&1 </dev/null \
+db_run pg_isready -U "$DB_USER" >/dev/null 2>&1 </dev/null \
   || die "the database container is not answering. Start it (docker compose -f /opt/lares/compose.yaml up -d db) or finish install.sh first. Nothing was changed." "$EX_REFUSED"
 
-COUNTS=$(dc exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+COUNTS=$(db_run psql -U "$DB_USER" -d "$DB_NAME" -tAc \
   "SELECT (SELECT count(*) FROM agent_definitions) || ' ' || (SELECT count(*) FROM agent_conversations) || ' ' || (SELECT count(*) FROM conversation_entries)" \
   </dev/null 2>/dev/null | tr -d '\r') || COUNTS=""
 printf '%s' "$COUNTS" | grep -Eq '^[0-9]+ [0-9]+ [0-9]+$' \
@@ -314,7 +347,7 @@ done
 # The snapshot's migration record, read straight out of the dump without touching any database
 # (pg_restore with -f - and no -d never connects). A snapshot written by a NEWER release than
 # this checkout cannot be understood by this checkout.
-LEDGER=$(dc exec -T db pg_restore --data-only --table=schema_migrations -f - < "$DUMP_DIR/$DB_NAME.dump" 2>/dev/null \
+LEDGER=$(db_run pg_restore --data-only --table=schema_migrations -f - < "$DUMP_DIR/$DB_NAME.dump" 2>/dev/null \
   | tr -d '\r' | awk -F'\t' '
       /^COPY .*schema_migrations \(/ {
         cols = $0; sub(/^[^(]*\(/, "", cols); sub(/\).*$/, "", cols)
@@ -352,10 +385,10 @@ if [ -r "$HERE/vault-storage.sh" ];then
   vault_storage_verify "$SCRATCH" "$DB_NAME" verify-files >/dev/null || die 'snapshot Vault Git integrity or local origin pairing failed' "$EX_REFUSED"
   if [ "$VAULT_INCOMING_PRESENT" = 1 ] || [ -r "$OPT_LARES/vault-recovery-engine-image" ];then
     VAULT_SNAPSHOT_DB="drill_vault_restore_$$"
-    dc exec -T db createdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'cannot create the private snapshot verification database' "$EX_REFUSED"
-    dc exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U "$DB_USER" -d "$VAULT_SNAPSHOT_DB" < "$DUMP_DIR/$DB_NAME.dump" || die 'snapshot database could not be verified before restoration' "$EX_REFUSED"
+    db_run createdb -U "$DB_USER" -O lares_operator "$VAULT_SNAPSHOT_DB" </dev/null || die 'cannot create the private snapshot verification database' "$EX_REFUSED"
+    db_run pg_restore --exit-on-error -U "$DB_USER" -d "$VAULT_SNAPSHOT_DB" < "$DUMP_DIR/$DB_NAME.dump" || die 'snapshot database could not be verified before restoration' "$EX_REFUSED"
     vault_storage_verify "$SCRATCH" "$VAULT_SNAPSHOT_DB" verify-snapshot >/dev/null || die 'snapshot Vault metadata, ownership and stored markers disagree' "$EX_REFUSED"
-    dc exec -T db dropdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'snapshot verification database could not be removed' "$EX_REFUSED"
+    db_run dropdb -U "$DB_USER" "$VAULT_SNAPSHOT_DB" </dev/null || die 'snapshot verification database could not be removed' "$EX_REFUSED"
     VAULT_SNAPSHOT_DB=""
   fi
 fi
@@ -369,8 +402,22 @@ import json, os, sys
 try:
     config = json.load(open(sys.argv[1]))
     if 'budgetFinancial' in config:
-        if config['budgetFinancial'] != {'directory': '/var/lib/lares/budget-financial'}:
+        financial = config['budgetFinancial']
+        app = config['db']
+        fields = {'host', 'port', 'database', 'user', 'passwordFile'}
+        if not isinstance(app, dict) or set(app) != fields or app['user'] != 'lares_app':
+            raise ValueError('invalid app database binding')
+        if not isinstance(financial, dict) or set(financial) != {'directory', 'db'} or financial['directory'] != '/var/lib/lares/budget-financial':
             raise ValueError('invalid financial binding')
+        db = financial['db']
+        if not isinstance(db, dict) or set(db) != fields or db['user'] != 'lares_financial':
+            raise ValueError('invalid financial database binding')
+        if any(not isinstance(db[k], str) or not db[k] for k in ('host', 'database')) or not isinstance(db['port'], int) or db['port'] < 1 or db['port'] > 65535:
+            raise ValueError('invalid financial database coordinates')
+        if any(db[k] != app[k] for k in ('host', 'port', 'database')):
+            raise ValueError('financial database must match the engine database')
+        if any(not isinstance(value, str) or not value.startswith('/') for value in (app['passwordFile'], db['passwordFile'])):
+            raise ValueError('invalid database password file')
         if not os.path.isdir(sys.argv[2]) or os.path.islink(sys.argv[2]):
             raise ValueError('prepared custody is missing')
         print('1')
@@ -493,15 +540,29 @@ if [ "$VAULT_TARGET_PRESENT" = 1 ];then
 fi
 
 restore_database() { # restore_database <name> <already-exists: 0|1>
-  local db="$1" existing="$2"
+  local db="$1" existing="$2" owner
   valid_name "$db" || midway "Refused to touch a database named '$db'."
+  case "$db" in
+    lares_state) owner=lares_schema_owner ;;
+    litellm) owner=lares_gateway ;;
+    postgres) owner=postgres ;;
+    lares_[a-f0-9][a-f0-9][a-f0-9][a-f0-9]*)
+      printf '%s' "$db" | grep -Eq '^lares_[a-f0-9]{32}$' || midway "Refused unknown workflow database '$db'."
+      owner=lares_workflow_owner ;;
+    *) midway "Refused database '$db' because its intended owner is unknown." ;;
+  esac
   say "restoring database $db"
   if [ "$existing" = 0 ]; then
-    dc exec -T db dropdb -U "$DB_USER" --if-exists --force "$db" </dev/null || midway "Could not drop database $db."
+    db_run dropdb -U "$DB_USER" --if-exists --force "$db" </dev/null || midway "Could not drop database $db."
     CHANGED="$CHANGED; database $db dropped"
-    dc exec -T db createdb -U "$DB_USER" "$db" </dev/null || midway "Could not create database $db."
+    # Fresh custom-format dumps include database metadata. Let pg_restore create the database
+    # from that archive so its owner, comment and database ACL survive alongside object grants.
+    db_run pg_restore --exit-on-error --create -U "$DB_USER" -d postgres < "$DUMP_DIR/$db.dump" \
+      || midway "pg_restore could not create database $db with its archived ownership and grants."
+    CHANGED="$CHANGED; database $db restored"
+    return 0
   fi
-  dc exec -T db pg_restore --exit-on-error --no-owner --no-privileges -U "$DB_USER" -d "$db" < "$DUMP_DIR/$db.dump" \
+  db_run pg_restore --exit-on-error -U "$DB_USER" -d "$db" < "$DUMP_DIR/$db.dump" \
     || midway "pg_restore of database $db failed."
   CHANGED="$CHANGED; database $db restored"
 }
@@ -509,31 +570,102 @@ for db in "${DUMPS[@]}"; do
   [ "$db" != postgres ] || continue
   restore_database "$db" 0
 done
-# The postgres database always exists and is the one this connects through, so its dump goes
-# into it as it is. The roles file (globals.sql) is not replayed: the installer already made the
-# database role with the escrowed password, and --no-owner keeps every object with it.
+# PostgreSQL roles are recreated by the fresh installer with the fixed role names and safe
+# flags. Object ownership and grants are restored from each database archive; global role
+# passwords stay with this host's explicitly escrowed operator credential.
 for db in "${DUMPS[@]}"; do
   [ "$db" = postgres ] || continue
   restore_database postgres 1
 done
 
 say "applying any newer database changes"
-DB_PASSWORD=$(cat "$ETC_LARES/secrets/database-password")
 code=0
 if [ "$ENGINE_MODE" = image ]; then
-  # The password stays in its file: the secrets folder is mounted read-only and named by
-  # DATABASE_PASSWORD_FILE. Nothing secret is an argument or an environment value.
-  DB_PASSWORD=""
-  engine_run --ro "$ETC_LARES/secrets" --env "DATABASE_PASSWORD_FILE=$ETC_LARES/secrets/database-password" \
+  engine_run --ro "$OPERATOR_PASSWORD_FILE" --env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
+    --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
-    --env "PGDATABASE=$DB_NAME" --env "PGUSER=$DB_USER" migrate.ts || code=$?
+    --env "PGDATABASE=$DB_NAME" --env "PGUSER=$DB_USER" migrate.ts --schema-owner || code=$?
 else
-  PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" \
-    PGPASSWORD="$DB_PASSWORD" pnpm -C "$BOX_DIR" migrate || code=$?
+  LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
+    PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$DB_NAME" PGUSER="$DB_USER" \
+    pnpm -C "$BOX_DIR" migrate -- --schema-owner || code=$?
 fi
-DB_PASSWORD=""
 [ "$code" -eq 0 ] || midway "The database migration did not finish (exit $code)."
 CHANGED="$CHANGED; migrations applied"
+
+if [ "$ENGINE_MODE" = image ]; then
+  engine_run --ro "$OPERATOR_PASSWORD_FILE" --ro "$ENGINE_APP_PASSWORD_FILE" --ro "$ENGINE_FINANCIAL_PASSWORD_FILE" \
+    --env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE" \
+    --env "PGHOST=127.0.0.1" --env "PGPORT=${PGPORT:-5432}" --env "PGDATABASE=lares_state" --env "PGUSER=lares_operator" \
+    bin/database-setup.ts --verify-restored-engine --operator-password-file "$OPERATOR_PASSWORD_FILE" \
+    --app-password-file "$ENGINE_APP_PASSWORD_FILE" --financial-password-file "$ENGINE_FINANCIAL_PASSWORD_FILE" \
+    || midway 'Restored engine ownership or database grants do not match the required role boundary.'
+else
+  LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
+    PGHOST=127.0.0.1 PGPORT="${PGPORT:-5432}" PGDATABASE=lares_state PGUSER=lares_operator \
+    pnpm -C "$BOX_DIR" exec tsx bin/database-setup.ts --verify-restored-engine \
+    --operator-password-file "$OPERATOR_PASSWORD_FILE" --app-password-file "$ENGINE_APP_PASSWORD_FILE" \
+    --financial-password-file "$ENGINE_FINANCIAL_PASSWORD_FILE" \
+    || midway 'Restored engine ownership or database grants do not match the required role boundary.'
+fi
+
+# Prove every restored per-agent database still has its recorded owner marker and the exact
+# restricted runtime ACL before any Keeper or agent service is restarted.
+WORKFLOW_ROWS=$(db_run psql -U "$DB_USER" -d "$DB_NAME" -F $'\t' -Atc \
+  "SELECT a.workflow_database, a.ownership, a.ownership_token, COALESCE(pg_get_userbyid(d.datdba),''), COALESCE(shobj_description(d.oid,'pg_database'),'') FROM agent_resources a LEFT JOIN pg_database d ON d.datname=a.workflow_database WHERE a.workflow_database IS NOT NULL ORDER BY a.workflow_database") \
+  || midway 'Could not verify restored workflow database ownership records.'
+WORKFLOW_PASSWORD_FILE=$(python3 - "$KEEPER_JSON" <<'PYWORKFLOW'
+import json, sys
+try:
+    cfg=json.load(open(sys.argv[1]))
+    value=cfg['lifecycle']['runtime']['workflowPasswordFile']
+    if not isinstance(value,str) or not value.startswith('/'):
+        raise ValueError()
+    print(value)
+except Exception:
+    raise SystemExit(1)
+PYWORKFLOW
+) || midway 'Keeper configuration has no explicit workflow runtime password file.'
+WORKFLOW_DATABASES=()
+while IFS=$'\t' read -r workflow_db ownership token db_owner marker; do
+  [ -n "$workflow_db" ] || continue
+  printf '%s' "$workflow_db" | grep -Eq '^lares_[a-f0-9]{32}$' \
+    || midway "Restored workflow database name '$workflow_db' is unsupported."
+  [ "$ownership" = owned ] && printf '%s' "$token" | grep -Eq '^[0-9a-f-]{36}$' \
+    && [ "$db_owner" = lares_workflow_owner ] && [ "$marker" = "lares-owned:$token" ] \
+    || midway "Workflow database $workflow_db ownership could not be verified."
+  found=0
+  for dumped in "${DUMPS[@]}"; do [ "$dumped" = "$workflow_db" ] && found=1; done
+  [ "$found" = 1 ] || midway "Workflow database $workflow_db has no restored archive."
+  WORKFLOW_DATABASES+=("$workflow_db")
+done <<< "$WORKFLOW_ROWS"
+for dumped in "${DUMPS[@]}"; do
+  case "$dumped" in
+    lares_[a-f0-9][a-f0-9][a-f0-9][a-f0-9]*)
+      printf '%s' "$dumped" | grep -Eq '^lares_[a-f0-9]{32}$' || midway "Restored database '$dumped' has an unsupported name."
+      found=0
+      for known in "${WORKFLOW_DATABASES[@]}"; do [ "$known" = "$dumped" ] && found=1; done
+      [ "$found" = 1 ] || midway "Restored workflow database $dumped has no matching ownership record."
+      ;;
+  esac
+done
+if [ "${#WORKFLOW_DATABASES[@]}" -gt 0 ]; then
+  [ -r "$WORKFLOW_PASSWORD_FILE" ] && [ ! -L "$WORKFLOW_PASSWORD_FILE" ] \
+    || midway 'Workflow runtime credential is missing or unsafe; restored agents remain stopped.'
+  for workflow_db in "${WORKFLOW_DATABASES[@]}"; do
+    if [ "$ENGINE_MODE" = image ]; then
+      engine_run --ro "$WORKFLOW_PASSWORD_FILE" \
+        --env "PGHOST=127.0.0.1" --env "PGPORT=${PGPORT:-5432}" \
+        bin/workflow-template.ts verify-database --host 127.0.0.1 --port "${PGPORT:-5432}" \
+        --database "$workflow_db" --runtime-password-file "$WORKFLOW_PASSWORD_FILE" \
+        || midway "The restricted workflow login could not verify database $workflow_db."
+    else
+      pnpm -C "$BOX_DIR" exec tsx bin/workflow-template.ts verify-database --host 127.0.0.1 --port "${PGPORT:-5432}" \
+        --database "$workflow_db" --runtime-password-file "$WORKFLOW_PASSWORD_FILE" \
+        || midway "The restricted workflow login could not verify database $workflow_db."
+    fi
+  done
+fi
 
 # restic restored these as root, so each file keeps its numeric owner and mode; cp -a keeps them
 # on the way in (the agent containers run as uid 10001 and read these folders by number).

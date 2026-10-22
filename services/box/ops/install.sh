@@ -37,7 +37,9 @@
 #   3. every image it pulls is named by digest (@sha256:...), never by a tag.
 #   4. it never compiles or assembles an image on this box, and never installs dependencies here
 #      except from a lockfile exactly as committed. Images are built in CI and pulled by digest.
-#   5. a secret is written only under the secrets directory ($SECRETS_DIR), through lares_secret
+#   5. online secrets are written under $SECRETS_DIR through lares_secret; the database operator
+#      password is a separate root-only input outside every online mount and is never copied into
+#      the keeper or normal database container.
 #      or capture_model_key, and its value is never echoed anywhere.
 set -euo pipefail
 umask 077
@@ -206,6 +208,10 @@ PREFIX="${PREFIX_ARG:-${LARES_PREFIX:-/}}"
 # as "//etc/...". Strip it: the real root is an empty prefix.
 while [ "${PREFIX%/}" != "$PREFIX" ]; do PREFIX="${PREFIX%/}"; done
 DRY="$DRY_RUN"
+[ "${PGDATABASE:-lares_state}" = "lares_state" ] || die "PGDATABASE must be lares_state for this fixed database-role installation; no override was applied." "$EX_REFUSED"
+[ "${PGUSER:-lares_app}" = "lares_app" ] || die "PGUSER must be lares_app for application-only installer actions; use the explicit offline operator path only for database administration." "$EX_REFUSED"
+[ "${PGHOST:-127.0.0.1}" = "127.0.0.1" ] || die "PGHOST must be 127.0.0.1 because the database publishes only on host loopback." "$EX_REFUSED"
+[ "${PGPORT:-5432}" = "5432" ] || die "PGPORT must be 5432 because the rendered database publishes that fixed host port." "$EX_REFUSED"
 
 # The stack file and the keeper file share one Compose project name (changing it would rename
 # the containers of existing installs), so each file sees the other's services as orphans and
@@ -650,6 +656,8 @@ fi
 LARES_RUNTIME_GID="${LARES_RUNTIME_GID:-10001}"
 [ "$LARES_RUNTIME_GID" = "10001" ] || die "LARES_RUNTIME_GID is '$LARES_RUNTIME_GID', but every shipped runtime image uses gid 10001. Refusing before any secret is written; remove the override." "$EX_REFUSED"
 SECRETS_DIR="$PREFIX/etc/lares/secrets"
+OPERATOR_DIR="$PREFIX/etc/lares/operator"
+OPERATOR_PASSWORD_FILE="$OPERATOR_DIR/database-password"
 
 # Created, permissioned and owned only when it is not already there — an existing secrets
 # directory belongs to a running installation and is not this command's to re-permission.
@@ -739,6 +747,10 @@ say "secrets (files under $SECRETS_DIR, owner 0:$LARES_RUNTIME_GID 0440 — neve
 lares_secret console-session-secret 32 base64url  # writes $SECRETS_DIR/console-session-secret
 lares_secret console-vault-signing-key 32 hex     # writes $SECRETS_DIR/console-vault-signing-key (console/Keeper request capsule key)
 lares_secret database-password      32 base64url  # writes $SECRETS_DIR/database-password
+lares_secret financial-database-password 32 base64url
+lares_secret workflow-provisioner-password 32 base64url
+lares_secret workflow-password 32 base64url
+lares_secret gateway-database-password 32 base64url
 lares_secret eve-route-password     32 base64url  # writes $SECRETS_DIR/eve-route-password
 lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/gateway-key
 # gateway-master-key. The engine renders the gateway service itself (lib/stack-compose.ts) and its
@@ -748,6 +760,62 @@ lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/ga
 # below — see that function for why it, and not the model provider's own key.
 lares_secret gateway-master-key     32 base64url "sk-"  # writes $SECRETS_DIR/gateway-master-key
 lares_secret token-enc-key          32 hex  # writes $SECRETS_DIR/token-enc-key
+
+# The Postgres superuser is an offline operator input, never a member of the online secrets
+# directory or of any directory bind-mounted into Keeper. Existing files are retained, but the
+# database bootstrap helper refuses an already initialized data directory or role state, so this
+# cannot silently adopt an old password.
+ensure_operator_password() {
+  local tmp
+  if ! python3 - "$PREFIX" "$OPERATOR_DIR" "$SECRETS_DIR" "$PREFIX/var/lib/lares" "$PREFIX/srv/lares" <<'PYOPERATOR'
+import os,stat,sys
+prefix,operator,secrets,keeper,agents=map(os.path.abspath,sys.argv[1:])
+def overlaps(a,b):return a==b or a.startswith(b.rstrip(os.sep)+os.sep) or b.startswith(a.rstrip(os.sep)+os.sep)
+operator_real=os.path.realpath(operator)
+if any(overlaps(operator_real,os.path.realpath(online)) for online in (secrets,keeper,agents)):
+ raise SystemExit('offline operator directory overlaps an online secret or data mount')
+prefix_real=os.path.realpath(prefix)
+if not (operator_real==prefix_real or operator_real.startswith(prefix_real.rstrip(os.sep)+os.sep)):
+ raise SystemExit('offline operator directory resolves outside the installation prefix')
+path=operator
+while path!=prefix:
+ if os.path.lexists(path) and stat.S_ISLNK(os.lstat(path).st_mode):
+  raise SystemExit('offline operator directory has a symbolic-link ancestor')
+ parent=os.path.dirname(path)
+ if parent==path or not (path.startswith(prefix.rstrip(os.sep)+os.sep) or prefix==os.sep):
+  raise SystemExit('offline operator directory escaped the installation prefix')
+ path=parent
+PYOPERATOR
+  then
+    die "the offline operator directory is not isolated from online mounts or contains a symbolic-link ancestor." "$EX_REFUSED"
+  fi
+  if [ -e "$OPERATOR_PASSWORD_FILE" ]; then
+    [ -f "$OPERATOR_PASSWORD_FILE" ] && [ ! -L "$OPERATOR_PASSWORD_FILE" ] && [ -s "$OPERATOR_PASSWORD_FILE" ] \
+      || die "the offline database operator credential at $OPERATOR_PASSWORD_FILE is not a non-empty regular file. Inspect it before retrying." "$EX_REFUSED"
+    [ "$(stat -c '%u:%a' "$OPERATOR_PASSWORD_FILE" 2>/dev/null || true)" = "0:600" ] \
+      || die "the offline database operator credential must be owned by root with mode 0600. Fix its permissions before retrying." "$EX_REFUSED"
+    [ -d "$OPERATOR_DIR" ] && [ ! -L "$OPERATOR_DIR" ] && [ "$(stat -c '%u:%a' "$OPERATOR_DIR" 2>/dev/null || true)" = "0:700" ] \
+      || die "the offline database operator directory must be a root-owned 0700 directory." "$EX_REFUSED"
+    return
+  fi
+  [ "$DRY" -eq 1 ] && { say "would create a root-only offline database operator credential at $OPERATOR_PASSWORD_FILE"; return; }
+  [ ! -e "$OPERATOR_DIR" ] && [ ! -L "$OPERATOR_DIR" ] || {
+    [ -d "$OPERATOR_DIR" ] && [ ! -L "$OPERATOR_DIR" ] && [ "$(stat -c '%u:%a' "$OPERATOR_DIR" 2>/dev/null || true)" = "0:700" ] \
+      || die "the offline database operator directory exists with unexpected type, owner or permissions." "$EX_REFUSED"
+  }
+  mkdir -p "$OPERATOR_DIR"
+  [ ! -L "$OPERATOR_DIR" ] || die "the offline database operator directory became a symbolic link before credential creation." "$EX_REFUSED"
+  chmod 0700 "$OPERATOR_DIR"
+  tmp=$(mktemp "$OPERATOR_DIR/.database-password.XXXXXX") || die "the offline operator credential file could not be created safely." "$EX_REFUSED"
+  head -c 32 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=\n' > "$tmp"
+  printf '\n' >> "$tmp"
+  [ "$(wc -c < "$tmp" | tr -d ' ')" = 44 ] || { rm -f "$tmp"; die "the offline operator credential could not be generated safely." "$EX_REFUSED"; }
+  chmod 0600 "$tmp"
+  chown 0:0 "$tmp"
+  ln "$tmp" "$OPERATOR_PASSWORD_FILE" || { rm -f "$tmp"; die "an operator credential appeared while this install was running; inspect it before retrying." "$EX_REFUSED"; }
+  rm -f "$tmp"
+}
+ensure_operator_password
 
 # --- 8. four questions, asked once -----------------------------
 # FOUR THINGS ONLY: the domain, the e-mail address, the name, and a model provider key.
@@ -1153,9 +1221,8 @@ run_stack() {
   local db_data="$PREFIX/var/lib/lares/postgres"
   local taste_dir="$PREFIX/srv/taste"
   # The same overridable names run_database and run_first_owner read, with the same defaults.
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
-  local gateway_db_marker="$PREFIX/etc/lares/gateway-database-created"
-  local domain allowed_emails model_alias provider_model owner_id owner_home_tz tmp tries=0 existing
+  local db_name="${PGDATABASE:-lares_state}"
+  local domain allowed_emails model_alias provider_model owner_id owner_home_tz tmp
 
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
   [ -n "$domain" ] || die "the domain is not written down in $INSTALL_ENV, so the stack cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
@@ -1199,7 +1266,7 @@ run_stack() {
   if ! engine_run "${render_mounts[@]}" bin/render-stack.ts \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_user" "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation"; then
+      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1233,45 +1300,123 @@ run_stack() {
   do_or_say chmod 0644 "$caddyfile"
   say "installed $caddyfile (the domain reaches Caddy through the caddy service's own environment)."
 
-  # LiteLLM's virtual keys live in a separate database so create it
-  # before the gateway starts. Starting db alone is harmless on a re-run; the existence check
-  # makes the database creation itself idempotent. The database name is an engine constant,
-  # never owner input, so it is safe in the fixed SQL below. No password crosses argv or stdin:
-  # psql runs inside the database container over its local socket as the POSTGRES_USER.
   if ! do_or_say docker compose -f "$compose_file" up -d db; then
-    die "the database container did not come up (docker's own message is above). Everything generated so far is left exactly as it is — fix what it named, then run this again." "$EX_REFUSED"
+    die "the normal database service did not start after the temporary bootstrap container was removed." "$EX_REFUSED"
   fi
-  until docker compose -f "$compose_file" exec -T db pg_isready -U "$db_user" >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 30 ]; then
-      die "the database container did not become ready, so the gateway database was not created and the gateway was not started." "$EX_TEMPFAIL"
-    fi
-    sleep 1
+  local tries=0
+  until docker compose -f "$compose_file" exec -T db pg_isready -U lares_operator -d postgres >/dev/null 2>&1; do
+    tries=$((tries + 1)); [ "$tries" -lt 30 ] || die "the normal database service did not become ready after bootstrap removal." "$EX_TEMPFAIL"; sleep 1
   done
-  if [ -f "$gateway_db_marker" ]; then
-    say "gateway database litellm — already created by this installer. Left exactly as it is."
-  else
-    existing=$(docker compose -f "$compose_file" exec -T db \
-      psql -U "$db_user" -d postgres -tAc \
-      "SELECT 1 FROM pg_database WHERE datname = 'litellm'" </dev/null 2>/dev/null \
-      | tr -d '[:space:]') || existing=""
-    if [ "$existing" = "1" ]; then
-      say "gateway database litellm — already there (the stack created it earlier). Left exactly as it is."
-    elif printf 'CREATE DATABASE litellm;\n' \
-        | docker compose -f "$compose_file" exec -T db psql -U "$db_user" -d postgres
-    then
-      say "gateway database litellm — created."
-    else
-      die "could not create the gateway database litellm, so the gateway was not started." "$EX_REFUSED"
-    fi
-    do_or_say mkdir -p "$(dirname "$gateway_db_marker")"
-    do_or_say touch "$gateway_db_marker"
+  local live_container
+  live_container=$(docker compose -f "$compose_file" ps -q db 2>/dev/null) || live_container=""
+  [ -n "$live_container" ] || die "the normal database container has no identity to verify." "$EX_REFUSED"
+  if [ -n "${BOOTSTRAP_DB_CONTAINER_ID:-}" ] && [ "$live_container" = "$BOOTSTRAP_DB_CONTAINER_ID" ]; then
+    die "the normal database service reused its bootstrap container, so the operator password may still be mounted. Nothing else was started." "$EX_REFUSED"
   fi
+  local mounts
+  mounts=$(docker inspect -f '{{range .Mounts}}{{println .Source}}{{end}}' "$live_container" 2>/dev/null) \
+    || die "the normal database container mounts could not be checked; no application service was started." "$EX_REFUSED"
+  if printf '%s\n' "$mounts" | grep -Fqx "$OPERATOR_PASSWORD_FILE"; then
+    die "the normal database container still mounts the offline operator credential. No application service was started." "$EX_REFUSED"
+  fi
+  say "the normal database service is running without the bootstrap container or its operator-secret mount."
+}
 
-  if ! do_or_say docker compose -f "$compose_file" up -d; then
-    die "the stack did not come up (docker's own message is above). Everything generated so far is left exactly as it is — fix what it named, then run this again." "$EX_REFUSED"
+run_online_stack() {
+  local compose_file="$PREFIX/opt/lares/compose.yaml"
+  if ! docker compose -f "$compose_file" up -d console lares-gateway caddy; then
+    die "the online services did not start after the operator-only database steps completed." "$EX_REFUSED"
   fi
-  say "the stack is up: db, console, lares-gateway, caddy."
+  say "the console, gateway and public listener are running; the database remains operator-secret-free."
+}
+
+# The first database container exists only for initialization. Its password is a host file under
+# /etc/lares/operator, outside every online bind mount. A partial first setup has no completion
+# marker and is refused on a rerun: we never infer custody from a role or an existing database.
+BOOTSTRAP_DB_CONTAINER_ID=""
+run_database_bootstrap() {
+  local db_name="${PGDATABASE:-lares_state}" db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
+  local compose_file="$PREFIX/opt/lares/compose.bootstrap.yaml" final_file="$PREFIX/opt/lares/compose.yaml"
+  local db_data="$PREFIX/var/lib/lares/postgres" marker="$PREFIX/etc/lares/database-bootstrap-complete"
+  local old_container role_image
+  local tmp="$compose_file.partial" tries=0
+  [ "$db_name" = "lares_state" ] || die "this database cutover is defined for lares_state. Refusing the PGDATABASE override '$db_name'." "$EX_REFUSED"
+  [ ! -f "$marker" ] || { say "database roles and template — already prepared by this installer."; return; }
+  [ -d "$db_data" ] && [ -n "$(ls -A "$db_data" 2>/dev/null)" ] \
+    && die "the Postgres data directory is not empty but this installer has no completed database-bootstrap record. Inspect it; it will not be adopted." "$EX_REFUSED"
+  [ ! -e "$final_file" ] || die "a normal stack file already exists without a completed database bootstrap. Inspect the installation before retrying." "$EX_REFUSED"
+
+  mkdir -p "$(dirname "$compose_file")" "$(dirname "$db_data")"
+  rm -f "$tmp"
+  if ! engine_run --rw "$(dirname "$compose_file")" --ro "$RELEASE_FILE" bin/render-database-bootstrap.ts \
+      "$RELEASE_FILE" "$tmp" "$OPERATOR_PASSWORD_FILE" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET"; then
+    rm -f "$tmp"
+    die "the database-only bootstrap file could not be rendered." "$EX_REFUSED"
+  fi
+  chmod 0600 "$tmp"
+  mv "$tmp" "$compose_file"
+  docker compose -f "$compose_file" up -d db || die "the database-only bootstrap service did not start." "$EX_REFUSED"
+  until docker compose -f "$compose_file" exec -T db pg_isready -U lares_operator -d postgres >/dev/null 2>&1; do
+    tries=$((tries + 1)); [ "$tries" -lt 30 ] || die "the temporary database bootstrap did not become ready." "$EX_TEMPFAIL"; sleep 1
+  done
+  old_container=$(docker compose -f "$compose_file" ps -q db 2>/dev/null) || old_container=""
+  [ -n "$old_container" ] || die "the bootstrap database container has no identity to verify." "$EX_REFUSED"
+
+  engine_run --ro "$OPERATOR_PASSWORD_FILE" \
+    --ro "$SECRETS_DIR/database-password" --ro "$SECRETS_DIR/financial-database-password" \
+    --ro "$SECRETS_DIR/workflow-provisioner-password" --ro "$SECRETS_DIR/workflow-password" \
+    --ro "$SECRETS_DIR/gateway-database-password" \
+    --env "PGHOST=$db_host" --env "PGPORT=$db_port" \
+    bin/database-setup.ts \
+    --operator-password-file "$OPERATOR_PASSWORD_FILE" \
+    --app-password-file "$SECRETS_DIR/database-password" \
+    --financial-password-file "$SECRETS_DIR/financial-database-password" \
+    --workflow-provisioner-password-file "$SECRETS_DIR/workflow-provisioner-password" \
+    --workflow-password-file "$SECRETS_DIR/workflow-password" \
+    --gateway-password-file "$SECRETS_DIR/gateway-database-password" \
+    || die "database roles or the initial engine baseline could not be prepared. The partial data directory is retained for inspection and will not be adopted on a rerun." "$EX_REFUSED"
+
+  # The workflow template is initialized from the exact creative role image in the release;
+  # passwords are read inside that short-lived container and never put in URL/argv/Compose.
+  role_image=$(python3 - "$RELEASE_FILE" <<'PYIMAGE'
+import json,re,sys
+try:
+ value=json.load(open(sys.argv[1]))['images']['creative']
+except (OSError,ValueError,KeyError,TypeError):raise SystemExit(1)
+if not re.fullmatch(r'[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}',value):raise SystemExit(1)
+print(value)
+PYIMAGE
+  ) || die "the release does not name the creative role image by digest, so the workflow template cannot be prepared." "$EX_REFUSED"
+  docker run --rm --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+    -w /app/services/creative \
+    -v "$SECRETS_DIR/workflow-provisioner-password:/run/secrets/workflow-provisioner:ro" \
+    -e PGPASSWORD_FILE=/run/secrets/workflow-provisioner -e PGOPTIONS='-c role=lares_workflow_owner' \
+    -e "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@${db_host}:${db_port}/empty_workflow" \
+    --entrypoint /bin/sh "$role_image" -ec 'PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; export PGPASSWORD; exec node --input-type=module -e '\''import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); try { const r = await pool.query("SELECT current_user, session_user, current_database()"); if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } finally { await pool.end(); } await setupDatabase();'\'' ' \
+    || die "the pinned workflow package could not prepare its owned template migrations." "$EX_REFUSED"
+
+  engine_run --ro "$SECRETS_DIR/workflow-provisioner-password" --ro "$SECRETS_DIR/workflow-password" \
+    bin/workflow-template.ts apply --host "$db_host" --port "$db_port" \
+    --provisioner-password-file "$SECRETS_DIR/workflow-provisioner-password" \
+    --runtime-password-file "$SECRETS_DIR/workflow-password" \
+    || die "the workflow runtime privileges did not pass their exact post-migration check." "$EX_REFUSED"
+
+  engine_run --ro "$OPERATOR_PASSWORD_FILE" --ro "$SECRETS_DIR/workflow-password" \
+    --env "PGHOST=$db_host" --env "PGPORT=$db_port" \
+    bin/database-setup.ts --finalize-workflow-template \
+    --operator-password-file "$OPERATOR_PASSWORD_FILE" \
+    --workflow-password-file "$SECRETS_DIR/workflow-password" \
+    || die "the empty workflow template did not pass its final ownership, ACL and data checks." "$EX_REFUSED"
+
+  # The bootstrap container was created with the operator password file mounted. Remove it,
+  # then prove Docker no longer has that container before the normal compose starts a new one.
+  docker compose -f "$compose_file" down || die "the temporary database bootstrap container could not be removed." "$EX_REFUSED"
+  docker inspect "$old_container" >/dev/null 2>&1 && die "the bootstrap database container still exists; no normal services were started." "$EX_REFUSED"
+  rm -f "$compose_file"
+  BOOTSTRAP_DB_CONTAINER_ID="$old_container"
+  mkdir -p "$(dirname "$marker")"
+  touch "$marker"
+  say "database roles, engine baseline, workflow template and gateway database are prepared; the bootstrap container has been removed."
 }
 
 # --- 9b. prove the key works, now that the gateway it calls is running ------------------
@@ -1324,7 +1469,7 @@ run_model_check() {
   fi
 }
 
-# --- 10. the database is created and migrated, or the install stops ---------------
+# --- 10. the database is verified under the offline operator, or the install stops ---------
 # THE COMPOSE FILE IS WRITTEN BY run_stack, IMMEDIATELY ABOVE (lib/stack-compose.ts renders the stack). This reads the path from ONE variable and still
 # refuses by name if the file is not there, because "run_stack did not finish" and "somebody
 # moved the file between two runs" are both states this step must stop on rather than create a
@@ -1342,122 +1487,21 @@ run_model_check() {
 # command has run — never an argument. CREATE DATABASE itself goes in on the psql call's
 # STDIN, never `-c` — the same shape ops/backup-verify.sh already uses to talk to this container.
 run_database() {
-  # PGDATABASE / PGUSER / PGHOST / PGPORT are the SAME overridable names ops/update.sh and
-  # lib/db.ts already read, with the same defaults — so this installation's spelling of them
-  # lives in one place; a rename has one list to change, not a new literal here.
   local compose_file="$PREFIX/opt/lares/compose.yaml"
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
-  local db_created_marker="$PREFIX/etc/lares/database-created"
-  local tries=0 code existing
+  local code=0
 
   if [ ! -f "$compose_file" ]; then
-    die "there is no stack file at $compose_file, so no database can be created. The step before this one writes it from the release file — run this again, and if it still says this, what it printed there is the thing to fix. Nothing has been changed." "$EX_REFUSED"
+    die "there is no normal stack file at $compose_file, so the schema-owner migration cannot run." "$EX_REFUSED"
   fi
-
-  do_or_say docker compose -f "$compose_file" up -d db
-
-  until docker compose -f "$compose_file" exec -T db pg_isready -U "$db_user" >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 30 ]; then
-      die "the database container did not become ready. Nothing else was applied." "$EX_REFUSED"
-    fi
-    sleep 1
-  done
-
-  # NO PASSWORD ON THIS CALL, on purpose. `docker compose exec` does not carry the host's
-  # environment into the container, so a PGPASSWORD set here would reach nothing; psql inside
-  # the container talks over its own local socket, which is exactly how ops/restore-drill.sh
-  # already reaches this database. A password only appears below, for the
-  # ONE call that connects from THIS machine.
-  #
-  # ALREADY THERE can also mean the stack's own first start created it: a Postgres image creates
-  # POSTGRES_DB itself at first init, which is exactly what run_stack's `up -d` above just did — so
-  # on a fresh install the container will usually have made it already (empty: the schema comes
-  # from the migration step below, never from the image). Asking is one SELECT;
-  # getting it wrong would refuse a perfectly good installation over a database that exists.
-  if [ -f "$db_created_marker" ]; then
-    say "database $db_name — already there. Left exactly as it is."
-  else
-    existing=$(docker compose -f "$compose_file" exec -T db \
-      psql -U "$db_user" -d postgres -tAc \
-      "SELECT 1 FROM pg_database WHERE datname = '$db_name'" </dev/null 2>/dev/null \
-      | tr -d '[:space:]') || existing=""
-    if [ "$existing" = "1" ]; then
-      say "database $db_name — already there (the stack's own first start created it). Left exactly as it is."
-      do_or_say mkdir -p "$(dirname "$db_created_marker")"
-      do_or_say touch "$db_created_marker"
-    elif printf 'CREATE DATABASE %s;\n' "$db_name" \
-        | docker compose -f "$compose_file" exec -T db psql -U "$db_user" -d postgres
-    then
-      do_or_say mkdir -p "$(dirname "$db_created_marker")"
-      do_or_say touch "$db_created_marker"
-      say "database $db_name — created."
-    else
-      die "could not create the $db_name database. Nothing else was applied." "$EX_REFUSED"
-    fi
-  fi
-
-  # services/box/migrate.ts's own exit codes: 0 nothing left to do · 1 refused (its own message,
-  # already printed to stderr above this call, says what to fix) · 2 dry-run-only, there is work
-  # to do — reachable only if this were ever called with --dry-run, which a real install never
-  # does, but the runner's own contract names it so this still answers it correctly rather than
-  # treating it as a failure.
-  # THE RUNNER'S ENVIRONMENT, and why it has to be given one. migrate.ts connects through
-  # lib/db.ts's poolFromEnv, whose defaults are for a process INSIDE the fleet: host "db" (a
-  # compose service name, which does not resolve on this machine) and the password at
-  # /run/secrets/db_password (a mount that exists only in a fleet container). So this call, like
-  # the other database steps, is given the address as plain settings and the password as a FILE:
-  # the secrets folder is mounted read-only and DATABASE_PASSWORD_FILE names the file in it. The
-  # password is never a value in an argument or in the environment. PGHOST/PGPORT are overridable
-  # above because reaching the database from here means the stack publishes that port — which the
-  # file run_stack renders does, to 127.0.0.1 only (the container shares this host's network).
-  code=0
-  engine_run --ro "$SECRETS_DIR" --env DATABASE_PASSWORD_FILE="$SECRETS_DIR/database-password" \
-    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER="$db_user" \
-    migrate.ts || code=$?
-  if [ "$code" -eq 0 ]; then
-    say "database migrations applied through the runner."
-  else
-    if [ "$code" -eq 2 ]; then
-      say "migrations: there is work to do (a dry run reported it; nothing was applied)."
-    else
-      die "the database migration runner refused. Nothing else was applied." "$EX_REFUSED"
-    fi
-  fi
-}
-
-# Keeper clones this empty database for each agent. The committed world-postgres
-# schema is shared by the role images; its DDL body is identical in creative and
-# chief-of-staff. An interrupted first run may leave the database without the
-# marker, so the schema is applied transactionally on the next run.
-run_workflow_template() {
-  local compose_file="$PREFIX/opt/lares/compose.yaml"
-  local marker="$PREFIX/etc/lares/workflow-template-created"
-  local schema="$BOX_DIR/../creative/sql/001-eve-workflow.sql"
-  local db_user="${PGUSER:-lares}" existing
-
-  [ -r "$schema" ] || die "the workflow template schema is missing at $schema. No agent can be started." "$EX_REFUSED"
-  if [ -f "$marker" ]; then
-    say "workflow template empty_workflow — already prepared. Left exactly as it is."
-    return
-  fi
-  existing=$(docker compose -f "$compose_file" exec -T db \
-    psql -U "$db_user" -d postgres -tAc \
-    "SELECT 1 FROM pg_database WHERE datname = 'empty_workflow'" </dev/null 2>/dev/null \
-    | tr -d '[:space:]') || existing=""
-  if [ "$existing" != "1" ]; then
-    if ! printf 'CREATE DATABASE empty_workflow;\n' \
-      | docker compose -f "$compose_file" exec -T db psql -v ON_ERROR_STOP=1 -U "$db_user" -d postgres; then
-      die "could not create the empty_workflow database. No agent has been started." "$EX_REFUSED"
-    fi
-  fi
-  if ! docker compose -f "$compose_file" exec -T db \
-      psql -v ON_ERROR_STOP=1 --single-transaction -U "$db_user" -d empty_workflow -f - < "$schema"; then
-    die "could not prepare the empty_workflow schema. The database remains for a safe retry; no agent has been started." "$EX_REFUSED"
-  fi
-  do_or_say touch "$marker"
-  say "workflow template empty_workflow — prepared for first-agent databases."
+  [ "$db_name" = "lares_state" ] || die "this database cutover is defined for lares_state. Refusing the PGDATABASE override '$db_name'." "$EX_REFUSED"
+  engine_run --ro "$OPERATOR_PASSWORD_FILE" --env DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
+    --env LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
+    --env PGHOST="$db_host" --env PGPORT="$db_port" --env PGDATABASE="$db_name" --env PGUSER=lares_operator \
+    migrate.ts --schema-owner || code=$?
+  [ "$code" -eq 0 ] || die "schema-owner migrations refused. The operator credential and database identity must be inspected before retrying." "$EX_REFUSED"
+  say "the database migration runner completed under lares_schema_owner using the explicit offline operator."
 }
 
 # --- 10b. the first-agent screen's installation settings ----------------------------------
@@ -1466,7 +1510,7 @@ run_workflow_template() {
 # tested path needs exactly one first agent, so initialize missing values to `lares` and 1.
 # Repair runs preserve every existing value; this is an initializer, not a settings reset.
 run_installation_settings() {
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local code
 
@@ -1520,7 +1564,7 @@ run_first_owner() {
 
   # THE SAME PG ENVIRONMENT run_database's migrate call is given, read the same way — see that
   # function's own comment on why each of these is what it is.
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local code
   code=0
@@ -1541,7 +1585,7 @@ run_first_owner() {
 # configured domain before the keeper starts. The command is transactional and refuses to
 # adopt or change an existing organisation on a repair run.
 run_first_organisation() {
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
   local db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local domain owner_email code=0
   domain=$(read_setting LARES_DOMAIN "$INSTALL_ENV")
@@ -1559,7 +1603,7 @@ run_first_organisation() {
 # are refreshed first; incomplete storage stops installation before the keeper can start.
 run_vault_storage() {
   local prefix="${PREFIX%/}" install_dir="$PREFIX/srv/lares/installation" plan verified roots
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
   local -a envs=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password" --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" --env "PGDATABASE=$db_name" --env "PGUSER=$db_user")
   if [ "$DRY" = 1 ]; then say 'would refresh recovery tooling, validate the current owner and initialize explicit private/shared stores; runtime Vault tools remain disabled';return 0;fi
   roots=$(python3 - "$PREFIX" <<'PYVAULT'
@@ -1652,7 +1696,7 @@ run_keeper() {
   local vault_ready=""
   local vault_mounts=""
   local -a compose_cmd
-  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares}"
+  local db_name="${PGDATABASE:-lares_state}" db_user="${PGUSER:-lares_app}"
   local gateway_url tmp env_tmp before_sum="" after_sum="" keeper_running=""
 
   [ -n "$OWNER_ID" ] || die "the keeper cannot be configured before the owner exists: every first-agent role default is bound to the owner's id, and nothing has set one. Fix: in the dispatch block at the foot of this script, run_keeper goes after run_first_owner. Nothing has been brought up, and nothing already written has been changed." "$EX_REFUSED"
@@ -1709,7 +1753,7 @@ run_keeper() {
       "$LARES_PROJECT" "$root" "$agents_dir" "$retired_dir" "$backup_dir" "$egress_dir" \
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
-      "$db_user" "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
+      "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
       "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")"; then
     rm -f "$tmp" "$env_tmp"
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
@@ -1848,10 +1892,11 @@ else
   # tests/install-keeper.test.ts pin those orderings against the stub log rather than against
   # this comment.
   run_wizard        # the four questions ONLY — no outside call
+  run_database_bootstrap
   run_stack
-  run_model_check
   run_database
-  run_workflow_template
+  run_online_stack
+  run_model_check
   run_installation_settings
   run_first_owner
   run_first_organisation

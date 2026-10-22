@@ -35,14 +35,14 @@ const COMMITTED_CADDYFILE = join(here, "..", "ops", "Caddyfile");
 const COMMITTED_GATEWAY_START = join(here, "..", "..", "..", "images", "gateway-runtime", "start.sh");
 
 /** The pnpm this machine has, by absolute path — see the `pnpm` stub below. */
-const REAL_PNPM = execFileSync("/bin/sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).trim();
+const REAL_NODE = execFileSync("/bin/sh", ["-c", "command -v node"], { encoding: "utf8" }).trim();
 
 const D = (n: string) => `example.invalid/lares-${n}@sha256:${"a".repeat(64)}`;
 
 /** A release this installer can actually bring up: every service the stack file needs. */
 const GOOD_RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: D("db"), console: D("console"), "lares-gateway": D("gateway"), caddy: D("caddy") },
+  images: { db: D("db"), console: D("console"), "lares-gateway": D("gateway"), caddy: D("caddy"), creative: D("creative"), "lares-keeper": D("keeper"), "lares-egress-proxy": D("proxy"), "lares-firewall-helper": D("firewall"), "chief-of-staff": D("chief-of-staff") },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -103,9 +103,10 @@ beforeEach(() => {
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, GOOD_RELEASE);
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // The installer pipes SQL to this command. Consume stdin so Bash pipefail
   // does not race the stub's exit while the writer is still sending the query.
-  stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
+  stub("docker", 'case "$*" in *"ps -q db"*) case "$*" in *compose.bootstrap*) echo bootstrap-container ;; *) echo normal-container ;; esac ;; *"inspect -f"*) exit 0 ;; *"inspect bootstrap-container"*) exit 1 ;; *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');
   stub("lares-doctor");
   // `pnpm` reaches three of the box's own commands from this script: render-stack,
   // migrate and first-owner. Only the first is what this file is about, and only it runs for
@@ -114,7 +115,7 @@ beforeEach(() => {
   // A fourth is run_keeper's `render-keeper-config` at the end of the install. This
   // file is about the stack, so that one gets a placeholder pair of files, not the real
   // renderer — tests/install-keeper.test.ts is where THAT one runs for real.
-  stub("pnpm", `case "$*" in *render-keeper-config*) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; *render-stack*) exec ${REAL_PNPM} "$@" ;; esac\nexit 0`);
+  stub("pnpm", `case "$*" in *render-keeper-config*) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; *render-database-bootstrap*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-database-bootstrap.ts")}" "\${@:4}" ;; *render-stack*) exec ${REAL_NODE} --import tsx/esm "${join(here, "..", "bin", "render-stack.ts")}" "\${@:4}" ;; esac\nexit 0`);
   stub("id", "echo 0");                                   // running as root
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
@@ -149,7 +150,7 @@ describe("the release file the installer was given", () => {
     writeFileSync(releaseFile, JSON.stringify({
       release: "2026-10-01",
       images: { db: D("db"), console: "example.invalid/lares-console:latest",
-        "lares-gateway": D("gateway"), caddy: D("caddy") },
+        "lares-gateway": D("gateway"), caddy: D("caddy"), creative: D("creative"), "lares-keeper": D("keeper"), "lares-egress-proxy": D("proxy"), "lares-firewall-helper": D("firewall"), "chief-of-staff": D("chief-of-staff") },
       migrations: { box: "001_baseline.sql" },
       breaking: [],
     }));
@@ -163,7 +164,7 @@ describe("the release file the installer was given", () => {
   it("refuses by name when the release names no image for a service the stack needs", () => {
     writeFileSync(releaseFile, JSON.stringify({
       release: "2026-10-01",
-      images: { db: D("db"), "lares-gateway": D("gateway"), caddy: D("caddy") },
+      images: { db: D("db"), "lares-gateway": D("gateway"), caddy: D("caddy"), creative: D("creative"), "lares-keeper": D("keeper"), "lares-egress-proxy": D("proxy"), "lares-firewall-helper": D("firewall"), "chief-of-staff": D("chief-of-staff") },
       migrations: { box: "001_baseline.sql" },
       breaking: [],
     }));
@@ -256,9 +257,11 @@ describe("the stack the installer brings up", () => {
     expect(mode, `the installed start script is mode ${mode.toString(8)}, not 0755`).toBe(0o755);
   });
 
-  it("brings the whole stack up, not only the database", () => {
+  it("starts the online stack only after the database-only bootstrap", () => {
     okRun(run(["--release", releaseFile]));
-    expect(calls()).toMatch(/docker compose -f \S+compose\.yaml up -d\s*$/m);
+    const callsLog = calls();
+    expect(callsLog).toMatch(/docker compose -f \S+compose\.yaml up -d console lares-gateway caddy/);
+    expect(callsLog.indexOf("compose.bootstrap.yaml down")).toBeLessThan(callsLog.indexOf("compose.yaml up -d console"));
   });
 
   // Regression guard: nothing ever wrote the file the compose file mounts

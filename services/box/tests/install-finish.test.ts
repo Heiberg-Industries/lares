@@ -21,7 +21,7 @@ let dir: string, binDir: string, prefix: string, log: string, releaseFile: strin
 
 const RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}` },
+  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}`, creative: `example.invalid/lares-creative@sha256:${"c".repeat(64)}` },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -76,6 +76,7 @@ beforeEach(() => {
     "docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl",
     "node", "pnpm", "openssl", "lares-doctor", "sleep",
   ]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // CREATE DATABASE is piped into docker. Drain that tiny SQL input before exiting, as a real
   // psql does, so the writer cannot hit a closed pipe and trip the installer's pipefail.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');

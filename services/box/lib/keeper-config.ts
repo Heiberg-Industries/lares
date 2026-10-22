@@ -18,6 +18,7 @@
 import { join } from "node:path";
 import { imageFor, type ReleaseManifest } from "./release-manifest.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
+import { ENGINE_DATABASE_ROLES } from "./database-privileges.js";
 import { DEADLINE_CALENDAR_IN_CONTAINER } from "./stack-compose.js";
 
 /** The agents' own compose file, the one the keeper WRITES. Its name is fixed here because two
@@ -43,6 +44,11 @@ const PROXY_URL = `http://${PROXY_CONTAINER}:8888`;
  *  it. */
 const DB_HOST = "db";
 const DB_PORT = 5432;
+const APP_DATABASE_ROLE = ENGINE_DATABASE_ROLES.application;
+const FINANCIAL_DATABASE_ROLE = ENGINE_DATABASE_ROLES.financial;
+const WORKFLOW_PROVISIONER_ROLE = "lares_workflow_provisioner";
+const WORKFLOW_OWNER_ROLE = "lares_workflow_owner";
+const WORKFLOW_RUNTIME_ROLE = "lares_workflow";
 
 export interface KeeperConfigOptions {
   /** Compose project name for the agents the keeper owns (`docker compose --project-name`). */
@@ -64,7 +70,6 @@ export interface KeeperConfigOptions {
   readonly egressDir: string;
   /** `$PREFIX/etc/lares/secrets` — where `install.sh` generated this installation's secrets. */
   readonly secretsDir: string;
-  readonly pgUser: string;
   readonly pgDatabase: string;
   /** GATEWAY_URL, e.g. the gateway's compose service name on the fleet's own network. */
   readonly gatewayUrl: string;
@@ -94,20 +99,37 @@ export function renderKeeperConfig(
   opts: KeeperConfigOptions,
 ): KeeperConfig {
   const passwordFile = join(opts.secretsDir, "database-password");
+  const workflowPasswordFile = join(opts.secretsDir, "workflow-password");
+  const workflowProvisionerPasswordFile = join(opts.secretsDir, "workflow-provisioner-password");
+  const financialPasswordFile = join(opts.secretsDir, "financial-database-password");
   const managedSecretsDir = join(opts.dir, "secrets");
   const db = {
     host: DB_HOST,
     port: DB_PORT,
     database: opts.pgDatabase,
-    user: opts.pgUser,
+    user: APP_DATABASE_ROLE,
     passwordFile,
   };
+  const financialDb = { ...db, user: FINANCIAL_DATABASE_ROLE, passwordFile: financialPasswordFile };
+  if (opts.previousBudgetFinancial) {
+    const previousDb = opts.previousBudgetFinancial.db;
+    if (opts.previousBudgetFinancial.directory !== "/var/lib/lares/budget-financial" ||
+      previousDb.host !== financialDb.host || previousDb.port !== financialDb.port ||
+      previousDb.database !== financialDb.database || previousDb.user !== financialDb.user ||
+      previousDb.passwordFile !== financialDb.passwordFile)
+      throw new Error("Existing financial custody does not use the explicit financial database credential; operator recovery is required.");
+  }
 
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
     designatedOwnerId: opts.ownerId,
-    ...(opts.previousBudgetFinancial?{budgetFinancial:opts.previousBudgetFinancial}:{}),
+    ...(opts.previousBudgetFinancial ? {
+      budgetFinancial: {
+        directory: opts.previousBudgetFinancial.directory,
+        db: financialDb,
+      },
+    } : {}),
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.
     vaultConsoleSigningKeyFile: join(opts.secretsDir, "console-vault-signing-key"),
@@ -146,21 +168,22 @@ export function renderKeeperConfig(
       proxyContainer: PROXY_CONTAINER,
       squidImage: imageFor(manifest, "lares-egress-proxy"),
       firewallImage: imageFor(manifest, "lares-firewall-helper"),
-      adminDb: db,
+      adminDb: { ...db, database: "postgres", user: WORKFLOW_PROVISIONER_ROLE, passwordFile: workflowProvisionerPasswordFile },
       workflowTemplate: "empty_workflow",
-      workflowOwner: opts.pgUser,
+      workflowOwner: WORKFLOW_OWNER_ROLE,
       runtime: {
         // Installation-only master switch. ON by default: the create-agent
         // review page lists the schedules an agent will run, and the owner approves that list
         // there. An installer re-run keeps whatever an earlier keeper.json said.
         schedulesLive: opts.previousSchedulesLive ?? true,
-        databaseUrl: `postgres://${opts.pgUser}@${DB_HOST}:${DB_PORT}/${opts.pgDatabase}`,
+        databaseUrl: `postgres://${APP_DATABASE_ROLE}@${DB_HOST}:${DB_PORT}/${opts.pgDatabase}`,
         // Per-agent workflow databases hang off this server URL: `lifecycle.ts` sets the
         // pathname itself, one database per agent, so this one carries none.
-        workflowServer: `postgres://${opts.pgUser}@${DB_HOST}:${DB_PORT}/`,
+        workflowServer: `postgres://${WORKFLOW_RUNTIME_ROLE}@${DB_HOST}:${DB_PORT}/`,
         gatewayUrl: opts.gatewayUrl,
         proxyUrl: PROXY_URL,
         passwordFile,
+        workflowPasswordFile,
         // Exact entries remain the compatibility seam for external/existing installations.
         // Fresh on-box installs let the keeper persist and register one budgeted key per agent.
         gatewayKeys: {},

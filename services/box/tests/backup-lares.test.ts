@@ -8,7 +8,8 @@ const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(d=>rmSync(d,{recursive:true,force:true})));
 function fixture(encrypted:boolean){
  const root=mkdtempSync(join(tmpdir(),'lares-backup-'));roots.push(root);
- for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/lares/budget-native','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
+ for(const p of ['bin','etc/agent-box','etc/lares/secrets','etc/lares/operator','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/lares/budget-native','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
+ writeFileSync(join(root,'etc/lares/operator/database-password'),'fixture-operator-password-value-0001',{mode:0o600});
  writeFileSync(join(root,'opt/agent-box/.env'),'OLD_TEST_SECRET=old-secret');
  writeFileSync(join(root,'opt/lares/compose.yaml'),'services: {}\n');
  writeFileSync(join(root,'srv/lares/compose.lares-agents.yaml'),'services: {}\n');
@@ -25,7 +26,9 @@ function fixture(encrypted:boolean){
  writeFileSync(join(root,'bin/docker'),`#!/usr/bin/env python3
 import sys,os
 a=sys.argv
-if 'volume' in a:
+if 'config' in a and '--format' in a:
+ print('{"services":{"db":{"image":"postgres:16"}}}')
+elif 'volume' in a:
  if os.environ.get('MISSING_WORKFLOW'): sys.exit(1)
  print(os.environ['FIXTURE_ROOT']+'/var/lib/docker/volumes/fixture_workflow/_data')
 elif 'psql' in a:
@@ -36,6 +39,9 @@ elif 'pg_dumpall' in a: print('-- fixture roles')
 `,{mode:0o755});
  writeFileSync(join(root,'bin/stat'),`#!/usr/bin/env python3
 import os,sys
+if '-c' in sys.argv:
+ print(os.stat(sys.argv[-1]).st_size if sys.argv[sys.argv.index('-c')+1]=='%s' else '0:600')
+ sys.exit(0)
 print(os.stat(sys.argv[-1]).st_size)
 `,{mode:0o755});
  writeFileSync(join(root,'bin/restic'),`#!/usr/bin/env python3
@@ -48,10 +54,11 @@ shutil.copytree(r/'var/backups/pg',r/'captured-dumps')
  // Relocate only filesystem roots into this disposable fixture. The actual dump,
  // path selection, encryption pipeline, restic invocation and failure gates run.
  let script=readFileSync(resolve('ops/backup.sh'),'utf8');
+ writeFileSync(join(root,'engine-run.sh'),readFileSync(resolve('ops/engine-run.sh')));
  for(const prefix of ['/etc/','/opt/','/srv/','/var/backups/','/var/lib/docker/'])script=script.replaceAll(prefix,root+prefix);
  script=script.replace('tar -C / -cf -',`tar -C '${root}' -cf -`);
  const file=join(root,'backup.sh');writeFileSync(file,script);
- return {root,key,file,env:{...process.env,PATH:join(root,'bin')+':'+process.env.PATH,AGENT_BOX_BACKUP_ENV:envFile,FIXTURE_ROOT:root}};
+ return {root,key,file,env:{...process.env,PATH:join(root,'bin')+':'+process.env.PATH,AGENT_BOX_BACKUP_ENV:envFile,FIXTURE_ROOT:root,LARES_OPERATOR_PASSWORD_FILE:join(root,'etc/lares/operator/database-password')}};
 }
 it('backs up Lares definitions and encrypts new keeper configuration/secrets with the existing escrow key',()=>{
  const f=fixture(true);execFileSync('bash',[f.file],{env:f.env,stdio:'pipe'});

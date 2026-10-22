@@ -141,10 +141,10 @@ vault_storage_verify() { # prefix, database, mode: verify|verify-files|verify-em
   for path in "${VAULT_STORAGE_REPOSITORIES[@]}"; do mounts+=(--ro "$path"); done
   # Bare paths are a fixed inventory, not discovered from arbitrary directories.
   if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then for path in "$prefix"/var/lib/lares-vault-git/*.git; do mounts+=(--ro "$path"); done;fi
-  local secrets="${LARES_PREFIX:-}/etc/lares/secrets"
-  if [ "$mode" != verify-files ]; then mounts+=(--ro "$secrets" --env "DATABASE_PASSWORD_FILE=$secrets/database-password"); fi
+  local database_password_file="${LARES_PREFIX:-}/etc/lares/secrets/database-password"
+  if [ "$mode" != verify-files ]; then mounts+=(--ro "$database_password_file" --env "DATABASE_PASSWORD_FILE=$database_password_file"); fi
   engine_run "${mounts[@]}" --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
-    --env "PGUSER=${PGUSER:-lares}" --env "PGDATABASE=$database" bin/vault-storage.ts "$mode" --prefix "$prefix"
+    --env "PGUSER=lares_app" --env "PGDATABASE=$database" bin/vault-storage.ts "$mode" --prefix "$prefix"
 }
 
 # Root publishes a plan before creating only its new fixed-layout directories. Existing

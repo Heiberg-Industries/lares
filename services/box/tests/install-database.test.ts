@@ -28,7 +28,17 @@ let dir: string, binDir: string, prefix: string, log: string, composeFile: strin
  *  itself is stubbed here (see RENDER_STACK). */
 const RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}` },
+  images: {
+    db: `example.invalid/lares-db@sha256:${"a".repeat(64)}`,
+    creative: `example.invalid/lares-creative@sha256:${"b".repeat(64)}`,
+    console: `example.invalid/lares-console@sha256:${"c".repeat(64)}`,
+    "lares-gateway": `example.invalid/lares-gateway@sha256:${"d".repeat(64)}`,
+    caddy: `example.invalid/caddy@sha256:${"e".repeat(64)}`,
+    "lares-keeper": `example.invalid/lares-keeper@sha256:${"f".repeat(64)}`,
+    "lares-egress-proxy": `example.invalid/lares-egress-proxy@sha256:${"1".repeat(64)}`,
+    "lares-firewall-helper": `example.invalid/lares-firewall-helper@sha256:${"2".repeat(64)}`,
+    "chief-of-staff": `example.invalid/chief-of-staff@sha256:${"3".repeat(64)}`,
+  },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -40,7 +50,7 @@ const RELEASE = JSON.stringify({
  *  call over and gets no prelude. The same prelude answers run_keeper's
  *  `render-keeper-config` call at the end, for the same reason.
  *  tests/install-stack.test.ts is where the real renderer runs. */
-const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac`;
+const RENDER_STACK = `case "$3" in render-stack) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-database-bootstrap) printf 'services:\\n  db: {}\\n' > "$5"; exit 0 ;; render-keeper-config) printf '{}\\n' > "$5"; printf 'LARES_KEEPER_IMAGE=placeholder\\n' > "$6"; exit 0 ;; esac`;
 
 /** A stub that logs its own name and argv, and exits 0 unless `body` says otherwise. */
 function stub(name: string, body = "exit 0") {
@@ -82,13 +92,14 @@ beforeEach(() => {
   prefix = join(dir, "root"); mkdirSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   for (const name of ["systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "openssl"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // `docker` also logs whatever was piped to its stdin, but ONLY for the one invocation that
   // ever receives anything there (`exec ... psql`, matched by argv containing "psql"): every
   // other docker call here (compose version, up -d db, pg_isready) inherits the SAME stdin this
   // whole script's four questions are still going to read from, and must never drain it. CREATE
   // DATABASE travels to psql on stdin, never as an argument — that is where a password would
   // leak — so a test can only see it this way, exactly the shape ops/backup-verify.sh uses.
-  stub("docker", 'case "$*" in *psql*) cat >> "$STUB_LOG" 2>/dev/null ;; esac; exit 0');
+  stub("docker", 'case "$*" in *"ps -q db"*) case "$*" in *compose.bootstrap*) echo bootstrap-container ;; *) echo normal-container ;; esac ;; *"inspect -f"*) exit 0 ;; *"inspect bootstrap-container"*) exit 1 ;; *psql*) cat >> "$STUB_LOG" 2>/dev/null ;; esac; exit 0');
   stub("pnpm");
   // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
@@ -112,38 +123,34 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("the database the installer creates", () => {
-  it("creates the database, then applies every migration through the runner", () => {
+  it("prepares roles and workflow template offline before starting online services", () => {
     stub("pnpm", 'printf "%s %s\\n" "pnpm" "$*" >> "$STUB_LOG"; exit 0');
     okRun(runWithStdin([], answers));
     const calls = readFileSync(log, "utf8");
-    expect(calls).toMatch(/docker .*compose .*up -d .*db/);
-    expect(calls).toContain("CREATE DATABASE litellm;");
-    expect(calls.indexOf("CREATE DATABASE")).toBeGreaterThan(-1);
-    const wholeStack = calls.search(/docker compose -f \S+compose\.yaml up -d\s*$/m);
-    expect(wholeStack, "the whole stack never started").toBeGreaterThan(-1);
-    expect(
-      calls.indexOf("CREATE DATABASE litellm;"),
-      "LiteLLM started before the database its virtual keys need existed",
-    ).toBeLessThan(wholeStack);
-    // install.sh reaches the runner through $BOX_DIR (resolved from where install.sh itself lives,
-    // per the HERE/BOX_DIR convention — never a hardcoded relative "services/box", which would only work
-    // if this script's cwd happened to be the repo root), so the logged argv carries `services/box`
-    // as the tail of an absolute path rather than as the whole `-C` value.
-    expect(calls).toMatch(/pnpm -C .*services\/box migrate/);
+    expect(calls).toMatch(/docker .*compose .*compose\.bootstrap\.yaml up -d db/);
+    expect(calls).toContain("bin/database-setup.ts");
+    expect(calls).toContain("bin/workflow-template.ts apply");
+    expect(calls).toContain("setupDatabase()");
+    expect(calls).not.toContain("001-eve-workflow.sql");
+    expect(calls).not.toContain("CREATE SCHEMA IF NOT EXISTS workflow;");
+    const bootstrapDown = calls.indexOf("compose.bootstrap.yaml down");
+    const normalDatabase = calls.indexOf("compose.yaml up -d db");
+    expect(bootstrapDown, "the operator-secret bootstrap container was not removed").toBeGreaterThan(-1);
+    expect(normalDatabase, "the normal database did not start after bootstrap removal").toBeGreaterThan(bootstrapDown);
+    expect(calls).toMatch(/pnpm -C .*database-setup/);
+    expect(calls).toMatch(/pnpm -C .*migrate --schema-owner/);
+    expect(calls).toContain("PGUSER=lares_operator");
+    expect(calls).toMatch(/docker compose -f .*compose\.yaml up -d console lares-gateway caddy/);
     expect(calls).toMatch(/pnpm -C .*services\/box installation-settings/);
-    // The runner runs AFTER the database exists, never before.
-    expect(calls.indexOf("CREATE DATABASE lares_state;")).toBeLessThan(calls.indexOf("migrate"));
-    expect(calls).toContain("CREATE DATABASE empty_workflow;");
-    expect(calls).toContain("CREATE SCHEMA IF NOT EXISTS workflow;");
-    expect(calls.indexOf("CREATE DATABASE empty_workflow;")).toBeLessThan(calls.indexOf("render-keeper-config"));
-    expect(calls.indexOf("migrate")).toBeLessThan(calls.indexOf("installation-settings"));
+    expect(calls.indexOf("bin/database-setup.ts")).toBeLessThan(calls.indexOf("migrate.ts --schema-owner"));
+    expect(calls.indexOf("migrate.ts --schema-owner")).toBeLessThan(calls.indexOf("installation-settings"));
     expect(calls.indexOf("installation-settings")).toBeLessThan(calls.indexOf("first-owner"));
     expect(calls.indexOf("first-owner")).toBeLessThan(calls.indexOf("first-organisation"));
     expect(calls.indexOf("first-organisation")).toBeLessThan(calls.indexOf("render-keeper-config"));
   });
 
   it("stops when the runner refuses, repeats its sentence, and applies nothing else", () => {
-    stub("pnpm", 'if printf "%s" "$*" | grep -q migrate; then echo "migrations: 052 is out of order" >&2; exit 1; fi; exit 0');
+    stub("pnpm", 'case "$*" in *"migrate --schema-owner"*) echo "migrations: 052 is out of order" >&2; exit 1 ;; esac; exit 0');
     const r = runWithStdin([], answers);
     expect(r.code).toBe(78);
     expect(r.stderr).toContain("out of order");
