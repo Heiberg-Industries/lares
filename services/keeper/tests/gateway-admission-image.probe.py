@@ -26,7 +26,7 @@ from urllib.parse import quote
 REPO = pathlib.Path(__file__).resolve().parents[3]
 ASSETS = REPO / "images/gateway-runtime"
 sys.path.insert(0, str(ASSETS))
-from admission_contract import Profile, canonical
+from admission_contract import MAX_NATIVE_LOOKUP_BODY, Profile, canonical
 
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
@@ -469,7 +469,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             "lost-user-create-response-reconciles-original-id","team-membership-and-caps","client-empty-key-inventory",
             "caller-key-exact-and-hash-lookup","client-populated-key-inventory","hash-lookup-absent-is-not-error","client-hash-only-absence-receipt",
             "hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite","atomic-blocked-create",
-            "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","unblocked-key-readback-and-native-auth",
+            "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","client-unblock-and-exact-unblocked-readback","unblocked-key-readback-and-native-auth",
             "lost-create-response-reconciles-by-hash","lost-client-blocked-create-response-reconciles-original-key",
             "block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
             "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
@@ -928,6 +928,46 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 reply.get("body",{}).get("info")==[] for item,reply in zip(hashes,absent)),"Deleted fixture key was not strictly absent")
             require(counters_unchanged(after_malformed,after_delete),"Native lookup or deletion reached model/provider dispatch")
         self.case(provider+"-guarded-native-lookups-auth-refusal-and-cleanup",authenticated_role_keys)
+
+        def guarded_native_unblock():
+            key="sk-"+secrets.token_urlsafe(32);fingerprint=hashlib.sha256(key.encode()).hexdigest()
+            alias="probe-unblock-"+uuid.uuid4().hex
+            minted=self.admin(url,"/key/generate",{"key":key,"key_alias":alias,"key_type":"llm_api","team_id":team,"user_id":user,
+                "max_budget":100,"models":["lares-brain"],"budget_duration":"1d","blocked":True})
+            require(minted.get("key")==key,"Blocked unblock fixture key was not returned exactly")
+            self.disposable_secrets.append(key.encode())
+            before=self.control()
+            malformed=[
+                lookup("GET","/key/unblock",credential=self.master),
+                lookup("POST","/key/unblock?extra=x",credential=self.master,body={"key":fingerprint}),
+                lookup("POST","/key/unblock",credential=self.master,body={"key":fingerprint,"extra":True}),
+                lookup("POST","/key/unblock",credential=self.master,raw='{"key":"'+fingerprint+'","key":"'+fingerprint+'"}'),
+                lookup("POST","/key/unblock",credential=self.master,body={"key":fingerprint.upper()}),
+                lookup("POST","/key/unblock",credential=self.master,raw='{"key":"'+fingerprint+'"'+' '*MAX_NATIVE_LOOKUP_BODY+'}'),
+                lookup("POST","/key/unblock",credential="sk-deliberately-wrong-key-000000",body={"key":fingerprint}),
+                lookup("POST","/key/unblock",credential=self.master,headers=[["authorization","Bearer "+self.master],["authorization","Bearer "+self.master]],body={"key":fingerprint}),
+            ]
+            require(all(type(reply) is dict and reply.get("status")==400 for reply in malformed),"Guarded native unblock accepted malformed or non-master input")
+            after_denied=self.control()
+            require(counters_unchanged(before,after_denied),"Refused native unblock reached model/provider dispatch")
+            acknowledgement=lookup("POST","/key/unblock",credential=self.master,body={"key":fingerprint})
+            readback=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[fingerprint]})
+            rows=readback.get("body",{}).get("info",[]) if type(readback.get("body")) is dict else []
+            auth=lookup("GET","/v1/models",credential=key)
+            after_allowed=self.control()
+            require(acknowledgement.get("status")==200 and readback.get("status")==200 and readback.get("body",{}).get("key")==[fingerprint] and
+                len(rows)==1 and type(rows[0]) is dict and rows[0].get("key_alias")==alias and rows[0].get("key_type")=="llm_api" and
+                rows[0].get("team_id")==team and rows[0].get("user_id")==user and rows[0].get("max_budget")==100 and
+                rows[0].get("budget_duration")=="1d" and rows[0].get("models")==["lares-brain"] and
+                rows[0].get("blocked") is False and auth.get("status")==200,
+                "Master unblock acknowledgement did not match exact unblocked native readback/authentication")
+            require(counters_unchanged(after_denied,after_allowed),"Native unblock/readback/auth check reached model/provider dispatch")
+            deleted=lookup("POST","/key/delete",credential=self.master,body={"keys":[fingerprint]})
+            absent=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[fingerprint]})
+            require(deleted.get("status")==200 and absent.get("status")==200 and absent.get("body",{}).get("key")==[fingerprint] and
+                absent.get("body",{}).get("info")==[],"Unblock fixture key cleanup did not confirm exact absence")
+            require(counters_unchanged(after_allowed,self.control()),"Unblock fixture cleanup reached model/provider dispatch")
+        self.case(provider+"-guarded-native-unblock-master-only-exact-readback",guarded_native_unblock)
 
         def fresh_user_policy():
             before=self.control()

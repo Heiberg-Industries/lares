@@ -42,6 +42,7 @@ CONTROL_ROUTES = frozenset((
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 TICKET = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 NATIVE_LOOKUP_ROUTES = frozenset((("POST", "/v2/key/info"), ("GET", "/team/info"), ("GET", "/key/list"), ("GET", "/user/info")))
+NATIVE_MASTER_ROUTES = NATIVE_LOOKUP_ROUTES | frozenset((("POST", "/key/unblock"),))
 NATIVE_LOOKUP_GET_QUERY = {"/team/info": "team_id", "/key/list": "user_id", "/user/info": "user_id"}
 MAX_NATIVE_LOOKUP_BODY = 1024
 OPAQUE_NATIVE_ID = re.compile(r"[A-Za-z0-9-]{1,80}\Z")
@@ -93,6 +94,15 @@ def native_lookup_key_hash(raw):
     if set(body) != {"keys"} or not isinstance(keys, list) or len(keys) != 1 or not isinstance(keys[0], str) or not HASH.fullmatch(keys[0]):
         raise Refused()
     return keys[0]
+
+
+def native_unblock_key_hash(raw):
+    """Require one bounded unblock document containing only a lowercase key fingerprint."""
+    if not isinstance(raw, bytes) or len(raw) > MAX_NATIVE_LOOKUP_BODY: raise Refused()
+    body = parse_json(raw)
+    key = body.get("key")
+    if set(body) != {"key"} or not isinstance(key, str) or not HASH.fullmatch(key): raise Refused()
+    return key
 
 
 def request_hash(method, path, raw):
