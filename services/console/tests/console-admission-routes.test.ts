@@ -1,21 +1,29 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemberStoreError } from "@lares/agent-kit/member-store";
 import { NextRequest } from "next/server";
-const mocks = vi.hoisted(() => ({ open: vi.fn(), finish: vi.fn(), start: vi.fn(), lookup: vi.fn(), current: vi.fn(), link: vi.fn(), accept: vi.fn(), create: vi.fn() }));
-vi.mock("../lib/auth", () => ({ members: { memberForIdentity: mocks.lookup, currentMember: mocks.current, linkIdentity: mocks.link, acceptInvitation: mocks.accept, createSession: mocks.create }, isConsoleOwner: (m: { id: string; role: string }) => m.id === process.env.AGENT_OWNER_USER_ID && m.role === "owner", SESSION_MAX_AGE: 604800 }));
+const mocks = vi.hoisted(() => ({ open: vi.fn(), finish: vi.fn(), start: vi.fn(), lookup: vi.fn(), current: vi.fn(), eligible: vi.fn(), bootstrap: vi.fn(), link: vi.fn(), accept: vi.fn(), create: vi.fn(), seal: vi.fn() }));
+vi.mock("../lib/auth", () => ({ members: { memberForIdentity: mocks.lookup, currentMember: mocks.current, firstOwnerBootstrapEligible: mocks.eligible, bootstrapFirstOwnerIdentity: mocks.bootstrap, linkIdentity: mocks.link, acceptInvitation: mocks.accept, createSession: mocks.create }, isConsoleOwner: (m: { id: string; role: string; status?: string }) => m.id === process.env.AGENT_OWNER_USER_ID && m.role === "owner" && (m.status === undefined || m.status === "active"), SESSION_MAX_AGE: 604800 }));
 vi.mock("../lib/console-oidc", () => ({ openFlow: mocks.open, finishSignIn: mocks.finish, startSignIn: mocks.start, consoleRedirect: () => "https://console.example.test/api/auth/callback" }));
+vi.mock("../lib/owner-bootstrap-receipt", async () => {
+  const actual = await vi.importActual<typeof import("../lib/owner-bootstrap-receipt")>("../lib/owner-bootstrap-receipt");
+  return { ...actual, sealOwnerDiscoveryReceipt: mocks.seal };
+});
 import { GET } from "../app/api/auth/[...route]/route";
+import { ownerBootstrapDigest, ownerDiscoveryDigest } from "../lib/owner-bootstrap-receipt";
 const owner = { id: "owner-1", role: "owner", status: "active" };
 const identity = { issuer: "https://accounts.google.com", subject: "exact-subject" };
 const proof = { identity, verifiedAt: new Date() };
 const flow = { provider: "google", state: "state", nonce: "nonce", verifier: "verifier", next: "/agents" };
 const ctx = (...route: string[]) => ({ params: Promise.resolve({ route }) });
-const req = (path = "/api/auth/callback?code=code&state=state") => new NextRequest(`http://internal:3000${path}`, { headers: { cookie: "oauth_flow=signed-cookie; lares_session=old" } });
+const req = (path = "/api/auth/callback?code=code&state=state") => new NextRequest(`http://internal:3000${path}`, { headers: { cookie: "oauth_flow=signed-cookie; lares_session=old; lares_owner_discovery=old-receipt" } });
+const selection = (selectedIdentity = identity) => ({ ownerId: "owner-1", organisationId: "example.test", installationOrigin: "https://console.example.test", identity: selectedIdentity, digest: ownerBootstrapDigest("owner-1", "example.test", "https://console.example.test", selectedIdentity) });
 beforeEach(() => {
   vi.stubEnv("AGENT_OWNER_USER_ID", "owner-1"); vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", undefined);
   mocks.open.mockReset().mockResolvedValue(flow); mocks.finish.mockReset().mockResolvedValue(proof);
   mocks.lookup.mockReset().mockResolvedValue(owner); mocks.current.mockReset().mockResolvedValue(owner);
+  mocks.eligible.mockReset().mockResolvedValue(false); mocks.bootstrap.mockReset().mockResolvedValue(undefined);
   mocks.link.mockReset().mockResolvedValue(undefined); mocks.accept.mockReset().mockResolvedValue(undefined);
+  mocks.seal.mockReset().mockResolvedValue("signed-discovery-receipt");
   mocks.create.mockReset().mockResolvedValue({ member: owner, token: "x".repeat(43) });
   mocks.start.mockReset().mockResolvedValue({ url: new URL("https://accounts.google.com/authorize"), cookie: "sealed" });
 });
@@ -39,22 +47,43 @@ describe("trusted console admission callback", () => {
     expect((await GET(req(), ctx("callback"))).headers.get("location")).toContain("error=failed");
     expect(mocks.link).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled();
   });
-  it("explicitly adopts the existing active owner without creating or rewriting a user", async () => {
+  it("pins the exact selected provider identity through the atomic first-owner binder", async () => {
     mocks.lookup.mockResolvedValue(undefined);
-    vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(identity));
+    vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(selection()));
     expect((await GET(req(), ctx("callback"))).headers.get("location")).toContain("/agents");
-    expect(mocks.link).toHaveBeenCalledWith("owner-1", "owner-1", proof);
+    expect(mocks.bootstrap).toHaveBeenCalledWith("owner-1", "example.test", proof);
+    expect(mocks.link).not.toHaveBeenCalled();
   });
   it.each([{ ...identity, subject: "other" }, { ...identity, issuer: "https://other.test" }, { ...identity, tenantId: "other" }])("refuses mismatched bootstrap issuer/subject/tenant %s", async configured => {
-    mocks.lookup.mockResolvedValue(undefined); vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(configured));
-    await GET(req(), ctx("callback")); expect(mocks.link).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled();
+    mocks.lookup.mockResolvedValue(undefined); vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(selection(configured)));
+    await GET(req(), ctx("callback")); expect(mocks.bootstrap).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled();
   });
-  it("does not bootstrap a removed, missing or demoted member", async () => {
-    mocks.lookup.mockResolvedValue(undefined); vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(identity));
-    for (const member of [undefined, { ...owner, role: "member" }]) {
-      mocks.current.mockResolvedValue(member); await GET(req(), ctx("callback"));
-    }
-    expect(mocks.link).not.toHaveBeenCalled();
+  it("refuses a selected tuple pinned to another public installation origin", async () => {
+    mocks.lookup.mockResolvedValue(undefined);
+    vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify({ ...selection(), installationOrigin: "https://other.test" }));
+    expect((await GET(req(), ctx("callback"))).headers.get("location")).toContain("error=failed");
+    expect(mocks.bootstrap).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it("does not issue a session when the atomic first-owner binder refuses stale eligibility", async () => {
+    mocks.lookup.mockResolvedValue(undefined); vi.stubEnv("CONSOLE_BOOTSTRAP_IDENTITY", JSON.stringify(selection()));
+    mocks.bootstrap.mockRejectedValue(new MemberStoreError("denied"));
+    expect((await GET(req(), ctx("callback"))).headers.get("location")).toContain("error=failed");
+    expect(mocks.bootstrap).toHaveBeenCalledWith("owner-1", "example.test", proof);
+    expect(mocks.create).not.toHaveBeenCalled();
+  });
+  it("shows a verified setup receipt without creating a session or linking an identity", async () => {
+    mocks.lookup.mockResolvedValue(undefined); mocks.eligible.mockResolvedValue(true);
+    const res = await GET(req(), ctx("callback"));
+    expect(res.headers.get("location")).toBe("https://console.example.test/sign-in?setup=owner");
+    expect(res.headers.get("set-cookie")).toContain("lares_owner_discovery=signed-discovery-receipt");
+    expect(mocks.seal).toHaveBeenCalledWith({ installationOrigin: "https://console.example.test", identity, digest: ownerDiscoveryDigest("https://console.example.test", identity) });
+    expect(mocks.bootstrap).not.toHaveBeenCalled(); expect(mocks.link).not.toHaveBeenCalled(); expect(mocks.create).not.toHaveBeenCalled();
+    expect(res.headers.get("set-cookie")).not.toContain("lares_session=");
+  });
+  it("clears a prior discovery receipt when a new login flow starts", async () => {
+    const res = await GET(req("/api/auth/login"), ctx("login"));
+    expect(res.headers.get("set-cookie")).toContain("lares_owner_discovery=;");
+    expect(res.headers.get("set-cookie")).toContain("oauth_flow=sealed");
   });
   it("consumes only the invitation sealed into the original flow, never a callback query token", async () => {
     mocks.open.mockResolvedValue({ ...flow, invitation: "a".repeat(43) });

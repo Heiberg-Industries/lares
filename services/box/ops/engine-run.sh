@@ -69,7 +69,7 @@ engine_resolve_target_image() {
   return 1
 }
 
-# engine_run [--ro PATH]... [--rw PATH]... [--env NAME=VALUE]... SCRIPT [ARGS...]
+# engine_run [--cidfile PATH] [--ro PATH]... [--rw PATH]... [--env NAME=VALUE]... SCRIPT [ARGS...]
 #   SCRIPT is relative to services/box inside the image (migrate.ts, bin/render-stack.ts, ...).
 #   --env is for plain settings only; a secret is handed over as a file under a --ro mount.
 engine_run() {
@@ -82,6 +82,7 @@ engine_run() {
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --runtime-user) runtime_user=10001:10001; shift ;;
+      --cidfile) docker_args+=(--cidfile "$2"); shift 2 ;;
       --ro) docker_args+=(-v "$2:$2:ro"); shift 2 ;;
       --rw) docker_args+=(-v "$2:$2"); shift 2 ;;
       --env) docker_args+=(-e "$2"); shift 2 ;;

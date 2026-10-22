@@ -11,6 +11,7 @@
 #   lares restore  [restore.sh options]                 ops/restore.sh of the current release
 #   lares doctor   [doctor options]                     what is wrong with this installation, run
 #                                                       in a container of the current engine image
+#   lares owner-bootstrap                               pin a verified first-owner identity
 #   lares backups  [setup-backups.sh options]           switch on or check backups (setup-backups.sh)
 #
 # Image mode only: nothing here needs Node, pnpm or a checkout. Layout (set by get-lares.sh):
@@ -41,6 +42,7 @@ Usage: lares update --release <name> [--dry-run] [--yes] [--even-though-the-back
        lares rollback [--dry-run] [--yes]
        lares restore --snapshot <id|latest> [--old-server-stopped] [--dry-run] [--yes]
        lares doctor [--help]
+       lares owner-bootstrap
        lares backups [--dry-run] [--yes] [setup-backups.sh options]
 
 <name> is the full release name from the repository's releases folder, for example
@@ -52,7 +54,7 @@ EOF
 cmd="$1"
 shift
 case "$cmd" in
-  update|rollback|restore|doctor|backups) ;;
+  update|rollback|restore|doctor|owner-bootstrap|backups) ;;
   -h|--help) usage; exit "$EX_USAGE" ;;
   *) printf 'lares: I do not know the command %s.\n' "'$cmd'" >&2; usage; exit "$EX_USAGE" ;;
 esac
@@ -143,10 +145,16 @@ cmd_doctor() {
     bin/doctor.ts "$@"
 }
 
+cmd_owner_bootstrap() {
+  [ "$#" -eq 0 ] || die "owner-bootstrap takes no options; paste the setup JSON at its protected prompt" "$EX_USAGE"
+  python3 "$OPS/owner-bootstrap.py" --prefix "${PREFIX:-/}"
+}
+
 case "$cmd" in
   update) cmd_update "$@" ;;
   rollback) cmd_rollback "$@" ;;
   restore) exec bash "$OPS/restore.sh" "$@" ;;
+  owner-bootstrap) cmd_owner_bootstrap "$@" ;;
   backups) exec bash "$OPS/setup-backups.sh" "$@" ;;
   doctor) cmd_doctor "$@" ;;
 esac
