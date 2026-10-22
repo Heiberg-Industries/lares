@@ -2,7 +2,7 @@ import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
 import {consoleSourceTransaction,sourceTransactionBoundary,type BudgetFinancialChange,type SourceDatabase,type SourcePool,type SourceTransactionOutcome} from '@lares/agent-kit/console-source-transaction';
 import {HostFinancialJournal,markJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAtom} from './financial-journal.js';
 import {collectFinancialAtoms} from './budget-financial-writer.js';
-import {verifyFinancialContinuity} from './financial-continuity.js';
+import {observeCommittedFinancialProjection,verifyFinancialContinuity} from './financial-continuity.js';
 
 const uuid=(value:unknown):value is string=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 const same=(left:readonly FinancialAtom[],right:readonly FinancialAtom[])=>Buffer.from(gatewayCanonical([...left])).equals(Buffer.from(gatewayCanonical([...right])));
@@ -132,7 +132,8 @@ async function finalizeClosure(afterDb:SourceDatabase,closure:PersonErasureClosu
 /** Begins durable journal ownership before the first database checkout and owns one source
  * transaction through identity resolution, file work, redaction, proposal and commit. */
 export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostFinancialJournal,
-  work:(db:SourceDatabase,financial:PersonErasureFinancialContext)=>Promise<T>):Promise<{value:T;outcome:SourceTransactionOutcome;receipt?:CommittedFinancialReceipt}>{
+  work:(db:SourceDatabase,financial:PersonErasureFinancialContext)=>Promise<T>,
+  publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;outcome:SourceTransactionOutcome;receipt?:CommittedFinancialReceipt}>{
   let outcome:SourceTransactionOutcome='not-started';
   let receipt:CommittedFinancialReceipt|undefined;
   let abortReceipt:DurableFinancialAbortReceipt|undefined;
@@ -157,24 +158,28 @@ export async function runJournaledPersonErasure<T>(pool:SourcePool,journal:HostF
         const record=journal.propose(operationId,proposal);proposed=true;
         await db.query('INSERT INTO budget_financial_checkpoints(operation_id,journal_id,proposal_sequence,proposal_digest) VALUES($1,$2,$3,$4)',[record.operationId,record.journalId,record.sequence,record.digest]);
       },
-      settled:async result=>{
+      afterCommitObservation:async db=>observeCommittedFinancialProjection(journal,db,operationId),
+      settled:async (result,observation)=>{
         outcome=result;
         if(result==='commit-acknowledged'){
           if(!proposed){journal.freeze();throw refusal();}
-          receipt=journal.committed(operationId);
+          if(!observation){journal.freeze();throw new Error('Financial erasure observation unavailable');}
+          receipt=journal.committedObserved(operationId,observation as Awaited<ReturnType<typeof observeCommittedFinancialProjection>>);
         }else if(result==='unknown'){
           journal.freeze();throw new Error('Financial erasure outcome is unknown; inspection and recovery are required');
         }else abortReceipt=journal.aborted(operationId,result);
         settled=true;
       },
-    });
+    },operationId);
     try{
       const result=await consoleSourceTransaction(pool,async db=>{
         activeSource=db;
         journalOwners.set(owner,db);
         try{return await work(db,financial);}finally{activeSource=undefined;journalOwners.delete(owner);}
       },boundary);
-      if(!settled)throw refusal();return result;
+      if(!settled)throw refusal();
+      if(publish&&receipt)journal.withPublicationProof(receipt,()=>publish(receipt!,result));
+      return result;
     }finally{journalOwners.delete(owner);for(const closure of pendingClosures)closures.delete(closure);pendingClosures.clear();if(!settled){try{journal.freeze();}catch{/* Preserve the original failure; custody remains recovery-only. */}}}
   });
   return receipt?{value,outcome,receipt}:{value,outcome};

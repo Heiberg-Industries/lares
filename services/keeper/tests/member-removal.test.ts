@@ -92,7 +92,23 @@ it('uses the opaque session as authority and removes a member through the prepar
   expect(JSON.stringify(audit.audit.mock.calls)).toContain('<redacted>');
   const records=readFileSync(join(directory,'journal.jsonl'),'utf8');
   expect(records).not.toContain(sessions.designated);
-  expect(JSON.parse(records.trimEnd().split('\n').at(-1)!).record.kind).toBe('control');
+  const frames=records.trimEnd().split('\n').map(line=>JSON.parse(line));
+  const journalRecords=frames.map(frame=>frame.record);
+  const observationIndex=journalRecords.map((record,index)=>record.kind==='observation'?index:-1).filter(index=>index>=0).at(-1)!;
+  expect(observationIndex).toBeGreaterThanOrEqual(4);
+  expect(journalRecords.slice(observationIndex-4,observationIndex+1).map(record=>record.kind))
+    .toEqual(['begin','proposal','commit','control','observation']);
+  const [begin,proposal,commit,control,observation]=journalRecords.slice(observationIndex-4,observationIndex+1);
+  expect(begin.operation).toBe('member-remove');
+  expect(proposal.operationId).toBe(begin.operationId);
+  expect(commit.operationId).toBe(begin.operationId);
+  expect(observation.operationId).toBe(begin.operationId);
+  const checkpoint={operationId:begin.operationId,journalId:control.control.journalId,sequence:proposal.sequence,digest:frames[observationIndex-3].digest};
+  expect(commit.proposalDigest).toBe(checkpoint.digest);
+  expect(control.control.checkpoint).toEqual(checkpoint);
+  expect(observation.observation).toMatchObject({operationId:begin.operationId,checkpoint,database:control.control.database});
+  expect(frames.slice(observationIndex-4,observationIndex+1).map(frame=>frame.record.sequence))
+    .toEqual(frames.slice(observationIndex-4,observationIndex+1).map((_,index)=>frames[observationIndex-4]!.record.sequence+index));
 });
 
 it('admits the verified-email socket contract and redacts the opaque cookie in keeper audit',async()=>{

@@ -13,7 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {Pool} from 'pg';
 
 import { startThreeSpellingsDb, seedThreeSpellingsFinancial, FIXTURE_OWNER, FIXTURE_SECOND, type TestDb } from "./helpers/three-spellings.js";
@@ -22,6 +22,7 @@ import {erasePerson,withPersonErasureClient} from '../lib/erase-person.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,type SourcePool} from '@lares/agent-kit/console-source-transaction';
+import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
 import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 import {runJournaledPersonErasure} from '../../keeper/lib/person-erasure.js';
 import {platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
@@ -70,6 +71,7 @@ beforeEach(async () => {
 }, 180_000);
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   try{nativeCustody?.close();}catch{}nativeCustody=undefined;
   journal?.close();
   if(custodyParent)rmSync(custodyParent, { recursive: true, force: true });
@@ -78,6 +80,31 @@ afterEach(async () => {
 });
 
 describe("runErase — the order of operations", () => {
+  it('refuses a post-COMMIT competing change before issuing a financial receipt',async()=>{
+    const writer=new JournalBudgetFinancialWriter(journal),original=sourceTransactions.sourceTransactionBoundary;
+    const account=(await db.pool.query("SELECT id,policy_generation::text FROM budget_accounts WHERE kind='member' ORDER BY id LIMIT 1")).rows[0];
+    if(!account)throw new Error('Financial race fixture unavailable');
+    vi.spyOn(sourceTransactions,'sourceTransactionBoundary').mockImplementation((hooks,operationId)=>original({
+      ...hooks,
+      afterCommitObservation:async(owned,activeOperationId)=>{
+        await db.pool.query('UPDATE budget_accounts SET policy_generation=policy_generation+1 WHERE id=$1',[account.id]);
+        return hooks.afterCommitObservation?.(owned,activeOperationId);
+      },
+    },operationId));
+    await expect(writer.runWithReceipt('member-remove',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,async source=>{
+      await source.query('UPDATE budget_accounts SET policy_generation=policy_generation+1 WHERE id=$1',[account.id]);
+      noteBudgetFinancialChange(source,'budget_accounts',account.id);return 'changed';
+    },boundary))).rejects.toThrow(/could not be confirmed/i);
+    const after=(await db.pool.query('SELECT policy_generation::text FROM budget_accounts WHERE id=$1',[account.id])).rows[0];
+    expect(BigInt(after.policy_generation)).toBe(BigInt(account.policy_generation)+2n);
+    const history=readFileSync(join(custodyRoot,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record);
+    const attempted=[...history].reverse().find((record:any)=>record.kind==='proposal');
+    expect(attempted).toBeDefined();
+    expect(history.some(record=>record.kind==='observation'&&record.operationId===attempted.operationId)).toBe(false);
+    expect(history.at(-1)?.kind).toBe('freeze');
+    await expect(journal.operation('member-remove',async()=>undefined)).rejects.toThrow(/closed/i);
+  },240_000);
+
   it('refuses database apply without an active journal-owned source transaction',async()=>{
     await expect(erasePerson(db.pool,{person:FIXTURE_OWNER,dryRun:false})).rejects.toThrow(/journal-owned source transaction/i);
     const client=await db.pool.connect();
@@ -149,15 +176,14 @@ describe("runErase — the order of operations", () => {
     const operationId=await addUnboundNativeCredential(nativeCustody,member,'a1111111-1111-4111-8111-111111111111');
     let removalReceipt:import('../../keeper/lib/financial-journal.js').CommittedFinancialReceipt|undefined;
     const removalWriter=new JournalBudgetFinancialWriter(journal);
-    await removalWriter.runWithReceipt('member-remove',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,async source=>{
+    await nativeCustody.withGate(async gate=>{await removalWriter.runWithReceipt('member-remove',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,async source=>{
       for(const table of ['budget_accounts','budget_gateway_bindings','budget_attempts'] as const){
         const rows=await source.query(`SELECT id FROM ${table} WHERE live_member_id=$1`,[FIXTURE_OWNER]);
         for(const row of rows.rows)noteBudgetFinancialChange(source,table,row.id);
       }
       await source.query("UPDATE users SET status='removed' WHERE id=$1",[FIXTURE_OWNER]);return true;
-    },boundary)).then(result=>{removalReceipt=result.receipt;});
+    },boundary),receipt=>{removalReceipt=receipt;gate.recordRevocation(operationId,receipt);return undefined;}).then(result=>{removalReceipt=result.receipt;});gate.removePlaintext(operationId);});
     if(!removalReceipt)throw new Error('Prepared member-removal receipt fixture failed');
-    await nativeCustody.withGate(async gate=>{gate.recordRevocation(operationId,removalReceipt!);gate.removePlaintext(operationId);});
     const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[],apply:true,journal,nativeCustody});
     expect(result.dbReport.refusals).toEqual([]);
     expect(result.nativeCleanup).toEqual({status:'pending',remaining:1});

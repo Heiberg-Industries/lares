@@ -196,21 +196,23 @@ it('observes continuity on the owned single client before mutation and after che
   const {consoleSourceTransaction}=await import('@lares/agent-kit/console-source-transaction');
   const directory=prepared(),journal=open(directory),writer=new JournalBudgetFinancialWriter(journal),queries:string[]=[];
   let checkpoint:any=null,connections=0,releases=0;
-  const db={release:()=>{releases++;},query:async(sql:string,values?:any[])=>{
+  const db={release:()=>{releases++;},query:async(input:string|{text:string;values?:any[]},suppliedValues?:any[])=>{
+    const sql=typeof input==='string'?input:input.text,values=typeof input==='string'?suppliedValues:input.values;
     queries.push(sql);
     if(sql.includes('pg_control_system'))return {rows:[database]};
     if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:'0',windows:'0',bindings:'0',attempts:'0',grants:'0',checkpoints:checkpoint?'1':'0'}]};
     if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoint?[{...checkpoint,sequence:checkpoint.sequence}]:[]};
     if(sql.startsWith('INSERT INTO budget_financial_checkpoints'))checkpoint={operationId:values![0],journalId:values![1],sequence:String(values![2]),digest:values![3]};
-    return {rows:[],command:sql};
+    return {rows:[],command:/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase()};
   }};
   const pool={query:db.query,connect:async()=>{connections++;return db;}};
   await expect(writer.run('prepare',boundary=>consoleSourceTransaction(pool,async owned=>{await owned.query('MUTATION');return 'complete';},boundary))).resolves.toBe('complete');
   expect(connections).toBe(1);expect(releases).toBe(1);
   const observations=queries.map((q,i)=>q.includes('pg_control_system')?i:-1).filter(i=>i>=0);
-  expect(observations).toHaveLength(2);expect(observations[0]).toBeLessThan(queries.indexOf('MUTATION'));
+  expect(observations).toHaveLength(3);expect(observations[0]).toBeLessThan(queries.indexOf('MUTATION'));
   expect(observations[1]).toBeGreaterThan(queries.findIndex(q=>q.startsWith('INSERT INTO budget_financial_checkpoints')));expect(observations[1]).toBeLessThan(queries.indexOf('COMMIT'));
-  expect(records(directory).at(-1)?.kind).toBe('control');
+  expect(observations[2]).toBeGreaterThan(queries.indexOf('COMMIT'));expect(observations[2]).toBeLessThan(queries.lastIndexOf('COMMIT'));
+  expect(records(directory).at(-1)?.kind).toBe('observation');
 });
 
 it('expires authority during ready-to-commit observation and selects only source-retirement compensation',async()=>{

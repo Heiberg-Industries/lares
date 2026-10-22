@@ -117,6 +117,7 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
     let committed:{result:RunEraseResult;accountIds:readonly string[];receipt:import('../../keeper/lib/financial-journal.js').CommittedFinancialReceipt|undefined}|undefined;
     try{
       const execute=async(gate?:import('../../keeper/lib/budget-native-custody.js').NativeCustodyGate):Promise<RunEraseResult>=>{
+      let nativeCleanup:ReturnType<typeof recordCommittedNativeRetirement>|undefined;
       const transaction=await runJournaledPersonErasure(db as never,opts.journal!,async(source,financial)=>{
         let identity;
         try{identity=await resolvePerson(source as never,person);}catch(err){
@@ -136,12 +137,12 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
           if(result.vaultError||result.dbReport.refusals.length)throw new ErasureRefused(result);
           return {result,accountIds};
         });
-      });
+      },(receipt,value)=>{if(gate)nativeCleanup=recordCommittedNativeRetirement(gate,value.accountIds,receipt,true);return undefined;});
       committed={result:transaction.value.result,accountIds:transaction.value.accountIds,receipt:transaction.receipt};
       const result:RunEraseResult={...committed.result,transactionOutcome:"commit-acknowledged"};
       if(!transaction.receipt)return {...result,journalWarning:"The database erase committed, but no financial receipt was available; native cleanup was left untouched for inspection.",...(gate?{nativeCleanup:{status:'blocked' as const,remaining:null}}:{})};
       if(!gate)return result;
-      return {...result,nativeCleanup:recordCommittedNativeRetirement(gate,committed.accountIds,transaction.receipt,true)};
+      return {...result,nativeCleanup:nativeCleanup??{status:'blocked',remaining:null}};
       };
       if(opts.nativeCustody){
         const gated=await opts.nativeCustody.withGate(async gate=>{
@@ -158,6 +159,7 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
     }catch(err){
       if(committed&&opts.nativeCustody)return {...committed.result,transactionOutcome:"commit-acknowledged",journalWarning:"The database erase committed, but native cleanup custody needs inspection.",nativeCleanup:{status:'blocked',remaining:null}};
       const outcome=(err as {outcome?:string}).outcome;
+      if(outcome==='commit-acknowledged'&&opts.nativeCustody&&partial)return {...partial,transactionOutcome:'commit-acknowledged',journalWarning:'The database erase committed, but native cleanup custody needs inspection.',nativeCleanup:{status:'blocked',remaining:null}};
       if(err instanceof ErasureRefused)return {...err.result,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
       if(partial?.dbReport.refusals.length)return {...partial,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
       if(outcome==='commit-acknowledged'&&partial)return {...partial,transactionOutcome:"commit-acknowledged",journalWarning:"The database commit was acknowledged, but its final journal record could not be confirmed. Inspect custody before another financial operation."};

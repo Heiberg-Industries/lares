@@ -8,7 +8,7 @@ import {z} from 'zod';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayMaximumLiability,gatewayPricingSchema} from '@lares/agent-kit/gateway-pricing';
-import {linuxInheritedJournalLock,committedFinancialEvidence,type CommittedFinancialReceipt,type FinancialAtom} from './financial-journal.js';
+import {linuxInheritedJournalLock,committedFinancialEvidence,requireCurrentFinancialPublicationProof,type CommittedFinancialReceipt,type FinancialAtom} from './financial-journal.js';
 import {consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt} from './budget-native-client.js';
 
 export const NATIVE_CUSTODY_DIRECTORY='/var/lib/lares/budget-native';
@@ -228,11 +228,13 @@ export class BudgetNativeCustodyStore {
     return {kind:'binding',id:op.bindingId,installationAccountId:u.installationAccountId,memberAccountId:u.accountId,endpointHash:u.endpoint.hash,credentialGeneration:op.credentialGeneration,profileHash:op.reviewedPolicy.pricing.capabilityHash,maximumLiability:op.reviewedPolicy.maximumLiability,pricingProfile:op.reviewedPolicy.pricing,state};
   }
   private recordBoundClosed(id:string,raw:CommittedFinancialReceipt):void {
+    try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
     const op=this.operation(id),r=committedFinancialEvidence(raw,{kind:'bound-closed',binding:this.bindingAtom(op,'active')});if(!r)throw refused();
     if(op.phase==='bound-closed'&&same(op.bindingReceipt,r))return;
     if(op.phase!=='native-blocked-verified'||op.financialOperationId!==r.operationId||op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'bound-closed',bindingReceipt:r});
   }
   private recordRevocation(id:string,raw:CommittedFinancialReceipt):void {
+    try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
     const op=this.operation(id),r=committedFinancialEvidence(raw,{kind:op.bindingReceipt?'bound-revocation':'pending-revocation',binding:this.bindingAtom(op,'revoked')});if(!r)throw refused();
     if(['revoke-pending','revoked'].includes(op.phase)&&same(op.revocationReceipt,r))return;
     if(['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId||op.financialJournalId!==null&&op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});
@@ -263,6 +265,7 @@ export class BudgetNativeCustodyStore {
   }
   private eraseAccountAssociation(accountId:string,raw:CommittedFinancialReceipt):void {
     try{uuid.parse(accountId);}catch{throw refused();}
+    try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
     const r=committedFinancialEvidence(raw,{kind:'account-erasure',accountId});if(!r)throw refused();
     const erasureReceiptHash=gatewayHash(gatewayCanonical(r)),accountCommitment=commitment('erased-account',this.snapshot.storeId,accountId);
     if(this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===accountCommitment&&u.erasureReceiptHash!==erasureReceiptHash))throw refused();
