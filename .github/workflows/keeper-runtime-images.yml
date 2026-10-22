@@ -59,6 +59,9 @@ jobs:
       - name: Build the matching Keeper image for the combined first-use proof
         if: matrix.role == 'chief-of-staff'
         run: docker buildx build --pull --load --file services/keeper/Dockerfile --tag lares-keeper:combined .
+      - name: Check combined first-use Docker command construction
+        if: matrix.role == 'chief-of-staff'
+        run: python3 -B services/keeper/tests/native-first-use-command.test.py
       - name: Prove first native activation through compiled Eve and production Keeper
         if: matrix.role == 'chief-of-staff'
         run: python3 -B services/keeper/tests/native-first-use-image.probe.py lares-runtime:test lares-keeper:combined "$GITHUB_SHA" "$RUNNER_TEMP/native-first-use-proof.json"

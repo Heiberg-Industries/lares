@@ -239,7 +239,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     gateway=manifest['images']['lares-gateway']
     endpoint_origin='http://native-gateway:4000'
     endpoint_hash=hashlib.sha256(('lares.native-endpoint.v1\0'+endpoint_origin+'\0'+capability['providerBaseUrl']).encode()).hexdigest()
-    gateway_args=['docker','run','-d','--name',network+'-gateway','--network',network,'--network-alias','native-gateway',
+    gateway_args=['run','-d','--name',network+'-gateway','--network',network,'--network-alias','native-gateway',
       '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777','--mount',f'type=bind,src={repo}/images/gateway-runtime,dst=/opt/lares-gateway,readonly',
       '--mount',f'type=bind,src={native_dir},dst=/etc/litellm,readonly',
       '--mount',f'type=bind,src={secrets_dir},dst=/run/secrets,readonly','--mount',f'type=bind,src={tls_runtime},dst=/fixture/tls,readonly',
@@ -249,6 +249,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
       '-e','LARES_GATEWAY_ENDPOINT_HASH='+endpoint_hash,'-e','LARES_GATEWAY_PROFILE_FILE=/etc/litellm/profile.json','-e','SSL_CERT_FILE=/fixture/tls/ca.pem',
       '-e','LITELLM_LOCAL_MODEL_COST_MAP=True','-e','LITELLM_TELEMETRY=False','-e','PYTHONDONTWRITEBYTECODE=1','-e','CI=true',
       '--entrypoint','/bin/sh',gateway,'/opt/lares-gateway/start.sh']
+    stage = 'pinned-production-gateway-start'
     docker(*gateway_args);container_names.append(network+'-gateway')
     proof['images']['nativeGatewayRef']=gateway
     proof['images']['nativeGateway']=image_identity(gateway)
@@ -263,8 +264,10 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     proof['reviewedMaximumLiability']=maximum_liability
     proof['endpointHash']=endpoint_hash
     proof['gatewayEndpointOrigin']=endpoint_origin
+    stage = 'pinned-production-gateway-readiness'
     gateway_ready="const fs=await import('node:fs/promises');const key=(await fs.readFile('/etc/lares/secrets/gateway-master','utf8')).trim();let ok=false;for(let i=0;i<240;i++){try{const r=await fetch('http://native-gateway:4000/health/readiness',{headers:{authorization:'Bearer '+key},signal:AbortSignal.timeout(1000)});if(r.status===200){ok=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!ok)process.exit(2);"
     tsx_keeper(gateway_ready,timeout=90);cases['productionGuardedGatewayAndTrustedInternalProvider']=True
+    stage = 'pinned-production-relay-refusal'
     relay_refusal="const https=await import('node:https');const fs=await import('node:fs/promises');const ca=await fs.readFile('/fixture/tls/ca.pem');let refused=false;for(let i=0;i<40;i++){try{const status=await new Promise((resolve,reject)=>{const q=https.request({hostname:'admission-bridge',port:8443,path:'/v1/gateway-budget/admit',method:'POST',ca,timeout:1000,headers:{'content-type':'application/json','content-length':'2','x-lares-signature':'0'.repeat(64)}},r=>{r.resume();r.on('end',()=>resolve(r.statusCode))});q.on('timeout',()=>q.destroy(new Error('timeout')));q.on('error',reject);q.end('{}')});if(status===503){refused=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!refused)process.exit(2);"
     tsx_keeper(relay_refusal,mounts=['--mount',f'type=bind,src={tls_runtime},dst=/fixture/tls,readonly'],timeout=20)
     cases['productionConsoleRelayRefusesBeforeKeeperAuthorityExists']=True
@@ -360,7 +363,7 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
     lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
     keeper_name=network+'-keeper'
-    keeper_cmd=['docker','run','-d','--name',keeper_name,'--network',network,'--mount',f'type=volume,src={volume},dst=/var/lib/lares',
+    keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'--mount',f'type=volume,src={volume},dst=/var/lib/lares',
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
       '--mount',f'type=bind,src={install_root},dst=/fixture-install',
       '--mount',f'type=bind,src={host_socket_dir},dst=/run/lares-host','--mount',f'type=bind,src={run_dir},dst=/run/lares',
@@ -505,7 +508,7 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
       'AGENT_OWNER_USER_ID':owner,'EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0',
       'FIRST_USE_DEFINITION_HASH':definition_hash,
     }
-    args=['docker','run','-d','--name',chief_name,'--network',network,'--read-only','--user','10001:10001',
+    args=['run','-d','--name',chief_name,'--network',network,'--read-only','--user','10001:10001',
       '--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770',
       '--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m',
       '--tmpfs','/app/services/chief-of-staff/.eve/.workflow-data:uid=10001,gid=10001,mode=0700,size=64m',
