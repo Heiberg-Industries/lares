@@ -26,8 +26,8 @@ let responseMode:'ok'|'credential-error'|'held-stream'|'compressed'|'backpressur
 let heldStream:ReadableStreamDefaultController<Uint8Array>|undefined;
 let upstreamCancelled=false;
 const operation={kind:'operation',operationId:'123e4567-e89b-42d3-a456-426614174002',bindingId,credentialGeneration:'4',
-  association:{agent,incarnation,definitionHash:'c'.repeat(64),purposeAlias:'fixture-brain'},phase:'bound-closed',plaintext:'present',
-  bindingReceipt:{operationId:'x'},keyFingerprint,reviewedPolicy:{pricing:{capabilityHash:profileHash,format:'anthropic'},
+  association:{agent,incarnation,definitionHash:'c'.repeat(64),purposeAlias:'fixture-brain'},phase:'active' as string,plaintext:'present',
+  bindingReceipt:{operationId:'x',journalId:'j'},activationReceipt:{operation:'native-activation',journalId:'j'},keyFingerprint,reviewedPolicy:{pricing:{capabilityHash:profileHash,format:'anthropic'},
     capability:{aliases:['fixture-brain','other-a','other-b','other-c'],maxBodyBytes:1_048_576},key:{blocked:true}},userOwnershipId:'123e4567-e89b-42d3-a456-426614174003'};
 const installationAccountId='123e4567-e89b-42d3-a456-426614174005';
 const snapshot={operations:[operation],users:[{kind:'user',ownershipId:operation.userOwnershipId,teamOwnershipId:'123e4567-e89b-42d3-a456-426614174004',installationAccountId,endpoint:{origin:'https://gateway.fixture.invalid',hash:endpointHash}}],
@@ -58,7 +58,7 @@ function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),
 
 beforeEach(async()=>{
   root=await mkdtemp(join(tmpdir(),'lares-model-purpose-transport-'));await chmod(root,0o750);socketPath=join(root,'gateway.sock');
-  gateBusy=false;calls=[];responseMode='ok';heldStream=undefined;upstreamCancelled=false;
+  operation.phase='active';gateBusy=false;calls=[];responseMode='ok';heldStream=undefined;upstreamCancelled=false;
   fixture.runtimeKey.mockImplementation(async()=>Buffer.from(fixture.key));
   fixture.fetch.mockImplementation(async(input:URL,init:RequestInit)=>{
     const headers=new Headers(init.headers);const body=Buffer.from(init.body as Uint8Array);
@@ -89,6 +89,22 @@ describe('Keeper model-purpose dispatch transport',()=>{
     expect(calls).toHaveLength(1);expect(calls[0]!.url).toBe('https://gateway.fixture.invalid/v1/messages');
     expect(calls[0]!.headers.get('x-api-key')).toBe(nativeKey);expect(calls[0]!.headers.get('x-lares-budget-intent')).toBe(ticket);
     expect(calls[0]!.body.toString()).toBe('{"model":"fixture-brain"}');
+  });
+
+  it('refuses transport while the native binding is still blocked and awaiting activation',async()=>{
+    operation.phase='bound-closed';
+    const response=await send();
+    expect(response.status).toBe(503);expect(calls).toHaveLength(0);
+  });
+
+  it('refuses transport while native activation is pending',async()=>{
+    operation.phase='activation-pending';
+    expect((await send()).status).toBe(503);expect(calls).toHaveLength(0);
+  });
+
+  it('refuses transport while native activation is uncertain',async()=>{
+    operation.phase='uncertain';
+    expect((await send()).status).toBe(503);expect(calls).toHaveLength(0);
   });
 
   it('burns a valid nonce once and never retries an uncertain or duplicate request',async()=>{

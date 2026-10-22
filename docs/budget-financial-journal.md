@@ -197,6 +197,26 @@ receipt, and leaves the open control record open. This path returns no runtime
 gate, store or key, and does not authorize gateway deletion, startup recovery or
 spending. Uncertain or incomplete evidence remains blocked.
 
+The root-only `provision-native --host` command accepts a bounded JSON request
+on standard input with `bindingId`, `credentialGeneration`, `memberId`, `agent`,
+`incarnation` and `purposeAlias`. Keeper selects that alias from the configured
+`budgetNative.reviewedPolicyFile`, a root-owned `0600` JSON file containing an
+`endpointHash` and reviewed policies. The trusted gateway origin and master key
+come from existing lifecycle configuration and its protected key file; a request
+cannot choose either. The command reports only the binding ID, generation and
+`bound-closed` state. Provisioning creates a blocked native key and does not open
+budget accounts.
+
+The root-only `activate-native --host` command accepts only the binding ID and
+credential generation. Keeper rechecks current source authority and retained
+policy, verifies the native key is blocked, then performs explicit activation.
+Both commands use the host Keeper socket with a bounded deadline. A timeout,
+missing acknowledgement or malformed response does not retry or fall back;
+inspect the financial journal and native custody before another attempt.
+This describes source-level host wiring. The compiled image and complete
+first-use path still require separate release proof before these commands are a
+tested installation path.
+
 Native custody is excluded from ordinary backups and encrypted secret bundles.
 Restore refuses when configured custody is missing or cannot be opened. Keeper
 stops listeners and drains native work before draining the journal and closing
@@ -226,11 +246,14 @@ There is no unfreeze or reconciliation shortcut.
 
 ## Remaining activation boundaries and verification
 
-Native shared-team/user provisioning and spending activation remain closed.
-Distinct nonowner application and keeper financial database logins,
-admin host-only access, privilege guards and comprehensive mutation guards remain
-required. SQL025's immutable checkpoint is an integration aid, not database role
-isolation. Never bypass existing triggers to simulate readiness.
+Native shared-team/user provisioning and activation now have explicit source-level
+host commands, but neither command is a tested installation path until the
+compiled-image and complete first-use proof above passes. Do not run either on a
+live installation before that gate. Distinct nonowner application and keeper
+financial database logins, host-only access, privilege guards and comprehensive
+mutation guards remain required. SQL025's immutable checkpoint is an integration
+aid, not database role isolation. Never bypass existing triggers to simulate
+readiness.
 
 Owner-directed reconciliation must preserve unknown liabilities and suppression
 continuity and invalidate restored console, resume and job authority before fresh

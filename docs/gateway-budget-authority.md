@@ -12,17 +12,18 @@ is root-owned and regular, and cannot be writable by its group or accessible to
 others. This code never generates or copies a key. Missing or unsafe custody
 refuses the service. No console environment variable contains that key.
 
-The production factory binds its recovery observation to the same prepared
-financial journal used by its admission writer. It matches a persisted ticket's
-installation account, endpoint generation and raw epoch against the journal's
-committed open and approved installation account and active window. A matching
-database epoch alone never establishes recovery authority. This observation is
-discovery only: the writer still checks the complete database projection inside
-its owned transaction before mutation. The test constructor can inject a witness
-for focused tests; there is no production setting for one. This does not open a
-closed account, unfreeze a journal, activate spending, or establish restore
-acceptance. Reviewed prices, runtime ticket preparation after final prompt-cache
-shaping and the remaining activation dependencies are still required.
+The production gateway factory binds recovery observation to the same prepared
+financial journal used by its admission writer. Native activation is a separate
+explicit source API for one already-bound, closed credential. It rechecks the
+retained reviewed policy, current member and agent authority, exact owned native
+key inventory, and the full SQL projection inside one owned transaction. The
+first activation opens the installation and selected member; later preprovisioned
+members preserve the existing installation endpoint, epoch, windows and caps.
+The key is made active only after exact native readback, acknowledged SQL commit,
+same-client projection observation and durable custody publication. SQL openness
+alone never enables dispatch. This source slice adds no Keeper startup wiring,
+operator command, live activation, automatic recovery, unfreeze or restore
+acceptance; those remain separate gates.
 
 ## Wire and transaction boundary
 
@@ -73,12 +74,12 @@ and credential-bearing headers are discarded. Successful responses stream with
 backpressure and client cancellation; the request is not retried and cannot fall
 back to the legacy gateway key after managed-purpose preparation begins.
 
-The transport only accepts the existing `bound-closed` native state: the account
-and key remain blocked. Production still has no recovery witness and cannot allow
-spending. The focused source tests exercise the local socket and controlled gateway
-fixture, but the compiled chief-runtime-to-Keeper image proof remains outstanding.
-This transport therefore does not establish provider readiness, account activation,
-spending, or restore safety.
+The transport accepts only a native operation with a current `active` receipt
+paired to its original provisioning receipt. A bound-but-closed, activation-pending,
+uncertain or revoked credential cannot dispatch. The focused source tests exercise
+the local socket and controlled gateway fixture, but the compiled chief-runtime-to-
+Keeper image proof and root-host activation wiring remain outstanding. This source
+does not establish provider readiness, live spending or restore safety.
 
 ## Immutable fixed pricing
 
@@ -143,3 +144,9 @@ Focused protocol, pricing, relay/socket and real PostgreSQL tests exercise this
 integration. The manual keeper/neutral-image workflow must also prove SQL024 in
 the actual runtime images before merge. Passing these checks establishes the
 inactive integration, not production activation or restore acceptance.
+
+Native custody records use the current protected snapshot format. This format
+was introduced before release; there is no released older native-custody
+snapshot to migrate. Opening an older unpublished development snapshot fails
+closed and requires explicit reconciliation. No compatibility conversion is
+attempted.

@@ -101,8 +101,8 @@ function validBodyModel(raw:Buffer,alias:string):boolean{
 }
 function matchNative(gate:NativeCustodyGate,ticket:BudgetGatewayTicket,path:GatewayModelPath,bodyBytes:number):{endpoint:string;key:string;format:'anthropic'|'openai'}|undefined{
   const snapshot=gate.inventory();
-  const matches=snapshot.operations.filter((value):value is NativeOperation=>value.kind==='operation'&&value.phase==='bound-closed'&&
-    value.plaintext==='present'&&value.bindingReceipt!==null&&value.bindingId===ticket.bindingId&&value.credentialGeneration===ticket.credentialGeneration&&
+  const matches=snapshot.operations.filter((value):value is NativeOperation=>value.kind==='operation'&&value.phase==='active'&&
+    value.plaintext==='present'&&value.bindingReceipt!==null&&value.activationReceipt!==null&&value.bindingReceipt.journalId===value.activationReceipt.journalId&&value.bindingId===ticket.bindingId&&value.credentialGeneration===ticket.credentialGeneration&&
     value.association.agent===ticket.agent&&value.association.incarnation===ticket.incarnation&&value.association.purposeAlias===ticket.purposeAlias&&
     value.keyFingerprint===ticket.keyFingerprint&&value.reviewedPolicy.pricing.capabilityHash===ticket.profileHash&&
     bodyBytes<=value.reviewedPolicy.capability.maxBodyBytes&&

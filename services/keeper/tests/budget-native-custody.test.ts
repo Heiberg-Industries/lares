@@ -21,19 +21,20 @@ const open=(directory:string)=>{const store=BudgetNativeCustodyStore.openExistin
 let financial:HostFinancialJournal|undefined;
 afterEach(()=>{financial?.close();financial=undefined;for(const store of stores.splice(0))try{store.close();}catch{}for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 const target={origin:'http://gateway.invalid:4000',hash:'a'.repeat(64)};
+const activationRecoveryEpoch='activation-test-epoch',activationRecoveryEpochHash=createHash('sha256').update(activationRecoveryEpoch).digest('hex');
 function reviewed():BudgetNativeReviewedPolicy {
   const capability={version:1 as const,provider:'openai' as const,model:'synthetic-model',providerBaseUrl:'https://provider.invalid/v1',aliases:['lares-brain','lares-writer','lares-utility','lares-gate'],maxBodyBytes:1_048_576,maxOutputTokens:1000};
   return {capability,pricing:{version:1,capabilityHash:gatewayHash(gatewayCanonical(capability)),format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'1',output:'2',cacheRead:'0',cacheWrite:'0'}},maximumLiability:'0.003',team:{maxBudget:'100',models:capability.aliases,budgetDuration:'1d'},user:{maxBudget:'30',userRole:'internal_user',autoCreateKey:false},membership:{maxBudget:'20',allowedModels:capability.aliases,budgetDuration:'1d',role:'user'},key:{maxBudget:'10',models:['lares-brain'],budgetDuration:'1d',keyType:'llm_api',blocked:true}};
 }
 const secret=()=>`sk-${'x'.repeat(43)}`;
-function accountAtom(p:ReturnType<typeof prepare>,kind:'provision'|'member-remove'|'erase-person',installation=false):FinancialAtom {
-  return {kind:'account',id:installation?p.installationId:p.accountId,installationAccountId:p.installationId,accountKind:installation?'installation':'member',state:kind==='provision'?'closed':'retired',reason:kind==='provision'?'unreconciled':kind==='erase-person'?'member_erased':'member_removed',activeWindowId:null,installationCap:installation?'100':null,policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:kind==='erase-person'?'d'.repeat(64):null,providerSuppressionHashes:kind==='erase-person'?['e'.repeat(64)]:[]};
+function accountAtom(p:ReturnType<typeof prepare>,kind:'provision'|'native-activation'|'member-remove'|'erase-person',installation=false):FinancialAtom {
+  const active=kind==='native-activation';return {kind:'account',id:installation?p.installationId:p.accountId,installationAccountId:p.installationId,accountKind:installation?'installation':'member',state:active?'open':kind==='provision'?'closed':'retired',reason:active?'approved':kind==='provision'?'unreconciled':kind==='erase-person'?'member_erased':'member_removed',activeWindowId:active?(installation?'11111111-1111-4111-8111-111111111111':'22222222-2222-4222-8222-222222222222'):null,installationCap:installation?'100':null,policyGeneration:'0',selectedEndpointHash:active&&installation?target.hash:null,endpointGeneration:active&&installation?'1':'0',recoveryEpochHash:active&&installation?activationRecoveryEpochHash:null,canonicalSuppressionHash:kind==='erase-person'?'d'.repeat(64):null,providerSuppressionHashes:kind==='erase-person'?['e'.repeat(64)]:[]};
 }
 function bindingAtom(p:ReturnType<typeof prepare>,state:'active'|'revoked'):Extract<FinancialAtom,{kind:'binding'}> {
   const policy=p.input.reviewedPolicy;return {kind:'binding',id:p.input.bindingId,installationAccountId:p.installationId,memberAccountId:p.accountId,endpointHash:target.hash,credentialGeneration:p.input.credentialGeneration,profileHash:policy.pricing.capabilityHash,maximumLiability:policy.maximumLiability,pricingProfile:policy.pricing,state};
 }
 // Real journal operations mint every positive fixture; copied JSON has no authority.
-async function receipt(p?:ReturnType<typeof prepare>,kind:'provision'|'member-remove'|'erase-person'='member-remove',override?:FinancialAtom[]):Promise<CommittedFinancialReceipt> {
+async function receipt(p?:ReturnType<typeof prepare>,kind:'provision'|'native-activation'|'member-remove'|'erase-person'='member-remove',override?:FinancialAtom[]):Promise<CommittedFinancialReceipt> {
   if(!financial){
     const parent=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-financial-'));roots.push(parent);const directory=join(parent,'financial');
     const database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'},selected={ownershipUid:options.ownershipUid,lock:options.lock};
@@ -44,13 +45,20 @@ async function receipt(p?:ReturnType<typeof prepare>,kind:'provision'|'member-re
   const atoms=override??(p?[accountAtom(p,kind),...(kind==='provision'?[accountAtom(p,kind,true),bindingAtom(p,'active')]:[]),...(kind==='erase-person'?[{kind:'tombstone' as const,accountId:p.accountId,canonicalSuppressionHash:'d'.repeat(64),providerSuppressionHashes:['e'.repeat(64)],state:'erased' as const}]:[])]:[]);
   await j.operation(kind,async id=>{j.propose(id,atoms);result=j.committed(id);});if(!result)throw new Error('Prepared receipt fixture failed');return result;
 }
-async function publishReceipt(gate:NativeCustodyGate,p:ReturnType<typeof prepare>,kind:'provision'|'member-remove'|'erase-person',publish:(receipt:CommittedFinancialReceipt)=>void,override?:FinancialAtom[]):Promise<void>{
+async function publishReceipt(gate:NativeCustodyGate,p:ReturnType<typeof prepare>,kind:'provision'|'native-activation'|'member-remove'|'erase-person',publish:(receipt:CommittedFinancialReceipt)=>void,override?:FinancialAtom[],before?: (operationId:string)=>void):Promise<void>{
   if(!financial)await receipt();const j=financial!;
   const atoms=override??[accountAtom(p,kind),...(kind==='provision'?[accountAtom(p,kind,true),bindingAtom(p,'active')]:[]),...(kind==='erase-person'?[{kind:'tombstone' as const,accountId:p.accountId,canonicalSuppressionHash:'d'.repeat(64),providerSuppressionHashes:['e'.repeat(64)],state:'erased' as const}]:[])];
   await j.operation(kind,async operationId=>{
+    before?.(operationId);
     j.propose(operationId,atoms);
     const committed=j.committedObserved(operationId,await ownedObservationHandle(j,operationId))!;j.withPublicationProof(committed,()=>publish(committed));
   });
+}
+function activationAtoms(p:ReturnType<typeof prepare>,memberWindowCap='10'):FinancialAtom[]{
+  const startsAt='2026-10-01T00:00:00.000000Z',endsAt='2026-11-01T00:00:00.000000Z';
+  return [bindingAtom(p,'active'),accountAtom(p,'native-activation',true),accountAtom(p,'native-activation'),
+    {kind:'window',id:'11111111-1111-4111-8111-111111111111',accountId:p.installationId,startsAt,endsAt,openingLiability:'0',openingCap:'100',policyRevision:'0'},
+    {kind:'window',id:'22222222-2222-4222-8222-222222222222',accountId:p.accountId,startsAt,endsAt,openingLiability:'0',openingCap:memberWindowCap,policyRevision:'0'}];
 }
 function prepare(gate:NativeCustodyGate,values:{installationId?:string;accountId?:string;bindingId?:string;key?:string;policy?:BudgetNativeReviewedPolicy}={}){
   const policy=values.policy??reviewed(),installationId=values.installationId??randomUUID(),accountId=values.accountId??randomUUID();
@@ -72,14 +80,15 @@ function restoreOpenControl(directory:string):void {
 }
 async function ownedObservationHandle(journal:HostFinancialJournal,operationId:string):Promise<Awaited<ReturnType<typeof observeCommittedFinancialProjection>>>{
   const client={async query(value:string|{text:string}){
-    const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
+    const sql=typeof value==='string'?value:value.text,parameters=typeof value==='string'?[]:((value as any).values??[]),command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
     const projection=journal.expectedProjection(true),atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
     if(sql.includes('pg_control_system'))rows=[{systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'}];
     else if(sql.includes('FROM budget_accounts) AS accounts'))rows=[{accounts:String(atoms.filter(a=>a.kind==='account').length),windows:String(atoms.filter(a=>a.kind==='window').length),bindings:String(atoms.filter(a=>a.kind==='binding').length),attempts:String(atoms.filter(a=>a.kind==='attempt').length),grants:String(atoms.filter(a=>a.kind==='grant').length),checkpoints:String(projection.checkpoints.length)}];
     else if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))rows=projection.checkpoints.map(c=>({...c,sequence:String(c.sequence)}));
     else if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))rows=projection.checkpoints.slice(-1).map(c=>({...c,sequence:String(c.sequence)}));
-    else if(sql.includes('FROM budget_accounts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account').map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:null,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
-    else if(sql.includes('FROM budget_gateway_bindings WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'binding'}>=>a.kind==='binding').map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,profile_hash:a.profileHash,maximum_liability:a.maximumLiability,pricing_profile:a.pricingProfile,state:a.state}));
+    else if(sql.includes('FROM budget_accounts WHERE id=ANY'))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account'&&parameters[0].includes(a.id)).map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:a.recoveryEpochHash===activationRecoveryEpochHash?activationRecoveryEpoch:null,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
+    else if(sql.includes('FROM budget_windows WHERE id=ANY'))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'window'}>=>a.kind==='window'&&parameters[0].includes(a.id)).map(a=>({id:a.id,account_id:a.accountId,starts_utc:a.startsAt,ends_utc:a.endsAt,opening_liability:a.openingLiability,opening_cap:a.openingCap,policy_revision:a.policyRevision}));
+    else if(sql.includes('FROM budget_gateway_bindings WHERE id=ANY'))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'binding'}>=>a.kind==='binding'&&parameters[0].includes(a.id)).map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,profile_hash:a.profileHash,maximum_liability:a.maximumLiability,pricing_profile:a.pricingProfile,state:a.state}));
     return {rows,command};
   },release(){}};
   const pool={async query(){return {rows:[]};},async connect(){return client;}};let handle:Awaited<ReturnType<typeof observeCommittedFinancialProjection>>|undefined;
@@ -111,6 +120,75 @@ async function absence(fingerprint:string,challenge:string,origin=target.origin)
 }
 
 describe('protected native custody foundation',()=>{
+  it('records active only from the current observed full activation projection and keeps the provisioning receipt through retirement',async()=>{
+    const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{bindingReceipt=current;gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'native-activation',current=>gate.recordActive(id,current),activationAtoms(p),operationId=>{
+        gate.beginActivation(id,{financialOperationId:operationId,journalId:bindingReceipt.journalId,installationWindowId:'11111111-1111-4111-8111-111111111111',memberWindowId:'22222222-2222-4222-8222-222222222222',
+          endpointGeneration:'1',recoveryEpochHash:activationRecoveryEpochHash,monthStartsAt:'2026-10-01T00:00:00.000000Z',monthEndsAt:'2026-11-01T00:00:00.000000Z',installationCap:'100',memberWindowCap:'10'});
+        gate.claimActivationUnblock(id);gate.verifyActivationUnblocked(id);
+      });
+      expect(gate.readOperation(id)).toMatchObject({phase:'active',bindingReceipt,activationReceipt:{operation:'native-activation',journalId:bindingReceipt.journalId}});
+      await publishReceipt(gate,p,'erase-person',current=>{gate.recordRevocation(id,current);gate.removePlaintext(id);gate.eraseAccountAssociation(p.accountId,current);},
+        [accountAtom(p,'erase-person'),bindingAtom(p,'revoked'),{kind:'tombstone',accountId:p.accountId,canonicalSuppressionHash:'d'.repeat(64),providerSuppressionHashes:['e'.repeat(64)],state:'erased'}]);
+      expect(gate.inventory().operations.find(value=>value.kind==='cleanup')).toMatchObject({kind:'cleanup',phase:'revoke-pending',plaintext:'removed'});
+      expect(gate.inventory().users.some(value=>value.kind==='user'&&value.accountId===p.accountId)).toBe(false);
+    });
+    expect(readdirSync(directory)).not.toContain(`${id}.key`);expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');store.close();
+  });
+
+  it.each(['copied receipt','mismatched full projection'] as const)('refuses activation publication using a %s',async fault=>{
+    const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{bindingReceipt=current;gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      await publishReceipt(gate,p,'native-activation',current=>{
+        const evidence=fault==='copied receipt'?{...current}:current;
+        expect(()=>gate.recordActive(id,evidence)).toThrow('refused');
+      },activationAtoms(p,fault==='mismatched full projection'?'11':'10'),operationId=>{
+        gate.beginActivation(id,{financialOperationId:operationId,journalId:bindingReceipt.journalId,installationWindowId:'11111111-1111-4111-8111-111111111111',memberWindowId:'22222222-2222-4222-8222-222222222222',
+          endpointGeneration:'1',recoveryEpochHash:activationRecoveryEpochHash,monthStartsAt:'2026-10-01T00:00:00.000000Z',monthEndsAt:'2026-11-01T00:00:00.000000Z',installationCap:'100',memberWindowCap:'10'});
+        gate.claimActivationUnblock(id);gate.verifyActivationUnblocked(id);
+      });
+      expect(gate.readOperation(id)).toMatchObject({phase:'activation-pending',activationReceipt:null,bindingReceipt});
+    });store.close();expect(readdirSync(directory)).toContain(`${id}.key`);
+  });
+
+  it('refuses stale and wrong-journal activation observations',async()=>{
+    const {store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt,stale!:CommittedFinancialReceipt,foreign!:HostFinancialJournal;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{bindingReceipt=current;gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      const main=financial!;
+      await main.operation('native-activation',async operationId=>{
+        main.propose(operationId,activationAtoms(p));stale=main.committedObserved(operationId,await ownedObservationHandle(main,operationId))!;
+        main.withPublicationProof(stale,()=>undefined);
+      });
+      await publishReceipt(gate,p,'native-activation',current=>{expect(()=>gate.recordActive(id,stale)).toThrow('refused');},activationAtoms(p),operationId=>{
+        gate.beginActivation(id,{financialOperationId:operationId,journalId:bindingReceipt.journalId,installationWindowId:'11111111-1111-4111-8111-111111111111',memberWindowId:'22222222-2222-4222-8222-222222222222',
+          endpointGeneration:'1',recoveryEpochHash:activationRecoveryEpochHash,monthStartsAt:'2026-10-01T00:00:00.000000Z',monthEndsAt:'2026-11-01T00:00:00.000000Z',installationCap:'100',memberWindowCap:'10'});
+        gate.claimActivationUnblock(id);gate.verifyActivationUnblocked(id);
+      });
+      const parent=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-foreign-journal-'));roots.push(parent);const path=join(parent,'financial');
+      const database={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'},selected={ownershipUid:options.ownershipUid,lock:options.lock};
+      const preparation=HostFinancialJournal.prepareFresh(path,database,selected);try{preparation.complete();}finally{preparation.close();}
+      foreign=HostFinancialJournal.openExisting(path,{...selected,requirePrepared:true});
+      let wrongJournalRefused=false;
+      await expect(foreign.operation('native-activation',async operationId=>{
+        foreign.propose(operationId,activationAtoms(p));const current=foreign.committedObserved(operationId,await ownedObservationHandle(foreign,operationId))!;
+        try{foreign.withPublicationProof(current,()=>gate.recordActive(id,current));}catch(error){wrongJournalRefused=String(error).includes('refused');}
+      })).rejects.toThrow('Financial operation did not durably finish');
+      expect(wrongJournalRefused).toBe(true);
+      expect(gate.readOperation(id)).toMatchObject({phase:'activation-pending',activationReceipt:null,bindingReceipt});
+    });
+    foreign?.close();store.close();
+  });
+
   it('uses only a fresh observed cleanup proof for exact raw operations and leaves the control open',async()=>{
     const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt;
     await store.withGate(async gate=>{
@@ -141,6 +219,26 @@ describe('protected native custody foundation',()=>{
     }finally{recovery.close();}
     expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');
     expect(()=>open(directory)).toThrow('reconciliation');
+  });
+
+  it.each([false,true])('removes an activation-pending key with same-journal retirement before or after the unblock claim (%s)',async claimed=>{
+    const {directory,store}=fixture();let p!:ReturnType<typeof prepare>,id='',bindingReceipt!:CommittedFinancialReceipt;
+    await store.withGate(async gate=>{
+      p=prepare(gate);id=p.operation.operationId;gate.beginProvisioning(id);gate.claimKeyCreate(id);gate.verifyKeyCreated(id);gate.recordNativeBlockedVerification(id);
+      await publishReceipt(gate,p,'provision',current=>{bindingReceipt=current;gate.linkFinancialOperation(id,current.operationId,current.journalId);gate.recordBoundClosed(id,current);},
+        [accountAtom(p,'provision'),accountAtom(p,'provision',true),bindingAtom(p,'active')]);
+      const activation=gate.beginActivation(id,{financialOperationId:randomUUID(),journalId:bindingReceipt.journalId,installationWindowId:randomUUID(),memberWindowId:randomUUID(),
+        endpointGeneration:'1',recoveryEpochHash:'a'.repeat(64),monthStartsAt:'2026-10-01T00:00:00.000000Z',monthEndsAt:'2026-11-01T00:00:00.000000Z',installationCap:'100',memberWindowCap:'10'});
+      expect(activation.activationIntent?.unblockAttempt).toBe('not-attempted');
+      if(claimed){gate.claimActivationUnblock(id);expect(gate.readOperation(id).activationIntent?.unblockAttempt).toBe('attempted');}
+      await publishReceipt(gate,p,'member-remove',current=>{gate.recordRevocation(id,current);gate.removePlaintext(id);},
+        [accountAtom(p,'member-remove'),bindingAtom(p,'revoked')]);
+      expect(()=>gate.claimActivationUnblock(id)).toThrow('refused');
+      expect(gate.readOperation(id)).toMatchObject({phase:'revoke-pending',plaintext:'removed',bindingReceipt,revocationReceipt:{operation:'member-remove',journalId:bindingReceipt.journalId}});
+    });
+    expect(readdirSync(directory)).not.toContain(`${id}.key`);
+    expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('open');
+    store.close();
   });
 
   it('preserves an existing revoke receipt while a current cleanup proof resumes pending local removal',async()=>{

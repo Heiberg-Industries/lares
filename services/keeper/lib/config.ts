@@ -8,7 +8,7 @@ const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 const databaseConnectionSchema = z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict();
 export type KeeperDatabaseConfig = z.infer<typeof databaseConnectionSchema>;
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial'),db:databaseConnectionSchema.extend({user:z.literal('lares_financial')})}).strict();
-export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native')}).strict();
+export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native'),reviewedPolicyFile:absolute.optional()}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
   /** Trusted identity written by the installer from the same ownerId used in role bindings.

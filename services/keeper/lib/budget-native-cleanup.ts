@@ -34,7 +34,7 @@ export function recordCommittedNativeRetirement(gate:NativeCustodyGate,accountId
   return {status:left===0?'complete':'pending',remaining:left};
 }
 
-function trustedOrigin(gatewayUrl:string|undefined):string|undefined {
+export function trustedNativeGatewayOrigin(gatewayUrl:string|undefined):string|undefined {
   if(!gatewayUrl)return undefined;
   try{const url=new URL(gatewayUrl);return ['http:','https:'].includes(url.protocol)&&url.origin!=='null'&&url.pathname==='/'&&!url.search&&!url.hash&&!url.username&&!url.password?url.origin:undefined;}catch{return undefined;}
 }
@@ -51,7 +51,7 @@ function writeOutcome(write:NativeWrite):'acknowledged'|'pending'|'blocked' {
 }
 
 /** Read only a small protected host secret without following links or trusting a stale path stat. */
-function readProtectedMasterKey(path:string):string {
+export function readProtectedNativeGatewayMasterKey(path:string):string {
   const fd=openSync(path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);
   let bytes:Buffer|undefined;
   try{
@@ -79,12 +79,12 @@ export async function cleanupOneNativeCredential(gate:NativeCustodyGate,options:
   const row=rows[0]!,erased=row.kind==='cleanup';
   let request:NativeAbsenceRequest;
   try{request=erased?gate.prepareErasedNativeAbsence(row.keyFingerprint):gate.prepareNativeAbsence(row.operationId);}catch{return {status:'blocked',remaining};}
-  const origin=trustedOrigin(options.gatewayUrl);
+  const origin=trustedNativeGatewayOrigin(options.gatewayUrl);
   if(!origin||origin!==request.origin||!options.masterKeyFile)return {status:'blocked',remaining};
 
   // Do not read the credential until the exact persisted native origin has passed the check.
   let key:string;
-  try{key=readProtectedMasterKey(options.masterKeyFile);}catch{return {status:'blocked',remaining};}
+  try{key=readProtectedNativeGatewayMasterKey(options.masterKeyFile);}catch{return {status:'blocked',remaining};}
   let client:BudgetNativeCredentialClient;
   try{client=new BudgetNativeCredentialClient(origin,key);}catch{return {status:'blocked',remaining};}
   const proveAbsent=async():Promise<NativeCleanupStatus>=>{

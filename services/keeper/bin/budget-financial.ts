@@ -12,6 +12,9 @@ import {consoleSourceTransaction,type SourcePool} from '@lares/agent-kit/console
 import {BudgetNativeCustodyStore,NATIVE_CUSTODY_DIRECTORY} from '../lib/budget-native-custody.js';
 import {openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
 import {budgetAccountProvisionPlanSchema} from '../lib/budget-account-provisioning.js';
+import {budgetNativeActivationRequestSchema} from '../lib/budget-native-host.js';
+import {budgetNativeProvisionRequestSchema} from '../lib/budget-native-provisioning.js';
+import {z} from 'zod';
 const directory='/var/lib/lares/budget-financial';
 function absent(path:string):boolean{try{lstatSync(path);return false;}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return true;throw e;}}
 /** Only absent/dead listeners (ENOENT/ECONNREFUSED) permit a fallback owner.
@@ -73,6 +76,34 @@ export async function requestNativeCleanup(socket:string,deadlineMs=20_000):Prom
     client.once('error',()=>{finish(new Error('Native cleanup host socket unavailable'));});
   });
 }
+const nativeHostResultSchema=(state:'bound-closed'|'active')=>z.object({state:z.literal(state),bindingId:z.string().uuid(),credentialGeneration:z.string().regex(/^(0|[1-9][0-9]{0,18})$/)}).strict();
+async function requestNativeHostAction<T extends {bindingId:string;credentialGeneration:string},S extends 'bound-closed'|'active'>(socket:string,action:string,input:T,state:S,deadlineMs=25_000):Promise<{state:S;bindingId:string;credentialGeneration:string}>{
+  if(!Number.isInteger(deadlineMs)||deadlineMs<1||deadlineMs>25_000)throw new Error('Invalid native budget deadline');
+  return new Promise((resolve,reject)=>{
+    const client=createConnection(socket);let bytes=0,text='',settled=false;
+    const finish=(error:Error|null,result?:{state:S;bindingId:string;credentialGeneration:string})=>{if(settled)return;settled=true;clearTimeout(deadline);client.destroy();if(error)reject(error);else if(result)resolve(result);else reject(new Error('Native budget action was not acknowledged'));};
+    const deadline=setTimeout(()=>finish(new Error('Native budget action timed out; inspect custody before retrying')),deadlineMs);
+    const response=()=>{try{
+      if(!text.endsWith('\n')||text.slice(0,-1).includes('\n'))throw new Error();
+      const envelope=z.object({ok:z.literal(true),result:nativeHostResultSchema(state)}).strict().parse(JSON.parse(text.slice(0,-1)));
+      if(envelope.result.state!==state||envelope.result.bindingId!==input.bindingId||envelope.result.credentialGeneration!==input.credentialGeneration)throw new Error();
+      finish(null,{state,bindingId:envelope.result.bindingId,credentialGeneration:envelope.result.credentialGeneration});
+    }catch{finish(new Error('Native budget action was not acknowledged; inspect custody before retrying'));}};
+    client.once('connect',()=>client.end(JSON.stringify({action,input})+'\n'));
+    client.on('data',chunk=>{if(settled)return;bytes+=chunk.length;if(bytes>4096){finish(new Error('Invalid native budget response; inspect custody before retrying'));return;}text+=chunk.toString();});
+    client.once('end',()=>{if(!settled)response();});
+    client.once('close',()=>{if(!settled)finish(new Error('Native budget connection closed without acknowledgement; inspect custody before retrying'));});
+    client.once('error',()=>{finish(new Error('Native budget host socket unavailable; inspect custody before retrying'));});
+  });
+}
+export async function requestNativeProvision(socket:string,raw:unknown,deadlineMs=25_000):Promise<{state:'bound-closed';bindingId:string;credentialGeneration:string}>{
+  const input=budgetNativeProvisionRequestSchema.parse(raw);
+  return requestNativeHostAction(socket,'budget.provision-native',input,'bound-closed',deadlineMs);
+}
+export async function requestNativeActivation(socket:string,raw:unknown,deadlineMs=25_000):Promise<{state:'active';bindingId:string;credentialGeneration:string}>{
+  const input=budgetNativeActivationRequestSchema.parse(raw);
+  return requestNativeHostAction(socket,'budget.activate-native',input,'active',deadlineMs);
+}
 async function readPlan():Promise<unknown>{
   const chunks:Buffer[]=[];let size=0;
   for await(const chunk of process.stdin){const value=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);size+=value.length;if(size>4096)throw new Error('Provision plan is too large');chunks.push(value);}
@@ -116,7 +147,7 @@ export async function main(argv:string[]):Promise<void>{
     if(argv[1]!==confirm||argv[2]!=='--operator-password-file'||!argv[3]||argv.length>5)throw new Error(`usage: budget-financial ${command} ${confirm} --operator-password-file <path> [config]`);
     operatorPath=argv[3];if(argv[4])configPath=argv[4];
   }else{
-    if(argv.length>3||!['freeze','cleanup-native','provision-accounts'].includes(command))throw new Error('usage: budget-financial prepare-fresh --confirm-fresh-installation --operator-password-file <path> [config] | prepare-native --confirm-fresh-native-custody --operator-password-file <path> [config] | freeze --host [config] | cleanup-native --host [config] | provision-accounts --host [config] < plan.json');
+    if(argv.length>3||!['freeze','cleanup-native','provision-accounts','provision-native','activate-native'].includes(command))throw new Error('usage: budget-financial prepare-fresh --confirm-fresh-installation --operator-password-file <path> [config] | prepare-native --confirm-fresh-native-custody --operator-password-file <path> [config] | freeze --host [config] | cleanup-native --host [config] | provision-accounts --host [config] < plan.json | provision-native --host [config] < request.json | activate-native --host [config] < request.json');
     if(argv[2])configPath=argv[2];
   }
   const config=loadKeeperConfig(configPath);
@@ -167,6 +198,16 @@ export async function main(argv:string[]):Promise<void>{
     return;
   }
   if(argv[1]!=='--host')throw new Error('Root host action required');
+  if(command==='provision-native'){
+    if(!config.budgetFinancial||!config.budgetNative?.reviewedPolicyFile||!config.lifecycle?.runtime.gatewayUrl||!config.lifecycle.runtime.gatewayMasterKeyFile)throw new Error('Prepared native custody, reviewed policy and a trusted gateway are required');
+    const result=await requestNativeProvision('/run/lares-host/keeper.sock',await readPlan());
+    process.stdout.write(JSON.stringify(result)+'\n');return;
+  }
+  if(command==='activate-native'){
+    if(!config.budgetFinancial||!config.budgetNative||!config.lifecycle?.runtime.gatewayUrl||!config.lifecycle.runtime.gatewayMasterKeyFile)throw new Error('Prepared native custody and a trusted gateway are required');
+    const result=await requestNativeActivation('/run/lares-host/keeper.sock',await readPlan());
+    process.stdout.write(JSON.stringify(result)+'\n');return;
+  }
   if(command==='provision-accounts'){
     if(!config.budgetFinancial)throw new Error('Financial custody is not configured');
     const result=await requestFinancialProvision('/run/lares-host/keeper.sock',await readPlan());
