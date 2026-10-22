@@ -1,4 +1,4 @@
-import {consoleSourceTransaction,gateConsoleOrganisation,invalidateConsoleSource,noteConsoleSourceBindingLocked,SourceAuthorityDenied,SourceAuthorityUnavailable,retainConsoleSourceDeadline,checkConsoleSourceDeadlines} from './console-source-transaction.js';
+import {consoleSourceTransaction,gateConsoleOrganisation,invalidateConsoleSource,noteConsoleSourceBindingLocked,SourceAuthorityDenied,SourceAuthorityUnavailable,retainConsoleSourceDeadline,checkConsoleSourceDeadlines,type SourceDatabase,type SourceTransactionOptions} from './console-source-transaction.js';
 import {retainedConsoleSources,prepareConsoleVaultSources,insertConsoleVaultSources,type RequestedVaultSources} from './console-vault-source-history.js';
 import {currentMember} from './member-store.js';
 import {verifiedPrivateConsoleResponse} from './private-console-envelope.js';
@@ -23,8 +23,8 @@ export const CONSOLE_AUTHORITY_REFUSED = 'Conversation authority is not availabl
 /** A pool supplies connect; a query-only client must belong to our registered transaction owner. */
 export interface AuthorityDatabase { query(sql: string, values?: unknown[]): Promise<{ rows: any[] }> }
 export interface AuthorityPool extends AuthorityDatabase { connect(): Promise<AuthorityDatabase & {release():void}> }
-export async function authorityTransaction<T>(database:AuthorityDatabase|undefined,fn:(db:AuthorityDatabase)=>Promise<T>):Promise<T> {
-  return consoleSourceTransaction(database??getPool(),fn);
+export async function authorityTransaction<T>(database:AuthorityDatabase|undefined,fn:(db:AuthorityDatabase)=>Promise<T>,options:{deadlineAtMs?:number}={}):Promise<T> {
+  return consoleSourceTransaction(database??getPool(),fn,undefined,options);
 }
 export interface ConsoleBindingInput { agent: string; incarnation: string; sessionId: string; memberId: string; admissionNonce: string }
 export interface ConsoleBinding extends ConsoleBindingInput { placeId: string; audienceRevision: number; policyRevision: number; agentAccessRevision: number }
@@ -104,10 +104,27 @@ export async function requireConsoleSessionBinding(input: Omit<ConsoleBindingInp
 }
 /** Trusted server seam only; supply the actual loaded definition for this session. No files
  * are read here, and no model-facing caller can manufacture session definition provenance. */
-export async function captureConsoleVaultSources(input:ConsoleBindingInput,requested:RequestedVaultSources,db?:AuthorityDatabase,env:NodeJS.ProcessEnv=process.env):Promise<ConsoleBinding>{
-  return checkedConsoleSessionBinding(input,db,env,requested);
+export async function captureConsoleVaultSources(input:ConsoleBindingInput,requested:RequestedVaultSources,db?:AuthorityDatabase,env:NodeJS.ProcessEnv=process.env,options:{deadlineAtMs?:number}={}):Promise<ConsoleBinding>{
+  return checkedConsoleSessionBinding(input,db,env,requested,options);
 }
-async function checkedConsoleSessionBinding(input:Omit<ConsoleBindingInput,'admissionNonce'> & {admissionNonce?:string},db:AuthorityDatabase|undefined,env:NodeJS.ProcessEnv,requested?:RequestedVaultSources):Promise<ConsoleBinding>{
+/** Capture sources in an acknowledged transaction, then reauthorize them and perform one
+ * buffered guarded file read in a fresh transaction. The callback result is returned only after
+ * the second COMMIT is acknowledged; caught retained-source failures still use the transaction's
+ * revoke-only retirement path. */
+export async function withConsoleVaultSourceRead<T>(input:ConsoleBindingInput,requested:RequestedVaultSources,
+  use:(db:AuthorityDatabase,binding:ConsoleBinding)=>Promise<T>,db?:AuthorityPool,env:NodeJS.ProcessEnv=process.env,options:SourceTransactionOptions={}):Promise<T>{
+  await captureConsoleVaultSources(input,requested,db,env,{...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})});
+  return consoleSourceTransaction(db??getPool(),async client=>{
+    const current=await checkedConsoleSessionBinding(input,client,env,requested,{...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})});
+    const retained=await retainedConsoleSources(client as SourceDatabase,current);
+    const captured=new Set(retained.filter(c=>c.session_definition_hash===requested.sessionDefinition.hash).map(c=>c.area_id));
+    if(requested.areaIds.some(id=>!captured.has(id)))denied();
+    const result=await use(client,current);
+    await checkConsoleSourceDeadlines(client as SourceDatabase);
+    return result;
+  },undefined,options);
+}
+async function checkedConsoleSessionBinding(input:Omit<ConsoleBindingInput,'admissionNonce'> & {admissionNonce?:string},db:AuthorityDatabase|undefined,env:NodeJS.ProcessEnv,requested?:RequestedVaultSources,options:{deadlineAtMs?:number}={}):Promise<ConsoleBinding>{
   try{return await authorityTransaction(db,async client=>{
     // Unlocked discovery establishes the exact tuple; it is rechecked under lock below.
     const snapshot=(await client.query(`SELECT * FROM console_session_bindings WHERE agent=$1 AND incarnation=$2::uuid AND session_id=$3
@@ -135,7 +152,7 @@ async function checkedConsoleSessionBinding(input:Omit<ConsoleBindingInput,'admi
     if(final===undefined){if(retained.length||pending.length)invalidateConsoleSource(client,exact);denied();}
     await checkConsoleSourceDeadlines(client);
     return binding(rows[0]);
-  });}catch(error){if(error instanceof SourceAuthorityDenied||error instanceof SourceAuthorityUnavailable)throw error;return denied();}
+  },options);}catch(error){if(error instanceof SourceAuthorityDenied||error instanceof SourceAuthorityUnavailable)throw error;return denied();}
 }
 
 export async function retireConsoleSession(input: ConsoleBindingInput, db: AuthorityDatabase | undefined = undefined, env: NodeJS.ProcessEnv = process.env): Promise<void> {

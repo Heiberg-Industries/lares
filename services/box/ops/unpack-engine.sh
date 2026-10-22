@@ -7,6 +7,7 @@
 #   services/box/ops/*                  the installer, update, rollback, restore, units, Caddyfile
 #   services/box/sql/*                  the numbered migrations
 #   services/box/compose.lares-keeper.yaml
+#   services/box/compose.lares-keeper-vault.yaml
 #   services/box/engine-image           one line: the digest passed in
 #   services/creative/sql/001-eve-workflow.sql
 #
@@ -42,6 +43,7 @@ required=(
   "$box/ops/Caddyfile"
   "$box/sql/001_baseline.sql"
   "$box/compose.lares-keeper.yaml"
+  "$box/compose.lares-keeper-vault.yaml"
   "$APP_ROOT/services/creative/sql/001-eve-workflow.sql"
 )
 for f in "${required[@]}"; do
@@ -64,6 +66,7 @@ copy_dir_files() { # <source dir> <dest dir>: regular files directly inside, mod
 copy_dir_files "$box/ops" "$stage/services/box/ops"
 copy_dir_files "$box/sql" "$stage/services/box/sql"
 cp -p "$box/compose.lares-keeper.yaml" "$stage/services/box/"
+cp -p "$box/compose.lares-keeper-vault.yaml" "$stage/services/box/"
 mkdir -p "$stage/services/creative/sql"
 cp -p "$APP_ROOT/services/creative/sql/001-eve-workflow.sql" "$stage/services/creative/sql/"
 printf '%s\n' "$digest" > "$stage/services/box/engine-image"

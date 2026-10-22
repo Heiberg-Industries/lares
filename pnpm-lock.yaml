@@ -519,6 +519,9 @@ importers:
 
   services/keeper:
     dependencies:
+      '@lares/agent-box':
+        specifier: workspace:^
+        version: link:../box
       '@lares/agent-kit':
         specifier: workspace:*
         version: link:../../packages/agent-kit

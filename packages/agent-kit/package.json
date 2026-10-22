@@ -117,6 +117,7 @@
     "./agent-registry": "./src/agent-registry.ts",
     "./catalogue": "./src/catalogue.ts",
     "./private-console-surface": "./src/private-console-surface.ts",
+    "./vault-broker-client": "./src/vault-broker-client.ts",
     "./private-console-resume": "./src/private-console-resume.ts",
     "./private-console-envelope": "./src/private-console-envelope.ts",
     "./console-turn-authority": "./src/console-turn-authority.ts",

@@ -12,6 +12,15 @@ it('renders real YAML with own identity, two Slack secrets and stable read-only 
  expect(JSON.stringify(doc)).not.toContain('telegram-token');expect(s.networks.test_default.ipv4_address).toBe(agent.address);
  expect(Object.keys(doc.services)).toEqual(['lares-bookkeeper']);
 });
+it('mounts Keeper-prepared Vault sockets only for the chief runtime',()=>{
+ const chief={...agent,role:'chief-of-staff' as const};
+ const chiefOpts={...opts,imageByRole:{'chief-of-staff':image}};
+ const without=parse(renderAgentsCompose([chief],chiefOpts)).services['lares-bookkeeper'];
+ expect(without.volumes).toEqual(['/srv/agents/bookkeeper:/definition:ro']);
+ const withVault=parse(renderAgentsCompose([chief],{...chiefOpts,vaultRuntimeDir:'/srv/lares/run/vault'})).services['lares-bookkeeper'];
+ expect(withVault.volumes).toContainEqual({type:'bind',source:'/srv/lares/run/vault',target:'/run/lares-vault',read_only:true,bind:{create_host_path:false}});
+ expect(JSON.stringify(withVault)).not.toContain('/srv/lares/vault');
+});
 it('hands every agent the installation model prefix and refuses a missing or invalid one',()=>{
  expect(parse(renderAgentsCompose([agent],{...opts,modelPrefix:'home'})).services['lares-bookkeeper'].environment.LARES_MODEL_PREFIX).toBe('home');
  for(const bad of ['','Home','a-b','installation',undefined as unknown as string])

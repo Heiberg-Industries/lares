@@ -10,7 +10,7 @@ import {mkdtempSync,cpSync,symlinkSync,writeFileSync,readFileSync,readdirSync,mk
 import {tmpdir} from 'node:os';
 import {join,resolve,basename,relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createHash,createCipheriv,randomBytes,randomUUID} from 'node:crypto';
+import {createHash,createCipheriv,createHmac,randomBytes,randomUUID} from 'node:crypto';
 import {spawn,execFileSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {PostgreSqlContainer} from '@testcontainers/postgresql';
@@ -34,12 +34,36 @@ let container,db,child,logs='',port;
 const withSend=process.env.PRIVATE_CHAT_PROOF_SEND==='1';
 const gatewayLane=process.env.PRIVATE_CHAT_PROOF_GATEWAY_LANE;
 const withBudget=process.env.PRIVATE_CHAT_PROOF_BUDGET==='1';
+const withVault=process.env.PRIVATE_CHAT_PROOF_VAULT==='1';
 if(withBudget)assert.ok(gatewayLane==='anthropic'&&process.env.PRIVATE_CHAT_PROOF_ROLE==='chief-of-staff'&&withSend,'Durable proof uses the bounded chief/Anthropic approval fixture');
+if(withVault)assert.equal(process.env.PRIVATE_CHAT_PROOF_ROLE,'chief-of-staff','Vault custody fixture is bounded to the chief-of-staff role');
 let gateway;
 const observedSteps=new Set();
+const vaultCalls=[],vaultWire=[],vaultChallenges=new Map(),vaultTurns=new Map(),vaultServers=[];
 const snapshots=[],ownedSessionIds=new Set();
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const freePort=()=>new Promise(done=>{const server=createServer();server.listen(0,'127.0.0.1',()=>{const p=server.address().port;server.close(()=>done(p));});});
+function serveVaultFixture(path,handler){return new Promise((resolve,reject)=>{const server=createServer(socket=>{let buffer='';socket.setTimeout(2500,()=>socket.destroy());socket.on('data',chunk=>{buffer+=chunk.toString('utf8');if(Buffer.byteLength(buffer)>16384){socket.destroy();return;}const end=buffer.indexOf('\n');if(end<0)return;if(end!==buffer.length-1){socket.destroy();return;}const request=JSON.parse(buffer.slice(0,end));vaultWire.push({op:request.op,agent:request.agent,session:request.input?.sessionId??request.input?.receipt?.path,turnId:request.input?.turnId,sequence:request.input?.sequence});void Promise.resolve().then(()=>handler(request)).then(result=>socket.end(JSON.stringify({ok:true,...result})+'\n')).catch(error=>{writeFileSync(join(root,'vault-error.log'),String(error));socket.end('{"ok":false}\n');});});});server.once('error',reject);server.listen(path,()=>{server.off('error',reject);vaultServers.push(server);resolve(server);});});}
+async function startVaultFixture(){
+ const consoleSocket=join(root,'console-vault.sock'),runtimeSocket=join(root,'runtime-vault.sock'),consoleKey='2'.repeat(64),runtimeKey='3'.repeat(64);
+ writeFileSync(join(root,'console-vault-key'),consoleKey);writeFileSync(join(root,'runtime-control-key'),runtimeKey);
+ process.env.CONSOLE_VAULT_SIGNING_KEY_FILE=join(root,'console-vault-key');process.env.LARES_VAULT_CONSOLE_SOCKET=consoleSocket;
+ const secret=Buffer.from(consoleKey,'hex'),runtimeSecret=Buffer.from(runtimeKey,'hex');
+ await serveVaultFixture(consoleSocket,async req=>{
+  if(req.op==='challenge'){const challenge=randomBytes(32).toString('base64url'),expiry=Date.now()+10000;vaultChallenges.set(challenge,{input:req.input,expiry});vaultCalls.push({op:'challenge',input:req.input});return {challenge,expiry};}
+  throw new Error('console operation');
+ });
+ const vaultPending=new Map();
+ await serveVaultFixture(runtimeSocket,async req=>{
+  const {mac,...body}=req,expected=createHmac('sha256',runtimeSecret).update(JSON.stringify(body)).digest('base64url');assert.equal(mac,expected,'runtime socket authentication');
+  vaultCalls.push({op:req.op,body});
+  if(req.op==='request.admit'){const input=req.input,[payload,signature]=String(input.capsule).split('.'),expectedCapsule=createHmac('sha256',secret).update(payload).digest('base64url');assert.equal(signature,expectedCapsule,'Keeper verifies console capsule signature');const capsule=JSON.parse(Buffer.from(payload,'base64url').toString('utf8')),challenge=vaultChallenges.get(capsule.challenge);assert.ok(challenge&&challenge.expiry===capsule.expiry&&challenge.expiry>Date.now(),'Keeper consumes one-use challenge');for(const [key,value]of Object.entries(challenge.input))assert.equal(capsule[key],value,'Keeper checks challenge binding '+key);assert.equal(req.agent,capsule.agent);assert.equal(req.incarnation,capsule.incarnation);assert.equal(input.receipt.method,capsule.method);assert.equal(input.receipt.path,capsule.path);assert.equal(input.receipt.rawBodyHash,capsule.rawBodyHash);vaultChallenges.delete(capsule.challenge);const pendingReceipt=randomBytes(32).toString('base64url');vaultPending.set(pendingReceipt,{agent:req.agent,incarnation:req.incarnation,capsule});return {pendingReceipt};}
+  if(req.op==='turn.open'){const input=req.input;assert.equal(input.definition.hash.length,64);assert.equal(typeof input.definition.dutiesMd,'string');const pending=vaultPending.get(input.pendingReceipt);assert.ok(pending,'turn.open consumes actual one-use pending receipt');assert.equal(pending.agent,req.agent);assert.equal(pending.incarnation,req.incarnation);assert.equal(pending.capsule.session,input.sessionId);assert.equal(pending.capsule.member,input.memberId);assert.equal(pending.capsule.admissionNonce,input.admissionNonce);assert.equal(pending.capsule.definitionHash,input.definition.hash);vaultPending.delete(input.pendingReceipt);const turnCapability=randomBytes(32).toString('base64url'),expiresAt=Date.now()+300000;vaultTurns.set(turnCapability,{sessionId:input.sessionId,turnId:input.turnId,sequence:input.sequence,agent:req.agent,incarnation:req.incarnation});return {turnCapability,expiresAt};}
+  if(req.op==='vault.read'){const turn=vaultTurns.get(req.input.turnCapability);assert.ok(turn,'current opened turn');assert.equal(turn.sessionId,req.input.sessionId);assert.equal(turn.turnId,req.input.turnId);assert.equal(turn.sequence,req.input.sequence);return {path:'owner.md',content:'VAULT_PRIVATE_CANARY'};}
+  if(req.op==='turn.close'){vaultTurns.delete(req.input.turnCapability);return {closed:true};}
+  throw new Error('runtime operation');
+ });
+}
 function encrypt(value){const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',Buffer.from(key,'hex'),iv);return Buffer.concat([iv,cipher.update(value),cipher.final(),cipher.getAuthTag()]).toString('base64');}
 function hashOutput(path){const h=createHash('sha256');for(const file of readdirSync(join(path,'.output'),{recursive:true,withFileTypes:true}).filter(d=>d.isFile()).map(d=>join(d.parentPath,d.name)).sort()){h.update(relative(path,file));h.update(readFileSync(file));}return h.digest('hex');}
 function modelSource(role){const source = `
@@ -62,6 +86,7 @@ const scripted=mockModel(({lastUserMessage,messages,tools,toolResults})=>{
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&!currentResults)return {toolCalls:[{name:'personal_mailbox_send',input:JSON.parse(lastUserMessage.slice(12))}]};
   if(lastUserMessage?.startsWith('SEND_ATTACK ')&&currentResults&&!attacked.has(lastUserMessage)){attacked.add(lastUserMessage);const input=JSON.parse(lastUserMessage.slice(12));return {toolCalls:[{name:'personal_mailbox_send',input},{name:'personal_mailbox_read',input:{selection:input.selection,id:'proof-message'}}]};}
   if(lastUserMessage?.startsWith('MAIL ')&&!toolResults.length)return {toolCalls:[{name:'gmail_read',input:{id:'proof-message',selection:JSON.parse(lastUserMessage.slice(5))}}]};
+  if(lastUserMessage==='VAULT_READ'&&!currentResults)return {toolCalls:[{name:'agent-kit__vault_read',input:{area:'private',path:'owner.md'}}]};
   if(lastUserMessage?.startsWith('SKILL ')&&!toolResults.length)return {toolCalls:[{name:'load_skill',input:{skill:lastUserMessage.slice(6)}}]};
   if(lastUserMessage==='question')return 'Which topic would you like to discuss?';
   return 'ANSWER '+lastUserMessage+' '+JSON.stringify(toolResults);
@@ -79,7 +104,7 @@ async function makeRole(role){
  cpSync(join(repo,'services',role),cwd,{recursive:true,filter:path=>!['node_modules','.output','.eve','tests'].includes(basename(path))});
  symlinkSync(join(repo,'services',role,'node_modules'),join(cwd,'node_modules'));
  const definition=join(root,role+'-definition');mkdirSync(definition);
- const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
+ const declaration={...JSON.parse(readFileSync(join(cwd,'agent.json'),'utf8')),name:'proof-'+(role==='creative'?'creative':'chief'),model:'fixture-brain',role,display:'Proof agent',grants:role==='creative'?[]:[{capability:'gmail',scope:'read'},...(withVault?[{capability:'vault',scope:'read',areas:['private']}]:[]),...(withSend?[{capability:'personal_mailbox',scope:'write-with-confirm'}]:[])],autonomy:role==='creative'?{}:{gmail:'autonomous',...(withVault?{vault:'autonomous'}:{}),...(withSend?{personal_mailbox:'autonomous'}:{})},skills:[]};
  writeFileSync(join(definition,'agent.json'),JSON.stringify(declaration));writeFileSync(join(definition,'voice.md'),canaries.owner);writeFileSync(join(definition,'duties.md'),canaries.owner);
  const modelLog=join(root,role+'-model.jsonl'),providerLog=join(root,role+'-provider.log');writeFileSync(modelLog,'');writeFileSync(providerLog,'');
  if(gatewayLane){gateway.setRole(role);writeFileSync(modelLog+'.scope','');writeFileSync(modelLog+'.compaction','');if(withBudget)writeFileSync(modelLog+'.budget','');
@@ -87,7 +112,7 @@ async function makeRole(role){
  }
  writeFileSync(join(cwd,'lib/gateway-provider.ts'),modelSource(role));
  const inherited=Object.fromEntries(['PATH','HOME','TMPDIR'].filter(k=>process.env[k]).map(k=>[k,process.env[k]]));
- const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`};
+ const env={...inherited,EVE_TELEMETRY_DISABLED:'1',NODE_ENV:'production',EVE_SCHEDULES_LIVE:'0',EGRESS_PROXY_URL:'http://synthetic-proxy.invalid:8888',LARES_AGENT_NAME:declaration.name,LARES_AGENT_INCARNATION:incarnation,AGENT_OWNER_USER_ID:owner,OWNER_HOME_TZ:'UTC',LARES_DEFINITION_DIR:definition,EVE_ROUTE_PASSWORD_FILE:join(root,'password'),PROOF_MODEL_LOG:modelLog,PROOF_PROVIDER_LOG:providerLog,VAULT_PATH:join(root,'vault'),TOKEN_ENC_KEY_FILE:'/run/secrets/google-token-key',LARES_PERSONAL_GOOGLE_CLIENTS:JSON.stringify({proof:{clientIdFile:'/run/secrets/personal-google-proof-id',clientSecretFile:'/run/secrets/personal-google-proof-secret'}}),NODE_OPTIONS:`--import=${join(root,'mounts.mjs')}`,...(withVault?{CONSOLE_VAULT_SIGNING_KEY_FILE:join(root,'console-vault-key'),LARES_RUNTIME_CONTROL_SECRET_FILE:join(root,'runtime-control-key'),LARES_VAULT_RUNTIME_SOCKET:join(root,'runtime-vault.sock')}:{})};
  const eve=join(cwd,'node_modules/.bin/eve');
  console.log(role+': building actual role with synthetic provider');
  await run(eve,['build'],{cwd,env,timeout:300000});
@@ -221,6 +246,7 @@ async function proveGatewayInvocation(app){
 }
 try{
  mkdirSync(join(root,'packages'),{recursive:true});symlinkSync(join(repo,'packages/agent-kit'),join(root,'packages/agent-kit'));symlinkSync(join(repo,'node_modules'),join(root,'node_modules'));mkdirSync(join(root,'vault'));writeFileSync(join(root,'vault/owner.md'),canaries.owner);writeFileSync(join(root,'password'),password);
+ if(withVault)await startVaultFixture();
  for(const [name,value]of [['google-token-key',key],['personal-google-proof-id','fixture-client'],['personal-google-proof-secret','fixture-secret']])writeFileSync(join(root,name),value);
  writeFileSync(join(root,'mounts.mjs'),`import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';const read=fs.readFileSync;const allowed=new Set(['google-token-key','personal-google-proof-id','personal-google-proof-secret']);fs.readFileSync=function(path,...args){if(typeof path==='string'&&path.startsWith('/run/secrets/')&&allowed.has(path.slice(13)))return read(${JSON.stringify(root)}+'/'+path.slice(13),...args);return read(path,...args);};syncBuiltinESMExports();`);
  if(gatewayLane){writeFileSync(join(root,'gateway-key'),'fixture-gateway-key');gateway=await startGatewayFixture(root,gatewayLane);}
@@ -250,6 +276,7 @@ try{
   const crossControl=await request(app,b,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie);assert.equal(crossControl.ok,false);assert.equal(upstreamCalls,before);
   const controlCalls=models(app).length;assert.ok((await request(app,a,'POST',`eve/v1/session/${sa.id}/cancel`,{},sa.cookie)).ok);assert.equal(models(app).length,controlCalls);
   await send(app,a,sa,'question');assert.ok((await send(app,a,sa,'A private planning question')).includes('ANSWER'));console.log(role+': plain-text question continuation accepted');
+  if(withVault){const vaultSession=await create(app,a,'Vault custody seam');await stream(app,a,vaultSession);const startIndex=vaultCalls.length,transcript=await send(app,a,vaultSession,'VAULT_READ'),events=transcript.split('\n').filter(Boolean).map(JSON.parse),started=events.find(event=>event.type==='turn.started');assert.ok(started,'Actual Eve turn.started event');assert.ok(transcript.includes('VAULT_PRIVATE_CANARY'),'Actual tool context returned the bounded broker read');const chain=vaultCalls.slice(startIndex);assert.deepEqual(chain.map(call=>call.op),['challenge','request.admit','turn.open','vault.read','turn.close']);const opened=chain.find(call=>call.op==='turn.open').body.input,read=chain.find(call=>call.op==='vault.read').body.input,admitted=chain.find(call=>call.op==='request.admit').body.input,capsule=JSON.parse(Buffer.from(admitted.capsule.split('.')[0],'base64url').toString('utf8'));assert.equal(opened.sessionId,vaultSession.id);assert.equal(opened.turnId,started.data.turnId);assert.equal(opened.sequence,started.data.sequence);assert.equal(read.turnId,started.data.turnId);assert.equal(read.sequence,started.data.sequence);assert.equal(admitted.receipt.method,'POST');assert.equal(admitted.receipt.path,`/eve/v1/session/${vaultSession.id}`);assert.equal(admitted.receipt.rawBodyHash,capsule.rawBodyHash);assert.equal(capsule.member,a);assert.equal(capsule.purpose,'human');console.log('chief-of-staff: actual compiled HTTP Request → signed exact receipt → Eve auth clone/turn.started → real tool context → bounded broker read PASS (recording broker fixture)');}
   if(role==='chief-of-staff'){const mailA=await send(app,a,sa,'MAIL '+JSON.stringify(selections.get(a)));const mailB=await send(app,b,sb,'MAIL '+JSON.stringify(selections.get(b)));assert.ok(mailA.includes('MEMBER_A_MAIL_CANARY'));assert.ok(!mailA.includes('MEMBER_B_MAIL_CANARY'));assert.ok(mailB.includes('MEMBER_B_MAIL_CANARY'));}
   if(role==='creative')for(const skill of ['private-owner-skill','/vault/owner.md','../../agent/voice.md']){const result=await send(app,a,sa,'SKILL '+skill);assert.ok(result.includes('No skill named'),result);assert.ok(!result.includes(canaries.owner));}
   if(role==='chief-of-staff'&&withSend){
@@ -294,7 +321,7 @@ try{
     await answer(sa,expired,'cancel');
     console.log('chief-of-staff: exact prepare/approve/cancel/replay/cold-restart and second-call refusal PASS');
   }
-  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
+  const record=models(app);for(const frame of record){const text=JSON.stringify(frame);assert.ok(!text.includes(canaries.owner));assert.ok(frame.messages.filter(message=>message.text?.startsWith('Available skills:')).every(message=>message.text==='Available skills: none'));const names=frame.tools.map(t=>t.name).sort();assert.deepEqual(names,role==='creative'?['ask_question','load_skill','todo']:['ask_question','gmail_accounts','gmail_read','gmail_search','todo',...(withSend?['personal_mailbox_accounts','personal_mailbox_list','personal_mailbox_read','personal_mailbox_send']:[]),...(withVault?['agent-kit__vault_list','agent-kit__vault_read']:[])].sort());assert.ok(!(text.includes(canaries.a)&&text.includes(canaries.b)));}
   const beforeCold=gatewayLane?readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id):[];
   await stop();await start(app);assert.equal(hashOutput(app.cwd),outputHash);assert.ok((await send(app,a,sa,'After cold restart')).includes('ANSWER'));
   if(gatewayLane){const after=readFileSync(app.modelLog+'.scope','utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(s=>s.session.id===sa.id);assert.ok(after.at(-1).event.data.sequence>Math.max(...beforeCold.map(s=>s.event.data.sequence)),'Cold fresh human turn reused previous sequence');assert.ok(after.at(-1).event.data.turnId,'Cold fresh human turn did not retain actual nonempty turn');}
@@ -325,4 +352,4 @@ try{
 }catch(error){writeFileSync(join(root,'server.log'),logs);console.error(logs.slice(-6000));throw error;}finally{await stop();
  // Eve's session sandboxes outlive its server. Remove only exact synthetic session labels.
  for(const id of ownedSessionIds){try{const ids=execFileSync('docker',['ps','-aq','--filter','label=eve.sandbox=1','--filter',`label=eve.sandbox.tag.sessionId=${id}`],{encoding:'utf8'}).trim().split('\n').filter(Boolean);if(ids.length){assert.ok(ids.every(value=>/^[a-f0-9]{12,64}$/.test(value)));execFileSync('docker',['rm','-f',...ids],{stdio:'ignore'});}}catch{console.warn('Synthetic sandbox cleanup needs attention for '+id);}}
- await gateway?.close();await db?.end();await container?.stop();if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}
+ await Promise.all(vaultServers.map(server=>new Promise(resolve=>{const timeout=setTimeout(()=>{server.closeAllConnections?.();resolve();},1000);server.close(()=>{clearTimeout(timeout);resolve();});})));await gateway?.close();await db?.end();await container?.stop();if(withVault)writeFileSync(join(root,'vault-wire.json'),JSON.stringify({vaultWire,vaultCalls},null,2));if(process.env.PRIVATE_CHAT_PROOF_KEEP)console.log('Kept synthetic fixture: '+root);else rmSync(root,{recursive:true,force:true});}

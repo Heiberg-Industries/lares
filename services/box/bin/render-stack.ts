@@ -16,7 +16,7 @@
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER. It reads one file, validates it
 // through the engine's own release rules, and writes one file.
-import { readFileSync, writeFileSync, renameSync, rmSync, chmodSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, rmSync, chmodSync, existsSync, lstatSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
@@ -57,6 +57,17 @@ const ARGUMENTS = [
 const COMMITTED_GATEWAY_START = join(
   dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "images", "gateway-runtime", "start.sh",
 );
+
+/** Vault custody is optional on installations updated by digest only. Inspect the named file
+ *  without following symlinks or reading its value; invalid/missing custody omits only Vault. */
+export function optionalRegularFile(path: string): string | null {
+  try {
+    const info = lstatSync(path);
+    return info.isFile() && info.size > 0 ? path : null;
+  } catch {
+    return null;
+  }
+}
 
 const HELP_TEXT = [
   `pnpm -C services/box render-stack ${ARGUMENTS.map((a) => `<${a}>`).join(" ")}`,
@@ -107,6 +118,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const calendarFile = join(at("installationDir"), "deadline-calendar.json");
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
+    consoleVaultSigningKeyFile: optionalRegularFile(join(at("secretsDir"), "console-vault-signing-key")),
     socketDir: at("socketDir"),
     tasteDir: at("tasteDir"),
     gatewayConfigFile: at("gatewayConfigFile"),

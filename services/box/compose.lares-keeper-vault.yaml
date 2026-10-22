@@ -1,0 +1,15 @@
+# Optional Keeper-only mounts for an explicitly prepared managed Vault inventory.
+# install.sh activates this file only after storage preview, prepare, apply and verification.
+services:
+  lares-keeper:
+    volumes:
+      - type: bind
+        source: ${LARES_VAULT_WORKING_ROOT:?prepared Vault working root required}
+        target: /srv/vault
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${LARES_VAULT_BARE_ROOT:?prepared Vault bare root required}
+        target: /var/lib/lares-vault-git
+        bind:
+          create_host_path: false

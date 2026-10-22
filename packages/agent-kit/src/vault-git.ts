@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute } from "node:path";
 import { execFileSync } from "node:child_process";
 
 import { resolveInStore } from "./notes-store.js";
-import { withVaultRepositoryLock, vaultGitEnvironment } from "./note-lock.js";
+import { withGuardedVaultRepositoryLock, withVaultRepositoryLock, vaultGitEnvironment } from "./note-lock.js";
 import { createHash } from "node:crypto";
 import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
 
@@ -66,7 +66,23 @@ export function runVaultGit(vaultRoot: string, args: string[]): string {
   return execFileSync("git", ["--literal-pathspecs", "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
     "-C", vaultRoot, ...args], { encoding: "utf8", env: vaultGitEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
 }
+/** Git with exact safe.directory entries for one already validated installer-managed area. */
+export function runGuardedVaultGit(vaultRoot: string, localOrigin: string, args: string[]): string {
+  const match = /^\/srv\/vault\/(?:private|shared)\/([a-f0-9-]{36})$/.exec(vaultRoot);
+  if (!match) return runVaultGit(vaultRoot,args);
+  if (localOrigin !== `/var/lib/lares-vault-git/${match[1]}.git`)
+    throw new Error("Vault repository unavailable");
+  return execFileSync("git", ["--literal-pathspecs", "-c", `safe.directory=${vaultRoot}`,
+    "-c", `safe.directory=${localOrigin}`, "-c", "protocol.allow=never", "-c", "protocol.file.allow=always",
+    "-C", vaultRoot, ...args], { encoding: "utf8", env: vaultGitEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
+}
 const runGit = runVaultGit;
+function git(vaultRoot:string,args:string[],guard?:VaultGitGuard):string {
+  return guard ? runGuardedVaultGit(vaultRoot,guard.localOrigin,args) : runGit(vaultRoot,args);
+}
+function withGitLock<T>(vaultRoot:string,guard:VaultGitGuard|undefined,fn:()=>Promise<T>):Promise<T> {
+  return guard ? withGuardedVaultRepositoryLock(vaultRoot,guard.localOrigin,fn) : withVaultRepositoryLock(vaultRoot,fn);
+}
 export function vaultContentRevision(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -104,25 +120,26 @@ async function prepare(root: string, guard: VaultGitGuard | undefined, paths: st
     await guard.revalidate();
     // pushURL and URL must each resolve to the one trusted local bare repository.
     for (const args of [["remote", "get-url", "--all", "origin"], ["remote", "get-url", "--push", "--all", "origin"]]) {
-      const urls = runGit(root, args).trim().split("\n");
+      const urls = git(root,args,guard).trim().split("\n");
       if (urls.length !== 1 || !isAbsolute(urls[0]) || realpathSync(urls[0]) !== realpathSync(guard.localOrigin)) throw new Error("Vault local origin unavailable");
     }
-    if (!lstatSync(guard.localOrigin).isDirectory() || runGit(guard.localOrigin, ["rev-parse", "--is-bare-repository"]).trim() !== "true") throw new Error("Vault local origin unavailable");
+    if (!lstatSync(guard.localOrigin).isDirectory() || runGuardedVaultGit(root, guard.localOrigin, ["-C", guard.localOrigin, "rev-parse", "--is-bare-repository"]).trim() !== "true") throw new Error("Vault local origin unavailable");
     if (companion !== (guard.companion?.path ?? null)) throw new VaultContentChangedError();
     if (guard.companion && guard.expectedContents[guard.companion.path] !== guard.companion.revision) throw new VaultContentChangedError();
     assertExpected(root, guard.expectedContents, paths);
   }
-  if (runGit(root, ["diff", "--cached", "--name-only", "--ita-visible-in-index", "-z"]).length) throw new VaultStagedChangesError();
+  if (git(root,["diff", "--cached", "--name-only", "--ita-visible-in-index", "-z"],guard).length) throw new VaultStagedChangesError();
 }
 
-function gitShortHead(vaultRoot: string): string {
-  return runGit(vaultRoot, ["rev-parse", "--short", "HEAD"]).toString().trim();
+function gitShortHead(vaultRoot: string, guard?: VaultGitGuard): string {
+  return (guard ? runGuardedVaultGit(vaultRoot, guard.localOrigin, ["rev-parse", "--short", "HEAD"]) : runGit(vaultRoot, ["rev-parse", "--short", "HEAD"])).toString().trim();
 }
 
 /** Push HEAD to origin, or throw `VaultPushFailedError` carrying the local commit hash. */
-function gitPushOrThrow(vaultRoot: string, commit: string): void {
+function gitPushOrThrow(vaultRoot: string, commit: string, guard?: VaultGitGuard): void {
   try {
-    runGit(vaultRoot, ["push", "-q", "origin", "HEAD"]);
+    if (guard) runGuardedVaultGit(vaultRoot, guard.localOrigin, ["push", "-q", "origin", "HEAD"]);
+    else runGit(vaultRoot, ["push", "-q", "origin", "HEAD"]);
   } catch (err) {
     throw new VaultPushFailedError(commit, err);
   }
@@ -178,7 +195,7 @@ export async function commitNote(opts: {
 }): Promise<VaultWriteResult> {
   const { vaultRoot, path, frontmatter, body } = opts;
   resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
-  return withVaultRepositoryLock(vaultRoot, async () => {
+  return withGitLock(vaultRoot,opts.guard,async () => {
     if (opts.guard) await opts.guard.revalidate();
     const abs = resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // throws NotePathEscapesStoreError first
     await prepare(vaultRoot, opts.guard, [path], null);
@@ -189,10 +206,10 @@ export async function commitNote(opts: {
     const content = `${serializeFrontmatter(frontmatter)}\n\n${body}`;
     writeFileSync(abs, content, "utf8");
 
-    runGit(vaultRoot, ["add", "--", path]);
-    runGit(vaultRoot, ["commit", "-q", "-m", opts.message ?? `note: ${path}`, "--", path]);
-    const commit = gitShortHead(vaultRoot);
-    gitPushOrThrow(vaultRoot, commit);
+    git(vaultRoot,["add", "--", path],opts.guard);
+    git(vaultRoot,["commit", "-q", "-m", opts.message ?? `note: ${path}`, "--", path],opts.guard);
+    const commit = gitShortHead(vaultRoot, opts.guard);
+    gitPushOrThrow(vaultRoot, commit, opts.guard);
     return { commit };
   });
 }
@@ -209,7 +226,7 @@ export async function moveNote(opts: {
   const { vaultRoot, sourcePath, destPath, message } = opts;
   resolveInStore(sourcePath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
   resolveInStore(destPath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
-  return withVaultRepositoryLock(vaultRoot, async () => {
+  return withGitLock(vaultRoot,opts.guard,async () => {
     if (opts.guard) await opts.guard.revalidate();
     const destAbs = resolveInStore(destPath, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     resolveInStore(sourcePath, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // reject traversal on the source too, before any git call
@@ -228,13 +245,13 @@ export async function moveNote(opts: {
     mkdirSync(dirname(destAbs), { recursive: true });
     for (const p of [sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])]) resolveInStore(p, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     // git mv preserves the file's bytes (and its history) — a true move, not a rewrite.
-    runGit(vaultRoot, ["mv", "--", sourcePath, destPath]);
+    git(vaultRoot,["mv", "--", sourcePath, destPath],opts.guard);
     if (companion !== null && companionDest !== null && companionDest !== companion) {
-      runGit(vaultRoot, ["mv", "--", companion, companionDest]);
+      git(vaultRoot,["mv", "--", companion, companionDest],opts.guard);
     }
-    runGit(vaultRoot, ["commit", "-q", "-m", message, "--", sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])]);
-    const commit = gitShortHead(vaultRoot);
-    gitPushOrThrow(vaultRoot, commit);
+    git(vaultRoot,["commit", "-q", "-m", message, "--", sourcePath, destPath, ...(companion ? [companion] : []), ...(companionDest ? [companionDest] : [])],opts.guard);
+    const commit = gitShortHead(vaultRoot,opts.guard);
+    gitPushOrThrow(vaultRoot, commit,opts.guard);
     return { commit };
   });
 }
@@ -249,7 +266,7 @@ export async function removeNote(opts: {
 }): Promise<VaultWriteResult> {
   const { vaultRoot, path, message } = opts;
   resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
-  return withVaultRepositoryLock(vaultRoot, async () => {
+  return withGitLock(vaultRoot,opts.guard,async () => {
     if (opts.guard) await opts.guard.revalidate();
     resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard}); // reject traversal, before any git call
 
@@ -258,11 +275,11 @@ export async function removeNote(opts: {
     await prepare(vaultRoot, opts.guard, [path, ...(companion ? [companion] : [])], companion);
     resolveInStore(path, vaultRoot, {rejectNestedRepositories:!!opts.guard});
     if (companion) resolveInStore(companion, vaultRoot, {rejectNestedRepositories:!!opts.guard});
-    runGit(vaultRoot, ["rm", "-q", "--", path]);
-    if (companion !== null) runGit(vaultRoot, ["rm", "-q", "--ignore-unmatch", "--", companion]);
-    runGit(vaultRoot, ["commit", "-q", "-m", message, "--", path, ...(companion ? [companion] : [])]);
-    const commit = gitShortHead(vaultRoot);
-    gitPushOrThrow(vaultRoot, commit);
+    git(vaultRoot,["rm", "-q", "--", path],opts.guard);
+    if (companion !== null) git(vaultRoot,["rm", "-q", "--ignore-unmatch", "--", companion],opts.guard);
+    git(vaultRoot,["commit", "-q", "-m", message, "--", path, ...(companion ? [companion] : [])],opts.guard);
+    const commit = gitShortHead(vaultRoot,opts.guard);
+    gitPushOrThrow(vaultRoot, commit,opts.guard);
     return { commit };
   });
 }

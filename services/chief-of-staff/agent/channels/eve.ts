@@ -1,5 +1,6 @@
-import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage } from "@lares/agent-kit/private-console-envelope";
+import { assertPrivateConsoleRequest, assertVerifiedPrivateConsoleMessage, verifiedPrivateConsoleMessageReceipt } from "@lares/agent-kit/private-console-envelope";
 import { consoleRouteAdmission, consoleAdmission } from "@lares/agent-kit/console-turn-authority";
+import { vaultBrokerRequest } from "@lares/agent-kit/vault-broker-client";
 import { readFileSync } from "node:fs";
 import { eveChannel } from "eve/channels/eve";
 import {
@@ -146,6 +147,11 @@ export default eveChannel({
     const tagged = caller?.attributes?.lares_member_id !== undefined;
     if (tagged) assertVerifiedPrivateConsoleMessage(ctx.eve.request, message);
     if (tagged && consoleAdmission(caller)?.purpose !== "human") throw new Error("Conversation authority is not available");
+    if(tagged){
+      let vaultPending:string|undefined;
+      try{const receipt=verifiedPrivateConsoleMessageReceipt(ctx.eve.request,message);const result=await vaultBrokerRequest<{pendingReceipt?:unknown}>('request.admit',{capsule:receipt.vaultCapsule,receipt});if(typeof result.pendingReceipt==='string'&&/^[A-Za-z0-9_-]{43}$/.test(result.pendingReceipt))vaultPending=result.pendingReceipt;}catch{/* Broker absence disables only Vault reads. */}
+      return {auth:vaultPending?{...caller,attributes:{...caller?.attributes,lares_vault_pending:vaultPending}}:caller};
+    }
     return { auth: caller };
   },
   auth: [

@@ -12,6 +12,16 @@ no Node.js, no pnpm and no copy of this repository. The step-by-step guide is
 [`docs/install.md`](../../docs/install.md), and `ops/README.md` describes the scripts. This works
 for rc.12 and later.
 
+Fresh installation prepares the console Vault signing key, and the tested installer path adds
+the exact prepared working and bare repository roots to a Keeper-only compose overlay after it
+validates the published inventory. The Keeper receives the signing key through the existing
+read-only installer secrets mount; agents receive neither that key nor the managed repository
+roots. `lares update` reruns the installer after changing image digests, so an existing
+installation gets the current render path; running `ops/update.sh` directly changes images only
+and does not create Vault custody or rerender the compose files. The Keeper keeps ordinary chat
+available when Vault custody or its dedicated socket directory is unavailable; Vault reads
+remain unavailable until custody is prepared and checked.
+
 ## What is in here
 
 | Path | What it is |
@@ -23,6 +33,7 @@ for rc.12 and later.
 | `ops/` | The install, update, rollback, backup, restore and export scripts and their systemd units. See [`ops/README.md`](ops/README.md). |
 | `proxy/squid.conf` | The egress proxy's configuration: outbound traffic from agents goes through an allow-list. |
 | `compose.lares-keeper.yaml` | The keeper and egress proxy, as rendered into `/opt/lares/compose.lares-keeper.yaml`. |
+| `compose.lares-keeper-vault.yaml` | Optional Keeper-only binds for the exact managed roots, activated only after the inventory and directories validate. |
 | `tests/` | Vitest tests that start real `pgvector` containers (Testcontainers), apply the real schema and check the data layer. Docker must be running. |
 
 The stack Compose file (database, console, gateway, Caddy) is not a file in this folder. The

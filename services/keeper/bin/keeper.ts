@@ -14,7 +14,7 @@ import { KeeperRefusedError } from '../lib/actions.js';
 import {registerDoorActions} from '../lib/doors.js';
 import {registerConversationActions,runtimeReset} from "../lib/conversations.js";
 import { registerOutsideToolActions } from "../lib/outside-tools.js";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
 import { deployedToolsFor } from "@lares/agent-kit/persona";
 import { registerDefinitionActions } from "../lib/definitions.js";
@@ -29,18 +29,36 @@ import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
 import {productionGatewayBudgetAuthority} from '../lib/gateway-budget.js';
 import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
+import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
     const config = loadKeeperConfig();
+    const vaultRuntimePath = join(config.agentsDir, "..", "run", "vault");
+    let vaultRuntimeDir: string | undefined;
+    try {
+        await prepareVaultRuntimeDirectory(vaultRuntimePath);
+        vaultRuntimeDir = vaultRuntimePath;
+    } catch {
+        console.warn("keeper: Vault reader unavailable until its dedicated runtime directory is repaired");
+    }
     const pool = keeperPool(config.db);
+    // Vault reads use a dedicated, bounded pool so disconnected clients cannot occupy
+    // the connections used by unrelated Keeper actions.
+    const vaultKeyPath=config.vaultConsoleSigningKeyFile;
+    let vaultKeyPresent=false;
+    try { if(vaultKeyPath){const st=lstatSync(vaultKeyPath); vaultKeyPresent=st.isFile()&&!st.isSymbolicLink()&&st.size>0;} } catch { }
+    const vaultPool=vaultKeyPresent
+        ?keeperPool(config.db,{max:32,connectionTimeoutMillis:500,query_timeout:1000,options:'-c statement_timeout=900 -c lock_timeout=500 -c idle_in_transaction_session_timeout=1500'})
+        :undefined;
+    vaultPool?.on('error',()=>{});
     // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
     // occupy their connections. HTTP deadlines never authorize a late allow.
     const budgetPool=keeperPool(config.db,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
     budgetPool.on('error',()=>{});
     const admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
     const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
-    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,config,docker):undefined;
+    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir},docker):undefined;
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
     const managed = config.credentials?.prepared === true;
@@ -100,6 +118,12 @@ async function main(): Promise<void> {
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
         stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(budgetPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
+        // Vault is optional for older installations: missing custody removes only its dedicated
+        // reader sockets and never prevents unrelated conversations or Keeper actions.
+        if (vaultPool) {
+            try { if(!vaultKeyPath)throw new Error('Vault signing key unavailable');stops.push(await serveConsoleVaultBroker(vaultPool,vaultKeyPath,config.secretsDir,join(config.agentsDir,"..","run","vault","read.sock"))); }
+            catch { console.warn("keeper: Vault reader unavailable until its dedicated broker path is repaired"); }
+        }
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();
@@ -108,6 +132,7 @@ async function main(): Promise<void> {
         for (const stop of stops)
             await stop();
         await pool.end();
+        await vaultPool?.end();
         await budgetPool.end();
         await admin?.end();
         financialJournal?.close();
@@ -123,6 +148,7 @@ async function main(): Promise<void> {
         for (const stop of stops)
             await stop();
         await pool.end();
+        await vaultPool?.end();
         await budgetPool.end();
         await admin?.end();
         await drained;

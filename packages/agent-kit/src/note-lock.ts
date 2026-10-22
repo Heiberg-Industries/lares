@@ -1,4 +1,4 @@
-import { mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -93,6 +93,25 @@ export async function withVaultRepositoryLock<T>(vaultRoot: string, fn: () => Pr
   const common = execFileSync("git", ["-C", vaultRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
     { encoding: "utf8", env: vaultGitEnvironment(), stdio: ["ignore", "pipe", "pipe"] }).trim();
   const canonical = realpathSync(common);
+  let result!: T;
+  await withFileLock(join(canonical, "lares-vault.lock"), async () => { result = await fn(); });
+  return result;
+}
+
+/** Exact ownership exception for the two installer-managed working-store families. Callers
+ * must already have authorized and validated the inventory/area before reaching this helper.
+ * The path shape is rechecked here so this cannot become a general Git trust switch. */
+export async function withGuardedVaultRepositoryLock<T>(vaultRoot: string, localOrigin: string, fn: () => Promise<T>): Promise<T> {
+  const match = /^\/srv\/vault\/(?:private|shared)\/([a-f0-9-]{36})$/.exec(vaultRoot);
+  if (!match) return withVaultRepositoryLock(vaultRoot,fn);
+  if (localOrigin !== `/var/lib/lares-vault-git/${match[1]}.git` ||
+      realpathSync(vaultRoot) !== vaultRoot || realpathSync(localOrigin) !== localOrigin ||
+      !lstatSync(join(vaultRoot, ".git")).isDirectory()) throw new Error("Vault repository unavailable");
+  const common = execFileSync("git", ["-c", `safe.directory=${vaultRoot}`, "-C", vaultRoot,
+    "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { encoding: "utf8", env: vaultGitEnvironment(), stdio: ["ignore", "pipe", "pipe"] }).trim();
+  const canonical = realpathSync(common);
+  if (canonical !== join(vaultRoot, ".git")) throw new Error("Vault repository unavailable");
   let result!: T;
   await withFileLock(join(canonical, "lares-vault.lock"), async () => { result = await fn(); });
   return result;

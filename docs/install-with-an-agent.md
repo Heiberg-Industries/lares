@@ -229,7 +229,7 @@ Check the stack:
 
 ```bash
 docker compose -f /opt/lares/compose.yaml ps
-docker compose --env-file /etc/lares/keeper.env -f /opt/lares/compose.lares-keeper.yaml ps
+env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps
 ```
 
 The first should show `db`, `console`, `lares-gateway` and `caddy` running; the second the keeper

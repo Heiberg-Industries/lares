@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@lares/agent-box": "workspace:^",
     "@lares/agent-kit": "workspace:*",
     "@notionhq/client": "5.27.0",
     "pg": "^8.23.1",

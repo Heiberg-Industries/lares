@@ -84,6 +84,7 @@ describe("fresh install settings", () => {
   it("writes the public door origin the keeper reads", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
     expect(config.publicDoorOrigin).toBe("https://lares.example.com");
+    expect(config.vaultConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-vault-signing-key");
     expect(loadAsKeeperWould(config).publicDoorOrigin).toBe("https://lares.example.com");
   });
 
