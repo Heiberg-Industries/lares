@@ -12,12 +12,17 @@ is root-owned and regular, and cannot be writable by its group or accessible to
 others. This code never generates or copies a key. Missing or unsafe custody
 refuses the service. No console environment variable contains that key.
 
-The production factory has **no recovery witness implementation** and therefore
-cannot allow spending. An open database account or matching database epoch does
-not override this. Test constructors can inject an independent witness; there is
-no production configuration or environment switch that supplies one. Actual
-account provisioning, reviewed prices, runtime ticket preparation after final
-prompt-cache shaping, and restore-safe recovery remain activation dependencies.
+The production factory binds its recovery observation to the same prepared
+financial journal used by its admission writer. It matches a persisted ticket's
+installation account, endpoint generation and raw epoch against the journal's
+committed open and approved installation account and active window. A matching
+database epoch alone never establishes recovery authority. This observation is
+discovery only: the writer still checks the complete database projection inside
+its owned transaction before mutation. The test constructor can inject a witness
+for focused tests; there is no production setting for one. This does not open a
+closed account, unfreeze a journal, activate spending, or establish restore
+acceptance. Reviewed prices, runtime ticket preparation after final prompt-cache
+shaping and the remaining activation dependencies are still required.
 
 ## Wire and transaction boundary
 
@@ -47,6 +52,33 @@ transactions use the store's owned transaction mechanism; a borrowed pool client
 is not a replacement. The keeper uses a separate small pool with bounded
 connection, lock and statement waits. Expiring HTTP work cannot authorize a late
 allow even if the database subsequently finishes an uncertain admission.
+
+## Managed model credential transport
+
+After the SDK has shaped a managed-purpose request, the agent prepares one exact
+request identity and receives a short-lived ticket. It burns the invocation before
+opening a separate authenticated Unix socket to Keeper. That request is bound by a
+domain-separated runtime-control HMAC to the POST path, exact body hash, ticket,
+agent incarnation, nonce and deadline. Keeper looks up the persisted prepared ticket
+and rechecks its request identity before using native custody. Only the two fixed
+routes `/v1/messages` and `/v1/chat/completions` are accepted; query strings,
+alternate methods and redirects are refused.
+
+The socket accepts request bodies up to 8 MiB, has bounded connections and a small
+dispatch queue, and gives each dispatch a deadline. Keeper selects the endpoint and
+credential from the matching native binding. The ticket may cross into the agent
+because the agent already received it during preparation; the native credential
+stays in Keeper and is never returned to the runtime. Non-success upstream bodies
+and credential-bearing headers are discarded. Successful responses stream with
+backpressure and client cancellation; the request is not retried and cannot fall
+back to the legacy gateway key after managed-purpose preparation begins.
+
+The transport only accepts the existing `bound-closed` native state: the account
+and key remain blocked. Production still has no recovery witness and cannot allow
+spending. The focused source tests exercise the local socket and controlled gateway
+fixture, but the compiled chief-runtime-to-Keeper image proof remains outstanding.
+This transport therefore does not establish provider readiness, account activation,
+spending, or restore safety.
 
 ## Immutable fixed pricing
 

@@ -4,8 +4,15 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { captureModelInvocation, runModelInvocation } from "../src/model-invocation.js";
+import { captureModelInvocation, requestAndAttachModelPurposeClaim, runModelInvocation } from "../src/model-invocation.js";
 import { createGatewayProvider } from "../src/gateway-provider.js";
+
+const purposeTransport = vi.hoisted(() => ({request: vi.fn(), dispatch: vi.fn()}));
+vi.mock('../src/model-purpose-client.js', () => ({
+  modelPurposeRequest: purposeTransport.request,
+  modelPurposeDispatchRequest: purposeTransport.dispatch,
+  MODEL_PURPOSE_DISPATCH_BODY_MAX: 8 * 1024 * 1024,
+}));
 
 const scoped = <T>(call: () => Promise<T>) => runModelInvocation(captureModelInvocation(
   { type: "step.started", data: { turnId: randomUUID(), sequence: 0, stepIndex: 0 } },
@@ -26,6 +33,10 @@ describe("createGatewayProvider", () => {
     delete process.env["GATEWAY_KEY_FILE"];
     delete process.env["GATEWAY_URL"];
     delete process.env["GATEWAY_LANE"];
+    purposeTransport.request.mockImplementation(async (operation:string) => operation==='step.claim'
+      ? {claim:'C'.repeat(43),expiresAt:Date.now()+20_000}
+      : {ticket:'T'.repeat(43),expiresAt:Date.now()+15_000});
+    purposeTransport.dispatch.mockResolvedValue(new Response('{"ok":true}',{status:200}));
   });
 
   afterEach(() => {
@@ -76,6 +87,33 @@ describe("createGatewayProvider", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]!.get("accept-encoding")).toBe("identity");
     expect(seen[0]!.get("content-type")).toBe("application/json");
+  });
+
+  it("sends a purpose call through Keeper after shaping and never reads or falls back to the legacy gateway key",async()=>{
+    const missing=join(dir,"missing-gateway-key");
+    const {gatewayModel}=createGatewayProvider({defaultKeyFile:missing});
+    const model=gatewayModel('fixture-brain') as unknown as {config:{headers:()=>Record<string,string>;fetch?:typeof globalThis.fetch}};
+    const invocation=captureModelInvocation({type:'step.started',data:{turnId:'',sequence:2,stepIndex:0}},
+      {id:'session-fixture',auth:{current:null,initiator:null}},'fixture-brain');
+    await requestAndAttachModelPurposeClaim(invocation,'C'.repeat(43),()=>true);
+    const legacyFetch=vi.fn(async()=>new Response('legacy'));
+    vi.stubGlobal('fetch',legacyFetch);
+    try{
+      const response=await runModelInvocation(invocation,async()=>{
+        expect(model.config.headers()['x-api-key']).toBe('lares-managed-purpose');
+        return model.config.fetch!('https://gateway.example.test/v1/messages',{method:'POST',headers:{'content-type':'application/json'},
+          body:JSON.stringify({model:'fixture-brain',system:'stable <!-- lares:end-of-session-stable-prompt --> dynamic',messages:[]})});
+      });
+      expect(response.status).toBe(200);
+      expect(purposeTransport.request).toHaveBeenCalledTimes(2);
+      expect(purposeTransport.request).toHaveBeenLastCalledWith('step.consume',expect.objectContaining({request:expect.objectContaining({method:'POST',path:'/v1/messages'})}));
+      const sent=purposeTransport.dispatch.mock.calls.at(-1)![0];
+      expect(sent.ticket).toBe('T'.repeat(43));expect(sent.path).toBe('/v1/messages');
+      const body=Buffer.from(sent.rawBody).toString('utf8');
+      expect(body).toContain('cache_control');expect(body).not.toContain('lares:end-of-session-stable-prompt');
+      expect(purposeTransport.dispatch).toHaveBeenCalledTimes(1);
+      expect(legacyFetch).not.toHaveBeenCalled();
+    }finally{vi.unstubAllGlobals();}
   });
 
   it("the fetch seam sets no Authorization header — the SDK's own x-api-key carries the key", async () => {

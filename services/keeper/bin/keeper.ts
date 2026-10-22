@@ -32,6 +32,7 @@ import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
 import { serveModelPurposeBroker } from "../lib/model-purpose-broker.js";
+import { DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET, serveModelPurposeTransport } from "../lib/model-purpose-transport.js";
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
 import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
@@ -159,10 +160,18 @@ async function main(): Promise<void> {
         // configured but unusable signer fails startup rather than silently allowing unsigned
         // private requests; absent optional custody leaves ordinary private chat unchanged.
         if(modelPurposePool&&modelPurposeKeyPath){
-            stops.push(await serveModelPurposeBroker(modelPurposePool,{
+            const consumer=preparedModelPurposeConsumer(financialPool,financialJournal);
+            const brokerStop=await serveModelPurposeBroker(modelPurposePool,{
                 consoleSigningKeyFile:modelPurposeKeyPath,runtimeSecretsDir:config.secretsDir,
                 consoleSocket:"/run/lares/model-purpose-console.sock",runtimeSocket:"/run/lares/model-purpose/model-purpose.sock",
-            },preparedModelPurposeConsumer(financialPool,financialJournal)));
+            },consumer);
+            if(nativeCustody&&consumer&&modelPurposeRuntimeDir){
+                try{
+                    const transportStop=await serveModelPurposeTransport({socket:DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET,runtimeSecretsDir:config.secretsDir,
+                        custody:nativeCustody,ticketPool:modelPurposePool});
+                    stops.push(async()=>{await transportStop();await brokerStop();});
+                }catch(error){await brokerStop();throw error;}
+            }else stops.push(brokerStop);
         }
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.

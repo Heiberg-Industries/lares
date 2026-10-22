@@ -310,6 +310,9 @@ describe("the keeper the installer configures and starts", () => {
       // host socket root at /run/lares, while the role compose uses this exact host source.
       expect(config.modelPurposeRuntimeDir).toBe(join(env.LARES_SOCKET_DIR!, "model-purpose"));
       expect(mounted).toContain("/run/lares");
+      const keeperModelPurposeDir = join("/run/lares", "model-purpose");
+      expect(config.modelPurposeRuntimeDir).not.toBe(keeperModelPurposeDir);
+      expect(join(config.modelPurposeRuntimeDir, "gateway.sock")).not.toBe(join(keeperModelPurposeDir, "gateway.sock"));
       keeperHostMountSources.add(config.modelPurposeRuntimeDir);
     }
     const agentSide = new Set<string>([
