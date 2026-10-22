@@ -2,11 +2,11 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID} from 'node:crypto';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome} from '../lib/financial-journal.js';
+import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
-import {observeCommittedFinancialProjection} from '../lib/financial-continuity.js';
+import {observeCommittedFinancialProjection,type FinancialObservationHandle} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 const fixtures:ReturnType<typeof journalFixture>[]=[],journals:HostFinancialJournal[]=[];
 const fixture=(options:Parameters<typeof journalFixture>[0]={})=>{const f=journalFixture(options);fixtures.push(f);return f;};
@@ -27,6 +27,20 @@ function journalFailingAfterObserverCommit(kind:'commit'|'control'|'observation'
   return {journal,directory,arm:()=>{armed=true;}};
 }
 const testDatabase={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
+it('requires observed erased-account cleanup evidence and its exact retained tombstone',async()=>{
+  const j=preparedJournal(),installationId=randomUUID(),accountId=randomUUID(),bindingId=randomUUID(),digest='a'.repeat(64);
+  const binding:FinancialAtom={kind:'binding',id:bindingId,installationAccountId:installationId,memberAccountId:accountId,endpointHash:digest,credentialGeneration:'0',profileHash:digest,maximumLiability:'1',pricingProfile:null,state:'revoked'};
+  const account:FinancialAtom={kind:'account',id:accountId,installationAccountId:installationId,accountKind:'member',state:'retired',reason:'member_erased',activeWindowId:null,installationCap:null,policyGeneration:'1',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:'b'.repeat(64),providerSuppressionHashes:['c'.repeat(64)]};
+  const tombstone:FinancialAtom={kind:'tombstone',accountId,canonicalSuppressionHash:'b'.repeat(64),providerSuppressionHashes:['c'.repeat(64)],state:'erased'};
+  await j.operation('erase-person',async id=>{j.propose(id,[account,binding]);j.committedObserved(id,await observation(j,id));});
+  let missingTombstone:CommittedFinancialReceipt|undefined;
+  await j.operation('native-cleanup-recovery',async id=>{j.propose(id,[]);missingTombstone=j.committedObserved(id,await observation(j,id));});
+  expect(missingTombstone).toBeDefined();expect(committedFinancialEvidence(missingTombstone!,{kind:'native-cleanup-recovery',binding})).toBeUndefined();
+  await j.operation('erase-person',async id=>{j.propose(id,[tombstone]);j.committedObserved(id,await observation(j,id));});
+  let complete:CommittedFinancialReceipt|undefined;
+  await j.operation('native-cleanup-recovery',async id=>{j.propose(id,[]);complete=j.committedObserved(id,await observation(j,id));});
+  expect(complete).toBeDefined();expect(committedFinancialEvidence(complete!,{kind:'native-cleanup-recovery',binding})?.operation).toBe('native-cleanup-recovery');
+});
 async function observation(journal:HostFinancialJournal,operationId:string){
   const client={async query(value:string|{text:string}){
     const sql=typeof value==='string'?value:value.text,command=/^\s*([A-Za-z]+)/.exec(sql)?.[1]?.toUpperCase();let rows:any[]=[];
@@ -36,11 +50,13 @@ async function observation(journal:HostFinancialJournal,operationId:string){
     else if(sql.includes('FROM budget_accounts) AS accounts'))rows=[{accounts:String(atoms.filter(a=>a.kind==='account').length),windows:String(atoms.filter(a=>a.kind==='window').length),bindings:String(atoms.filter(a=>a.kind==='binding').length),attempts:String(atoms.filter(a=>a.kind==='attempt').length),grants:String(atoms.filter(a=>a.kind==='grant').length),checkpoints:String(projection.checkpoints.length)}];
     else if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))rows=projection.checkpoints.map(c=>({...c,sequence:String(c.sequence)}));
     else if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))rows=projection.checkpoints.slice(-1).map(c=>({...c,sequence:String(c.sequence)}));
+    else if(sql.includes('FROM budget_accounts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account').map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:a.recoveryEpochHash,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
+    else if(sql.includes('FROM budget_gateway_bindings WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'binding'}>=>a.kind==='binding').map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,profile_hash:a.profileHash,maximum_liability:a.maximumLiability,pricing_profile:a.pricingProfile,state:a.state}));
     else if(sql.startsWith('SELECT')&&sql.includes('FROM budget_'))rows=[];
     return {rows,command};
   },release(){}};
   const pool={async query(){return {rows:[]};},async connect(){return client;}};
-  let handle:unknown;const observingBoundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
+  let handle:FinancialObservationHandle|undefined;const observingBoundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
   await consoleSourceTransaction(pool,async()=>undefined,observingBoundary);if(!handle)throw new Error('Owned financial observer fixture failed');return handle;
 }
 type ObservationFault='begin'|'read'|'commit-reject'|'commit-unacknowledged'|'deadline'|'guard';
