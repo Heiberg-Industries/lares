@@ -2,10 +2,11 @@
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { members, requireConsoleMember, requireMember } from "../../lib/auth";
+import { members, requireConsoleMember, requireMember, verify } from "../../lib/auth";
 import { MemberStoreError } from "@lares/agent-kit/member-store";
 import { ConsoleAdmissionUnavailableError } from "../../lib/admission-error";
 import { consoleRedirect } from "../../lib/console-oidc";
+import { keeper, KeeperRefusedError, KeeperUnavailableError } from "../../lib/keeper-client";
 
 async function memberOperation<T>(operation: () => Promise<T>): Promise<T> {
   try { return await operation(); }
@@ -41,7 +42,17 @@ export async function removeMember(form: FormData): Promise<void> {
   const actor = await requireConsoleMember();
   const targetId = form.get("memberId"); if (typeof targetId !== "string") throw new Error("Invalid member");
   if (targetId === actor.id) throw new Error("The designated console owner cannot be removed here");
-  await memberOperation(() => members.removeMember(actor.id, targetId));
+  const sessionToken = (await cookies()).get("lares_session")?.value;
+  if (!sessionToken) throw new Error("Console sign-in expired. Refresh membership and try again.");
+  const auditAddress = await verify(sessionToken);
+  if (!auditAddress) throw new Error("Console sign-in expired. Refresh membership and try again.");
+  try { await keeper("member.remove", { sessionToken, targetMemberId: targetId }, auditAddress); }
+  catch (error) {
+    if (error instanceof KeeperRefusedError) throw new Error("The member change was refused. Refresh membership and try again.");
+    if (error instanceof KeeperUnavailableError && error.outcomeMayBeUnknown) throw new Error("Member removal outcome is unknown. Refresh membership before trying again.");
+    if (error instanceof KeeperUnavailableError) throw new ConsoleAdmissionUnavailableError();
+    throw new ConsoleAdmissionUnavailableError();
+  }
   revalidatePath("/members");
 }
 export async function signOutMember(form: FormData): Promise<void> {

@@ -8,6 +8,9 @@ const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial')}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
+  /** Trusted identity written by the installer from the same ownerId used in role bindings.
+   * Older keeper configs may omit it; member removal then refuses closed. */
+  designatedOwnerId: z.string().min(1).max(128).optional(),
   budgetFinancial: financialCustodyConfigSchema.optional(),
   credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),

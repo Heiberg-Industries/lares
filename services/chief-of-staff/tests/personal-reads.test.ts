@@ -5,7 +5,6 @@ import { Pool } from 'pg';
 import {MockAgent} from 'undici';
 import { getPool,closePool } from '@lares/agent-kit/db';
 import { PgAccountStore,type TrustedAccountAdapter } from '@lares/agent-kit/account-store';
-import { PgMemberStore } from '@lares/agent-kit/member-store';
 import { PgGrantStore } from '@lares/agent-kit/grant-store';
 import { bindConsoleSession } from '@lares/agent-kit/console-turn-authority';
 import { encryptSecret,decryptSecret } from '@lares/agent-box/lib/crypto.js';
@@ -115,7 +114,7 @@ describe('private neutral reads through real current authority and PostgreSQL cu
     const otherPool=quiet(new Pool({connectionString:process.env.DATABASE_URL,application_name:'read-lock-proof',max:1}));let mutation:Promise<unknown>|undefined;
     try{
       await ready;
-      mutation=change==='member-removal'?new PgMemberStore(otherPool).removeMember('member-b','member-a'):
+      mutation=change==='member-removal'?otherPool.query("UPDATE users SET status='removed' WHERE id='member-a'"):
         new PgAccountStore(otherPool).beginUpdate('member-a',own.account.id,own.account.generation).then(update=>new PgAccountStore(otherPool).setStatus('member-a',update,'needs_reconsent'));
       const changed=mutation.then(()=>({ok:true}),error=>({ok:false,error}));let blocked=false;
       for(let n=0;n<100;n++){blocked=(await getPool().query("SELECT 1 FROM pg_stat_activity WHERE application_name='read-lock-proof' AND wait_event_type='Lock'")).rows.length>0;if(blocked)break;await new Promise(resolve=>setTimeout(resolve,10));}

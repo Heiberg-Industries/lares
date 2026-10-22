@@ -20,6 +20,15 @@ it("loads overlay and rendered configs without installation defaults", () => {
     expect(loadKeeperConfig(f.file)).toEqual({ ...f.config, mode });
   }
 });
+it("keeps the trusted designated owner optional for older keeper configs and validates rendered values",()=>{
+  const f=fixture();
+  writeFileSync(f.file,JSON.stringify({...f.config,mode:'rendered',designatedOwnerId:'owner-id'}));
+  expect(loadKeeperConfig(f.file).designatedOwnerId).toBe('owner-id');
+  for(const designatedOwnerId of ['', 'x'.repeat(129), {id:'owner'}]){
+    writeFileSync(f.file,JSON.stringify({...f.config,mode:'rendered',designatedOwnerId}));
+    expect(()=>loadKeeperConfig(f.file)).toThrow('designatedOwnerId');
+  }
+});
 // : the keeper used to replace every failure with "invalid or unreadable configuration",
 // so the owner could not see which field in the boot file was wrong. Each failure now says
 // what it is and where — and still never repeats a value from the file.

@@ -84,6 +84,7 @@ describe("fresh install settings", () => {
   it("writes the public door origin the keeper reads", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
     expect(config.publicDoorOrigin).toBe("https://lares.example.com");
+    expect(config.designatedOwnerId).toBe(OPTS.ownerId);
     expect(config.vaultConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-vault-signing-key");
     expect(loadAsKeeperWould(config).publicDoorOrigin).toBe("https://lares.example.com");
   });
@@ -147,6 +148,7 @@ describe("the deadline calendar", () => {
 describe("the generated keeper configuration", () => {
   it("is one the keeper's own loader accepts, not merely a lifecycle block", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
+    expect(config.designatedOwnerId).toBe(OPTS.ownerId);
     expect(() => loadAsKeeperWould(config)).not.toThrow();
     // Survives the round trip unchanged: nothing in it is defaulted in by the schema.
     expect(loadAsKeeperWould(config)).toEqual(config);

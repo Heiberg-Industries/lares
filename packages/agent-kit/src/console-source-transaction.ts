@@ -13,7 +13,8 @@ export interface SourceTransactionOptions {
 const REFUSED='Conversation authority is not available';
 export class SourceAuthorityDenied extends Error {constructor(){super(REFUSED);}}
 export class SourceAuthorityUnavailable extends Error {constructor(){super('Conversation authority could not be confirmed');}}
-interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;deadlineAtMs?:number}
+export class SourceTransactionDeadlineExpired extends Error {constructor(){super(REFUSED);}}
+interface Owner {organisationId?:string;lockedBindings:Set<string>;retire:Map<string,SourceBinding>;deadlines:Map<string,{binding:SourceBinding;deadline:string}>;genericDeadlines:Set<string>;deadlineAtMs?:number}
 export type SourceTransactionOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'|'commit-acknowledged'|'unknown';
 export type BudgetFinancialTable='budget_accounts'|'budget_windows'|'budget_gateway_bindings'|'budget_attempts'|'budget_gateway_grants';
 export interface BudgetFinancialChange {table:BudgetFinancialTable;id:string}
@@ -47,7 +48,7 @@ export function invalidateConsoleSource(db:SourceDatabase,binding:SourceBinding)
 }
 /** Discover unlocked, serialize readers before authority/resource locks, then lock/recheck.
  * A moved member or another organisation never causes a second gate acquisition. */
-export async function gateConsoleOrganisation(db:SourceDatabase,memberId:string,binding?:SourceBinding):Promise<void>{
+export async function gateConsoleOrganisation(db:SourceDatabase,memberId:string,binding?:SourceBinding,options:{lock?:'share'|'update'}={}):Promise<void>{
   const state=owner(db),before=(await db.query('SELECT org_id AS organisation_id FROM users WHERE id=$1',[memberId])).rows[0];
   if(!before?.organisation_id)throw new Error(REFUSED);
   const organisationId=before.organisation_id;
@@ -56,8 +57,8 @@ export async function gateConsoleOrganisation(db:SourceDatabase,memberId:string,
     await db.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-console-source:' || $1,0))",[organisationId]);
     state.organisationId=organisationId;
   }
-  const org=await db.query('SELECT id FROM orgs WHERE id=$1 FOR SHARE',[state.organisationId]);
-  const member=await currentMember(db as never,memberId,{lock:'share'});
+  const org=await db.query(`SELECT id FROM orgs WHERE id=$1 FOR ${options.lock==='update'?'UPDATE':'SHARE'}`,[state.organisationId]);
+  const member=await currentMember(db as never,memberId,{lock:options.lock==='update'?'update':'share'});
   if(org.rows.length!==1||!member||member.organisationId!==state.organisationId){
     if(binding)invalidateConsoleSource(db,binding);throw new Error(REFUSED);
   }
@@ -74,6 +75,13 @@ export function retainConsoleSourceDeadline(db:SourceDatabase,binding:SourceBind
   const state=owner(db);requireConsoleSourceOwner(db);
   if(deadline!==null)state.deadlines.set(JSON.stringify([key(binding),deadline]),{binding:{...binding},deadline});
 }
+/** Retain an exact PostgreSQL deadline for any owned transaction, independent of source
+ * bindings. PostgreSQL checks the original timestamp text at each existing boundary. */
+export function retainSourceTransactionDeadline(db:SourceDatabase,deadline:string):void{
+  const state=owner(db);requireConsoleSourceOwner(db);
+  if(typeof deadline!=='string'||!deadline.trim())throw new Error(REFUSED);
+  state.genericDeadlines.add(deadline);
+}
 /** After later resource waits, before admitting output/dispatch and again before commit. */
 export async function checkConsoleSourceDeadlines(db:SourceDatabase):Promise<string|null>{
   const state=owner(db);
@@ -81,9 +89,14 @@ export async function checkConsoleSourceDeadlines(db:SourceDatabase):Promise<str
     const fresh=await db.query('SELECT 1 WHERE $1::timestamptz>clock_timestamp()',[deadline]);
     if(!fresh.rows.length)invalidateConsoleSource(db,binding);
   }
-  if(!state.deadlines.size)return null;
+  for(const deadline of state.genericDeadlines){
+    const fresh=await db.query('SELECT 1 WHERE $1::timestamptz>clock_timestamp()',[deadline]);
+    if(!fresh.rows.length)throw new SourceTransactionDeadlineExpired();
+  }
+  if(!state.deadlines.size&&!state.genericDeadlines.size)return null;
   // PostgreSQL retains sub-millisecond precision when choosing the earliest deadline.
-  return (await db.query('SELECT min(deadline)::text AS deadline FROM unnest($1::timestamptz[]) deadline',[[...state.deadlines.values()].map(v=>v.deadline)])).rows[0].deadline;
+  const bindingDeadlines=[...state.deadlines.values()].map(v=>v.deadline);
+  return (await db.query('SELECT min(deadline)::text AS deadline FROM unnest($1::timestamptz[]) deadline',[[...bindingDeadlines,...state.genericDeadlines]])).rows[0].deadline;
 }
 const MAX_OWNED_QUERY_TIMEOUT_MS=1000;
 async function connectUntil(source:SourcePool,deadlineAtMs:number):Promise<SourceDatabase&{release(error?:boolean):void}>{
@@ -106,7 +119,7 @@ export async function consoleSourceTransaction<T>(source:SourceDatabase,work:(db
   if(boundary&&(!selected||selected.used))throw new Error(REFUSED);
   if(selected)selected.used=true;
   let db:(SourceDatabase&{release(error?:boolean):void})|undefined;
-  const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map(),...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})};
+  const state:Owner={lockedBindings:new Set(),retire:new Map(),deadlines:new Map(),genericDeadlines:new Set(),...(options.deadlineAtMs===undefined?{}:{deadlineAtMs:options.deadlineAtMs})};
   let result:T|undefined,error:unknown,failed=false,broken=false,outcome:SourceTransactionOutcome='not-started',originalOpen=false,compensationOpen=false,txOpen=false;
   let originalQuery:((sql:any,values?:any[])=>Promise<{rows:any[];command?:string}>)|undefined,queryDescriptor:PropertyDescriptor|undefined;
   const remaining=()=>state.deadlineAtMs===undefined?undefined:Math.max(0,state.deadlineAtMs-Date.now());

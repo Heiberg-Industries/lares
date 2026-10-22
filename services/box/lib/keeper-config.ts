@@ -106,6 +106,7 @@ export function renderKeeperConfig(
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   return {
     publicDoorOrigin: opts.publicDoorOrigin,
+    designatedOwnerId: opts.ownerId,
     ...(opts.previousBudgetFinancial?{budgetFinancial:opts.previousBudgetFinancial}:{}),
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.

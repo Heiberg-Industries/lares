@@ -64,7 +64,7 @@ export interface Action<I = unknown, O = unknown> {
 export const RESERVED_ACTIONS: readonly string[] = Object.freeze([
   "apply", "dns.check", "cert.status", "gateway.provider_add", "gateway.key_create",
   "gateway.key_rotate", "gateway.cap_set", "vault.key_add", "backup.now", "backup.test_restore",
-  "setup_link.issue", "allowlist.reset", "update",
+  "setup_link.issue", "allowlist.reset", "update", "member.remove",
 ]);
 const registry = new Map<string, Action<never, unknown>>();
 export function registerAction<I, O>(action: Action<I, O>): void {
@@ -95,7 +95,7 @@ export async function refuse(ctx: ActionContext, action: string, detail: string)
   catch {
     throw new Error("keeper: audit unavailable; request refused");
   }
-  throw new Error(`keeper: ${detail}`);
+  throw new KeeperRefusedError(`keeper: ${detail}`);
 }
 export async function runAction(name: string, rawInput: unknown, ctx: ActionContext, opts: {
   host?: boolean;

@@ -41,12 +41,12 @@ describe('member storage on disposable PostgreSQL',()=> {
     expect((await store.listMembers('outsider')).map(entry=>entry.member.id)).toEqual(['outsider']);
     await store.revokeInvitation('owner',invitation.invitationId);
     expect(await store.listInvitations('owner')).toEqual([]);
-    await store.removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     await expect(store.listMembers('second')).rejects.toThrow('denied');
   });
   it('preserves existing ids/data and refuses inactive members after repeated migration',async()=> {
     const invitation=await invite();
-    await store.removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     await db.query(migration);
     expect(await store.currentMember('owner')).toEqual({id:'owner',organisationId:'org',role:'owner',status:'active',automationMode:'draft-and-ask'});
     expect(await store.currentMember('second')).toBeUndefined();
@@ -137,16 +137,16 @@ describe('member storage on disposable PostgreSQL',()=> {
     await store.signOutAll('second','second');
     expect(await store.sessionMember(a.token)).toBeUndefined(); expect(await store.sessionMember(b.token)).toBeUndefined();
     const c=await store.createSession(proof('second'),tomorrow());
-    await store.removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     expect(await store.sessionMember(c.token)).toBeUndefined();
     expect(await store.memberForIdentity(proof('second').identity)).toBeUndefined();
     await expect(store.createSession(proof('second'),tomorrow())).rejects.toThrow('denied');
-    const invitation=await invite(); await store.removeMember('owner',invitation.member.id);
+    const invitation=await invite(); await db.query("UPDATE users SET status='removed' WHERE id=$1",[invitation.member.id]);
     await expect(store.acceptInvitation(invitation.token,proof('removed'))).rejects.toThrow('denied');
     expect((await db.query('SELECT count(*)::int AS n FROM member_provider_identities WHERE member_id=$1',['second'])).rows[0].n).toBe(1);
   });
   it('preserves the last active owner through API and concurrent direct updates',async()=> {
-    await expect(store.removeMember('owner','owner')).rejects.toThrow('last active owner');
+    await expect(db.query("UPDATE users SET status='removed' WHERE id='owner'")).rejects.toThrow('last active owner');
     await expect(db.query("DELETE FROM users WHERE id='owner'")).rejects.toThrow('last active owner');
     await expect(db.query("UPDATE users SET org_role='member' WHERE id='owner'")).rejects.toThrow('last active owner');
     await expect(db.query("UPDATE users SET org_id='other' WHERE id='owner'")).rejects.toThrow('last active owner');
@@ -171,14 +171,13 @@ describe('member storage on disposable PostgreSQL',()=> {
         await other.query('ROLLBACK');
       } finally { other.release(); }
     } finally {await client.query('ROLLBACK'); client.release();}
-    await store.removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     expect(await currentMember(db,'second',{lock:'share'})).toBeUndefined();
   });
-  it('serializes removal with session issuance and acceptance with revocation',async()=> {
+  it('prevents session issuance after removal and acceptance after invitation revocation',async()=> {
     await store.linkIdentity('second','second',proof('second'));
-    const sessions=await Promise.allSettled([store.createSession(proof('second'),tomorrow()),store.removeMember('owner','second')]);
-    expect(sessions[1].status).toBe('fulfilled');
-    if (sessions[0].status==='fulfilled') expect(await store.sessionMember(sessions[0].value.token)).toBeUndefined();
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
+    await expect(store.createSession(proof('second'),tomorrow())).rejects.toThrow('denied');
     expect(await store.currentMember('second')).toBeUndefined();
     const invitation=await invite();
     const actions=await Promise.allSettled([store.acceptInvitation(invitation.token,proof('invited')),store.revokeInvitation('owner',invitation.invitationId)]);

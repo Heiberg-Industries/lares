@@ -27,7 +27,7 @@ export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
-const operation=z.enum(['prepare','provision','admit','grant','unknown','settle']);
+const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),
@@ -51,6 +51,14 @@ export function financialJournalFrame(record:JournalRecord):{bytes:Buffer;digest
   const bytes=Buffer.concat([gatewayCanonical({record:checked,digest:sum}),Buffer.from('\n')]);
   if(bytes.length>JOURNAL_MAX_RECORD_BYTES)throw new Error('Financial journal record unavailable');
   return {bytes,digest:sum};
+}
+/** The exact schema and byte bound used by the durable proposal append, available before
+ * a database mutation while the journal operation lock is held. */
+export function financialProposalFrame(operationId:string,sequence:number,previousDigest:string,atoms:readonly FinancialAtom[]):{record:JournalRecord;bytes:Buffer;digest:string} {
+  const record=FINANCIAL_JOURNAL_RECORD_SCHEMA.parse({version:1,sequence,operationId,previousDigest,kind:'proposal',atoms:[...atoms]});
+  const sum=digest(gatewayCanonical(record)),bytes=Buffer.concat([gatewayCanonical({record,digest:sum}),Buffer.from('\n')]);
+  if(bytes.length>JOURNAL_MAX_RECORD_BYTES)throw new Error('Financial proposal exceeds journal record limit');
+  return {record,bytes,digest:sum};
 }
 export function linuxInheritedJournalLock(fd:number):void {
   if(process.platform!=='linux')throw new Error('Financial journal kernel lock unavailable');
@@ -190,14 +198,13 @@ export class HostFinancialJournal {
   }
   propose(operationId:string,atoms:readonly FinancialAtom[]):FinancialJournalProposal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
-    // A bounded oversize proposal is known before any bytes are appended. Keep it a
-    // clean transaction abort, rather than treating a size limit as uncertain custody.
-    const record=FINANCIAL_JOURNAL_RECORD_SCHEMA.parse({version:1,sequence:this.sequence,operationId,previousDigest:this.head,kind:'proposal',atoms:[...atoms]});
-    const sum=digest(gatewayCanonical(record));
-    if(Buffer.concat([gatewayCanonical({record,digest:sum}),Buffer.from('\n')]).length>JOURNAL_MAX_RECORD_BYTES)
-      throw new Error('Financial proposal exceeds journal record limit');
+    financialProposalFrame(operationId,this.sequence,this.head,atoms);
     const frame=this.append({kind:'proposal',atoms:[...atoms]},operationId);this.pending.proposal=frame.digest;
     return {journalId:this.journalId,operationId,sequence:frame.sequence,digest:frame.digest};
+  }
+  validateProposal(operationId:string,atoms:readonly FinancialAtom[]):void {
+    if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
+    financialProposalFrame(operationId,this.sequence,this.head,atoms);
   }
   committed(operationId:string):void {
     if(this.pending?.id!==operationId||!this.pending.proposal)throw new Error('Financial proposal unavailable');

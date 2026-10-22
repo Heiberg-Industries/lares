@@ -3,7 +3,6 @@ import { Pool } from 'pg';
 import { readFileSync } from 'node:fs';
 import { afterAll,beforeAll,beforeEach,describe,expect,it } from 'vitest';
 import { PgGrantStore } from '../src/grant-store.js';
-import { PgMemberStore } from '../src/member-store.js';
 import { quiet } from './helpers/quiet-pool.js';
 const migration=(n:string)=>readFileSync(new URL(`../../../services/box/sql/${n}`,import.meta.url),'utf8');
 let db:Pool,store:PgGrantStore,stop:()=>Promise<void>;
@@ -85,7 +84,7 @@ describe('agent grants on disposable PostgreSQL',()=>{
   });
   it('tombstones a removed members direct grants without clearing other sharing; membership changes invalidate captures',async()=>{
     await adopt();const initial=await set([named('second'),named('restricted')]);await bind();
-    await new PgMemberStore(db).removeMember('owner','second');
+    await db.query("UPDATE users SET status='removed' WHERE id='second'");
     expect(await store.can('second',agent,'use')).toBe(false);expect(await store.can('restricted',agent,'use')).toBe(true);
     expect(await store.can('restricted',agent,'use',{expectedRevision:initial.accessRevision})).toBe(false);
     await db.query("UPDATE users SET status='active' WHERE id='second'");expect(await store.can('second',agent,'use')).toBe(false);

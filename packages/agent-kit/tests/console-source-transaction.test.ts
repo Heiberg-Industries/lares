@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
 import { consoleSourceTransaction, gateConsoleOrganisation, invalidateConsoleSource, sourceTransactionBoundary,
-  type SourceDatabase, type SourceTransactionOutcome } from '../src/console-source-transaction.js';
+  retainSourceTransactionDeadline, type SourceDatabase, type SourceTransactionOutcome } from '../src/console-source-transaction.js';
 
 type QueryConfig={text:string;values?:unknown[];query_timeout?:number};
 class Client {
-  calls:QueryConfig[]=[];released:boolean[]=[];slow=false;delayCommitMs=0;
+  calls:QueryConfig[]=[];released:boolean[]=[];slow=false;delayCommitMs=0;deadlineLive=true;
   async query(value:string|QueryConfig,values?:unknown[]):Promise<{rows:any[];command?:string}>{
     const config=typeof value==='string'?{text:value,values}:value;this.calls.push(config);
     const command=/^\s*([A-Za-z]+)/.exec(config.text)?.[1]?.toUpperCase();
@@ -13,6 +13,8 @@ class Client {
     if(config.text.includes('SELECT org_id AS organisation_id'))return {rows:[{organisation_id:'org'}]};
     if(config.text.includes('SELECT id FROM orgs'))return {rows:[{id:'org'}]};
     if(config.text.includes('FROM users WHERE id=$1'))return {rows:[{id:'member',org_id:'org',org_role:'owner',status:'active',automation_mode:'draft-and-ask'}]};
+    if(config.text.includes('clock_timestamp()'))return {rows:this.deadlineLive?[{one:1}]:[]};
+    if(config.text.startsWith('SELECT min(deadline)'))return {rows:[{deadline:'2026-10-22 13:14:15.123456+00'}]};
     return {rows:[],...(command==='BEGIN'||command==='COMMIT'||command==='ROLLBACK'?{command}:{})};
   }
   release(error?:boolean){this.released.push(error===true);}
@@ -71,4 +73,23 @@ it('withholds a result when the request deadline expires before a delayed COMMIT
   const boundary=sourceTransactionBoundary({beforeCommit:async()=>{},settled:async outcome=>{settled=outcome;}});
   await expect(consoleSourceTransaction(pool,async()=>({content:'private bytes'}),boundary,{deadlineAtMs:Date.now()+10})).rejects.toThrow();
   expect(client.calls.filter(c=>c.text==='COMMIT')).toHaveLength(1);expect(settled).toBe('commit-acknowledged');expect(client.released).toEqual([false]);
+});
+
+it('checks an exact generic PostgreSQL deadline after proposal and rolls back without sticky source retirement',async()=>{
+  const pool=new Pool(),client=new Client();pool.next=Promise.resolve(client);let settled:SourceTransactionOutcome|undefined;
+  const exact='2026-10-22T13:14:15.123456Z';
+  const boundary=sourceTransactionBoundary({beforeCommit:async()=>{client.deadlineLive=false;},settled:async outcome=>{settled=outcome;}});
+  await expect(consoleSourceTransaction(pool,async db=>{
+    await gateConsoleOrganisation(db,'member',undefined,{lock:'update'});
+    retainSourceTransactionDeadline(db,exact);
+    await db.query('FINANCIAL MUTATION');
+    return 'must not escape';
+  },boundary,{deadlineAtMs:Date.now()+5000})).rejects.toThrow('Conversation authority is not available');
+  expect(client.calls.some(call=>call.text.includes('clock_timestamp()')&&call.values?.[0]===exact)).toBe(true);
+  expect(client.calls.some(call=>call.text==='SELECT id FROM orgs WHERE id=$1 FOR UPDATE')).toBe(true);
+  expect(client.calls.some(call=>call.text.includes('FROM users WHERE id=$1')&&call.text.endsWith('FOR UPDATE'))).toBe(true);
+  expect(client.calls.filter(call=>call.text==='ROLLBACK')).toHaveLength(1);
+  expect(client.calls.filter(call=>call.text==='COMMIT')).toHaveLength(0);
+  expect(settled).toBe('rollback-acknowledged');
+  expect(client.released).toEqual([false]);
 });
