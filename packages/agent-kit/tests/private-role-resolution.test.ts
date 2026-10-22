@@ -2,8 +2,12 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {readFileSync} from 'node:fs';
-const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),outside:vi.fn(),granted:['fixture','gmail_accounts','gmail_read','gmail_search']}));
+const fake=vi.hoisted(()=>({binding:vi.fn(),turn:vi.fn(),resume:vi.fn(),docsRead:vi.fn(),docsIndex:vi.fn(),definition:vi.fn(),connections:vi.fn(),clock:vi.fn(),source:vi.fn(),outside:vi.fn(),granted:['fixture','gmail_accounts','gmail_read','gmail_search']}));
 vi.mock('../src/console-turn-authority.js',async original=>({...await original<typeof import('../src/console-turn-authority.js')>(),requireConsoleSessionBinding:fake.binding,guardConsoleToolContext:fake.turn}));
+vi.mock('../src/private-console-resume.js',async original=>({...await original<typeof import('../src/private-console-resume.js')>(),
+ privateResolverAdmission:(auth:any)=>auth?.attributes?.lares_purpose==='resolver'?{memberId:auth.attributes.lares_resolver_member_id,requestId:auth.attributes.lares_resume_request_id,optionId:auth.attributes.lares_resume_option}:undefined,
+ requirePrivateConsoleResume:fake.resume}));
+vi.mock('@lares/agent-kit/public-docs-runtime',()=>({publicDocsIndex:fake.docsIndex,readBakedPublicDoc:fake.docsRead}));
 vi.mock('../src/catalogue.js',()=>({grantedToolNames:()=>fake.granted}));
 vi.mock('../src/outside-connections.js',()=>({checkedOutsideConnections:fake.outside,descriptionChecks:vi.fn()}));
 vi.mock('../../../services/chief-of-staff/lib/definition.js',()=>({thisAgent:fake.definition,roleMdPath:()=>fileURLToPath(new URL('../templates/chief-of-staff/role.md',import.meta.url))}));
@@ -23,7 +27,7 @@ const auth={authenticator:'lares-console',principalType:'user',principalId:'synt
 const context={session:{id:'private',turn:{id:'turn-1',sequence:0},auth:{current:auth,initiator:auth}}};
 const event={type:'session.started',data:{},meta:{}};
 const load=(path:string)=>import(new URL(path,import.meta.url).href);
-beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION','11111111-1111-4111-8111-111111111111');fake.binding.mockResolvedValue({});fake.turn.mockResolvedValue(undefined);fake.source.mockResolvedValue('mail result');fake.granted=['fixture','gmail_accounts','gmail_read','gmail_search'];fake.definition.mockResolvedValue({loaded:{definition:{}}});});
+beforeEach(()=>{vi.stubEnv('LARES_AGENT_NAME','helper');vi.stubEnv('LARES_AGENT_INCARNATION','11111111-1111-4111-8111-111111111111');fake.binding.mockResolvedValue({});fake.turn.mockResolvedValue(undefined);fake.resume.mockResolvedValue({});fake.docsRead.mockImplementation((id:string)=>({markdown:`PUBLIC_DOC:${id}`}));fake.docsIndex.mockReturnValue('- install: reviewed page');fake.source.mockResolvedValue('mail result');fake.granted=['fixture','gmail_accounts','gmail_read','gmail_search'];fake.definition.mockResolvedValue({loaded:{definition:{}}});});
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
 for(const role of ['chief-of-staff','creative'])describe(`${role} real resolvers`,()=>{
  it('installed Eve assembles neutral private instructions and only the safe intersection, with no installation canary',async()=>{
@@ -77,7 +81,7 @@ it('both usage hooks omit private counts, including tagged initiator-only resume
  }
 });
 
-it('private load_skill sees an empty installed manifest; native loader preserves exact skill content without a sandbox',async()=>{
+it('private load_skill resolves only reviewed docs; native chief loader preserves its exact skills',async()=>{
  const {dispatchDynamicSkillEvent}=await import(`${dist}context/dynamic-skill-lifecycle.js`);
  const {executeLoadSkill}=await import(`${dist}execution/tools/load-skill.js`);
  const {BundleKey}=await import(`${dist}runtime/sessions/runtime-context-keys.js`);
@@ -90,7 +94,9 @@ it('private load_skill sees an empty installed manifest; native loader preserves
   await expect(executeLoadSkill({skill:'sales-outreach'})).rejects.toThrow('No skill named "sales-outreach".');
  });
  const loader=(await load('../../../services/chief-of-staff/agent/tools/load_skill.ts')).default;
- await expect(loader.events['session.started']({},context)).resolves.toBeNull();
+ const privateTool=await loader.events['session.started']({},context);
+ await expect(privateTool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
+ await expect(privateTool.execute({skill:'lares-docs'},context)).resolves.toContain('Public Lares documentation');
  const native={session:{id:'native',auth:{current:null,initiator:null}}};
  const tool=await loader.events['session.started']({},native);
  for(const name of ['signals','sales-outreach']){
@@ -98,7 +104,7 @@ it('private load_skill sees an empty installed manifest; native loader preserves
   const skill=await definition.events['session.started']({},native);
   await expect(tool.execute({skill:name},native)).resolves.toBe(skill.markdown);
  }
- await expect(tool.execute({skill:'signals'},context)).rejects.toThrow('Conversation authority');
+ await expect(tool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
 });
 it('installed session-local todo state cannot cross between private sessions or into native sessions',async()=>{
  const {executeTodoTool}=await import(`${dist}execution/tools/todo.js`);
@@ -119,8 +125,73 @@ it('installed Eve resolves the native load_skill override with durable callbacks
   const expected=(await load('../../../services/chief-of-staff/agent/skills/signals.ts')).default;
   await expect(tools[0].execute({skill:'signals'},{toolCallId:'native-load'})).resolves.toBe((await expected.events['session.started']({},{})).markdown);
   native.set(keys.SessionKey,{sessionId:'native-loader',auth:context.session.auth,turn:context.session.turn});
-  await expect(tools[0].execute({skill:'signals'},{toolCallId:'private-load'})).rejects.toThrow('Conversation authority');
+  await expect(tools[0].execute({skill:'signals'},{toolCallId:'private-load'})).rejects.toThrow('No skill named "lares-docs".');
  });
+});
+it('creative load_skill delegates native requests to Eve’s installed loader',async()=>{
+ const loader=(await load('../../../services/creative/agent/tools/load_skill.ts')).default;
+ const docsSkill=(await load('../../../services/creative/agent/skills/lares-docs.ts')).default;
+ const native={session:{id:'creative-native',auth:{current:null,initiator:null}}};
+ const expected={markdown:'Native overlay skill exact text.'};
+ const {BundleKey}=await import(`${dist}runtime/sessions/runtime-context-keys.js`);
+ const storage=new ContextContainer();
+ storage.set(keys.SessionIdKey,'creative-native');storage.set(keys.StaticModelReferenceKey,null);
+ storage.set(keys.SessionKey,{sessionId:'creative-native',auth:native.session.auth,turn:{id:'native-turn',sequence:0}});
+ storage.set(keys.SandboxKey,{get:async()=>null});
+ storage.set(BundleKey,{resolvedAgent:{skills:[{name:'overlay-skill',markdown:expected.markdown}]}});
+ await contextStorage.run(storage,async()=>{
+  const {dispatchDynamicSkillEvent}=await import(`${dist}context/dynamic-skill-lifecycle.js`);
+  await dispatchDynamicSkillEvent({ctx:storage,resolvers:[{slug:'lares-docs',logicalPath:'skills/lares-docs.ts',eventNames:['session.started'],events:docsSkill.events}],event,messages:[]});
+  expect(storage.get(keys.DynamicSkillManifestKey)).toHaveProperty('lares-docs');
+  await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'load_skill',logicalPath:'tools/load_skill.ts',eventNames:['session.started'],events:loader.events}],event,messages:[]});
+  const tools=buildDynamicTools(storage);expect(tools.map((tool:any)=>tool.name)).toEqual(['load_skill']);
+  await expect(tools[0].execute({skill:'overlay-skill'},{toolCallId:'creative-native-signal'})).resolves.toBe(expected.markdown);
+  await expect(tools[0].execute({skill:'lares-docs'},{toolCallId:'creative-native-docs'})).resolves.toContain('Public Lares documentation');
+ });
+});
+it('creative private load_skill accepts only the public documentation skill',async()=>{
+ const loader=(await load('../../../services/creative/agent/tools/load_skill.ts')).default;
+ const {load_skill:tool}=await loader.events['session.started']({},context);
+ await expect(tool.execute({skill:'signals'},context)).rejects.toThrow('No skill named "lares-docs".');
+ await expect(tool.execute({skill:'lares-docs'},context)).resolves.toContain('Public Lares documentation');
+ fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
+ await expect(tool.execute({skill:'lares-docs'},context)).rejects.toThrow('binding revoked');
+});
+it('both roles expose only the fixed public reader and recheck private or resumed authority on durable execution',async()=>{
+ const {ContextContainer}=await import(`${dist}context/container.js`);
+ const {dispatchDynamicToolEvent}=await import(`${dist}context/dynamic-tool-lifecycle.js`);
+ const {buildDynamicTools}=await import(`${dist}context/build-dynamic-tools.js`);
+ const {SessionIdKey,StaticModelReferenceKey,AuthKey,InitiatorAuthKey,SessionKey}=keys;
+ for(const role of ['chief-of-staff','creative']){
+  fake.docsRead.mockClear();
+  const resolver=(await load(`../../../services/${role}/agent/tools/public_doc.ts`)).default;
+  const storage=new ContextContainer();
+  storage.set(SessionIdKey,'public-doc-'+role);storage.set(StaticModelReferenceKey,null);storage.set(AuthKey,auth);storage.set(InitiatorAuthKey,auth);
+  storage.set(SessionKey,{sessionId:'public-doc-'+role,auth:context.session.auth,turn:context.session.turn});
+  await contextStorage.run(storage,async()=>{
+   await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'public_doc',logicalPath:'tools/public_doc.ts',eventNames:['session.started'],events:resolver.events}],event,messages:[]});
+   const tools=buildDynamicTools(storage);expect(tools.map((tool:any)=>tool.name)).toEqual(['lares_read_public_doc']);
+   await expect(tools[0].execute({id:'install'},{toolCallId:'public-doc'})).resolves.toBe('PUBLIC_DOC:install');
+   expect(fake.docsRead).toHaveBeenCalledTimes(1);
+
+   fake.binding.mockRejectedValueOnce(new Error('binding revoked'));
+   await expect(tools[0].execute({id:'install'},{toolCallId:'revoked-doc'})).rejects.toThrow('unavailable or this conversation is no longer authorized');
+   expect(fake.docsRead).toHaveBeenCalledTimes(1);
+  });
+ }
+
+ const resolver=(await load('../../../services/creative/agent/tools/public_doc.ts')).default;
+ const resumeAuth={authenticator:'lares-console',attributes:{lares_resolver_member_id:'synthetic',lares_resume_request_id:'request-1',lares_resume_option:'approve',lares_purpose:'resolver'}};
+ const resumed={session:{id:'resumed-public-doc',turn:{id:'turn-resumed',sequence:0},auth:{current:resumeAuth,initiator:auth}}};
+ const storage=new ContextContainer();storage.set(SessionIdKey,'resumed-public-doc');storage.set(StaticModelReferenceKey,null);storage.set(AuthKey,resumeAuth);storage.set(InitiatorAuthKey,auth);storage.set(SessionKey,{sessionId:'resumed-public-doc',auth:resumed.session.auth,turn:resumed.session.turn});
+ await contextStorage.run(storage,async()=>{
+  await dispatchDynamicToolEvent({ctx:storage,resolvers:[{slug:'public_doc',logicalPath:'tools/public_doc.ts',eventNames:['session.started'],events:resolver.events}],event,messages:[]});
+  const tools=buildDynamicTools(storage);
+  await expect(tools[0].execute({id:'install'},{toolCallId:'resumed-doc'})).resolves.toBe('PUBLIC_DOC:install');
+ });
+ expect(fake.resume).toHaveBeenCalledTimes(2);
+ expect(fake.resume.mock.calls.every(([ctx,phase])=>ctx.session.id==='resumed-public-doc'&&phase==='surface')).toBe(true);
+ expect(fake.docsRead).toHaveBeenCalledTimes(2);
 });
 it('installed Eve trace policy drops HTTP content and metadata exports',async()=>{
  const {resolveTracePolicy}=await import(`${dist}shared/trace-policy.js`);

@@ -155,6 +155,102 @@ function isCovered(req: Requirement, paths: string[]): boolean {
   return positive.some((p) => p === req.name || p.startsWith(`${req.name}/`));
 }
 
+const PUBLIC_DOCS_GENERATED_SOURCES = new Set([
+  ".public-docs-bake/snapshot",
+  ".public-docs-bake/identity.json",
+]);
+const PUBLIC_DOCS_TRACKED_INPUTS: Requirement[] = [
+  { kind: "directory", name: "docs" },
+  { kind: "file", name: "scripts/public-docs.ts" },
+  { kind: "directory", name: "packages" },
+  { kind: "file", name: "package.json" },
+  { kind: "file", name: "pnpm-lock.yaml" },
+  { kind: "file", name: "pnpm-workspace.yaml" },
+];
+const PUBLIC_DOCS_BAKE_STEP = "Export and stage the verified public docs corpus";
+
+/** Generated Docker inputs cannot be covered by a Git path filter. Require each Docker build
+ * that copies them to have verified them earlier in the same job, and require the workflow to
+ * rerun for every tracked source/configuration input used by that export. */
+function publicDocsBakeErrors(job: any, buildStepIndex: number): string[] {
+  const steps: any[] = Array.isArray(job?.steps) ? job.steps : [];
+  const bakeIndex = steps.findIndex((step, index) => index < buildStepIndex && step.name === PUBLIC_DOCS_BAKE_STEP);
+  if (bakeIndex < 0) return ["missing bake step before Docker build"];
+  const bake = String(steps[bakeIndex]?.run ?? "");
+  const errors: string[] = [];
+  const hasEarlier = (predicate: (step: any) => boolean) => steps.some((step, index) => index < bakeIndex && predicate(step));
+  if (!hasEarlier((step) => step.uses === "actions/setup-node@v4" && step.with?.["node-version"] === "24"))
+    errors.push("Node 24 setup must precede the public docs exporter");
+  if (!hasEarlier((step) => typeof step.run === "string" && /pnpm install --frozen-lockfile --filter lares(?:\s|$)/.test(step.run)))
+    errors.push("the lares exporter dependency install must precede the bake");
+  for (const token of [
+    'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"',
+    'scripts/public-docs.ts export --root "$GITHUB_WORKSPACE" --release "$PUBLIC_DOCS_RELEASE"',
+    'mkdir -p .public-docs-bake',
+    'cp -R "$export_dir" .public-docs-bake/snapshot',
+    'cp "$RUNNER_TEMP/public-docs-identity.json" .public-docs-bake/identity.json',
+    'i.sourceCommit!==process.argv[2]||i.release!==process.argv[3]',
+    '"$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE"',
+    'scripts/public-docs.ts verify --snapshot "$GITHUB_WORKSPACE/.public-docs-bake/snapshot" --expected-corpus "$expected_hash"',
+  ]) {
+    if (!bake.includes(token)) errors.push(`bake step is missing required verified export operation: ${token}`);
+  }
+  return errors;
+}
+
+function publicDocsTrackedInputGaps(paths: string[] | null): string[] {
+  if (!paths) return [];
+  return PUBLIC_DOCS_TRACKED_INPUTS.filter((input) => !isCovered(input, paths))
+    .map((input) => `${input.kind}:${input.name}`);
+}
+
+function publicDocsReleaseIdentityErrors(doc: any, job?: any): string[] {
+  const input = doc?.on?.workflow_dispatch?.inputs?.docs_release;
+  const errors: string[] = [];
+  if (input?.type !== "string" || input?.default !== "candidate")
+    errors.push("workflow_dispatch must expose docs_release with candidate as its default");
+  const identity = job?.env?.PUBLIC_DOCS_RELEASE ?? doc?.env?.PUBLIC_DOCS_RELEASE;
+  if (identity !== "${{ github.event_name == 'workflow_dispatch' && inputs.docs_release || 'candidate' }}")
+    errors.push("PUBLIC_DOCS_RELEASE must use the validated dispatch identity or candidate");
+  return errors;
+}
+
+/** Return every generated-docs Docker build (including duplicate build/scan and publish builds)
+ *  whose same job does not prepare and verify the generated inputs first. */
+function findUncoveredPublicDocsBuilds(): { violations: string[]; examined: number; jobs: Map<string, any> } {
+  const violations: string[] = [];
+  const jobs = new Map<string, any>();
+  let examined = 0;
+  for (const wf of readdirSync(WORKFLOWS_DIR).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))) {
+    const doc = parse(readFileSync(join(WORKFLOWS_DIR, wf), "utf8"));
+    const paths = pushPaths(doc);
+    let docsWorkflowExamined = false;
+    for (const [jobId, job] of Object.entries<any>(doc.jobs ?? {})) {
+      const steps: any[] = Array.isArray(job.steps) ? job.steps : [];
+      steps.forEach((step, index) => {
+        if (typeof step.uses !== "string" || !step.uses.startsWith("docker/build-push-action")) return;
+        const context: string = step.with?.context ?? ".";
+        const template: string = step.with?.file ?? posix.join(context, "Dockerfile");
+        const files = resolveMatrixFile(template, job);
+        const hasGeneratedDocs = files.some((file) => copySources(join(REPO_ROOT, file), context)
+          .some(({ src }) => PUBLIC_DOCS_GENERATED_SOURCES.has(src)));
+        if (!hasGeneratedDocs) return;
+        examined++;
+        const key = `${wf}:${jobId}`;
+        jobs.set(key, job);
+        if (!docsWorkflowExamined) {
+          for (const error of publicDocsReleaseIdentityErrors(doc, job)) violations.push(`${wf}: ${error}`);
+          docsWorkflowExamined = true;
+        }
+        for (const error of publicDocsBakeErrors(job, index)) violations.push(`${key}: ${error}`);
+        const gaps = publicDocsTrackedInputGaps(paths);
+        if (gaps.length) violations.push(`${key}: push.paths does not cover public-docs inputs ${gaps.join(", ")}`);
+      });
+    }
+  }
+  return { violations, examined, jobs };
+}
+
 function findUncoveredCopies(): { uncovered: UncoveredCopy[]; examined: number } {
   const uncovered: UncoveredCopy[] = [];
   let examined = 0;
@@ -170,6 +266,7 @@ function findUncoveredCopies(): { uncovered: UncoveredCopy[]; examined: number }
       const dockerfilePath = join(REPO_ROOT, dockerfile);
       const seenDirs = new Set<string>();
       for (const { src, line } of copySources(dockerfilePath, context)) {
+        if (PUBLIC_DOCS_GENERATED_SOURCES.has(src)) continue; // separately checked as generated workflow input above
         const requirement = requirementFor(src);
         if (requirement === null || isCovered(requirement, paths)) continue;
         const key = `${dockerfile}::${requirement.kind}::${requirement.name}`;
@@ -196,5 +293,29 @@ describe("an image workflow's paths: filter covers what its Dockerfile COPIES", 
         : `${workflow}: ${dockerfile}:${line} COPIES "${src}" (a bare file) but "${workflow}"'s paths: filter does not name "${requirement.name}" — add it`,
     );
     expect(messages).toEqual([]);
+  });
+
+  it("bakes and verifies generated public-docs inputs before every role Docker build", () => {
+    const { violations, examined } = findUncoveredPublicDocsBuilds();
+    expect(examined).toBeGreaterThanOrEqual(6);
+    expect(violations).toEqual([]);
+  });
+
+  it("rejects a missing or misordered bake and a missing tracked source trigger", () => {
+    const { jobs } = findUncoveredPublicDocsBuilds();
+    const job = jobs.get("creative-builder.yml:build");
+    expect(job).toBeDefined();
+    const buildIndex = job.steps.findIndex((step: any) => step.uses?.startsWith("docker/build-push-action"));
+    const bake = job.steps.find((step: any) => step.name === PUBLIC_DOCS_BAKE_STEP);
+    expect(bake).toBeDefined();
+    const withoutBake = { ...job, steps: job.steps.filter((step: any) => step.name !== PUBLIC_DOCS_BAKE_STEP) };
+    expect(publicDocsBakeErrors(withoutBake, buildIndex)).toContain("missing bake step before Docker build");
+    const afterBuild = { ...job, steps: [...job.steps.filter((step: any) => step.name !== PUBLIC_DOCS_BAKE_STEP), bake] };
+    expect(publicDocsBakeErrors(afterBuild, buildIndex)).toContain("missing bake step before Docker build");
+    const creative = parse(readFileSync(join(WORKFLOWS_DIR, "creative-builder.yml"), "utf8"));
+    expect(publicDocsReleaseIdentityErrors({ ...creative, env: {} })).toContain("PUBLIC_DOCS_RELEASE must use the validated dispatch identity or candidate");
+    const paths = pushPaths(parse(readFileSync(join(WORKFLOWS_DIR, "creative-builder.yml"), "utf8")))!;
+    expect(publicDocsTrackedInputGaps(paths.filter((path) => path !== "docs/**"))).toContain("directory:docs");
+    expect(publicDocsTrackedInputGaps(paths.filter((path) => path !== "scripts/public-docs.ts"))).toContain("file:scripts/public-docs.ts");
   });
 });
