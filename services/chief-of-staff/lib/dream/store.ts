@@ -51,7 +51,7 @@ export interface ObservationRow {
   confidence: number;
   source: string | null;
   /** Which of the five ADR-0018 origin classes produced this row. Never null — see
-   *  `ensureDreamTables`'s ALTER TABLE for the backfill default and why it is `'agent'`. */
+   *  `026_dream_schema.sql`'s backfill default and why it is `'agent'`. */
   origin: Origin;
   /** The identity register's canonical id this row belongs to. NULL for a
    *  row written before this column existed AND not labelled by `labelExistingDreamRows` (the
@@ -94,71 +94,19 @@ export interface PreferenceInput {
   origin: Origin;
 }
 
-// ─── DDL ─────────────────────────────────────────────────────────────────────
+// ─── Schema readiness ────────────────────────────────────────────────────────
 
-/** Idempotent — safe to call on every startup. */
+/** Check that the offline migration created the complete schema this store needs. */
 export async function ensureDreamTables(db: MiniPool): Promise<void> {
   await db.query(
-    `CREATE TABLE IF NOT EXISTS dream_observations (
-       id         uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-       text       text          NOT NULL,
-       kind       text          NOT NULL,
-       subject    text          NOT NULL DEFAULT '',
-       confidence double precision NOT NULL DEFAULT 0,
-       source     text,
-       owner      text,
-       valid_from timestamptz   NOT NULL DEFAULT now(),
-       valid_to   timestamptz,
-       created_at timestamptz   NOT NULL DEFAULT now()
-     )`,
-  );
-  // Idempotent migration: add text_norm if the table was created before this column existed.
-  // Pre-existing rows will have text_norm = NULL and won't match new normalised queries —
-  // worst case a one-time re-record of those observations on the next dream cycle.
-  await db.query(
-    `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS text_norm text`,
-  );
-  // Origin (docs/decisions/0018-learning-and-dreaming.md, the origin model). DEFAULT 'agent' is
-  // the correct backfill: every row that exists was produced by the reflector reasoning over
-  // conversation logs (cycle.ts), which is the `agent` class. Unlike `standing_facts`, there is
-  // deliberately NO CHECK constraint here — these tables legitimately hold all five classes once
-  // the taint reaches them. The promotion gate is what reads this column.
-  await db.query(
-    `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent'`,
-  );
-  // Owner. NULLABLE, NO DEFAULT: unlike `origin` above, an ALTER must never INVENT an owner — a
-  // row this store did not write itself either predates the column, or belongs to an
-  // installation this code cannot see. THIS CREATE TABLE, and this ALTER, are the column's one
-  // truth (`owner text`, nullable, no default); these tables are created here at runtime, not by
-  // a numbered migration, so nothing else can disagree about the column's shape. Labelling an
-  // existing NULL row as the installation's one member (when there is exactly one) is a
-  // SEPARATE, explicit step — `labelExistingDreamRows` below — never something this ALTER does
-  // on its own.
-  await db.query(
-    `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS owner text`,
+    `SELECT id, text, text_norm, kind, subject, confidence, source, origin, owner,
+            valid_from, valid_to, created_at
+       FROM dream_observations LIMIT 0`,
   );
   await db.query(
-    `CREATE TABLE IF NOT EXISTS dream_preferences (
-       id            uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-       text          text          NOT NULL,
-       kind          text          NOT NULL,
-       subject       text          NOT NULL DEFAULT '',
-       confidence    double precision NOT NULL DEFAULT 0,
-       source        text,
-       owner         text,
-       valid_from    timestamptz   NOT NULL DEFAULT now(),
-       valid_to      timestamptz,
-       superseded_by uuid,
-       created_at    timestamptz   NOT NULL DEFAULT now()
-     )`,
-  );
-  // Same rule and same backfill default as dream_observations above.
-  await db.query(
-    `ALTER TABLE dream_preferences ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent'`,
-  );
-  // Same rule as dream_observations' owner column above — see that comment.
-  await db.query(
-    `ALTER TABLE dream_preferences ADD COLUMN IF NOT EXISTS owner text`,
+    `SELECT id, text, kind, subject, confidence, source, origin, owner, valid_from,
+            valid_to, superseded_by, created_at
+       FROM dream_preferences LIMIT 0`,
   );
 }
 
@@ -181,8 +129,8 @@ export interface DreamLabelResult {
  * Label pre-existing dream rows as the installation's single member. Does nothing, and says so, when `users` holds anything other than exactly one row
  * or is not on this database at all.
  *
- * Written for callers the SQL files cannot reach: a deploy where `ensureDreamTables` added the
- * column (at chief-of-staff startup) after rows already existed, and any other explicit
+ * Written for callers the SQL files cannot reach: a deploy where the dream schema migration added
+ * the column after rows already existed, and any other explicit
  * labelling run. Running it more than once, in any order, ends at the same
  * answer — every row that predates the column, and only those, get exactly one owner: the
  * register's one member, when there is exactly one; otherwise nothing changes.
@@ -347,7 +295,7 @@ export function makeDreamStore(db: MiniPool, owner?: string) {
      * agent manufacture recurrence.
      *
      * `origin = 'owner'` also excludes every row written BEFORE the origin column existed:
-     * `ensureDreamTables`'s backfill stamps those `'agent'` (see its ALTER above), and they
+     * `026_dream_schema.sql` backfills those as `'agent'`, and they
      * were derived from conversation logs of unknown provenance. Unknown is not trusted, so no
      * date cutoff is needed — the backfill default is exactly the marker.
      *

@@ -52,8 +52,11 @@ import { applyMemoryProposal } from "../lib/memory-proposal-apply.js";
 import { deriveRef, DREAM_CONFIRM_MAX_PER_RUN } from "../lib/dream/surface.js";
 import { everythingRejected } from "../lib/dream/cycle.js";
 import { fileConfirmations } from "../agent/schedules/dream.js";
-import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
+import { makeDreamStore } from "../lib/dream/store.js";
+
 import type { Observation } from "../lib/dream/reflect.js";
+
+const DREAM_SCHEMA_SQL = readFileSync(new URL("../../box/sql/026_dream_schema.sql", import.meta.url), "utf8");
 
 /** Mirrors services/box/sql/001_baseline.sql as the baseline leaves it — see this file's header. */
 const MEMORY_PROPOSALS_SCHEMA = `
@@ -97,7 +100,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
   await pool.query(MEMORY_PROPOSALS_SCHEMA);
-  await ensureDreamTables(pool);
+  await pool.query(DREAM_SCHEMA_SQL);
 }, 180_000);
 
 afterAll(async () => {

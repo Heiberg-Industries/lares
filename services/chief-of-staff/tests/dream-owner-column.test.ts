@@ -5,7 +5,7 @@
  *   1. a NEW row written through the store always carries the owner the caller supplied —
  *      `makeDreamStore(db, owner)` binds it once, at construction, so a store built without one
  *      (a read-only caller) throws a loud error rather than writing a silently NULL owner;
- *   2. `ensureDreamTables`'s ALTER never invents an owner for a row that predates the column —
+ *   2. the migration never invents an owner for a row that predates the column —
  *      the same rule this service already follows for `origin` (see `tests/dream-store.test.ts`);
  *   3. `labelExistingDreamRows` — the one-member rule as a reusable, idempotent runtime function — labels
  *      pre-existing NULL rows as the installation's one member, and ONLY when there is exactly
@@ -22,12 +22,16 @@
  * alongside it rather than instead of it.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { Pool } from "pg";
 import { quiet } from "./helpers/quiet-pool.js";
 
 import { ensureDreamTables, makeDreamStore, labelExistingDreamRows } from "../lib/dream/store.js";
+
 import type { Observation } from "../lib/dream/reflect.js";
+
+const DREAM_SCHEMA_SQL = readFileSync(new URL("../../box/sql/026_dream_schema.sql", import.meta.url), "utf8");
 
 const FIXTURE_OWNER = "fixture-owner";
 const FIXTURE_SECOND = "fixture-second";
@@ -42,6 +46,7 @@ describe("the dream tables' owner column", () => {
     // Minimal stand-in for services/box/sql/001_baseline.sql's `users` table — only the shape
     // `labelExistingDreamRows` reads (id, and enough to count rows).
     await pool.query(`CREATE TABLE users (id text PRIMARY KEY, display_name text NOT NULL)`);
+    await pool.query(DREAM_SCHEMA_SQL);
     await ensureDreamTables(pool);
   }, 120_000);
 
@@ -114,7 +119,7 @@ describe("the dream tables' owner column", () => {
       "CREATE TABLE dream_observations (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), text text NOT NULL, kind text NOT NULL)",
     );
     await pool.query("INSERT INTO dream_observations (text, kind) VALUES ('old','identity')");
-    await ensureDreamTables(pool); // the ALTER only — no labelling
+    await pool.query(DREAM_SCHEMA_SQL); // migration adds the nullable owner without labelling
     const { rows } = await pool.query("SELECT owner FROM dream_observations WHERE text = 'old'");
     expect(rows[0].owner).toBeNull();
   });

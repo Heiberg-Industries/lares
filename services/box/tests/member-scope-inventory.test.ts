@@ -4,15 +4,8 @@
 // every time it runs (styled after tests/migration-numbering.test.ts), so it keeps catching a
 // missing inventory entry as new migrations land, rather than only pinning what is true today.
 //
-// WHY THE THIRD ASSERTION IS LOOSER: the third assertion below reads
-// `expect(t.createdBy, t.table).toMatch(/\.sql$|\(runtime DDL\)$/)` rather than a bare
-// `/\.sql$/`. `dream_observations` and `dream_preferences` are not created by any `.sql` file at
-// all (lib/member-scope.ts explains why: they are runtime DDL in
-// services/chief-of-staff/lib/dream/store.ts), and the fourth test below requires
-// exactly that literal `createdBy` string for both of them. A bare `/\.sql$/` here would make
-// this file self-contradictory — no `createdBy` value could satisfy both assertions at once. The
-// loosened regex keeps the spirit (createdBy names where to check the claim) while admitting the
-// one documented exception.
+// Every table in the inventory now names the SQL file that creates it. The dream tables used to
+// be the runtime-DDL exception; migration 026 makes their schema ownership explicit too.
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
@@ -31,7 +24,7 @@ describe("member-scope inventory", () => {
     for (const t of MEMBER_SCOPE) {
       if (t.scope === "member") expect(t.column, t.table).toBeTruthy();
       if (t.scope === "resolved") expect(t.reachedBy, t.table).toBeTruthy();
-      expect(t.createdBy, t.table).toMatch(/\.sql$|\(runtime DDL\)$/);
+      expect(t.createdBy, t.table).toMatch(/\.sql$/);
     }
   });
 
@@ -60,9 +53,9 @@ describe("member-scope inventory", () => {
     expect(scopeOf("personal_action_calls")).toMatchObject({scope:"operational"});
   });
 
-  it("records the tables that are NOT created by a numbered migration, so nobody thinks they are covered", () => {
+  it("records the dream tables as created by the numbered schema migration", () => {
     for (const t of ["dream_observations", "dream_preferences"]) {
-      expect(scopeOf(t), t).toMatchObject({ createdBy: "services/chief-of-staff/lib/dream/store.ts (runtime DDL)" });
+      expect(scopeOf(t), t).toMatchObject({ createdBy: "services/box/sql/026_dream_schema.sql" });
     }
   });
 

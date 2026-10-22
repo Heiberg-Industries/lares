@@ -1,10 +1,10 @@
 /**
- * (docs/decisions/0018-learning-and-dreaming.md, the origin model) — coverage for `ensureDreamTables`'s `origin` column and the two dream-store write
- * paths (`record`, `addPreference`) that now require an `Origin`.
+ * (docs/decisions/0018-learning-and-dreaming.md, the origin model) — verifies that the offline
+ * dream schema migration preserves origin backfill semantics and covers the dream-store write
+ * paths (`record`, `addPreference`) that require an `Origin`.
  *
- * This is the container half the plan's own note calls for: `ensureDreamTables` is a real
- * `ALTER TABLE … ADD COLUMN IF NOT EXISTS`, so a fake `MiniPool` that never executes SQL cannot
- * prove it ran. Runs against a REAL disposable Postgres — the house pattern, following
+ * It runs against a REAL disposable Postgres because the migration and store both execute SQL —
+ * a fake `MiniPool` cannot prove either one works. This follows the house pattern in
  * `tests/standing-facts.test.ts`'s own header comment — via `@lares/agent-kit/db`'s `getPool()`,
  * which structurally satisfies `store.ts`'s `MiniPool` interface.
  *
@@ -19,12 +19,16 @@
  * being bookkeeping and starts deciding something.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
 import { quiet } from "./helpers/quiet-pool.js";
 import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
+
 import type { Observation } from "../lib/dream/reflect.js";
+
+const DREAM_SCHEMA_SQL = readFileSync(new URL("../../box/sql/026_dream_schema.sql", import.meta.url), "utf8");
 
 describe("origin on dream rows", () => {
   let container: StartedPostgreSqlContainer;
@@ -32,6 +36,7 @@ describe("origin on dream rows", () => {
   beforeAll(async () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     process.env["DATABASE_URL"] = container.getConnectionUri();
+    await quiet(getPool()).query(DREAM_SCHEMA_SQL);
   }, 120_000);
 
   afterAll(async () => {
@@ -39,7 +44,7 @@ describe("origin on dream rows", () => {
     await container.stop();
   });
 
-  it("ensureDreamTables adds origin to both tables, idempotently", async () => {
+  it("the offline migration creates the origin columns and readiness checks are read-only", async () => {
     const pool = quiet(getPool());
     await ensureDreamTables(pool);
     await ensureDreamTables(pool);
@@ -102,21 +107,35 @@ describe("origin on dream rows", () => {
     expect(await store.ownerRecurrenceCount(text)).toBe(2);
   });
 
-  it("never counts a row stamped 'agent' by the backfill", async () => {
+  it("migration backfills old rows as agent and never infers an owner", async () => {
     const pool = getPool();
-    const store = makeDreamStore(pool, "fixture-owner");
-    // A row as it exists on a live box from before the origin column: `ensureDreamTables`'s
-    // ALTER stamped every one of them `'agent'`, and they came from logs of unknown provenance.
-    // Unknown is not trusted, so no date cutoff is needed — the backfill default IS the marker.
-    await pool.query(
-      `INSERT INTO dream_observations (text, text_norm, kind, subject, confidence) VALUES ($1, $2, 'fact', 'legacy', 0.9)`,
-      ["a belief of unknown provenance", "a belief of unknown provenance"],
-    );
-    const { rows } = await pool.query(
-      `SELECT origin FROM dream_observations WHERE subject = 'legacy'`,
-    );
-    expect(rows[0].origin).toBe("agent");
-    expect(await store.ownerRecurrenceCount("a belief of unknown provenance")).toBe(0);
+    await pool.query("DROP TABLE dream_observations, dream_preferences");
+    await pool.query(`
+      CREATE TABLE dream_observations (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), text text NOT NULL,
+        kind text NOT NULL, subject text NOT NULL DEFAULT '',
+        confidence double precision NOT NULL DEFAULT 0, source text,
+        valid_from timestamptz NOT NULL DEFAULT now(), valid_to timestamptz,
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE dream_preferences (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(), text text NOT NULL,
+        kind text NOT NULL, subject text NOT NULL DEFAULT '',
+        confidence double precision NOT NULL DEFAULT 0, source text,
+        valid_from timestamptz NOT NULL DEFAULT now(), valid_to timestamptz,
+        superseded_by uuid, created_at timestamptz NOT NULL DEFAULT now()
+      );
+      INSERT INTO dream_observations (text, kind, subject) VALUES ('old observation', 'fact', 'legacy');
+      INSERT INTO dream_preferences (text, kind, subject) VALUES ('old preference', 'preference', 'legacy');
+    `);
+    await pool.query(DREAM_SCHEMA_SQL);
+    await ensureDreamTables(pool);
+
+    const observations = await pool.query("SELECT origin, owner, text_norm FROM dream_observations WHERE subject='legacy'");
+    expect(observations.rows).toEqual([{ origin: "agent", owner: null, text_norm: null }]);
+    const preferences = await pool.query("SELECT origin, owner FROM dream_preferences WHERE subject='legacy'");
+    expect(preferences.rows).toEqual([{ origin: "agent", owner: null }]);
+    expect(await makeDreamStore(pool, "fixture-owner").ownerRecurrenceCount("old observation")).toBe(0);
   });
 
   it("addPreference requires an origin", async () => {

@@ -7,8 +7,7 @@
  *
  * `memory_proposals` lives on the box's shared `lares_state` database
  * (services/box/sql/001_baseline.sql) and is mirrored here rather than imported, the
- * same convention as `tests/proposals.test.ts`. The dream tables are created by the role's own
- * `ensureDreamTables`, which is where they are created in production too.
+ * same convention as `tests/proposals.test.ts`. The dream tables are created by the offline migration `services/box/sql/026_dream_schema.sql`.
  *
  * WHAT THIS FILE IS FOR, in one line: proving that nothing between the reflector and the
  * standing preference can change what the owner believes without the owner saying so.
@@ -40,8 +39,11 @@ import {
   resetProposeWarningForTests,
   type ProposeOutcome,
 } from "../lib/dream/promote.js";
-import { ensureDreamTables, makeDreamStore } from "../lib/dream/store.js";
+import { makeDreamStore } from "../lib/dream/store.js";
+
 import { UnauthorizedApproverError } from "../lib/approvals.js";
+
+const DREAM_SCHEMA_SQL = readFileSync(new URL("../../box/sql/026_dream_schema.sql", import.meta.url), "utf8");
 
 /** Mirrors services/box/sql/001_baseline.sql — see this file's header. */
 const MEMORY_PROPOSALS_SCHEMA = `
@@ -87,7 +89,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("postgres:16-alpine").start();
   const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
   await pool.query(MEMORY_PROPOSALS_SCHEMA);
-  await ensureDreamTables(pool);
+  await pool.query(DREAM_SCHEMA_SQL);
 }, 180_000);
 
 afterAll(async () => {
