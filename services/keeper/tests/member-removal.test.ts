@@ -15,14 +15,17 @@ import {resetActions,runAction,type AuditRecord} from '../lib/actions.js';
 import {PgMemberStore} from '@lares/agent-kit/member-store';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import {serve} from '../lib/socket-server.js';
+import {addUnboundNativeCredential,createNativeTestCustody,openNativeTestCustody} from './helpers/native-cleanup.js';
+import type {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 
 let container:StartedPostgreSqlContainer,pool:Pool,journal:HostFinancialJournal,directory:string;
+let nativeCustody:BudgetNativeCustodyStore|undefined;
 const roots:string[]=[];
 const sessions={designated:'A'.repeat(43),secondOwner:'B'.repeat(43),expired:'C'.repeat(43),revoked:'D'.repeat(43),fresh:'F'.repeat(43),expiring:'G'.repeat(43)};
 const sessionHash=(token:string)=>createHash('sha256').update(token).digest('hex');
 const context=(actor='untrusted audit text')=>({actor,audit:vi.fn(async(_record:AuditRecord)=>{})});
-function register(ownerId:string|undefined,poolArg:Pool=pool){
-  registerMemberRemovalAction({pool:poolArg,journal,designatedOwnerId:ownerId});
+function register(ownerId:string|undefined,poolArg:Pool=pool,native?:BudgetNativeCustodyStore){
+  registerMemberRemovalAction({pool:poolArg,journal,designatedOwnerId:ownerId,nativeCustody:native});
 }
 async function act(token:string,targetMemberId:string,actor?:string){
   return runAction('member.remove',{sessionToken:token,targetMemberId},context(actor));
@@ -71,7 +74,7 @@ beforeAll(async()=>{
   journal=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
 });
 beforeEach(resetActions);
-afterAll(async()=>{resetActions();try{journal?.close();}catch{}if(pool)await pool.end();if(container)await container.stop();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
+afterAll(async()=>{resetActions();try{nativeCustody?.close();}catch{}try{journal?.close();}catch{}if(pool)await pool.end();if(container)await container.stop();for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 
 it('uses the opaque session as authority and removes a member through the prepared journal with no financial accounts',async()=>{
   register('designated-owner');const audit=context();
@@ -97,7 +100,9 @@ it('admits the verified-email socket contract and redacts the opaque cookie in k
 });
 
 it('refuses actor claims, non-designated owners, expired or revoked sessions, self removal, and foreign targets',async()=>{
-  register('designated-owner');
+  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native-refusal'));
+  const refusedAccount=randomUUID();await addUnboundNativeCredential(nativeCustody,refusedAccount);
+  register('designated-owner',pool,nativeCustody);
   await expect(act(sessions.secondOwner,'target-invited','designated-owner')).rejects.toThrow('Member removal was refused');
   await expect(act(sessions.expired,'target-invited')).rejects.toThrow('Member removal was refused');
   await expect(act(sessions.revoked,'target-invited')).rejects.toThrow('Member removal was refused');
@@ -107,10 +112,33 @@ it('refuses actor claims, non-designated owners, expired or revoked sessions, se
     .rejects.toThrow('invalid input');
   const state=(await pool.query("SELECT id,status FROM users WHERE id IN ('target-invited','target-foreign') ORDER BY id")).rows;
   expect(state).toEqual([{id:'target-foreign',status:'active'},{id:'target-invited',status:'invited'}]);
+  await nativeCustody.withGate(async gate=>expect(gate.accountOperations(refusedAccount)).toHaveLength(1));
+  nativeCustody.close();nativeCustody=openNativeTestCustody(join(roots[0]!, 'native-refusal'));
+  await nativeCustody.withGate(async gate=>expect(gate.inventory().operations[0]).toMatchObject({phase:'prepared',plaintext:'present'}));
 });
 
+it('reports acknowledged SQL removal when the post-COMMIT deadline expires',async()=>{
+  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native-deadline'));
+  await addUnboundNativeCredential(nativeCustody,randomUUID());
+  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('target-native-deadline','Deadline target','org-main','member','active')");
+  const delayedPool=new Proxy(pool,{get(target,property){
+    if(property==='connect')return async()=>{
+      const client=await target.connect(),query=client.query.bind(client);
+      return {release:client.release.bind(client),query:async(value:any,values?:any[])=>{
+        const sql=typeof value==='string'?value:value.text,result=await query(value,values);
+        if(/^\s*COMMIT\b/i.test(sql))await new Promise(resolve=>setTimeout(resolve,5_050));
+        return result;
+      }};
+    };
+    const value=Reflect.get(target,property,target);return typeof value==='function'?value.bind(target):value;
+  }}) as unknown as Pool;
+  register('designated-owner',delayedPool,nativeCustody);
+  await expect(act(sessions.designated,'target-native-deadline')).resolves.toEqual({removed:true,nativeCleanup:{status:'blocked',remaining:null}});
+  expect((await pool.query("SELECT status FROM users WHERE id='target-native-deadline'")).rows[0].status).toBe('removed');
+  await expect(nativeCustody.withGate(async()=>undefined)).rejects.toThrow('Native custody unavailable');
+},15_000);
+
 it('journals trigger retirement and the expanded closure while leaving admitted history and windows unchanged',async()=>{
-  register('designated-owner');
   await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:['target-financial']});
   const accounts=(await pool.query(`SELECT a.id,a.kind,a.policy_generation::text,a.active_window_id,a.installation_account_id
     FROM budget_accounts a WHERE a.kind='installation' OR a.live_member_id='target-financial' ORDER BY a.kind,a.id`)).rows;
@@ -118,6 +146,8 @@ it('journals trigger retirement and the expanded closure while leaving admitted 
   const windows=(await pool.query(`SELECT id,starts_at,ends_at,opening_liability::text,opening_cap::text,policy_revision::text
     FROM budget_windows WHERE account_id=ANY($1::uuid[]) ORDER BY id`,[[installation.id,member.id]])).rows;
   const iw=windows.find(row=>row.id===installation.active_window_id)!,mw=windows.find(row=>row.id===member.active_window_id)!;
+  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native'));
+  const unboundOperationId=await addUnboundNativeCredential(nativeCustody,member.id,installation.id);
   const bindingId=randomUUID(),incarnation=randomUUID(),preparedId=randomUUID(),historyIds={admitted:randomUUID(),unknown:randomUUID(),settled:randomUUID()};
   const endpoint='a'.repeat(64),fingerprint='b'.repeat(64),profile='c'.repeat(64);
   await pool.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
@@ -140,7 +170,10 @@ it('journals trigger retirement and the expanded closure while leaving admitted 
       createHash('sha256').update('settlement').digest('hex')]);
   }
   const originalWindows=await pool.query('SELECT id,starts_at,ends_at,opening_liability::text,opening_cap::text,policy_revision::text FROM budget_windows ORDER BY id');
-  await act(sessions.designated,'target-financial');
+  register('designated-owner',pool,nativeCustody);
+  const removal=await act(sessions.designated,'target-financial');
+  expect(removal).toEqual({removed:true,nativeCleanup:{status:'pending',remaining:1}});
+  await nativeCustody.withGate(async gate=>expect(gate.inventory().operations[0]).toMatchObject({operationId:unboundOperationId,phase:'revoke-pending',plaintext:'removed',nativeDeletion:'unverified'}));
   const result=(await pool.query(`SELECT kind,state,reason,policy_generation::text,active_window_id FROM budget_accounts
     WHERE id=ANY($1::uuid[]) ORDER BY kind,id`,[[installation.id,member.id]])).rows;
   expect(result.find(row=>row.kind==='member')).toEqual({kind:'member',state:'retired',reason:'member_removed',
@@ -256,4 +289,29 @@ it('serializes session issuance with removal so any issued session is unusable a
   if(session.status==='fulfilled')expect(await store.sessionMember(session.value.token)).toBeUndefined();
   else expect(session.reason).toMatchObject({code:'denied'});
   expect(await store.currentMember('target-concurrent')).toBeUndefined();
+});
+
+it('freezes native custody when SQL committed but the journal control fsync is unknown',async()=>{
+  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native-uncertain'));
+  await addUnboundNativeCredential(nativeCustody,randomUUID());
+  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('target-native-uncertain','Uncertain target','org-main','member','active')");
+  const priorControl=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record)
+    .filter(record=>record.kind==='control').at(-1)?.control.checkpoint?.operationId;
+  journal.close();
+  journal=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true,
+    sync:fd=>{
+      fsyncSync(fd);
+      const last=readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').at(-1);
+      if(!last)return;
+      const record=JSON.parse(last).record;
+      if(record.kind==='control'&&record.control.checkpoint?.operationId&&record.control.checkpoint.operationId!==priorControl)
+        throw new Error('synthetic terminal control fsync failure');
+    }});
+  register('designated-owner',pool,nativeCustody);
+  const actionResult=await act(sessions.fresh,'target-native-uncertain').catch(error=>error);
+  expect((await pool.query("SELECT status FROM users WHERE id='target-native-uncertain'")).rows[0].status).toBe('removed');
+  expect(actionResult).toEqual({removed:true,nativeCleanup:{status:'blocked',remaining:null}});
+  await expect(nativeCustody.withGate(async()=>undefined)).rejects.toThrow('Native custody unavailable');
+  nativeCustody.close();
+  expect(()=>openNativeTestCustody(join(roots[0]!, 'native-uncertain'))).toThrow('reconciliation');
 });

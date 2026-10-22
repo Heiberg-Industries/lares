@@ -29,7 +29,9 @@ import type { Pool, PoolClient } from "pg";
 import { erasePerson, withPersonErasureClient, renderEraseReport, type EraseReport } from "./erase-person.js";
 import { erasePersonFiles, findPersonFiles, ErasePersonFilesError, type VaultHit } from "./erase-person-vault.js";
 import {runJournaledPersonErasure,type PersonErasureFinancialContext} from "../../keeper/lib/person-erasure.js";
-import type {HostFinancialJournal} from "../../keeper/lib/financial-journal.js";
+import {isJournaledAbort,type HostFinancialJournal} from "../../keeper/lib/financial-journal.js";
+import type {BudgetNativeCustodyStore} from "../../keeper/lib/budget-native-custody.js";
+import {recordCommittedNativeRetirement,type NativeCleanupStatus} from "../../keeper/lib/budget-native-cleanup.js";
 import {
   resolvePerson,
   IdentityRegisterMissing,
@@ -59,6 +61,8 @@ export interface RunEraseOptions {
   apply: boolean;
   /** Required for every apply. This is the existing prepared host custody, never initialized here. */
   journal?:HostFinancialJournal;
+  /** The already-open native custody owner, when configured. Acquired before journal ownership. */
+  nativeCustody?:BudgetNativeCustodyStore;
 }
 
 export interface RunEraseResult {
@@ -74,6 +78,7 @@ export interface RunEraseResult {
   vaultError?: string;
   transactionOutcome?:"rollback-acknowledged"|"commit-acknowledged"|"unknown"|"not-started";
   journalWarning?:string;
+  nativeCleanup?:NativeCleanupStatus;
 }
 
 function messageOf(err: unknown): string {
@@ -109,8 +114,10 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
   if(apply){
     if(!opts.journal?.prepared)return {dbReport:refusalReport(person,'Prepared financial custody is required before erasure.'),vaults:[],noVaultGiven};
     let partial:RunEraseResult|undefined;
+    let committed:{result:RunEraseResult;accountIds:readonly string[];receipt:import('../../keeper/lib/financial-journal.js').CommittedFinancialReceipt|undefined}|undefined;
     try{
-      const {value}=await runJournaledPersonErasure(db as never,opts.journal,async(source,financial)=>{
+      const execute=async(gate?:import('../../keeper/lib/budget-native-custody.js').NativeCustodyGate):Promise<RunEraseResult>=>{
+      const transaction=await runJournaledPersonErasure(db as never,opts.journal!,async(source,financial)=>{
         let identity;
         try{identity=await resolvePerson(source as never,person);}catch(err){
           if(err instanceof PersonNotFound||err instanceof PersonAmbiguous||err instanceof IdentityRegisterMissing)
@@ -123,14 +130,33 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
           partial={dbReport:preCheck,vaults:[],noVaultGiven};
           if(preCheck.refusals.length)throw new ErasureRefused({dbReport:preCheck,vaults:[],noVaultGiven});
           const closure=await financial.prepare(source,identity.id);
+          const accountIds=gate?financial.nativeAccountIds(closure):[];
           const result=await runEraseOwned(opts,identity,client,preCheck,financial,closure,value=>{partial=value;});
           partial=result;
           if(result.vaultError||result.dbReport.refusals.length)throw new ErasureRefused(result);
-          return result;
+          return {result,accountIds};
         });
       });
-      return {...value,transactionOutcome:"commit-acknowledged"};
+      committed={result:transaction.value.result,accountIds:transaction.value.accountIds,receipt:transaction.receipt};
+      const result:RunEraseResult={...committed.result,transactionOutcome:"commit-acknowledged"};
+      if(!transaction.receipt)return {...result,journalWarning:"The database erase committed, but no financial receipt was available; native cleanup was left untouched for inspection.",...(gate?{nativeCleanup:{status:'blocked' as const,remaining:null}}:{})};
+      if(!gate)return result;
+      return {...result,nativeCleanup:recordCommittedNativeRetirement(gate,committed.accountIds,transaction.receipt,true)};
+      };
+      if(opts.nativeCustody){
+        const gated=await opts.nativeCustody.withGate(async gate=>{
+          try{return {kind:'done' as const,result:await execute(gate)};}
+          catch(error){
+            if(isJournaledAbort(error,{journalId:opts.journal!.id,operation:'erase-person'}))return {kind:'aborted' as const,error};
+            throw error;
+          }
+        });
+        if(gated.kind==='aborted')throw gated.error;
+        return gated.result;
+      }
+      return await execute();
     }catch(err){
+      if(committed&&opts.nativeCustody)return {...committed.result,transactionOutcome:"commit-acknowledged",journalWarning:"The database erase committed, but native cleanup custody needs inspection.",nativeCleanup:{status:'blocked',remaining:null}};
       const outcome=(err as {outcome?:string}).outcome;
       if(err instanceof ErasureRefused)return {...err.result,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
       if(partial?.dbReport.refusals.length)return {...partial,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"rollback-acknowledged"};
@@ -138,6 +164,8 @@ export async function runErase(opts: RunEraseOptions): Promise<RunEraseResult> {
       const safeCause=err instanceof Error&&(err.message.startsWith('Cannot erase the last active organisation owner;')||err.message==='Financial erasure proposal exceeds the journal record limit')?err.message:undefined;
       const failure=outcome==='unknown'
         ?'The database outcome is unknown. The journal is frozen; inspect the database and local files before recovery or retry.'
+        :outcome==='not-started'
+          ?'The erase did not start because custody or database access was unavailable. No database commit was acknowledged; inspect the listed files before retrying.'
         :safeCause??'The database transaction was rolled back. Any file removals shown below already happened and were not rolled back.';
       return partial
         ?{...partial,transactionOutcome:(outcome as RunEraseResult["transactionOutcome"])??"not-started",dbReport:{...partial.dbReport,planned:[],deleted:[],refusals:[failure]}}
@@ -254,6 +282,14 @@ export function renderRunEraseReport(result: RunEraseResult): string {
   }
   const out: string[] = [renderEraseReport(result.dbReport)];
   if(result.journalWarning)out.push("",`**${result.journalWarning}**`);
+  if(result.nativeCleanup){
+    const cleanup=result.nativeCleanup;
+    out.push("",cleanup.status==='complete'
+      ?"Native credential cleanup is complete."
+      :cleanup.status==='pending'
+        ?`The database erase committed. Native credential cleanup remains pending for ${cleanup.remaining} key(s). Run the root-only native cleanup command once for each remaining key.`
+        :"The database erase committed. Native cleanup needs inspection; the remaining count is unknown.");
+  }
 
   if (result.vaultError) {
     out.push("");

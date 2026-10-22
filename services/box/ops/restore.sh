@@ -385,11 +385,32 @@ PYFINANCIAL
 if [ "$FINANCIAL_PREPARED" = 0 ];then
   say 'financial custody is not configured (legacy inactive path)'
 fi
+NATIVE_PREPARED=$(python3 - "$KEEPER_JSON" "$(P /var/lib/lares/budget-native)" <<'PYNATIVE'
+import json, os, sys
+try:
+    config = json.load(open(sys.argv[1]))
+    if 'budgetNative' in config:
+        if config['budgetNative'] != {'directory': '/var/lib/lares/budget-native'} or 'budgetFinancial' not in config:
+            raise ValueError('invalid native binding')
+        if not os.path.isdir(sys.argv[2]) or os.path.islink(sys.argv[2]):
+            raise ValueError('prepared native custody is missing')
+        print('1')
+    else:
+        if os.path.lexists(sys.argv[2]):
+            raise ValueError('unbound native custody needs recovery')
+        print('0')
+except Exception:
+    sys.exit(1)
+PYNATIVE
+) || die 'native custody is missing, unsafe or unbound; recovery is required before restore. Nothing was changed.' "$EX_REFUSED"
+if [ "$NATIVE_PREPARED" = 1 ];then
+  say 'prepared native custody is recorded outside backups and will be drained before restore'
+fi
 
 # --- 8. dry run stops here ----------------------------------------------------------------------------
 if [ "$DRY" = 1 ]; then
   say "dry run: nothing on this server was changed. With these answers I would:"
-  say "  1. permanently freeze any prepared financial custody, then stop the keeper, console, caddy and the model gateway (the database stays up)"
+  say "  1. drain configured native cleanup and permanently freeze prepared financial custody, then stop the keeper, console, caddy and the model gateway (the database stays up)"
   say "  2. drop, recreate and restore these databases from the snapshot: ${DUMPS[*]}"
   say "  3. apply any newer database changes (pnpm -C services/box migrate)"
   say "  4. copy the agents, retired, taste and installation folders from the snapshot, keeping owners and modes"
@@ -445,7 +466,7 @@ write_keeper_compose_selection() { # 0 base only; 1 verified Vault inventory and
 # fsyncs a permanent freeze under the lifetime kernel lock, then acknowledges. If the keeper
 # is unavailable, the host command must acquire that SAME lock; contention stops restore.
 if [ "$FINANCIAL_PREPARED" = 1 ];then
-  say 'permanently freezing prepared financial custody before stopping any service'
+  say 'draining native custody and permanently freezing prepared financial custody before stopping any service'
   if ! keeper_dc exec -T lares-keeper \
     /app/services/keeper/node_modules/.bin/tsx /app/services/keeper/bin/budget-financial.ts freeze --host </dev/null;then
     if [ "$ENGINE_MODE" = image ];then

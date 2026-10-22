@@ -70,9 +70,58 @@ export function linuxInheritedJournalLock(fd:number):void {
 }
 export interface FinancialPreparation {complete():void;close():void}
 export interface FinancialJournalProposal {journalId:string;operationId:string;sequence:number;digest:string}
+export interface CommittedFinancialEvidence {readonly journalId:string;readonly operationId:string;readonly operation:BudgetFinancialOperation;readonly proposalSequence:number;readonly proposalDigest:string}
+declare const committedReceiptBrand:unique symbol;
+export interface CommittedFinancialReceipt extends CommittedFinancialEvidence {readonly [committedReceiptBrand]:true}
+const committedReceipts=new WeakMap<object,{evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[]}>();
+export type FinancialAbortOutcome='not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back';
+declare const durableAbortReceiptBrand:unique symbol;
+export interface DurableFinancialAbortReceipt {readonly [durableAbortReceiptBrand]:true;readonly journalId:string;readonly operationId:string;readonly operation:BudgetFinancialOperation;readonly outcome:FinancialAbortOutcome;readonly terminalSequence:number;readonly terminalDigest:string}
+const durableAbortReceipts=new WeakMap<object,{finished:boolean;failure?:unknown;markedError?:object}>();
+const currentAbortFailures=new WeakMap<object,DurableFinancialAbortReceipt>();
+const journaledAborts=new WeakMap<object,DurableFinancialAbortReceipt>();
+/** Preserve the original failure. Only a prepared, fsynced abort from an operation
+ * whose barrier has finished may mark it; copied fields never carry authority. */
+export function markJournaledAbort(error:unknown,receipt:DurableFinancialAbortReceipt|undefined):void {
+  if(!error||typeof error!=='object'||!receipt||typeof receipt!=='object')return;
+  const proof=durableAbortReceipts.get(receipt);if(!proof?.finished||proof.failure!==error||currentAbortFailures.get(error)!==receipt||proof.markedError&&proof.markedError!==error)return;
+  proof.markedError=error;journaledAborts.set(error,receipt);
+}
+export function isJournaledAbort(error:unknown,expected:{journalId:string;operation:BudgetFinancialOperation}):boolean {
+  if(!error||typeof error!=='object')return false;const receipt=journaledAborts.get(error);
+  return !!receipt&&durableAbortReceipts.get(receipt)?.finished===true&&receipt.journalId===expected.journalId&&receipt.operation===expected.operation;
+}
+type BindingAtom=Extract<FinancialAtom,{kind:'binding'}>;
+export type FinancialReceiptRequirement=
+  |{kind:'bound-closed';binding:BindingAtom}
+  |{kind:'pending-revocation'|'bound-revocation';binding:BindingAtom}
+  |{kind:'account-erasure';accountId:string;installationAccountId?:string};
+/** Only a live receipt minted by this module can authorize these fixed financial facts.
+ * Reading a historical line or copying its coordinates never creates process authority.
+ * Private agent/native coordinates are deliberately absent from financial atoms; this
+ * receipt proves only the projected financial tuple, never those private fields. */
+export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,requirement:FinancialReceiptRequirement):CommittedFinancialEvidence|undefined {
+  if(!receipt||typeof receipt!=='object')return undefined;
+  const proof=committedReceipts.get(receipt);if(!proof)return undefined;
+  const {evidence,atoms}=proof;
+  const retired=(accountId:string,installationAccountId:string|undefined,erased:boolean)=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.accountKind==='member'&&(!installationAccountId||a.installationAccountId===installationAccountId)&&a.state==='retired'&&a.reason===(erased?'member_erased':evidence.operation==='erase-person'?'member_erased':'member_removed'));
+  let covered=false;
+  const erasedTombstone=(accountId:string)=>atoms.some(t=>t.kind==='tombstone'&&t.accountId===accountId&&t.state==='erased'&&atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.canonicalSuppressionHash===t.canonicalSuppressionHash&&gatewayCanonical(a.providerSuppressionHashes).equals(gatewayCanonical(t.providerSuppressionHashes))));
+  if(requirement.kind==='account-erasure')covered=evidence.operation==='erase-person'&&retired(requirement.accountId,requirement.installationAccountId,true)&&erasedTombstone(requirement.accountId);
+  else {
+    const binding=requirement.binding,exact=atoms.some(a=>a.kind==='binding'&&gatewayCanonical(a).equals(gatewayCanonical(binding)));
+    if(requirement.kind==='bound-closed')covered=evidence.operation==='provision'&&binding.state==='active'&&exact&&[binding.installationAccountId,binding.memberAccountId].every(accountId=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.installationAccountId===binding.installationAccountId&&a.accountKind===(accountId===binding.installationAccountId?'installation':'member')&&a.state==='closed'&&a.reason==='unreconciled'&&a.selectedEndpointHash===null&&a.recoveryEpochHash===null));
+    // Pending custody may never have reached INSERT. Erasure may omit already-revoked
+    // historical rows; its irreversible member retirement plus matching erased tombstone
+    // covers them. A present but mismatching binding never receives this fallback.
+    else covered=['member-remove','erase-person'].includes(evidence.operation)&&binding.state==='revoked'&&(exact||!atoms.some(a=>a.kind==='binding'&&a.id===binding.id)&&retired(binding.memberAccountId,binding.installationAccountId,false)&&(requirement.kind==='pending-revocation'||evidence.operation==='erase-person'&&erasedTombstone(binding.memberAccountId)));
+  }
+  return covered?{...evidence}:undefined;
+}
 export class HostFinancialJournal {
   #key:Buffer;
-  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string};private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private idle=new Set<()=>void>();private preparationComplete=false;
+  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private idle=new Set<()=>void>();private preparationComplete=false;
+  private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
   /** No mkdir, key creation, restore adoption, tail repair or automatic initialization. */
   static openExisting(directory:string,options:JournalOptions={}):HostFinancialJournal {
@@ -186,36 +235,51 @@ export class HostFinancialJournal {
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
     this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
-    this.busy=true;const operationId=randomUUID();
+    this.busy=true;this.pendingAbortReceipt=undefined;const operationId=randomUUID();
     try{
-      this.append({kind:'begin',operation:operation.parse(kind)},operationId);this.pending={id:operationId};
+      this.append({kind:'begin',operation:operation.parse(kind)},operationId);this.pending={id:operationId,operation:kind};
       const result=await work(operationId);
       if(this.pending||this.frozen)throw new Error('Financial operation did not durably finish');
       return result;
     }
-    catch(error){if(this.pending)this.frozen=true;throw error;}
-    finally{this.busy=false;if(this.pending)this.frozen=true;for(const resolve of this.idle)resolve();this.idle.clear();}
+    catch(error){
+      if(error&&typeof error==='object'){
+        const previous=currentAbortFailures.get(error);if(previous){const proof=durableAbortReceipts.get(previous);if(proof)proof.finished=false;}
+        currentAbortFailures.delete(error);journaledAborts.delete(error);
+      }
+      if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof){proof.failure=error;if(error&&typeof error==='object')currentAbortFailures.set(error,this.pendingAbortReceipt);}}throw error;
+    }
+    finally{this.busy=false;if(this.pending)this.frozen=true;if(this.pendingAbortReceipt){const proof=durableAbortReceipts.get(this.pendingAbortReceipt);if(proof)proof.finished=!this.pending&&!this.frozen;this.pendingAbortReceipt=undefined;}for(const resolve of this.idle)resolve();this.idle.clear();}
   }
   propose(operationId:string,atoms:readonly FinancialAtom[]):FinancialJournalProposal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
     financialProposalFrame(operationId,this.sequence,this.head,atoms);
-    const frame=this.append({kind:'proposal',atoms:[...atoms]},operationId);this.pending.proposal=frame.digest;
+    const checked=atoms.map(atom=>FINANCIAL_ATOM_SCHEMA.parse(atom));
+    const frame=this.append({kind:'proposal',atoms:checked},operationId);this.pending.proposal=frame.digest;this.pending.atoms=structuredClone(checked);
     return {journalId:this.journalId,operationId,sequence:frame.sequence,digest:frame.digest};
   }
   validateProposal(operationId:string,atoms:readonly FinancialAtom[]):void {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
     financialProposalFrame(operationId,this.sequence,this.head,atoms);
   }
-  committed(operationId:string):void {
-    if(this.pending?.id!==operationId||!this.pending.proposal)throw new Error('Financial proposal unavailable');
-    const proposal=this.pending.proposal,sequence=this.sequence-1;
+  committed(operationId:string):CommittedFinancialReceipt|undefined {
+    if(this.pending?.id!==operationId||!this.pending.proposal||!this.pending.operation||!this.pending.atoms)throw new Error('Financial proposal unavailable');
+    const proposal=this.pending.proposal,sequence=this.sequence-1,kind=this.pending.operation,atoms=this.pending.atoms;
     this.append({kind:'commit',proposalDigest:proposal},operationId);this.pending=undefined;
     this.lastCheckpoint={operationId,journalId:this.journalId,sequence,digest:proposal};
     if(this.control){this.control={...this.control,checkpoint:this.lastCheckpoint};this.append({kind:'control',control:this.control},this.writerId);}
+    // Generic unprepared histories retain their existing commit behavior, but have no
+    // database-bound control and cannot mint authority for native custody cleanup.
+    if(!this.control)return undefined;
+    const evidence=Object.freeze({journalId:this.journalId,operationId,operation:kind,proposalSequence:sequence,proposalDigest:proposal});
+    const receipt=evidence as CommittedFinancialReceipt;committedReceipts.set(receipt,{evidence,atoms});return receipt;
   }
-  aborted(operationId:string,reason:'not-started'|'rollback-acknowledged'|'source-retirement-acknowledged'|'source-retirement-rolled-back'):void {
-    if(this.pending?.id!==operationId)throw new Error('Financial operation unavailable');
-    this.append({kind:'abort',proposalDigest:this.pending.proposal??null,reason},operationId);this.pending=undefined;
+  aborted(operationId:string,reason:FinancialAbortOutcome):DurableFinancialAbortReceipt|undefined {
+    if(this.pending?.id!==operationId||!this.pending.operation)throw new Error('Financial operation unavailable');
+    const kind=this.pending.operation,frame=this.append({kind:'abort',proposalDigest:this.pending.proposal??null,reason},operationId);this.pending=undefined;
+    if(!this.control)return undefined;
+    const receipt=Object.freeze({journalId:this.journalId,operationId,operation:kind,outcome:reason,terminalSequence:frame.sequence,terminalDigest:frame.digest}) as DurableFinancialAbortReceipt;
+    durableAbortReceipts.set(receipt,{finished:false});this.pendingAbortReceipt=receipt;return receipt;
   }
   freeze():void {this.persistFreeze('uncertain');}
   /** Each observation is made on startup, before owned mutation, and immediately before
@@ -227,6 +291,7 @@ export class HostFinancialJournal {
     }
   }
   get prepared():boolean{return this.control!==undefined;}
+  get id():string{return this.journalId;}
   async drainForShutdown():Promise<void>{
     this.stopping=true;
     if(this.busy)await new Promise<void>(resolve=>{this.idle.add(resolve);});

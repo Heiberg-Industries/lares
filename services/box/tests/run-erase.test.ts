@@ -20,13 +20,18 @@ import { startThreeSpellingsDb, FIXTURE_OWNER, FIXTURE_SECOND, type TestDb } fro
 import { runErase, renderRunEraseReport } from "../lib/run-erase.js";
 import {erasePerson,withPersonErasureClient} from '../lib/erase-person.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
+import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
+import {consoleSourceTransaction,noteBudgetFinancialChange,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
 import {runJournaledPersonErasure} from '../../keeper/lib/person-erasure.js';
 import {platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
+import {addUnboundNativeCredential,createNativeTestCustody} from '../../keeper/tests/helpers/native-cleanup.js';
+import type {BudgetNativeCustodyStore} from '../../keeper/lib/budget-native-custody.js';
 
 let db: TestDb;
 let vaultRoot: string;
 let journal:HostFinancialJournal;
+let nativeCustody:BudgetNativeCustodyStore|undefined;
 let custodyRoot:string;
 let custodyParent:string;
 
@@ -59,6 +64,7 @@ beforeEach(async () => {
 }, 180_000);
 
 afterEach(async () => {
+  try{nativeCustody?.close();}catch{}nativeCustody=undefined;
   journal?.close();
   if(custodyParent)rmSync(custodyParent, { recursive: true, force: true });
   await db.stop();
@@ -131,10 +137,29 @@ describe("runErase — the order of operations", () => {
     await db.pool.query("UPDATE budget_accounts SET state='retired',reason='member_removed' WHERE id=$1",[member]);
     await db.pool.query("UPDATE budget_accounts SET policy_generation=9 WHERE id=$1",[member]);
     const beforeWindow=(await db.pool.query("SELECT id,opening_liability::text,opening_cap::text FROM budget_windows WHERE account_id=$1 ORDER BY id",[member])).rows;
-    const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[],apply:true,journal});
+    nativeCustody=createNativeTestCustody(join(custodyParent,'native'));
+    const operationId=await addUnboundNativeCredential(nativeCustody,member,'a1111111-1111-4111-8111-111111111111');
+    let removalReceipt:import('../../keeper/lib/financial-journal.js').CommittedFinancialReceipt|undefined;
+    const removalWriter=new JournalBudgetFinancialWriter(journal);
+    await removalWriter.runWithReceipt('member-remove',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,async source=>{
+      noteBudgetFinancialChange(source,'budget_accounts',member);
+      await source.query("UPDATE users SET status='removed' WHERE id=$1",[FIXTURE_OWNER]);return true;
+    },boundary)).then(result=>{removalReceipt=result.receipt;});
+    if(!removalReceipt)throw new Error('Prepared member-removal receipt fixture failed');
+    await nativeCustody.withGate(async gate=>{gate.recordRevocation(operationId,removalReceipt!);gate.removePlaintext(operationId);});
+    const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[],apply:true,journal,nativeCustody});
     expect(result.dbReport.refusals).toEqual([]);
+    expect(result.nativeCleanup).toEqual({status:'pending',remaining:1});
+    await nativeCustody.withGate(async gate=>{
+      const inventory=gate.inventory();
+      expect(inventory.users.some(user=>user.kind==='user')).toBe(false);
+      expect(inventory.users.some(user=>user.kind==='erased-user')).toBe(true);
+      expect(inventory.operations[0]).toMatchObject({kind:'cleanup',operationCommitment:expect.any(String),keyFingerprint:expect.any(String),phase:'revoke-pending',plaintext:'removed',nativeDeletion:'unverified'});
+      expect(JSON.stringify(inventory)).not.toContain(member);
+      expect(JSON.stringify(inventory)).not.toContain(operationId);
+    });
     const after=(await db.pool.query("SELECT state,reason,policy_generation::text,live_member_id,organisation_id FROM budget_accounts WHERE id=$1",[member])).rows[0];
-    expect(after).toEqual({state:'retired',reason:'member_erased',policy_generation:'10',live_member_id:null,organisation_id:null});
+    expect(after).toEqual({state:'retired',reason:'member_erased',policy_generation:'11',live_member_id:null,organisation_id:null});
     const binding=(await db.pool.query("SELECT state,live_member_id,agent,key_fingerprint FROM budget_gateway_bindings WHERE member_account_id=$1",[member])).rows[0];
     expect(binding).toEqual({state:'revoked',live_member_id:null,agent:null,key_fingerprint:null});
     const attempt=(await db.pool.query("SELECT state,live_member_id,authority_reference FROM budget_attempts WHERE member_account_id=$1",[member])).rows[0];

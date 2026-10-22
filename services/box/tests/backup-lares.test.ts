@@ -8,13 +8,14 @@ const roots:string[]=[];
 afterEach(()=>roots.splice(0).forEach(d=>rmSync(d,{recursive:true,force:true})));
 function fixture(encrypted:boolean){
  const root=mkdtempSync(join(tmpdir(),'lares-backup-'));roots.push(root);
- for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
+ for(const p of ['bin','etc/agent-box','etc/lares/secrets','opt/agent-box','opt/lares','srv/lares/agents/example','srv/lares/retired','srv/lares/backup','srv/lares/egress','srv/lares/secrets','srv/taste','var/backups','var/lib/lares/budget-native','var/lib/docker/volumes/fixture_workflow/_data'])mkdirSync(join(root,p),{recursive:true});
  writeFileSync(join(root,'opt/agent-box/.env'),'OLD_TEST_SECRET=old-secret');
  writeFileSync(join(root,'opt/lares/compose.yaml'),'services: {}\n');
  writeFileSync(join(root,'srv/lares/compose.lares-agents.yaml'),'services: {}\n');
  writeFileSync(join(root,'etc/lares/keeper.json'),'{"privateConfig":"test-only"}');
  writeFileSync(join(root,'etc/lares/secrets/key'),'NEW_TEST_SECRET');
  writeFileSync(join(root,'srv/lares/secrets/example-telegram-token'),'AGENT_TOKEN_SECRET');
+ writeFileSync(join(root,'var/lib/lares/budget-native/snapshot.json'),'NATIVE_CUSTODY_SECRET');
  writeFileSync(join(root,'srv/lares/agents/example/agent.json'),'{"name":"example"}');
  const key=join(root,'identity');
  execFileSync('age-keygen',['-o',key],{stdio:'pipe'});
@@ -56,12 +57,14 @@ it('backs up Lares definitions and encrypts new keeper configuration/secrets wit
  const f=fixture(true);execFileSync('bash',[f.file],{env:f.env,stdio:'pipe'});
  const args=JSON.parse(readFileSync(join(f.root,'restic-args.json'),'utf8'));
  expect(args).toContain(join(f.root,'srv/lares'));expect(args).not.toContain(join(f.root,'etc/lares'));
+ expect(args).toContain('--exclude');expect(args).toContain('/var/lib/lares/budget-native');
  expect(args).toContain(join(f.root,'var/lib/docker/volumes/fixture_workflow/_data'));
  const encrypted=join(f.root,'captured-dumps/secrets/agent-box-secrets.tar.age');
  expect(readFileSync(encrypted).includes(Buffer.from('NEW_TEST_SECRET'))).toBe(false);
  const archive=execFileSync('age',['-d','-i',f.key,encrypted]);
  const entries=execFileSync('tar',['-tf','-'],{input:archive,encoding:'utf8'});
  expect(entries).toContain('etc/lares/keeper.json');expect(entries).toContain('etc/lares/secrets/key');expect(entries).toContain('opt/agent-box/.env');
+ expect(entries).not.toContain('var/lib/lares/budget-native/snapshot.json');
  expect(execFileSync('tar',['-xOf','-','etc/lares/secrets/key'],{input:archive,encoding:'utf8'})).toBe('NEW_TEST_SECRET');
 });
 it('refuses an incomplete backup when a required workflow file volume is unavailable',()=>{
@@ -107,6 +110,7 @@ it('backs up only portable current-layout stores and an encrypted configuration 
  const archive=execFileSync('age',['-d','-i',f.key,encrypted]);
  const entries=execFileSync('tar',['-tf','-'],{input:archive,encoding:'utf8'});
  expect(entries).toContain('etc/lares/secrets/key');
+ expect(entries).not.toContain('var/lib/lares/budget-native/snapshot.json');
  expect(entries).not.toContain('opt/agent-box/.env');
 });
 it('classifies the installation folder and backs it up when it exists',()=>{

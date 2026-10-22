@@ -1,14 +1,15 @@
 /** Host-only pending native custody. This module performs no RPC/SQL and grants no
  * spending authority. Production wiring must first cover pending operations in removal,
  * erasure and explicit recovery. Never expose ownership/lock test seams in configuration. */
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash,randomUUID,randomBytes} from 'node:crypto';
 import {closeSync,constants,fchmodSync,fchownSync,fstatSync,fsyncSync,lstatSync,mkdirSync,opendirSync,openSync,readSync,renameSync,unlinkSync,writeSync,type BigIntStats} from 'node:fs';
 import {dirname,isAbsolute,join,normalize,parse} from 'node:path';
 import {z} from 'zod';
 import {canonicalBudgetMoney} from '@lares/agent-kit/budget-admission-store';
 import {gatewayCanonical,gatewayHash} from '@lares/agent-kit/gateway-admission-protocol';
 import {gatewayMaximumLiability,gatewayPricingSchema} from '@lares/agent-kit/gateway-pricing';
-import {linuxInheritedJournalLock} from './financial-journal.js';
+import {linuxInheritedJournalLock,committedFinancialEvidence,type CommittedFinancialReceipt,type FinancialAtom} from './financial-journal.js';
+import {consumeNativeHashAbsenceReceipt,type NativeHashAbsenceReceipt} from './budget-native-client.js';
 
 export const NATIVE_CUSTODY_DIRECTORY='/var/lib/lares/budget-native';
 export const NATIVE_CUSTODY_MAX_RECORDS=128,NATIVE_CUSTODY_MAX_BYTES=1_048_576,NATIVE_CUSTODY_POLICY_BYTES=16_384;
@@ -33,8 +34,7 @@ export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatew
   if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==p.capability.provider||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
 });
 export type BudgetNativeReviewedPolicy=z.infer<typeof budgetNativeReviewedPolicySchema>;
-const receipt=z.object({journalId:uuid,operationId:uuid,proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
-export type NativeFinancialReceipt=z.infer<typeof receipt>;
+const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
 const team=z.object({kind:z.literal('team'),ownershipId:uuid,installationAccountId:uuid,endpoint,nativeTeamId:nativeId,capabilityHash:hash,policy:teamPolicy}).strict();
 const user=z.object({kind:z.literal('user'),ownershipId:uuid,installationAccountId:uuid,accountId:uuid,endpoint,teamOwnershipId:uuid,nativeUserId:nativeId,policy:userPolicy,membership:membershipPolicy}).strict();
 const erasedUser=z.object({kind:z.literal('erased-user'),accountCommitment:hash,coordinateCommitment:hash,erasureReceiptHash:hash}).strict();
@@ -42,16 +42,17 @@ const operation=z.object({kind:z.literal('operation'),operationId:uuid,bindingId
   association:z.object({agent:z.string().regex(/^[a-z][a-z0-9-]{1,30}$/),incarnation:uuid,definitionHash:hash,purposeAlias:alias}).strict(),
   reviewedPolicy:budgetNativeReviewedPolicySchema,policyDigest:hash,keyFingerprint:hash,
   phase:z.enum(['prepared','provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked']),
-  financialOperationId:uuid.nullable(),bindingReceipt:receipt.nullable(),revocationReceipt:receipt.nullable(),
-  plaintext:z.enum(['present','removal-pending','removed']),nativeDeletion:z.literal('unverified'),
+  financialOperationId:uuid.nullable(),financialJournalId:uuid.nullable(),bindingReceipt:receipt.nullable(),revocationReceipt:receipt.nullable(),
+  plaintext:z.enum(['present','removal-pending','removed']),nativeDeletion:z.enum(['unverified','verified']),
 }).strict();
-const cleanup=z.object({kind:z.literal('cleanup'),accountCommitment:hash,coordinateCommitment:hash,operationCommitment:hash,endpoint,keyFingerprint:hash,policyDigest:hash,revocationReceiptHash:hash,erasureReceiptHash:hash,phase:z.literal('revoke-pending'),plaintext:z.literal('removed'),nativeDeletion:z.literal('unverified')}).strict();
+const cleanup=z.object({kind:z.literal('cleanup'),accountCommitment:hash,coordinateCommitment:hash,operationCommitment:hash,endpoint,keyFingerprint:hash,policyDigest:hash,revocationReceiptHash:hash,erasureReceiptHash:hash,phase:z.enum(['revoke-pending','revoked']),plaintext:z.literal('removed'),nativeDeletion:z.enum(['unverified','verified'])}).strict();
 const snapshotSchema=z.object({version:z.literal(1),storeId:uuid,revision:z.number().int().nonnegative().safe(),teams:z.array(team),users:z.array(z.discriminatedUnion('kind',[user,erasedUser])),operations:z.array(z.discriminatedUnion('kind',[operation,cleanup]))}).strict();
 type Snapshot=z.infer<typeof snapshotSchema>;
 export type NativeTeamOwnership=z.infer<typeof team>;
 export type NativeUserOwnership=z.infer<typeof user>;
 export type NativeOperation=z.infer<typeof operation>;
 export type NativeCleanupReceipt=z.infer<typeof cleanup>;
+export interface NativeAbsenceRequest {readonly origin:string;readonly fingerprint:string;readonly challenge:string}
 const controlSchema=z.object({version:z.literal(1),storeId:uuid,state:z.enum(['open','closed','uncertain']),revision:z.number().int().nonnegative().safe(),snapshotDigest:hash}).strict();
 type Control=z.infer<typeof controlSchema>;
 interface Options {ownershipUid?:number;ownershipGid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void}
@@ -71,12 +72,17 @@ export interface NativeCustodyGate {
   readKey(operationId:string):string;
   beginProvisioning(operationId:string):void;
   recordNativeBlockedVerification(operationId:string):void;
-  linkFinancialOperation(operationId:string,financialOperationId:string):void;
-  recordBoundClosed(operationId:string,evidence:NativeFinancialReceipt):void;
+  linkFinancialOperation(operationId:string,financialOperationId:string,journalId:string):void;
+  recordBoundClosed(operationId:string,evidence:CommittedFinancialReceipt):void;
   recordUncertain(operationId:string):void;
-  recordRevocation(operationId:string,evidence:NativeFinancialReceipt):void;
+  recordRevocation(operationId:string,evidence:CommittedFinancialReceipt):void;
   removePlaintext(operationId:string):void;
-  eraseAccountAssociation(accountId:string,evidence:NativeFinancialReceipt):void;
+  eraseAccountAssociation(accountId:string,evidence:CommittedFinancialReceipt):void;
+  accountOperations(accountId:string):readonly NativeOperation[];
+  prepareNativeAbsence(operationId:string):NativeAbsenceRequest;
+  prepareErasedNativeAbsence(keyFingerprint:string):NativeAbsenceRequest;
+  recordNativeAbsence(operationId:string,evidence:NativeHashAbsenceReceipt):void;
+  recordErasedNativeAbsence(keyFingerprint:string,evidence:NativeHashAbsenceReceipt):void;
   inventory():Snapshot;
 }
 
@@ -114,21 +120,24 @@ export class BudgetNativeCustodyStore {
     }catch{owner.release();throw unavailable();}
   }
   async withGate<T>(work:(gate:NativeCustodyGate)=>Promise<T>):Promise<T>{
-    if(this.closed||this.frozen||this.stopping||this.busy)throw unavailable();this.busy=true;let active=true;
+    if(this.closed||this.frozen||this.stopping||this.busy)throw unavailable();this.busy=true;let active=true;const absenceChallenges=new Map<string,string>();
+    const prepareAbsence=(id:string,erased:boolean):NativeAbsenceRequest=>{const target=this.absenceTarget(id,erased),challenge=randomBytes(32).toString('hex');absenceChallenges.set(target.fingerprint,challenge);return Object.freeze({...target,challenge});};
+    const recordAbsence=(id:string,r:NativeHashAbsenceReceipt,erased:boolean)=>{const target=this.absenceTarget(id,erased),challenge=absenceChallenges.get(target.fingerprint);if(!challenge)throw refused();this.recordNativeAbsence(id,r,erased,challenge);absenceChallenges.delete(target.fingerprint);};
     const call=<T>(fn:()=>T):T=>{if(!active||this.closed||this.frozen)throw unavailable();try{this.verify();return fn();}catch(error){if(error instanceof Error&&error.message==='Native custody operation refused')throw error;this.freeze();throw unavailable();}};
     const gate:NativeCustodyGate={
       reserveTeam:(a,e,p)=>call(()=>this.reserveTeam(a,e,p)),reserveUser:(a,t,p)=>call(()=>this.reserveUser(a,t,p)),
       prepareOperation:(i,k)=>call(()=>this.prepareOperation(i,k)),readOperation:id=>call(()=>clone(this.operation(id))),readKey:id=>call(()=>this.readKey(id)),
       beginProvisioning:id=>call(()=>this.advance(id,'prepared','provisioning')),
       recordNativeBlockedVerification:id=>call(()=>this.advance(id,'provisioning','native-blocked-verified')),
-      linkFinancialOperation:(id,financialId)=>call(()=>this.linkFinancialOperation(id,financialId)),recordBoundClosed:(id,r)=>call(()=>this.recordBoundClosed(id,r)),
+      linkFinancialOperation:(id,financialId,journalId)=>call(()=>this.linkFinancialOperation(id,financialId,journalId)),recordBoundClosed:(id,r)=>call(()=>this.recordBoundClosed(id,r)),
       recordUncertain:id=>call(()=>{const op=this.operation(id);if(['revoked','revoke-pending'].includes(op.phase))throw refused();this.updateOperation({...op,phase:'uncertain'});this.freeze();throw unavailable();}),
       recordRevocation:(id,r)=>call(()=>this.recordRevocation(id,r)),removePlaintext:id=>call(()=>this.removePlaintext(id)),
       eraseAccountAssociation:(id,r)=>call(()=>this.eraseAccountAssociation(id,r)),inventory:()=>call(()=>clone(this.snapshot)),
+      accountOperations:id=>call(()=>this.accountOperations(id)),prepareNativeAbsence:id=>call(()=>prepareAbsence(id,false)),prepareErasedNativeAbsence:fingerprint=>call(()=>prepareAbsence(fingerprint,true)),recordNativeAbsence:(id,r)=>call(()=>recordAbsence(id,r,false)),recordErasedNativeAbsence:(fingerprint,r)=>call(()=>recordAbsence(fingerprint,r,true)),
     };
     try{const value=await work(Object.freeze(gate));if(this.frozen)throw unavailable();this.verify();return value;}
     catch(error){if(!(error instanceof Error&&error.message==='Native custody operation refused'))this.freeze();throw error;}
-    finally{active=false;this.busy=false;for(const resolve of this.idle)resolve();this.idle.clear();}
+    finally{active=false;absenceChallenges.clear();this.busy=false;for(const resolve of this.idle)resolve();this.idle.clear();}
   }
   async drainForShutdown():Promise<void>{this.stopping=true;if(this.busy)await new Promise<void>(resolve=>this.idle.add(resolve));}
   close():void {
@@ -167,7 +176,7 @@ export class BudgetNativeCustodyStore {
     const immutable={bindingId:input.bindingId,credentialGeneration:input.credentialGeneration,userOwnershipId:u.ownershipId,association,reviewedPolicy:p,policyDigest:gatewayHash(gatewayCanonical(p)),keyFingerprint:digest(Buffer.from(plaintext))};
     if(found){if(found.phase!=='prepared'||Object.entries(immutable).some(([key,value])=>!same(found[key as keyof NativeOperation],value))||this.readKey(found.operationId)!==plaintext)throw refused();return clone(found);}
     if(this.snapshot.operations.some(o=>o.keyFingerprint===immutable.keyFingerprint))throw refused();
-    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',financialOperationId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
+    const row:NativeOperation={kind:'operation',operationId:randomUUID(),...immutable,phase:'prepared',financialOperationId:null,financialJournalId:null,bindingReceipt:null,revocationReceipt:null,plaintext:'present',nativeDeletion:'unverified'};
     // The complete tuple is durable first. A crash before its secret is durable leaves
     // missing custody and a writer-open receipt; reopening cannot promote that partial state.
     this.publish({...this.snapshot,operations:[...this.snapshot.operations,row]},new Set([row.operationId]));
@@ -176,9 +185,34 @@ export class BudgetNativeCustodyStore {
   private operation(id:string):NativeOperation {try{uuid.parse(id);}catch{throw refused();}const op=this.snapshot.operations.find((o):o is NativeOperation=>o.kind==='operation'&&o.operationId===id);if(!op)throw refused();return op;}
   private readKey(id:string):string {const op=this.operation(id);if(op.plaintext!=='present')throw refused();const file=this.openFile(this.keyName(id),KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();return file.bytes.toString('ascii');}finally{file.bytes.fill(0);closeSync(file.fd);}}
   private advance(id:string,from:NativeOperation['phase'],to:NativeOperation['phase']):void {const op=this.operation(id);if(op.phase===to)return;if(op.phase!==from)throw refused();this.updateOperation({...op,phase:to});}
-  private linkFinancialOperation(id:string,financialId:string):void {try{uuid.parse(financialId);}catch{throw refused();}const op=this.operation(id);if(op.phase!=='native-blocked-verified'||op.financialOperationId!==null&&op.financialOperationId!==financialId)throw refused();if(op.financialOperationId===financialId)return;this.updateOperation({...op,financialOperationId:financialId});}
-  private recordBoundClosed(id:string,raw:NativeFinancialReceipt):void {let r:NativeFinancialReceipt;try{r=receipt.parse(raw);}catch{throw refused();}const op=this.operation(id);if(op.phase==='bound-closed'&&same(op.bindingReceipt,r))return;if(op.phase!=='native-blocked-verified'||op.financialOperationId!==r.operationId)throw refused();this.updateOperation({...op,phase:'bound-closed',bindingReceipt:r});}
-  private recordRevocation(id:string,raw:NativeFinancialReceipt):void {let r:NativeFinancialReceipt;try{r=receipt.parse(raw);}catch{throw refused();}const op=this.operation(id);if(op.phase==='revoke-pending'&&same(op.revocationReceipt,r))return;if(['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});}
+  private linkFinancialOperation(id:string,financialId:string,journalId:string):void {try{uuid.parse(financialId);uuid.parse(journalId);}catch{throw refused();}const op=this.operation(id);if(op.phase!=='native-blocked-verified'||op.financialOperationId!==null&&(op.financialOperationId!==financialId||op.financialJournalId!==journalId))throw refused();if(op.financialOperationId===financialId)return;this.updateOperation({...op,financialOperationId:financialId,financialJournalId:journalId});}
+  private bindingAtom(op:NativeOperation,state:'active'|'revoked'):Extract<FinancialAtom,{kind:'binding'}> {
+    const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId);if(!u)throw unavailable();
+    return {kind:'binding',id:op.bindingId,installationAccountId:u.installationAccountId,memberAccountId:u.accountId,endpointHash:u.endpoint.hash,credentialGeneration:op.credentialGeneration,profileHash:op.reviewedPolicy.pricing.capabilityHash,maximumLiability:op.reviewedPolicy.maximumLiability,pricingProfile:op.reviewedPolicy.pricing,state};
+  }
+  private recordBoundClosed(id:string,raw:CommittedFinancialReceipt):void {
+    const op=this.operation(id),r=committedFinancialEvidence(raw,{kind:'bound-closed',binding:this.bindingAtom(op,'active')});if(!r)throw refused();
+    if(op.phase==='bound-closed'&&same(op.bindingReceipt,r))return;
+    if(op.phase!=='native-blocked-verified'||op.financialOperationId!==r.operationId||op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'bound-closed',bindingReceipt:r});
+  }
+  private recordRevocation(id:string,raw:CommittedFinancialReceipt):void {
+    const op=this.operation(id),r=committedFinancialEvidence(raw,{kind:op.bindingReceipt?'bound-revocation':'pending-revocation',binding:this.bindingAtom(op,'revoked')});if(!r)throw refused();
+    if(['revoke-pending','revoked'].includes(op.phase)&&same(op.revocationReceipt,r))return;
+    if(['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId||op.financialJournalId!==null&&op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});
+  }
+  private accountOperations(accountId:string):readonly NativeOperation[] {
+    try{uuid.parse(accountId);}catch{throw refused();}const ids=new Set(this.snapshot.users.filter((u):u is NativeUserOwnership=>u.kind==='user'&&u.accountId===accountId).map(u=>u.ownershipId));
+    return clone(this.snapshot.operations.filter((o):o is NativeOperation=>o.kind==='operation'&&ids.has(o.userOwnershipId)));
+  }
+  private absenceTarget(id:string,erased:boolean):Omit<NativeAbsenceRequest,'challenge'> {
+    if(erased){const op=this.snapshot.operations.find((o):o is NativeCleanupReceipt=>o.kind==='cleanup'&&o.keyFingerprint===id);if(!op||op.phase!=='revoke-pending'||op.nativeDeletion!=='unverified')throw refused();return {origin:op.endpoint.origin,fingerprint:op.keyFingerprint};}
+    const op=this.operation(id),u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId);if(!u||op.phase!=='revoke-pending'||op.plaintext!=='removed'||!op.revocationReceipt||op.nativeDeletion!=='unverified')throw refused();return {origin:u.endpoint.origin,fingerprint:op.keyFingerprint};
+  }
+  private recordNativeAbsence(id:string,proof:NativeHashAbsenceReceipt,erased:boolean,challenge:string):void {
+    const target=this.absenceTarget(id,erased);if(!consumeNativeHashAbsenceReceipt(proof,target.origin,target.fingerprint,challenge))throw refused();
+    if(!erased){this.updateOperation({...this.operation(id),phase:'revoked',nativeDeletion:'verified'});return;}
+    this.publish({...this.snapshot,operations:this.snapshot.operations.map(o=>o.kind==='cleanup'&&o.keyFingerprint===id?{...o,phase:'revoked',nativeDeletion:'verified'}:o)});
+  }
   private removePlaintext(id:string):void {
     const op=this.operation(id);if(op.phase!=='revoke-pending'||!op.revocationReceipt)throw refused();if(op.plaintext==='removed')return;if(op.plaintext!=='present')throw unavailable();
     // Snapshot already retains the exact endpoint/fingerprint/policy and revocation
@@ -187,16 +221,17 @@ export class BudgetNativeCustodyStore {
     try{this.assertHandle(this.keyName(id),file,KEY_BYTES);if(digest(file.bytes)!==op.keyFingerprint)throw unavailable();unlinkSync(join(this.directory,this.keyName(id)));this.syncRoot();}finally{file.bytes.fill(0);closeSync(file.fd);}
     this.updateOperation({...op,plaintext:'removed'});
   }
-  private eraseAccountAssociation(accountId:string,raw:NativeFinancialReceipt):void {
-    let r:NativeFinancialReceipt;try{uuid.parse(accountId);r=receipt.parse(raw);}catch{throw refused();}
+  private eraseAccountAssociation(accountId:string,raw:CommittedFinancialReceipt):void {
+    try{uuid.parse(accountId);}catch{throw refused();}
+    const r=committedFinancialEvidence(raw,{kind:'account-erasure',accountId});if(!r)throw refused();
     const erasureReceiptHash=gatewayHash(gatewayCanonical(r)),accountCommitment=commitment('erased-account',this.snapshot.storeId,accountId);
     if(this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===accountCommitment&&u.erasureReceiptHash!==erasureReceiptHash))throw refused();
     const users=this.snapshot.users.filter((u):u is NativeUserOwnership=>u.kind==='user'&&u.accountId===accountId),ids=new Set(users.map(u=>u.ownershipId));
     const owned=this.snapshot.operations.filter((o):o is NativeOperation=>o.kind==='operation'&&ids.has(o.userOwnershipId));
-    if(owned.some(o=>o.phase!=='revoke-pending'||o.plaintext!=='removed'||!o.revocationReceipt))throw refused();
+    if(users.some(u=>!committedFinancialEvidence(raw,{kind:'account-erasure',accountId,installationAccountId:u.installationAccountId}))||owned.some(o=>!['revoke-pending','revoked'].includes(o.phase)||o.plaintext!=='removed'||!o.revocationReceipt||o.revocationReceipt.journalId!==r.journalId))throw refused();
     if(!users.length)return;
     this.publish({...this.snapshot,users:this.snapshot.users.map(u=>u.kind==='user'&&ids.has(u.ownershipId)?{kind:'erased-user',accountCommitment,coordinateCommitment:this.userCoordinate(accountId,u.endpoint.hash),erasureReceiptHash}:u),
-      operations:this.snapshot.operations.map(o=>{if(o.kind!=='operation'||!ids.has(o.userOwnershipId))return o;const u=users.find(u=>u.ownershipId===o.userOwnershipId)!;return {kind:'cleanup',accountCommitment,coordinateCommitment:this.operationCoordinate(o.bindingId,o.credentialGeneration),operationCommitment:commitment('erased-operation',this.snapshot.storeId,o.operationId),endpoint:u.endpoint,keyFingerprint:o.keyFingerprint,policyDigest:o.policyDigest,revocationReceiptHash:gatewayHash(gatewayCanonical(o.revocationReceipt)),erasureReceiptHash,phase:'revoke-pending',plaintext:'removed',nativeDeletion:'unverified'};})});
+      operations:this.snapshot.operations.map(o=>{if(o.kind!=='operation'||!ids.has(o.userOwnershipId))return o;const u=users.find(u=>u.ownershipId===o.userOwnershipId)!;return {kind:'cleanup',accountCommitment,coordinateCommitment:this.operationCoordinate(o.bindingId,o.credentialGeneration),operationCommitment:commitment('erased-operation',this.snapshot.storeId,o.operationId),endpoint:u.endpoint,keyFingerprint:o.keyFingerprint,policyDigest:o.policyDigest,revocationReceiptHash:gatewayHash(gatewayCanonical(o.revocationReceipt)),erasureReceiptHash,phase:o.phase==='revoked'?'revoked':'revoke-pending',plaintext:'removed',nativeDeletion:o.nativeDeletion};})});
   }
   private userCoordinate(accountId:string,endpointHash:string):string{return commitment('erased-user-coordinate',this.snapshot.storeId,accountId,endpointHash);}
   private operationCoordinate(bindingId:string,credentialGeneration:string):string{return commitment('erased-binding-coordinate',this.snapshot.storeId,bindingId,credentialGeneration);}
@@ -219,10 +254,11 @@ export class BudgetNativeCustodyStore {
     for(const t of this.snapshot.teams){uniqueId('team:'+t.ownershipId);uniqueId('team-coordinate:'+t.installationAccountId+':'+t.endpoint.hash);uniqueId('native-team:'+t.endpoint.hash+':'+t.nativeTeamId);}
     for(const u of this.snapshot.users){if(u.kind==='erased-user'){uniqueId('erased-user:'+u.coordinateCommitment);continue;}uniqueId('user:'+u.ownershipId);uniqueId('user-coordinate:'+u.accountId+':'+u.endpoint.hash);uniqueId('native-user:'+u.endpoint.hash+':'+u.nativeUserId);const t=this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId);if(!t||t.installationAccountId!==u.installationAccountId||!same(t.endpoint,u.endpoint)||this.snapshot.users.some(v=>v.kind==='erased-user'&&(v.coordinateCommitment===this.userCoordinate(u.accountId,u.endpoint.hash)||v.accountCommitment===commitment('erased-account',this.snapshot.storeId,u.accountId))))throw unavailable();}
     for(const op of this.snapshot.operations){
-      if(op.kind==='cleanup'){uniqueId('operation-coordinate:'+op.coordinateCommitment);uniqueId('cleanup-operation:'+op.operationCommitment);uniqueId('key:'+op.keyFingerprint);if(!this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===op.accountCommitment&&u.erasureReceiptHash===op.erasureReceiptHash))throw unavailable();continue;}
+      if(op.kind==='cleanup'){uniqueId('operation-coordinate:'+op.coordinateCommitment);uniqueId('cleanup-operation:'+op.operationCommitment);uniqueId('key:'+op.keyFingerprint);if((op.phase==='revoked')!==(op.nativeDeletion==='verified')||!this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===op.accountCommitment&&u.erasureReceiptHash===op.erasureReceiptHash))throw unavailable();continue;}
       uniqueId('operation:'+op.operationId);uniqueId('operation-coordinate:'+this.operationCoordinate(op.bindingId,op.credentialGeneration));uniqueId('key:'+op.keyFingerprint);
       const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId),t=u&&this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId),p=this.checkedPolicy(op.reviewedPolicy);
-      if(!u||!t||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||op.phase==='revoked'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||op.phase==='revoke-pending'&&!op.revocationReceipt||op.plaintext!=='present'&&(op.phase!=='revoke-pending'||!op.revocationReceipt))throw unavailable();
+      if((op.financialOperationId===null)!==(op.financialJournalId===null)||op.bindingReceipt&&(op.bindingReceipt.operation!=='provision'||op.bindingReceipt.journalId!==op.financialJournalId)||op.revocationReceipt&&(!['member-remove','erase-person'].includes(op.revocationReceipt.operation)||op.financialJournalId!==null&&op.revocationReceipt.journalId!==op.financialJournalId))throw unavailable();
+      if(!u||!t||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
       if(op.plaintext!=='removed'){
         const name=this.keyName(op.operationId);if(missingKeys.has(op.operationId))continue;expected.add(name);
         const file=this.openFile(name,KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}finally{file.bytes.fill(0);closeSync(file.fd);}

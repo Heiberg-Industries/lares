@@ -11,6 +11,8 @@ const DURATION=/^[1-9][0-9]{0,3}(?:s|m|h|d|w|M|y)$/;
 
 export type NativeRead<T>={kind:'match';value:T}|{kind:'mismatch'}|{kind:'absent'}|{kind:'refused'}|{kind:'malformed'}|{kind:'unavailable'};
 export type NativeWrite={kind:'acknowledged'}|{kind:'refused'}|{kind:'malformed'}|{kind:'uncertain'};
+export type NativeHashAbsenceReceipt={readonly [nativeHashAbsenceReceiptBrand]:true};
+export type NativeHashRead={kind:'present'}|{kind:'absent';receipt:NativeHashAbsenceReceipt}|{kind:'refused'}|{kind:'malformed'}|{kind:'unavailable'};
 
 export interface NativeBudgetPolicy {
   maxBudget:number;
@@ -37,6 +39,13 @@ export interface NativeTeamExpectation {
   memberModels:readonly string[];
   memberRole:'user';
 }
+export interface NativeTeamPolicyExpectation {
+  teamId:string;
+  teamMaxBudget:number;
+  teamBudgetDuration:string;
+  teamModels:readonly string[];
+}
+export interface NativeUserExpectation {userId:string;maxBudget:number;userRole:'internal_user'}
 export interface NativeKeyExpectation {
   keyAlias:string;
   teamId:string;
@@ -48,6 +57,8 @@ export interface NativeKeyExpectation {
 
 type RecordValue=Record<string,unknown>;
 type ResponseShape='ack'|'user'|'key';
+declare const nativeHashAbsenceReceiptBrand:unique symbol;
+const nativeHashAbsenceReceipts=new WeakMap<object,{origin:string;fingerprint:string;challenge:string}>();
 
 class BodyUnavailable extends Error {}
 class BodyTooLarge extends Error {}
@@ -63,6 +74,30 @@ const validHash=(value:unknown):value is string=>typeof value==='string'&&HASH.t
 const validKey=(value:unknown):value is string=>typeof value==='string'&&KEY.test(value);
 const sameModels=(actual:unknown,expected:readonly string[])=>Array.isArray(actual)&&actual.length===expected.length&&
   actual.every((value,index)=>value===expected[index]);
+
+function exactTeamPolicy(team:RecordValue,expected:NativeTeamPolicyExpectation):boolean {
+  return team.team_id===expected.teamId&&team.max_budget===expected.teamMaxBudget&&team.budget_duration===expected.teamBudgetDuration&&
+    sameModels(team.models,expected.teamModels)&&team.blocked===false&&empty(team.metadata);
+}
+
+function exactNativeUserNotFound(value:unknown,userId:string):boolean {
+  if(!isObject(value)||!isObject(value.error))return false;
+  return value.error.message===`User ${userId} not found`&&(value.error.code===404||value.error.code==='404');
+}
+
+function validOrigin(value:string):boolean {
+  try{const url=new URL(value);return ['http:','https:'].includes(url.protocol)&&url.origin===value&&!url.username&&!url.password&&url.pathname==='/'&&!url.search&&!url.hash;}
+  catch{return false;}
+}
+
+/** Consumes a process-owned absence receipt only for its original gateway and key fingerprint. */
+export function consumeNativeHashAbsenceReceipt(receipt:NativeHashAbsenceReceipt,expectedOrigin:string,expectedFingerprint:string,expectedChallenge:string):boolean {
+  if(receipt===null||typeof receipt!=='object'||!validOrigin(expectedOrigin)||!validHash(expectedFingerprint)||!validHash(expectedChallenge))return false;
+  const proof=nativeHashAbsenceReceipts.get(receipt);
+  if(!proof||proof.origin!==expectedOrigin||proof.fingerprint!==expectedFingerprint||proof.challenge!==expectedChallenge)return false;
+  nativeHashAbsenceReceipts.delete(receipt);
+  return true;
+}
 
 /** Scan JSON structure before JSON.parse so escaped duplicate object keys cannot be accepted. */
 function rejectDuplicateKeys(text:string):void {
@@ -207,15 +242,33 @@ export class BudgetNativeCredentialClient {
     if(result.kind!=='body')return result;
     const body=result.value;const team=body.team_info;const memberships=body.team_memberships;
     if(!isObject(team)||!Array.isArray(memberships)||!Array.isArray(team.members_with_roles))return {kind:'malformed'};
+    if(!exactTeamPolicy(team,expected))return {kind:'mismatch'};
     const memberRows=memberships.filter((row):row is RecordValue=>isObject(row)&&row.team_id===expected.teamId&&row.user_id===expected.memberUserId);
     const roleRows=team.members_with_roles.filter((row):row is RecordValue=>isObject(row)&&row.user_id===expected.memberUserId);
     if(memberRows.length!==1||roleRows.length!==1)return {kind:'mismatch'};
     const budget=memberRows[0]!.litellm_budget_table;
     if(!isObject(budget))return {kind:'malformed'};
-    const exact=team.team_id===expected.teamId&&team.max_budget===expected.teamMaxBudget&&team.budget_duration===expected.teamBudgetDuration&&sameModels(team.models,expected.teamModels)&&
-      team.blocked===false&&empty(team.metadata)&&budget.max_budget===expected.memberMaxBudget&&budget.budget_duration===expected.memberBudgetDuration&&
+    const exact=budget.max_budget===expected.memberMaxBudget&&budget.budget_duration===expected.memberBudgetDuration&&
       sameModels(budget.allowed_models,expected.memberModels)&&roleRows[0]!.role===expected.memberRole;
     return exact?{kind:'match',value:true}:{kind:'mismatch'};
+  }
+
+  async readTeamPolicy(expected:NativeTeamPolicyExpectation):Promise<NativeRead<true>>{
+    if(!validId(expected.teamId)||!validBudget(expected.teamMaxBudget)||!validDuration(expected.teamBudgetDuration)||!validModels(expected.teamModels))return {kind:'malformed'};
+    const result=await this.read(`/team/info?team_id=${expected.teamId}`);
+    if(result.kind!=='body')return result;
+    if(!isObject(result.value.team_info))return {kind:'malformed'};
+    return exactTeamPolicy(result.value.team_info,expected)?{kind:'match',value:true}:{kind:'mismatch'};
+  }
+
+  async readUser(expected:NativeUserExpectation):Promise<NativeRead<true>>{
+    if(!validId(expected.userId)||!validBudget(expected.maxBudget)||expected.userRole!=='internal_user')return {kind:'malformed'};
+    const result=await this.read(`/user/info?user_id=${expected.userId}`,undefined,expected.userId);
+    if(result.kind!=='body')return result;
+    const body=result.value;
+    if(body.user_id!==expected.userId||!isObject(body.user_info)||body.user_info.user_id!==expected.userId||!Array.isArray(body.keys)||!Array.isArray(body.teams))return {kind:'malformed'};
+    const user=body.user_info;
+    return user.max_budget===expected.maxBudget&&user.user_role===expected.userRole?{kind:'match',value:true}:{kind:'mismatch'};
   }
 
   async createBlockedKey(input:NativeBlockedKeyCreate):Promise<NativeWrite>{
@@ -237,6 +290,17 @@ export class BudgetNativeCredentialClient {
     return exactKeyRow(body.info[0],expected,true)?{kind:'match',value:true}:{kind:'mismatch'};
   }
 
+  async lookupKeyHashOnly(hash:string,challenge:string):Promise<NativeHashRead>{
+    if(!validHash(hash)||!validHash(challenge))return {kind:'malformed'};
+    const result=await this.read('/v2/key/info',{keys:[hash]});
+    if(result.kind!=='body')return result.kind==='mismatch'||result.kind==='absent'?{kind:'malformed'}:result;
+    const body=result.value;
+    if(!Array.isArray(body.key)||body.key.length!==1||body.key[0]!==hash||!Array.isArray(body.info))return {kind:'malformed'};
+    if(body.info.length===0){const receipt={} as NativeHashAbsenceReceipt;nativeHashAbsenceReceipts.set(receipt,{origin:this.origin,fingerprint:hash,challenge});return {kind:'absent',receipt};}
+    if(body.info.length!==1||!isObject(body.info[0])||'token' in body.info[0])return {kind:'malformed'};
+    return {kind:'present'};
+  }
+
   async listOwnedKeys(userId:string):Promise<NativeRead<readonly string[]>>{
     if(!validId(userId))return {kind:'malformed'};
     const result=await this.read(`/key/list?user_id=${userId}`);
@@ -254,10 +318,14 @@ export class BudgetNativeCredentialClient {
     return this.write('/key/delete',{keys:[hash]},'ack');
   }
 
-  private async read(path:string,body?:unknown):Promise<{kind:'body';value:RecordValue}|Exclude<NativeRead<never>,{kind:'match'}>>{
+  private async read(path:string,body?:unknown,missingUserId?:string):Promise<{kind:'body';value:RecordValue}|Exclude<NativeRead<never>,{kind:'match'}>>{
     const response=await this.send(path,body);
     if(response.kind!=='response')return {kind:'unavailable'};
     if(response.value.status===401||response.value.status===403){void response.value.body?.cancel().catch(()=>{});return {kind:'refused'};}
+    if(response.value.status===404&&missingUserId!==undefined){
+      try{const parsed=await jsonBody(response.value);return exactNativeUserNotFound(parsed,missingUserId)?{kind:'absent'}:{kind:'malformed'};}
+      catch(error){return error instanceof BodyUnavailable?{kind:'unavailable'}:{kind:'malformed'};}
+    }
     if(response.value.status!==200){void response.value.body?.cancel().catch(()=>{});return {kind:'unavailable'};}
     try{const parsed=await jsonBody(response.value);return isObject(parsed)?{kind:'body',value:parsed}:{kind:'malformed'};}
     catch(error){return error instanceof BodyUnavailable?{kind:'unavailable'}:{kind:'malformed'};}
@@ -284,7 +352,7 @@ export class BudgetNativeCredentialClient {
 
   private async send(path:string,body?:unknown):Promise<{kind:'response';value:Response}|{kind:'unavailable'}>{
     const fixedRoute=['/team/new','/user/new','/team/member_add','/v2/key/info','/key/generate','/key/delete'].includes(path);
-    const fixedQueryRoute=/^\/team\/info\?team_id=[A-Za-z0-9-]{1,80}$/.test(path)||/^\/key\/list\?user_id=[A-Za-z0-9-]{1,80}$/.test(path);
+    const fixedQueryRoute=/^\/team\/info\?team_id=[A-Za-z0-9-]{1,80}$/.test(path)||/^\/(?:key\/list|user\/info)\?user_id=[A-Za-z0-9-]{1,80}$/.test(path);
     if(!fixedRoute&&!fixedQueryRoute)return {kind:'unavailable'};
     let raw:Uint8Array|undefined;
     if(body!==undefined){try{raw=new TextEncoder().encode(JSON.stringify(body));}catch{return {kind:'unavailable'};}if(raw.byteLength>MAX_REQUEST_BYTES)return {kind:'unavailable'};}

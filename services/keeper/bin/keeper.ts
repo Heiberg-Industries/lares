@@ -31,34 +31,47 @@ import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
+import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
+import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
     const config = loadKeeperConfig();
     const vaultRuntimePath = join(config.agentsDir, "..", "run", "vault");
     let vaultRuntimeDir: string | undefined;
+    let nativeCustody:BudgetNativeCustodyStore|undefined;
+    let pool!:ReturnType<typeof keeperPool>;
+    let vaultPool:ReturnType<typeof keeperPool>|undefined;
+    let budgetPool!:ReturnType<typeof keeperPool>;
+    let admin:ReturnType<typeof keeperPool>|undefined;
+    const stops: Array<() => Promise<void>> = [];
+    let financialJournal:HostFinancialJournal|undefined;
+    try {
+    pool = keeperPool(config.db);
+    // Vault reads use a dedicated, bounded pool so disconnected clients cannot occupy
+    // the connections used by unrelated Keeper actions.
+    const vaultKeyPath=config.vaultConsoleSigningKeyFile;
+    let vaultKeyPresent=false;
+    try { if(vaultKeyPath){const st=lstatSync(vaultKeyPath); vaultKeyPresent=st.isFile()&&!st.isSymbolicLink()&&st.size>0;} } catch { }
+    vaultPool=vaultKeyPresent
+        ?keeperPool(config.db,{max:32,connectionTimeoutMillis:500,query_timeout:1000,options:'-c statement_timeout=900 -c lock_timeout=500 -c idle_in_transaction_session_timeout=1500'})
+        :undefined;
+    vaultPool?.on('error',()=>{});
+    // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
+    // occupy their connections. HTTP deadlines never authorize a late allow.
+    budgetPool=keeperPool(config.db,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
+    budgetPool.on('error',()=>{});
+    admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
+    const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
+    // Verify native custody before creating the optional vault runtime directory or
+    // registering any action that can mutate SQL or local files.
+    nativeCustody=openConfiguredNativeCustody(config.budgetNative?.directory);
     try {
         await prepareVaultRuntimeDirectory(vaultRuntimePath);
         vaultRuntimeDir = vaultRuntimePath;
     } catch {
         console.warn("keeper: Vault reader unavailable until its dedicated runtime directory is repaired");
     }
-    const pool = keeperPool(config.db);
-    // Vault reads use a dedicated, bounded pool so disconnected clients cannot occupy
-    // the connections used by unrelated Keeper actions.
-    const vaultKeyPath=config.vaultConsoleSigningKeyFile;
-    let vaultKeyPresent=false;
-    try { if(vaultKeyPath){const st=lstatSync(vaultKeyPath); vaultKeyPresent=st.isFile()&&!st.isSymbolicLink()&&st.size>0;} } catch { }
-    const vaultPool=vaultKeyPresent
-        ?keeperPool(config.db,{max:32,connectionTimeoutMillis:500,query_timeout:1000,options:'-c statement_timeout=900 -c lock_timeout=500 -c idle_in_transaction_session_timeout=1500'})
-        :undefined;
-    vaultPool?.on('error',()=>{});
-    // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
-    // occupy their connections. HTTP deadlines never authorize a late allow.
-    const budgetPool=keeperPool(config.db,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
-    budgetPool.on('error',()=>{});
-    const admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
-    const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
     const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir},docker):undefined;
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
@@ -69,9 +82,8 @@ async function main(): Promise<void> {
             throw new KeeperRefusedError('Credential recovery required before changing agents or connections');
     };
     const context = { actor: "host", audit: auditor(pool) };
-    const stops: Array<() => Promise<void>> = [];
-    let financialJournal:HostFinancialJournal|undefined;
-    try {
+        // Native custody is opened and verified before the journal or any action can mutate
+        // source rows or files. An unbound leftover is recovery, never an empty legacy store.
         if(config.budgetFinancial){
             financialJournal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
             // The startup observer is owned/released before sockets become reachable.
@@ -80,13 +92,20 @@ async function main(): Promise<void> {
         }
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
-            await financialJournal.freezeForRestore();return {frozen:true};
+            await nativeCustody?.drainForShutdown();
+            await financialJournal.freezeForRestore();
+            nativeCustody?.close();
+            return {frozen:true};
         }});
+        if(nativeCustody)registerAction({name:'budget.cleanup-native',hostOnly:true,input:z.object({}).strict(),run:async()=>
+            nativeCustody!.withGate(gate=>cleanupOneNativeCredential(gate,{gatewayUrl:config.lifecycle?.runtime.gatewayUrl,masterKeyFile:config.lifecycle?.runtime.gatewayMasterKeyFile})),
+          successDetail:result=>result.status==='complete'?'native key cleanup complete':result.status==='pending'
+            ?`${result.remaining} native key cleanup item(s) remain`:'native key cleanup blocked; inspection is required'});
         registerAction({name:'budget.provision-accounts',hostOnly:true,input:budgetAccountProvisionPlanSchema,secretFields:['memberIds'],run:async input=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             return provisionBudgetAccounts(budgetPool,financialJournal,input);
         },successDetail:result=>`closed unreconciled accounts provisioned for ${result.members} members`});
-        registerMemberRemovalAction({pool:budgetPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId});
+        registerMemberRemovalAction({pool:budgetPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
@@ -131,13 +150,14 @@ async function main(): Promise<void> {
         void lifecycle?.resealAtStart();
     }
     catch {
-        for (const stop of stops)
-            await stop();
-        await pool.end();
-        await vaultPool?.end();
-        await budgetPool.end();
-        await admin?.end();
-        financialJournal?.close();
+        // Cleanup is best-effort but keeps the ownership order: stop listeners, drain
+        // native work, drain its journal work, then close pools and durable owners.
+        await Promise.allSettled(stops.map(stop=>stop()));
+        try{await nativeCustody?.drainForShutdown();}catch{}
+        try{await financialJournal?.drainForShutdown();}catch{}
+        await Promise.allSettled([pool?.end(),vaultPool?.end(),budgetPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
+        try{nativeCustody?.close();}catch{}
+        try{financialJournal?.close();}catch{}
         throw new Error("keeper: startup failed");
     }
     let stopping = false;
@@ -145,16 +165,17 @@ async function main(): Promise<void> {
         if (stopping)
             return;
         stopping = true;
-        // Stops admission synchronously before waiting for any socket/pool shutdown.
-        const drained=financialJournal?.drainForShutdown();
-        for (const stop of stops)
-            await stop();
-        await pool.end();
-        await vaultPool?.end();
-        await budgetPool.end();
-        await admin?.end();
-        await drained;
-        financialJournal?.close();
+        // Stop accepting commands first; keep both pools alive while an active native
+        // action finishes any journal it already owns. Only then stop journal admission.
+        const failures:unknown[]=[];
+        for(const stop of stops)try{await stop();}catch(error){failures.push(error);}
+        try{await nativeCustody?.drainForShutdown();}catch(error){failures.push(error);}
+        try{await financialJournal?.drainForShutdown();}catch(error){failures.push(error);}
+        const pools=[pool.end(),vaultPool?.end(),budgetPool.end(),admin?.end()].filter(Boolean) as Promise<void>[];
+        for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
+        try{nativeCustody?.close();}catch(error){failures.push(error);}
+        try{financialJournal?.close();}catch(error){failures.push(error);}
+        if(failures.length)throw new Error('keeper: shutdown did not complete cleanly');
     };
     for (const signal of ["SIGTERM", "SIGINT"] as const)
         process.once(signal, () => {

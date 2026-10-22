@@ -128,3 +128,15 @@ it('keeps financial custody optional and only accepts its dedicated backup-exclu
     writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial:invalid}));expect(()=>loadKeeperConfig(f.file)).toThrow('budgetFinancial');
   }
 });
+it('requires prepared financial custody for the fixed native custody path',()=>{
+  const f=fixture(),budgetNative={directory:'/var/lib/lares/budget-native'};
+  writeFileSync(f.file,JSON.stringify({...f.config,budgetNative}));
+  expect(()=>loadKeeperConfig(f.file)).toThrow('budgetNative: requires prepared financial custody');
+  const budgetFinancial={directory:'/var/lib/lares/budget-financial'};
+  writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative}));
+  expect(loadKeeperConfig(f.file).budgetNative).toEqual(budgetNative);
+  for(const invalid of [{directory:'/etc/lares/budget-native'},{directory:'/srv/lares/budget-native'},{directory:budgetNative.directory,reset:true}]){
+    writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative:invalid}));
+    expect(()=>loadKeeperConfig(f.file)).toThrow('budgetNative');
+  }
+});

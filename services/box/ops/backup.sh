@@ -240,7 +240,8 @@ for volume in ${LARES_WORKFLOW_VOLUMES:-}; do
   PATHS+=("$mount")
 done
 "${RESTIC[@]}" backup "${PATHS[@]}" \
-  --tag nightly --exclude-caches --exclude '**/.git/lares-vault.lock' --exclude /opt/agent-box/.env
+  --tag nightly --exclude-caches --exclude '**/.git/lares-vault.lock' --exclude /opt/agent-box/.env \
+  --exclude /var/lib/lares/budget-native
 
 # 4. NO heartbeat here — deliberately. This block used to be
 #      `if [ -n "${HC_URL:-}" ]; then curl ... "$HC_URL"; fi`

@@ -480,17 +480,29 @@ it('refuses a missing prepared financial custody before stopping services or rep
   write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('financial custody');expect(changes()).toEqual([]);
 });
-it('freezes prepared custody before the keeper stop while PostgreSQL stays running',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+it('refuses configured native custody that is missing before stopping services or replacing any database',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
+});
+it('refuses an unbound native custody directory before restoring',()=>{
+  mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
+  const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
+});
+it('freezes prepared custody before the keeper stop while PostgreSQL stays running',()=>{
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
+  mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
   const result=run(base());expect(result.code).toBe(0);
+  expect(result.all).toContain('draining native custody');
   expect(idx(/budget-financial.ts freeze --host/)).toBeGreaterThanOrEqual(0);
   expect(idx(/budget-financial.ts freeze --host/)).toBeLessThan(idx(/compose.* stop/));
   expect(logLines().some(line=>/compose.* stop.*\bdb\b/.test(line))).toBe(false);
 });
 it('does not freeze prepared custody on dry-run',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
+  mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
   const result=run([...base(),'--dry-run']);expect(result.code).toBe(0);expect(idx(/budget-financial.ts/)).toBe(-1);expect(changes()).toEqual([]);
 });
 it('refuses a failed live and fallback financial freeze before service stop or drop',()=>{

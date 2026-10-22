@@ -23,11 +23,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { BudgetNativeCredentialClient } from "../../lib/budget-native-client.js";
+import { BudgetNativeCredentialClient, consumeNativeHashAbsenceReceipt } from "../../lib/budget-native-client.js";
 
 const CASES = [
   "fixture-guard",
   "member-create-without-key",
+  "client-existing-team-before-membership",
+  "client-user-policy-readback",
   "user-current-identity-global-cap-and-role",
   "user-info-no-auto-key",
   "user-info-absent-is-not-refusal",
@@ -38,6 +40,7 @@ const CASES = [
   "caller-key-exact-and-hash-lookup",
   "client-populated-key-inventory",
   "hash-lookup-absent-is-not-error",
+  "client-hash-only-absence-receipt",
   "hash-lookup-refused-is-not-absence",
   "duplicate-key-create-does-not-overwrite",
   "atomic-blocked-create",
@@ -338,8 +341,20 @@ const run = async () => {
   try {
     teamAttempted = true;
     const createTeam = await call("POST", "/team/new", { team_id: teamId, max_budget: 4, models: [model], budget_duration: "1d" });
+    const existingTeamPolicy = await nativeClient.readTeamPolicy({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!]});
+    mark("client-existing-team-before-membership", existingTeamPolicy.kind === "match" ? "PASS" :
+      existingTeamPolicy.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     userAttempted = true;
     const createUser = await call("POST", "/user/new", { user_id: userId, max_budget: 3, auto_create_key: false, user_role: "internal_user" });
+    const currentUserPolicy = await nativeClient.readUser({userId,maxBudget:3,userRole:"internal_user"});
+    const initialUserKeys = await nativeClient.listOwnedKeys(userId);
+    const absentUserId = `probe-${randomUUID()}`;
+    const clientAbsentUser = await nativeClient.readUser({userId:absentUserId,maxBudget:3,userRole:"internal_user"});
+    const wrongAuthClient = new BudgetNativeCredentialClient(origin!, "sk-probe-deliberately-wrong-key-000000");
+    const clientRefusedUser = await wrongAuthClient.readUser({userId,maxBudget:3,userRole:"internal_user"});
+    mark("client-user-policy-readback", currentUserPolicy.kind === "match" && initialUserKeys.kind === "match" && initialUserKeys.value.length === 0 &&
+      clientAbsentUser.kind === "absent" && clientRefusedUser.kind === "refused" ? "PASS" :
+      [currentUserPolicy,initialUserKeys,clientAbsentUser,clientRefusedUser].some(result => result.kind === "mismatch" || result.kind === "malformed") ? "FAIL" : "UNKNOWN");
     const membership = await call("POST", "/team/member_add", {
       team_id: teamId, max_budget_in_team: 2, budget_duration: "1d", allowed_models: [model],
       member: { role: "user", user_id: userId },
@@ -357,7 +372,6 @@ const run = async () => {
     mark("user-current-identity-global-cap-and-role", exactUserPolicy(currentUser, userId, 3) ? "PASS" : currentUser.kind === "present" ? "FAIL" : "UNKNOWN");
     mark("user-info-no-auto-key", currentUser.kind === "present" && object(userReadback?.body) &&
       Array.isArray(userReadback.body.keys) && userReadback.body.keys.length === 0 && listedKeyHashes(noAutoKey)?.length === 0 ? "PASS" : "UNKNOWN");
-    const absentUserId = `probe-${randomUUID()}`;
     mark("user-info-absent-is-not-refusal", classifyUserLookup(await userLookup(absentUserId), absentUserId).kind === "absent" ? "PASS" : "UNKNOWN");
     mark("user-info-refused-is-not-absence", classifyUserLookup(await userLookup(userId, "sk-probe-deliberately-wrong-key-000000"), userId).kind === "refused" ? "PASS" : "UNKNOWN");
 
@@ -434,6 +448,11 @@ const run = async () => {
 
     const absentHash = fingerprint(randomKey());
     mark("hash-lookup-absent-is-not-error", classifyLookup(await hashLookup(absentHash), absentHash).kind === "absent" ? "PASS" : "UNKNOWN");
+    const fixtureChallenge = randomBytes(32).toString("hex");
+    const clientAbsent = await nativeClient.lookupKeyHashOnly(absentHash, fixtureChallenge);
+    mark("client-hash-only-absence-receipt", clientAbsent.kind === "absent" &&
+      consumeNativeHashAbsenceReceipt(clientAbsent.receipt, origin!, absentHash, fixtureChallenge) ? "PASS" :
+      clientAbsent.kind === "malformed" || clientAbsent.kind === "present" ? "FAIL" : "UNKNOWN");
     const refused = classifyLookup(await hashLookup(normalHash, "sk-probe-deliberately-wrong-key-000000"), normalHash);
     mark("hash-lookup-refused-is-not-absence", refused.kind === "refused" ? "PASS" : refused.kind === "malformed" ? "UNKNOWN" : "FAIL");
 
