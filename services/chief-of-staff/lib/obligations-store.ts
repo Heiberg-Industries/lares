@@ -18,43 +18,16 @@ import type { Pool } from "pg";
 import type { Obligation } from "./brief-content.js";
 import type { Intent } from "./obligation-intent.js";
 
-/**
- * Idempotent — safe to call at boot. `001_baseline.sql` is the schema's source of truth and
- * is applied separately; this is
- * the net under a forgotten step, not a replacement for the file. Mirrors the file
- * exactly, index included — a net that only rebuilds the table and not the index it is
- * queried through is not actually a net.
- */
+/** Check that the baseline migration created the complete schema this store needs. */
 export async function ensureObligationsTable(db: Pool): Promise<void> {
-  await db.query(`
-    CREATE TABLE IF NOT EXISTS obligation_threads (
-      thread_id               TEXT PRIMARY KEY,
-      principal               TEXT NOT NULL,
-      source                  TEXT NOT NULL DEFAULT 'gmail',
-      counterparty_address    TEXT NOT NULL,
-      last_message_at         TIMESTAMPTZ NOT NULL,
-      last_speaker_is_them    BOOLEAN NOT NULL,
-      their_unanswered_count  INTEGER NOT NULL DEFAULT 0,
-      first_seen_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_seen_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
-      dismissed_at            TIMESTAMPTZ,
-      reping_announced_at     TIMESTAMPTZ,
-      reping_announced_count  INTEGER,
-      night_before_delivered_day TEXT
-    )`);
-  await db.query(`
-    CREATE INDEX IF NOT EXISTS obligation_threads_open_idx
-      ON obligation_threads (last_message_at DESC)
-      WHERE dismissed_at IS NULL`);
-  // Resolution + intent, both pointers only. Mirrors
-  // sql/001_baseline.sql exactly; see that file's header for what these hold.
-  await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS resolved_elsewhere_at TIMESTAMPTZ`);
-  await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS resolution_via        TEXT`);
-  await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS resolution_evidence   TEXT`);
   await db.query(
-    `ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS intent TEXT CHECK (intent IN ('expects_reply','closes_loop','fyi','unreadable'))`,
+    `SELECT thread_id, principal, source, counterparty_address, last_message_at,
+            last_speaker_is_them, their_unanswered_count, first_seen_at, last_seen_at,
+            dismissed_at, reping_announced_at, reping_announced_count,
+            night_before_delivered_day, resolved_elsewhere_at, resolution_via,
+            resolution_evidence, intent, intent_for_message_at
+       FROM obligation_threads LIMIT 0`,
   );
-  await db.query(`ALTER TABLE obligation_threads ADD COLUMN IF NOT EXISTS intent_for_message_at TIMESTAMPTZ`);
 }
 
 /** Module-scope memo so the four schedules sharing a warm process (evening/morning brief,

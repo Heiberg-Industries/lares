@@ -74,6 +74,54 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
+ # The dream migration is offline-owned. An ordinary application login gets only table CRUD
+ # and schema USAGE, then proves the shipped read-only readiness checks and stores work without
+ # running as the migration owner or changing role.
+ sql("CREATE ROLE memory_probe_app LOGIN PASSWORD 'disposable-memory-proof-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; GRANT USAGE ON SCHEMA public TO memory_probe_app; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.dream_observations, public.dream_preferences, public.obligation_threads TO memory_probe_app")
+ memory_access_probe = """import{Pool}from'pg';
+import{ensureDreamTables,makeDreamStore}from'/app/services/chief-of-staff/lib/dream/store.ts';
+import{ensureObligationsTable,upsertSeen,dismissedThreads,dismissObligation}from'/app/services/chief-of-staff/lib/obligations-store.ts';
+const db=new Pool({connectionString:process.env.MEMORY_PROOF_DATABASE_URL,max:1,connectionTimeoutMillis:3000});
+async function main(){try{
+const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
+ (SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid)::int AS memberships,
+ has_schema_privilege(current_user,'public','USAGE') AS schema_usage,has_schema_privilege(current_user,'public','CREATE') AS schema_create,
+ has_table_privilege(current_user,'public.dream_observations','SELECT') AS observation_read,
+ has_table_privilege(current_user,'public.dream_observations','INSERT') AS observation_insert,
+ has_table_privilege(current_user,'public.dream_observations','UPDATE') AS observation_update,
+ has_table_privilege(current_user,'public.dream_observations','DELETE') AS observation_delete,
+ has_table_privilege(current_user,'public.dream_observations','TRUNCATE') AS observation_truncate,
+ has_table_privilege(current_user,'public.dream_preferences','SELECT') AS preference_read,
+ has_table_privilege(current_user,'public.dream_preferences','INSERT') AS preference_insert,
+ has_table_privilege(current_user,'public.dream_preferences','UPDATE') AS preference_update,
+ has_table_privilege(current_user,'public.dream_preferences','DELETE') AS preference_delete,
+ has_table_privilege(current_user,'public.dream_preferences','TRUNCATE') AS preference_truncate,
+ has_table_privilege(current_user,'public.obligation_threads','SELECT') AS obligation_read,
+ has_table_privilege(current_user,'public.obligation_threads','INSERT') AS obligation_insert,
+ has_table_privilege(current_user,'public.obligation_threads','UPDATE') AS obligation_update,
+ has_table_privilege(current_user,'public.obligation_threads','DELETE') AS obligation_delete,
+ has_table_privilege(current_user,'public.obligation_threads','TRUNCATE') AS obligation_truncate
+ FROM pg_roles r WHERE r.rolname=current_user`);
+const identity=role.rows[0];if(!identity||identity.current_user!=='memory_probe_app'||identity.session_user!=='memory_probe_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
+for(const table of ['observation','preference','obligation'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
+if(identity.observation_truncate||identity.preference_truncate||identity.obligation_truncate)throw Error();
+await ensureDreamTables(db);await ensureObligationsTable(db);
+const dream=makeDreamStore(db,'fixture-owner'),observation=await dream.record({text:'prefers concise status updates',kind:'preference',subject:'communication',confidence:0.5,evidenceRefs:[]},'runtime-image-proof','owner');
+if(observation.origin!=='owner'||observation.owner!=='fixture-owner'||await dream.ownerRecurrenceCount('PREFERS concise status updates!')!==1)throw Error();
+const old=await dream.addPreference({text:'prefers weekly updates',kind:'preference',subject:'communication',confidence:0.6,origin:'owner'});
+const current=await dream.addPreference({text:'prefers brief weekly updates',kind:'preference',subject:'communication',confidence:0.8,origin:'owner'});
+await dream.supersede(old.id,current.id);const active=await dream.activePreferences();if(active.length!==1||active[0].id!==current.id||active[0].owner!=='fixture-owner')throw Error();
+const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
+await upsertSeen(db,obligation,now,'fixture-principal');if((await dismissedThreads(db)).has(threadId))throw Error();
+const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
+const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
+await db.query('DELETE FROM dream_preferences WHERE id=ANY($1::uuid[])',[[old.id,current.id]]);await db.query('DELETE FROM obligation_threads WHERE thread_id=$1',[threadId]);
+for(const ddl of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads']){let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
+console.log('memory-schema-proof:complete');
+}catch{console.log('memory-schema-proof:failed');process.exitCode=1;}finally{await db.end();}}
+void main();"""
+ memory_access_output=cmd('docker','run','--rm','--network',name,'--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://memory_probe_app:disposable-memory-proof-only@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
+ assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and DML proof'
  # Inactive budget storage is additive, defaults closed, and retains evidence on reapply.
  sql("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id) VALUES('b1111111-1111-4111-8111-111111111111','probe-installation','installation','b1111111-1111-4111-8111-111111111111'); INSERT INTO budget_windows(id,account_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES('b2222222-2222-4222-8222-222222222222','b1111111-1111-4111-8111-111111111111',clock_timestamp(),clock_timestamp()+interval '1 day',0,1,0)")
  sql((repo/'services/box/sql/011_budget_admission.sql').read_text())

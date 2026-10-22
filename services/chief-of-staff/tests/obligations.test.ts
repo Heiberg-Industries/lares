@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
@@ -13,6 +14,7 @@ import {
   type ThreadSnapshot,
 } from "../lib/brief-content.js";
 import {
+
   ensureObligationsTable,
   ensureObligationsTableOnce,
   upsertSeen,
@@ -27,6 +29,8 @@ import {
   cachedIntent,
   recordIntent,
 } from "../lib/obligations-store.js";
+
+const BASELINE_SQL = readFileSync(new URL("../../box/sql/001_baseline.sql", import.meta.url), "utf8");
 
 /**
  * lib/obligations-store.ts, the Postgres adapter behind makeObligationStore. Table and
@@ -50,8 +54,9 @@ describe("lib/obligations-store.ts", () => {
   let container: StartedPostgreSqlContainer;
 
   beforeAll(async () => {
-    container = await new PostgreSqlContainer("postgres:16-alpine").start();
+    container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
     quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
+    await getPool().query(BASELINE_SQL);
     await ensureObligationsTable(getPool());
   }, 120_000);
 
@@ -79,11 +84,11 @@ describe("lib/obligations-store.ts", () => {
     };
   }
 
-  it("ensureObligationsTable is idempotent — calling twice raises nothing", async () => {
+  it("ensureObligationsTable verifies the baseline schema without changing it", async () => {
     await expect(ensureObligationsTable(getPool())).resolves.toBeUndefined();
   });
 
-  it("ensureObligationsTableOnce memoizes — a second call does not re-run the DDL (still succeeds)", async () => {
+  it("ensureObligationsTableOnce memoizes the read-only readiness check", async () => {
     await expect(ensureObligationsTableOnce(getPool())).resolves.toBeUndefined();
     await expect(ensureObligationsTableOnce(getPool())).resolves.toBeUndefined();
   });

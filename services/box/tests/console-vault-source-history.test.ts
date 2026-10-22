@@ -61,7 +61,8 @@ async function blocked(pid:number):Promise<void>{
 beforeAll(async()=>{
  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:6}));
  for(const f of readdirSync(sql).filter(n=>/^\d{3}_.*\.sql$/.test(n)).sort())await pool.query(readFileSync(new URL(f,sql),'utf8'));
- await pool.query('CREATE TABLE dream_observations(id bigserial PRIMARY KEY,owner text);CREATE TABLE dream_preferences(id bigserial PRIMARY KEY,owner text);CREATE TABLE source_test_business(marker text PRIMARY KEY)');
+ // Migration 026 already created the real dream tables used by the inventory.
+ await pool.query('CREATE TABLE source_test_business(marker text PRIMARY KEY)');
 },120_000);
 afterAll(async()=>{await pool?.end();await container?.stop();},120_000);
 async function fixture(expiryMs?:number,agentExpiryMs?:number){

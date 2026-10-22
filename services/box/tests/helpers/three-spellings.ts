@@ -5,9 +5,8 @@
 // A disposable Postgres with the box's REAL schema applied from services/box/sql (every numbered
 // migration file, in order, read off disk rather than named one by one — the mistake
 // tests/helpers/pg.ts made and stopped at 019; that includes 002_standing_facts.sql, which creates
-// the chief of staff's standing_facts table), plus the dream tables' runtime
-// DDL (services/box cannot import services/chief-of-staff, so it is reproduced inline below,
-// copied verbatim from ensureDreamTables). Seeded with TWO fictional people whose rows use all
+// the chief of staff's standing_facts table), including the dream schema migration. Seeded with
+// TWO fictional people whose rows use all
 // four id conventions the inventory (lib/member-scope.ts) records: `registry` (the identity
 // register's own id space), `principal` (an older, door-native/legacy spelling), `owner-key` (a
 // free-text `owner` column convention fills with the canonical id) and `actor` (whoever changed
@@ -371,9 +370,8 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO forget_ledger (owner, kind, match_hash, reason) VALUES ($1, 'fact', repeat('0', 64), 'forget')`,
     [FIXTURE_OWNER]),
 
-  // ── dream tables (runtime DDL, not a numbered migration; they carry an `owner`
-  //    column) — one row per fixture person in each table, so a later erase test can
-  //    tell the two apart the same way it can for every numbered-migration member table. ─────
+  // ── 026_dream_schema.sql — one row per fixture person in each table, so a later erase test can
+  //    tell the two apart the same way it can for every migration-owned member table. ──────────
   row("dream_observations", "owner", FIXTURE_OWNER,
     `INSERT INTO dream_observations (text, kind, origin, owner)
      VALUES ('fixture observation for the owner', 'identity', 'owner', $1)`,
@@ -477,43 +475,6 @@ const VAULT_ROWS: SeedRow[] = [row("vault_areas", "owner_member_id", FIXTURE_OWN
 export const FIXTURE_ROWS: ReadonlyArray<{ table: string; column: string; value: string }> =
   [...SEED_ROWS,...VAULT_ROWS].map(({ table, column, value }) => ({ table, column, value }));
 
-// ─── The dream tables' DDL, copied verbatim from services/chief-of-staff/lib/dream/store.ts's
-// `ensureDreamTables` (services/box cannot import services/chief-of-staff). Not a numbered
-// migration on a real box either — see lib/member-scope.ts's DREAM_STORE constant. Both tables carry an `owner text` column (nullable, no default — kept in
-// step with that ALTER; see this fixture's SEED_ROWS below for the rows it seeds into them).
-const DREAM_TABLES_DDL = [
-  `CREATE TABLE IF NOT EXISTS dream_observations (
-     id         uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-     text       text          NOT NULL,
-     kind       text          NOT NULL,
-     subject    text          NOT NULL DEFAULT '',
-     confidence double precision NOT NULL DEFAULT 0,
-     source     text,
-     owner      text,
-     valid_from timestamptz   NOT NULL DEFAULT now(),
-     valid_to   timestamptz,
-     created_at timestamptz   NOT NULL DEFAULT now()
-   )`,
-  `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS text_norm text`,
-  `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent'`,
-  `ALTER TABLE dream_observations ADD COLUMN IF NOT EXISTS owner text`,
-  `CREATE TABLE IF NOT EXISTS dream_preferences (
-     id            uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
-     text          text          NOT NULL,
-     kind          text          NOT NULL,
-     subject       text          NOT NULL DEFAULT '',
-     confidence    double precision NOT NULL DEFAULT 0,
-     source        text,
-     owner         text,
-     valid_from    timestamptz   NOT NULL DEFAULT now(),
-     valid_to      timestamptz,
-     superseded_by uuid,
-     created_at    timestamptz   NOT NULL DEFAULT now()
-   )`,
-  `ALTER TABLE dream_preferences ADD COLUMN IF NOT EXISTS origin text NOT NULL DEFAULT 'agent'`,
-  `ALTER TABLE dream_preferences ADD COLUMN IF NOT EXISTS owner text`,
-];
-
 /** Every `services/box/sql/[0-9][0-9][0-9]_*.sql` file, in numeric-then-alphabetic order (two
  *  files share the number 019 — see sql/001_baseline.sql's own comment on that). Read
  *  off disk rather than named one by one, so a new migration is picked up automatically instead
@@ -525,8 +486,8 @@ function boxSqlFilesInOrder(): string[] {
     .sort();
 }
 
-/** A throwaway Postgres with the box's real schema applied from `services/box/sql`, plus the
- *  dream tables' runtime DDL — seeded with TWO people whose rows use all three id conventions.
+/** A throwaway Postgres with the box's real schema applied from `services/box/sql` — seeded with
+ *  TWO people whose rows use all three id conventions.
  *  Nothing here ever connects to a real installation: the container is disposable and the
  *  connection string is generated. */
 export async function startThreeSpellingsDb(options: {vaultAreas?:boolean;financial?:boolean} = {}): Promise<TestDb> {
@@ -545,10 +506,6 @@ export async function startThreeSpellingsDb(options: {vaultAreas?:boolean;financ
   for (const file of boxSqlFilesInOrder()) {
     await pool.query(readFileSync(join(boxSqlDir, file), "utf8"));
   }
-  for (const stmt of DREAM_TABLES_DDL) {
-    await pool.query(stmt);
-  }
-
   for (const seed of [...SEED_ROWS,...(options.vaultAreas===false?[]:VAULT_ROWS)]) {
     if(options.financial===false&&seed.table.startsWith('budget_'))continue;
     await seed.insert(pool);

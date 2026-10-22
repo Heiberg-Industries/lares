@@ -11,8 +11,7 @@
 //   operational — the row is about the installation's running, not about a person.
 //   derived     — the row can be rebuilt from a member table and is cleared, not exported.
 //   resolved    — the row holds a person's words but has NO person column; it is reached by
-//                 resolving ids or paths first (memory_proposals, the sync-state tables, the
-//                 dream tables). Pretending one of these has a column would be worse than saying
+//                 resolving ids or paths first (memory_proposals and the sync-state tables). Pretending one of these has a column would be worse than saying
 //                 it does not — `reachedBy` says, in one sentence, what an erase routine must do
 //                 instead.
 //
@@ -66,11 +65,8 @@
 // treated as a historical record." (docs/decisions/0020-conversations.md, rule 5). They are not
 // listed below; they are not this module's to cover.
 //
-// TWO TABLES THAT ARE NOT EVEN IN `services/box/sql`: `dream_observations` and
-// `dream_preferences` are created by runtime DDL
-// (`services/chief-of-staff/lib/dream/store.ts`'s `ensureDreamTables`), not by a numbered
-// migration. They are listed below anyway, `createdBy` naming the runtime function rather than a
-// `.sql` file. Both now carry a free-text-but-registry `owner`
+// `dream_observations` and `dream_preferences` are created by
+// `services/box/sql/026_dream_schema.sql`. Both carry a free-text-but-registry `owner`
 // column — `member`/`registry`, not `resolved` any more — and every NEW row carries it
 // (`makeDreamStore(db, owner)` throws rather than writing one without). A row written before the
 // column existed is NULL unless the register held exactly one person at the time it was
@@ -132,7 +128,7 @@ export interface ScopedTable {
 }
 
 const BOX = "services/box/sql";
-const DREAM_STORE = "services/chief-of-staff/lib/dream/store.ts (runtime DDL)";
+const DREAM_SCHEMA = `${BOX}/026_dream_schema.sql`;
 
 export const MEMBER_SCOPE: readonly ScopedTable[] = [
   { table: "console_vault_source_captures", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/022_console_vault_source_history.sql`, reason: "Immutable conversation source dependencies; erasure refuses retained captures until history reconciliation is implemented." },
@@ -721,10 +717,9 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
       "the console administrator who changed it, an actor label, not a member's own content.",
   },
 
-  // ── Not created by any services/box/sql migration — both carry an `owner`
-  // column, so they are `member`/`registry`, not `resolved`. The column is
-  // NULLABLE and carries no default (`services/chief-of-staff/lib/dream/store.ts`'s
-  // `ensureDreamTables`): a row written before this column existed is NULL unless
+  // ── Dream tables carry an `owner` column, so they are `member`/`registry`, not `resolved`.
+  // The column is NULLABLE and carries no default (`026_dream_schema.sql`): a row written before
+  // this column existed is NULL unless
   // `labelExistingDreamRows` labelled it as the
   // installation's one member, only ever done when the register held exactly one
   // person at the time. A NULL row is still this table's business, not a second convention: an
@@ -735,14 +730,14 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     scope: "member",
     column: "owner",
     idKind: "registry",
-    createdBy: DREAM_STORE,
+    createdBy: DREAM_SCHEMA,
   },
   {
     table: "dream_preferences",
     scope: "member",
     column: "owner",
     idKind: "registry",
-    createdBy: DREAM_STORE,
+    createdBy: DREAM_SCHEMA,
   },
 
   // ── The chief of staff's own store, created by services/box/sql/002_standing_facts.sql ──

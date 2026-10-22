@@ -10,7 +10,7 @@
 // it lands.
 //
 // The fixture (tests/helpers/three-spellings.ts) applies every services/box/sql file (standing_facts
-// included) and the dream tables' runtime DDL to a disposable
+// and the dream schema included) to a disposable
 // Postgres, and seeds two fictional people whose rows use all four id conventions. Nothing here
 // ever touches a real installation.
 //
