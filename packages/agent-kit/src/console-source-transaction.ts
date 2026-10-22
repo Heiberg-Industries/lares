@@ -39,6 +39,8 @@ export function noteBudgetFinancialChange(db:SourceDatabase,table:BudgetFinancia
 const owners=new WeakMap<object,Owner>();
 const key=(b:SourceBinding)=>JSON.stringify([b.agent,b.incarnation,b.sessionId,b.memberId,b.admissionNonce]);
 function owner(db:SourceDatabase):Owner {const value=owners.get(db);if(!value)throw new Error(REFUSED);return value;}
+/** Require this exact client to be registered to a live source transaction. */
+export function requireSourceTransactionOwner(db:SourceDatabase):void {owner(db);}
 export function invalidateConsoleSource(db:SourceDatabase,binding:SourceBinding):never {
   const state=owner(db);if(!state.organisationId)throw new Error(REFUSED);
   state.retire.set(key(binding),{...binding});throw new SourceAuthorityDenied();

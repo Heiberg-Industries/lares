@@ -4,13 +4,11 @@ import {consoleSourceTransaction,checkConsoleSourceDeadlines,SourceAuthorityDeni
  * hook, HTTP endpoint, model tool, account opener or recovery reset is exported here. */
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
-import { consoleAdmission, requireConsoleSessionBinding, requireConsoleTurnAuthority,
-  type ConsoleAuthorityContext, type ConsoleBinding } from './console-turn-authority.js';
-import { privateResolverAdmission, requirePrivateConsoleResume, requirePersistedPrivateConsoleModelResume } from './private-console-resume.js';
+import { type ConsoleAuthorityContext } from './console-turn-authority.js';
 import { PgGrantStore } from './grant-store.js';
-import { managedIdentity } from './door-authority.js';
 import { payloadFingerprint } from './approval-ledger.js';
 import { currentModelInvocation, MODEL_INVOCATION_REFUSED } from './model-invocation.js';
+import { captureBudgetAuthorityReference, validateBudgetAuthorityReference, type BudgetAuthorityReference } from './budget-model-authority.js';
 
 const SCALE=10n**18n;
 /** At most 18 integral and 18 fractional digits, no exponent/sign/nonfinite values. */
@@ -60,7 +58,7 @@ export type BudgetFinancialOperation='prepare'|'provision'|'admit'|'grant'|'unkn
 export interface BudgetFinancialWriter {
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary)=>Promise<T>):Promise<T>;
 }
-type Ref={kind:'human'|'resume';binding:ConsoleBinding;turnId:string;turnSequence:number;resume?:{requestId:string;optionId:'approve'|'cancel'}};
+type Ref=BudgetAuthorityReference;
 const permits=new WeakMap<object,{attemptId:string;bindingId:string;requestHash:string}>();
 /** Burn synchronously BEFORE the first await/transport call; a thrown transport consumes it. */
 export function consumeDispatchPermit(permit:BudgetDispatchPermit):{attemptId:string;bindingId:string;requestHash:string}|undefined {
@@ -105,37 +103,6 @@ export class PgBudgetAdmissionStore {
     return a?{attemptId:a.id,bindingId:a.binding_id,requestHash:a.request_hash,profileHash:a.profile_hash,endpointHash:a.endpoint_hash,credentialGeneration:a.credential_generation,grantHash:a.grant_hash,pricingProfile:a.pricing_profile}:undefined;
   }
 
-  private async capture(db:PoolClient,ctx:ConsoleAuthorityContext):Promise<Ref> {
-    const own=managedIdentity(this.env),session=ctx.session;
-    if(!own||!session?.id||typeof session.turn?.id!=='string'||(session.turn.id!==''&&!session.turn.id.trim())||!Number.isSafeInteger(session.turn.sequence)||session.turn.sequence!<0)throw new Error('Unsupported budget authority');
-    const resolver=privateResolverAdmission(session.auth?.current);
-    if(resolver){
-      const current=await requirePrivateConsoleResume(ctx,'model',{db,env:this.env});
-      return {kind:'resume',binding:current.binding,turnId:session.turn.id,turnSequence:session.turn.sequence!,resume:{requestId:resolver.requestId,optionId:resolver.optionId}};
-    }
-    await requireConsoleTurnAuthority(ctx,db,this.env);
-    const admission=consoleAdmission(session.auth?.current)!;
-    const binding=await requireConsoleSessionBinding({agent:own.name,incarnation:own.incarnation,sessionId:session.id,...admission},db,this.env);
-    return {kind:'human',binding,turnId:session.turn.id,turnSequence:session.turn.sequence!};
-  }
-  private async validate(db:PoolClient,ref:Ref):Promise<string|null> {
-    let resumeValidUntil:string|null=null;
-    const own=managedIdentity(this.env);
-    if(!own||own.name!==ref.binding.agent||own.incarnation!==ref.binding.incarnation)throw new Error('Stale runtime');
-    if(ref.kind==='resume') {
-      if(!ref.resume)throw new Error('Missing resume');
-      const current=await requirePersistedPrivateConsoleModelResume({binding:ref.binding,...ref.resume},{db,env:this.env});
-      if(ref.resume.optionId==='approve')resumeValidUntil=current.validUntil;
-    }else if(ref.kind==='human'){
-      const current=await requireConsoleSessionBinding(ref.binding,db,this.env);
-      if(payloadFingerprint('budget-binding',current)!==payloadFingerprint('budget-binding',ref.binding))throw new Error('Stale authority');
-    }else throw new Error('Unsupported authority');
-    const grant=await new PgGrantStore().captureUseWithExpiry(ref.binding.memberId,ref.binding.agent,{expectedRevision:ref.binding.agentAccessRevision,db});
-    if(!grant)throw new Error('Stale grant');
-    // All authority evidence is locked before budget locks. Only immutable time deadlines
-    // cross the lock wait; the final transition compares them using the database clock.
-    return (await db.query('SELECT LEAST($1::timestamptz,$2::timestamptz,$3::timestamptz)::text AS valid_until',[grant.validUntil,resumeValidUntil,await checkConsoleSourceDeadlines(db)])).rows[0].valid_until;
-  }
   private async locks(db:PoolClient,installationId:string,memberId:string,bindingId?:string):Promise<{installation:Row;member:Row;binding?:Row}> {
     const installation=(await db.query('SELECT * FROM budget_accounts WHERE id=$1 AND kind=\'installation\' FOR UPDATE',[installationId])).rows[0];
     const member=(await db.query('SELECT * FROM budget_accounts WHERE id=$1 AND kind=\'member\' AND installation_account_id=$2 FOR UPDATE',[memberId,installationId])).rows[0];
@@ -174,7 +141,7 @@ export class PgBudgetAdmissionStore {
     if(!uuid(request.bindingId)||!validHash(request.requestHash)||!validHash(request.profileHash))throw new Error('Invalid budget request');
     const raw=randomBytes(32).toString('base64url');
     await this.transaction(async db=>{
-      const reference=await this.capture(db,ctx); // Authority locks always precede budget locks.
+      const reference=await captureBudgetAuthorityReference(db,ctx,this.env); // Authority locks always precede budget locks.
       // Agent use locks its owner's policy; a delegated member's separate cap row also
       // needs a lock BEFORE the budget locks, including a concurrent deletion/reduction.
       await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[reference.binding.memberId]);
@@ -205,7 +172,7 @@ export class PgBudgetAdmissionStore {
         const ref=discovered.authority_reference as Ref;
         if(payloadFingerprint('budget-authority',ref)!==discovered.authority_hash)return undefined;
         let authorityValidUntil:string|null;
-        try{authorityValidUntil=await this.validate(db,ref);}catch{
+        try{authorityValidUntil=await validateBudgetAuthorityReference(db,ref,this.env);}catch{
           await db.query("UPDATE budget_attempts SET state='retired' WHERE id=$1 AND state='prepared'",[discovered.id]);noteBudgetFinancialChange(db,'budget_attempts',discovered.id);return undefined;
         }
         await db.query('SELECT user_id FROM org_member_policy WHERE user_id=$1 FOR SHARE',[ref.binding.memberId]);
@@ -271,7 +238,7 @@ export class PgBudgetAdmissionStore {
    * Members can read only their own account; installation scope requires a current owner. */
   async readStatus(ctx:ConsoleAuthorityContext,scope:'member'|'installation'='member'):Promise<BudgetStatus> {
     return this.transaction(async db=>{
-      const ref=await this.capture(db,ctx);
+      const ref=await captureBudgetAuthorityReference(db,ctx,this.env);
       if(scope==='installation'){
         const owner=(await db.query("SELECT 1 FROM users WHERE id=$1 AND org_role='owner' AND status='active'",[ref.binding.memberId])).rows.length;
         if(!owner)throw new Error('Budget scope denied');
