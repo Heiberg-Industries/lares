@@ -321,7 +321,8 @@ class Proof:
         # The client receives only the probe source, protected master-key file, and fixed phase barrier.
         client_mounts=[
             "--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly",
-            "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/tmp/litellm-member-credential.live.mts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/app/services/keeper/tests/live/litellm-member-credential.live.mts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/keeper/lib/budget-native-client.ts,dst=/app/services/keeper/lib/budget-native-client.ts,readonly",
             "--mount",f"type=bind,src={self.root/'master'},dst=/tmp/gateway-master-key,readonly",
             "--mount",f"type=bind,src={self.native_barrier},dst=/run/lares-native-probe-barrier",
             "--mount",f"type=bind,src={self.native_expected},dst=/run/lares-native-probe-expected",
@@ -462,18 +463,22 @@ exec litellm --config "$CONFIG_FILE_PATH"
             if existing is None:report["diagnostics"].append({"name":name,"outcome":outcome})
             elif outcome=="false":existing["outcome"]="false"
         self.artifact["nativeCredentialContract"]=report
-        expected=("fixture-guard","member-create-without-key","team-membership-and-caps","caller-key-exact-and-hash-lookup",
-            "hash-lookup-absent-is-not-error","hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite",
-            "atomic-blocked-create","blocked-key-readback-and-native-auth","unblocked-key-readback-and-native-auth",
+        expected=("fixture-guard","member-create-without-key","user-current-identity-global-cap-and-role",
+            "user-info-no-auto-key","user-info-absent-is-not-refusal","user-info-refused-is-not-absence",
+            "lost-user-create-response-reconciles-original-id","team-membership-and-caps","client-empty-key-inventory",
+            "caller-key-exact-and-hash-lookup","client-populated-key-inventory","hash-lookup-absent-is-not-error",
+            "hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite","atomic-blocked-create",
+            "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","unblocked-key-readback-and-native-auth",
             "lost-create-response-reconciles-by-hash","block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
-            "already-deleted-remains-absent","fixture-cleanup")
+            "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
         try:
             native_url=self.start_native_admin()
             self.native_barrier.write_text("idle")
             args=["docker","exec","-i","-e","CI=true","-e","LARES_DISPOSABLE_GATEWAY=1","-e","LARES_PROBE_CI_BARRIER=1",
                 "-e","GATEWAY_URL="+native_url,"-e","GATEWAY_MASTER_KEY_FILE=/tmp/gateway-master-key","-e","GATEWAY_PROBE_MODEL=lares-brain",
                 "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/run/lares-native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/run/lares-native-probe-expected",self.name+"-client","node",
-                "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs","/tmp/litellm-member-credential.live.mts"]
+                "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs",
+                "/app/services/keeper/tests/live/litellm-member-credential.live.mts"]
             process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             deadline=time.monotonic()+180
             checked_members=False;checked_key=False
@@ -843,12 +848,14 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 lookup("GET","/key/info",credential=role_keys["read_only"]),
             ]
             team_reply=lookup("GET","/team/info?team_id="+team,credential=self.master)
+            user_reply=lookup("GET","/user/info?user_id="+user,credential=self.master)
             inventory=lookup("GET","/key/list?user_id="+user,credential=self.master)
             exact=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[ordinary_hash]})
             role_readbacks=[lookup("POST","/v2/key/info",credential=self.master,body={"keys":[role_hashes[role]]}) for role in ("management","read_only")]
             blocked_readback=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[blocked_hash]})
             after=self.control()
             team_info=team_reply.get("body",{}).get("team_info",{}) if type(team_reply.get("body")) is dict else {}
+            user_info=user_reply.get("body",{}).get("user_info",{}) if type(user_reply.get("body")) is dict else {}
             memberships=team_reply.get("body",{}).get("team_memberships",[]) if type(team_reply.get("body")) is dict else []
             matching_memberships=[item for item in memberships if type(item) is dict and item.get("team_id")==team and item.get("user_id")==user]
             key_rows=exact.get("body",{}).get("info",[]) if type(exact.get("body")) is dict else []
@@ -856,6 +863,9 @@ exec litellm --config "$CONFIG_FILE_PATH"
             blocked_rows=blocked_readback.get("body",{}).get("info",[]) if type(blocked_readback.get("body")) is dict else []
             require(team_reply.get("status")==200 and team_info.get("team_id")==team and len(matching_memberships)==1,
                 "Master team lookup did not return the exact fixture membership")
+            require(user_reply.get("status")==200 and user_reply.get("body",{}).get("user_id")==user and
+                type(user_info) is dict and user_info.get("user_id")==user and user_info.get("max_budget")==100 and
+                user_info.get("user_role")=="internal_user","Master user lookup did not return the exact current fixture policy")
             expected_hashes=sorted([*role_hashes.values(),blocked_hash])
             require(inventory.get("status")==200 and sorted(inventory.get("body",{}).get("keys",[]))==expected_hashes,"Master key inventory differed")
             require(exact.get("status")==200 and exact.get("body",{}).get("key")==[ordinary_hash] and len(key_rows)==1 and
@@ -869,7 +879,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             require(lookup("GET","/v1/model/info",credential=blocked_key).get("status") in (401,403),"Atomic blocked key authenticated on a read route")
             after_reads=self.control()
             require(counters_unchanged(before,after) and counters_unchanged(after,after_reads),"Native lookup or auth check reached model/provider dispatch")
-            forbidden=[(method,path) for method,path in (("GET","/team/info?team_id="+team),("GET","/key/list?user_id="+user),("POST","/v2/key/info"))]
+            forbidden=[(method,path) for method,path in (("GET","/team/info?team_id="+team),("GET","/key/list?user_id="+user),("GET","/user/info?user_id="+user),("POST","/v2/key/info"))]
             denied=[]
             for method,path in forbidden:
                 body={"keys":[ordinary_hash]} if method=="POST" else None
@@ -879,6 +889,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             after_denied=self.control()
             require(counters_unchanged(after_reads,after_denied),"Refused role credential lookup reached model/provider dispatch")
             blocked_denied=[lookup("GET","/team/info?team_id="+team,credential=blocked_key),
+                lookup("GET","/user/info?user_id="+user,credential=blocked_key),
                 lookup("GET","/key/list?user_id="+user,credential=blocked_key),lookup("POST","/v2/key/info",credential=blocked_key,body={"keys":[ordinary_hash]})]
             require(all(reply.get("status")==400 for reply in blocked_denied),"Blocked virtual key reached a native lookup")
             malformed=[
@@ -893,6 +904,16 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 lookup("GET","/team/info?team_id="+team,credential=self.master,headers=[["authorization","Bearer "+self.master],["authorization","Bearer "+self.master]]),
                 lookup("POST","/team/info?team_id="+team,credential=self.master),
                 lookup("GET","/team/info/?team_id="+team,credential=self.master),
+                lookup("GET","/user/info?user_id="+user+"&user_id="+user,credential=self.master),
+                lookup("GET","/user/info?user_id=%6d"+user[1:],credential=self.master),
+                lookup("GET","/user/info?user_id="+user+"&extra=x",credential=self.master),
+                lookup("GET","/user/info?team_id="+team,credential=self.master),
+                lookup("GET","/user/info?user_id="+user,credential=self.master,headers={"x-api-key":self.master}),
+                lookup("GET","/user/info?user_id="+user,credential=self.master,headers=[["authorization","Bearer "+self.master],["authorization","Bearer "+self.master]]),
+                lookup("GET","/user/info?user_id="+user,credential=self.master,headers={"content-type":"application/json"}),
+                lookup("GET","/user/info",credential=self.master),
+                lookup("POST","/user/info?user_id="+user,credential=self.master),
+                lookup("GET","/user/info/?user_id="+user,credential=self.master),
             ]
             require(all(type(reply) is dict and reply.get("status")==400 for reply in malformed),"Malformed lookup boundary was accepted")
             after_malformed=self.control()
@@ -905,6 +926,26 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 reply.get("body",{}).get("info")==[] for item,reply in zip(hashes,absent)),"Deleted fixture key was not strictly absent")
             require(counters_unchanged(after_malformed,after_delete),"Native lookup or deletion reached model/provider dispatch")
         self.case(provider+"-guarded-native-lookups-auth-refusal-and-cleanup",authenticated_role_keys)
+
+        def fresh_user_policy():
+            before=self.control()
+            def current(cap,role):
+                reply=lookup("GET","/user/info?user_id="+user,credential=self.master)
+                body=reply.get("body");info=body.get("user_info") if type(body) is dict else None
+                require(reply.get("status")==200 and type(body) is dict and body.get("user_id")==user and
+                    type(info) is dict and info.get("user_id")==user and info.get("max_budget")==cap and
+                    info.get("user_role")==role and body.get("keys")==[],"User lookup did not reflect the current fixture row")
+            current(100,"internal_user")
+            try:
+                # Mutate only this disposable row after creation. A cached create receipt
+                # cannot satisfy the independent current-policy readback below.
+                self.sql(f'''UPDATE "LiteLLM_UserTable" SET max_budget=99,user_role='internal_user_viewer' WHERE user_id='{user}' ''')
+                current(99,"internal_user_viewer")
+            finally:
+                self.sql(f'''UPDATE "LiteLLM_UserTable" SET max_budget=100,user_role='internal_user' WHERE user_id='{user}' ''')
+            current(100,"internal_user")
+            require(counters_unchanged(before,self.control()),"Current user policy lookup reached model/provider dispatch")
+        self.case(provider+"-guarded-native-user-policy-is-current",fresh_user_policy)
 
     def execute(self):
         try:
