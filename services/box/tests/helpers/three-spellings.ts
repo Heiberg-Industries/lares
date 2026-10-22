@@ -28,6 +28,9 @@ import { Pool } from "pg";
 import { encryptSecret } from "../../lib/crypto.js";
 import { payloadFingerprint } from "../../../../packages/agent-kit/src/approval-ledger.js";
 import { PRIVATE_CONSOLE_SURFACE_REVISION } from "../../../../packages/agent-kit/src/console-turn-authority.js";
+import { consoleSourceTransaction, noteBudgetFinancialChange, type SourcePool } from "../../../../packages/agent-kit/src/console-source-transaction.js";
+import { JournalBudgetFinancialWriter } from "../../../keeper/lib/budget-financial-writer.js";
+import type { HostFinancialJournal } from "../../../keeper/lib/financial-journal.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const boxSqlDir = join(here, "..", "..", "sql");
@@ -462,6 +465,27 @@ const SEED_ROWS: SeedRow[] = [
      VALUES ('fixture-clip-source-2', 'fixture-page-2', 'fixture-data-source', $1, 'shared', 'imported')`,
     [FIXTURE_SECOND]),
 ];
+
+/** Populate only the fixture's reviewed financial rows through the real prepared journal.
+ * Tests that need complete-history verification start with financial:false, prepare custody
+ * against the empty tables, and call this explicitly. Each stable changed primary key is noted
+ * on the owned source client before the transaction commits. */
+export async function seedThreeSpellingsFinancial(pool: Pool, journal: HostFinancialJournal): Promise<void> {
+  const ids: ReadonlyArray<readonly ["budget_accounts"|"budget_windows"|"budget_gateway_bindings"|"budget_attempts", string]> = [
+    ["budget_accounts", "a1111111-1111-4111-8111-111111111111"],
+    ["budget_accounts", "a2222222-2222-4222-8222-222222222222"],
+    ["budget_windows", "a6666666-6666-4666-8666-666666666666"],
+    ["budget_windows", "a3333333-3333-4333-8333-333333333333"],
+    ["budget_gateway_bindings", "a4444444-4444-4444-8444-444444444444"],
+    ["budget_attempts", "a5555555-5555-4555-8555-555555555555"],
+  ];
+  const financialRows = SEED_ROWS.filter(seed => seed.table.startsWith("budget_"));
+  const writer = new JournalBudgetFinancialWriter(journal);
+  await writer.run("provision", boundary => consoleSourceTransaction(pool as unknown as SourcePool, async source => {
+    for (const seed of financialRows) await seed.insert(source as unknown as Pool);
+    for (const [table, id] of ids) noteBudgetFinancialChange(source, table, id);
+  }, boundary));
+}
 
 // Owned storage metadata is part of resolver/export completeness. Legacy erase-path
 // tests explicitly use vaultAreas:false; dedicated tests prove owned-area and retained-source refusal.

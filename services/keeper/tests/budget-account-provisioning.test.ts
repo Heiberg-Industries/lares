@@ -131,7 +131,11 @@ it('validates plans and provisions only closed accounts with locked live identit
   const afterChange=(await pool.query(`SELECT installation_cap::text,policy_generation::text FROM budget_accounts WHERE kind='installation'`)).rows[0];
   expect(afterChange).toEqual({installation_cap:'120',policy_generation:'2'});
   expect((await pool.query('SELECT count(*)::int AS n, max(opening_cap)::text AS cap FROM budget_windows')).rows[0]).toEqual({n:3,cap:'100'});
-  await pool.query('UPDATE org_member_policy SET spend_cap_usd_month=30 WHERE user_id=$1',[users.a]);
+  await new JournalBudgetFinancialWriter(journal).run('provision',boundary=>consoleSourceTransaction(pool,async db=>{
+    const affected=(await db.query('SELECT id FROM budget_accounts WHERE live_member_id=$1 ORDER BY id FOR UPDATE',[users.a])).rows;
+    await db.query('UPDATE org_member_policy SET spend_cap_usd_month=30 WHERE user_id=$1',[users.a]);
+    for(const account of affected)noteBudgetFinancialChange(db,'budget_accounts',account.id);
+  },boundary));
   const memberPolicyChange=await provisionBudgetAccounts(pool,journal,{...plan,installationCap:'120'});
   expect(memberPolicyChange.windowsCreated).toBe(0);
   expect((await pool.query('SELECT count(*)::int AS n FROM budget_windows')).rows[0].n).toBe(3);
@@ -190,13 +194,23 @@ it('refuses changed identity sets, organisation drift, cross-organisation plans 
   await selected.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('budget-tombstone-member',12)");
   const digests=journal.suppression({canonicalMemberId:'budget-tombstone-member',providers:[{issuer:'https://identity.example.invalid',subject:'rejoined-provider',tenantId:'tenant'}]});
   const installation=(await selected.query("SELECT id,installation_id FROM budget_accounts WHERE kind='installation'")).rows[0];
-  await selected.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes)
-    VALUES($1,$2,'member',$3,'budget-tombstone-member',$4,$5,$6)`,[id(),installation.installation_id,installation.id,users.org,digests.canonicalSuppressionHash,digests.providerSuppressionHashes]);
-  await selected.query("DELETE FROM users WHERE id='budget-tombstone-member'");
+  const tombstoneAccountId=id();
+  await new JournalBudgetFinancialWriter(journal).run('member-remove',boundary=>consoleSourceTransaction(selected,async db=>{
+    await db.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes)
+      VALUES($1,$2,'member',$3,'budget-tombstone-member',$4,$5,$6)`,[tombstoneAccountId,installation.installation_id,installation.id,users.org,digests.canonicalSuppressionHash,digests.providerSuppressionHashes]);
+    await db.query("DELETE FROM users WHERE id='budget-tombstone-member'");
+    noteBudgetFinancialChange(db,'budget_accounts',tombstoneAccountId);
+  },boundary));
+  expect((await selected.query('SELECT live_member_id,canonical_suppression_hash,provider_suppression_hashes FROM budget_accounts WHERE id=$1',[tombstoneAccountId])).rows[0]).toEqual({
+    live_member_id:null,canonical_suppression_hash:digests.canonicalSuppressionHash,provider_suppression_hashes:digests.providerSuppressionHashes,
+  });
   await selected.query(`INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('budget-rejoined-member','Rejoined',$1,'member','active')`,[users.org]);
   await selected.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES('budget-rejoined-member','https://identity.example.invalid','rejoined-provider','tenant')");
   await selected.query("INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES('budget-rejoined-member',12)");
-  await expect(provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:['budget-rejoined-member']})).rejects.toThrow();
+  await expect(provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:['budget-rejoined-member']}))
+    .rejects.toThrow('Budget account provisioning refused; financial recovery may be required');
+  await expect(provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:[users.a]}))
+    .resolves.toMatchObject({state:'closed',members:1,accountsCreated:0,windowsCreated:0});
 });
 
 it('serializes concurrent policy and member changes behind the selected-user recheck',async()=>{

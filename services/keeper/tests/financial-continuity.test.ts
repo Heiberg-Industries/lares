@@ -3,8 +3,9 @@ import {chmodSync,fsyncSync,mkdtempSync,readFileSync,realpathSync,rmSync,unlinkS
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {spawn,type ChildProcessWithoutNullStreams} from 'node:child_process';
-import {HostFinancialJournal,type FinancialDatabase} from '../lib/financial-journal.js';
+import {HostFinancialJournal,type FinancialAtom,type FinancialCheckpoint,type FinancialDatabase} from '../lib/financial-journal.js';
 import {prepareFinancialCustody,verifyFinancialContinuity} from '../lib/financial-continuity.js';
+import {financialAtomFromRow} from '../lib/financial-projection.js';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 const database:FinancialDatabase={systemIdentifier:'74683378529478211',postmasterStartedAt:'2026-10-22T00:00:00.123456Z',databaseOid:'16384'};
 const options={ownershipUid:testJournalUid,lock:platformTestJournalLock};
@@ -14,6 +15,25 @@ function establish(directory:string,selected:Parameters<typeof HostFinancialJour
 function prepared(){const directory=location();establish(directory);return directory;}
 function open(directory:string,extra:Parameters<typeof HostFinancialJournal.openExisting>[1]={}){const j=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true,...extra});journals.push(j);return j;}
 function records(directory:string){return readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line).record);}
+function verifyJournal(journal:HostFinancialJournal,databaseValue:FinancialDatabase=database,proposed=false){const projection=journal.expectedProjection(proposed);journal.verifyContinuity(databaseValue,projection.checkpoints,projection.atoms,proposed);}
+const zeroHash='0'.repeat(64),uuid=(n:number)=>`00000000-0000-4000-8000-${String(n).padStart(12,'0')}`;
+function account(id:string,suppression=zeroHash):Extract<FinancialAtom,{kind:'account'}>{return {kind:'account',id,installationAccountId:id,accountKind:'installation',state:'closed',reason:'unreconciled',activeWindowId:null,installationCap:null,policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:suppression,providerSuppressionHashes:[]};}
+function accountRow(atom:Extract<FinancialAtom,{kind:'account'}>){return {id:atom.id,installation_account_id:atom.installationAccountId,kind:atom.accountKind,state:atom.state,reason:atom.reason,active_window_id:atom.activeWindowId,installation_cap:atom.installationCap,policy_generation:atom.policyGeneration,selected_endpoint:atom.selectedEndpointHash,endpoint_generation:atom.endpointGeneration,recovery_epoch:null,canonical_suppression_hash:atom.canonicalSuppressionHash,provider_suppression_hashes:atom.providerSuppressionHashes};}
+function projectionDb(state:{accounts?:ReturnType<typeof accountRow>[];checkpoints?:FinancialCheckpoint[];grants?:{attempt_id:string;grant_hash:string}[]}={}){
+  const accounts=state.accounts??[],checkpoints=state.checkpoints??[],grants=state.grants??[];
+  return {query:async(sql:string,values?:any[])=>{
+    if(sql.includes('pg_control_system'))return {rows:[database]};
+    if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:String(accounts.length),windows:'0',bindings:'0',attempts:'0',grants:String(grants.length),checkpoints:String(checkpoints.length)}]};
+    if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoints.filter(row=>(values?.[0] as string[]).includes(String(row.sequence))).map(row=>({...row,sequence:String(row.sequence)}))};
+    if(sql.includes('FROM budget_accounts WHERE id=ANY'))return {rows:accounts.filter(row=>(values?.[0] as string[]).includes(row.id))};
+    if(sql.includes('FROM budget_gateway_grants WHERE attempt_id=ANY'))return {rows:grants.filter(row=>(values?.[0] as string[]).includes(row.attempt_id))};
+    if(sql.includes('FROM budget_windows WHERE id=ANY')||sql.includes('FROM budget_gateway_bindings WHERE id=ANY')||sql.includes('FROM budget_attempts WHERE id=ANY'))return {rows:[]};
+    return {rows:[],command:sql};
+  }};
+}
+async function commitProjection(journal:HostFinancialJournal,atoms:FinancialAtom[],checkpoints:FinancialCheckpoint[]){
+  await journal.operation('admit',async operationId=>{const proposal=journal.propose(operationId,atoms);checkpoints.push({operationId,journalId:proposal.journalId,sequence:proposal.sequence,digest:proposal.digest});journal.committed(operationId);});
+}
 afterEach(()=>{vi.restoreAllMocks();for(const j of journals.splice(0)){try{j.close();}catch{}}for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});});
 it('prepares receipt before creating key/genesis, with strict private file modes',()=>{
   const directory=location(),seen:string[][]=[];
@@ -40,13 +60,13 @@ it.each(['missing-key','replacement-key','unsafe-key','missing-receipt','partial
   expect(()=>open(directory)).toThrow();expect(()=>HostFinancialJournal.prepareFresh(directory,database,options)).toThrow();
 });
 it('allows a clean keeper-only restart with the identical running PostgreSQL identity',async()=>{
-  const directory=prepared(),j=open(directory);j.verifyContinuity(database,null);
-  await j.drainForShutdown();j.close();const next=open(directory);expect(()=>next.verifyContinuity(database,null)).not.toThrow();
+  const directory=prepared(),j=open(directory);verifyJournal(j);
+  await j.drainForShutdown();j.close();const next=open(directory);expect(()=>verifyJournal(next)).not.toThrow();
 });
 it.each(['postmasterStartedAt','systemIdentifier','databaseOid'])('durably freezes changed database identity %s, even with matching retained state',field=>{
   const directory=prepared(),j=open(directory),changed={...database,[field]:field==='postmasterStartedAt'?'2026-10-22T00:00:00.123457Z':'16385'};
-  expect(()=>j.verifyContinuity(changed,null)).toThrow('recovery');j.close();
-  const next=open(directory);expect(()=>next.verifyContinuity(database,null)).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
+  expect(()=>verifyJournal(j,changed)).toThrow('recovery');j.close();
+  const next=open(directory);expect(()=>verifyJournal(next)).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
 });
 function child(code:string):{process:ChildProcessWithoutNullStreams;ready:Promise<void>;done:Promise<number|null>}{
   const process=spawn(globalThis.process.execPath,['--import','tsx','--input-type=module','-e',code],{stdio:'pipe'});
@@ -64,7 +84,7 @@ process.stdout.write('ready\\n');process.stdin.once('data',()=>{try{const p=Host
   try{await Promise.all([a.ready,b.ready]);a.process.stdin.end('go');b.process.stdin.end('go');expect((await Promise.all([a.done,b.done])).sort()).toEqual([0,75]);}
   finally{a.process.kill();b.process.kill();}
   const history=records(directory),receipt=JSON.parse(readFileSync(join(directory,'first-use.json'),'utf8'));
-  expect(history.map(r=>r.kind)).toEqual(['genesis','control','preparation-complete']);expect(history[0].journalId).toBe(receipt.journalId);expect(()=>open(directory).verifyContinuity(database,null)).not.toThrow();
+  expect(history.map(r=>r.kind)).toEqual(['genesis','control','preparation-complete']);expect(history[0].journalId).toBe(receipt.journalId);expect(()=>verifyJournal(open(directory))).not.toThrow();
 },10_000);
 it('permanently freezes an abandoned prepared writer after actual process termination',async()=>{
   const directory=prepared(),holder=child(childImports+`const j=HostFinancialJournal.openExisting(${JSON.stringify(directory)},{ownershipUid:process.getuid(),lock:platformTestJournalLock,requirePrepared:true});process.stdout.write('ready\\n');setInterval(()=>{},1000);`);
@@ -74,27 +94,80 @@ it('permanently freezes an abandoned prepared writer after actual process termin
     holder.process.kill('SIGKILL');await holder.done;
     const next=open(directory); // persists freeze while acquiring ownership, before any observation/work
     expect(records(directory).at(-1)).toMatchObject({kind:'freeze',reason:'uncertain'});
-    expect(()=>next.verifyContinuity(database,null)).toThrow('recovery');
+    expect(()=>verifyJournal(next)).toThrow('recovery');
     let called=false;await expect(next.operation('admit',async()=>{called=true;})).rejects.toThrow('closed');expect(called).toBe(false);next.close();
-    expect(()=>open(directory).verifyContinuity(database,null)).toThrow('recovery');
+    expect(()=>verifyJournal(open(directory))).toThrow('recovery');
   }finally{holder.process.kill('SIGKILL');}
 },10_000);
 it('orders checkpoint control fsync after commit before exposing success and verifies it on restart',async()=>{
   const directory=prepared(),j=open(directory);let checkpoint:any;
-  await j.operation('admit',async id=>{const p=j.propose(id,[]);checkpoint={operationId:p.operationId,journalId:p.journalId,sequence:p.sequence,digest:p.digest};j.verifyContinuity(database,checkpoint,true);j.committed(id);expect(records(directory).at(-1)?.kind).toBe('control');});
-  j.close();const next=open(directory);expect(()=>next.verifyContinuity(database,checkpoint)).not.toThrow();expect(()=>next.verifyContinuity(database,null)).toThrow('recovery');
+  await j.operation('admit',async id=>{const p=j.propose(id,[]);checkpoint={operationId:p.operationId,journalId:p.journalId,sequence:p.sequence,digest:p.digest};verifyJournal(j,database,true);j.committed(id);expect(records(directory).at(-1)?.kind).toBe('control');});
+  j.close();const next=open(directory);expect(()=>verifyJournal(next)).not.toThrow();expect(()=>next.verifyContinuity(database,[],[])).toThrow('recovery');
+});
+it('matches every committed checkpoint, including old coordinates when the latest still matches',async()=>{
+  const directory=prepared(),journal=open(directory),checkpoints:FinancialCheckpoint[]=[],rows=[accountRow(account(uuid(1))),accountRow(account(uuid(2)))];
+  await commitProjection(journal,[account(uuid(1))],checkpoints);await commitProjection(journal,[account(uuid(2))],checkpoints);
+  await expect(verifyFinancialContinuity(journal,projectionDb({accounts:rows,checkpoints}))).resolves.toBeUndefined();
+  const missingDirectory=prepared(),missingOld=open(missingDirectory),all:FinancialCheckpoint[]=[];
+  await commitProjection(missingOld,[account(uuid(1))],all);await commitProjection(missingOld,[account(uuid(2))],all);
+  const latestStillMatches=projectionDb({accounts:rows,checkpoints:all.slice(1)});
+  await expect(verifyFinancialContinuity(missingOld,latestStillMatches)).rejects.toThrow('recovery');
+  expect(records(missingDirectory).at(-1)?.kind).toBe('freeze');
+});
+it.each(['missing','extra','changed'])('freezes when historical financial rows are %s even though every checkpoint remains',async change=>{
+  const directory=prepared(),journal=open(directory),checkpoints:FinancialCheckpoint[]=[],first=accountRow(account(uuid(11))),second=accountRow(account(uuid(12)));
+  await commitProjection(journal,[account(uuid(11))],checkpoints);await commitProjection(journal,[account(uuid(12))],checkpoints);
+  const rows=change==='missing'?[second]:change==='extra'?[first,second,accountRow(account(uuid(13)))]:[{...first,canonical_suppression_hash:'1'.repeat(64)},second];
+  await expect(verifyFinancialContinuity(journal,projectionDb({accounts:rows,checkpoints}))).rejects.toThrow('recovery');
+  expect(records(directory).at(-1)?.kind).toBe('freeze');
+});
+it('checks append-only grant coverage and rejects missing or changed grant rows',async()=>{
+  const directory=prepared(),journal=open(directory),checkpoints:FinancialCheckpoint[]=[],attemptId=uuid(21),grant:FinancialAtom={kind:'grant',attemptId,grantHash:zeroHash};
+  await commitProjection(journal,[grant],checkpoints);
+  await expect(verifyFinancialContinuity(journal,projectionDb({checkpoints,grants:[{attempt_id:attemptId,grant_hash:zeroHash}]}))).resolves.toBeUndefined();
+  const changedDirectory=prepared(),changed=open(changedDirectory),changedCheckpoints:FinancialCheckpoint[]=[];
+  await commitProjection(changed,[grant],changedCheckpoints);
+  await expect(verifyFinancialContinuity(changed,projectionDb({checkpoints:changedCheckpoints,grants:[{attempt_id:attemptId,grant_hash:'1'.repeat(64)}]}))).rejects.toThrow('recovery');
+  expect(records(changedDirectory).at(-1)?.kind).toBe('freeze');
+  const missingDirectory=prepared(),missing=open(missingDirectory),missingCheckpoints:FinancialCheckpoint[]=[];
+  await commitProjection(missing,[grant],missingCheckpoints);
+  await expect(verifyFinancialContinuity(missing,projectionDb({checkpoints:missingCheckpoints}))).rejects.toThrow('recovery');
+  expect(records(missingDirectory).at(-1)?.kind).toBe('freeze');
+});
+it('excludes an aborted proposal and verifies only the exact active proposal overlay',async()=>{
+  const directory=prepared(),journal=open(directory),empty=projectionDb();
+  await journal.operation('admit',async operationId=>{journal.propose(operationId,[account(uuid(31))]);journal.aborted(operationId,'rollback-acknowledged');});
+  await expect(verifyFinancialContinuity(journal,empty)).resolves.toBeUndefined();
+  const live={accounts:[] as ReturnType<typeof accountRow>[],checkpoints:[] as FinancialCheckpoint[]},db=projectionDb(live),current=account(uuid(32));
+  await journal.operation('admit',async operationId=>{
+    await verifyFinancialContinuity(journal,db); // BEGIN phase sees committed history only.
+    const proposal=journal.propose(operationId,[current]);
+    live.accounts.push(accountRow(current));live.checkpoints.push({operationId,journalId:proposal.journalId,sequence:proposal.sequence,digest:proposal.digest});
+    await expect(verifyFinancialContinuity(journal,db,true)).resolves.toBeUndefined();
+    journal.committed(operationId);
+  });
+  await expect(verifyFinancialContinuity(journal,db)).resolves.toBeUndefined();
+});
+it('projects bounded histories larger than the per-operation atom limit and keeps row metadata redacted',async()=>{
+  const directory=prepared(),journal=open(directory),checkpoints:FinancialCheckpoint[]=[],accounts:ReturnType<typeof accountRow>[]=[];
+  for(let index=0;index<132;index++){
+    const atom=account(uuid(100+index));accounts.push(accountRow(atom));await commitProjection(journal,[atom],checkpoints);
+  }
+  await expect(verifyFinancialContinuity(journal,projectionDb({accounts,checkpoints}))).resolves.toBeUndefined();
+  const redacted=financialAtomFromRow('account',{...accountRow(account(uuid(999))),member_id:'private',ticket_reference:'private',native_user_id:'private'});
+  expect(redacted).toEqual(account(uuid(999)));expect(Object.keys(redacted)).not.toContain('member_id');
 });
 it('unknown observation durably freezes; a later matching database never clears it',async()=>{
   const directory=prepared(),j=open(directory);
   await expect(verifyFinancialContinuity(j,{query:async()=>{throw new Error('unknown');}})).rejects.toThrow('recovery');
-  expect(()=>j.verifyContinuity(database,null)).toThrow('recovery');expect(records(directory).at(-1)?.kind).toBe('freeze');
+  expect(()=>verifyJournal(j)).toThrow('recovery');expect(records(directory).at(-1)?.kind).toBe('freeze');
 });
 it('stops new operations synchronously while draining an active operation before freeze acknowledgement',async()=>{
   const directory=prepared(),j=open(directory);let resume!:()=>void;
   const active=j.operation('admit',async id=>{await new Promise<void>(resolve=>{resume=resolve;});j.propose(id,[]);j.committed(id);});
   const freeze=j.freezeForRestore();await expect(j.operation('admit',async()=>undefined)).rejects.toThrow('closed');
   expect(records(directory).at(-1)?.kind).toBe('begin');resume();await active;await freeze;
-  expect(records(directory).at(-1)?.kind).toBe('freeze');j.close();expect(()=>open(directory).verifyContinuity(database,null)).toThrow();
+  expect(records(directory).at(-1)?.kind).toBe('freeze');j.close();expect(()=>verifyJournal(open(directory))).toThrow();
 });
 it('withholds freeze acknowledgement if an active operation cannot drain',async()=>{
   const directory=prepared(),j=open(directory);let resume!:()=>void;
@@ -126,7 +199,8 @@ it('observes continuity on the owned single client before mutation and after che
   const db={release:()=>{releases++;},query:async(sql:string,values?:any[])=>{
     queries.push(sql);
     if(sql.includes('pg_control_system'))return {rows:[database]};
-    if(sql.startsWith('SELECT operation_id'))return {rows:checkpoint?[checkpoint]:[]};
+    if(sql.includes('(SELECT count(*)::text FROM budget_accounts)'))return {rows:[{accounts:'0',windows:'0',bindings:'0',attempts:'0',grants:'0',checkpoints:checkpoint?'1':'0'}]};
+    if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))return {rows:checkpoint?[{...checkpoint,sequence:checkpoint.sequence}]:[]};
     if(sql.startsWith('INSERT INTO budget_financial_checkpoints'))checkpoint={operationId:values![0],journalId:values![1],sequence:String(values![2]),digest:values![3]};
     return {rows:[],command:sql};
   }};
@@ -180,12 +254,12 @@ it.each(['commit-throw','commit-unknown','completion-fsync'])('a preparation fau
   }};
   await expect(prepareFinancialCustody(directory,db,{...options,sync:fd=>{fsyncSync(fd);if(failure==='completion-fsync'&&completion){completion=false;throw new Error('completion fsync unavailable');}}})).rejects.toThrow();
   const history=records(directory);expect(history.some(r=>r.kind==='freeze')).toBe(true);
-  expect(()=>open(directory).verifyContinuity(database,null)).toThrow('recovery');expect(()=>establish(directory)).toThrow();
+  expect(()=>verifyJournal(open(directory))).toThrow('recovery');expect(()=>establish(directory)).toThrow();
 });
 it('initial files without preparation completion require recovery before any result',()=>{
   const directory=location(),preparation=HostFinancialJournal.prepareFresh(directory,database,options);
   preparation.close();expect(records(directory).some(r=>r.kind==='preparation-complete')).toBe(false);
-  expect(()=>open(directory).verifyContinuity(database,null)).toThrow('recovery');
+  expect(()=>verifyJournal(open(directory))).toThrow('recovery');
 });
 
 it('a refused preparation-completion write leaves missing completion recovery-only',async()=>{
@@ -199,7 +273,7 @@ it('a refused preparation-completion write leaves missing completion recovery-on
   await expect(prepareFinancialCustody(directory,db,options)).rejects.toThrow();
   expect(records(directory).some(r=>r.kind==='preparation-complete')).toBe(false);
   chmodSync(join(directory,'journal.jsonl'),0o600);
-  expect(()=>open(directory).verifyContinuity(database,null)).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
+  expect(()=>verifyJournal(open(directory))).toThrow('recovery');expect(records(directory).some(r=>r.kind==='freeze')).toBe(true);
 });
 
 it.each(['missing-completion','missing-receipt','mismatched-receipt-journal','mismatched-receipt-key','missing-completion-and-receipt'])('default open cannot expose a writer result from invalid prepared custody: %s',async failure=>{
@@ -234,6 +308,6 @@ it.each(['missing-completion','missing-receipt','mismatched-receipt-journal','mi
 });
 it('default open permits completed prepared custody with its original receipt',async()=>{
   const directory=prepared(),journal=HostFinancialJournal.openExisting(directory,options);journals.push(journal);
-  expect(journal.prepared).toBe(true);expect(()=>journal.verifyContinuity(database,null)).not.toThrow();
+  expect(journal.prepared).toBe(true);expect(()=>verifyJournal(journal)).not.toThrow();
   await expect(journal.operation('prepare',async id=>{journal.propose(id,[]);journal.committed(id);return 'completed';})).resolves.toBe('completed');
 });

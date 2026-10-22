@@ -187,7 +187,7 @@ import{{HostFinancialJournal}}from'{base}financial-journal.ts';
 import{{verifyFinancialContinuity,observeFinancialDatabase}}from'{base}financial-continuity.ts';
 import{{JournalBudgetFinancialWriter}}from'{base}budget-financial-writer.ts';
 import{{provisionBudgetAccounts}}from'{base}budget-account-provisioning.ts';
-import{{consoleSourceTransaction}}from'/app/packages/agent-kit/src/console-source-transaction.ts';
+import{{consoleSourceTransaction,noteBudgetFinancialChange}}from'/app/packages/agent-kit/src/console-source-transaction.ts';
 import{{budgetAccountProvisionPlanSchema}}from'{base}budget-account-provisioning.ts';
 import{{registerAction}}from'{base}actions.ts';
 import{{serve}}from'{base}socket-server.ts';
@@ -372,15 +372,18 @@ await grants.updateAgentAccess('member-a',{agentName:'helper',expectedRevision:a
 await bindConsoleSession({agent:'helper',incarnation,memberId:'member-a',admissionNonce:memberNonce,sessionId},pool,env);
 const installation=randomUUID(),member=randomUUID(),installationWindow=randomUUID(),memberWindow=randomUUID(),binding=randomUUID();
 const suppression=budgetIdentitySuppression(Buffer.alloc(32,1),{canonicalMemberId:'member-a',providers:[{issuer:'https://issuer.invalid',subject:'member-a',tenantId:'tenant'}]});
-await pool.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,installation_cap,selected_endpoint,recovery_epoch) VALUES($1,'installation','installation',$1,1,$2,'epoch-1')",[installation,endpoint]);
-await pool.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,NULL,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[installationWindow,installation]);
-await pool.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[installation,installationWindow]);
-await pool.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,'member-a','org',$3,$4)",[member,installation,suppression.canonicalSuppressionHash,suppression.providerSuppressionHashes]);
-await pool.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,'member-a',clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[memberWindow,member]);
-await pool.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[member,memberWindow]);
+const writer=new JournalBudgetFinancialWriter(journal);
+await writer.run('provision',boundary=>consoleSourceTransaction(pool,async source=>{
+await source.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,installation_cap,selected_endpoint,recovery_epoch) VALUES($1,'installation','installation',$1,1,$2,'epoch-1')",[installation,endpoint]);noteBudgetFinancialChange(source,'budget_accounts',installation);
+await source.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,NULL,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[installationWindow,installation]);noteBudgetFinancialChange(source,'budget_windows',installationWindow);
+await source.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[installation,installationWindow]);noteBudgetFinancialChange(source,'budget_accounts',installation);
+await source.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,'member-a','org',$3,$4)",[member,installation,suppression.canonicalSuppressionHash,suppression.providerSuppressionHashes]);noteBudgetFinancialChange(source,'budget_accounts',member);
+await source.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,'member-a',clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[memberWindow,member]);noteBudgetFinancialChange(source,'budget_windows',memberWindow);
+await source.query("UPDATE budget_accounts SET active_window_id=$2,state='open',reason='approved' WHERE id=$1",[member,memberWindow]);noteBudgetFinancialChange(source,'budget_accounts',member);
 const pricing={version:1,capabilityHash:profile,format:'openai',limits:{inputTokens:1000,outputTokens:1000},usdPerMillionTokens:{input:'10',output:'90',cacheRead:'5',cacheWrite:'0'}};
-await pool.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,'member-a',$4,0,$5,'helper',$6,'standard',$7,0.1,$8::jsonb,'active')",[binding,installation,member,endpoint,fingerprint,incarnation,profile,JSON.stringify(pricing)]);
-const store=new PgBudgetAdmissionStore(pool,env),requestHash=hash('request'),invocation=captureModelInvocation({type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}},context.session,'standard');
+await source.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,'member-a',$4,0,$5,'helper',$6,'standard',$7,0.1,$8::jsonb,'active')",[binding,installation,member,endpoint,fingerprint,incarnation,profile,JSON.stringify(pricing)]);noteBudgetFinancialChange(source,'budget_gateway_bindings',binding);
+},boundary));
+const store=new PgBudgetAdmissionStore(pool,env,30_000,writer),requestHash=hash('request'),invocation=captureModelInvocation({type:'step.started',data:{turnId:'turn-1',sequence:0,stepIndex:0}},context.session,'standard');
 const ticket=await runModelInvocation(invocation,()=>store.prepareIntent({bindingId:binding,requestHash,profileHash:profile}));
 const key=Buffer.alloc(32,9),witness={observe:async()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled'})};
 const authority=new GatewayBudgetAuthority(pool,key,new JournalBudgetFinancialWriter(journal),witness);
@@ -391,7 +394,7 @@ const grant=JSON.parse(admitted.body.toString()),settlement={version:1,nonce:gra
 settlement.receiptHash=gatewayHash(gatewayCanonical(settlement));const terminal=gatewayCanonical(settlement),reply=await authority.handle(GATEWAY_SETTLE_PATH,gatewaySignature(key,'request',GATEWAY_SETTLE_PATH,terminal),terminal);
 if(reply.status!==200||JSON.parse(reply.body.toString()).state!=='settled')throw Error('signed gateway settlement failed');
 const frames=readFileSync('/proof/gateway/journal.jsonl','utf8').trimEnd().split('\n').map(line=>JSON.parse(line)),records=frames.map(frame=>frame.record),proposals=frames.filter(frame=>frame.record.kind==='proposal');
-if(JSON.stringify(records.filter(record=>record.kind==='begin').map(record=>record.operation))!==JSON.stringify(['admit','grant','settle'])||proposals.length!==3||records.filter(record=>record.kind==='commit').length!==3)throw Error('gateway journal operations incomplete');
+if(JSON.stringify(records.filter(record=>record.kind==='begin').map(record=>record.operation))!==JSON.stringify(['provision','prepare','admit','grant','settle'])||proposals.length!==5||records.filter(record=>record.kind==='commit').length!==5)throw Error('gateway journal operations incomplete');
 for(const frame of proposals){const record=frame.record,row=(await pool.query('SELECT journal_id,proposal_sequence::text,proposal_digest FROM budget_financial_checkpoints WHERE operation_id=$1',[record.operationId])).rows[0];if(!row||row.journal_id!==records.find(value=>value.kind==='control').control.journalId||row.proposal_sequence!==String(record.sequence)||row.proposal_digest!==frame.digest)throw Error('gateway journal checkpoint mismatch');}
 for(const frame of proposals){for(const atom of frame.record.atoms.filter(value=>value.kind==='account')){const generation=(await pool.query('SELECT policy_generation::text FROM budget_accounts WHERE id=$1',[atom.id])).rows[0]?.policy_generation;if(atom.policyGeneration!==generation)throw Error('journal account policy generation mismatch');}}
 const attempt=(await pool.query('SELECT state,actual_amount FROM budget_attempts WHERE id=$1',[grant.attemptId])).rows[0];if(attempt.state!=='settled'||canonicalBudgetMoney(String(attempt.actual_amount))!=='0.0098')throw Error('gateway source state mismatch');

@@ -16,7 +16,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type {Pool} from 'pg';
 
-import { startThreeSpellingsDb, FIXTURE_OWNER, FIXTURE_SECOND, type TestDb } from "./helpers/three-spellings.js";
+import { startThreeSpellingsDb, seedThreeSpellingsFinancial, FIXTURE_OWNER, FIXTURE_SECOND, type TestDb } from "./helpers/three-spellings.js";
 import { runErase, renderRunEraseReport } from "../lib/run-erase.js";
 import {erasePerson,withPersonErasureClient} from '../lib/erase-person.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
@@ -45,13 +45,19 @@ function git(...args: string[]): string {
   return execFileSync("git", ["-C", vaultRoot, ...args], { encoding: "utf8" });
 }
 
+async function journalFinancialSetup(work:(source:import('@lares/agent-kit/console-source-transaction').SourceDatabase)=>Promise<void>):Promise<void>{
+  const writer=new JournalBudgetFinancialWriter(journal);
+  await writer.run('provision',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,work,boundary));
+}
+
 beforeEach(async () => {
   // Legacy rows have no provisioned storage. Owned-area refusal is tested separately.
-  db = await startThreeSpellingsDb({vaultAreas:false});
+  db = await startThreeSpellingsDb({vaultAreas:false,financial:false});
   custodyParent=mkdtempSync(join(realpathSync(tmpdir()),"run-erase-journal-"));custodyRoot=join(custodyParent,'custody');
   const preparation=HostFinancialJournal.prepareFresh(custodyRoot,await observeFinancialDatabase(db.pool),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
   try{preparation.complete();}finally{preparation.close();}
   journal=HostFinancialJournal.openExisting(custodyRoot,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+  await seedThreeSpellingsFinancial(db.pool,journal);
 
   vaultRoot = mkdtempSync(join(tmpdir(), "run-erase-vault-"));
   write("people/vera.md", "---\nowner: fixture-owner\nscope: private\n---\n\nA note.\n");
@@ -100,15 +106,11 @@ describe("runErase — the order of operations", () => {
       stale=await financial.prepare(source,FIXTURE_OWNER);
       throw new Error('end first operation after capturing closure');
     })).rejects.toThrow('end first operation after capturing closure');
-    const secondParent=mkdtempSync(join(realpathSync(tmpdir()),'run-erase-journal-second-')),secondRoot=join(secondParent,'custody');
-    const preparation=HostFinancialJournal.prepareFresh(secondRoot,await observeFinancialDatabase(db.pool),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
-    try{preparation.complete();}finally{preparation.close();}
-    const second=HostFinancialJournal.openExisting(secondRoot,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
-    try{
-      await expect(runJournaledPersonErasure(db.pool,second,async(source,financial)=>financial.finalize(source,stale as never)))
-        .rejects.toThrow('Financial erasure preflight refused');
-      expect((await db.pool.query('SELECT 1 FROM users WHERE id=$1',[FIXTURE_OWNER])).rowCount).toBe(1);
-    }finally{second.close();rmSync(secondParent,{recursive:true,force:true});}
+    journal.close();
+    journal=HostFinancialJournal.openExisting(custodyRoot,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+    await expect(runJournaledPersonErasure(db.pool,journal,async(source,financial)=>financial.finalize(source,stale as never)))
+      .rejects.toThrow('Financial erasure preflight refused');
+    expect((await db.pool.query('SELECT 1 FROM users WHERE id=$1',[FIXTURE_OWNER])).rowCount).toBe(1);
   },240_000);
 
   it("requires prepared custody even when there are no budget accounts",async()=>{
@@ -134,15 +136,24 @@ describe("runErase — the order of operations", () => {
 
   it("retires a financial account with one generation increment and records only secret-free tombstones",async()=>{
     const member="a2222222-2222-4222-8222-222222222222";
-    await db.pool.query("UPDATE budget_accounts SET state='retired',reason='member_removed' WHERE id=$1",[member]);
-    await db.pool.query("UPDATE budget_accounts SET policy_generation=9 WHERE id=$1",[member]);
+    await journalFinancialSetup(async source=>{
+      await source.query("UPDATE budget_accounts SET state='retired',reason='member_removed' WHERE id=$1",[member]);
+      noteBudgetFinancialChange(source,'budget_accounts',member);
+    });
+    await journalFinancialSetup(async source=>{
+      await source.query("UPDATE budget_accounts SET policy_generation=9 WHERE id=$1",[member]);
+      noteBudgetFinancialChange(source,'budget_accounts',member);
+    });
     const beforeWindow=(await db.pool.query("SELECT id,opening_liability::text,opening_cap::text FROM budget_windows WHERE account_id=$1 ORDER BY id",[member])).rows;
     nativeCustody=createNativeTestCustody(join(custodyParent,'native'));
     const operationId=await addUnboundNativeCredential(nativeCustody,member,'a1111111-1111-4111-8111-111111111111');
     let removalReceipt:import('../../keeper/lib/financial-journal.js').CommittedFinancialReceipt|undefined;
     const removalWriter=new JournalBudgetFinancialWriter(journal);
     await removalWriter.runWithReceipt('member-remove',boundary=>consoleSourceTransaction(db.pool as unknown as SourcePool,async source=>{
-      noteBudgetFinancialChange(source,'budget_accounts',member);
+      for(const table of ['budget_accounts','budget_gateway_bindings','budget_attempts'] as const){
+        const rows=await source.query(`SELECT id FROM ${table} WHERE live_member_id=$1`,[FIXTURE_OWNER]);
+        for(const row of rows.rows)noteBudgetFinancialChange(source,table,row.id);
+      }
       await source.query("UPDATE users SET status='removed' WHERE id=$1",[FIXTURE_OWNER]);return true;
     },boundary)).then(result=>{removalReceipt=result.receipt;});
     if(!removalReceipt)throw new Error('Prepared member-removal receipt fixture failed');
@@ -169,9 +180,12 @@ describe("runErase — the order of operations", () => {
     expect(journalText).not.toContain(FIXTURE_OWNER);expect(journalText).not.toContain('fixture-private');expect(journalText).not.toContain('fixture-epoch');
     expect(journalText).toContain('tombstone');expect(journalText).toContain('member_erased');expect(journalText).toContain('d'.repeat(64));expect(journalText).toContain('e'.repeat(64));
     const activeMember='a7777777-7777-4777-8777-777777777777';
-    await db.pool.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,
+    await journalFinancialSetup(async source=>{
+      await source.query(`INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,
       canonical_suppression_hash,provider_suppression_hashes,state,reason,policy_generation)
       VALUES($1,'fixture-installation','member','a1111111-1111-4111-8111-111111111111','fixture-second',repeat('f',64),ARRAY[repeat('1',64)],'open','approved',4)`,[activeMember]);
+      noteBudgetFinancialChange(source,'budget_accounts',activeMember);
+    });
     const activeResult=await runErase({db:db.pool,person:FIXTURE_SECOND,vaults:[],apply:true,journal});
     expect(activeResult.dbReport.refusals).toEqual([]);
     expect((await db.pool.query("SELECT state,reason,policy_generation::text,live_member_id FROM budget_accounts WHERE id=$1",[activeMember])).rows[0])
@@ -179,12 +193,15 @@ describe("runErase — the order of operations", () => {
   },240_000);
 
   it("refuses more than 128 active target bindings before file or Git changes",async()=>{
-    await db.pool.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,
+    for(const [first,last] of [[1,64],[65,129]] as const)await journalFinancialSetup(async source=>{
+      const inserted=await source.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,
       endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
       SELECT ('f0000000-0000-4000-8000-'||lpad(to_hex(i),12,'0'))::uuid,
         'a1111111-1111-4111-8111-111111111111','a2222222-2222-4222-8222-222222222222','fixture-owner',
         repeat('a',64),0,repeat('b',64),'fixture-agent','88888888-8888-4888-8888-888888888888','proof-'||i,repeat('c',64),0.1,'active'
-      FROM generate_series(1,129) i`);
+      FROM generate_series($1::int,$2::int) i RETURNING id`,[first,last]);
+      for(const row of inserted.rows)noteBudgetFinancialChange(source,'budget_gateway_bindings',row.id);
+    });
     const before=readFileSync(join(vaultRoot,'people/vera.md')),head=git('rev-parse','HEAD');
     const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[vaultRoot],apply:true,journal});
     expect(result.dbReport.refusals.join(' ')).toMatch(/rolled back/i);
@@ -195,18 +212,22 @@ describe("runErase — the order of operations", () => {
   },240_000);
 
   it('preserves and redacts more than 128 already-revoked historical bindings',async()=>{
-    await db.pool.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,
+    for(const [first,last] of [[1,64],[65,129]] as const)await journalFinancialSetup(async source=>{
+      const inserted=await source.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,
       endpoint_hash,credential_generation,profile_hash,maximum_liability,state)
       SELECT ('f3000000-0000-4000-8000-'||lpad(to_hex(i),12,'0'))::uuid,
         'a1111111-1111-4111-8111-111111111111','a2222222-2222-4222-8222-222222222222',$1,
-        repeat('a',64),0,repeat('c',64),0.1,'revoked' FROM generate_series(1,129) i`,[FIXTURE_OWNER]);
+      repeat('a',64),0,repeat('c',64),0.1,'revoked' FROM generate_series($2::int,$3::int) i RETURNING id`,[FIXTURE_OWNER,first,last]);
+      for(const row of inserted.rows)noteBudgetFinancialChange(source,'budget_gateway_bindings',row.id);
+    });
     const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[],apply:true,journal});
     expect(result.dbReport.refusals).toEqual([]);
     expect((await db.pool.query("SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE member_account_id='a2222222-2222-4222-8222-222222222222' AND state='revoked' AND live_member_id IS NULL")).rows[0].n).toBe(130);
   },240_000);
 
   it("refuses the exact journal frame byte limit before vault or Git changes",async()=>{
-    await db.pool.query(`INSERT INTO budget_attempts(id,invocation_hash,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,
+    for(const [first,last] of [[1,16],[17,32],[33,48],[49,64],[65,80],[81,96],[97,105]] as const)await journalFinancialSetup(async source=>{
+      const inserted=await source.query(`INSERT INTO budget_attempts(id,invocation_hash,ticket_hash,installation_account_id,member_account_id,binding_id,live_member_id,
       installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,
       endpoint_generation,recovery_epoch,request_hash,authority_hash,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,
       created_at,expires_at)
@@ -214,7 +235,9 @@ describe("runErase — the order of operations", () => {
         'a1111111-1111-4111-8111-111111111111','a2222222-2222-4222-8222-222222222222','a4444444-4444-4444-8444-444444444444',$1,
         'a6666666-6666-4666-8666-666666666666','a3333333-3333-4333-8333-333333333333',repeat('a',64),0,0,0,0,'fixture-epoch',
         repeat('1',64),repeat('2',64),repeat('c',64),0.1,1,1,t,t+interval '30 seconds'
-      FROM generate_series(1,105) i CROSS JOIN (SELECT clock_timestamp() AS t) c`,[FIXTURE_OWNER]);
+      FROM generate_series($2::int,$3::int) i CROSS JOIN (SELECT clock_timestamp() AS t) c RETURNING id`,[FIXTURE_OWNER,first,last]);
+      for(const row of inserted.rows)noteBudgetFinancialChange(source,'budget_attempts',row.id);
+    });
     expect((await db.pool.query("SELECT count(*)::int AS n FROM budget_attempts WHERE live_member_id=$1 AND state='prepared'",[FIXTURE_OWNER])).rows[0].n).toBe(106);
     const before=readFileSync(join(vaultRoot,'people/vera.md')),head=git('rev-parse','HEAD');
     const result=await runErase({db:db.pool,person:FIXTURE_OWNER,vaults:[vaultRoot],apply:true,journal});

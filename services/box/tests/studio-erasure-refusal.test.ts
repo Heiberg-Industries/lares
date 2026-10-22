@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startThreeSpellingsDb, FIXTURE_OWNER, type TestDb } from "./helpers/three-spellings.js";
+import { startThreeSpellingsDb, seedThreeSpellingsFinancial, FIXTURE_OWNER, type TestDb } from "./helpers/three-spellings.js";
 import { runErase } from "../lib/run-erase.js";
 import { HostFinancialJournal } from "../../keeper/lib/financial-journal.js";
 import { observeFinancialDatabase } from "../../keeper/lib/financial-continuity.js";
@@ -22,7 +22,7 @@ afterEach(async () => {
 
 describe("studio history erasure refusal", () => {
   it("stops an apply before removing vault files when a legacy studio owner is unknown", async () => {
-    db = await startThreeSpellingsDb({ vaultAreas: false, beforeMigration: async (pool, migration) => {
+    db = await startThreeSpellingsDb({ vaultAreas: false, financial: false, beforeMigration: async (pool, migration) => {
       if (migration !== "028_studio_ownership.sql") return;
       await pool.query(`CREATE TABLE studio_runs (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(), brief text NOT NULL, consensus text NOT NULL,
@@ -55,6 +55,7 @@ describe("studio history erasure refusal", () => {
       lock: platformTestJournalLock,
       requirePrepared: true,
     });
+    await seedThreeSpellingsFinancial(db.pool, journal);
 
     const result = await runErase({ db: db.pool, person: FIXTURE_OWNER, vaults: [vault], apply: true, journal });
 

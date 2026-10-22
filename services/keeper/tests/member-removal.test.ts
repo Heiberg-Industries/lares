@@ -6,6 +6,7 @@ import {createConnection} from 'node:net';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {afterAll,beforeAll,beforeEach,expect,it,vi} from 'vitest';
+import {consoleSourceTransaction,noteBudgetFinancialChange,type BudgetFinancialChange,type SourceDatabase,type SourcePool} from '@lares/agent-kit/console-source-transaction';
 import {quiet} from './helpers/quiet-pool.js';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {FINANCIAL_ATOM_SCHEMA,HostFinancialJournal} from '../lib/financial-journal.js';
@@ -14,6 +15,7 @@ import {registerMemberRemovalAction} from '../lib/member-removal.js';
 import {resetActions,runAction,type AuditRecord} from '../lib/actions.js';
 import {PgMemberStore} from '@lares/agent-kit/member-store';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
+import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 import {serve} from '../lib/socket-server.js';
 import {addUnboundNativeCredential,createNativeTestCustody,openNativeTestCustody} from './helpers/native-cleanup.js';
 import type {BudgetNativeCustodyStore,NativeCustodyGate} from '../lib/budget-native-custody.js';
@@ -29,6 +31,12 @@ function register(ownerId:string|undefined,poolArg:Pool=pool,native?:BudgetNativ
 }
 async function act(token:string,targetMemberId:string,actor?:string){
   return runAction('member.remove',{sessionToken:token,targetMemberId},context(actor));
+}
+async function seedFinancial(changes:readonly BudgetFinancialChange[],write:(db:SourceDatabase)=>Promise<void>){
+  const writer=new JournalBudgetFinancialWriter(journal);
+  await writer.run('admit',boundary=>consoleSourceTransaction(pool as unknown as SourcePool,async db=>{
+    await write(db);for(const change of changes)noteBudgetFinancialChange(db,change.table,change.id);
+  },boundary));
 }
 async function socketRequest(path:string,data:unknown):Promise<any>{
   return new Promise((resolve,reject)=>{
@@ -171,25 +179,26 @@ it('journals trigger retirement and the expanded closure while leaving admitted 
   const unboundOperationId=await addUnboundNativeCredential(nativeCustody,member.id,installation.id);
   const bindingId=randomUUID(),incarnation=randomUUID(),preparedId=randomUUID(),historyIds={admitted:randomUUID(),unknown:randomUUID(),settled:randomUUID()};
   const endpoint='a'.repeat(64),fingerprint='b'.repeat(64),profile='c'.repeat(64);
-  await pool.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
-    key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
-    VALUES($1,$2,$3,'target-financial',$4,0,$5,'keeper-test',$6,'member-removal',$7,5,'active')`,
-  [bindingId,installation.id,member.id,endpoint,fingerprint,incarnation,profile]);
   const attemptIds={prepared:preparedId,...historyIds};
-  for(const [state,id] of Object.entries(attemptIds)){
-    const settled=state==='settled';
-    await pool.query(`INSERT INTO budget_attempts(id,ticket_hash,invocation_hash,installation_account_id,member_account_id,binding_id,live_member_id,
-      installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,
-      endpoint_generation,recovery_epoch,request_hash,authority_hash,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,
-      expires_at,admitted_at,state,actual_amount,settlement_hash,highest_observed_liability)
-      VALUES($1,$2,$3,$4,$5,$6,'target-financial',$7,$8,$9,0,$10,$11,0,'proof-epoch',$12,$13,$14,2,100,30,
-        clock_timestamp()+interval '20 seconds',CASE WHEN $15='prepared' THEN NULL ELSE clock_timestamp() END,$15,
-        CASE WHEN $15='settled' THEN 2 ELSE NULL END,CASE WHEN $15='settled' THEN $16 ELSE NULL END,0)`,
-    [id,createHash('sha256').update(`ticket-${state}`).digest('hex'),createHash('sha256').update(`invocation-${state}`).digest('hex'),
-      installation.id,member.id,bindingId,iw.id,mw.id,endpoint,installation.policy_generation,member.policy_generation,
-      createHash('sha256').update(`request-${state}`).digest('hex'),createHash('sha256').update(`authority-${state}`).digest('hex'),profile,state,
-      createHash('sha256').update('settlement').digest('hex')]);
-  }
+  await seedFinancial([{table:'budget_gateway_bindings',id:bindingId},...Object.values(attemptIds).map(id=>({table:'budget_attempts' as const,id}))],async db=>{
+    await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
+      key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
+      VALUES($1,$2,$3,'target-financial',$4,0,$5,'keeper-test',$6,'member-removal',$7,5,'active')`,
+    [bindingId,installation.id,member.id,endpoint,fingerprint,incarnation,profile]);
+    for(const [state,id] of Object.entries(attemptIds)){
+      await db.query(`INSERT INTO budget_attempts(id,ticket_hash,invocation_hash,installation_account_id,member_account_id,binding_id,live_member_id,
+        installation_window_id,member_window_id,endpoint_hash,credential_generation,installation_policy_generation,member_policy_generation,
+        endpoint_generation,recovery_epoch,request_hash,authority_hash,profile_hash,reserved_amount,installation_cap_snapshot,member_cap_snapshot,
+        expires_at,admitted_at,state,actual_amount,settlement_hash,highest_observed_liability)
+        VALUES($1,$2,$3,$4,$5,$6,'target-financial',$7,$8,$9,0,$10,$11,0,'proof-epoch',$12,$13,$14,2,100,30,
+          clock_timestamp()+interval '20 seconds',CASE WHEN $15='prepared' THEN NULL ELSE clock_timestamp() END,$15,
+          CASE WHEN $15='settled' THEN 2 ELSE NULL END,CASE WHEN $15='settled' THEN $16 ELSE NULL END,0)`,
+      [id,createHash('sha256').update(`ticket-${state}`).digest('hex'),createHash('sha256').update(`invocation-${state}`).digest('hex'),
+        installation.id,member.id,bindingId,iw.id,mw.id,endpoint,installation.policy_generation,member.policy_generation,
+        createHash('sha256').update(`request-${state}`).digest('hex'),createHash('sha256').update(`authority-${state}`).digest('hex'),profile,state,
+        createHash('sha256').update('settlement').digest('hex')]);
+    }
+  });
   const originalWindows=await pool.query('SELECT id,starts_at,ends_at,opening_liability::text,opening_cap::text,policy_revision::text FROM budget_windows ORDER BY id');
   const originalWithGate=nativeCustody.withGate,ownedWithGate=nativeCustody.withGate.bind(nativeCustody),publicationAttempts:Promise<string>[]=[];
   nativeCustody.withGate=async <T>(work:(gate:NativeCustodyGate)=>Promise<T>)=>ownedWithGate(gate=>work({...gate,recordRevocation:(operationId,receipt)=>{
@@ -229,10 +238,13 @@ it('refuses an expanded preimage closure above 128 atoms before the status trigg
   await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:['target-overflow']});
   const rows=(await pool.query(`SELECT i.id AS installation_id,m.id AS member_id FROM budget_accounts i
     JOIN budget_accounts m ON m.installation_account_id=i.id AND m.live_member_id='target-overflow' WHERE i.kind='installation'`)).rows[0];
-  await pool.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
-    key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
-    SELECT gen_random_uuid(),$1,$2,'target-overflow',repeat('a',64),0,repeat('b',64),'keeper-test',gen_random_uuid(),
-      'overflow-'||n::text,repeat('c',64),5,'active' FROM generate_series(1,127) n`,[rows.installation_id,rows.member_id]);
+  const bindingIds=Array.from({length:127},()=>randomUUID());
+  for(const batch of [bindingIds.slice(0,64),bindingIds.slice(64)])await seedFinancial(batch.map(id=>({table:'budget_gateway_bindings',id})),async db=>{
+    await db.query(`INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,
+      key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,state)
+      SELECT id,$1,$2,'target-overflow',repeat('a',64),0,repeat('b',64),'keeper-test',gen_random_uuid(),
+        'overflow-'||id::text,repeat('c',64),5,'active' FROM unnest($3::uuid[]) AS selected(id)`,[rows.installation_id,rows.member_id,batch]);
+  });
   const beforeProposals=readFileSync(join(directory,'journal.jsonl'),'utf8').split('\n').filter(line=>line.includes('"kind":"proposal"')).length;
   await expect(act(sessions.designated,'target-overflow')).rejects.toThrow('action failed');
   expect((await pool.query("SELECT status FROM users WHERE id='target-overflow'")).rows[0].status).toBe('active');

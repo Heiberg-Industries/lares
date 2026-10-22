@@ -27,6 +27,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {
   startThreeSpellingsDb,
+  seedThreeSpellingsFinancial,
   FIXTURE_OWNER,
   FIXTURE_SECOND,
   FIXTURE_ROWS,
@@ -55,11 +56,12 @@ let custodyParent:string;
 let vaultRoot:string;
 beforeEach(async () => {
   // Legacy rows have no provisioned storage. Owned-area refusal is tested separately.
-  db = await startThreeSpellingsDb({vaultAreas:false});
+  db = await startThreeSpellingsDb({vaultAreas:false,financial:false});
   custodyParent=mkdtempSync(join(realpathSync(tmpdir()),'erase-person-db-journal-'));custody=join(custodyParent,'custody');
   const preparation=HostFinancialJournal.prepareFresh(custody,await observeFinancialDatabase(db.pool),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
   try{preparation.complete();}finally{preparation.close();}
   journal=HostFinancialJournal.openExisting(custody,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+  await seedThreeSpellingsFinancial(db.pool,journal);
   vaultRoot=mkdtempSync(join(tmpdir(),'erase-person-db-vault-'));mkdirSync(join(vaultRoot,'people'));
   writeFileSync(join(vaultRoot,'people/vera.md'),'---\nowner: fixture-owner\n---\nA disposable note.\n');
   execFileSync('git',['-C',vaultRoot,'init','-q']);execFileSync('git',['-C',vaultRoot,'config','user.name','Fixture Operator']);

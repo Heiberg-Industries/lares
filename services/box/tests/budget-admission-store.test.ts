@@ -26,7 +26,7 @@ import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
-import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary} from '../../../packages/agent-kit/src/console-source-transaction.js';
+import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary,type SourceDatabase,type SourcePool} from '../../../packages/agent-kit/src/console-source-transaction.js';
 import {captureBudgetAuthorityReference} from '../../../packages/agent-kit/src/budget-model-authority.js';
 import {requireConsoleSessionBinding} from '../../../packages/agent-kit/src/console-turn-authority.js';
 import {JournalBudgetFinancialWriter} from '../../keeper/lib/budget-financial-writer.js';
@@ -48,8 +48,8 @@ const fixtureOwner=randomUUID();
 const sql=new URL('../sql/',import.meta.url);
 const h=(s:string)=>createHash('sha256').update(s).digest('hex');
 const recovery=()=>({installationAccountId:installation,epoch:'epoch-1',endpointGeneration:'0',state:'reconciled' as const});
-async function gatewayCustody(pool:Pool,failOn?:'proposal'|'control'){
-  const directory=join(realpathSync(tmpdir()),`lares-gateway-financial-${randomUUID()}`);let armed=false;
+async function gatewayCustody(pool:Pool,failOn?:'proposal'|'control',existingDirectory?:string){
+  const directory=existingDirectory??join(realpathSync(tmpdir()),`lares-gateway-financial-${randomUUID()}`);let armed=false;
   const sync=(fd:number)=>{
     fsyncSync(fd);
     if(armed&&failOn){
@@ -58,10 +58,57 @@ async function gatewayCustody(pool:Pool,failOn?:'proposal'|'control'){
     }
   };
   const options={ownershipUid:testJournalUid,lock:platformTestJournalLock,sync};
-  const preparation=HostFinancialJournal.prepareFresh(directory,await observeFinancialDatabase(pool),options);
-  try{preparation.complete();}finally{preparation.close();}
-  const journal=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});armed=true;
+  let journal:HostFinancialJournal;
+  if(existingDirectory)journal=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});
+  else{
+    const preparation=HostFinancialJournal.prepareFresh(directory,await observeFinancialDatabase(pool),options);
+    try{preparation.complete();}finally{preparation.close();}
+    journal=HostFinancialJournal.openExisting(directory,{...options,requirePrepared:true});
+  }
+  armed=true;
   return {directory,journal,writer:new JournalBudgetFinancialWriter(journal),records:()=>readFileSync(join(directory,'journal.jsonl'),'utf8').trimEnd().split('\n').map(line=>JSON.parse(line))};
+}
+let gatewayPreparedStore:PgBudgetAdmissionStore|undefined;
+async function journalGatewayFixture(writer:JournalBudgetFinancialWriter,work:(source:SourceDatabase)=>Promise<void>):Promise<void>{
+  await writer.run('provision',boundary=>consoleSourceTransaction(db as unknown as SourcePool,work,boundary));
+}
+async function journalGatewayWindow(writer:JournalBudgetFinancialWriter,accountId:string,memberId:string|null,opening='0'):Promise<string>{
+  const id=randomUUID();
+  await journalGatewayFixture(writer,async source=>{
+    await source.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,$3,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',$4,1,0)",[id,accountId,memberId,opening]);
+    noteBudgetFinancialChange(source,'budget_windows',id);
+    await source.query('UPDATE budget_accounts SET active_window_id=$2 WHERE id=$1',[accountId,id]);
+    noteBudgetFinancialChange(source,'budget_accounts',accountId);
+  });
+  return id;
+}
+async function seedGatewayFinancialFixture(writer:JournalBudgetFinancialWriter):Promise<void>{
+  await journalGatewayFixture(writer,async source=>{
+    await source.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,installation_cap,selected_endpoint,recovery_epoch) VALUES($1,'installation','installation',$1,1,$2,'epoch-1')",[installation,endpoint]);
+    noteBudgetFinancialChange(source,'budget_accounts',installation);
+    const makeWindow=async(id:string,accountId:string,memberId:string|null)=>{
+      await source.query("INSERT INTO budget_windows(id,account_id,live_member_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES($1,$2,$3,clock_timestamp()-interval '1 second',clock_timestamp()+interval '1 day',0,1,0)",[id,accountId,memberId]);
+      noteBudgetFinancialChange(source,'budget_windows',id);
+      await source.query('UPDATE budget_accounts SET active_window_id=$2 WHERE id=$1',[accountId,id]);
+      noteBudgetFinancialChange(source,'budget_accounts',accountId);
+    };
+    await makeWindow(randomUUID(),installation,null);
+    await source.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[installation]);
+    noteBudgetFinancialChange(source,'budget_accounts',installation);
+    for(const member of ['member-a','member-b']){
+      const id=accounts[member]!,suppression=budgetIdentitySuppression(Buffer.alloc(32,1),{canonicalMemberId:member,providers:[{issuer:'https://issuer.invalid',subject:member,tenantId:'tenant'}]});
+      await source.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,live_member_id,organisation_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,$3,'org',$4,$5)",[id,installation,member,suppression.canonicalSuppressionHash,suppression.providerSuppressionHashes]);
+      noteBudgetFinancialChange(source,'budget_accounts',id);
+      await makeWindow(randomUUID(),id,member);
+      await source.query("UPDATE budget_accounts SET state='open',reason='approved' WHERE id=$1",[id]);
+      noteBudgetFinancialChange(source,'budget_accounts',id);
+      for(const agent of ['helper','helper-two']){
+        const bindingId=bindings[`${member}:${agent}`]!;
+        await source.query("INSERT INTO budget_gateway_bindings(id,installation_account_id,member_account_id,live_member_id,endpoint_hash,credential_generation,key_fingerprint,agent,incarnation,purpose_alias,profile_hash,maximum_liability,pricing_profile,state) VALUES($1,$2,$3,$4,$5,0,$6,$7,$8,'standard',$9,0.1,$10::jsonb,'active')",[bindingId,installation,id,member,endpoint,fingerprint,agent,incarnation,profile,JSON.stringify(pricing)]);
+        noteBudgetFinancialChange(source,'budget_gateway_bindings',bindingId);
+      }
+    }
+  });
 }
 let invocationSequence=0;
 function prepare(selected:PgBudgetAdmissionStore,ctx:ConsoleAuthorityContext,request:BudgetRequestReference,coordinates={turnId:ctx.session!.turn!.id!,sequence:ctx.session!.turn!.sequence!,stepIndex:invocationSequence++},alias='standard'){
@@ -86,7 +133,8 @@ async function coldPrepare(ctx:ConsoleAuthorityContext,request:BudgetRequestRefe
   });
   return JSON.parse(result.stdout) as {ticket?:string;denied?:boolean};
 }
-async function prepared(member='member-a',agent='helper',selected=store){
+async function prepared(member='member-a',agent='helper',selected?:PgBudgetAdmissionStore){
+  selected??=gatewayPreparedStore??store;
   const requestHash=h(randomUUID()),bindingId=bindings[`${member}:${agent}`]!;
   const ticket=await prepare(selected,context(member,agent),{bindingId,requestHash,profileHash:profile});
   const observation:BudgetGatewayObservation={requestHash,profileHash:profile,endpointHash:endpoint,credentialGeneration:'0',keyFingerprint:fingerprint,agent,incarnation,purposeAlias:'standard'};
@@ -195,8 +243,16 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
   const serviceKey=Buffer.alloc(32,9);
   const witness:GatewayRecoveryWitness={observe:async()=>recovery()};
   let files:{directory:string;journal:HostFinancialJournal;writer:JournalBudgetFinancialWriter;records:()=>any[]};
-  beforeEach(async()=>{files=await gatewayCustody(db);});
-  afterEach(()=>{files.journal.close();rmSync(files.directory,{recursive:true,force:true});});
+  beforeEach(async()=>{
+    // The shared test setup populates raw financial rows for non-journalled store tests.
+    // This prepared-custody integration starts from an empty financial ledger and recreates
+    // the same fixtures through the real writer, so no row is silently adopted.
+    await db.query('TRUNCATE budget_gateway_grants,budget_attempts,budget_gateway_bindings,budget_windows,budget_accounts,budget_financial_checkpoints CASCADE');
+    files=await gatewayCustody(db);
+    await seedGatewayFinancialFixture(files.writer);
+    gatewayPreparedStore=new PgBudgetAdmissionStore(db,env(),30_000,files.writer);
+  });
+  afterEach(()=>{gatewayPreparedStore=undefined;files.journal.close();rmSync(files.directory,{recursive:true,force:true});});
   function authority(pool=db,source:GatewayRecoveryWitness|undefined=witness,writer:JournalBudgetFinancialWriter|undefined=files.writer){return new GatewayBudgetAuthority(pool,serviceKey,writer,source);}
   function admitDocument(p:Awaited<ReturnType<typeof prepared>>){return {version:1,nonce:h(randomUUID()),ticket:p.ticket,requestHash:p.observation.requestHash,profileHash:profile,endpointHash:endpoint,keyFingerprint:fingerprint,purposeAlias:'standard'};}
   async function rpc(selected:GatewayBudgetAuthority,path:string,document:unknown){
@@ -231,8 +287,8 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const a=await allowed(),receipt=terminal(a.grant);
     expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,receipt)).document.state).toBe('settled');
     const frames=files.records(),proposals=frames.filter(frame=>frame.record.kind==='proposal'),begins=frames.filter(frame=>frame.record.kind==='begin'),commits=frames.filter(frame=>frame.record.kind==='commit');
-    expect(begins.map(frame=>frame.record.operation)).toEqual(['admit','grant','settle']);expect(proposals).toHaveLength(3);
-    expect(commits).toHaveLength(3);
+    expect(begins.map(frame=>frame.record.operation)).toEqual(['provision','prepare','admit','grant','settle']);expect(proposals).toHaveLength(5);
+    expect(commits).toHaveLength(5);
     for(const frame of proposals){
       const row=(await db.query('SELECT * FROM budget_financial_checkpoints WHERE operation_id=$1',[frame.record.operationId])).rows[0];
       expect(row).toMatchObject({journal_id:frames.find(value=>value.record.kind==='control').record.control.journalId,proposal_sequence:String(frame.record.sequence),proposal_digest:frame.digest});
@@ -263,7 +319,10 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect(await store.recordGatewayGrant({attemptId:a.id,bindingId:a.binding_id,requestHash:a.request_hash},h('another grant'))).toBe(false);
   });
   it('serializes the shared cap across distinct simultaneous signed tickets',async()=>{
-    await db.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+    await journalGatewayFixture(files.writer,async source=>{
+      await source.query('UPDATE budget_accounts SET installation_cap=0.1 WHERE id=$1',[installation]);
+      noteBudgetFinancialChange(source,'budget_accounts',installation);
+    });
     const p=await prepared(),q=await prepared('member-b');
     const results=await Promise.all([rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p)),rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(q))]);
     expect(results.map(r=>r.reply.status).sort()).toEqual([200,503]);
@@ -286,9 +345,9 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
   });
   it.each(['proposal','control'] as const)('does not allow when the journal %s fsync fails',async failure=>{
-    files.journal.close();rmSync(files.directory,{recursive:true,force:true});
-    files=await gatewayCustody(db,failure);
-    const selected=authority(db,witness,files.writer),p=await prepared(),request=admitDocument(p);
+    const p=await prepared(),request=admitDocument(p),directory=files.directory;
+    files.journal.close();files=await gatewayCustody(db,failure,directory);
+    const selected=authority(db,witness,files.writer);
     expect((await rpc(selected,GATEWAY_ADMIT_PATH,request)).reply.status).toBe(503);
     const state=(await db.query('SELECT state FROM budget_attempts')).rows[0].state;
     expect(state).toBe(failure==='control'?'admitted':'prepared');
@@ -303,22 +362,29 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
   });
   it('refuses missing or mismatched immutable reviewed pricing',async()=>{
     const old=bindings['member-a:helper'],next=randomUUID();
-    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
-    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',NULL))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next]);
+    await journalGatewayFixture(files.writer,async source=>{
+      await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);noteBudgetFinancialChange(source,'budget_gateway_bindings',old);
+      await source.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',NULL))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next]);noteBudgetFinancialChange(source,'budget_gateway_bindings',next);
+    });
     bindings['member-a:helper']=next;
     const p=await prepared();expect((await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
     await expect(db.query('UPDATE budget_gateway_bindings SET pricing_profile=$2::jsonb WHERE id=$1',[next,JSON.stringify(pricing)])).rejects.toThrow('immutable');
   });
   it.each([{maximum_liability:'0.09'},{pricing_profile:{...pricing,capabilityHash:h('unrelated capability')}}])('refuses a price maximum or capability mismatch %#',async change=>{
-    const old=bindings['member-a:helper'],next=randomUUID();await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
-    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||$3::jsonb||jsonb_build_object('id',$2::text,'state','active'))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(change)]);
+    const old=bindings['member-a:helper'],next=randomUUID();
+    await journalGatewayFixture(files.writer,async source=>{
+      await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);noteBudgetFinancialChange(source,'budget_gateway_bindings',old);
+      await source.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||$3::jsonb||jsonb_build_object('id',$2::text,'state','active'))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(change)]);noteBudgetFinancialChange(source,'budget_gateway_bindings',next);
+    });
     bindings['member-a:helper']=next;const p=await prepared();expect((await rpc(authority(),GATEWAY_ADMIT_PATH,admitDocument(p))).reply.status).toBe(503);
     expect((await db.query('SELECT state FROM budget_attempts')).rows[0].state).toBe('prepared');
   });
   it('uses immutable Anthropic pricing for its separate native cache categories',async()=>{
     const old=bindings['member-a:helper'],next=randomUUID(),anthropic={...pricing,format:'anthropic',usdPerMillionTokens:{...pricing.usdPerMillionTokens,output:'80',cacheWrite:'20'}};
-    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);
-    await db.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',$3::jsonb))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(anthropic)]);
+    await journalGatewayFixture(files.writer,async source=>{
+      await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[old]);noteBudgetFinancialChange(source,'budget_gateway_bindings',old);
+      await source.query(`INSERT INTO budget_gateway_bindings SELECT(jsonb_populate_record(NULL::budget_gateway_bindings,to_jsonb(b)||jsonb_build_object('id',$2::text,'state','active','pricing_profile',$3::jsonb))).* FROM budget_gateway_bindings b WHERE id=$1`,[old,next,JSON.stringify(anthropic)]);noteBudgetFinancialChange(source,'budget_gateway_bindings',next);
+    });
     bindings['member-a:helper']=next;const a=await allowed();
     expect((await rpc(a.selected,GATEWAY_SETTLE_PATH,terminal(a.grant,100,{format:'anthropic',usage:{inputTokens:100,outputTokens:100,cacheReadTokens:40,cacheWriteTokens:20}}))).document.state).toBe('settled');
     expect((await db.query('SELECT actual_amount FROM budget_attempts')).rows[0].actual_amount).toBe('0.0096');
@@ -338,7 +404,7 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const selected=authority(lostCommit(3)),a=await allowed(selected),receipt=terminal(a.grant);
     expect((await rpc(selected,GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
     expect((await db.query('SELECT state,actual_amount FROM budget_attempts')).rows[0]).toMatchObject({state:'settled',actual_amount:'0.0098'});
-    expect(files.records().filter(frame=>frame.record.kind==='commit')).toHaveLength(2);
+    expect(files.records().filter(frame=>frame.record.kind==='commit')).toHaveLength(4);
     expect(files.records().at(-1).record.kind).toBe('freeze');
     expect((await rpc(authority(),GATEWAY_SETTLE_PATH,receipt)).reply.status).toBe(503);
     expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,200))).reply.status).toBe(503);
@@ -350,11 +416,20 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     expect((await db.query('SELECT state FROM budget_accounts WHERE id=$1',[installation])).rows[0].state).toBe('frozen');
   });
   it('retains late exact grant correlation after rotation, old-window carry and member erasure',async()=>{
-    const a=await allowed();await store.markUnknown(a.grant.attemptId);
-    await db.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[a.grant.bindingId]);
-    await window(installation,null);await window(accounts['member-a']!,'member-a');
+    const a=await allowed();await gatewayPreparedStore!.markUnknown(a.grant.attemptId);
+    await journalGatewayFixture(files.writer,async source=>{
+      await source.query("UPDATE budget_gateway_bindings SET state='revoked' WHERE id=$1",[a.grant.bindingId]);
+      noteBudgetFinancialChange(source,'budget_gateway_bindings',a.grant.bindingId);
+    });
+    await journalGatewayWindow(files.writer,installation,null);await journalGatewayWindow(files.writer,accounts['member-a']!,'member-a');
     expect((await store.readStatus(context())).liability).toBe('0.1');
-    await db.query("DELETE FROM users WHERE id='member-a'");
+    await files.writer.run('member-remove',boundary=>consoleSourceTransaction(db as unknown as SourcePool,async source=>{
+      for(const table of ['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts'] as const){
+        const rows=await source.query(`SELECT id FROM ${table} WHERE live_member_id=$1`,['member-a']);
+        for(const row of rows.rows)noteBudgetFinancialChange(source,table,row.id);
+      }
+      await source.query("DELETE FROM users WHERE id='member-a'");
+    },boundary));
     const binding=(await db.query('SELECT key_fingerprint,purpose_alias,pricing_profile FROM budget_gateway_bindings WHERE id=$1',[a.grant.bindingId])).rows[0];
     expect(binding).toMatchObject({key_fingerprint:null,purpose_alias:null,pricing_profile:pricing});
     for(const changes of [{nonce:h('different nonce')},{purposeAlias:'different'},{keyFingerprint:h('different key')},{endpointHash:h('different endpoint')},{bindingId:randomUUID()},{profileHash:h('different profile')}])expect((await rpc(authority(),GATEWAY_SETTLE_PATH,terminal(a.grant,100,changes))).reply.status).toBe(503);
@@ -897,9 +972,18 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE state='admitted'")).rows[0].n).toBe(0);
   });
   it('exports financial data without credential/ticket/suppression values and erases metadata while retaining late settlement',async()=>{
-    const a=await admitted(),unknown=await admitted(),settled=await admitted();
-    await db.query("UPDATE budget_attempts SET state='unknown' WHERE id=$1",[unknown.attemptId]);
-    expect(await store.settle(receipt(settled,'0.03'))).toBe('settled');
+    await db.query('TRUNCATE budget_gateway_grants,budget_attempts,budget_gateway_bindings,budget_windows,budget_accounts,budget_financial_checkpoints CASCADE');
+    const custody=await gatewayCustody(db);
+    try{
+    await seedGatewayFinancialFixture(custody.writer);
+    const journalStore=new PgBudgetAdmissionStore(db,env(),30_000,custody.writer);
+    const makeAdmitted=async()=>{
+      const p=await prepared('member-a','helper',journalStore),result=await journalStore.admit(p.ticket,p.observation,recovery());
+      expect(result.state).toBe('allowed');if(result.state!=='allowed')throw new Error('Fixture admission failed');return {...p,...result};
+    };
+    const a=await makeAdmitted(),unknown=await makeAdmitted(),settled=await makeAdmitted();
+    await journalStore.markUnknown(unknown.attemptId);
+    expect(await journalStore.settle(receipt(settled,'0.03'))).toBe('settled');
     const retainedHash=(await db.query('SELECT invocation_hash FROM budget_attempts WHERE id=$1',[a.attemptId])).rows[0].invocation_hash;
     const historicalWindows=(await db.query('SELECT id,opening_liability::text,opening_cap::text FROM budget_windows WHERE account_id=$1 ORDER BY id',[accounts['member-a']])).rows;
     const historicalGrants=(await db.query('SELECT count(*)::int n FROM budget_gateway_grants WHERE attempt_id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows[0].n;
@@ -910,9 +994,7 @@ describe('inactive budget admission on real PostgreSQL',()=>{
         expect(scopeOf(table)).toMatchObject({scope:'member',column:'live_member_id',idKind:'registry'});expect(eraseHandlingFor(scopeOf(table)!)).toBe('retire-and-redact-budget-liability');
         const body=readFileSync(join(root,'export','data',`${table}.json`),'utf8');expect(body).not.toMatch(/ticket_hash|invocation_hash|key_fingerprint|suppression|authority_reference|authority_hash|request_hash|session-/);
       }
-      const custody=await gatewayCustody(db);
-      try{const erased=await runErase({db,person:'member-a',vaults:[],apply:true,journal:custody.journal});expect(erased.dbReport.refusals).toEqual([]);}
-      finally{custody.journal.close();rmSync(custody.directory,{recursive:true,force:true});}
+      const erased=await runErase({db,person:'member-a',vaults:[],apply:true,journal:custody.journal});expect(erased.dbReport.refusals).toEqual([]);
       const account=(await db.query('SELECT * FROM budget_accounts WHERE id=$1',[accounts['member-a']])).rows[0];expect(account).toMatchObject({state:'retired',live_member_id:null,organisation_id:null});expect(account.provider_suppression_hashes).toHaveLength(1);
       const binding=(await db.query('SELECT * FROM budget_gateway_bindings WHERE id=$1',[a.bindingId])).rows[0];expect(binding).toMatchObject({state:'revoked',live_member_id:null,agent:null,key_fingerprint:null});
       const attempts=(await db.query('SELECT id,state,reserved_amount,actual_amount,authority_reference,live_member_id,invocation_hash FROM budget_attempts WHERE id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows;
@@ -925,10 +1007,11 @@ describe('inactive budget admission on real PostgreSQL',()=>{
       expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants WHERE attempt_id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows[0].n).toBe(historicalGrants);
       // Erasure cannot turn the same opaque invocation hash into a new attempt.
       await expect(db.query(`INSERT INTO budget_attempts SELECT (jsonb_populate_record(NULL::budget_attempts,to_jsonb(a)||jsonb_build_object('id',$1::text,'ticket_hash',$2::text))).* FROM budget_attempts a LIMIT 1`,[randomUUID(),h(randomUUID())])).rejects.toThrow('invocation_hash');
-      expect(await store.settle(receipt(a,'0.05'))).toBe('settled');
+      expect(await journalStore.settle(receipt(a,'0.05'))).toBe('settled');
       await expect(db.query("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id,canonical_suppression_hash,provider_suppression_hashes) VALUES($1,'installation','member',$2,$3,$4)",[randomUUID(),installation,h('new-canonical'),account.provider_suppression_hashes])).rejects.toThrow('reconciliation');
       expect((await db.query('SELECT count(*)::int n FROM budget_accounts WHERE live_member_id=\'member-b\'')).rows[0].n).toBe(1);
     }finally{rmSync(root,{recursive:true,force:true});}
+    }finally{custody.journal.close();rmSync(custody.directory,{recursive:true,force:true});}
   });
   it('direct user deletion also retires authority, preserves liabilities, and redacts raw references',async()=>{
     const a=await admitted();await db.query("DELETE FROM users WHERE id='member-a'");
