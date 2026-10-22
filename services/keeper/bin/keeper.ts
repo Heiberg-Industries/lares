@@ -98,10 +98,12 @@ async function main(): Promise<void> {
         // source rows or files. An unbound leftover is recovery, never an empty legacy store.
         if(config.budgetFinancial){
             if(!financialPool)throw new Error('Financial database credentials unavailable');
-            financialJournal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
-            // The startup observer is owned/released before sockets become reachable.
+            financialJournal=HostFinancialJournal.openExistingForStartupVerification(config.budgetFinancial.directory,{requirePrepared:true});
+            // Keep protected ownership through the full check, then publish writer ownership
+            // before any host action or listener can reach the journal.
             const db=await financialPool.connect();
             try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
+            financialJournal.acquireWriterLease();
         }
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
