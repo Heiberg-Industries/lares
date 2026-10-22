@@ -110,6 +110,11 @@ afterAll(async () => {
 });
 
 describe('bounded runtime model-purpose client', () => {
+  it('uses the isolated chief-only socket documented by the settings catalog', async () => {
+    const { DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET } = await import('../src/model-purpose-client.js');
+    expect(DEFAULT_MODEL_PURPOSE_RUNTIME_SOCKET).toBe('/run/lares/model-purpose/model-purpose.sock');
+  });
+
   it('sends a fresh envelope and accepts only its matching signed ACK', async () => {
     const { modelPurposeRequest } = await import('../src/model-purpose-client.js');
     await expect(modelPurposeRequest('turn.open', { pendingReceipt: 'P'.repeat(43) })).resolves.toEqual(result);

@@ -23,6 +23,10 @@ const configSchema = z.object({
   // Optional installer-owned Vault signer. Kept separate from the Keeper's writable secrets
   // directory so the same protected file is never copied into role custody.
   vaultConsoleSigningKeyFile: absolute.optional(),
+  // Separate optional Console signer for model-purpose receipts; never derived from Vault.
+  modelPurposeConsoleSigningKeyFile: absolute.optional(),
+  // Dedicated runtime socket directory on the shared host socket mount. Only the chief receives it.
+  modelPurposeRuntimeDir: absolute.optional(),
   mode: z.enum(["overlay", "rendered"]), project: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/),
   dir: absolute, files: z.array(z.string().min(1).refine(s => !s.includes("\u0000"))).min(1),
   agentsDir: absolute, retiredDir: absolute, secretsDir: absolute,
@@ -31,6 +35,7 @@ const configSchema = z.object({
 }).strict().superRefine((value,context)=>{
   if(value.budgetNative&&!value.budgetFinancial)context.addIssue({code:'custom',path:['budgetNative'],message:'requires prepared financial custody'});
   if(value.budgetFinancial&&(value.budgetFinancial.db.host!==value.db.host||value.budgetFinancial.db.port!==value.db.port||value.budgetFinancial.db.database!==value.db.database))context.addIssue({code:'custom',path:['budgetFinancial','db'],message:'must connect to the same engine database as db'});
+  if(Boolean(value.modelPurposeConsoleSigningKeyFile)!==Boolean(value.modelPurposeRuntimeDir))context.addIssue({code:'custom',path:['modelPurposeRuntimeDir'],message:'requires the configured Console model-purpose signer'});
 });
 export type KeeperConfig = z.infer<typeof configSchema>;
 /**

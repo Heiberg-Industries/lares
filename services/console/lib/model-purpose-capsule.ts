@@ -147,3 +147,13 @@ export async function signPrivateModelPurposeRequest(
 export function modelPurposeRawBodyHash(rawBody: Uint8Array | string): string {
   return createHash('sha256').update(rawBody).digest('hex');
 }
+
+/** An absent default key is the legacy optional path. An explicitly named key, or any
+ * existing default path (including an unreadable or malformed file), means custody was
+ * configured and signing failures must refuse the marked request. */
+export function modelPurposeSigningConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = env.CONSOLE_MODEL_PURPOSE_SIGNING_KEY_FILE;
+  if (explicit !== undefined) return true;
+  try { lstatSync(DEFAULT_KEY_FILE); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; return true; }
+}

@@ -2,7 +2,7 @@ import { verifyPrivateConsoleModel } from './private-console-surface.js';
 import { wrapLanguageModel, type LanguageModel } from 'ai';
 import { defineState } from 'eve/context';
 import { defineDynamic, type DynamicResolveContext } from 'eve/tools';
-export { currentModelInvocation } from './model-invocation.js';
+export { currentModelInvocation, currentModelPurposeClaim } from './model-invocation.js';
 import { captureModelInvocation, runModelInvocation, type ModelInvocation } from './model-invocation.js';
 
 // A durable session marker, not a process-wide success flag. A repair on disk after a failed
@@ -55,7 +55,12 @@ export function sessionGatewayModel(provider: (alias: string) => LanguageModel, 
  */
 export function definitionModel(input: {
   /** One read of this agent's definition; returns the gateway alias to talk to. */
-  readonly resolveAlias: (sessionId: string | undefined) => Promise<string>;
+  readonly resolveAlias: (sessionId: string | undefined, session: DynamicResolveContext['session'] | undefined) => Promise<string>;
+  /** Optional synchronous role-specific reservation before authority verification awaits.
+   * This may only mark trusted framework coordinates locally; it must not grant authority. */
+  readonly preparePurpose?: (event: unknown, session: DynamicResolveContext['session'] | undefined) => void;
+  /** Optional role-specific authority adapter. Roles without one retain their current path. */
+  readonly claimPurpose?: (invocation: ModelInvocation) => Promise<void>;
   /** Builds the LiteLLM-backed provider for an alias. Never a bare id string. */
   readonly provider: (alias: string) => LanguageModel;
 }) {
@@ -69,10 +74,12 @@ export function definitionModel(input: {
         // change the authority closed over by this selected model.
         const authorityContext = structuredClone({ session: ctx?.session });
         const stepEvent = structuredClone(event);
+        input.preparePurpose?.(stepEvent, authorityContext.session);
         const verifyAuthority = () => verifyPrivateConsoleModel(authorityContext);
         await verifyAuthority();
-        if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(authorityContext.session?.id));
+        if (gatewayAlias.get() === null) pinSessionGatewayAlias(await input.resolveAlias(authorityContext.session?.id, authorityContext.session));
         const invocation = captureModelInvocation(stepEvent, authorityContext.session, gatewayAlias.get()!);
+        await input.claimPurpose?.(invocation);
         return sessionGatewayModel(input.provider, verifyAuthority, invocation);
       },
     },

@@ -30,6 +30,7 @@ import {productionGatewayBudgetAuthority} from '../lib/gateway-budget.js';
 import { GatewayAdmin } from "../lib/gateway-admin.js";
 import { GatewayStatusReader, registerGatewayStatusAction } from "../lib/gateway-status.js";
 import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/vault-console-broker.js";
+import { serveModelPurposeBroker } from "../lib/model-purpose-broker.js";
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
 import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
@@ -42,6 +43,7 @@ async function main(): Promise<void> {
     let nativeCustody:BudgetNativeCustodyStore|undefined;
     let pool!:ReturnType<typeof keeperPool>;
     let vaultPool:ReturnType<typeof keeperPool>|undefined;
+    let modelPurposePool:ReturnType<typeof keeperPool>|undefined;
     let financialPool:ReturnType<typeof keeperPool>|undefined;
     let admin:ReturnType<typeof keeperPool>|undefined;
     const stops: Array<() => Promise<void>> = [];
@@ -57,6 +59,9 @@ async function main(): Promise<void> {
         ?keeperPool(config.db,{max:32,connectionTimeoutMillis:500,query_timeout:1000,options:'-c statement_timeout=900 -c lock_timeout=500 -c idle_in_transaction_session_timeout=1500'})
         :undefined;
     vaultPool?.on('error',()=>{});
+    const modelPurposeKeyPath=config.modelPurposeConsoleSigningKeyFile;
+    modelPurposePool=modelPurposeKeyPath?keeperPool(config.db,{max:8,connectionTimeoutMillis:500,query_timeout:1800,options:'-c statement_timeout=1600 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'}):undefined;
+    modelPurposePool?.on('error',()=>{});
     // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
     // occupy their connections. HTTP deadlines never authorize a late allow.
     financialPool=keeperFinancialPool(config,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
@@ -72,7 +77,8 @@ async function main(): Promise<void> {
     } catch {
         console.warn("keeper: Vault reader unavailable until its dedicated runtime directory is repaired");
     }
-    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir},docker):undefined;
+    const modelPurposeRuntimeDir=modelPurposeKeyPath?config.modelPurposeRuntimeDir:undefined;
+    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir,modelPurposeRuntimeDir},docker):undefined;
     if(lifecycle)await lifecycle.storage.verifyReadyDatabases();
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
@@ -148,6 +154,13 @@ async function main(): Promise<void> {
             try { if(!vaultKeyPath)throw new Error('Vault signing key unavailable');stops.push(await serveConsoleVaultBroker(vaultPool,vaultKeyPath,config.secretsDir,join(config.agentsDir,"..","run","vault","read.sock"))); }
             catch { console.warn("keeper: Vault reader unavailable until its dedicated broker path is repaired"); }
         }
+        // The dedicated model-purpose signer enables its independent, bounded broker. A
+        // configured but unusable signer fails startup rather than silently allowing unsigned
+        // private requests; absent optional custody leaves ordinary private chat unchanged.
+        if(modelPurposePool&&modelPurposeKeyPath)stops.push(await serveModelPurposeBroker(modelPurposePool,{
+            consoleSigningKeyFile:modelPurposeKeyPath,runtimeSecretsDir:config.secretsDir,
+            consoleSocket:"/run/lares/model-purpose-console.sock",runtimeSocket:"/run/lares/model-purpose/model-purpose.sock",
+        }));
         // After a reboot the kernel holds no firewall. Not awaited: the sockets serve meanwhile,
         // and any seal an action starts waits for this one. It logs its own outcome and never throws.
         void lifecycle?.resealAtStart();
@@ -158,7 +171,7 @@ async function main(): Promise<void> {
         await Promise.allSettled(stops.map(stop=>stop()));
         try{await nativeCustody?.drainForShutdown();}catch{}
         try{await financialJournal?.drainForShutdown();}catch{}
-        await Promise.allSettled([pool?.end(),vaultPool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
+        await Promise.allSettled([pool?.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
         try{nativeCustody?.close();}catch{}
         try{financialJournal?.close();}catch{}
         throw new Error("keeper: startup failed");
@@ -174,7 +187,7 @@ async function main(): Promise<void> {
         for(const stop of stops)try{await stop();}catch(error){failures.push(error);}
         try{await nativeCustody?.drainForShutdown();}catch(error){failures.push(error);}
         try{await financialJournal?.drainForShutdown();}catch(error){failures.push(error);}
-        const pools=[pool.end(),vaultPool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
+        const pools=[pool.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
         for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
         try{nativeCustody?.close();}catch(error){failures.push(error);}
         try{financialJournal?.close();}catch(error){failures.push(error);}

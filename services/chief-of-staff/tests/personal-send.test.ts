@@ -1,6 +1,8 @@
 /** Real PostgreSQL authority, custody, immutable action and receipt; fake provider only.
  * Resolver contexts below are SYNTHETIC caller fixtures, not the installed Eve resolver.
  * Exact approval-response admission, catalogue enablement and model continuation are separate. */
+const {purposeRequestMock}=vi.hoisted(()=>({purposeRequestMock:vi.fn()}));
+vi.mock('@lares/agent-kit/model-purpose-client',()=>({modelPurposeRequest:purposeRequestMock}));
 vi.mock('@lares/agent-kit/google-auth',async original=>({...await original<typeof import('@lares/agent-kit/google-auth')>(),readTokenEncKey:()=> '1'.repeat(64)}));
 import { beforeAll,beforeEach,afterAll,describe,it,expect,vi } from 'vitest';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -13,7 +15,10 @@ import { bindConsoleSession,consoleRouteAdmission } from '@lares/agent-kit/conso
 import { PgPersonalActionStore,personalActionApprovalDescriptor,PERSONAL_MAIL_SEND_TOOL,type PersonalActionApprovedReference } from '@lares/agent-kit/personal-action-store';
 import { encryptSecret,decryptSecret } from '@lares/agent-box/lib/crypto.js';
 import {getPool,closePool} from '@lares/agent-kit/db';
+import { definitionModel } from '@lares/agent-kit/definition-model';
+import { markPrivateConsoleSurface } from '@lares/agent-kit/private-console-surface';
 import {personalSendApprovalRequest,personalSendInputRequested,personalSendApprovalResponse,personalSendInputResolved,requirePersonalSendCall} from '../lib/personal-send-approval.js';
+import { claimModelPurposeForInvocation,closeModelPurposeTurn,prepareModelPurposeInvocation } from '../agent/lib/model-purpose.js';
 import {requirePrivateConsoleResume} from '@lares/agent-kit/private-console-resume';
 import {readPersonalResource} from '../lib/personal-reads.js';
 import { executeApprovedPersonalSend,requirePersonalSendPolicy,type PersonalSendRuntime } from '../lib/personal-send.js';
@@ -265,5 +270,86 @@ describe('exact personal approval lifecycle through authenticated resolver refer
   await expect(requirePersonalSendCall({...p.resume,callId:'second-call'},p.input)).rejects.toThrow();
   await expect(readPersonalResource(p.resume,p.input.selection,{kind:'readMail',id:'mail'})).rejects.toThrow();
   expect((await pool.query('SELECT count(*)::int AS n FROM personal_actions')).rows[0].n).toBe(1);expect(sends).not.toHaveBeenCalled();
+ });
+});
+
+describe('real Eve model selection for an approved private resume',()=>{
+ it('runs the pinned response-resume coordinator through the actual definitionModel and DB authority gate',async()=>{
+   vi.stubEnv('LARES_AGENT_NAME',env.LARES_AGENT_NAME);vi.stubEnv('LARES_AGENT_INCARNATION',env.LARES_AGENT_INCARNATION);
+   purposeRequestMock.mockReset();
+   const {ref}=await ready();
+   const purposeReceipt='p'.repeat(43);
+   purposeRequestMock.mockImplementation(async(op:string)=>{
+     if(op==='request.admit')return {pendingReceipt:purposeReceipt} as never;
+     if(op==='turn.open')return {capability:'c'.repeat(43),expiresAt:Date.now()+30_000} as never;
+     if(op==='step.claim')return {claim:'k'.repeat(43),expiresAt:Date.now()+30_000} as never;
+     return {closed:true} as never;
+   });
+   const {modelPurposeRequest}=await import('@lares/agent-kit/model-purpose-client');
+   const admitted=await modelPurposeRequest<{pendingReceipt?:string}>('request.admit',{capsule:'verified-fixture-capsule',receipt:{kind:'resume'}});
+   expect(admitted.pendingReceipt).toBe(purposeReceipt);
+
+   const eveRoot=new URL('../node_modules/eve/dist/src/',import.meta.url);
+   const [{ContextContainer,contextStorage},keys,{sessionProvider},{createToolLoopHarness}]=await Promise.all([
+     import(new URL('context/container.js',eveRoot).href),import(new URL('context/keys.js',eveRoot).href),
+     import(new URL('context/providers/session.js',eveRoot).href),import(new URL('harness/tool-loop.js',eveRoot).href),
+   ]) as any;
+   const initial=auth();
+   const resolver={authenticator:'lares-console',attributes:{lares_resolver_member_id:'member-a',lares_resume_request_id:ref.requestId,
+     lares_resume_option:'approve',lares_purpose:'resolver',lares_model_purpose_required:'1',lares_model_pending_receipt:admitted.pendingReceipt}};
+   const context=new ContextContainer();context.set(keys.AuthKey,resolver);context.set(keys.InitiatorAuthKey,initial);context.set(keys.SessionIdKey,'wrun_send');
+   const session={agent:{dynamicModel:true,system:'',tools:[]},compaction:{recentWindowSize:10,threshold:100_000},
+     continuationToken:'eve:db-backed-resume-proof',history:[],sessionId:'wrun_send',state:{
+       'eve.harness.emission':{sessionStarted:true,sequence:1,stepIndex:0,turnId:''},
+       'eve.runtime.pendingInputBatches':[{event:{sequence:0,stepIndex:0,turnId:'turn_0'},requests:[{kind:'tool-approval',requestId:ref.requestId,
+         prompt:'Fixture approval',options:[{id:'approve',label:'Approve'},{id:'cancel',label:'Cancel'}],
+         action:{kind:'tool-call',callId:ref.selection.originalCallId,toolName:PERSONAL_MAIL_SEND_TOOL,input:{}}}],responseMessages:[],responseAuthRequiredRequestIds:[ref.requestId]}],
+     }};
+   context.set(keys.SessionKey,sessionProvider.create(context,{state:session.state}).value);
+   await contextStorage.run(context,()=>markPrivateConsoleSurface());
+   const events:Array<{type:string;data?:unknown}>=[];let adapterSession:any,actualStepEvent:any,reservedBeforeVerification=false;
+   const model=definitionModel({resolveAlias:async()=>{expect(reservedBeforeVerification).toBe(true);return 'fixture-brain';},
+     preparePurpose:(event,session)=>{prepareModelPurposeInvocation(event,session);reservedBeforeVerification=true;},
+     claimPurpose:claimModelPurposeForInvocation,provider:()=>({} as never)});
+   const originalConnect=Pool.prototype.connect;
+   vi.spyOn(Pool.prototype,'connect').mockImplementation(function(this:Pool,...args:unknown[]){
+     expect(reservedBeforeVerification).toBe(true);
+     return originalConnect.apply(this,args as never);
+   } as never);
+   const harness=createToolLoopHarness({mode:'conversation',
+     tools:new Map([[PERSONAL_MAIL_SEND_TOOL,{description:'Fixture',inputSchema:{type:'object'},approval:{response:async()=>({status:'allowed'})}}]]),
+     handleEvent:async(event:{type:string;data?:unknown})=>{
+       events.push({type:event.type,data:event.data});
+       if(['turn.completed','turn.failed','turn.cancelled'].includes(event.type))await closeModelPurposeTurn(event,adapterSession);
+     },resolveModel:async()=>{throw new Error('No provider expected');},
+     dispatchDynamicModelEvent:async({ctx,event}:{ctx:any;event:any})=>{
+       const frameworkSession=ctx.get(keys.SessionKey);
+       actualStepEvent=event;
+       // Eve's public DynamicResolveContext exposes identity and auth, but no turn object.
+       // The real step.started event is the sole source of the raw empty turn coordinate.
+       adapterSession={id:frameworkSession.sessionId,auth:{current:ctx.get(keys.AuthKey),initiator:ctx.get(keys.InitiatorAuthKey)}};
+       await model.events['step.started'](event,{session:adapterSession});
+       throw new Error('Regression stops before provider invocation');
+     }});
+   const input={attributedInputResponses:[{auth:resolver,response:{requestId:ref.requestId,optionId:'approve'}}]};
+   const first=await contextStorage.run(context,()=>harness(session,input));
+   expect(typeof first.next).toBe('function');
+   const second=await contextStorage.run(context,()=>first.next!(first.session));
+   expect(second.next).toMatchObject({done:true});
+   expect(events.map(event=>event.type)).toEqual(expect.arrayContaining(['approval.settled','input.resolved','step.failed','turn.failed']));
+   expect(sessionProvider.create(context,{state:session.state}).value.turn).toEqual({id:'turn_1',sequence:1});
+   const calls=purposeRequestMock.mock.calls;
+   expect(calls.map(([op])=>op)).toEqual(['request.admit','turn.open','step.claim','turn.close']);
+   expect(calls[1]![1]).toMatchObject({pendingReceipt:purposeReceipt,context:{session:{id:'wrun_send',turn:{id:'',sequence:1},auth:{current:resolver,initiator:initial}}}});
+   expect(calls[2]![1]).toMatchObject({event:{type:'step.started',data:{turnId:'',sequence:1,stepIndex:0}},purposeAlias:'fixture-brain'});
+   expect(calls[3]![1]).toEqual({turnCapability:'c'.repeat(43),turnId:'',sequence:1});
+   expect(adapterSession.auth.current).not.toBe(adapterSession.auth.initiator);
+   expect(adapterSession.auth.current.attributes.lares_resolver_member_id).toBe(adapterSession.auth.initiator.attributes.lares_member_id);
+   await expect(model.events['step.started'](actualStepEvent,{session:adapterSession} as never)).rejects.toThrow('Model purpose authority');
+   expect(purposeRequestMock.mock.calls.map(([op])=>op)).toEqual(['request.admit','turn.open','step.claim','turn.close']);
+   // This approval is checked by the real private-resume database gate before the broker's
+   // open/claim ACKs; the fixture row remains an approved exact action for this request.
+   expect((await pool.query('SELECT outcome,resolved_by_member_id FROM approval_asks WHERE request_id=$1',[ref.requestId])).rows[0])
+     .toEqual({outcome:'approved',resolved_by_member_id:'member-a'});
  });
 });

@@ -2,6 +2,7 @@ import { definitionModel, resolveDefinitionForModel } from "@lares/agent-kit/def
 import { defineAgent } from "eve";
 import { gatewayModel } from "../lib/gateway-provider.js";
 import { thisAgent } from "../lib/definition.js";
+import { claimModelPurposeForInvocation, prepareModelPurposeInvocation } from "./lib/model-purpose.js";
 
 // Every model call is routed through the LiteLLM gateway (gatewayModel) — never the Vercel
 // AI Gateway default that a bare model-id string like "anthropic/claude-sonnet-5" would use.
@@ -24,11 +25,17 @@ export default defineAgent({
     // and the approval fallback through `thisAgent`'s per-session pin (lib/definition.ts).
     // `sessionId` is passed through as-is: `thisAgent` treats a missing id as "read fresh, pin
     // nothing" rather than sharing one entry between every conversation in the process.
-    resolveAlias: async (sessionId) => {
+    resolveAlias: async (sessionId, session) => {
       const { loaded } = await resolveDefinitionForModel(() => thisAgent(sessionId));
-      // The env override still wins — that contract is unchanged.
-      return process.env["AGENT_MODEL"] ?? loaded.definition.model;
+      const attributes = (session?.auth?.current as { attributes?: Record<string, unknown> } | undefined)?.attributes;
+      const purposeBound = attributes?.lares_model_purpose_required === '1' ||
+        typeof attributes?.lares_model_pending_receipt === 'string';
+      // Only a request carrying verified model-purpose custody is pinned to the validated
+      // session definition. Ordinary Console conversations preserve the AGENT_MODEL override.
+      return purposeBound ? loaded.definition.model : process.env["AGENT_MODEL"] ?? loaded.definition.model;
     },
+    preparePurpose: prepareModelPurposeInvocation,
+    claimPurpose: claimModelPurposeForInvocation,
     provider: gatewayModel,
   }),
   experimental: {

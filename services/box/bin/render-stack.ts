@@ -68,6 +68,19 @@ export function optionalRegularFile(path: string): string | null {
   }
 }
 
+/** Missing is the legacy optional case. A present but unsafe path must stop rendering so a
+ * configured signer can never silently become an unsigned Console path. */
+function optionalConfiguredRegularFile(path: string): string | null {
+  try {
+    const info = lstatSync(path);
+    if (!info.isFile() || info.size === 0) throw new Error("Console model-purpose signing key is present but is not a non-empty regular file");
+    return path;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 const HELP_TEXT = [
   `pnpm -C services/box render-stack ${ARGUMENTS.map((a) => `<${a}>`).join(" ")}`,
   "",
@@ -118,6 +131,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const text = renderStackCompose(manifest, {
     secretsDir: at("secretsDir"),
     consoleVaultSigningKeyFile: optionalRegularFile(join(at("secretsDir"), "console-vault-signing-key")),
+    consoleModelPurposeSigningKeyFile: optionalConfiguredRegularFile(join(at("secretsDir"), "console-model-purpose-signing-key")),
     socketDir: at("socketDir"),
     tasteDir: at("tasteDir"),
     gatewayConfigFile: at("gatewayConfigFile"),

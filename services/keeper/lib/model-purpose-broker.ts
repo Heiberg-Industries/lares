@@ -9,7 +9,7 @@ import { consoleAdmission, requireConsoleSessionBinding, type ConsoleAuthorityCo
 import { MODEL_PURPOSE_EMPTY_DIGEST, modelPurposeAckFields, modelPurposeChallengeFields, modelPurposeConsoleRequestFields, modelPurposeDigest, modelPurposeEqualMac, modelPurposeMac, modelPurposeRuntimeRequestFields, type ModelPurposeMacFields } from '@lares/agent-kit/model-purpose-protocol';
 
 const DEFAULT_CONSOLE_SOCKET='/run/lares/model-purpose-console.sock';
-const DEFAULT_RUNTIME_SOCKET='/run/lares/run/model-purpose.sock';
+const DEFAULT_RUNTIME_SOCKET='/run/lares/model-purpose/model-purpose.sock';
 const FRAME_LIMIT=32_768,MAX_CLIENTS=32,MAX_LIVE=2048,CHALLENGE_MS=10_000,PENDING_MS=30_000,TURN_MS=5*60_000,CLAIM_MS=30_000,REQUEST_MS=60_000;
 const EMPTY_DIGEST=MODEL_PURPOSE_EMPTY_DIGEST;
 const deny=()=>new Error('Model purpose authority is not available');
@@ -239,7 +239,7 @@ function runtimeFields(req:RuntimeEnvelope,_input:Record<string,unknown>):MacFie
 }
 function signedAck(key:Buffer,req:RuntimeEnvelope,input:Record<string,unknown>,result:Record<string,unknown>){runtimeFields(req,input);const fields=modelPurposeAckFields(req,result);return {...result,responseMac:modelPurposeMac(key,fields).toString('base64url'),responseRequestDigest:fields.requestDigest,responseOutcomeDigest:fields.outcomeDigest,responsePayloadDigest:fields.payloadDigest};}
 
-/** Start a standalone Keeper broker. It has no Vault dependency and is intentionally not wired into runtime consumers yet. */
+/** Start the independent Keeper broker for Console receipts and chief runtime claims. */
 export async function serveModelPurposeBroker(pool:SourcePool,options:ModelPurposeBrokerOptions):Promise<()=>Promise<void>>{
   const rootUid=options.rootUid??0,socketUid=options.socketUid??rootUid,socketGid=options.socketGid??10001,now=options.now??Date.now;
   const consoleSocket=options.consoleSocket??DEFAULT_CONSOLE_SOCKET,runtimeSocket=options.runtimeSocket??DEFAULT_RUNTIME_SOCKET;

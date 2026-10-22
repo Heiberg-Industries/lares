@@ -26,6 +26,8 @@ vi.mock('eve/context', () => ({
     update: (fn: (value: unknown) => unknown) => { sessionState.set(key, fn(sessionState.has(key) ? sessionState.get(key) : initial())); },
   }),
 }));
+vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined }));
+vi.mock('../agent/lib/model-purpose.js', () => ({ claimModelPurposeForInvocation: async () => undefined }));
 
 describe("chief-of-staff agent config", () => {
   let dir: string;
@@ -95,5 +97,27 @@ describe("chief-of-staff agent config", () => {
     // ...and a second step reuses the pin: same alias, no second read of the definition folder.
     const second = await model.events["step.started"]({ type: "step.started", data: { turnId: "agent-a-model-test-turn", sequence: 0, stepIndex: 1 } }, { session: { id: "agent-a-model-test", auth: { current: null, initiator: null } } });
     expect(second.model.modelId).toBe(first.model.modelId);
+  });
+
+  it("keeps ordinary Console chats on the env override but binds custody-tagged turns to the validated definition", async () => {
+    sessionState.clear();
+    process.env["AGENT_MODEL"] = "ordinary-override";
+    const agent = await freshAgentConfig();
+    const model = agent.model as {
+      events: { "step.started": (event: unknown, ctx: unknown) => Promise<{ model: { modelId?: string } }> };
+    };
+    const select = (turnId: string, attributes: Record<string, unknown>) => {
+      sessionState.clear(); // Eve scopes this state per session; the fixture map is process-wide.
+      return model.events["step.started"](
+        { type: "step.started", data: { turnId, sequence: 0, stepIndex: 0 } },
+        { session: { id: `agent-purpose-${turnId}`, auth: { current: { attributes }, initiator: null } } },
+      );
+    };
+    const ordinary = await select("ordinary-console", { lares_member_id: "member-1" });
+    expect(ordinary.model.modelId).toBe("ordinary-override");
+    const configuredHuman = await select("custody-human", { lares_member_id: "member-1", lares_model_purpose_required: "1" });
+    expect(configuredHuman.model.modelId).toBe(declaration.model);
+    const configuredResume = await select("custody-resume", { lares_resolver_member_id: "member-1", lares_model_pending_receipt: "p".repeat(43) });
+    expect(configuredResume.model.modelId).toBe(declaration.model);
   });
 });

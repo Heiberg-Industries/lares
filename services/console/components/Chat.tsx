@@ -201,6 +201,13 @@ function ChatSession({
       .finally(() => setAnswering(null));
   };
 
+  async function sendMessage(value: string, options?: { turnPolicy: "steer" }) {
+    // Create an empty, already-bound session on the first send. The actual message then uses
+    // the session route, which lets the server sign its exact bytes against that binding.
+    if (!agent.session) await agent.prewarm();
+    await agent.send(value, options);
+  }
+
   return (
     <div className="lares-page lares-chat">
       <PageHeader
@@ -372,7 +379,7 @@ function ChatSession({
           const value = text.trim();
           if (value.length === 0 || composer.disabled) return;
           setText("");
-          void agent.send(value, isBusy ? { turnPolicy: "steer" } : undefined);
+          void sendMessage(value, isBusy ? { turnPolicy: "steer" } : undefined);
         }}
         className="lares-composer"
       >

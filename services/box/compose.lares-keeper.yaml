@@ -39,6 +39,9 @@ services:
       - ${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:${LARES_GATEWAY_MASTER_KEY_FILE:?gateway master key file required}:ro
       - ${LARES_EVE_ROUTE_PASSWORD_FILE:?route password file required}:${LARES_EVE_ROUTE_PASSWORD_FILE:?route password file required}:ro
       - ${LARES_VAULT_SIGNING_KEY_FILE:?Vault signing key file required}:${LARES_VAULT_SIGNING_KEY_FILE:?Vault signing key file required}:ro
+      # Dedicated optional model-purpose signer. The /dev/null source is inert for older
+      # configurations; when keeper.json names custody, the renderer supplies its exact path.
+      - ${LARES_MODEL_PURPOSE_SIGNING_KEY_FILE:-/dev/null}:${LARES_MODEL_PURPOSE_SIGNING_KEY_FILE:-/run/model-purpose-unused-key}:ro
       - ${LARES_SOCKET_DIR:?absolute app socket directory}:/run/lares
       - ${LARES_HOST_SOCKET_DIR:?absolute host socket directory}:/run/lares-host
     tmpfs: [/tmp]
