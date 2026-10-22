@@ -21,6 +21,7 @@ import {PgPersonalActionStore,PERSONAL_MAIL_SEND_TOOL,personalActionApprovalDesc
 import {encryptSecret,decryptSecret} from '../lib/crypto.js';
 import {exportPerson} from '../lib/export-person.js';
 import {erasePerson,eraseHandlingFor} from '../lib/erase-person.js';
+import {runErase} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
@@ -895,18 +896,32 @@ describe('inactive budget admission on real PostgreSQL',()=>{
     expect((await db.query("SELECT count(*)::int n FROM budget_attempts WHERE state='admitted'")).rows[0].n).toBe(0);
   });
   it('exports financial data without credential/ticket/suppression values and erases metadata while retaining late settlement',async()=>{
-    const a=await admitted(),retainedHash=(await db.query('SELECT invocation_hash FROM budget_attempts')).rows[0].invocation_hash,root=mkdtempSync(join(tmpdir(),'budget-export-'));
+    const a=await admitted(),unknown=await admitted(),settled=await admitted();
+    await db.query("UPDATE budget_attempts SET state='unknown' WHERE id=$1",[unknown.attemptId]);
+    expect(await store.settle(receipt(settled,'0.03'))).toBe('settled');
+    const retainedHash=(await db.query('SELECT invocation_hash FROM budget_attempts WHERE id=$1',[a.attemptId])).rows[0].invocation_hash;
+    const historicalWindows=(await db.query('SELECT id,opening_liability::text,opening_cap::text FROM budget_windows WHERE account_id=$1 ORDER BY id',[accounts['member-a']])).rows;
+    const historicalGrants=(await db.query('SELECT count(*)::int n FROM budget_gateway_grants WHERE attempt_id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows[0].n;
+    const root=mkdtempSync(join(tmpdir(),'budget-export-'));
     try{
       const report=await exportPerson(db,{person:'member-a',outDir:join(root,'export')});expect(report.refusals).toEqual([]);
       for(const table of ['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts']){
         expect(scopeOf(table)).toMatchObject({scope:'member',column:'live_member_id',idKind:'registry'});expect(eraseHandlingFor(scopeOf(table)!)).toBe('retire-and-redact-budget-liability');
         const body=readFileSync(join(root,'export','data',`${table}.json`),'utf8');expect(body).not.toMatch(/ticket_hash|invocation_hash|key_fingerprint|suppression|authority_reference|authority_hash|request_hash|session-/);
       }
-      const erased=await erasePerson(db,{person:'member-a',dryRun:false});expect(erased.refusals).toEqual([]);
+      const custody=await gatewayCustody(db);
+      try{const erased=await runErase({db,person:'member-a',vaults:[],apply:true,journal:custody.journal});expect(erased.dbReport.refusals).toEqual([]);}
+      finally{custody.journal.close();rmSync(custody.directory,{recursive:true,force:true});}
       const account=(await db.query('SELECT * FROM budget_accounts WHERE id=$1',[accounts['member-a']])).rows[0];expect(account).toMatchObject({state:'retired',live_member_id:null,organisation_id:null});expect(account.provider_suppression_hashes).toHaveLength(1);
       const binding=(await db.query('SELECT * FROM budget_gateway_bindings WHERE id=$1',[a.bindingId])).rows[0];expect(binding).toMatchObject({state:'revoked',live_member_id:null,agent:null,key_fingerprint:null});
-      expect((await db.query('SELECT state,reserved_amount,authority_reference,live_member_id FROM budget_attempts')).rows[0]).toMatchObject({state:'admitted',reserved_amount:'0.1',authority_reference:null,live_member_id:null});
-      expect((await db.query('SELECT invocation_hash FROM budget_attempts')).rows[0].invocation_hash).toBe(retainedHash);
+      const attempts=(await db.query('SELECT id,state,reserved_amount,actual_amount,authority_reference,live_member_id,invocation_hash FROM budget_attempts WHERE id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows;
+      expect(attempts).toHaveLength(3);
+      for(const attempt of attempts)expect(attempt).toMatchObject({authority_reference:null,live_member_id:null});
+      expect(attempts.find(attempt=>attempt.id===a.attemptId)).toMatchObject({state:'admitted',reserved_amount:'0.1',invocation_hash:retainedHash});
+      expect(attempts.find(attempt=>attempt.id===unknown.attemptId)).toMatchObject({state:'unknown'});
+      expect(attempts.find(attempt=>attempt.id===settled.attemptId)).toMatchObject({state:'settled',actual_amount:'0.03'});
+      expect((await db.query('SELECT id,opening_liability::text,opening_cap::text FROM budget_windows WHERE account_id=$1 ORDER BY id',[accounts['member-a']])).rows).toEqual(historicalWindows);
+      expect((await db.query('SELECT count(*)::int n FROM budget_gateway_grants WHERE attempt_id=ANY($1::uuid[])',[[a.attemptId,unknown.attemptId,settled.attemptId]])).rows[0].n).toBe(historicalGrants);
       // Erasure cannot turn the same opaque invocation hash into a new attempt.
       await expect(db.query(`INSERT INTO budget_attempts SELECT (jsonb_populate_record(NULL::budget_attempts,to_jsonb(a)||jsonb_build_object('id',$1::text,'ticket_hash',$2::text))).* FROM budget_attempts a LIMIT 1`,[randomUUID(),h(randomUUID())])).rejects.toThrow('invocation_hash');
       expect(await store.settle(receipt(a,'0.05'))).toBe('settled');

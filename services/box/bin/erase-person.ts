@@ -8,9 +8,8 @@
 // DRY RUN IS THE DEFAULT. Run with no flags and nothing is changed: the report says what a real
 // run would remove and what it would not reach. `--apply` is the only thing that writes.
 //
-// Run with:
-//   pnpm -C services/box erase-person -- <who>                                # practice run
-//   pnpm -C services/box erase-person -- <who> --vault /srv/brain --apply     # does it
+// Practice runs can use the package script. Apply is run through the existing Keeper image by
+// root on Linux after Keeper and all selected vault writers have been stopped.
 //
 // <who> is whatever you have: the person's id in the register, an old chat handle, an email
 // address. Anybody the register does not hold is refused — this erases MEMBERS of this
@@ -26,9 +25,9 @@
 // WHY THIS TALKS IN FULL SENTENCES, like migrate.ts next to it: whoever reads this output is
 // doing something irreversible, and is not necessarily a developer. `main` never throws.
 
-import { poolFromEnv } from "../lib/db.js";
 import { runErase, renderRunEraseReport } from "../lib/run-erase.js";
 import type { Pool } from "pg";
+import type {HostFinancialJournal} from "../../keeper/lib/financial-journal.js";
 
 export interface ParsedEraseArgs {
   person?: string;
@@ -37,17 +36,22 @@ export interface ParsedEraseArgs {
   vaults: string[];
 }
 
+export function rootApplyRefusal(platform:string,uid:number|undefined):string|undefined{
+  return platform!=='linux'||uid!==0?"--apply requires root on Linux. No database rows or files were changed.":undefined;
+}
+
 const HELP_TEXT = [
-  "pnpm -C services/box erase-person -- <who> [--vault <path> ...] [--apply] [--help]",
+  "tsx services/box/bin/erase-person.ts <who> [--vault <path> ...] [--apply] [--help]",
   "",
   "Removes one member of this installation from every table in this database that names them,",
-  "and — for every --vault given — from that vault's notes too. It happens all at once or not at",
-  "all: if any part of it cannot run, nothing is changed.",
+  "and — for every --vault given — from that vault's notes too. An apply uses the prepared financial",
+  "journal and requires the keeper to be stopped first. File removals remain if the database fails.",
   "",
   "  <who>          The person: their id in the register, an old chat handle, or an email address.",
   "  --vault <path> A vault to also check, on this filesystem. Repeatable. Without at least one,",
   "                 no vault is looked at at all, and the report says so.",
-  "  --apply        Actually do it. Without this flag nothing is changed and you get a practice run.",
+  "  --apply        Actually do it. Root on Linux only; prepared financial custody is required.",
+  "                 Without this flag nothing is changed and you get a practice run.",
   "  --help         Show this message.",
   "",
   "Exit codes:",
@@ -99,7 +103,7 @@ function messageOf(err: unknown): string {
 /** Exported so a test can drive it without spawning a process — migrate.ts's shape. */
 export async function main(
   argv: readonly string[],
-  deps: { db: Pool; out: (s: string) => void },
+  deps: { db: Pool; out: (s: string) => void;journal?:HostFinancialJournal },
 ): Promise<number> {
   let args: ParsedEraseArgs;
   try {
@@ -118,31 +122,52 @@ export async function main(
     return 1;
   }
 
+  if(args.apply&&!deps.journal?.prepared){
+    deps.out("Prepared financial custody is not configured or available. No database rows or files were changed.");
+    return 1;
+  }
+
   let result;
   try {
-    result = await runErase({ db: deps.db, person: args.person, vaults: args.vaults, apply: args.apply });
+    result = await runErase({ db: deps.db, person: args.person, vaults: args.vaults, apply: args.apply,journal:deps.journal });
   } catch (err) {
     deps.out(
-      "This erase stopped before anything was changed, because the database could not be " +
-        `reached or answered unexpectedly: ${messageOf(err)}`,
+      "The erase stopped because the database could not be reached or answered unexpectedly. " +
+        `Inspect the database and any vault files before deciding what to do next: ${messageOf(err)}`,
     );
     return 1;
   }
 
   deps.out(renderRunEraseReport(result));
-  return result.dbReport.refusals.length > 0 || result.vaultError !== undefined ? 1 : 0;
+  return result.dbReport.refusals.length > 0 || result.vaultError !== undefined || result.journalWarning!==undefined || result.transactionOutcome==='unknown' ? 1 : 0;
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  const db = poolFromEnv();
-  main(process.argv.slice(2), { db, out: (s) => process.stdout.write(s + "\n") })
-    .then(async (code) => {
-      await db.end();
-      process.exit(code);
-    })
-    .catch(async (err) => {
-      process.stdout.write(messageOf(err) + "\n");
-      await db.end().catch(() => undefined);
-      process.exit(1);
-    });
+  let db:Pool|undefined,journal:HostFinancialJournal|undefined;
+  const args=process.argv.slice(2);
+  const apply=args.includes('--apply')&&!args.includes('--help');
+  const rootRefusal=apply?rootApplyRefusal(process.platform,process.getuid?.()):undefined;
+  if(rootRefusal){
+    process.stdout.write(rootRefusal+"\n");process.exit(1);
+  }
+  try{
+    if(args.includes('--help')){
+      process.exitCode=await main(args,{db:{} as Pool,out:(s)=>process.stdout.write(s+"\n")});
+    }else if(apply){
+      const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
+      const {HostFinancialJournal}=await import('../../keeper/lib/financial-journal.js');
+      const config=loadKeeperConfig();
+      if(config.budgetFinancial)journal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
+      db=keeperPool(config.db);
+    }else{
+      const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
+      const config=loadKeeperConfig();db=keeperPool(config.db);
+    }
+    if(!args.includes('--help'))process.exitCode=await main(args, { db:db!,journal,out: (s) => process.stdout.write(s + "\n") });
+  }
+  catch(err){process.stdout.write(messageOf(err)+"\n");process.exitCode=1;}
+  finally{
+    try{journal?.close();}catch(err){process.stdout.write(`Financial custody needs inspection: ${messageOf(err)}\n`);process.exitCode=1;}
+    await db?.end().catch(()=>undefined);
+  }
 }

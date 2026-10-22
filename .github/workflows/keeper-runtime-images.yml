@@ -119,6 +119,8 @@ jobs:
         run: python3 services/keeper/tests/financial-continuity-image.probe.py lares-keeper:test
       - name: Prove Vault reads through the final Keeper image and real managed Git files
         run: python3 services/keeper/tests/vault-files-image.probe.py lares-keeper:test
+      - name: Prove root-only person erasure against the final Keeper image and Linux journal lock
+        run: python3 services/keeper/tests/person-erasure-image.probe.py lares-keeper:test
 
       - name: Verify the box tooling loads and the engine unpacks
         run: |

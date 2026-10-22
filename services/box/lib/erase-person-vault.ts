@@ -52,7 +52,7 @@
 // walker that misses a form leaves a person's file behind and reports success.
 
 import { execFileSync } from "node:child_process";
-import { readFileSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, type Dirent } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 
 import { ARTICLE_FULL_TEXT_KEY, articleCompanionPath } from "@lares/vault-format/article";
@@ -68,6 +68,10 @@ export interface VaultHit {
   /** Whether git knows about this file. Untracked files need a plain `rm`; `git rm` cannot see
    *  them. A vault that is not a git repository at all has no tracked files. */
   tracked: boolean;
+}
+
+export class ErasePersonFilesError extends Error {
+  constructor(message:string,readonly partial:{commit:string|null;removed:string[];untracked:string[];leftShared:string[]}){super(message);}
 }
 
 /** What the commit says about itself, because the git log is where somebody will look in a year.
@@ -402,22 +406,31 @@ export async function erasePersonFiles(opts: {
 
   // `-f`: a person's note with an unsaved local edit is still that person's note. Without it
   // `git rm` stops on the first modified file, part-way through the batches.
-  for (const batch of chunked(removed, 200)) {
-    execFileSync("git", ["-C", vaultRoot, "rm", "-q", "-f", "--", ...batch]);
+  const existed=new Set([...removed,...untracked].filter(path=>existsSync(join(vaultRoot,path))));
+  const beforeHead=isGitWorkTree(vaultRoot)?execFileSync("git",["-C",vaultRoot,"rev-parse","--short","HEAD"],{encoding:"utf8"}).trim():null;
+  try{
+    for (const batch of chunked(removed, 200)) {
+      execFileSync("git", ["-C", vaultRoot, "rm", "-q", "-f", "--", ...batch]);
+    }
+    for (const path of untracked) {
+      rmSync(join(vaultRoot, path), { force: true });
+    }
+    // The commit can fail after the tracked files have already been removed. Keep it
+    // inside the same reporting boundary so the caller gets the current vault's partial result.
+    if (removed.length === 0 || !isGitWorkTree(vaultRoot)) {
+      return { commit: null, removed, untracked, leftShared };
+    }
+    const subject = `erase: ${removed.length} file(s) for one person`;
+    execFileSync("git", ["-C", vaultRoot, "commit", "-q", "-m", `${subject}\n\n${ERASE_COMMIT_NOTE}`]);
+    const commit = execFileSync("git", ["-C", vaultRoot, "rev-parse", "--short", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    return { commit, removed, untracked, leftShared };
+  }catch(error){
+    const removedNow=[...existed].filter(path=>!existsSync(join(vaultRoot,path))&&removed.includes(path));
+    const untrackedNow=[...existed].filter(path=>!existsSync(join(vaultRoot,path))&&untracked.includes(path));
+    let commit:string|null=null;
+    if(beforeHead&&isGitWorkTree(vaultRoot))try{const current=execFileSync("git",["-C",vaultRoot,"rev-parse","--short","HEAD"],{encoding:"utf8"}).trim();if(current!==beforeHead)commit=current;}catch{/* The known file removals are still reported. */}
+    throw new ErasePersonFilesError(error instanceof Error?error.message:String(error),{commit,removed:removedNow,untracked:untrackedNow,leftShared});
   }
-  for (const path of untracked) {
-    rmSync(join(vaultRoot, path), { force: true });
-  }
-
-  // The commit counts the files it actually records. The untracked ones were never in git and
-  // never will be; the report tells the person about them, the commit does not pretend to.
-  if (removed.length === 0 || !isGitWorkTree(vaultRoot)) {
-    return { commit: null, removed, untracked, leftShared };
-  }
-  const subject = `erase: ${removed.length} file(s) for one person`;
-  execFileSync("git", ["-C", vaultRoot, "commit", "-q", "-m", `${subject}\n\n${ERASE_COMMIT_NOTE}`]);
-  const commit = execFileSync("git", ["-C", vaultRoot, "rev-parse", "--short", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
-  return { commit, removed, untracked, leftShared };
 }
