@@ -16,7 +16,7 @@ import {PgMemberStore} from '@lares/agent-kit/member-store';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import {serve} from '../lib/socket-server.js';
 import {addUnboundNativeCredential,createNativeTestCustody,openNativeTestCustody} from './helpers/native-cleanup.js';
-import type {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
+import type {BudgetNativeCustodyStore,NativeCustodyGate} from '../lib/budget-native-custody.js';
 
 let container:StartedPostgreSqlContainer,pool:Pool,journal:HostFinancialJournal,directory:string;
 let nativeCustody:BudgetNativeCustodyStore|undefined;
@@ -118,25 +118,46 @@ it('refuses actor claims, non-designated owners, expired or revoked sessions, se
 });
 
 it('reports acknowledged SQL removal when the post-COMMIT deadline expires',async()=>{
-  nativeCustody=createNativeTestCustody(join(roots[0]!, 'native-deadline'));
-  await addUnboundNativeCredential(nativeCustody,randomUUID());
-  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('target-native-deadline','Deadline target','org-main','member','active')");
-  const delayedPool=new Proxy(pool,{get(target,property){
-    if(property==='connect')return async()=>{
-      const client=await target.connect(),query=client.query.bind(client);
-      return {release:client.release.bind(client),query:async(value:any,values?:any[])=>{
-        const sql=typeof value==='string'?value:value.text,result=await query(value,values);
-        if(/^\s*COMMIT\b/i.test(sql))await new Promise(resolve=>setTimeout(resolve,5_050));
-        return result;
-      }};
-    };
-    const value=Reflect.get(target,property,target);return typeof value==='function'?value.bind(target):value;
-  }}) as unknown as Pool;
-  register('designated-owner',delayedPool,nativeCustody);
-  await expect(act(sessions.designated,'target-native-deadline')).resolves.toEqual({removed:true,nativeCleanup:{status:'blocked',remaining:null}});
-  expect((await pool.query("SELECT status FROM users WHERE id='target-native-deadline'")).rows[0].status).toBe('removed');
-  await expect(nativeCustody.withGate(async()=>undefined)).rejects.toThrow('Native custody unavailable');
-},15_000);
+  const databaseName=`member_deadline_${randomUUID().replaceAll('-','')}`;
+  await pool.query(`CREATE DATABASE ${databaseName}`);
+  const deadlineUri=new URL(container.getConnectionUri());deadlineUri.pathname=`/${databaseName}`;
+  const deadlinePool=quiet(new Pool({connectionString:deadlineUri.toString(),max:4,connectionTimeoutMillis:3000}));
+  const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-member-deadline-'));chmodSync(root,0o700);
+  let deadlineJournal:HostFinancialJournal|undefined,deadlineCustody:BudgetNativeCustodyStore|undefined;
+  try{
+    const sqlDir=new URL('../../box/sql/',import.meta.url);
+    for(const name of readdirSync(sqlDir).filter(name=>/^\d{3}_.*\.sql$/.test(name)).sort())await deadlinePool.query(readFileSync(new URL(name,sqlDir),'utf8'));
+    await deadlinePool.query("INSERT INTO orgs(id,display_name) VALUES('org-main','Main')");
+    await deadlinePool.query(`INSERT INTO users(id,display_name,org_id,org_role,status) VALUES
+      ('designated-owner','Owner','org-main','owner','active'),('target-native-deadline','Deadline target','org-main','member','active')`);
+    await deadlinePool.query(`INSERT INTO member_sessions(id,member_id,token_hash,created_at,expires_at,revoked_at)
+      VALUES('session-designated','designated-owner',$1,clock_timestamp()-interval '1 minute',clock_timestamp()+interval '1 day',NULL)`,[sessionHash(sessions.designated)]);
+    const directory=join(root,'financial'),client=await deadlinePool.connect();
+    try{await prepareFinancialCustody(directory,client,{ownershipUid:testJournalUid,lock:platformTestJournalLock});}finally{client.release();}
+    deadlineJournal=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+    deadlineCustody=createNativeTestCustody(join(root,'native'));await addUnboundNativeCredential(deadlineCustody,randomUUID());
+    const delayedPool=new Proxy(deadlinePool,{get(target,property){
+      if(property==='connect')return async()=>{
+        const client=await target.connect(),query=client.query.bind(client);
+        return {release:client.release.bind(client),query:async(value:any,values?:any[])=>{
+          const sql=typeof value==='string'?value:value.text,result=await query(value,values);
+          if(/^\s*COMMIT\b/i.test(sql))await new Promise(resolve=>setTimeout(resolve,5_050));
+          return result;
+        }};
+      };
+      const value=Reflect.get(target,property,target);return typeof value==='function'?value.bind(target):value;
+    }}) as unknown as Pool;
+    registerMemberRemovalAction({pool:delayedPool,journal:deadlineJournal,designatedOwnerId:'designated-owner',nativeCustody:deadlineCustody});
+    await expect(runAction('member.remove',{sessionToken:sessions.designated,targetMemberId:'target-native-deadline'},context()))
+      .resolves.toEqual({removed:true,nativeCleanup:{status:'blocked',remaining:null}});
+    expect((await deadlinePool.query("SELECT status FROM users WHERE id='target-native-deadline'")).rows[0].status).toBe('removed');
+    await expect(deadlineCustody.withGate(async()=>undefined)).rejects.toThrow('Native custody unavailable');
+    await expect(deadlineJournal.operation('member-remove',async()=>undefined)).rejects.toThrow('closed');
+  }finally{
+    resetActions();try{deadlineCustody?.close();}catch{}try{deadlineJournal?.close();}catch{}
+    await deadlinePool.end();await pool.query(`DROP DATABASE ${databaseName} WITH (FORCE)`);rmSync(root,{recursive:true,force:true});
+  }
+},120_000);
 
 it('journals trigger retirement and the expanded closure while leaving admitted history and windows unchanged',async()=>{
   await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:['target-financial']});
@@ -170,9 +191,16 @@ it('journals trigger retirement and the expanded closure while leaving admitted 
       createHash('sha256').update('settlement').digest('hex')]);
   }
   const originalWindows=await pool.query('SELECT id,starts_at,ends_at,opening_liability::text,opening_cap::text,policy_revision::text FROM budget_windows ORDER BY id');
+  const originalWithGate=nativeCustody.withGate,ownedWithGate=nativeCustody.withGate.bind(nativeCustody),publicationAttempts:Promise<string>[]=[];
+  nativeCustody.withGate=async <T>(work:(gate:NativeCustodyGate)=>Promise<T>)=>ownedWithGate(gate=>work({...gate,recordRevocation:(operationId,receipt)=>{
+      publicationAttempts.push(journal.operation('settle',async()=>undefined).then(()=> 'entered',error=>error instanceof Error?error.message:'failed'));
+      return gate.recordRevocation(operationId,receipt);
+    }}));
   register('designated-owner',pool,nativeCustody);
   const removal=await act(sessions.designated,'target-financial');
+  nativeCustody.withGate=originalWithGate;
   expect(removal).toEqual({removed:true,nativeCleanup:{status:'pending',remaining:1}});
+  await expect(Promise.all(publicationAttempts)).resolves.toEqual(['Financial journal is closed or busy']);
   await nativeCustody.withGate(async gate=>expect(gate.inventory().operations[0]).toMatchObject({operationId:unboundOperationId,phase:'revoke-pending',plaintext:'removed',nativeDeletion:'unverified'}));
   const result=(await pool.query(`SELECT kind,state,reason,policy_generation::text,active_window_id FROM budget_accounts
     WHERE id=ANY($1::uuid[]) ORDER BY kind,id`,[[installation.id,member.id]])).rows;

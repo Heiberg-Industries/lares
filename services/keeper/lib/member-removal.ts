@@ -98,10 +98,13 @@ export function registerMemberRemovalAction(options:{pool:Pool;journal:HostFinan
       if(!options.nativeCustody){const result=await writer.run('member-remove',work);return {removed:result.removed};}
       const gated=await options.nativeCustody.withGate(async gate=>{
         try{
-          const result=await writer.runWithReceipt('member-remove',work);
+          let nativeCleanup:NativeCleanupStatus|undefined;
+          const result=await writer.runWithReceipt('member-remove',work,(receipt,value)=>{
+            nativeCleanup=recordCommittedNativeRetirement(gate,value.accountIds,receipt,false);
+            return undefined;
+          });
           committed=result;
-          const nativeCleanup=recordCommittedNativeRetirement(gate,result.value.accountIds,result.receipt,false);
-          return {kind:'done' as const,result:{removed:true as const,nativeCleanup}};
+          return {kind:'done' as const,result:{removed:true as const,nativeCleanup:nativeCleanup??{status:'blocked',remaining:null}}};
         }catch(error){
           if(isJournaledAbort(error,{journalId:journal.id,operation:'member-remove'}))return {kind:'aborted' as const,error};
           throw error;
