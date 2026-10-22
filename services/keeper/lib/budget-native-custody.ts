@@ -66,6 +66,11 @@ const publicationIntentSchema=z.object({version:z.literal(1),storeId:uuid,kind:z
 type PublicationIntent=z.infer<typeof publicationIntentSchema>;
 interface Options {ownershipUid?:number;ownershipGid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void}
 type Handle={fd:number;stat:BigIntStats;bytes:Buffer};
+export type NativePublicationRecoveryResult=
+  |{status:'no-intent';runtimeReady:false}
+  |{status:'recovery-available';action:'complete-publication'|'cancel-unstarted-key-create'|'cancel-local-key-removal';runtimeReady:false}
+  |{status:'repaired-locally';action:'complete-publication'|'cancel-unstarted-key-create'|'cancel-local-key-removal';runtimeReady:false}
+  |{status:'recovery-required';runtimeReady:false};
 const unavailable=()=>new Error('Native custody unavailable; explicit reconciliation is required');
 const refused=()=>new Error('Native custody operation refused');
 const same=(a:unknown,b:unknown)=>gatewayCanonical(a).equals(gatewayCanonical(b));
@@ -137,6 +142,178 @@ export class BudgetNativeCustodyStore {
       owner.snapshotFile=owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES);owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);
       owner.verify();owner.publishControl({...owner.control,state:'open'});return owner;
     }catch{owner.release();throw unavailable();}
+  }
+  /** Read-only inspection under the native writer lock. This never returns custody data
+   * or a runtime gate and cannot make an interrupted store usable. */
+  static inspectPublicationRecovery(directory:string,options:Options={}):NativePublicationRecoveryResult {
+    return this.runPublicationRecovery(directory,options,false);
+  }
+  /** Performs only a fully evidenced local file completion/cancellation. The runtime
+   * store must still be opened separately through the unchanged strict openExisting(). */
+  static repairPublicationRecovery(directory:string,options:Options={}):NativePublicationRecoveryResult {
+    return this.runPublicationRecovery(directory,options,true);
+  }
+  private static runPublicationRecovery(directory:string,options:Options,repair:boolean):NativePublicationRecoveryResult {
+    const owner=new BudgetNativeCustodyStore(directory,options),partials=new Map<string,Handle>(),owned=new Set<Handle>(),tracked=new Map<string,Handle>(),keyFiles=new Map<string,Handle>();
+    const own=(name:string,file:Handle):Handle=>{if(tracked.has(name))throw unavailable();owned.add(file);tracked.set(name,file);return file;};
+    const closeOwned=(file:Handle):void=>{if(!owned.delete(file))return;file.bytes.fill(0);try{closeSync(file.fd);}catch{}};
+    const forget=(name:string,file:Handle):void=>{if(tracked.get(name)===file)tracked.delete(name);closeOwned(file);};
+    const guard=():void=>{
+      owner.assertOwner();for(const [name,file] of tracked)owner.assertHandle(name,file,name==='control.json'||name==='.control.json.partial'?CONTROL_BYTES:name==='writer.lock'?0:name==='publication-intent.json'?INTENT_BYTES:name.endsWith('.key')?KEY_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+      const expected=[...tracked.keys()].sort(),actual=owner.inventoryNames().sort();if(expected.length!==actual.length||expected.some((name,index)=>name!==actual[index]))throw unavailable();
+    };
+    const syncTracked=(fd:number):void=>{owner.sync(fd);guard();};
+    const syncRootTracked=(skipIntentCheck=false):void=>{owner.syncRoot(skipIntentCheck);guard();};
+    let result:NativePublicationRecoveryResult={status:'recovery-required',runtimeReady:false};
+    try{
+      owner.openRoot();owner.lock=own('writer.lock',owner.openFile('writer.lock',0));if(owner.lock.bytes.length!==0)throw unavailable();
+      (options.lock??linuxInheritedJournalLock)(owner.lock.fd);
+      const names=owner.inventoryNames();
+      owner.snapshotFile=own('snapshot.json',owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES));
+      owner.controlFile=own('control.json',owner.openFile('control.json',CONTROL_BYTES));
+      owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);owner.control=owner.decode(controlSchema,owner.controlFile.bytes);
+      const intentPresent=names.includes('publication-intent.json');
+      if(!intentPresent){
+        if(names.some(name=>name==='.snapshot.json.partial'||name==='.control.json.partial'))throw unavailable();
+        const expected=new Map<string,string>();for(const op of owner.snapshot.operations)if(op.kind==='operation'&&op.plaintext!=='removed')expected.set(owner.keyName(op.operationId),op.keyFingerprint);
+        for(const [name,fingerprint] of expected)if(names.includes(name)){const file=own(name,owner.openFile(name,KEY_BYTES));keyFiles.set(name,file);if(digest(file.bytes)!==fingerprint)throw unavailable();}
+        guard();owner.verify(new Set(),{keyFiles});guard();result={status:'no-intent',runtimeReady:false};return result;
+      }
+      owner.publicationIntent=own('publication-intent.json',owner.openFile('publication-intent.json',INTENT_BYTES));
+      owner.publicationIntentRecord=owner.decode(publicationIntentSchema,owner.publicationIntent.bytes);
+      for(const name of ['.snapshot.json.partial','.control.json.partial'])if(names.includes(name))partials.set(name,own(name,owner.openFile(name,name==='.control.json.partial'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES)));
+      const intent=owner.publicationIntentRecord,actualSnapshot=owner.snapshotFile.bytes,actualControl=owner.controlFile.bytes;
+      if(intent.next.revision!==intent.previous.revision+1||!Number.isSafeInteger(intent.next.revision)||intent.previous.controlState!=='open'||intent.storeId!==owner.snapshot.storeId||owner.control.storeId!==intent.storeId||owner.snapshot.storeId!==intent.storeId)throw unavailable();
+
+      const snapshots=new Map<string,{handle:Handle;value:Snapshot}>(),controls=new Map<string,{handle:Handle;value:Control}>();
+      snapshots.set('snapshot.json',{handle:owner.snapshotFile,value:owner.snapshot});
+      controls.set('control.json',{handle:owner.controlFile,value:owner.control});
+      const snapshotPartial=partials.get('.snapshot.json.partial'),controlPartial=partials.get('.control.json.partial');
+      if(snapshotPartial)snapshots.set('.snapshot.json.partial',{handle:snapshotPartial,value:owner.decode(snapshotSchema,snapshotPartial.bytes)});
+      if(controlPartial)controls.set('.control.json.partial',{handle:controlPartial,value:owner.decode(controlSchema,controlPartial.bytes)});
+      const expectedKeys=new Map<string,string>();for(const {value} of snapshots.values())for(const op of value.operations)if(op.kind==='operation'&&op.plaintext!=='removed'){
+        const name=owner.keyName(op.operationId),found=expectedKeys.get(name);if(found&&found!==op.keyFingerprint)throw unavailable();expectedKeys.set(name,op.keyFingerprint);
+      }
+      if(expectedKeys.size>NATIVE_CUSTODY_MAX_RECORDS)throw unavailable();
+      for(const [name,fingerprint] of expectedKeys)if(names.includes(name)){const file=own(name,owner.openFile(name,KEY_BYTES));keyFiles.set(name,file);if(digest(file.bytes)!==fingerprint)throw unavailable();}
+      guard();
+      for(const {value} of snapshots.values())if(value.storeId!==intent.storeId)throw unavailable();
+      for(const {value} of controls.values())if(value.storeId!==intent.storeId)throw unavailable();
+      const currentSnapshotIsPrevious=owner.snapshot.revision===intent.previous.revision&&digest(actualSnapshot)===intent.previous.snapshotDigest;
+      const currentSnapshotIsNext=owner.snapshot.revision===intent.next.revision&&digest(actualSnapshot)===intent.next.snapshotDigest;
+      const currentControlIsPrevious=owner.control.revision===intent.previous.revision&&digest(actualControl)===intent.previous.controlDigest&&
+        owner.control.state===intent.previous.controlState&&owner.control.snapshotDigest===intent.previous.snapshotDigest;
+      const currentControlIsNext=owner.control.revision===intent.next.revision&&digest(actualControl)===intent.next.controlDigest&&
+        owner.control.state===intent.previous.controlState&&owner.control.snapshotDigest===intent.next.snapshotDigest;
+      if((!currentSnapshotIsPrevious&&!currentSnapshotIsNext)||(!currentControlIsPrevious&&!currentControlIsNext))throw unavailable();
+      for(const [name,candidate] of snapshots)if(name!== 'snapshot.json'&&
+        (candidate.value.revision!==intent.next.revision||digest(candidate.handle.bytes)!==intent.next.snapshotDigest))throw unavailable();
+      for(const [name,candidate] of controls)if(name!=='control.json'&&
+        (candidate.value.revision!==intent.next.revision||digest(candidate.handle.bytes)!==intent.next.controlDigest))throw unavailable();
+
+      const oldSnapshot=snapshots.get('snapshot.json')!,oldControl=controls.get('control.json')!;
+      const isOld=oldSnapshot.value.revision===intent.previous.revision&&oldControl.value.revision===intent.previous.revision&&
+        digest(actualSnapshot)===intent.previous.snapshotDigest&&digest(actualControl)===intent.previous.controlDigest&&
+        oldControl.value.state===intent.previous.controlState&&oldControl.value.snapshotDigest===intent.previous.snapshotDigest;
+      const nextSnapshot=[...snapshots.entries()].find(([,candidate])=>candidate.value.revision===intent.next.revision&&digest(candidate.handle.bytes)===intent.next.snapshotDigest);
+      const nextControl=[...controls.entries()].find(([,candidate])=>candidate.value.revision===intent.next.revision&&digest(candidate.handle.bytes)===intent.next.controlDigest);
+      if(nextSnapshot&&nextControl){
+        const snapshotValue=nextSnapshot[1].value,controlValue=nextControl[1].value;
+        if(snapshotValue.revision!==intent.next.revision||controlValue.revision!==intent.next.revision||controlValue.state!==intent.previous.controlState||
+          controlValue.snapshotDigest!==intent.next.snapshotDigest||controlValue.storeId!==intent.storeId)throw unavailable();
+        if(intent.kind==='snapshot'){
+          if(intent.key!==null)throw unavailable();
+        }else{
+          const target=intent.key;if(!target)throw unavailable();
+          const targetOperation=snapshotValue.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.operationId===target.operationId);
+          if(!targetOperation||targetOperation.keyFingerprint!==target.keyFingerprint)throw unavailable();
+          const previousSnapshot=[...snapshots.values()].find(candidate=>candidate.value.revision===intent.previous.revision&&digest(candidate.handle.bytes)===intent.previous.snapshotDigest)?.value;
+          // When previous bytes remain, prove the transition against them. If they have
+          // already been replaced, only the exact protected intent carries that history;
+          // its summary digest cannot reconstruct or authenticate missing snapshot bytes.
+          if(previousSnapshot){
+            const previousOperation=previousSnapshot.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.operationId===target.operationId);
+            if(intent.kind==='key-create'&&previousOperation)throw unavailable();
+            if(intent.kind==='key-remove'&&(!previousOperation||previousOperation.keyFingerprint!==target.keyFingerprint||
+              !same({...previousOperation,plaintext:'removed'},targetOperation)))throw unavailable();
+          }
+          if(intent.kind==='key-create'){
+            if(targetOperation.phase!=='prepared'||targetOperation.plaintext!=='present'||targetOperation.keyCreateAttempt!=='not-attempted'||
+              targetOperation.financialOperationId!==null||targetOperation.financialJournalId!==null||targetOperation.bindingReceipt!==null||targetOperation.revocationReceipt!==null||
+              targetOperation.nativeDeletion!=='unverified')throw unavailable();
+          }else if(targetOperation.phase!=='revoke-pending'||targetOperation.plaintext!=='removed'||targetOperation.nativeDeletion!=='unverified'||!targetOperation.revocationReceipt)throw unavailable();
+        }
+        owner.snapshot=snapshotValue;owner.snapshotFile=nextSnapshot[1].handle;owner.control=controlValue;owner.controlFile=nextControl[1].handle;
+        const extra=new Set<string>(['publication-intent.json',...names.filter(name=>name==='.snapshot.json.partial'||name==='.control.json.partial'||
+          (name==='snapshot.json'&&nextSnapshot[0]!==name)||(name==='control.json'&&nextControl[0]!==name))]);
+        owner.verify(new Set(),{snapshotName:nextSnapshot[0],controlName:nextControl[0],extraNames:extra,keyFiles});guard();
+        result={status:'recovery-available',action:'complete-publication',runtimeReady:false};
+        if(!repair)return result;
+        if(intent.kind==='key-create'&&intent.key){
+          const keyName=owner.keyName(intent.key.operationId),keyFile=keyFiles.get(keyName);if(!keyFile||digest(keyFile.bytes)!==intent.key.keyFingerprint)throw unavailable();
+          syncTracked(keyFile.fd);
+        }
+        for(const [partialName,finalName] of [['.snapshot.json.partial','snapshot.json'],['.control.json.partial','control.json']] as const){
+          const chosen=partialName==='.snapshot.json.partial'?nextSnapshot[0]:nextControl[0];
+          if(chosen!==partialName)continue;
+          const next=partials.get(partialName);if(!next)throw unavailable();
+          const current=partialName==='.snapshot.json.partial'?owner.snapshotFile:owner.controlFile;
+          const old=partialName==='.snapshot.json.partial'?oldSnapshot.handle:oldControl.handle;
+          if(current!==next)throw unavailable();owner.assertHandle(partialName,next,partialName==='.control.json.partial'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+          if(old!==next)owner.assertHandle(finalName,old,finalName==='control.json'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+          syncTracked(next.fd);owner.assertOwner();owner.assertHandle(partialName,next,partialName==='.control.json.partial'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+          if(old!==next)owner.assertHandle(finalName,old,finalName==='control.json'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+          guard();renameSync(join(directory,partialName),join(directory,finalName));tracked.delete(partialName);tracked.delete(finalName);next.stat=fstatSync(next.fd,{bigint:true});tracked.set(finalName,next);owner.assertHandle(finalName,next,finalName==='control.json'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);
+          if(finalName==='snapshot.json')owner.snapshotFile=next;else owner.controlFile=next;
+          if(old!==next){closeOwned(old);if(finalName==='snapshot.json')owner.snapshotFile=next;else owner.controlFile=next;}
+          syncRootTracked();partials.delete(partialName);
+        }
+        for(const [name,file] of [...partials]){guard();unlinkSync(join(directory,name));tracked.delete(name);partials.delete(name);closeOwned(file);syncRootTracked();}
+        owner.verify(new Set(),{keyFiles});guard();
+        const intentFile=owner.publicationIntent;if(!intentFile||!owner.publicationIntentRecord)throw unavailable();
+        guard();unlinkSync(join(directory,'publication-intent.json'));tracked.delete('publication-intent.json');owner.publicationIntent=undefined;owner.publicationIntentRecord=undefined;closeOwned(intentFile);syncRootTracked(true);
+        owner.verify(new Set(),{keyFiles});guard();
+        result={status:'repaired-locally',action:'complete-publication',runtimeReady:false};return result;
+      }
+
+      if(!isOld)throw unavailable();
+      // Every recognized partial must independently be exact canonical next bytes. They
+      // may be discarded only for the two transitions whose external ordering proves no
+      // later side effect could have started while the old pair remained current.
+      if(owner.control.state==='uncertain')throw unavailable();
+      const extra=new Set<string>(partials.keys());
+      owner.verify(new Set(),{intentMode:'old',extraNames:extra,keyFiles});guard();
+      let action:'cancel-unstarted-key-create'|'cancel-local-key-removal';
+      const key=intent.key;
+      if(intent.kind==='key-create'&&key&&owner.snapshot.operations.every(op=>op.kind!=='operation'||op.operationId!==key.operationId)&&!names.includes(`${key.operationId}.key`)){
+        const partialSnapshot=snapshots.get('.snapshot.json.partial')?.value;
+        if(partialSnapshot){
+          const intended=partialSnapshot.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.operationId===key.operationId);
+          if(!intended||intended.keyFingerprint!==key.keyFingerprint||intended.phase!=='prepared'||intended.plaintext!=='present'||intended.keyCreateAttempt!=='not-attempted'||
+            intended.financialOperationId!==null||intended.financialJournalId!==null||intended.bindingReceipt!==null||intended.revocationReceipt!==null||intended.nativeDeletion!=='unverified')throw unavailable();
+        }
+        action='cancel-unstarted-key-create';
+      }else if(intent.kind==='key-remove'&&key){
+        const op=owner.snapshot.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.operationId===key.operationId);
+        if(!op||op.keyFingerprint!==key.keyFingerprint||op.phase!=='revoke-pending'||op.plaintext!=='removal-pending'||op.nativeDeletion!=='unverified')throw unavailable();
+        const partialSnapshot=snapshots.get('.snapshot.json.partial')?.value;
+        if(partialSnapshot){
+          const intended=partialSnapshot.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.operationId===key.operationId);
+          if(!intended||intended.keyFingerprint!==key.keyFingerprint||intended.phase!=='revoke-pending'||intended.plaintext!=='removed'||intended.nativeDeletion!=='unverified'||!intended.revocationReceipt)throw unavailable();
+        }
+        const keyFile=keyFiles.get(owner.keyName(key.operationId));if(!keyFile||digest(keyFile.bytes)!==key.keyFingerprint)throw unavailable();
+        action='cancel-local-key-removal';
+      }else throw unavailable();
+      result={status:'recovery-available',action,runtimeReady:false};if(!repair)return result;
+      for(const [name,file] of [...partials]){guard();unlinkSync(join(directory,name));tracked.delete(name);partials.delete(name);closeOwned(file);syncRootTracked();}
+      const intentFile=owner.publicationIntent;if(!intentFile)throw unavailable();guard();unlinkSync(join(directory,'publication-intent.json'));tracked.delete('publication-intent.json');closeOwned(intentFile);owner.publicationIntent=undefined;owner.publicationIntentRecord=undefined;
+      syncRootTracked(true);owner.verify(new Set(),{keyFiles});guard();result={status:'repaired-locally',action,runtimeReady:false};return result;
+    }catch{
+      return {status:'recovery-required',runtimeReady:false};
+    }finally{
+      for(const file of owned)closeOwned(file);
+      owner.closed=true;if(owner.rootFd!==undefined)try{closeSync(owner.rootFd);}catch{}
+    }
   }
   async withGate<T>(work:(gate:NativeCustodyGate)=>Promise<T>):Promise<T>{
     if(this.closed||this.frozen||this.stopping||this.busy)throw unavailable();this.busy=true;let active=true;const absenceChallenges=new Map<string,string>();
@@ -328,16 +505,18 @@ export class BudgetNativeCustodyStore {
     this.verify();
   }
   private decode<T>(schema:z.ZodType<T>,bytes:Buffer):T {const value=schema.parse(JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(bytes)));if(!gatewayCanonical(value).equals(bytes))throw unavailable();return value;}
-  private verify(missingKeys=new Set<string>()):void {
-    this.assertRoot();this.assertHandle('writer.lock',this.lock,0);this.assertHandle('snapshot.json',this.snapshotFile,NATIVE_CUSTODY_MAX_BYTES);this.assertHandle('control.json',this.controlFile,CONTROL_BYTES);
+  private verify(missingKeys=new Set<string>(),recovery:{snapshotName?:string;controlName?:string;extraNames?:ReadonlySet<string>;intentMode?:'next'|'old';keyFiles?:ReadonlyMap<string,Handle>}={}):void {
+    const snapshotName=recovery.snapshotName??'snapshot.json',controlName=recovery.controlName??'control.json';
+    this.assertRoot();this.assertHandle('writer.lock',this.lock,0);this.assertHandle(snapshotName,this.snapshotFile,NATIVE_CUSTODY_MAX_BYTES);this.assertHandle(controlName,this.controlFile,CONTROL_BYTES);
     if(this.control.storeId!==this.snapshot.storeId||this.control.revision!==this.snapshot.revision||this.control.snapshotDigest!==digest(this.snapshotFile.bytes)||this.control.state==='uncertain'||!this.snapshotBytes(this.snapshot).equals(this.snapshotFile.bytes))throw unavailable();
     if(this.publicationIntent){
       if(!this.publicationIntentRecord)throw unavailable();this.assertHandle('publication-intent.json',this.publicationIntent,INTENT_BYTES);
       const stored=this.decode(publicationIntentSchema,this.publicationIntent.bytes);
-      if(!same(stored,this.publicationIntentRecord)||stored.storeId!==this.snapshot.storeId||stored.next.revision!==this.snapshot.revision||stored.next.snapshotDigest!==digest(this.snapshotFile.bytes)||stored.next.controlDigest!==digest(this.controlFile.bytes))throw unavailable();
+      if(!same(stored,this.publicationIntentRecord)||stored.storeId!==this.snapshot.storeId||recovery.intentMode!=='old'&&(stored.next.revision!==this.snapshot.revision||stored.next.snapshotDigest!==digest(this.snapshotFile.bytes)||stored.next.controlDigest!==digest(this.controlFile.bytes)))throw unavailable();
     }
-    const expected=new Set(['writer.lock','snapshot.json','control.json']),unique=new Set<string>();
+    const expected=new Set(['writer.lock',snapshotName,controlName]),unique=new Set<string>();
     if(this.publicationIntent){expected.add('publication-intent.json');}
+    for(const name of recovery.extraNames??[])expected.add(name);
     const uniqueId=(value:string)=>{if(unique.has(value))throw unavailable();unique.add(value);};
     for(const t of this.snapshot.teams){uniqueId('team:'+t.ownershipId);uniqueId('team-coordinate:'+t.installationAccountId+':'+t.endpoint.hash);uniqueId('native-team:'+t.endpoint.hash+':'+t.nativeTeamId);}
     for(const u of this.snapshot.users){if(u.kind==='erased-user'){uniqueId('erased-user:'+u.coordinateCommitment);continue;}uniqueId('user:'+u.ownershipId);uniqueId('user-coordinate:'+u.accountId+':'+u.endpoint.hash);uniqueId('native-user:'+u.endpoint.hash+':'+u.nativeUserId);const t=this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId);if(!t||t.installationAccountId!==u.installationAccountId||!same(t.endpoint,u.endpoint)||u.userCreateAttempt!=='not-attempted'&&t.createAttempt!=='verified'||u.membershipCreateAttempt!=='not-attempted'&&u.userCreateAttempt!=='verified'||this.snapshot.users.some(v=>v.kind==='erased-user'&&(v.coordinateCommitment===this.userCoordinate(u.accountId,u.endpoint.hash)||v.accountCommitment===commitment('erased-account',this.snapshot.storeId,u.accountId))))throw unavailable();}
@@ -349,7 +528,8 @@ export class BudgetNativeCustodyStore {
       if(!u||!t||op.keyCreateAttempt!=='not-attempted'&&u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted'&&!['provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked'].includes(op.phase)||['native-blocked-verified','bound-closed'].includes(op.phase)&&(op.keyCreateAttempt!=='verified'||u.membershipCreateAttempt!=='verified'||u.userCreateAttempt!=='verified'||t.createAttempt!=='verified')||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
       if(op.plaintext!=='removed'){
         const name=this.keyName(op.operationId);if(missingKeys.has(op.operationId))continue;expected.add(name);
-        const file=this.openFile(name,KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}finally{file.bytes.fill(0);closeSync(file.fd);}
+        if(recovery.keyFiles){const file=recovery.keyFiles.get(name);if(!file)throw unavailable();this.assertHandle(name,file,KEY_BYTES);if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}
+        else{const file=this.openFile(name,KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}finally{file.bytes.fill(0);closeSync(file.fd);}}
       }
     }
     const names=this.inventoryNames();if(names.length!==expected.size||names.some(name=>!expected.has(name)))throw unavailable();
