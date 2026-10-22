@@ -59,6 +59,22 @@ describe("member-scope inventory", () => {
     }
   });
 
+  it("classifies the shared sync and CRM tables as operational state", () => {
+    expect(scopeOf("karakeep_seen")).toMatchObject({
+      scope: "operational",
+      createdBy: "services/box/sql/027_shared_sync_schema.sql",
+    });
+    expect(scopeOf("route_cursor")).toMatchObject({
+      scope: "operational",
+      createdBy: "services/box/sql/027_shared_sync_schema.sql",
+    });
+    expect(scopeOf("route_proposals")).toMatchObject({
+      scope: "operational",
+      createdBy: "services/box/sql/027_shared_sync_schema.sql",
+    });
+    expect(scopeOf("route_proposals")?.reason).toContain("identifiable business contact references");
+  });
+
   // The inventory says what is true: two entries corrected, and a rule for new tables.
 
   it("does not claim a column that the schema does not have", () => {

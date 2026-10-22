@@ -750,6 +750,25 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
     reason: "the chief of staff's store of a person's own stated words, created by its own box migration so it is part of this inventory.",
   },
 
+  {
+    table: "karakeep_seen",
+    scope: "operational",
+    createdBy: `${BOX}/027_shared_sync_schema.sql`,
+    reason: "Deduplicates processing from the organisation's shared Karakeep source; this state does not map bookmark ids to Lares member identities.",
+  },
+  {
+    table: "route_cursor",
+    scope: "operational",
+    createdBy: `${BOX}/027_shared_sync_schema.sql`,
+    reason: "Global CRM scanner watermark for the organisation's shared feed; not a per-member cursor.",
+  },
+  {
+    table: "route_proposals",
+    scope: "operational",
+    createdBy: `${BOX}/027_shared_sync_schema.sql`,
+    reason: "Organisation commercial CRM proposal workflow and global dedup/cooldown state; person_id is an external CRM contact id outside Lares member ids, and rows retain identifiable business contact references.",
+  },
+
   // ── The web chat door's mailbox, created by services/box/sql/004_web_inbox.sql ──
   {
     table: "web_inbox",

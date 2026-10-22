@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 
 import { getPool, closePool } from "@lares/agent-kit/db";
@@ -15,6 +16,8 @@ import {
   type CrmRoutingDeps,
   RATE_LIMIT_RETRY_MS,
 } from "../agent/schedules/crm-routing.js";
+
+const SHARED_SYNC_SCHEMA_SQL = readFileSync(new URL("../../box/sql/027_shared_sync_schema.sql", import.meta.url), "utf8");
 
 // The brands are installation data (`CRM_BRANDS`); these made-up ones are set for every test here.
 let savedBrands: string | undefined;
@@ -55,6 +58,7 @@ describe("route-store", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     const pool = quiet(getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv));
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+    await pool.query(SHARED_SYNC_SCHEMA_SQL);
     await ensureRouteTables(pool);
   }, 120_000);
 
@@ -115,7 +119,7 @@ describe("route-store", () => {
     expect(await store.alreadyProposed({ personId: "person-2", signalRef: "cal:c1" })).toBe(true);
   });
 
-  it("ensureRouteTables is idempotent — safe to call twice", async () => {
+  it("ensureRouteTables verifies the migration schema without changing it", async () => {
     await expect(ensureRouteTables(getPool())).resolves.toBeUndefined();
   });
 });
@@ -741,6 +745,7 @@ describe("crm-routing integration (real Postgres, stubbed Twenty)", () => {
     container = await new PostgreSqlContainer("postgres:16-alpine").start();
     const pool = getPool({ DATABASE_URL: container.getConnectionUri() } as NodeJS.ProcessEnv);
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
+    await pool.query(SHARED_SYNC_SCHEMA_SQL);
     await ensureRouteTables(pool);
   }, 120_000);
 

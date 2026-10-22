@@ -48,29 +48,17 @@ interface CursorDbRow {
   cursor_at: string | Date | null;
 }
 
-// ─── DDL ─────────────────────────────────────────────────────────────────────
+// ─── Schema readiness ────────────────────────────────────────────────────────
 
-/** Idempotent — safe to call on every startup. */
+/** Check that the offline migration created the complete schema this store needs. */
 export async function ensureRouteTables(db: Pool): Promise<void> {
   await db.query(
-    `CREATE TABLE IF NOT EXISTS route_proposals (
-       id             uuid             PRIMARY KEY DEFAULT gen_random_uuid(),
-       person_id      text             NOT NULL,
-       opportunity_id text,
-       brand          text             NOT NULL,
-       proposed_stage text             NOT NULL,
-       signal_ref     text             NOT NULL,
-       confidence     double precision NOT NULL,
-       status         text             NOT NULL DEFAULT 'proposed',
-       created_at     timestamptz      NOT NULL DEFAULT now()
-     )`,
+    `SELECT id, person_id, opportunity_id, brand, proposed_stage, signal_ref,
+            confidence, status, created_at
+       FROM route_proposals LIMIT 0`,
   );
   await db.query(
-    `CREATE TABLE IF NOT EXISTS route_cursor (
-       id        integer  PRIMARY KEY DEFAULT 1,
-       cursor_at timestamptz NOT NULL,
-       CONSTRAINT route_cursor_singleton CHECK (id = 1)
-     )`,
+    `SELECT id, cursor_at FROM route_cursor LIMIT 0`,
   );
 }
 
