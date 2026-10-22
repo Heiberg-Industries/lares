@@ -6,10 +6,12 @@ authentication stay intact. No production authority or recovery witness is provi
 import asyncio
 import contextvars
 import hashlib
+import hmac
 import importlib.metadata
 import math
 import os
 import pathlib
+import re
 import ssl
 import sys
 import tempfile
@@ -28,6 +30,7 @@ from openai import AsyncOpenAI
 
 from admission_contract import (
     ADMIT_PATH, SETTLE_PATH, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
+    NATIVE_LOOKUP_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash,
     RPC_TIMEOUT, TICKET, VERSION, Profile, Refused, RequestState, TerminalEvidence, WireEvidence, canonical,
     https_url, parse_json, protected_key, sign, verify,
     PHYSICAL_HEADER_SECONDS, PHYSICAL_BODY_SECONDS, TERMINAL_TAIL_SECONDS, CLEANUP_SECONDS, NATIVE_POLICY_SECONDS,
@@ -302,6 +305,7 @@ class GuardedClientAuth(httpx.Auth):
 class Runtime:
     def __init__(self):
         self.profile, self.config, self.endpoint, self.gate_url, self.key = load_files()
+        self.master_key = os.environ.get("LARES_GATEWAY_MASTER_KEY")
         self.callback_ids = None
         self.secondary_callback_ids = None
         self.callback_references = None
@@ -647,8 +651,56 @@ class GatewayApp:
             if message["type"] == "http.response.start": outward_response_started = True
             await send(message)
         try:
-            if scope["type"] != "http" or scope.get("query_string") or scope.get("raw_path", scope["path"].encode()) != scope["path"].encode(): raise Refused()
+            if scope["type"] != "http" or scope.get("raw_path", scope["path"].encode()) != scope["path"].encode(): raise Refused()
             route = (scope["method"], scope["path"])
+            if route in NATIVE_LOOKUP_ROUTES:
+                query = scope.get("query_string", b"")
+                if route[0] == "GET": native_lookup_query(route[1], query)
+                elif query: raise Refused()
+
+                # These three native reads expose account identity and key state. Only
+                # the configured gateway master Bearer may reach LiteLLM's own auth.
+                # A role-bearing virtual key is still a virtual key and is refused here.
+                headers = {}
+                admin_headers = {b"host", b"connection", b"content-type", b"content-length", b"authorization", b"accept", b"accept-encoding", b"accept-language", b"sec-fetch-mode", b"user-agent"}
+                for name, value in scope["headers"]:
+                    name = name.lower()
+                    if name in headers or name not in admin_headers: raise Refused()
+                    headers[name] = value
+                authorization = headers.get(b"authorization", b"")
+                configured_master = runtime.master_key
+                if (not authorization.startswith(b"Bearer ") or not configured_master or
+                    not hmac.compare_digest(authorization[7:], configured_master.encode("utf-8"))): raise Refused()
+
+                maximum = MAX_NATIVE_LOOKUP_BODY if route[0] == "POST" else 0
+                if route[0] == "POST":
+                    if headers.get(b"content-type") != b"application/json": raise Refused()
+                elif b"content-type" in headers:
+                    raise Refused()
+                length = headers.get(b"content-length")
+                if length is not None:
+                    if re.fullmatch(rb"(?:0|[1-9][0-9]{0,5})", length) is None or int(length) > maximum: raise Refused()
+                raw = bytearray()
+                async with asyncio.timeout(2):
+                    while True:
+                        message = await receive()
+                        if message["type"] != "http.request": raise Refused()
+                        raw.extend(message.get("body", b""))
+                        if len(raw) > maximum: raise Refused()
+                        if not message.get("more_body", False): break
+                if length is not None and int(length) != len(raw): raise Refused()
+                if route[0] == "POST": native_lookup_key_hash(bytes(raw))
+                consumed = False
+                async def replay_lookup():
+                    nonlocal consumed
+                    if not consumed:
+                        consumed = True
+                        return {"type": "http.request", "body": bytes(raw), "more_body": False}
+                    return await receive()
+                native_invoked = True
+                await self.native(scope, replay_lookup, outward_send)
+                return
+            if scope.get("query_string"): raise Refused()
             if route in CONTROL_ROUTES:
                 native_invoked = True
                 await self.native(scope, receive, outward_send)

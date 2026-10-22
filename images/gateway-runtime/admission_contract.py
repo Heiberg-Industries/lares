@@ -41,6 +41,10 @@ CONTROL_ROUTES = frozenset((
 ))
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 TICKET = re.compile(r"[A-Za-z0-9_-]{43}\Z")
+NATIVE_LOOKUP_ROUTES = frozenset((("POST", "/v2/key/info"), ("GET", "/team/info"), ("GET", "/key/list")))
+NATIVE_LOOKUP_GET_QUERY = {"/team/info": "team_id", "/key/list": "user_id"}
+MAX_NATIVE_LOOKUP_BODY = 1024
+OPAQUE_NATIVE_ID = re.compile(r"[A-Za-z0-9-]{1,80}\Z")
 
 
 class Refused(Exception):
@@ -68,6 +72,27 @@ def parse_json(raw):
         if not isinstance(value, dict): raise Refused()
         return value
     except (ValueError, UnicodeError, RecursionError): raise Refused() from None
+
+
+def native_lookup_query(path, query_string):
+    """Accept only the two exact native lookup query shapes; never decode aliases."""
+    name = NATIVE_LOOKUP_GET_QUERY.get(path)
+    if name is None or not isinstance(query_string, bytes): raise Refused()
+    match = re.fullmatch(name.encode("ascii") + rb"=([A-Za-z0-9-]{1,80})", query_string)
+    if match is None: raise Refused()
+    value = match.group(1).decode("ascii")
+    if not OPAQUE_NATIVE_ID.fullmatch(value): raise Refused()
+    return value
+
+
+def native_lookup_key_hash(raw):
+    """Require one bounded, exact hash lookup document with no extra authority."""
+    if not isinstance(raw, bytes) or len(raw) > MAX_NATIVE_LOOKUP_BODY: raise Refused()
+    body = parse_json(raw)
+    keys = body.get("keys")
+    if set(body) != {"keys"} or not isinstance(keys, list) or len(keys) != 1 or not isinstance(keys[0], str) or not HASH.fullmatch(keys[0]):
+        raise Refused()
+    return keys[0]
 
 
 def request_hash(method, path, raw):
