@@ -470,7 +470,8 @@ exec litellm --config "$CONFIG_FILE_PATH"
             "caller-key-exact-and-hash-lookup","client-populated-key-inventory","hash-lookup-absent-is-not-error","client-hash-only-absence-receipt",
             "hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite","atomic-blocked-create",
             "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","unblocked-key-readback-and-native-auth",
-            "lost-create-response-reconciles-by-hash","block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
+            "lost-create-response-reconciles-by-hash","lost-client-blocked-create-response-reconciles-original-key",
+            "block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
             "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
         try:
             native_url=self.start_native_admin()

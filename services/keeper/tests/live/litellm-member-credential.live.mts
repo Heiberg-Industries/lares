@@ -48,6 +48,7 @@ const CASES = [
   "client-blocked-key-policy-readback",
   "unblocked-key-readback-and-native-auth",
   "lost-create-response-reconciles-by-hash",
+  "lost-client-blocked-create-response-reconciles-original-key",
   "block-unblock-readback-only",
   "delete-by-hash-and-reconcile-lost-response",
   "already-deleted-remains-absent",
@@ -63,6 +64,7 @@ const DIAGNOSTIC_NAMES = [
   "duplicate-inventory-readable", "duplicate-inventory-exact",
 ] as const;
 type DiagnosticName = typeof DIAGNOSTIC_NAMES[number];
+const MAX_PROBE_REQUEST_BYTES = 65_536;
 
 const outcomes = new Map<CaseName, Outcome>();
 const diagnostics = new Map<DiagnosticName, "false" | "unknown">();
@@ -82,6 +84,7 @@ const empty = (value: unknown) => value === undefined || value === null ||
 
 type Reply = { status: number; body: unknown; parsed: boolean; dropped?: boolean };
 type Lookup = { kind: "present"; row: Record<string, unknown> } | { kind: "absent" | "malformed" | "refused" | "unavailable" };
+const MAX_PROBE_RESPONSE_BYTES = 65_536;
 
 const urlValue = process.env.GATEWAY_URL;
 const keyFile = process.env.GATEWAY_MASTER_KEY_FILE;
@@ -181,7 +184,7 @@ async function call(method: "GET" | "POST", path: string, body?: unknown, auth =
         !/^[A-Za-z0-9-]{1,80}$/.test(params.get(expectedName) ?? "")) return undefined;
   } else if (path.includes("?")) return undefined;
   const requestBody = method === "POST" ? JSON.stringify(body) : undefined;
-  if (requestBody !== undefined && Buffer.byteLength(requestBody) > 65_536) return undefined;
+  if (requestBody !== undefined && Buffer.byteLength(requestBody) > MAX_PROBE_REQUEST_BYTES) return undefined;
   try {
     const response = await fetch(new URL(path, origin), {
       method, redirect: "manual", signal: AbortSignal.timeout(10_000),
@@ -200,7 +203,7 @@ async function call(method: "GET" | "POST", path: string, body?: unknown, auth =
       const next = await reader.read();
       if (next.done) break;
       length += next.value.byteLength;
-      if (length > 65_536) {
+      if (length > MAX_PROBE_RESPONSE_BYTES) {
         await reader.cancel();
         return { status: response.status, body: undefined, parsed: false };
       }
@@ -212,6 +215,53 @@ async function call(method: "GET" | "POST", path: string, body?: unknown, auth =
   } catch {
     return undefined;
   }
+}
+
+async function drainBoundedBody(response: Response, retainBody = true): Promise<Uint8Array | undefined> {
+  const reader = response.body?.getReader();
+  if (!reader) return new Uint8Array();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > MAX_PROBE_RESPONSE_BYTES) {
+        await reader.cancel();
+        return undefined;
+      }
+      if (retainBody) chunks.push(next.value);
+    }
+  } finally {
+    try { reader.releaseLock(); } catch { /* stream may already be canceled */ }
+  }
+  if (!retainBody) return new Uint8Array();
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}
+
+async function observeResponse(response: Response): Promise<{ reply: Reply; replay: Response }> {
+  let bytes: Uint8Array | undefined;
+  try { bytes = await drainBoundedBody(response); }
+  catch { bytes = undefined; }
+  const raw = bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8");
+  let reply: Reply = { status: response.status, body: undefined, parsed: false };
+  if (raw !== undefined) {
+    try { reply = { status: response.status, body: JSON.parse(raw), parsed: true }; }
+    catch { /* retain fixed malformed result */ }
+  }
+  // Give the actual client the bounded bytes from this same response. An oversized or
+  // unreadable body becomes empty so its normal response validation returns uncertain.
+  let replayBody: ArrayBuffer | null = null;
+  if (bytes !== undefined && bytes.byteLength > 0) {
+    replayBody = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(replayBody).set(bytes);
+  }
+  const replay = new Response(replayBody, { status: response.status, statusText: response.statusText, headers: response.headers });
+  return { reply, replay };
 }
 
 function classifyLookup(reply: Reply | undefined, hash: string): Lookup {
@@ -275,6 +325,29 @@ function readProbeUserId(directory: string): string {
   } finally { closeSync(fd); }
 }
 
+function persistProbeKey(directory: string, key: string): string {
+  const fd = openSync(join(directory, "original-key"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    const bytes = Buffer.from(key);
+    if (writeSync(fd, bytes) !== bytes.length) throw new Error("fixture key write failed");
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  const parent = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parent); } finally { closeSync(parent); }
+  return readProbeKey(directory);
+}
+function readProbeKey(directory: string): string {
+  const fd = openSync(join(directory, "original-key"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.size < 19 || stat.size > 259)
+      throw new Error("fixture key unavailable");
+    const key = readFileSync(fd, "utf8");
+    if (!/^sk-[A-Za-z0-9_-]{16,256}$/.test(key)) throw new Error("fixture key unavailable");
+    return key;
+  } finally { closeSync(fd); }
+}
+
 const fingerprint = (key: string) => createHash("sha256").update(key).digest("hex");
 const randomKey = () => `sk-${randomBytes(32).toString("base64url")}`;
 const hashLookup = (hash: string, auth = master) => call("POST", "/v2/key/info", { keys: [hash] }, auth);
@@ -335,34 +408,31 @@ const run = async () => {
   const expected = { keyAlias: alias, teamId, userId, blocked: false, budget: 1 };
   let teamAttempted = false, userAttempted = false;
   let lostUserDirectory: string | undefined, lostUserAttempted = false;
+  let lostClientKeyDirectory: string | undefined;
   const createdHashes = new Set<string>();
   let cleanupOk = true;
 
   try {
     teamAttempted = true;
-    const createTeam = await call("POST", "/team/new", { team_id: teamId, max_budget: 4, models: [model], budget_duration: "1d" });
+    const createTeam = await nativeClient.createTeam({teamId,maxBudget:4,budgetDuration:"1d",models:[model!]});
     const existingTeamPolicy = await nativeClient.readTeamPolicy({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!]});
-    mark("client-existing-team-before-membership", existingTeamPolicy.kind === "match" ? "PASS" :
+    mark("client-existing-team-before-membership", createTeam.kind === "acknowledged" && existingTeamPolicy.kind === "match" ? "PASS" :
       existingTeamPolicy.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     userAttempted = true;
-    const createUser = await call("POST", "/user/new", { user_id: userId, max_budget: 3, auto_create_key: false, user_role: "internal_user" });
+    const createUser = await nativeClient.createUser({userId,maxBudget:3,userRole:"internal_user"});
     const currentUserPolicy = await nativeClient.readUser({userId,maxBudget:3,userRole:"internal_user"});
     const initialUserKeys = await nativeClient.listOwnedKeys(userId);
     const absentUserId = `probe-${randomUUID()}`;
     const clientAbsentUser = await nativeClient.readUser({userId:absentUserId,maxBudget:3,userRole:"internal_user"});
     const wrongAuthClient = new BudgetNativeCredentialClient(origin!, "sk-probe-deliberately-wrong-key-000000");
     const clientRefusedUser = await wrongAuthClient.readUser({userId,maxBudget:3,userRole:"internal_user"});
-    mark("client-user-policy-readback", currentUserPolicy.kind === "match" && initialUserKeys.kind === "match" && initialUserKeys.value.length === 0 &&
+    mark("client-user-policy-readback", createUser.kind === "acknowledged" && currentUserPolicy.kind === "match" && initialUserKeys.kind === "match" && initialUserKeys.value.length === 0 &&
       clientAbsentUser.kind === "absent" && clientRefusedUser.kind === "refused" ? "PASS" :
       [currentUserPolicy,initialUserKeys,clientAbsentUser,clientRefusedUser].some(result => result.kind === "mismatch" || result.kind === "malformed") ? "FAIL" : "UNKNOWN");
-    const membership = await call("POST", "/team/member_add", {
-      team_id: teamId, max_budget_in_team: 2, budget_duration: "1d", allowed_models: [model],
-      member: { role: "user", user_id: userId },
-    });
+    const membership = await nativeClient.addMember({teamId,userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"});
     const noAutoKey = await call("GET", `/key/list?user_id=${encodeURIComponent(userId)}`);
     const noAutoKeyBody = noAutoKey?.body;
-    mark("member-create-without-key", createUser?.status === 200 && createUser.parsed && object(createUser.body) &&
-      createUser.body.user_id === userId && createUser.body.max_budget === 3 && noAutoKey?.status === 200 &&
+    mark("member-create-without-key", createUser.kind === "acknowledged" && noAutoKey?.status === 200 &&
       object(noAutoKeyBody) && Array.isArray(noAutoKeyBody.keys) && noAutoKeyBody.keys.length === 0 ? "PASS" : "FAIL");
     const emptyInventory = await nativeClient.listOwnedKeys(userId);
     mark("client-empty-key-inventory", emptyInventory.kind === "match" && emptyInventory.value.length === 0 ? "PASS" :
@@ -381,12 +451,19 @@ const run = async () => {
     // Exactly one create: after its response body is discarded, re-read the original
     // persisted identity. Never generate a replacement or retry the create.
     lostUserAttempted = true;
-    const lostUserCreate = await call("POST", "/user/new", { user_id: originalUserId, max_budget: 7, auto_create_key: false, user_role: "internal_user" }, master, true);
+    let lostUserWriteRequests = 0;
+    const lostUserClient = new BudgetNativeCredentialClient(origin!, master!, async (input, init) => {
+      lostUserWriteRequests++;
+      const response = await fetch(input, init);
+      await drainBoundedBody(response, false);
+      throw new Error("probe suppressed the completed user-create reply");
+    });
+    const lostUserCreate = await lostUserClient.createUser({userId:originalUserId,maxBudget:7,userRole:"internal_user"});
     const retainedUserId = readProbeUserId(lostUserDirectory);
     const reconciledUser = await userLookup(retainedUserId);
     const reconciledUserPolicy = classifyUserLookup(reconciledUser, retainedUserId);
     const lostUserKeys = listedKeyHashes(await call("GET", `/key/list?user_id=${retainedUserId}`));
-    mark("lost-user-create-response-reconciles-original-id", lostUserCreate?.dropped === true && originalUserId === retainedUserId &&
+    mark("lost-user-create-response-reconciles-original-id", lostUserCreate.kind === "uncertain" && lostUserWriteRequests === 1 && originalUserId === retainedUserId &&
       exactUserPolicy(reconciledUserPolicy, retainedUserId, 7) && object(reconciledUser?.body) &&
       Array.isArray(reconciledUser.body.keys) && reconciledUser.body.keys.length === 0 && lostUserKeys?.length === 0 ? "PASS" : "UNKNOWN");
     if (ciBarrier && barrierFile) {
@@ -439,7 +516,7 @@ const run = async () => {
     mismatch("team-blocked-false", teamRecord ? teamRecord.blocked === false : undefined);
     mismatch("team-metadata-empty", teamRecord ? empty(teamRecord.metadata) : undefined);
     mismatch("member-role-exact", roleRecords === undefined ? undefined : roleRecords.length === 1 && roleRecords[0].role === "user");
-    mark("team-membership-and-caps", createTeam?.status === 200 && membership?.status === 200 && teamReadbackAvailable &&
+    mark("team-membership-and-caps", createTeam.kind === "acknowledged" && membership.kind === "acknowledged" && teamReadbackAvailable &&
       teamRecord?.max_budget === 4 && Array.isArray(teamRecord.models) && teamRecord.models.length === 1 && teamRecord.models[0] === model &&
       empty(teamRecord.metadata) && teamRecord.blocked === false && memberships?.length === 1 &&
       memberBudget?.max_budget === 2 && memberBudget.budget_duration === "1d" &&
@@ -480,10 +557,17 @@ const run = async () => {
 
     const blockedAlias = `probe-${randomUUID()}`;
     createdHashes.add(blockedHash);
-    const blockedGenerate = await call("POST", "/key/generate", {
-      key: blockedKey, key_alias: blockedAlias, key_type: "llm_api", team_id: teamId, user_id: userId,
-      max_budget: 1, budget_duration: "1d", models: [model], blocked: true,
+    let blockedGenerateReply: Reply | undefined;
+    let blockedWriteRequests = 0;
+    const blockedCreateClient = new BudgetNativeCredentialClient(origin!, master!, async (input, init) => {
+      blockedWriteRequests++;
+      const response = await fetch(input, init);
+      const observed = await observeResponse(response);
+      blockedGenerateReply = observed.reply;
+      return observed.replay;
     });
+    const blockedGenerate = await blockedCreateClient.createBlockedKey({key:blockedKey,keyAlias:blockedAlias,teamId,userId,
+      maxBudget:1,budgetDuration:"1d",models:[model!]});
     const blockedLookup = classifyLookup(await hashLookup(blockedHash), blockedHash);
     const blockedExact = blockedLookup.kind === "present" && exactKey(blockedLookup.row, {
       keyAlias: blockedAlias, teamId, userId, blocked: true, budget: 1,
@@ -493,14 +577,14 @@ const run = async () => {
     });
     mark("client-blocked-key-policy-readback", clientBlockedLookup.kind === "match" ? "PASS" :
       clientBlockedLookup.kind === "mismatch" ? "FAIL" : "UNKNOWN");
-    if (blockedGenerate?.status === 200 && blockedExact) {
+    if (blockedGenerate.kind === "acknowledged" && blockedWriteRequests === 1 && blockedGenerateReply?.status === 200 && blockedExact) {
       const status = await authStatus(blockedKey);
       mark("atomic-blocked-create", status === 401 || status === 403 ? "PASS" : status === 200 ? "FAIL" : "UNKNOWN");
       mark("blocked-key-readback-and-native-auth", status === 401 || status === 403 ? "PASS" : "UNKNOWN");
-    } else if (explicitBlockedUnsupported(blockedGenerate) && blockedLookup.kind === "absent") {
+    } else if (explicitBlockedUnsupported(blockedGenerateReply) && blockedLookup.kind === "absent") {
       mark("atomic-blocked-create", "UNSUPPORTED");
       mark("blocked-key-readback-and-native-auth", "UNKNOWN");
-    } else if (blockedGenerate?.status === 200 && blockedLookup.kind === "present" && blockedLookup.row.blocked === false) {
+    } else if (blockedGenerateReply?.status === 200 && blockedLookup.kind === "present" && blockedLookup.row.blocked === false) {
       // The native endpoint accepted but ignored atomic blocking; never authenticate this key.
       await call("POST", "/key/delete", { keys: [blockedHash] });
       if (classifyLookup(await hashLookup(blockedHash), blockedHash).kind === "absent") createdHashes.delete(blockedHash);
@@ -535,6 +619,26 @@ const run = async () => {
     const recovered = classifyLookup(await hashLookup(lostHash), lostHash);
     mark("lost-create-response-reconciles-by-hash", lostCreate?.dropped === true && recovered.kind === "present" &&
       recovered.row.user_id === userId && recovered.row.team_id === teamId ? "PASS" : "UNKNOWN");
+
+    lostClientKeyDirectory = mkdtempSync(join(tmpdir(), "lares-native-key-probe-"));
+    const lostClientKey = persistProbeKey(lostClientKeyDirectory, randomKey());
+    const lostClientHash = fingerprint(lostClientKey);
+    const lostClientAlias = `probe-${randomUUID()}`;
+    createdHashes.add(lostClientHash);
+    let lostClientWriteRequests = 0;
+    const lostClient = new BudgetNativeCredentialClient(origin!, master!, async (input, init) => {
+      lostClientWriteRequests++;
+      const response = await fetch(input, init);
+      await drainBoundedBody(response, false);
+      throw new Error("probe suppressed the completed client key-create reply");
+    });
+    const lostClientWrite = await lostClient.createBlockedKey({key:lostClientKey,keyAlias:lostClientAlias,teamId,userId,
+      maxBudget:1,budgetDuration:"1d",models:[model!]});
+    const retainedLostClientKey = readProbeKey(lostClientKeyDirectory);
+    const lostClientReadback = await nativeClient.lookupKey(lostClientHash,{keyAlias:lostClientAlias,teamId,userId,
+      maxBudget:1,budgetDuration:"1d",models:[model!]});
+    mark("lost-client-blocked-create-response-reconciles-original-key", lostClientWrite.kind === "uncertain" &&
+      lostClientWriteRequests === 1 && fingerprint(retainedLostClientKey) === lostClientHash && lostClientReadback.kind === "match" ? "PASS" : "UNKNOWN");
 
     const lostDelete = await call("POST", "/key/delete", { keys: [lostHash] }, master, true);
     const deletedAfterLostReply = classifyLookup(await hashLookup(lostHash), lostHash);
@@ -572,6 +676,10 @@ const run = async () => {
     if (userAttempted) {
       const reply = await call("POST", "/user/delete", { user_ids: [userId] });
       if (!reply || reply.status < 200 || reply.status >= 300) cleanupOk = false;
+    }
+    if (lostClientKeyDirectory) {
+      try { unlinkSync(join(lostClientKeyDirectory, "original-key")); rmdirSync(lostClientKeyDirectory); }
+      catch { cleanupOk = false; }
     }
     mark("fixture-cleanup", cleanupOk ? "PASS" : "UNKNOWN");
   }
