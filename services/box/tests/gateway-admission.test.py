@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES
+from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, NATIVE_LOOKUP_ROUTES, MAX_NATIVE_LOOKUP_BODY
 
 
 class ContractTests(unittest.TestCase):
@@ -42,6 +42,20 @@ class ContractTests(unittest.TestCase):
     def test_duplicate_json_fields_and_nonfinite_numbers_refuse(self):
         for body in [b'{"model":"a","model":"b"}', b'{"n":NaN}', b'{"n":1e999}', b'[]']:
             with self.assertRaises(Refused): parse_json(body)
+
+    def test_native_lookup_documents_are_exact_and_bounded(self):
+        self.assertEqual(native_lookup_query("/team/info", b"team_id=team-123"), "team-123")
+        self.assertEqual(native_lookup_query("/key/list", b"user_id=user-123"), "user-123")
+        for path, query in (("/team/info", b"team_id=a&team_id=b"), ("/team/info", b"team_id=%61"),
+                            ("/key/list", b"team_id=user-123"), ("/key/list", b"user_id=user_123")):
+            with self.subTest(path=path, query=query), self.assertRaises(Refused): native_lookup_query(path, query)
+        key_hash = "a" * 64
+        self.assertEqual(native_lookup_key_hash(json.dumps({"keys": [key_hash]}).encode()), key_hash)
+        for body in (b'{"keys":["'+key_hash.encode()+b'"],"extra":true}',
+                     b'{"keys":["'+key_hash.encode()+b'"],"keys":[]}',
+                     b'{"keys":["'+b'A'*64+b'"]}', b'{"keys":["'+key_hash.encode()+b'","'+key_hash.encode()+b'"]}',
+                     b" " * (MAX_NATIVE_LOOKUP_BODY + 1)):
+            with self.subTest(body_length=len(body)), self.assertRaises(Refused): native_lookup_key_hash(body)
 
     def test_expiry_and_dispatch_are_forward_only(self):
         state = RequestState("POST", "/v1/messages", b'{}', "a" * 64, "sk-fixture", now=10)
@@ -566,9 +580,11 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         admission_hook = next(node for node in source.body if isinstance(node, ast.ClassDef) and node.name == "AdmissionHook")
         self.request_context = __import__("contextvars").ContextVar("refusal_test_request", default=None)
         self.profile = types.SimpleNamespace(document={"maxBodyBytes":4096}, check_body=lambda path, raw: {"model":"fixture"})
-        self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None)
-        self.namespace = {"asyncio":asyncio,"time":time,"current_request":self.request_context,"runtime":self.runtime,
-            "CONTROL_ROUTES":frozenset(),"MODEL_ROUTES":frozenset(("/v1/messages",)),"TICKET":__import__("re").compile(r"[A-Za-z0-9_-]{43}\Z"),
+        self.runtime = types.SimpleNamespace(profile=self.profile, endpoint="a" * 64, check_runtime=lambda **kwargs: None, master_key="fixture-master-key")
+        self.namespace = {"asyncio":asyncio,"time":time,"hmac":__import__("hmac"),"re":__import__("re"),"current_request":self.request_context,"runtime":self.runtime,
+            "CONTROL_ROUTES":frozenset(),"NATIVE_LOOKUP_ROUTES":NATIVE_LOOKUP_ROUTES,"MAX_NATIVE_LOOKUP_BODY":MAX_NATIVE_LOOKUP_BODY,
+            "native_lookup_query":native_lookup_query,"native_lookup_key_hash":native_lookup_key_hash,
+            "MODEL_ROUTES":frozenset(("/v1/messages",)),"TICKET":__import__("re").compile(r"[A-Za-z0-9_-]{43}\Z"),
             "Refused":Refused,"RequestState":RequestState,"canonical":lambda value:json.dumps(value,sort_keys=True,separators=(",",":"),ensure_ascii=True).encode(),
             "ADMISSION_REFUSED_TYPE":"budget_admission_refused","ADMISSION_REFUSED_TEXT":"I could not verify permission to spend. Please check the gateway setup.",
             "CustomLogger":object,"AdmissionHTTPRefusal":type("AdmissionHTTPRefusal",(Exception,),{}),
@@ -578,8 +594,18 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.mode = "marked"
         self.native_response = (400,b'{"type":"invalid_request_error","message":"remapped"}')
         self.last_sent = None
+        self.native_calls = 0
+        self.native_scope = None
+        self.native_body = None
 
     async def native(self, scope, receive, send):
+        if (scope.get("method"), scope.get("path")) in NATIVE_LOOKUP_ROUTES:
+            self.native_calls += 1
+            self.native_scope = scope
+            self.native_body = await receive()
+            await send({"type":"http.response.start","status":200,"headers":[(b"content-type",b"application/json")]})
+            await send({"type":"http.response.body","body":b'{"native":true}'})
+            return
         await receive()
         request = self.request_context.get()
         if self.mode in ("marked","after-replacement-refused"): request._authored_refusal = True
@@ -605,6 +631,74 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.last_sent=sent
         await self.app(scope,receive,send)
         return sent
+
+    async def call_lookup(self, method, path, *, query=b"", body=b"", headers=None, receive=None, auth=b"Bearer fixture-master-key"):
+        raw_path=path.encode("ascii")
+        selected=[(b"host",b"gateway.invalid"),(b"accept",b"*/*"),(b"accept-language",b"en-US"),(b"sec-fetch-mode",b"cors"), *(([(b"authorization",auth)] if auth is not None else [])),
+            *(([(b"content-type",b"application/json"),(b"content-length",str(len(body)).encode())] if method=="POST" else [])),
+            *(headers or [])]
+        scope={"type":"http","method":method,"path":path,"raw_path":raw_path,"query_string":query,"headers":selected}
+        messages=[{"type":"http.request","body":body,"more_body":False}]
+        async def get_message():
+            if receive is not None: return await receive()
+            return messages.pop(0) if messages else {"type":"http.request","body":b"","more_body":False}
+        sent=[]
+        async def send(message): sent.append(message)
+        await self.app(scope,get_message,send)
+        return sent
+
+    async def test_master_lookup_routes_are_narrow_and_still_use_native_auth(self):
+        valid=(
+            ("GET","/team/info",b"team_id=team-123",b""),
+            ("GET","/key/list",b"user_id=user-123",b""),
+            ("POST","/v2/key/info",b"",b'{"keys":["'+b"a"*64+b'"]}'),
+        )
+        for method,path,query,body in valid:
+            with self.subTest(path=path):
+                self.native_calls=0
+                sent=await self.call_lookup(method,path,query=query,body=body)
+                self.assertEqual(sent[0]["status"],200)
+                self.assertEqual(self.native_calls,1)
+                self.assertEqual(self.native_scope["query_string"],query)
+                self.assertEqual(self.native_body["body"],body)
+
+    async def test_master_lookup_refuses_virtual_keys_ambiguous_auth_and_malformed_targets(self):
+        invalid=(
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer ordinary-member-key")]),
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer wrong-master-key")]),
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer management-virtual-key")]),
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer read-only-virtual-key")]),
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer fixture-master-key"),(b"authorization",b"Bearer fixture-master-key")]),
+            ("GET","/team/info",b"team_id=team-123",b"",[(b"x-api-key",b"fixture-master-key")]),
+            ("GET","/team/info",b"team_id=team-123&team_id=team-123",b"",[]),
+            ("GET","/team/info",b"team_id=%74eam-123",b"",[]),
+            ("GET","/team/info",b"team_id=team-123&extra=x",b"",[]),
+            ("GET","/team/info",b"user_id=user-123",b"",[]),
+            ("POST","/v2/key/info",b"keys=x",b'{"keys":["'+b"a"*64+b'"]}',[]),
+            ("POST","/v2/key/info",b"",b'{"keys":["'+b"a"*64+b'"],"extra":true}',[]),
+            ("POST","/v2/key/info",b"",b'{"keys":["'+b"a"*64+b'"],"keys":[]}',[]),
+            ("POST","/v2/key/info",b"",b'{"keys":["not-a-hash"]}',[]),
+        )
+        for method,path,query,body,headers in invalid:
+            with self.subTest(path=path,query=query,body_length=len(body)):
+                self.native_calls=0
+                sent=await self.call_lookup(method,path,query=query,body=body,headers=headers,auth=None if len([h for h in headers if h[0]==b"authorization"])>0 else b"Bearer fixture-master-key")
+                self.assertEqual(sent[0]["status"],400)
+                self.assertEqual(self.native_calls,0)
+        missing=await self.call_lookup("GET","/team/info",query=b"team_id=team-123",auth=None)
+        self.assertEqual(missing[0]["status"],400);self.assertEqual(self.native_calls,0)
+        oversized=b" "*(MAX_NATIVE_LOOKUP_BODY+1)
+        sent=await self.call_lookup("POST","/v2/key/info",body=oversized)
+        self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
+
+    async def test_master_lookup_slow_body_is_bounded(self):
+        async def slow_receive():
+            await asyncio.sleep(3)
+            return {"type":"http.request","body":b'{"keys":[]}',"more_body":False}
+        self.native_calls=0
+        sent=await self.call_lookup("POST","/v2/key/info",receive=slow_receive)
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(self.native_calls,0)
 
     async def test_marked_native_remapping_becomes_one_fixed_refusal(self):
         self.mode="marked"

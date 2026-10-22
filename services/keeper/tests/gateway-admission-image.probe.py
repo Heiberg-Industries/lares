@@ -146,7 +146,7 @@ else if(x.kind==='sdk'){
  try{await runModelInvocation(invocation,async()=>{const args={model:gatewayModel('lares-brain'),system:'stable fixture instructions\n'+PROMPT_CACHE_BOUNDARY+'\nmoving fixture context',prompt:'fixture',maxOutputTokens:8,maxRetries:0,abortSignal:AbortSignal.timeout(x.timeout??10000)};if(x.stream){const result=streamText(args);let text='';for await(const part of result.textStream)text+=part;if(!text.includes('FIXTURE_OK'))throw Error('fixture text missing');}else{const result=await generateText(args);if(!result.text.includes('FIXTURE_OK'))throw Error('fixture text missing');}});console.log(JSON.stringify({ok:true,requests,hash}));}
  catch(error){const options={refusalText:'CAP_EXHAUSTED',dialect:'telegram'};console.log(JSON.stringify({ok:false,requests,hash,admission:isBudgetAdmissionRefused(error),budget:isBudgetExceeded(error),classification:classifyModelCallError(error),turn:respondToTurnFailed(error,options),session:respondToSessionFailed(error,options)}));}
 }else{
- const abort=new AbortController();const response=await original(x.url+x.path,{method:x.method??'POST',signal:abort.signal,headers:{'content-type':'application/json',...(x.key?{authorization:'Bearer '+x.key}:{}),...(x.ticket?{'x-lares-budget-intent':x.ticket}:{}),...x.headers},...(x.method==='GET'?{}:{body:typeof x.raw==='string'?x.raw:JSON.stringify(x.body)})});if(x.cancel){await response.body.getReader().read();abort.abort();console.log(JSON.stringify({status:response.status,cancelled:true}));}else{const raw=await response.text();let body;try{body=JSON.parse(raw)}catch{body={stream:raw.includes('FIXTURE_OK')}}console.log(JSON.stringify({status:response.status,body}));}
+ const abort=new AbortController();const method=x.method??'POST';const headers=new Headers(method==='GET'?{}:{'content-type':'application/json'});if(x.key)headers.set('authorization','Bearer '+x.key);if(x.ticket)headers.set('x-lares-budget-intent',x.ticket);if(Array.isArray(x.headers)){for(const [name,value] of x.headers)headers.append(name,value);}else for(const [name,value] of Object.entries(x.headers??{}))headers.set(name,value);const response=await original(x.url+x.path,{method,signal:abort.signal,headers,...(method==='GET'?{}:{body:typeof x.raw==='string'?x.raw:JSON.stringify(x.body)})});if(x.cancel){await response.body.getReader().read();abort.abort();console.log(JSON.stringify({status:response.status,cancelled:true}));}else{const raw=await response.text();let body;try{body=JSON.parse(raw)}catch{body={stream:raw.includes('FIXTURE_OK')}}console.log(JSON.stringify({status:response.status,body}));}
 }
 '''
 
@@ -551,12 +551,16 @@ exec litellm --config "$CONFIG_FILE_PATH"
         require(result["status"]==200,"Native fixture provisioning refused")
         return result["body"]
 
-    def provision(self,url):
+    def provision(self,url,exact=False):
         team="team-"+uuid.uuid4().hex;member="member-"+uuid.uuid4().hex
         self.admin(url,"/team/new",{"team_id":team,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
-        self.admin(url,"/user/new",{"user_id":member,"max_budget":100,"auto_create_key":False})
+        user={"user_id":member,"max_budget":100,"auto_create_key":False}
+        if exact:user["user_role"]="internal_user"
+        self.admin(url,"/user/new",user)
         self.admin(url,"/team/member_add",{"team_id":team,"max_budget_in_team":100,"member":{"role":"user","user_id":member}})
-        result=self.admin(url,"/key/generate",{"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
+        key_request={"team_id":team,"user_id":member,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"}
+        if exact:key_request.update({"blocked":False,"key_type":"llm_api"})
+        result=self.admin(url,"/key/generate",key_request)
         self.disposable_secrets.append(result["key"].encode())
         return result["key"],team,member
 
@@ -804,6 +808,104 @@ exec litellm --config "$CONFIG_FILE_PATH"
             for result,identity in zip(results,identities):self.receipt(before,after,result,identity,provider)
         self.case(provider+"-concurrent-isolation",concurrency)
 
+    def guarded_native_lookups(self,provider,url):
+        key,team,user=self.provision(url,exact=True)
+        ordinary_hash=hashlib.sha256(key.encode()).hexdigest()
+        role_keys={"ordinary":key};role_hashes={"ordinary":ordinary_hash}
+        for role in ("management","read_only"):
+            minted=self.admin(url,"/key/generate",{"team_id":team,"user_id":user,"key_alias":"probe-"+role+"-"+uuid.uuid4().hex,
+                "key_type":role,"blocked":False,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
+            role_keys[role]=minted["key"];role_hashes[role]=hashlib.sha256(minted["key"].encode()).hexdigest()
+            self.disposable_secrets.append(minted["key"].encode())
+        blocked_key="sk-"+secrets.token_urlsafe(32)
+        blocked_hash=hashlib.sha256(blocked_key.encode()).hexdigest()
+        blocked_alias="probe-blocked-"+uuid.uuid4().hex
+        blocked_reply=self.admin(url,"/key/generate",{"key":blocked_key,"key_alias":blocked_alias,"key_type":"llm_api",
+            "team_id":team,"user_id":user,"blocked":True,"max_budget":100,"models":["lares-brain"],"budget_duration":"1d"})
+        require(blocked_reply.get("key")==blocked_key,"Atomic blocked fixture key was not returned exactly")
+        self.disposable_secrets.append(blocked_key.encode())
+        def counters_unchanged(before,after):
+            return (before.get("upstream")==after.get("upstream") and before.get("gates")==after.get("gates") and
+                before.get("traps")==after.get("traps") and before.get("receipts")==after.get("receipts"))
+        def lookup(method,path,*,credential=None,body=None,raw=None,headers=None):
+            request={"url":url,"path":path,"method":method}
+            if credential is not None:request["key"]=credential
+            if body is not None:request["body"]=body
+            if raw is not None:request["raw"]=raw
+            if headers is not None:request["headers"]=headers
+            return self.client(request)
+
+        def authenticated_role_keys():
+            before=self.control()
+            native_checks=[
+                lookup("GET","/v1/model/info",credential=role_keys["ordinary"]),
+                lookup("GET","/key/info",credential=role_keys["management"]),
+                lookup("GET","/key/info",credential=role_keys["read_only"]),
+            ]
+            team_reply=lookup("GET","/team/info?team_id="+team,credential=self.master)
+            inventory=lookup("GET","/key/list?user_id="+user,credential=self.master)
+            exact=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[ordinary_hash]})
+            role_readbacks=[lookup("POST","/v2/key/info",credential=self.master,body={"keys":[role_hashes[role]]}) for role in ("management","read_only")]
+            blocked_readback=lookup("POST","/v2/key/info",credential=self.master,body={"keys":[blocked_hash]})
+            after=self.control()
+            team_info=team_reply.get("body",{}).get("team_info",{}) if type(team_reply.get("body")) is dict else {}
+            memberships=team_reply.get("body",{}).get("team_memberships",[]) if type(team_reply.get("body")) is dict else []
+            matching_memberships=[item for item in memberships if type(item) is dict and item.get("team_id")==team and item.get("user_id")==user]
+            key_rows=exact.get("body",{}).get("info",[]) if type(exact.get("body")) is dict else []
+            role_rows=[reply.get("body",{}).get("info",[]) if type(reply.get("body")) is dict else [] for reply in role_readbacks]
+            blocked_rows=blocked_readback.get("body",{}).get("info",[]) if type(blocked_readback.get("body")) is dict else []
+            require(team_reply.get("status")==200 and team_info.get("team_id")==team and len(matching_memberships)==1,
+                "Master team lookup did not return the exact fixture membership")
+            expected_hashes=sorted([*role_hashes.values(),blocked_hash])
+            require(inventory.get("status")==200 and sorted(inventory.get("body",{}).get("keys",[]))==expected_hashes,"Master key inventory differed")
+            require(exact.get("status")==200 and exact.get("body",{}).get("key")==[ordinary_hash] and len(key_rows)==1 and
+                type(key_rows[0]) is dict and key_rows[0].get("key_type")=="llm_api" and key_rows[0].get("team_id")==team and key_rows[0].get("user_id")==user and
+                key_rows[0].get("blocked") is False,"Master hash lookup differed")
+            require(all(reply.get("status")==200 and len(rows)==1 and type(rows[0]) is dict and rows[0].get("key_type")==role and rows[0].get("blocked") is False
+                for reply,rows,role in zip(role_readbacks,role_rows,("management","read_only"))),"Role-bearing key readback differed")
+            require(blocked_readback.get("status")==200 and len(blocked_rows)==1 and type(blocked_rows[0]) is dict and
+                blocked_rows[0].get("key_type")=="llm_api" and blocked_rows[0].get("blocked") is True,"Atomic blocked key readback differed")
+            require([reply.get("status") for reply in native_checks]==[200,200,200],"Native authentication failed for a valid role-bearing key")
+            require(lookup("GET","/v1/model/info",credential=blocked_key).get("status") in (401,403),"Atomic blocked key authenticated on a read route")
+            after_reads=self.control()
+            require(counters_unchanged(before,after) and counters_unchanged(after,after_reads),"Native lookup or auth check reached model/provider dispatch")
+            forbidden=[(method,path) for method,path in (("GET","/team/info?team_id="+team),("GET","/key/list?user_id="+user),("POST","/v2/key/info"))]
+            denied=[]
+            for method,path in forbidden:
+                body={"keys":[ordinary_hash]} if method=="POST" else None
+                for credential in (role_keys["ordinary"],role_keys["management"],role_keys["read_only"],"sk-deliberately-wrong-key-000000",None):
+                    denied.append(lookup(method,path,credential=credential,body=body))
+            require(all(type(reply) is dict and reply.get("status")==400 for reply in denied),"A non-master or missing credential reached native lookup")
+            after_denied=self.control()
+            require(counters_unchanged(after_reads,after_denied),"Refused role credential lookup reached model/provider dispatch")
+            blocked_denied=[lookup("GET","/team/info?team_id="+team,credential=blocked_key),
+                lookup("GET","/key/list?user_id="+user,credential=blocked_key),lookup("POST","/v2/key/info",credential=blocked_key,body={"keys":[ordinary_hash]})]
+            require(all(reply.get("status")==400 for reply in blocked_denied),"Blocked virtual key reached a native lookup")
+            malformed=[
+                lookup("GET","/team/info?team_id="+team+"&team_id="+team,credential=self.master),
+                lookup("GET","/team/info?team_id=%74"+team[1:],credential=self.master),
+                lookup("GET","/key/list?user_id="+user+"&extra=x",credential=self.master),
+                lookup("GET","/team/info?team_id="+team+"&api_key=hidden",credential=self.master),
+                lookup("GET","/team/info?team_id="+team,credential=self.master,headers={"x-api-key":self.master}),
+                lookup("POST","/v2/key/info?keys=x",credential=self.master,body={"keys":[ordinary_hash]}),
+                lookup("POST","/v2/key/info",credential=self.master,raw='{"keys":["'+ordinary_hash+'"],"keys":[]}'),
+                lookup("POST","/v2/key/info",credential=self.master,raw='{"keys":["'+ordinary_hash+'"],"extra":true}'),
+                lookup("GET","/team/info?team_id="+team,credential=self.master,headers=[["authorization","Bearer "+self.master],["authorization","Bearer "+self.master]]),
+                lookup("POST","/team/info?team_id="+team,credential=self.master),
+                lookup("GET","/team/info/?team_id="+team,credential=self.master),
+            ]
+            require(all(type(reply) is dict and reply.get("status")==400 for reply in malformed),"Malformed lookup boundary was accepted")
+            after_malformed=self.control()
+            require(counters_unchanged(after_denied,after_malformed),"Malformed lookup reached model/provider dispatch")
+            hashes=sorted([*role_hashes.values(),blocked_hash])
+            deleted=lookup("POST","/key/delete",credential=self.master,body={"keys":hashes})
+            absent=[lookup("POST","/v2/key/info",credential=self.master,body={"keys":[item]}) for item in hashes]
+            after_delete=self.control()
+            require(deleted.get("status")==200 and all(reply.get("status")==200 and reply.get("body",{}).get("key")==[item] and
+                reply.get("body",{}).get("info")==[] for item,reply in zip(hashes,absent)),"Deleted fixture key was not strictly absent")
+            require(counters_unchanged(after_malformed,after_delete),"Native lookup or deletion reached model/provider dispatch")
+        self.case(provider+"-guarded-native-lookups-auth-refusal-and-cleanup",authenticated_role_keys)
+
     def execute(self):
         try:
             self.setup()
@@ -816,6 +918,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             for provider in ("openai","anthropic"):
                 url=openai_url if provider=="openai" else self.start_gateway(provider);key,team,member=self.provision(url)
                 self.exercise(provider,url,key,team,member)
+                self.guarded_native_lookups(provider,url)
                 name=self.name+"-gateway-"+provider;command("docker","restart",name)
                 self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Restart did not restore native runtime",120)
                 self.case(provider+"-restart-persisted-key",lambda:require(self.sdk(url,key,"anthropic")["ok"],"Native key did not survive restart"))
