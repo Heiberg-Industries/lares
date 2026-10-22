@@ -106,22 +106,33 @@ try:
     write_offline('operator-password',operator_password);write_offline('workflow-provisioner-password',workflow_provisioner_password)
     # Console's production signer requires root-owned, group-readable 0440 key custody.
     signer=secrets_dir/'console-model-purpose-signing-key';signer.write_text(console_signing+'\n');signer.chmod(0o440)
-    stage = 'isolated-network-and-database'
+    stage = 'isolated-network-create'
     docker('network','create','--internal',network)
     network_created = True
+    stage = 'isolated-volume-create'
     docker('volume','create',volume)
     volume_created = True
+    stage = 'isolated-postgres-start'
     docker('run','-d','--name',network+'-db','--network',network,'--network-alias','proof-db',
            '-e','POSTGRES_USER=proof','-e','POSTGRES_PASSWORD=disposable-first-use','-e','POSTGRES_DB=proof','pgvector/pgvector:pg16')
-    container_names.append(network+'-db');wait_sql()
+    container_names.append(network+'-db')
+    stage = 'isolated-postgres-readiness'
+    wait_sql()
     migrations=sorted((repo/'services/box/sql').glob('[0-9][0-9][0-9]_*.sql'))
-    for migration in migrations: sql('proof',migration.read_text())
+    for migration in migrations:
+        stage = 'isolated-migration-' + migration.name
+        sql('proof',migration.read_text())
+    stage = 'isolated-migration-inventory'
     on_disk={p.name for p in (repo/'services/box/sql').iterdir() if p.name[:3].isdigit() and p.name.endswith('.sql')}
     if {p.name for p in migrations}!=on_disk or '001_baseline.sql' not in on_disk: raise RuntimeError('Engine schema migration inventory was incomplete')
+    stage = 'isolated-operator-role-create'
     sql('proof',f"CREATE ROLE lares_operator LOGIN SUPERUSER PASSWORD '{operator_password}'")
     privilege=root/'engine-privileges.mts'
+    stage = 'isolated-engine-privilege-script'
     privilege.write_text("import{Pool}from'pg';import{readFileSync}from'node:fs';import{provisionEngineDatabasePrivileges}from'/app/services/box/lib/database-privileges.ts';const p=new Pool({host:'proof-db',database:'proof',user:'lares_operator',password:readFileSync('/offline/operator-password','utf8').trim(),max:1});try{const c=await p.connect();try{const r=await provisionEngineDatabasePrivileges(c,{expectedDatabase:'proof',passwords:{application:readFileSync('/etc/lares/secrets/app-password'),financial:readFileSync('/etc/lares/secrets/financial-database-password')}});if(!['applied','verified'].includes(r.status))throw Error();}finally{c.release()}console.log('ready')}finally{await p.end()}\n")
+    stage = 'isolated-engine-privilege-helper'
     result=run('docker','run','--rm','--network',network,'--user','0:0','--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={offline_dir},dst=/offline,readonly','--mount',f'type=bind,src={privilege},dst=/app/services/keeper/engine-privileges.mts,readonly','--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/engine-privileges.mts')
+    stage = 'isolated-engine-privilege-result'
     if result.stdout.strip()!='ready': raise RuntimeError('Engine role grants were not prepared by the production helper')
     cases['schemaAndRestrictedEngineRoles']=True
 
