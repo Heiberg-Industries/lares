@@ -18,12 +18,20 @@
  * response bodies and transport errors are never printed.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { closeSync, ftruncateSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, ftruncateSync, lstatSync, mkdtempSync, openSync, readFileSync, rmdirSync, unlinkSync, writeSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const CASES = [
   "fixture-guard",
   "member-create-without-key",
+  "user-current-identity-global-cap-and-role",
+  "user-info-no-auto-key",
+  "user-info-absent-is-not-refusal",
+  "user-info-refused-is-not-absence",
+  "lost-user-create-response-reconciles-original-id",
   "team-membership-and-caps",
   "caller-key-exact-and-hash-lookup",
   "hash-lookup-absent-is-not-error",
@@ -147,7 +155,7 @@ async function waitForCiAcknowledgement(phase: "members-checked" | "key-checked"
 
 const allowedRoutes = new Map<string, "GET" | "POST">([
   ["/team/new", "POST"], ["/team/delete", "POST"],
-  ["/team/info", "GET"], ["/key/list", "GET"],
+  ["/team/info", "GET"], ["/key/list", "GET"], ["/user/info", "GET"],
   ["/user/new", "POST"], ["/user/delete", "POST"],
   ["/team/member_add", "POST"], ["/key/generate", "POST"],
   ["/v2/key/info", "POST"], ["/key/block", "POST"], ["/key/unblock", "POST"],
@@ -160,7 +168,7 @@ async function call(method: "GET" | "POST", path: string, body?: unknown, auth =
   const queryText = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
   if (queryText) {
     const params = new URLSearchParams(queryText);
-    const expectedName = route === "/team/info" ? "team_id" : route === "/key/list" ? "user_id" : "";
+    const expectedName = route === "/team/info" ? "team_id" : ["/key/list", "/user/info"].includes(route ?? "") ? "user_id" : "";
     if (!expectedName || [...params.keys()].length !== 1 || !params.has(expectedName) ||
         !/^[A-Za-z0-9-]{1,80}$/.test(params.get(expectedName) ?? "")) return undefined;
   } else if (path.includes("?")) return undefined;
@@ -210,6 +218,53 @@ function classifyLookup(reply: Reply | undefined, hash: string): Lookup {
   const row = reply.body.info[0];
   if ("token" in row) return { kind: "malformed" };
   return { kind: "present", row };
+}
+
+/** Pinned source: https://github.com/BerriAI/litellm/blob/v1.101.6/litellm/proxy/management_endpoints/internal_user_endpoints.py
+ * user_info returns the current user row. Only its exact structured missing-user error is absence. */
+export function classifyUserLookup(reply: Reply | undefined, userId: string): Lookup {
+  if (!reply) return { kind: "unavailable" };
+  if (reply.status === 401 || reply.status === 403) return { kind: "refused" };
+  if (reply.status === 404) {
+    return reply.parsed && object(reply.body) && object(reply.body.error) &&
+      reply.body.error.message === `User ${userId} not found` &&
+      (reply.body.error.code === 404 || reply.body.error.code === "404")
+      ? { kind: "absent" } : { kind: "malformed" };
+  }
+  if (reply.status !== 200) return { kind: "unavailable" };
+  if (!reply.parsed || !object(reply.body) || reply.body.user_id !== userId ||
+      !object(reply.body.user_info) || reply.body.user_info.user_id !== userId ||
+      !Array.isArray(reply.body.keys) || !Array.isArray(reply.body.teams)) return { kind: "malformed" };
+  return { kind: "present", row: reply.body.user_info };
+}
+const userLookup = (userId: string, auth = master) => call("GET", `/user/info?user_id=${userId}`, undefined, auth);
+export function exactUserPolicy(lookup: Lookup, userId: string, budget: number): boolean {
+  return lookup.kind === "present" && lookup.row.user_id === userId && lookup.row.max_budget === budget &&
+    lookup.row.user_role === "internal_user";
+}
+
+/** Disposable probe evidence only: preserve the chosen identity before the lost-reply
+ * experiment. No production custody or retry/adoption behaviour is implemented here. */
+function persistProbeUserId(directory: string): string {
+  const fd = openSync(join(directory, "original-user-id"), constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+  try {
+    const bytes = Buffer.from(`probe-${randomUUID()}`);
+    if (writeSync(fd, bytes) !== bytes.length) throw new Error("fixture identity write failed");
+    fsyncSync(fd);
+  } finally { closeSync(fd); }
+  const parent = openSync(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { fsyncSync(parent); } finally { closeSync(parent); }
+  return readProbeUserId(directory);
+}
+function readProbeUserId(directory: string): string {
+  const fd = openSync(join(directory, "original-user-id"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || stat.size !== 42) throw new Error("fixture identity unavailable");
+    const userId = readFileSync(fd, "utf8");
+    if (!/^probe-[a-f0-9-]{36}$/.test(userId)) throw new Error("fixture identity unavailable");
+    return userId;
+  } finally { closeSync(fd); }
 }
 
 const fingerprint = (key: string) => createHash("sha256").update(key).digest("hex");
@@ -270,6 +325,7 @@ const run = async () => {
   const lostHash = fingerprint(lostKey);
   const expected = { keyAlias: alias, teamId, userId, blocked: false, budget: 1 };
   let teamAttempted = false, userAttempted = false;
+  let lostUserDirectory: string | undefined, lostUserAttempted = false;
   const createdHashes = new Set<string>();
   let cleanupOk = true;
 
@@ -287,6 +343,29 @@ const run = async () => {
     mark("member-create-without-key", createUser?.status === 200 && createUser.parsed && object(createUser.body) &&
       createUser.body.user_id === userId && createUser.body.max_budget === 3 && noAutoKey?.status === 200 &&
       object(noAutoKeyBody) && Array.isArray(noAutoKeyBody.keys) && noAutoKeyBody.keys.length === 0 ? "PASS" : "FAIL");
+    const userReadback = await userLookup(userId);
+    const currentUser = classifyUserLookup(userReadback, userId);
+    mark("user-current-identity-global-cap-and-role", exactUserPolicy(currentUser, userId, 3) ? "PASS" : currentUser.kind === "present" ? "FAIL" : "UNKNOWN");
+    mark("user-info-no-auto-key", currentUser.kind === "present" && object(userReadback?.body) &&
+      Array.isArray(userReadback.body.keys) && userReadback.body.keys.length === 0 && listedKeyHashes(noAutoKey)?.length === 0 ? "PASS" : "UNKNOWN");
+    const absentUserId = `probe-${randomUUID()}`;
+    mark("user-info-absent-is-not-refusal", classifyUserLookup(await userLookup(absentUserId), absentUserId).kind === "absent" ? "PASS" : "UNKNOWN");
+    mark("user-info-refused-is-not-absence", classifyUserLookup(await userLookup(userId, "sk-probe-deliberately-wrong-key-000000"), userId).kind === "refused" ? "PASS" : "UNKNOWN");
+
+    lostUserDirectory = mkdtempSync(join(tmpdir(), "lares-native-user-probe-"));
+    const originalUserId = persistProbeUserId(lostUserDirectory);
+    if (classifyUserLookup(await userLookup(originalUserId), originalUserId).kind !== "absent") throw new Error("fixture original identity was not absent");
+    // Exactly one create: after its response body is discarded, re-read the original
+    // persisted identity. Never generate a replacement or retry the create.
+    lostUserAttempted = true;
+    const lostUserCreate = await call("POST", "/user/new", { user_id: originalUserId, max_budget: 7, auto_create_key: false, user_role: "internal_user" }, master, true);
+    const retainedUserId = readProbeUserId(lostUserDirectory);
+    const reconciledUser = await userLookup(retainedUserId);
+    const reconciledUserPolicy = classifyUserLookup(reconciledUser, retainedUserId);
+    const lostUserKeys = listedKeyHashes(await call("GET", `/key/list?user_id=${retainedUserId}`));
+    mark("lost-user-create-response-reconciles-original-id", lostUserCreate?.dropped === true && originalUserId === retainedUserId &&
+      exactUserPolicy(reconciledUserPolicy, retainedUserId, 7) && object(reconciledUser?.body) &&
+      Array.isArray(reconciledUser.body.keys) && reconciledUser.body.keys.length === 0 && lostUserKeys?.length === 0 ? "PASS" : "UNKNOWN");
     if (ciBarrier && barrierFile) {
       writeCiFile(expectedFile!, `${teamId}\n${userId}\n`, "members-expected-write-failed");
       writeCiFile(barrierFile, "members-ready", "members-barrier-write-failed");
@@ -429,6 +508,16 @@ const run = async () => {
     mark("already-deleted-remains-absent", deleted.kind === "absent" && deletedAgain.kind === "absent" ? "PASS" : "UNKNOWN");
     if (deletedAgain.kind === "absent") createdHashes.delete(normalHash);
   } finally {
+    if (lostUserDirectory) {
+      try {
+        if (lostUserAttempted) {
+          const retainedUserId = readProbeUserId(lostUserDirectory);
+          const reply = await call("POST", "/user/delete", { user_ids: [retainedUserId] });
+          if (reply?.status !== 200 || classifyUserLookup(await userLookup(retainedUserId), retainedUserId).kind !== "absent") cleanupOk = false;
+        }
+      } catch { cleanupOk = false; }
+      try { unlinkSync(join(lostUserDirectory, "original-user-id")); rmdirSync(lostUserDirectory); } catch { cleanupOk = false; }
+    }
     for (const hash of createdHashes) {
       const reply = await call("POST", "/key/delete", { keys: [hash] });
       const lookup = classifyLookup(await hashLookup(hash), hash);
@@ -448,15 +537,18 @@ const run = async () => {
   }
 };
 
-try {
-  await run();
-} catch {
-  failed = true;
-  if (!diagnosticCode) diagnosticCode = "unexpected-probe-failure";
-  for (const name of CASES) if (!outcomes.has(name)) mark(name, "UNKNOWN");
-} finally {
-  for (const name of CASES) console.log(`${outcomes.get(name) ?? "UNKNOWN"} ${name}`);
-  for (const [name, outcome] of diagnostics) console.log(`DIAGNOSTIC ${name} ${outcome}`);
-  if (diagnosticCode) console.log(`DIAGNOSTIC ${diagnosticCode}`);
+async function main(): Promise<void> {
+  try {
+    await run();
+  } catch {
+    failed = true;
+    if (!diagnosticCode) diagnosticCode = "unexpected-probe-failure";
+    for (const name of CASES) if (!outcomes.has(name)) mark(name, "UNKNOWN");
+  } finally {
+    for (const name of CASES) console.log(`${outcomes.get(name) ?? "UNKNOWN"} ${name}`);
+    for (const [name, outcome] of diagnostics) console.log(`DIAGNOSTIC ${name} ${outcome}`);
+    if (diagnosticCode) console.log(`DIAGNOSTIC ${diagnosticCode}`);
+  }
+  process.exitCode = failed ? 1 : 0;
 }
-process.exitCode = failed ? 1 : 0;
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

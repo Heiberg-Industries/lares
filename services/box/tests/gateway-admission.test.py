@@ -46,8 +46,14 @@ class ContractTests(unittest.TestCase):
     def test_native_lookup_documents_are_exact_and_bounded(self):
         self.assertEqual(native_lookup_query("/team/info", b"team_id=team-123"), "team-123")
         self.assertEqual(native_lookup_query("/key/list", b"user_id=user-123"), "user-123")
+        self.assertEqual(native_lookup_query("/user/info", b"user_id=user-123"), "user-123")
+        self.assertEqual(native_lookup_query("/user/info", b"user_id="+b"a"*80), "a"*80)
         for path, query in (("/team/info", b"team_id=a&team_id=b"), ("/team/info", b"team_id=%61"),
-                            ("/key/list", b"team_id=user-123"), ("/key/list", b"user_id=user_123")):
+                            ("/key/list", b"team_id=user-123"), ("/key/list", b"user_id=user_123"),
+                            ("/user/info", b"user_id=a&user_id=b"), ("/user/info", b"user_id=%61"),
+                            ("/user/info", b"team_id=a"), ("/user/info", b"user_id=a&extra=x"),
+                            ("/user/info", b"user_id="), ("/user/info", b"user_id="+b"a"*81),
+                            ("/user/info", b"user_id=user_123")):
             with self.subTest(path=path, query=query), self.assertRaises(Refused): native_lookup_query(path, query)
         key_hash = "a" * 64
         self.assertEqual(native_lookup_key_hash(json.dumps({"keys": [key_hash]}).encode()), key_hash)
@@ -632,8 +638,8 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         await self.app(scope,receive,send)
         return sent
 
-    async def call_lookup(self, method, path, *, query=b"", body=b"", headers=None, receive=None, auth=b"Bearer fixture-master-key"):
-        raw_path=path.encode("ascii")
+    async def call_lookup(self, method, path, *, query=b"", body=b"", headers=None, receive=None, auth=b"Bearer fixture-master-key", raw_path=None):
+        raw_path=path.encode("ascii") if raw_path is None else raw_path
         selected=[(b"host",b"gateway.invalid"),(b"accept",b"*/*"),(b"accept-language",b"en-US"),(b"sec-fetch-mode",b"cors"), *(([(b"authorization",auth)] if auth is not None else [])),
             *(([(b"content-type",b"application/json"),(b"content-length",str(len(body)).encode())] if method=="POST" else [])),
             *(headers or [])]
@@ -651,6 +657,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         valid=(
             ("GET","/team/info",b"team_id=team-123",b""),
             ("GET","/key/list",b"user_id=user-123",b""),
+            ("GET","/user/info",b"user_id=user-123",b""),
             ("POST","/v2/key/info",b"",b'{"keys":["'+b"a"*64+b'"]}'),
         )
         for method,path,query,body in valid:
@@ -664,6 +671,21 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_master_lookup_refuses_virtual_keys_ambiguous_auth_and_malformed_targets(self):
         invalid=(
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"authorization",b"Bearer ordinary-member-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"authorization",b"Bearer management-virtual-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"authorization",b"Bearer read-only-virtual-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"authorization",b"Bearer wrong-master-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"authorization",b"Bearer fixture-master-key"),(b"authorization",b"Bearer fixture-master-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"x-api-key",b"fixture-master-key")]),
+            ("GET","/user/info",b"user_id=user-123",b"",[(b"content-type",b"application/json")]),
+            ("GET","/user/info",b"user_id=user-123&user_id=other",b"",[]),
+            ("GET","/user/info",b"user_id=%75ser-123",b"",[]),
+            ("GET","/user/info",b"user_id=user-123&extra=x",b"",[]),
+            ("GET","/user/info",b"team_id=user-123",b"",[]),
+            ("GET","/user/info",b"",b"",[]),
+            ("POST","/user/info",b"user_id=user-123",b"",[]),
+            ("GET","/user/info/",b"user_id=user-123",b"",[]),
+            ("GET","/user/info",b"user_id=user-123",b"unexpected",[]),
             ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer ordinary-member-key")]),
             ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer wrong-master-key")]),
             ("GET","/team/info",b"team_id=team-123",b"",[(b"authorization",b"Bearer management-virtual-key")]),
@@ -689,6 +711,11 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing[0]["status"],400);self.assertEqual(self.native_calls,0)
         oversized=b" "*(MAX_NATIVE_LOOKUP_BODY+1)
         sent=await self.call_lookup("POST","/v2/key/info",body=oversized)
+        self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
+        for raw_path in (b"/user/%69nfo",b"/user/info/"):
+            sent=await self.call_lookup("GET","/user/info",query=b"user_id=user-123",raw_path=raw_path)
+            self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
+        sent=await self.call_lookup("GET","/user/info",query=b"user_id=user-123",auth=None)
         self.assertEqual(sent[0]["status"],400);self.assertEqual(self.native_calls,0)
 
     async def test_master_lookup_slow_body_is_bounded(self):

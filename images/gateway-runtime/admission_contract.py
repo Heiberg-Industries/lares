@@ -41,8 +41,8 @@ CONTROL_ROUTES = frozenset((
 ))
 HASH = re.compile(r"[0-9a-f]{64}\Z")
 TICKET = re.compile(r"[A-Za-z0-9_-]{43}\Z")
-NATIVE_LOOKUP_ROUTES = frozenset((("POST", "/v2/key/info"), ("GET", "/team/info"), ("GET", "/key/list")))
-NATIVE_LOOKUP_GET_QUERY = {"/team/info": "team_id", "/key/list": "user_id"}
+NATIVE_LOOKUP_ROUTES = frozenset((("POST", "/v2/key/info"), ("GET", "/team/info"), ("GET", "/key/list"), ("GET", "/user/info")))
+NATIVE_LOOKUP_GET_QUERY = {"/team/info": "team_id", "/key/list": "user_id", "/user/info": "user_id"}
 MAX_NATIVE_LOOKUP_BODY = 1024
 OPAQUE_NATIVE_ID = re.compile(r"[A-Za-z0-9-]{1,80}\Z")
 

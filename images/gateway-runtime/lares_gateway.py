@@ -658,7 +658,7 @@ class GatewayApp:
                 if route[0] == "GET": native_lookup_query(route[1], query)
                 elif query: raise Refused()
 
-                # These three native reads expose account identity and key state. Only
+                # These native reads expose account identity and key state. Only
                 # the configured gateway master Bearer may reach LiteLLM's own auth.
                 # A role-bearing virtual key is still a virtual key and is refused here.
                 headers = {}
