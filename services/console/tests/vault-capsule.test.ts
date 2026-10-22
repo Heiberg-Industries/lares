@@ -13,7 +13,9 @@ beforeAll(async()=>{
  writeFileSync(keyPath,'2'.repeat(64));process.env.CONSOLE_VAULT_SIGNING_KEY_FILE=keyPath;process.env.LARES_VAULT_CONSOLE_SOCKET=socketPath;
  server=createServer(socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));let received='';socket.on('data',chunk=>{received+=chunk.toString('utf8');if(!received.includes('\n'))return;const mode=JSON.parse(received.slice(0,received.indexOf('\n'))).input?.rawBodyHash;
   if(mode==='clean-eof'){socket.end();return;}if(mode==='partial-eof'){socket.end('{"ok":');return;}if(mode==='stall')return;
-  let index=0;const bytes=Buffer.from('{"ok":true');const timer=setInterval(()=>{if(socket.destroyed){clearInterval(timer);return;}socket.write(bytes.subarray(index,index+1));index=index===bytes.length-1?0:index+1;},150);socket.once('close',()=>clearInterval(timer));
+  let index=0;const bytes=Buffer.from('{"ok":true');const timer=setInterval(()=>{if(socket.destroyed){clearInterval(timer);return;}socket.write(bytes.subarray(index,index+1));index=index===bytes.length-1?0:index+1;},150);
+  const onWriteError=(error:NodeJS.ErrnoException)=>{clearInterval(timer);if(mode==='trickle'&&['EPIPE','ECONNRESET'].includes(error.code??''))return;throw error;};
+  socket.on('error',onWriteError);socket.once('close',()=>{clearInterval(timer);socket.off('error',onWriteError);});
  });});
  await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(socketPath,resolve);});
 });
