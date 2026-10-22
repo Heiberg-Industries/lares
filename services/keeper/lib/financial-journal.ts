@@ -39,7 +39,7 @@ function assertUniqueFinancialAtoms(atoms:readonly FinancialAtom[]):void {
 }
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
-const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']);
+const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),
@@ -86,7 +86,8 @@ export interface FinancialJournalProposal {journalId:string;operationId:string;s
 export interface CommittedFinancialEvidence {readonly journalId:string;readonly operationId:string;readonly operation:BudgetFinancialOperation;readonly proposalSequence:number;readonly proposalDigest:string}
 declare const committedReceiptBrand:unique symbol;
 export interface CommittedFinancialReceipt extends CommittedFinancialEvidence {readonly [committedReceiptBrand]:true}
-const committedReceipts=new WeakMap<object,{evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[]}>();
+interface CommittedReceiptProof {evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[];observedProjection?:readonly FinancialAtom[]}
+const committedReceipts=new WeakMap<object,CommittedReceiptProof>();
 interface PublicationProof {journal:HostFinancialJournal;operationId:string;receipt:CommittedFinancialReceipt;used:boolean;active:boolean}
 const publicationProofs=new WeakMap<object,PublicationProof>();
 let activePublicationProof:PublicationProof|undefined;
@@ -113,10 +114,21 @@ export function isJournaledAbort(error:unknown,expected:{journalId:string;operat
   return !!receipt&&durableAbortReceipts.get(receipt)?.finished===true&&receipt.journalId===expected.journalId&&receipt.operation===expected.operation;
 }
 type BindingAtom=Extract<FinancialAtom,{kind:'binding'}>;
+function nativeCleanupProjectionCovers(atoms:readonly FinancialAtom[],binding:BindingAtom):boolean {
+  if(binding.state!=='revoked')return false;
+  const exactBinding=atoms.some(atom=>atom.kind==='binding'&&gatewayCanonical(atom).equals(gatewayCanonical(binding)));
+  const account=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'account'}>=>atom.kind==='account'&&atom.id===binding.memberAccountId&&atom.accountKind==='member'&&atom.installationAccountId===binding.installationAccountId&&atom.state==='retired');
+  if(!exactBinding||!account)return false;
+  if(account.reason==='member_removed')return true;
+  if(account.reason!=='member_erased')return false;
+  const tombstone=atoms.find((atom):atom is Extract<FinancialAtom,{kind:'tombstone'}>=>atom.kind==='tombstone'&&atom.accountId===binding.memberAccountId&&atom.state==='erased');
+  return !!tombstone&&account.canonicalSuppressionHash===tombstone.canonicalSuppressionHash&&gatewayCanonical(account.providerSuppressionHashes).equals(gatewayCanonical(tombstone.providerSuppressionHashes));
+}
 export type FinancialReceiptRequirement=
   |{kind:'bound-closed';binding:BindingAtom}
   |{kind:'pending-revocation'|'bound-revocation';binding:BindingAtom}
-  |{kind:'account-erasure';accountId:string;installationAccountId?:string};
+  |{kind:'account-erasure';accountId:string;installationAccountId?:string}
+  |{kind:'native-cleanup-recovery';binding:BindingAtom};
 /** Only a live receipt minted by this module can authorize these fixed financial facts.
  * Reading a historical line or copying its coordinates never creates process authority.
  * Private agent/native coordinates are deliberately absent from financial atoms; this
@@ -124,11 +136,14 @@ export type FinancialReceiptRequirement=
 export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,requirement:FinancialReceiptRequirement):CommittedFinancialEvidence|undefined {
   if(!receipt||typeof receipt!=='object')return undefined;
   const proof=committedReceipts.get(receipt);if(!proof)return undefined;
-  const {evidence,atoms}=proof;
+  const {evidence,atoms,observedProjection}=proof;
   const retired=(accountId:string,installationAccountId:string|undefined,erased:boolean)=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.accountKind==='member'&&(!installationAccountId||a.installationAccountId===installationAccountId)&&a.state==='retired'&&a.reason===(erased?'member_erased':evidence.operation==='erase-person'?'member_erased':'member_removed'));
   let covered=false;
   const erasedTombstone=(accountId:string)=>atoms.some(t=>t.kind==='tombstone'&&t.accountId===accountId&&t.state==='erased'&&atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.canonicalSuppressionHash===t.canonicalSuppressionHash&&gatewayCanonical(a.providerSuppressionHashes).equals(gatewayCanonical(t.providerSuppressionHashes))));
   if(requirement.kind==='account-erasure')covered=evidence.operation==='erase-person'&&retired(requirement.accountId,requirement.installationAccountId,true)&&erasedTombstone(requirement.accountId);
+  else if(requirement.kind==='native-cleanup-recovery'){
+    covered=evidence.operation==='native-cleanup-recovery'&&!!observedProjection&&nativeCleanupProjectionCovers(observedProjection,requirement.binding);
+  }
   else {
     const binding=requirement.binding,exact=atoms.some(a=>a.kind==='binding'&&gatewayCanonical(a).equals(gatewayCanonical(binding)));
     if(requirement.kind==='bound-closed')covered=evidence.operation==='provision'&&binding.state==='active'&&exact&&[binding.installationAccountId,binding.memberAccountId].every(accountId=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.installationAccountId===binding.installationAccountId&&a.accountKind===(accountId===binding.installationAccountId?'installation':'member')&&a.state==='closed'&&a.reason==='unreconciled'&&a.selectedEndpointHash===null&&a.recoveryEpochHash===null));
@@ -290,6 +305,11 @@ export class HostFinancialJournal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
     financialProposalFrame(operationId,this.sequence,this.head,atoms);
   }
+  /** Fixed preflight for the cleanup-only operation. Call inside its owned SQL
+   * transaction after started() has verified the complete source projection. */
+  validateNativeCleanupRecoveryProjection(operationId:string,binding:BindingAtom):void {
+    if(this.pending?.id!==operationId||this.pending.operation!=='native-cleanup-recovery'||this.pending.proposal||!this.control||!this.preparationComplete||!nativeCleanupProjectionCovers([...this.projection.values()],binding))throw new Error('Native cleanup recovery unavailable');
+  }
   committed(operationId:string):CommittedFinancialReceipt|undefined {
     if(this.pending?.id!==operationId||!this.pending.proposal||!this.pending.operation||!this.pending.atoms)throw new Error('Financial proposal unavailable');
     const proposal=this.pending.proposal,sequence=this.sequence-1,kind=this.pending.operation,atoms=this.pending.atoms;
@@ -318,6 +338,15 @@ export class HostFinancialJournal {
       observation.projectionDigest!==digest(gatewayCanonical({checkpoints:projection.checkpoints,atoms:projection.atoms})))throw new Error('Financial observation unavailable');
     const receipt=this.committed(operationId);if(!receipt)return undefined;
     this.append({kind:'observation',observation},operationId);
+    const saved=committedReceipts.get(receipt);
+    if(saved?.evidence.operation==='native-cleanup-recovery'){
+      const freeze=(value:unknown):unknown=>{
+        if(!value||typeof value!=='object'||Object.isFrozen(value))return value;
+        for(const child of Object.values(value))freeze(child);
+        return Object.freeze(value);
+      };
+      saved.observedProjection=Object.freeze(projection.atoms.map(atom=>freeze(FINANCIAL_ATOM_SCHEMA.parse(structuredClone(atom))) as FinancialAtom));
+    }
     const proof:PublicationProof={journal:this,operationId,receipt,used:false,active:false};publicationProofs.set(receipt,proof);
     return receipt;
   }

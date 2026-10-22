@@ -35,7 +35,7 @@ export const budgetNativeReviewedPolicySchema=z.object({capability,pricing:gatew
   if(gatewayHash(gatewayCanonical(p.capability))!==p.pricing.capabilityHash||p.pricing.format!==p.capability.provider||p.pricing.limits.outputTokens>p.capability.maxOutputTokens||gatewayMaximumLiability(p.pricing)!==p.maximumLiability||[...p.team.models,...p.membership.allowedModels,...p.key.models].some(a=>!p.capability.aliases.includes(a)))ctx.addIssue({code:'custom',message:'Reviewed policy mismatch'});
 });
 export type BudgetNativeReviewedPolicy=z.infer<typeof budgetNativeReviewedPolicySchema>;
-const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
+const receipt=z.object({journalId:uuid,operationId:uuid,operation:z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person','native-cleanup-recovery']),proposalSequence:z.number().int().positive().safe(),proposalDigest:hash}).strict();
 const team=z.object({kind:z.literal('team'),ownershipId:uuid,installationAccountId:uuid,endpoint,nativeTeamId:nativeId,capabilityHash:hash,policy:teamPolicy,createAttempt:writeAttempt}).strict();
 const user=z.object({kind:z.literal('user'),ownershipId:uuid,installationAccountId:uuid,accountId:uuid,endpoint,teamOwnershipId:uuid,nativeUserId:nativeId,policy:userPolicy,membership:membershipPolicy,userCreateAttempt:writeAttempt,membershipCreateAttempt:writeAttempt}).strict();
 const erasedUser=z.object({kind:z.literal('erased-user'),accountCommitment:hash,coordinateCommitment:hash,erasureReceiptHash:hash}).strict();
@@ -108,6 +108,19 @@ export interface NativeCustodyGate {
   recordErasedNativeAbsence(keyFingerprint:string,evidence:NativeHashAbsenceReceipt):void;
   inventory():Snapshot;
 }
+export interface NativeCleanupRecoveryCandidate {
+  readonly operationId:string;
+  readonly accountId:string;
+  readonly installationAccountId:string;
+  readonly binding:Extract<FinancialAtom,{kind:'binding'}>;
+  readonly phase:'bound-closed'|'revoke-pending';
+  readonly plaintext:'present'|'removal-pending'|'removed';
+}
+export interface NativeCleanupRecoverySession {
+  candidates():readonly NativeCleanupRecoveryCandidate[];
+  publishLocalPlaintextCleanup(operationId:string,evidence:CommittedFinancialReceipt):void;
+  close():void;
+}
 
 /** One lifecycle owner holds all descriptors and the inherited Linux kernel lock. The
  * nonblocking gate is acquired before any later source/journal ownership. No timers/leases. */
@@ -115,6 +128,12 @@ export class BudgetNativeCustodyStore {
   private frozen=false;private stopping=false;private closed=false;private busy=false;private idle=new Set<()=>void>();
   private snapshot!:Snapshot;private control!:Control;private lock!:Handle;private snapshotFile!:Handle;private controlFile!:Handle;
   private publicationIntent?:Handle;private publicationIntentRecord?:PublicationIntent;
+  /** Retained only by the cleanup-recovery lifecycle; key paths are never reopened after awaits. */
+  private recoveryKeyFiles?:Map<string,Handle>;
+  /** Exact owned entries while a cleanup recovery publication is in flight. */
+  private recoveryPartials?:Map<string,Handle>;
+  private recoveryDetached?:Map<string,Handle>;
+  private recoveryProof?:CommittedFinancialReceipt;
   private rootFd!:number;private rootStat!:BigIntStats;
   private readonly uid:number;private readonly gid:number;private readonly sync:(fd:number)=>void;
   private constructor(private directory:string,private options:Options){this.uid=options.ownershipUid??0;this.gid=options.ownershipGid??0;this.sync=options.sync??fsyncSync;}
@@ -142,6 +161,42 @@ export class BudgetNativeCustodyStore {
       owner.snapshotFile=owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES);owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);
       owner.verify();owner.publishControl({...owner.control,state:'open'});return owner;
     }catch{owner.release();throw unavailable();}
+  }
+  /** Acquires a cleanup-only owner for an exact open store. It exposes no runtime gate,
+   * key reader, or ordinary store handle, and never closes the persisted open control. */
+  static openCleanupRecovery(directory:string,options:Options={}):NativeCleanupRecoverySession {
+    const owner=new BudgetNativeCustodyStore(directory,options);let active=true;
+    const assertActive=()=>{if(!active||owner.closed||owner.frozen)throw unavailable();};
+    try{
+      owner.openRoot();owner.lock=owner.openFile('writer.lock',0);if(owner.lock.bytes.length!==0)throw unavailable();(options.lock??linuxInheritedJournalLock)(owner.lock.fd);
+      owner.controlFile=owner.openFile('control.json',CONTROL_BYTES);owner.control=owner.decode(controlSchema,owner.controlFile.bytes);
+      if(owner.control.state!=='open')throw unavailable();
+      owner.snapshotFile=owner.openFile('snapshot.json',NATIVE_CUSTODY_MAX_BYTES);owner.snapshot=owner.decode(snapshotSchema,owner.snapshotFile.bytes);
+      owner.verify();
+      owner.recoveryKeyFiles=new Map();
+      owner.recoveryPartials=new Map();owner.recoveryDetached=new Map();
+      for(const op of owner.snapshot.operations)if(op.kind==='operation'&&op.plaintext!=='removed'){
+        const name=owner.keyName(op.operationId);owner.recoveryKeyFiles.set(name,owner.openFile(name,KEY_BYTES));
+      }
+      owner.verify();
+      const candidates=owner.snapshot.operations.flatMap(row=>{
+        if(row.kind!=='operation'||(row.phase!=='bound-closed'&&row.phase!=='revoke-pending')||(row.plaintext!=='present'&&row.plaintext!=='removal-pending'&&row.plaintext!=='removed')||row.nativeDeletion!=='unverified')return [];
+        const user=owner.snapshot.users.find((candidate):candidate is NativeUserOwnership=>candidate.kind==='user'&&candidate.ownershipId===row.userOwnershipId);
+        if(!user)return [];
+        return [{operationId:row.operationId,accountId:user.accountId,installationAccountId:user.installationAccountId,binding:{...owner.bindingAtom(row,'revoked'),state:'revoked' as const},phase:row.phase,plaintext:row.plaintext}];
+      });
+      const safeCandidates=frozenClone(candidates);
+      const session:NativeCleanupRecoverySession={
+        candidates:()=>{assertActive();owner.verify();return safeCandidates;},
+        publishLocalPlaintextCleanup:(operationId,evidence)=>{
+          assertActive();owner.verify();
+          try{owner.publishNativeCleanupRecovery(operationId,evidence);owner.verify();}
+          catch(error){if(error instanceof Error&&error.message==='Native custody operation refused')throw error;owner.frozen=true;throw unavailable();}
+        },
+        close:()=>{if(!active)return;active=false;owner.release();},
+      };
+      return Object.freeze(session);
+    }catch{active=false;owner.release();throw unavailable();}
   }
   /** Read-only inspection under the native writer lock. This never returns custody data
    * or a runtime gate and cannot make an interrupted store usable. */
@@ -416,6 +471,16 @@ export class BudgetNativeCustodyStore {
     if(['revoke-pending','revoked'].includes(op.phase)&&same(op.revocationReceipt,r))return;
     if(['revoke-pending','revoked'].includes(op.phase)||op.financialOperationId===r.operationId||op.financialJournalId!==null&&op.financialJournalId!==r.journalId)throw refused();this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:r});
   }
+  private publishNativeCleanupRecovery(id:string,raw:CommittedFinancialReceipt):void {
+    try{requireCurrentFinancialPublicationProof(raw);}catch{throw refused();}
+    const op=this.operation(id);
+    if((op.phase!=='bound-closed'&&op.phase!=='revoke-pending')||op.nativeDeletion!=='unverified'||!['present','removal-pending','removed'].includes(op.plaintext))throw refused();
+    if(op.financialJournalId!==null&&raw.journalId!==op.financialJournalId)throw refused();
+    const evidence=committedFinancialEvidence(raw,{kind:'native-cleanup-recovery',binding:this.bindingAtom(op,'revoked')});if(!evidence)throw refused();
+    this.recoveryProof=raw;
+    try{if(op.phase==='bound-closed')this.updateOperation({...op,phase:'revoke-pending',revocationReceipt:evidence});this.removePlaintext(id,true);}
+    finally{this.recoveryProof=undefined;}
+  }
   private accountOperations(accountId:string):readonly NativeOperation[] {
     try{uuid.parse(accountId);}catch{throw refused();}const ids=new Set(this.snapshot.users.filter((u):u is NativeUserOwnership=>u.kind==='user'&&u.accountId===accountId).map(u=>u.ownershipId));
     return clone(this.snapshot.operations.filter((o):o is NativeOperation=>o.kind==='operation'&&ids.has(o.userOwnershipId)));
@@ -429,16 +494,19 @@ export class BudgetNativeCustodyStore {
     if(!erased){this.updateOperation({...this.operation(id),phase:'revoked',nativeDeletion:'verified'});return;}
     this.publish({...this.snapshot,operations:this.snapshot.operations.map(o=>o.kind==='cleanup'&&o.keyFingerprint===id?{...o,phase:'revoked',nativeDeletion:'verified'}:o)});
   }
-  private removePlaintext(id:string):void {
-    const op=this.operation(id);if(op.phase!=='revoke-pending'||!op.revocationReceipt)throw refused();if(op.plaintext==='removed')return;if(op.plaintext!=='present')throw unavailable();
+  private removePlaintext(id:string,recoveryPendingRemoval=false):void {
+    const op=this.operation(id);if(op.phase!=='revoke-pending'||!op.revocationReceipt)throw refused();if(op.plaintext==='removed')return;if(op.plaintext!=='present'&&!(recoveryPendingRemoval&&op.plaintext==='removal-pending'))throw unavailable();
     // First make the revocation and pending removal durable. The second intent then binds
     // unlink to the exact snapshot that records plaintext as removed.
-    this.updateOperation({...op,plaintext:'removal-pending'});const file=this.openFile(this.keyName(id),KEY_BYTES);
+    if(op.plaintext==='present')this.updateOperation({...op,plaintext:'removal-pending'});
+    const name=this.keyName(id),retained=this.recoveryKeyFiles?.get(name),file=retained??this.openFile(name,KEY_BYTES);
     const next={...this.snapshot,operations:this.snapshot.operations.map(value=>value.kind==='operation'&&value.operationId===id?{...value,plaintext:'removed' as const}:value)};
     try{this.beginPublicationIntent(next,'key-remove',{operationId:id,keyFingerprint:op.keyFingerprint});
-      this.assertHandle(this.keyName(id),file,KEY_BYTES);if(digest(file.bytes)!==op.keyFingerprint)throw unavailable();unlinkSync(join(this.directory,this.keyName(id)));this.syncRoot();
+      this.assertOwner();this.assertHandle(name,file,KEY_BYTES);if(digest(file.bytes)!==op.keyFingerprint)throw unavailable();unlinkSync(join(this.directory,name));
+      if(retained){retained.stat=fstatSync(retained.fd,{bigint:true});this.recoveryKeyFiles!.delete(name);this.recoveryDetached!.set(name,retained);}this.assertOwner();this.syncRoot();
+      if(retained){this.recoveryDetached!.delete(name);retained.bytes.fill(0);closeSync(retained.fd);}
       this.publishSnapshotUnderIntent(next,new Set([id]));this.clearPublicationIntent();}
-    finally{file.bytes.fill(0);closeSync(file.fd);}
+    finally{if(!retained){file.bytes.fill(0);closeSync(file.fd);}}
   }
   private eraseAccountAssociation(accountId:string,raw:CommittedFinancialReceipt):void {
     try{uuid.parse(accountId);}catch{throw refused();}
@@ -478,7 +546,7 @@ export class BudgetNativeCustodyStore {
     // O_EXCL on the final path refuses a foreign intent instead of replacing it. A failed
     // file or directory sync leaves a refusal artifact; no snapshot/key write follows it.
     const file=this.createFile('publication-intent.json',bytes);
-    this.publicationIntent=file;this.publicationIntentRecord=record;this.syncRoot();
+    this.publicationIntent=file;this.recoveryPartials?.delete('publication-intent.json');this.publicationIntentRecord=record;this.syncRoot();
   }
   private publishSnapshotUnderIntent(nextSnapshot:Snapshot,missingKeys=new Set<string>()):void {
     const record=this.publicationIntentRecord;if(!record||!this.publicationIntent)throw unavailable();
@@ -496,10 +564,13 @@ export class BudgetNativeCustodyStore {
   }
   private clearPublicationIntent():void {
     const file=this.publicationIntent;if(!file||!this.publicationIntentRecord)throw unavailable();
-    this.assertHandle('publication-intent.json',file,INTENT_BYTES);unlinkSync(join(this.directory,'publication-intent.json'));
+    this.assertOwner();this.assertHandle('publication-intent.json',file,INTENT_BYTES);unlinkSync(join(this.directory,'publication-intent.json'));
     // Keep the in-memory intent until the directory sync acknowledges its removal. If
     // that sync is unknown, the caller freezes and cannot claim publication succeeded.
-    this.syncRoot(true);file.bytes.fill(0);closeSync(file.fd);this.publicationIntent=undefined;this.publicationIntentRecord=undefined;
+    if(this.recoveryPartials){file.stat=fstatSync(file.fd,{bigint:true});this.recoveryDetached!.set('publication-intent.json',file);this.publicationIntent=undefined;this.publicationIntentRecord=undefined;}
+    this.assertOwner(true);this.syncRoot(true);
+    if(this.recoveryPartials){this.recoveryDetached!.delete('publication-intent.json');file.bytes.fill(0);closeSync(file.fd);}
+    else{file.bytes.fill(0);closeSync(file.fd);this.publicationIntent=undefined;this.publicationIntentRecord=undefined;}
     // Recheck the complete store after the unlink sync and before returning permission.
     // This catches a concurrent insertion or path replacement at that exact boundary.
     this.verify();
@@ -524,11 +595,12 @@ export class BudgetNativeCustodyStore {
       if(op.kind==='cleanup'){uniqueId('operation-coordinate:'+op.coordinateCommitment);uniqueId('cleanup-operation:'+op.operationCommitment);uniqueId('key:'+op.keyFingerprint);if((op.phase==='revoked')!==(op.nativeDeletion==='verified')||!this.snapshot.users.some(u=>u.kind==='erased-user'&&u.accountCommitment===op.accountCommitment&&u.erasureReceiptHash===op.erasureReceiptHash))throw unavailable();continue;}
       uniqueId('operation:'+op.operationId);uniqueId('operation-coordinate:'+this.operationCoordinate(op.bindingId,op.credentialGeneration));uniqueId('key:'+op.keyFingerprint);
       const u=this.snapshot.users.find((u):u is NativeUserOwnership=>u.kind==='user'&&u.ownershipId===op.userOwnershipId),t=u&&this.snapshot.teams.find(t=>t.ownershipId===u.teamOwnershipId),p=this.checkedPolicy(op.reviewedPolicy);
-      if((op.financialOperationId===null)!==(op.financialJournalId===null)||op.bindingReceipt&&(op.bindingReceipt.operation!=='provision'||op.bindingReceipt.journalId!==op.financialJournalId)||op.revocationReceipt&&(!['member-remove','erase-person'].includes(op.revocationReceipt.operation)||op.financialJournalId!==null&&op.revocationReceipt.journalId!==op.financialJournalId))throw unavailable();
+      if((op.financialOperationId===null)!==(op.financialJournalId===null)||op.bindingReceipt&&(op.bindingReceipt.operation!=='provision'||op.bindingReceipt.journalId!==op.financialJournalId)||op.revocationReceipt&&(!['member-remove','erase-person','native-cleanup-recovery'].includes(op.revocationReceipt.operation)||op.financialJournalId!==null&&op.revocationReceipt.journalId!==op.financialJournalId))throw unavailable();
       if(!u||!t||op.keyCreateAttempt!=='not-attempted'&&u.membershipCreateAttempt!=='verified'||op.keyCreateAttempt!=='not-attempted'&&!['provisioning','native-blocked-verified','bound-closed','uncertain','revoke-pending','revoked'].includes(op.phase)||['native-blocked-verified','bound-closed'].includes(op.phase)&&(op.keyCreateAttempt!=='verified'||u.membershipCreateAttempt!=='verified'||u.userCreateAttempt!=='verified'||t.createAttempt!=='verified')||op.policyDigest!==gatewayHash(gatewayCanonical(p))||!same(t.policy,p.team)||!same(u.policy,p.user)||!same(u.membership,p.membership)||t.capabilityHash!==p.pricing.capabilityHash||p.key.models.length!==1||p.key.models[0]!==op.association.purposeAlias||(op.phase==='revoked')!==(op.nativeDeletion==='verified')||op.phase==='revoked'&&op.plaintext!=='removed'||op.phase==='bound-closed'&&(!op.bindingReceipt||op.bindingReceipt.operationId!==op.financialOperationId)||op.bindingReceipt&&op.bindingReceipt.operationId!==op.financialOperationId||['revoke-pending','revoked'].includes(op.phase)&&!op.revocationReceipt||op.plaintext!=='present'&&(!['revoke-pending','revoked'].includes(op.phase)||!op.revocationReceipt))throw unavailable();
       if(op.plaintext!=='removed'){
         const name=this.keyName(op.operationId);if(missingKeys.has(op.operationId))continue;expected.add(name);
-        if(recovery.keyFiles){const file=recovery.keyFiles.get(name);if(!file)throw unavailable();this.assertHandle(name,file,KEY_BYTES);if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}
+        const keyFiles=recovery.keyFiles??this.recoveryKeyFiles;
+        if(keyFiles){const file=keyFiles.get(name);if(!file)throw unavailable();this.assertHandle(name,file,KEY_BYTES);if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}
         else{const file=this.openFile(name,KEY_BYTES);try{if(file.bytes.length!==KEY_BYTES||digest(file.bytes)!==op.keyFingerprint)throw unavailable();}finally{file.bytes.fill(0);closeSync(file.fd);}}
       }
     }
@@ -552,7 +624,8 @@ export class BudgetNativeCustodyStore {
   }
   private createFile(name:string,bytes:Buffer):Handle {
     this.assertOwner();const fd=openSync(join(this.directory,name),constants.O_RDWR|constants.O_CREAT|constants.O_EXCL|constants.O_NOFOLLOW,0o600);
-    try{fchownSync(fd,this.uid,this.gid);fchmodSync(fd,0o600);let offset=0;while(offset<bytes.length){this.assertOwner();const written=writeSync(fd,bytes,offset,bytes.length-offset);if(written<1)throw unavailable();offset+=written;}this.assertOwner();this.sync(fd);const file={fd,stat:fstatSync(fd,{bigint:true}),bytes:Buffer.from(bytes)};this.assertHandle(name,file,Math.max(bytes.length,1));return file;}catch{closeSync(fd);throw unavailable();}
+    const file:Handle={fd,stat:fstatSync(fd,{bigint:true}),bytes:Buffer.alloc(0)};this.recoveryPartials?.set(name,file);
+    try{fchownSync(fd,this.uid,this.gid);fchmodSync(fd,0o600);file.stat=fstatSync(fd,{bigint:true});let offset=0;while(offset<bytes.length){this.assertOwner();const written=writeSync(fd,bytes,offset,bytes.length-offset);if(written<1)throw unavailable();offset+=written;file.bytes=Buffer.from(bytes.subarray(0,offset));file.stat=fstatSync(fd,{bigint:true});}this.assertOwner();this.syncOwned(fd);file.stat=fstatSync(fd,{bigint:true});file.bytes=Buffer.from(bytes);this.assertHandle(name,file,Math.max(bytes.length,1));return file;}catch{if(!this.recoveryPartials)closeSync(fd);throw unavailable();}
   }
   private replaceFile(name:string,current:Handle,bytes:Buffer):Handle {
     this.assertOwner();this.assertHandle(name,current,name==='control.json'?CONTROL_BYTES:NATIVE_CUSTODY_MAX_BYTES);const temporary=`.${name}.partial`,next=this.createFile(temporary,bytes);let published=false;
@@ -563,16 +636,33 @@ export class BudgetNativeCustodyStore {
       // OUR already-verified inode immediately, so failed-close freezing cannot target the
       // unlinked former control file. This never opens/adopts a replacement from the path.
       if(name==='control.json')this.controlFile=next;else this.snapshotFile=next;
-      published=true;next.stat=fstatSync(next.fd,{bigint:true});this.assertHandle(name,next,bytes.length);this.syncRoot();return next;
-    }finally{if(published)closeSync(current.fd);else closeSync(next.fd);}
+      this.recoveryPartials?.delete(temporary);published=true;next.stat=fstatSync(next.fd,{bigint:true});this.assertOwner();this.assertHandle(name,next,bytes.length);this.syncRoot();return next;
+    }finally{if(published)closeSync(current.fd);else if(!this.recoveryPartials)closeSync(next.fd);}
   }
   private assertOwner(skipIntentCheck=false):void {
+    if(this.recoveryProof)try{requireCurrentFinancialPublicationProof(this.recoveryProof);}catch{throw unavailable();}
     this.assertRoot();if(this.lock)this.assertHandle('writer.lock',this.lock,0);
     if(this.publicationIntent&&!skipIntentCheck){this.assertHandle('publication-intent.json',this.publicationIntent,INTENT_BYTES);if(!this.publicationIntentRecord||!this.publicationIntent.bytes.equals(gatewayCanonical(this.publicationIntentRecord)))throw unavailable();}
+    if(this.recoveryKeyFiles)this.assertRecoveryOwnership();
   }
+  private assertRecoveryOwnership():void {
+    if(this.recoveryProof)try{requireCurrentFinancialPublicationProof(this.recoveryProof);}catch{throw unavailable();}
+    this.assertRoot();const expected=new Set(['writer.lock','snapshot.json','control.json']);
+    this.assertHandle('writer.lock',this.lock,0);this.assertHandle('snapshot.json',this.snapshotFile,NATIVE_CUSTODY_MAX_BYTES);this.assertHandle('control.json',this.controlFile,CONTROL_BYTES);
+    for(const [name,file] of this.recoveryKeyFiles??[]){expected.add(name);this.assertHandle(name,file,KEY_BYTES);}
+    if(this.publicationIntent){expected.add('publication-intent.json');this.assertHandle('publication-intent.json',this.publicationIntent,INTENT_BYTES);}
+    for(const [name,file] of this.recoveryPartials??[]){expected.add(name);this.assertHandle(name,file,name==='.control.json.partial'?CONTROL_BYTES:name.endsWith('.key')?KEY_BYTES:name==='publication-intent.json'?INTENT_BYTES:NATIVE_CUSTODY_MAX_BYTES);}
+    for(const [name,file] of this.recoveryDetached??[]){this.assertDetachedHandle(file);if(expected.has(name))throw unavailable();}
+    const actual=this.inventoryNames().sort(),wanted=[...expected].sort();if(actual.length!==wanted.length||actual.some((name,index)=>name!==wanted[index]))throw unavailable();
+  }
+  private assertDetachedHandle(file:Handle):void {
+    this.assertRoot();const current=fstatSync(file.fd,{bigint:true});if(current.dev!==file.stat.dev||current.ino!==file.stat.ino||current.nlink!==0n||current.size!==BigInt(file.bytes.length)||current.mtimeNs!==file.stat.mtimeNs||current.ctimeNs!==file.stat.ctimeNs)throw unavailable();
+    const bytes=Buffer.alloc(file.bytes.length);if(bytes.length&&readSync(file.fd,bytes,0,bytes.length,0)!==bytes.length||!bytes.equals(file.bytes))throw unavailable();bytes.fill(0);
+  }
+  private syncOwned(fd:number):void {this.sync(fd);this.assertOwner();}
   private syncRoot(skipIntentCheck=false):void {this.assertOwner(skipIntentCheck);this.sync(this.rootFd);this.assertOwner(skipIntentCheck);}
   private freeze():void {if(this.closed||this.frozen)return;this.frozen=true;if(this.publicationIntent)return;try{this.publishControl({...this.control,state:'uncertain'});}catch{/* Writer-open/partial/mismatched files still refuse later adoption. */}}
-  private release():void {if(this.closed)return;this.closed=true;for(const file of [this.snapshotFile,this.controlFile,this.lock,this.publicationIntent])if(file){file.bytes.fill(0);try{closeSync(file.fd);}catch{}}if(this.rootFd!==undefined)try{closeSync(this.rootFd);}catch{}}
+  private release():void {if(this.closed)return;this.closed=true;const files=new Set<Handle>([this.snapshotFile,this.controlFile,this.lock,this.publicationIntent,...(this.recoveryKeyFiles?.values()??[]),...(this.recoveryPartials?.values()??[]),...(this.recoveryDetached?.values()??[])].filter((file):file is Handle=>Boolean(file)));for(const file of files){file.bytes.fill(0);try{closeSync(file.fd);}catch{}}this.recoveryKeyFiles?.clear();this.recoveryPartials?.clear();this.recoveryDetached?.clear();if(this.rootFd!==undefined)try{closeSync(this.rootFd);}catch{}}
 }
 
 // Bound enumeration before materializing the inventory, including unexpected entries.
