@@ -14,11 +14,11 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
   run<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<T> {
     return this.execute(operation,work).then(result=>result.value);
   }
-  runWithReceipt<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<{value:T;receipt:CommittedFinancialReceipt}> {
+  runWithReceipt<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;receipt:CommittedFinancialReceipt}> {
     if(!this.journal.prepared)return Promise.reject(new Error('Prepared financial journal receipt unavailable'));
-    return this.execute(operation,work).then(result=>{if(!result.receipt)throw new Error('Financial commit receipt unavailable');return {value:result.value,receipt:result.receipt};});
+    return this.execute(operation,work,publish).then(result=>{if(!result.receipt)throw new Error('Financial commit receipt unavailable');return {value:result.value,receipt:result.receipt};});
   }
-  private execute<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
+  private execute<T>(operation:BudgetFinancialOperation,work:(boundary:SourceTransactionBoundary,operationId:string)=>Promise<T>,publish?:(receipt:CommittedFinancialReceipt,value:T)=>undefined):Promise<{value:T;receipt?:CommittedFinancialReceipt}> {
     let abortReceipt:DurableFinancialAbortReceipt|undefined;
     return this.journal.operation(operation,async operationId=>{
       let settled=false,proposed=false,receipt:CommittedFinancialReceipt|undefined;
@@ -42,8 +42,22 @@ export class JournalBudgetFinancialWriter implements BudgetFinancialWriter {
         },
       });
       try{
-        const result=await work(boundary,operationId);
+        let result:T;
+        try{result=await work(boundary,operationId);}
+        catch(error){
+          // COMMIT may be durable even when the transaction wrapper withholds its
+          // result afterward. Without the result, current-receipt publication cannot run.
+          if(publish&&receipt){try{this.journal.freeze();}catch{/* Preserve the transaction failure. */}}
+          throw error;
+        }
         if(!settled)throw new Error('Financial transaction did not durably settle');
+        if(publish&&receipt){
+          // Only this writer's just-committed receipt crosses the held barrier.
+          try{
+            const publicationResult:unknown=publish(receipt,result);
+            if(publicationResult!==undefined){void Promise.resolve(publicationResult).catch(()=>undefined);throw new Error('Receipt publication must be synchronous');}
+          }catch(error){try{this.journal.freeze();}catch{/* Preserve the publication failure; custody remains closed. */}throw error;}
+        }
         return {value:result,receipt};
       }finally{if(!settled){try{this.journal.freeze();}catch{/* Preserve the owner failure; the writer remains closed. */}}}
     }).catch(error=>{markJournaledAbort(error,abortReceipt);throw error;});
