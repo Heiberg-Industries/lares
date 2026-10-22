@@ -121,6 +121,82 @@ describe('protected native custody foundation',()=>{
     await expect(store.withGate(async gate=>{const p=prepare(gate),id=p.operation.operationId;gate.recordRevocation(id,await receipt(p));gate.removePlaintext(id);const request=gate.prepareNativeAbsence(id),proof=await absence(request.fingerprint,request.challenge);fail=true;gate.recordNativeAbsence(id,proof);})).rejects.toThrow('reconciliation');fail=false;
     expect(()=>store.close()).not.toThrow();const before=bytes(directory);expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
   });
+
+  it('keeps a strict intent across key creation and removal without recording secrets or native identities',async()=>{
+    let directory='';const observed=new Map<string,any>();
+    const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!directory||!readdirSync(directory).includes('publication-intent.json'))return;
+      const record=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));observed.set(record.kind,record);
+    }});directory=join(roots[roots.length-1],'custody');
+    await store.withGate(async gate=>{
+      const p=prepare(gate);expect(readdirSync(directory)).not.toContain('publication-intent.json');
+      const created=observed.get('key-create');expect(created).toBeDefined();expect(created.key).toEqual({operationId:p.operation.operationId,keyFingerprint:p.operation.keyFingerprint});
+      expect(JSON.stringify(created)).not.toContain(secret());expect(JSON.stringify(created)).not.toContain(p.team.nativeTeamId);expect(JSON.stringify(created)).not.toContain(p.user.nativeUserId);
+      expect(created.next.controlDigest).toBe(gatewayHash(gatewayCanonical(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')))));
+      gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);
+      const removed=observed.get('key-remove');expect(removed).toBeDefined();expect(removed.key).toEqual(created.key);expect(removed.next.revision).toBeGreaterThan(created.next.revision);
+      expect(readdirSync(directory)).not.toContain('publication-intent.json');
+      gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+      const erasure=observed.get('snapshot');expect(erasure).toBeDefined();expect(JSON.stringify(erasure)).not.toContain(p.accountId);expect(JSON.stringify(erasure)).not.toContain(p.user.nativeUserId);
+    });
+    store.close();expect(readdirSync(directory)).not.toContain('publication-intent.json');const reopened=open(directory);reopened.close();
+  });
+
+  it.each([1,2,4,7])('preserves an unacknowledged publication intent at fsync boundary %i and refuses open without changing bytes',async failAt=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic publication sync failure');}});let returned=false;
+    enabled=true;await expect(store.withGate(async gate=>{gate.reserveTeam(randomUUID(),target,reviewed());returned=true;})).rejects.toThrow('reconciliation');enabled=false;
+    expect(returned).toBe(false);const before=bytes(directory);store.close();expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+    if(failAt===2||failAt===4)expect(readdirSync(directory)).toContain('publication-intent.json');
+    if(failAt===7)expect(readdirSync(directory)).not.toContain('publication-intent.json');
+  });
+
+  it('refuses to replace a foreign final publication intent',async()=>{
+    const {directory,store}=fixture();const snapshot=readFileSync(join(directory,'snapshot.json')),foreign=gatewayCanonical({version:1,foreign:true});
+    writeFileSync(join(directory,'publication-intent.json'),foreign,{mode:0o600});
+    await expect(store.withGate(async gate=>{gate.reserveTeam(randomUUID(),target,reviewed());})).rejects.toThrow('reconciliation');
+    expect(readFileSync(join(directory,'publication-intent.json')).equals(foreign)).toBe(true);expect(readFileSync(join(directory,'snapshot.json'))).toEqual(snapshot);
+    store.close();const before=bytes(directory);expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+  });
+
+  it('preserves foreign bytes inserted during intent-file fsync after gate verification',async()=>{
+    let directory='',armed=false,injected=false;const foreign=gatewayCanonical({version:1,foreign:'inserted-at-file-sync'});
+    const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!armed||injected||!directory||fstatSync(fd).isDirectory())return;
+      injected=true;writeFileSync(join(directory,'publication-intent.json'),foreign,{mode:0o600});
+    }});directory=join(roots[roots.length-1],'custody');const snapshot=readFileSync(join(directory,'snapshot.json'));let returned=false;
+    armed=true;await expect(store.withGate(async gate=>{gate.reserveTeam(randomUUID(),target,reviewed());returned=true;})).rejects.toThrow('reconciliation');armed=false;
+    expect(injected).toBe(true);expect(returned).toBe(false);expect(readFileSync(join(directory,'publication-intent.json'))).toEqual(foreign);
+    expect(readFileSync(join(directory,'snapshot.json'))).toEqual(snapshot);store.close();const before=bytes(directory);
+    expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+  });
+
+  it.each(['foreign-intent','snapshot-swap','control-swap'] as const)('does not return a claim when %s is inserted at the post-clear sync boundary',async tamper=>{
+    let directory='',enabled=false,done=false;const {store}=fixture({sync:fd=>{
+      fsyncSync(fd);if(!enabled||done||!directory||!fstatSync(fd).isDirectory()||readdirSync(directory).includes('publication-intent.json'))return;done=true;
+      if(tamper==='foreign-intent')writeFileSync(join(directory,'publication-intent.json'),gatewayCanonical({version:1,foreign:true}),{mode:0o600});
+      else{const name=tamper==='snapshot-swap'?'snapshot.json':'control.json',path=join(directory,name),replacement=join(directory,'replacement');copyFileSync(path,replacement);chmodSync(replacement,0o600);renameSync(replacement,path);}
+    }});directory=join(roots[roots.length-1],'custody');let returned=false;
+    enabled=true;await expect(store.withGate(async gate=>{gate.reserveTeam(randomUUID(),target,reviewed());returned=true;})).rejects.toThrow('reconciliation');enabled=false;
+    expect(done).toBe(true);expect(returned).toBe(false);store.close();const before=bytes(directory);
+    expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+  });
+
+  it('retains the exact erasure intent and refuses reopen after an interrupted snapshot rename',async()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===4)throw new Error('synthetic erasure snapshot sync failure');}});
+    await expect(store.withGate(async gate=>{
+      const p=prepare(gate);gate.recordRevocation(p.operation.operationId,await receipt(p));gate.removePlaintext(p.operation.operationId);
+      enabled=true;gate.eraseAccountAssociation(p.accountId,await receipt(p,'erase-person'));
+    })).rejects.toThrow('reconciliation');enabled=false;const intent=JSON.parse(readFileSync(join(directory,'publication-intent.json'),'utf8'));
+    expect(intent.kind).toBe('snapshot');expect(JSON.stringify(intent)).not.toContain('accountId');
+    const before=bytes(directory);store.close();expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+  });
+
+  it('refuses a persisted or partial publication intent byte-for-byte without adoption',()=>{
+    for(const name of ['publication-intent.json','.publication-intent.json.partial']){
+      const {directory,store}=fixture();store.close();writeFileSync(join(directory,name),gatewayCanonical({version:1,unexpected:true}),{mode:0o600});const before=bytes(directory);
+      expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+    }
+  });
   it('requires explicit creation, clean close and exact protected files',async()=>{
     const missing=join(realpathSync(tmpdir()),`lares-native-missing-${randomUUID()}`);
     expect(()=>open(missing)).toThrow('reconciliation');expect(()=>statSync(missing)).toThrow();
@@ -334,6 +410,13 @@ describe('protected native custody foundation',()=>{
     expect(()=>open(directory)).toThrow('reconciliation');
   });
 
+  it('keeps a close directory-sync failure uncertain and byte-preserving on reopen',()=>{
+    let enabled=false,count=0;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===2)throw new Error('synthetic close directory sync failure');}});
+    enabled=true;expect(()=>store.close()).toThrow('reconciliation');enabled=false;
+    expect(readdirSync(directory)).not.toContain('publication-intent.json');expect(JSON.parse(readFileSync(join(directory,'control.json'),'utf8')).state).toBe('uncertain');
+    const before=bytes(directory);expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
+  });
+
   it('freezes unknown work and retains records for later explicit reconciliation',async()=>{
     const {directory,store}=fixture();await expect(store.withGate(async gate=>{const p=prepare(gate);gate.recordUncertain(p.operation.operationId);})).rejects.toThrow('reconciliation');
     const before=bytes(directory);store.close();expect(bytes(directory)).toEqual(before);expect(JSON.parse(before['control.json'].toString()).state).toBe('uncertain');
@@ -372,7 +455,7 @@ describe('protected native custody foundation',()=>{
       for(let i=0;i<NATIVE_CUSTODY_MAX_RECORDS;i++)gate.reserveTeam(randomUUID(),target,reviewed());
       const before=bytes(directory);expect(()=>gate.reserveTeam(randomUUID(),target,reviewed())).toThrow('refused');expect(bytes(directory)).toEqual(before);
     });
-  });
+  },15000);
 
   it.each([1,2,3,4,5])('retains incomplete fresh creation after fsync failure %i',failAt=>{
     const parent=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-partial-'));roots.push(parent);const directory=join(parent,'custody');let count=0;
@@ -385,7 +468,7 @@ describe('protected native custody foundation',()=>{
     enabled=true;return expect(store.withGate(async gate=>{gate.reserveTeam(randomUUID(),target,reviewed());})).rejects.toThrow('reconciliation').then(()=>{enabled=false;store.close();expect(()=>open(directory)).toThrow('reconciliation');});
   });
 
-  it.each([1,2,3,4,5,6])('never promotes incomplete tuple/secret publication after fsync failure %i',async failAt=>{
+  it.each([1,2,3,4,5,6,7,8,9])('never promotes incomplete tuple/secret publication after fsync failure %i',async failAt=>{
     let count=0,enabled=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic failure');}});
     await expect(store.withGate(async gate=>{
       const p=reviewed(),team=gate.reserveTeam(randomUUID(),target,p),user=gate.reserveUser(randomUUID(),team.ownershipId,p);
@@ -395,7 +478,7 @@ describe('protected native custody foundation',()=>{
     const before=bytes(directory);store.close();expect(()=>open(directory)).toThrow('reconciliation');expect(bytes(directory)).toEqual(before);
   });
 
-  it.each([1,5,6,9])('does not claim plaintext erasure after cleanup fsync failure %i',async failAt=>{
+  it.each([1,5,6,7,8,9,10,12,15])('does not claim plaintext erasure after cleanup fsync failure %i',async failAt=>{
     let count=0,enabled=false;const {directory,store}=fixture({sync:fd=>{fsyncSync(fd);if(enabled&&++count===failAt)throw new Error('synthetic failure');}});let id='';
     await expect(store.withGate(async gate=>{const p=prepare(gate);id=p.operation.operationId;gate.recordRevocation(id,await receipt(p));enabled=true;gate.removePlaintext(id);})).rejects.toThrow('reconciliation');enabled=false;
     const s=JSON.parse(readFileSync(join(directory,'snapshot.json'),'utf8')),row=s.operations[0];
