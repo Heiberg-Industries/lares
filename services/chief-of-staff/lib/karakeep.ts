@@ -126,7 +126,7 @@ export function makePgSeenStore(db: { query(sql: string, params?: unknown[]): Pr
   return {
     async ensure() {
       await db.query(
-        `CREATE TABLE IF NOT EXISTS karakeep_seen (id text PRIMARY KEY, at timestamptz NOT NULL DEFAULT now())`,
+        `SELECT id, at FROM karakeep_seen LIMIT 0`,
       );
     },
     async isSeen(id) {

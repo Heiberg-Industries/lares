@@ -74,13 +74,15 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
- # The dream migration is offline-owned. An ordinary application login gets only table CRUD
- # and schema USAGE, then proves the shipped read-only readiness checks and stores work without
- # running as the migration owner or changing role.
- sql("CREATE ROLE memory_probe_app LOGIN PASSWORD 'disposable-memory-proof-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; GRANT USAGE ON SCHEMA public TO memory_probe_app; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.dream_observations, public.dream_preferences, public.obligation_threads TO memory_probe_app")
+ # Offline-owned memory and shared-source sync schemas are used by an ordinary application
+ # login with table CRUD and schema USAGE only. It connects as a distinct role; no role switch
+ # or runtime schema creation stands in for the published migration.
+ sql("CREATE ROLE memory_probe_app LOGIN PASSWORD 'disposable-memory-proof-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; GRANT USAGE ON SCHEMA public TO memory_probe_app; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.dream_observations, public.dream_preferences, public.obligation_threads, public.karakeep_seen, public.route_cursor, public.route_proposals TO memory_probe_app")
  memory_access_probe = """import{Pool}from'pg';
 import{ensureDreamTables,makeDreamStore}from'/app/services/chief-of-staff/lib/dream/store.ts';
 import{ensureObligationsTable,upsertSeen,dismissedThreads,dismissObligation}from'/app/services/chief-of-staff/lib/obligations-store.ts';
+import{makePgSeenStore}from'/app/services/chief-of-staff/lib/karakeep.ts';
+import{ensureRouteTables,makeRouteStore}from'/app/services/chief-of-staff/lib/route-store.ts';
 const db=new Pool({connectionString:process.env.MEMORY_PROOF_DATABASE_URL,max:1,connectionTimeoutMillis:3000});
 async function main(){try{
 const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
@@ -100,11 +102,27 @@ const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcrea
  has_table_privilege(current_user,'public.obligation_threads','INSERT') AS obligation_insert,
  has_table_privilege(current_user,'public.obligation_threads','UPDATE') AS obligation_update,
  has_table_privilege(current_user,'public.obligation_threads','DELETE') AS obligation_delete,
- has_table_privilege(current_user,'public.obligation_threads','TRUNCATE') AS obligation_truncate
+ has_table_privilege(current_user,'public.obligation_threads','TRUNCATE') AS obligation_truncate,
+ has_table_privilege(current_user,'public.karakeep_seen','SELECT') AS seen_read,
+ has_table_privilege(current_user,'public.karakeep_seen','INSERT') AS seen_insert,
+ has_table_privilege(current_user,'public.karakeep_seen','UPDATE') AS seen_update,
+ has_table_privilege(current_user,'public.karakeep_seen','DELETE') AS seen_delete,
+ has_table_privilege(current_user,'public.karakeep_seen','TRUNCATE') AS seen_truncate,
+ has_table_privilege(current_user,'public.route_cursor','SELECT') AS cursor_read,
+ has_table_privilege(current_user,'public.route_cursor','INSERT') AS cursor_insert,
+ has_table_privilege(current_user,'public.route_cursor','UPDATE') AS cursor_update,
+ has_table_privilege(current_user,'public.route_cursor','DELETE') AS cursor_delete,
+ has_table_privilege(current_user,'public.route_cursor','TRUNCATE') AS cursor_truncate,
+ has_table_privilege(current_user,'public.route_proposals','SELECT') AS route_read,
+ has_table_privilege(current_user,'public.route_proposals','INSERT') AS route_insert,
+ has_table_privilege(current_user,'public.route_proposals','UPDATE') AS route_update,
+ has_table_privilege(current_user,'public.route_proposals','DELETE') AS route_delete,
+ has_table_privilege(current_user,'public.route_proposals','TRUNCATE') AS route_truncate
  FROM pg_roles r WHERE r.rolname=current_user`);
 const identity=role.rows[0];if(!identity||identity.current_user!=='memory_probe_app'||identity.session_user!=='memory_probe_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
 for(const table of ['observation','preference','obligation'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
-if(identity.observation_truncate||identity.preference_truncate||identity.obligation_truncate)throw Error();
+for(const table of ['seen','cursor','route'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
+if(identity.observation_truncate||identity.preference_truncate||identity.obligation_truncate||identity.seen_truncate||identity.cursor_truncate||identity.route_truncate)throw Error();
 await ensureDreamTables(db);await ensureObligationsTable(db);
 const dream=makeDreamStore(db,'fixture-owner'),observation=await dream.record({text:'prefers concise status updates',kind:'preference',subject:'communication',confidence:0.5,evidenceRefs:[]},'runtime-image-proof','owner');
 if(observation.origin!=='owner'||observation.owner!=='fixture-owner'||await dream.ownerRecurrenceCount('PREFERS concise status updates!')!==1)throw Error();
@@ -114,14 +132,24 @@ await dream.supersede(old.id,current.id);const active=await dream.activePreferen
 const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
 await upsertSeen(db,obligation,now,'fixture-principal');if((await dismissedThreads(db)).has(threadId))throw Error();
 const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
+const seen=makePgSeenStore(db);await seen.ensure();if(await seen.isSeen('runtime-image-bookmark-proof'))throw Error();await seen.markSeen('runtime-image-bookmark-proof');await seen.markSeen('runtime-image-bookmark-proof');if(!await seen.isSeen('runtime-image-bookmark-proof'))throw Error();
+const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
+const cursor='2026-10-22T12:00:00.000Z';await routes.setCursor(cursor);if(await routes.getCursor()!==cursor)throw Error();
+const proposalArgs={personId:'runtime-image-person-proof',opportunityId:'runtime-image-opportunity-proof',brand:'runtime-image-brand-proof',proposedStage:'QUALIFIED',signalRef:'runtime-image-signal-proof',confidence:0.75};
+if(await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
+const proposal=await routes.recordProposal(proposalArgs);if(!proposal.id||!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||!await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
+await routes.markResolved(proposal.id,'skipped');if(!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef}))throw Error();
 const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
 await db.query('DELETE FROM dream_preferences WHERE id=ANY($1::uuid[])',[[old.id,current.id]]);await db.query('DELETE FROM obligation_threads WHERE thread_id=$1',[threadId]);
-for(const ddl of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads']){let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
+for(const ddl of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads','ALTER TABLE public.karakeep_seen ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.karakeep_seen','ALTER TABLE public.route_cursor ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_cursor','ALTER TABLE public.route_proposals ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_proposals']){let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
 console.log('memory-schema-proof:complete');
 }catch{console.log('memory-schema-proof:failed');process.exitCode=1;}finally{await db.end();}}
 void main();"""
  memory_access_output=cmd('docker','run','--rm','--network',name,'--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://memory_probe_app:disposable-memory-proof-only@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
- assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and DML proof'
+ assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and store proof'
+ # Reapplying the fixed schema migration must retain the existing shared cursor and dedup rows.
+ sql((repo/'services/box/sql/027_shared_sync_schema.sql').read_text())
+ sql("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM karakeep_seen WHERE id='runtime-image-bookmark-proof') OR (SELECT cursor_at FROM route_cursor WHERE id=1) IS DISTINCT FROM '2026-10-22T12:00:00Z'::timestamptz OR NOT EXISTS(SELECT 1 FROM route_proposals WHERE person_id='runtime-image-person-proof' AND signal_ref='runtime-image-signal-proof' AND status='skipped') OR NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='route_cursor'::regclass AND conname='route_cursor_singleton' AND contype='c') THEN RAISE EXCEPTION 'Shared sync migration reapply changed durable cursor, dedup state, or constraints'; END IF; END $$")
  # Inactive budget storage is additive, defaults closed, and retains evidence on reapply.
  sql("INSERT INTO budget_accounts(id,installation_id,kind,installation_account_id) VALUES('b1111111-1111-4111-8111-111111111111','probe-installation','installation','b1111111-1111-4111-8111-111111111111'); INSERT INTO budget_windows(id,account_id,starts_at,ends_at,opening_liability,opening_cap,policy_revision) VALUES('b2222222-2222-4222-8222-222222222222','b1111111-1111-4111-8111-111111111111',clock_timestamp(),clock_timestamp()+interval '1 day',0,1,0)")
  sql((repo/'services/box/sql/011_budget_admission.sql').read_text())
