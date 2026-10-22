@@ -21,6 +21,10 @@
 // assertion about them.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import {execFileSync} from 'node:child_process';
+import {mkdirSync,mkdtempSync,rmSync,writeFileSync,realpathSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {
   startThreeSpellingsDb,
   FIXTURE_OWNER,
@@ -30,6 +34,10 @@ import {
 } from "./helpers/three-spellings.js";
 import { MEMBER_SCOPE } from "../lib/member-scope.js";
 import { resolvePerson, spellingsFor } from "../lib/person-identity.js";
+import {runErase} from '../lib/run-erase.js';
+import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
+import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
+import {platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 import {
   erasePerson,
   renderEraseReport,
@@ -41,13 +49,34 @@ import {
 // A fresh container per test: three of these tests drop a table or delete a person, and a shared
 // database would make the order of the file matter.
 let db: TestDb;
+let journal:HostFinancialJournal;
+let custody:string;
+let custodyParent:string;
+let vaultRoot:string;
 beforeEach(async () => {
   // Legacy rows have no provisioned storage. Owned-area refusal is tested separately.
   db = await startThreeSpellingsDb({vaultAreas:false});
+  custodyParent=mkdtempSync(join(realpathSync(tmpdir()),'erase-person-db-journal-'));custody=join(custodyParent,'custody');
+  const preparation=HostFinancialJournal.prepareFresh(custody,await observeFinancialDatabase(db.pool),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
+  try{preparation.complete();}finally{preparation.close();}
+  journal=HostFinancialJournal.openExisting(custody,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+  vaultRoot=mkdtempSync(join(tmpdir(),'erase-person-db-vault-'));mkdirSync(join(vaultRoot,'people'));
+  writeFileSync(join(vaultRoot,'people/vera.md'),'---\nowner: fixture-owner\n---\nA disposable note.\n');
+  execFileSync('git',['-C',vaultRoot,'init','-q']);execFileSync('git',['-C',vaultRoot,'config','user.name','Fixture Operator']);
+  execFileSync('git',['-C',vaultRoot,'config','user.email','fixture@example.invalid']);execFileSync('git',['-C',vaultRoot,'add','-A']);
+  execFileSync('git',['-C',vaultRoot,'commit','-q','-m','before erase']);
 }, 180_000);
 afterEach(async () => {
+  journal?.close();
   await db.stop();
+  if(custodyParent)rmSync(custodyParent,{recursive:true,force:true});
+  if(vaultRoot)rmSync(vaultRoot,{recursive:true,force:true});
 });
+
+async function journaledErase(person:string,includeVault=false):Promise<EraseReport>{
+  const result=await runErase({db:db.pool,person,vaults:includeVault?[vaultRoot]:[],apply:true,journal});
+  return result.dbReport;
+}
 
 /** A supersede proposal that can only be reached through an id resolved before its owning row
  *  goes, and an `add` proposal that names no existing row at all. */
@@ -75,7 +104,7 @@ describe("erase-person — the database half", () => {
     const owner = await resolvePerson(db.pool, FIXTURE_OWNER);
     const second = await resolvePerson(db.pool, FIXTURE_SECOND);
 
-    const report = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: false });
+    const report = await journaledErase(FIXTURE_OWNER);
     expect(report.refusals).toEqual([]);
     expect(report.deleted.length).toBeGreaterThan(0);
 
@@ -113,7 +142,7 @@ describe("erase-person — the database half", () => {
   it("reaches memory_proposals through the ids it resolved, before those ids are deleted", async () => {
     await seedMemoryProposals();
 
-    const report = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: false });
+    const report = await journaledErase(FIXTURE_OWNER);
     expect(report.refusals).toEqual([]);
 
     const supersedes = await db.pool.query<{ n: number }>(
@@ -164,7 +193,7 @@ describe("erase-person — the database half", () => {
   it("refuses entirely rather than erasing part of a person", async () => {
     await db.pool.query("DROP TABLE memory_reads");
 
-    const report = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: false });
+    const report = await journaledErase(FIXTURE_OWNER);
     expect(report.refusals.join("\n")).toContain("memory_reads");
     expect(report.refusals.join("\n")).toContain("001_baseline.sql");
     expect(report.deleted).toEqual([]);
@@ -182,7 +211,7 @@ describe("erase-person — the database half", () => {
   }, 240_000);
 
   it("refuses a name nobody answers to, and anyone who is not a member of this installation", async () => {
-    const unknown = await erasePerson(db.pool, { person: "nobody-at-all", dryRun: false });
+    const unknown = await journaledErase("nobody-at-all");
     expect(unknown.refusals.length).toBe(1);
     expect(unknown.refusals[0]).toMatch(/nobody in the identity register/i);
     expect(unknown.deleted).toEqual([]);
@@ -192,7 +221,7 @@ describe("erase-person — the database half", () => {
       `INSERT INTO standing_facts (fact, category, source_turn, user_id, origin)
        VALUES ('A note about someone else', 'preference', 'fixture-turn-3', 'a-third-party', 'owner')`,
     );
-    const stranger = await erasePerson(db.pool, { person: "a-third-party", dryRun: false });
+    const stranger = await journaledErase("a-third-party");
     expect(stranger.refusals.length).toBe(1);
     expect(stranger.deleted).toEqual([]);
     const still = await db.pool.query<{ n: number }>(
@@ -207,7 +236,7 @@ describe("erase-person — the database half", () => {
        VALUES ('fixture-exemplar-1', 'en', 'a sentence in the voice we learned', '[]'::jsonb)`,
     );
 
-    const shared = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: false });
+    const shared = await journaledErase(FIXTURE_OWNER);
     expect(shared.refusals).toEqual([]);
     const kept = await db.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM voice_exemplar");
     expect(kept.rows[0]!.n).toBe(1);
@@ -218,7 +247,7 @@ describe("erase-person — the database half", () => {
     await db.pool.query("DELETE FROM users WHERE id <> $1", [FIXTURE_SECOND]);
 
     // Now the person being erased is the only one left: the corpus is theirs, and goes.
-    const alone = await erasePerson(db.pool, { person: FIXTURE_SECOND, dryRun: false });
+    const alone = await journaledErase(FIXTURE_SECOND);
     expect(alone.refusals).toEqual([]);
     expect(alone.wasOnlyMember).toBe(true);
     const gone = await db.pool.query<{ n: number }>("SELECT count(*)::int AS n FROM voice_exemplar");
@@ -271,11 +300,7 @@ describe("erase-person — the sync-state pass", () => {
     );
     await db.pool.query("INSERT INTO atlas_notes (note_path) VALUES ('people/vera.md')");
 
-    const report = await erasePerson(db.pool, {
-      person: FIXTURE_OWNER,
-      dryRun: false,
-      paths: ["people/vera.md"],
-    });
+    const report = await journaledErase(FIXTURE_OWNER,true);
     expect(report.refusals).toEqual([]);
 
     expect((await db.pool.query("SELECT 1 FROM notion_sync_docs")).rows).toHaveLength(0);
@@ -289,11 +314,7 @@ describe("erase-person — the sync-state pass", () => {
     );
     await db.pool.query("INSERT INTO atlas_notes (note_path) VALUES ('people/other.md')");
 
-    const report = await erasePerson(db.pool, {
-      person: FIXTURE_OWNER,
-      dryRun: false,
-      paths: ["people/vera.md"],
-    });
+    const report = await journaledErase(FIXTURE_OWNER,true);
     expect(report.refusals).toEqual([]);
 
     expect((await db.pool.query("SELECT 1 FROM notion_sync_docs")).rows).toHaveLength(1);
@@ -310,11 +331,7 @@ describe("erase-person — the sync-state pass", () => {
        VALUES ('people/vera.md', 'a proposed note', 'hash-a', 'hash-b')`,
     );
 
-    const report = await erasePerson(db.pool, {
-      person: FIXTURE_OWNER,
-      dryRun: false,
-      paths: ["people/vera.md"],
-    });
+    const report = await journaledErase(FIXTURE_OWNER,true);
     expect(report.refusals).toEqual([]);
 
     expect((await db.pool.query("SELECT 1 FROM notion_sync_proposals")).rows).toHaveLength(0);
@@ -322,11 +339,7 @@ describe("erase-person — the sync-state pass", () => {
   }, 240_000);
 
   it("warns that the sync run watermark now points at a commit this erase moved past", async () => {
-    const r = await erasePerson(db.pool, {
-      person: FIXTURE_OWNER,
-      dryRun: false,
-      paths: ["people/vera.md"],
-    });
+    const r = await journaledErase(FIXTURE_OWNER,true);
     expect(r.outstanding.join(" ")).toMatch(/notion_sync_run/);
   }, 240_000);
 
@@ -337,7 +350,7 @@ describe("erase-person — the sync-state pass", () => {
     );
     await db.pool.query("INSERT INTO atlas_notes (note_path) VALUES ('people/vera.md')");
 
-    const report = await erasePerson(db.pool, { person: FIXTURE_OWNER, dryRun: false });
+    const report = await journaledErase(FIXTURE_OWNER);
     expect(report.refusals).toEqual([]);
 
     expect((await db.pool.query("SELECT 1 FROM notion_sync_docs")).rows).toHaveLength(1);

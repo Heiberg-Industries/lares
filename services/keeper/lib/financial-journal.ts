@@ -27,7 +27,7 @@ export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
-const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove']);
+const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']);
 const base={version:z.literal(1),sequence:z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),operationId:id,previousDigest:hash};
 export const FINANCIAL_JOURNAL_RECORD_SCHEMA=z.discriminatedUnion('kind',[
   z.object({...base,kind:z.literal('genesis'),journalId:id,suppressionKeyFingerprint:hash}).strict(),

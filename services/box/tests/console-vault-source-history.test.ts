@@ -1,7 +1,7 @@
 import {beforeAll,afterAll,describe,it,expect} from 'vitest';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
-import {readFileSync,readdirSync,mkdtempSync,writeFileSync,existsSync,rmSync} from 'node:fs';
+import {readFileSync,readdirSync,mkdtempSync,writeFileSync,existsSync,rmSync,realpathSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
@@ -17,10 +17,37 @@ import {erasePerson} from '../lib/erase-person.js';
 import {runErase,renderRunEraseReport} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
+import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
+import {observeFinancialDatabase} from '../../keeper/lib/financial-continuity.js';
+import {platformTestJournalLock,testJournalUid} from '../../keeper/tests/helpers/financial-journal.js';
 let container:StartedPostgreSqlContainer,pool:Pool,sequence=0;
 const incarnation='11111111-1111-4111-8111-111111111111',sql=new URL('../sql/',import.meta.url);
 const migration=()=>readFileSync(new URL('022_console_vault_source_history.sql',sql),'utf8');
 const deferred=()=>{let resolve!:()=>void;const promise=new Promise<void>(r=>{resolve=r;});return {promise,resolve};};
+async function waitForSignal<T>(promise:Promise<T>,label:string,ms=5000):Promise<T>{
+ let timer:ReturnType<typeof setTimeout>|undefined;
+ try{return await Promise.race([promise,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error(`Timed out waiting for ${label}`)),ms);})]);}
+ finally{if(timer)clearTimeout(timer);}
+}
+async function preparedErasureJournal(){
+ const parent=mkdtempSync(join(realpathSync(tmpdir()),'source-erasure-journal-')),directory=join(parent,'custody');
+ // This suite shares one disposable database across tests. Earlier successful erasures can
+ // leave only the transaction checkpoint behind; a fresh host journal must match this test
+ // database's current checkpoint, so reset that test-only row after proving all financial
+ // business tables are empty. Production continuity remains unchanged.
+ const financialRows=(await pool.query(`SELECT
+  (SELECT count(*)::int FROM budget_accounts) AS accounts,
+  (SELECT count(*)::int FROM budget_windows) AS windows,
+  (SELECT count(*)::int FROM budget_gateway_bindings) AS bindings,
+  (SELECT count(*)::int FROM budget_attempts) AS attempts,
+  (SELECT count(*)::int FROM budget_gateway_grants) AS grants`)).rows[0];
+ expect(financialRows).toEqual({accounts:0,windows:0,bindings:0,attempts:0,grants:0});
+ await pool.query('TRUNCATE budget_financial_checkpoints');
+ const preparation=HostFinancialJournal.prepareFresh(directory,await observeFinancialDatabase(pool),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
+ try{preparation.complete();}finally{preparation.close();}
+ const journal=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+ return {journal,close:()=>{journal.close();rmSync(parent,{recursive:true,force:true});}};
+}
 async function blocked(pid:number):Promise<void>{
  const until=Date.now()+3000;
  while(Date.now()<until){
@@ -36,7 +63,7 @@ beforeAll(async()=>{
  for(const f of readdirSync(sql).filter(n=>/^\d{3}_.*\.sql$/.test(n)).sort())await pool.query(readFileSync(new URL(f,sql),'utf8'));
  await pool.query('CREATE TABLE dream_observations(id bigserial PRIMARY KEY,owner text);CREATE TABLE dream_preferences(id bigserial PRIMARY KEY,owner text);CREATE TABLE source_test_business(marker text PRIMARY KEY)');
 },120_000);
-afterAll(async()=>{await pool?.end();await container?.stop();});
+afterAll(async()=>{await pool?.end();await container?.stop();},120_000);
 async function fixture(expiryMs?:number,agentExpiryMs?:number){
  const n=++sequence,org=`source-org-${n}`,owner=`source-owner-${n}`,member=`source-reader-${n}`,agent=`helper-${n}`,area=`source-area-${n}`,backing=`source-backing-${n}`;
  const definition=parseDefinition({name:agent,model:'fixture-brain',persona:'voice.md',role:'chief-of-staff',channels:[],grants:[{capability:'vault',scope:'read',areas:['shared']}],autonomy:{vault:'gated'},skills:[]});
@@ -225,8 +252,8 @@ describe('retained private conversation Vault sources',()=>{
   expect((await pool.query('SELECT count(*)::int n FROM console_vault_source_captures WHERE agent=$1',[f.agent])).rows[0].n).toBe(2);
  });
  it('holds the erasure barrier across preflight and the file pass on a one-client pool',async()=>{
-  const f=await fixture(),single=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:500}));
-  const root=mkdtempSync(join(tmpdir(),'source-erasure-')),preflight=deferred(),release=deferred(),captureAtBarrier=deferred();let paused=false,capturePid=0;
+  const f=await fixture(),custody=await preparedErasureJournal(),single=quiet(new Pool({connectionString:container.getConnectionUri(),max:1,connectionTimeoutMillis:500}));
+  const root=mkdtempSync(join(tmpdir(),'source-erasure-')),preflight=deferred(),release=deferred(),captureStarted=deferred();let paused=false,capturePid=0;
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,stdio:'pipe'});
   git('init');git('config','user.name','Fixture');git('config','user.email','fixture@example.invalid');
   writeFileSync(join(root,'note.md'),`---\nowner: ${f.member}\n---\nPrivate fixture\n`);git('add','note.md');git('commit','-m','fixture');
@@ -235,19 +262,20 @@ describe('retained private conversation Vault sources',()=>{
    if(sql.includes('SELECT count(*)::int AS n FROM console_vault_source_captures')&&!paused){paused=true;preflight.resolve();await release.promise;}
    return result;
   }};}} as unknown as Pool;
-  const captureObserved={query:pool.query.bind(pool),connect:async()=>{const db=await pool.connect();capturePid=(await db.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;return {release:()=>db.release(),query:(sql:string,values?:unknown[])=>{
-   if(sql==='SELECT id FROM orgs WHERE id=$1 FOR SHARE')captureAtBarrier.resolve();return db.query(sql,values);
+  const captureObserved={query:pool.query.bind(pool),connect:async()=>{const db=await pool.connect();capturePid=(await db.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;captureStarted.resolve();return {release:()=>db.release(),query:(sql:string,values?:unknown[])=>{
+   return db.query(sql,values);
   }};}} as unknown as Pool;
   let erased:ReturnType<typeof runErase>|undefined,captured:Promise<unknown>|undefined;
   try{
-   erased=runErase({db:observed,person:f.member,vaults:[root],apply:true});await preflight.promise;
+   erased=runErase({db:observed,person:f.member,vaults:[root],apply:true,journal:custody.journal});
+   await waitForSignal(Promise.race([preflight.promise,erased.then(result=>{throw new Error(`Erasure returned before its barrier query: ${result.dbReport.refusals.join(' ')}`);})]),'erasure source preflight');
    captured=f.capture(captureObserved).then(()=>{throw new Error('Capture escaped the erasure barrier');},()=>undefined);
-   await captureAtBarrier.promise;await blocked(capturePid);expect(existsSync(join(root,'note.md'))).toBe(true);
+   await waitForSignal(captureStarted.promise,'capture connection checkout');await blocked(capturePid);expect(existsSync(join(root,'note.md'))).toBe(true);
    release.resolve();const result=await erased;await captured;
    expect(result.dbReport.refusals).toEqual([]);expect(existsSync(join(root,'note.md'))).toBe(false);
    expect((await pool.query('SELECT * FROM console_vault_source_captures WHERE agent=$1',[f.agent])).rows).toEqual([]);
-  }finally{release.resolve();await erased;await captured;await single.end();rmSync(root,{recursive:true,force:true});}
- });
+  }finally{release.resolve();if(erased)await waitForSignal(erased.catch(()=>undefined),'erasure transaction cleanup',5000).catch(()=>undefined);await captured;await single.end();custody.close();rmSync(root,{recursive:true,force:true});}
+ },30_000);
  it('reports already removed files when the later database sweep rolls back',async()=>{
   const f=await fixture(),root=mkdtempSync(join(tmpdir(),'source-erasure-failure-'));
   const git=(...args:string[])=>execFileSync('git',args,{cwd:root,stdio:'pipe'});
@@ -255,23 +283,31 @@ describe('retained private conversation Vault sources',()=>{
   writeFileSync(join(root,'note.md'),`---\nowner: ${f.member}\n---\nPrivate fixture\n`);git('add','note.md');git('commit','-m','fixture');
   await pool.query(`CREATE OR REPLACE FUNCTION source_test_erase_refusal() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF OLD.id=TG_ARGV[0] THEN RAISE EXCEPTION 'Fixture sweep refusal'; END IF; RETURN OLD; END $$;
    CREATE TRIGGER source_test_erase_guard BEFORE DELETE ON users FOR EACH ROW EXECUTE FUNCTION source_test_erase_refusal('${f.member}');`);
+  const custody=await preparedErasureJournal();
   try{
-   const result=await runErase({db:pool,person:f.member,vaults:[root],apply:true}),report=renderRunEraseReport(result);
+   const result=await runErase({db:pool,person:f.member,vaults:[root],apply:true,journal:custody.journal}),report=renderRunEraseReport(result);
    expect(result.dbReport.refusals.join(' ')).toContain('Fixture sweep refusal');expect(result.dbReport.deleted).toEqual([]);
    expect(existsSync(join(root,'note.md'))).toBe(false);expect((await pool.query('SELECT 1 FROM users WHERE id=$1',[f.member])).rows).toHaveLength(1);
    expect(report).toContain('note.md');expect(report).toContain('were not rolled back');expect(report).not.toContain('Nothing was erased');expect(report).not.toContain('before anything was changed');
-  }finally{await pool.query('DROP TRIGGER IF EXISTS source_test_erase_guard ON users');rmSync(root,{recursive:true,force:true});}
- });
+  }finally{custody.close();await pool.query('DROP TRIGGER IF EXISTS source_test_erase_guard ON users');rmSync(root,{recursive:true,force:true});}
+ },30_000);
  it('does not report a confirmed erasure when the final commit acknowledgement is lost',async()=>{
   const f=await fixture();
   const uncertain={query:pool.query.bind(pool),connect:async()=>{const db=await pool.connect();return {release:(broken?:boolean)=>db.release(broken),query:async(sql:string,values?:unknown[])=>{const result=await db.query(sql,values);if(sql==='COMMIT')throw new Error('lost acknowledgement');return result;}};}} as unknown as Pool;
-  await expect(runErase({db:uncertain,person:f.member,vaults:[],apply:true})).rejects.toThrow('Files already removed may remain removed');
+  const custody=await preparedErasureJournal();
+  let result:Awaited<ReturnType<typeof runErase>>;
+  try{result=await runErase({db:uncertain,person:f.member,vaults:[],apply:true,journal:custody.journal});}
+  finally{custody.close();}
+  expect(result!.transactionOutcome).toBe('unknown');expect(result!.dbReport.refusals.join(' ')).toMatch(/outcome is unknown/i);
   expect((await pool.query('SELECT 1 FROM users WHERE id=$1',[f.member])).rows).toEqual([]);
- });
+ },30_000);
  it('registers source history for member inventory and refuses reader erasure before any sweep',async()=>{
   const f=await fixture();await f.capture();expect(scopeOf('console_vault_source_captures')).toMatchObject({scope:'member',column:'member_id'});
   await pool.query('UPDATE console_session_bindings SET revoked_at=clock_timestamp() WHERE agent=$1',[f.agent]);
-  for(const dryRun of [true,false]){const report=await erasePerson(pool,{person:f.member,dryRun});expect(report.refusals.join(' ')).toContain('retained conversation source dependencies');expect(report.deleted).toEqual([]);}
+  const dryRun=await erasePerson(pool,{person:f.member,dryRun:true});expect(dryRun.refusals.join(' ')).toContain('retained conversation source dependencies');expect(dryRun.deleted).toEqual([]);
+  const custody=await preparedErasureJournal();
+  try{const applied=await runErase({db:pool,person:f.member,vaults:[],apply:true,journal:custody.journal});expect(applied.dbReport.refusals.join(' ')).toContain('retained conversation source dependencies');expect(applied.dbReport.deleted).toEqual([]);}
+  finally{custody.close();}
   expect((await pool.query('SELECT 1 FROM users WHERE id=$1',[f.member])).rows).toHaveLength(1);
- });
+ },30_000);
 });

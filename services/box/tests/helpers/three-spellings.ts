@@ -529,7 +529,7 @@ function boxSqlFilesInOrder(): string[] {
  *  dream tables' runtime DDL — seeded with TWO people whose rows use all three id conventions.
  *  Nothing here ever connects to a real installation: the container is disposable and the
  *  connection string is generated. */
-export async function startThreeSpellingsDb(options: {vaultAreas?:boolean} = {}): Promise<TestDb> {
+export async function startThreeSpellingsDb(options: {vaultAreas?:boolean;financial?:boolean} = {}): Promise<TestDb> {
   const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
     "pgvector/pgvector:pg16",
   ).start();
@@ -550,6 +550,7 @@ export async function startThreeSpellingsDb(options: {vaultAreas?:boolean} = {})
   }
 
   for (const seed of [...SEED_ROWS,...(options.vaultAreas===false?[]:VAULT_ROWS)]) {
+    if(options.financial===false&&seed.table.startsWith('budget_'))continue;
     await seed.insert(pool);
   }
 

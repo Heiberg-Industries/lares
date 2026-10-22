@@ -12,7 +12,7 @@ everything the system holds about them, on their own request.
 
 ## What an erase removes immediately
 
-Running the erase command removes, in one step:
+Running the erase command removes, in one database transaction:
 
 - **Their entry in the people register itself** — after everything else, so that if
   anything below needs to know who they were, it still can, until the very last moment.
@@ -29,6 +29,10 @@ Running the erase command removes, in one step:
 - **The record of anything synced from an outside source** (like Notion) that pointed at
   one of those now-removed files, so the file is not silently re-created the next time
   a sync job runs.
+- **The member link on financial records.** Open or already-retired accounts stay retired,
+  historical liabilities and replay-suppression hashes remain, and a secret-free suppression
+  tombstone is written to the prepared host journal. Erasure refuses when that journal is missing,
+  busy, incomplete, or too small for the exact record.
 
 One exception: a handful of tables exist only to record **who did what** — an audit
 trail, not the person's own information. In those tables, the row itself stays (so the
@@ -64,21 +68,26 @@ without removing anything. Only once you have read that list and are satisfied s
 you run it for real.
 
 ```
-docker run --rm --network host --user 0:0 --read-only --tmpfs /tmp \
-  --cap-drop ALL --security-opt no-new-privileges -e HOME=/tmp \
-  -v /etc/lares/secrets:/etc/lares/secrets:ro \
-  -e DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password \
-  -v <path to a vault>:<path to a vault> \
-  -w /app/services/box --entrypoint /app/services/box/node_modules/.bin/tsx \
-  "$(cat /opt/lares/current/services/box/engine-image)" \
-  /app/services/box/bin/erase-person.ts <person> --vault <path to a vault>
+docker compose --env-file /etc/lares/keeper.env \
+  -f /opt/lares/compose.lares-keeper.yaml stop lares-keeper
+
+docker compose --env-file /etc/lares/keeper.env \
+  -f /opt/lares/compose.lares-keeper.yaml run --rm --no-deps \
+  -v <path to a vault>:<same path in the container> \
+  --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper \
+  /app/services/box/bin/erase-person.ts <person> \
+  --vault <same path in the container>
 ```
 
-This runs the erase program in a short-lived container of the engine image, the same way the
-installer runs its own programs; the server needs no Node.js or pnpm. The long lines are one
-command. In the rest of this page, "the erase command" means this command. The container can
-only see the database password and the vault folders you give it with `-v` (one `-v` line, and one
-`--vault`, per vault).
+Run this from a root shell on Linux. It uses the configured Keeper image, database credentials,
+and prepared financial custody. It does not install software or create custody. Gracefully stop
+Keeper first so it drains work and releases the journal lock; also stop every other process that
+can write to the selected vaults. Do not use `budget.freeze`: that is a permanent restore freeze.
+If another journal writer still owns the lock, erasure refuses before connecting to PostgreSQL
+or reading the person's identity.
+
+The long lines are one command. Add one `-v` and one `--vault` for every vault. The compose file
+provides Keeper's normal configuration and credentials, plus only the selected vault mounts.
 
 Give `--vault` once for every vault this person might have notes in. If you leave it
 out, the notes are not looked at at all, and the report says so.
@@ -87,13 +96,18 @@ This is the dry run — nothing is deleted or changed. Read the report it prints
 lists, table by table and file by file, everything that would be removed, and it lists
 anything it cannot reach (the three things above, plus anything unusual it found).
 
-When you are ready to actually erase, run the same command again with `--apply` added at the
-very end, after the last `--vault`.
+When the practice report is satisfactory, run the same command with `--apply` added after the
+last `--vault`. Apply is available only to root on Linux and requires the existing prepared
+journal even when this installation has no budget accounts.
 
-A real run first checks that the database part can go through, and only then touches
-any file. The removal is saved in the vault as one local change that names nobody. It is
-**not sent to your git server**: the report prints the exact command for that, for you
-to run when you have read the report.
+A real run opens a journal operation before connecting to the database, resolves the person once,
+and checks organisation ownership plus every database and financial precondition before changing
+files. Vault files are outside PostgreSQL's transaction: if a later vault or database step fails,
+the report names files already removed. Do not retry automatically; inspect the current vault and
+database first. A lost commit acknowledgement is reported as unknown and freezes financial
+custody. Leave services stopped and follow recovery procedures. A successful vault removal is
+saved as one local change that names nobody. It is **not sent to your git server**: the report
+prints the exact command for that, for you to run after reviewing the result.
 
 This can only be run from a command line — there is no button for it anywhere, in any
 chat or console. That is deliberate: erasing a person is significant enough that it

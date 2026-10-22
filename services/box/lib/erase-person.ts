@@ -46,6 +46,7 @@
 
 import type { Pool, PoolClient } from "pg";
 import type { Queryable } from "./db.js";
+import {isJournaledPersonErasureOwner} from "../../keeper/lib/person-erasure.js";
 import { MEMBER_SCOPE, type ScopeClass, type ScopedTable } from "./member-scope.js";
 import {
   resolvePerson,
@@ -318,24 +319,31 @@ function messageOf(err: unknown): string {
  */
 // Only this owner may lend an existing transaction to the database/file erasure flow.
 // The organisation barrier spans preflight, files and the generated database sweep.
-const erasureOwners=new WeakMap<PoolClient,{failed:boolean}>();
+const erasureOwners=new WeakMap<PoolClient,{failed:boolean;owner:object}>();
 async function lockErasureMember(client:PoolClient,memberId:string):Promise<void>{
   const before=(await client.query('SELECT org_id FROM users WHERE id=$1',[memberId])).rows[0];
   if(!before)throw new Error('Membership changed during erasure');
-  if(before.org_id)await client.query('SELECT id FROM orgs WHERE id=$1 FOR UPDATE',[before.org_id]);
-  const current=(await client.query('SELECT org_id FROM users WHERE id=$1 FOR UPDATE',[memberId])).rows[0];
+  if(before.org_id){
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-console-source:' || $1,0))",[before.org_id]);
+    const org=await client.query('SELECT id FROM orgs WHERE id=$1 FOR UPDATE',[before.org_id]);
+    if(org.rows.length!==1)throw new Error('Membership changed during erasure');
+  }
+  const current=(await client.query('SELECT org_id,status,org_role FROM users WHERE id=$1 FOR UPDATE',[memberId])).rows[0];
   if(!current||current.org_id!==before.org_id)throw new Error('Membership changed during erasure');
+  // SQL 007 repeats this guard on DELETE. Do the exact same predicate before any vault file is
+  // changed so its later refusal cannot leave a half-erased person.
+  if(current.org_id&&current.status==='active'&&current.org_role==='owner'){
+    const another=(await client.query("SELECT 1 FROM users WHERE org_id=$1 AND id<>$2 AND status='active' AND org_role='owner' LIMIT 1",[current.org_id,memberId])).rows;
+    if(!another.length)throw new Error('Cannot erase the last active organisation owner; designate another active owner first');
+  }
 }
-export async function withPersonErasureTransaction<T>(pool:Pool,memberId:string,work:(db:PoolClient)=>Promise<T>):Promise<T>{
-  const db=await pool.connect(),state={failed:false};let broken=false;
-  try{
-    await db.query('BEGIN');await lockErasureMember(db,memberId);erasureOwners.set(db,state);
-    const value=await work(db);
-    if(state.failed)await db.query('ROLLBACK');
-    else try{if((await db.query('COMMIT')).command!=='COMMIT')throw new Error('Commit not acknowledged');}catch{broken=true;throw new Error('Database erasure could not be confirmed. Files already removed may remain removed; inspect the result before retrying.');}
-    return value;
-  }catch(error){await db.query('ROLLBACK').catch(()=>undefined);throw error;}
-  finally{erasureOwners.delete(db);db.release(broken);}
+/** Marks the caller's already-open source transaction as the only owner allowed to run the
+ * database erasure sweep. The caller owns COMMIT/ROLLBACK and may include vault work before it. */
+export async function withPersonErasureClient<T>(client:PoolClient,memberId:string,owner:object,work:()=>Promise<T>):Promise<T>{
+  if(!isJournaledPersonErasureOwner(owner,client))throw new Error('A journal-owned source transaction is required');
+  const state={failed:false,owner};await lockErasureMember(client,memberId);erasureOwners.set(client,state);
+  try{const result=await work();if(state.failed)throw new Error('Database erasure was refused');return result;}
+  finally{erasureOwners.delete(client);}
 }
 
 export async function erasePerson(
@@ -348,10 +356,15 @@ export async function erasePerson(
      *  sync-state tables are deleted for exactly these paths, inside the same transaction as the
      *  member deletes. When absent, those tables are untouched, as before this option existed. */
     paths?: readonly string[];
+    /** Internal single-resolution path used by the journaled root erasure. */
+    resolvedIdentity?:PersonIdentity;
+    /** Unforgeable per-operation owner issued only by Keeper's journaled erasure boundary. */
+    journalOwner?:object;
   },
 ): Promise<EraseReport> {
   const owned='release' in db?erasureOwners.get(db):undefined;
   if('release' in db&&!owned)throw new Error('An erasure-owned transaction is required');
+  if(!opts.dryRun&&(!owned||!opts.journalOwner||owned.owner!==opts.journalOwner||!isJournaledPersonErasureOwner(opts.journalOwner,'release' in db?db:undefined)))throw new Error('A journal-owned source transaction is required');
   const report: EraseReport = {
     person: opts.person,
     dryRun: opts.dryRun,
@@ -364,7 +377,7 @@ export async function erasePerson(
   // ── Step 0: who. The register is the membership list; anybody it does not hold is refused. ──
   let person: PersonIdentity;
   try {
-    person = await resolvePerson(db, opts.person);
+    person = opts.resolvedIdentity ?? await resolvePerson(db, opts.person);
   } catch (err) {
     if (
       err instanceof PersonNotFound ||
@@ -425,7 +438,7 @@ export async function erasePerson(
   if (opts.dryRun) return report;
 
   // ── Step 3: do it, in one transaction. ────────────────────────────────────────────────────
-  if(!('release' in db))return withPersonErasureTransaction(db,person.id,client=>erasePerson(client,opts));
+  if(!('release' in db))throw new Error('A journal-owned source transaction is required');
   const client=db;
   try {
     // Repeat under the barrier for standalone database erasure as well.
@@ -659,7 +672,7 @@ export function renderEraseReport(r: EraseReport): string {
     out.push("");
     for (const refusal of r.refusals) out.push(`- ${refusal}`);
     out.push("");
-    out.push("Fix what is named above and run it again.");
+    out.push("Review the refusal and the current files before deciding what to do next.");
     return out.join("\n");
   }
 

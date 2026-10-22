@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Pool } from 'pg';
-import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdtempSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +11,10 @@ import { PgPersonalActionStore, PersonalActionError, PERSONAL_MAIL_SEND_TOOL, pe
 import { encryptSecret, decryptSecret } from '../lib/crypto.js';
 import { exportPerson } from '../lib/export-person.js';
 import { erasePerson } from '../lib/erase-person.js';
+import { runErase } from '../lib/run-erase.js';
+import { HostFinancialJournal } from '../../keeper/lib/financial-journal.js';
+import { observeFinancialDatabase } from '../../keeper/lib/financial-continuity.js';
+import { platformTestJournalLock, testJournalUid } from '../../keeper/tests/helpers/financial-journal.js';
 import { APPROVAL_TTL_MS } from '../../../packages/agent-kit/src/approval-ledger.js';
 import { quiet } from './helpers/quiet-pool.js';
 
@@ -294,8 +298,12 @@ describe('private immutable personal actions',()=>{
       const content=readFileSync(join(root,'export',actions!.file!),'utf8');
       expect(content).toContain('[withheld]');expect(content).not.toContain((await row(a.actionId)).payload_ciphertext);
       expect(content).not.toContain('Private message');
-      const erased=await erasePerson(db,{person:'member-a',dryRun:false});
-      expect(erased.refusals).toEqual([]);
+      const directory=join(realpathSync(tmpdir()),`lares-personal-action-erasure-${randomUUID()}`);
+      const preparation=HostFinancialJournal.prepareFresh(directory,await observeFinancialDatabase(db),{ownershipUid:testJournalUid,lock:platformTestJournalLock});
+      try{preparation.complete();}finally{preparation.close();}
+      const journal=HostFinancialJournal.openExisting(directory,{ownershipUid:testJournalUid,lock:platformTestJournalLock,requirePrepared:true});
+      try{const erased=await runErase({db,person:'member-a',vaults:[],apply:true,journal});expect(erased.dbReport.refusals).toEqual([]);}
+      finally{journal.close();rmSync(directory,{recursive:true,force:true});}
       expect(await row(a.actionId)).toBeUndefined();
       expect(await row(other.actionId)).toBeDefined();
       await expect(store.claimAction(ref)).rejects.toThrow(PersonalActionError);
