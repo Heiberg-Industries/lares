@@ -403,38 +403,64 @@ exec litellm --config "$CONFIG_FILE_PATH"
         return url
 
     def native_membership_db_check(self, team_id, user_id):
-        if not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return False
-        statement = f'''SELECT (
-          (SELECT count(*)=1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}')
-          AND EXISTS (SELECT 1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}' AND max_budget=3
-            AND user_role NOT IN ('proxy_admin','proxy_admin_viewer') AND models=ARRAY[]::text[]
-            AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null') AND organization_id IS NULL)
-          AND (SELECT count(*)=0 FROM "LiteLLM_VerificationToken" WHERE user_id='{user_id}')
-          AND EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m
-            JOIN "LiteLLM_UserTable" u ON u.user_id=m.user_id
-            JOIN "LiteLLM_TeamTable" t ON t.team_id=m.team_id
-            JOIN "LiteLLM_BudgetTable" b ON b.budget_id=m.budget_id
-            WHERE u.user_id='{user_id}' AND t.team_id='{team_id}' AND t.max_budget=4 AND t.models=ARRAY['lares-brain']::text[]
-              AND t.budget_duration='1d' AND t.blocked IS FALSE AND COALESCE(t.metadata::text,'{{}}') IN ('{{}}','null')
-              AND b.max_budget=2 AND b.budget_duration='1d' AND b.allowed_models=ARRAY['lares-brain']::text[]
-              AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(t.members_with_roles,'[]')::jsonb) r
-                WHERE r->>'user_id'=u.user_id AND r->>'role'='user'))
-        )::text'''
-        return self.sql(statement)=="true"
+        if not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return None
+        names=("member-match-unique","budget-cap-exact","budget-duration-exact","models-exact",
+            "team-defaults-exact","team-blocked-false","team-metadata-empty","user-defaults-exact",
+            "user-role-exact","member-role-exact")
+        statement = f'''SELECT
+          ((SELECT count(*)=1 FROM "LiteLLM_TeamMembership" WHERE user_id='{user_id}' AND team_id='{team_id}'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m JOIN "LiteLLM_BudgetTable" b ON b.budget_id=m.budget_id
+            WHERE m.user_id='{user_id}' AND m.team_id='{team_id}' AND b.max_budget=2))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m JOIN "LiteLLM_BudgetTable" b ON b.budget_id=m.budget_id
+            WHERE m.user_id='{user_id}' AND m.team_id='{team_id}' AND b.budget_duration='1d'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m JOIN "LiteLLM_BudgetTable" b ON b.budget_id=m.budget_id
+            WHERE m.user_id='{user_id}' AND m.team_id='{team_id}' AND b.allowed_models=ARRAY['lares-brain']::text[]))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamTable" WHERE team_id='{team_id}' AND max_budget=4
+            AND models=ARRAY['lares-brain']::text[] AND budget_duration='1d'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamTable" WHERE team_id='{team_id}' AND blocked IS FALSE))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamTable" WHERE team_id='{team_id}'
+            AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null')))::text || '|' ||
+          ((SELECT count(*)=1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}')
+            AND EXISTS (SELECT 1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}' AND max_budget=3
+              AND models=ARRAY[]::text[]
+              AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null') AND organization_id IS NULL)
+            AND (SELECT count(*)=0 FROM "LiteLLM_VerificationToken" WHERE user_id='{user_id}'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}' AND user_role='internal_user'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_TeamTable" t WHERE t.team_id='{team_id}' AND
+            (SELECT count(*)=1 FROM jsonb_array_elements(COALESCE(t.members_with_roles,'[]')::jsonb) r
+              WHERE r->>'user_id'='{user_id}' AND r->>'role'='user')))::text'''
+        values=self.sql(statement).split("|")
+        if len(values)!=len(names) or any(value not in ("true","false") for value in values): return None
+        return dict(zip(names,(value=="true" for value in values),strict=True))
 
     def native_key_db_check(self, token, team_id, user_id):
-        if not re.fullmatch(r"[a-f0-9]{64}",token) or not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return False
+        if not re.fullmatch(r"[a-f0-9]{64}",token) or not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return None
+        names=("normal-key-policy-exact","normal-key-blocked-false")
         statement = f'''SELECT ((SELECT count(*)=1 FROM "LiteLLM_VerificationToken" WHERE user_id='{user_id}') AND EXISTS
           (SELECT 1 FROM "LiteLLM_VerificationToken" WHERE token='{token}' AND key_type='llm_api'
           AND key_alias LIKE 'probe-%' AND max_budget=1 AND budget_duration='1d'
-          AND models=ARRAY['lares-brain']::text[] AND blocked IS FALSE
+          AND models=ARRAY['lares-brain']::text[]
           AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null') AND COALESCE(config::text,'{{}}') IN ('{{}}','null')
           AND team_id='{team_id}' AND user_id='{user_id}' AND budget_id IS NULL AND project_id IS NULL AND organization_id IS NULL)
-          AND EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m WHERE m.user_id='{user_id}' AND m.team_id='{team_id}'))::text'''
-        return self.sql(statement)=="true"
+          AND EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m WHERE m.user_id='{user_id}' AND m.team_id='{team_id}'))::text || '|' ||
+          (EXISTS (SELECT 1 FROM "LiteLLM_VerificationToken" WHERE token='{token}' AND blocked IS FALSE))::text'''
+        values=self.sql(statement).split("|")
+        if len(values)!=len(names) or any(value not in ("true","false") for value in values): return None
+        return dict(zip(names,(value=="true" for value in values),strict=True))
 
     def native_contract(self):
-        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[], "diagnostics":[]}
+        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[], "diagnostics":[], "runtimeDiagnostics":[]}
+        diagnostic_names={"normal-key-policy-exact","normal-key-blocked-false",
+            "member-match-unique","budget-cap-exact","budget-duration-exact","models-exact",
+            "team-defaults-exact","team-blocked-false","team-metadata-empty","user-defaults-exact","user-role-exact","member-role-exact",
+            "duplicate-inventory-readable","duplicate-inventory-exact","native-db-query-readable"}
+        runtime_names={"members-barrier-write-failed","members-expected-write-failed","key-barrier-write-failed",
+            "key-expected-write-failed","barrier-ack-timeout","fixture-guard-failed","unexpected-probe-failure"}
+        def add_diagnostic(name,outcome):
+            if name not in diagnostic_names or outcome not in ("false","unknown"): return
+            existing=next((item for item in report["diagnostics"] if item["name"]==name),None)
+            if existing is None:report["diagnostics"].append({"name":name,"outcome":outcome})
+            elif outcome=="false":existing["outcome"]="false"
         self.artifact["nativeCredentialContract"]=report
         expected=("fixture-guard","member-create-without-key","team-membership-and-caps","caller-key-exact-and-hash-lookup",
             "hash-lookup-absent-is-not-error","hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite",
@@ -457,16 +483,24 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 if phase=="members-ready":
                     try:
                         expected_values=self.native_expected.read_text().splitlines()
-                        ok=len(expected_values)==2 and self.native_membership_db_check(*expected_values)
-                    except Exception:ok=False
-                    report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":"pass" if ok else "fail"})
+                        checks=self.native_membership_db_check(*expected_values) if len(expected_values)==2 else None
+                    except Exception:checks=None
+                    outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
+                    report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":outcome})
+                    if checks is None:add_diagnostic("native-db-query-readable","unknown")
+                    else:
+                        for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
                     self.native_barrier.write_text("members-checked");checked_members=True
                 elif phase=="key-ready":
                     try:
                         expected_values=self.native_expected.read_text().splitlines()
-                        ok=len(expected_values)==3 and self.native_key_db_check(*expected_values)
-                    except Exception:ok=False
-                    report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":"pass" if ok else "fail"})
+                        checks=self.native_key_db_check(*expected_values) if len(expected_values)==3 else None
+                    except Exception:checks=None
+                    outcome="unknown" if checks is None else "pass" if all(checks.values()) else "fail"
+                    report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":outcome})
+                    if checks is None:add_diagnostic("native-db-query-readable","unknown")
+                    else:
+                        for name,value in checks.items():add_diagnostic(name,"false" if not value else "pass")
                     self.native_barrier.write_text("key-checked");checked_key=True
                 time.sleep(.05)
             if process.poll() is None:process.kill()
@@ -475,8 +509,10 @@ exec litellm --config "$CONFIG_FILE_PATH"
             for line in stdout.splitlines()[:64]:
                 match=re.fullmatch(r"(PASS|FAIL|UNKNOWN|UNSUPPORTED) ([a-z][a-z0-9-]+)",line)
                 if match and match.group(2) in expected:parsed.append({"name":match.group(2),"outcome":match.group(1).lower()})
-                diagnostic=re.fullmatch(r"DIAGNOSTIC (members-barrier-write-failed|members-expected-write-failed|key-barrier-write-failed|key-expected-write-failed|barrier-ack-timeout|fixture-guard-failed|unexpected-probe-failure)",line)
-                if diagnostic:report["diagnostics"].append(diagnostic.group(1))
+                diagnostic=re.fullmatch(r"DIAGNOSTIC ([a-z-]+) (false|unknown)",line)
+                if diagnostic:add_diagnostic(diagnostic.group(1),diagnostic.group(2))
+                runtime=re.fullmatch(r"DIAGNOSTIC ([a-z-]+)",line)
+                if runtime and runtime.group(1) in runtime_names:report["runtimeDiagnostics"].append(runtime.group(1))
             by_name={item["name"]:item["outcome"] for item in parsed}
             report["cases"]=[{"name":name,"outcome":by_name.get(name,"unknown")} for name in expected]
             report["runnerCompleted"]=process.returncode==0 and len(by_name)==len(expected)
@@ -487,7 +523,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             report["cases"]=[{"name":name,"outcome":"unknown"} for name in expected]
             report["databaseCases"]=[{"name":"native-db-member-and-no-key-rows","outcome":"unknown"},
                 {"name":"native-db-key-hash-and-policy-row","outcome":"unknown"}]
-            report["diagnostics"].append("fixture-runner-failure")
+            report["runtimeDiagnostics"].append("fixture-runner-failure")
         report["passed"]=report.get("runnerCompleted") is True and all(case["outcome"]=="pass" for case in report["cases"]+report["databaseCases"])
 
     def startup_diagnostic(self,name,label):

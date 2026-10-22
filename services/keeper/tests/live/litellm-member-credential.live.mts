@@ -40,12 +40,23 @@ const CASES = [
 ] as const;
 type CaseName = typeof CASES[number];
 type Outcome = "PASS" | "FAIL" | "UNKNOWN" | "UNSUPPORTED";
+const DIAGNOSTIC_NAMES = [
+  "normal-key-policy-exact", "normal-key-blocked-false",
+  "member-match-unique", "budget-cap-exact", "budget-duration-exact", "models-exact",
+  "team-blocked-false", "team-metadata-empty", "member-role-exact",
+  "duplicate-inventory-readable", "duplicate-inventory-exact",
+] as const;
+type DiagnosticName = typeof DIAGNOSTIC_NAMES[number];
 
 const outcomes = new Map<CaseName, Outcome>();
+const diagnostics = new Map<DiagnosticName, "false" | "unknown">();
 let failed = false;
 const mark = (name: CaseName, outcome: Outcome) => {
   outcomes.set(name, outcome);
   if (outcome !== "PASS") failed = true;
+};
+const mismatch = (name: DiagnosticName, actual: boolean | undefined) => {
+  if (DIAGNOSTIC_NAMES.includes(name) && actual !== true) diagnostics.set(name, actual === false ? "false" : "unknown");
 };
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -145,7 +156,7 @@ const allowedRoutes = new Map<string, "GET" | "POST">([
 
 async function call(method: "GET" | "POST", path: string, body?: unknown, auth = master, dropReply = false): Promise<Reply | undefined> {
   const route = path.split("?", 1)[0];
-  if (!origin || !auth || (allowedRoutes.get(route) !== method && !/^\/team\/[0-9a-f-]{36}\/members\/me$/.test(route))) return undefined;
+  if (!origin || !auth || allowedRoutes.get(route) !== method) return undefined;
   const queryText = path.includes("?") ? path.slice(path.indexOf("?") + 1) : "";
   if (queryText) {
     const params = new URLSearchParams(queryText);
@@ -205,23 +216,27 @@ const fingerprint = (key: string) => createHash("sha256").update(key).digest("he
 const randomKey = () => `sk-${randomBytes(32).toString("base64url")}`;
 const hashLookup = (hash: string, auth = master) => call("POST", "/v2/key/info", { keys: [hash] }, auth);
 
-function exactKey(row: Record<string, unknown>, expected: { keyAlias: string; teamId: string; userId: string; blocked: boolean; budget: number }): boolean {
+function exactKeyPolicy(row: Record<string, unknown>, expected: { keyAlias: string; teamId: string; userId: string; budget: number }): boolean {
   return row.key_alias === expected.keyAlias && row.key_type === "llm_api" &&
     row.user_id === expected.userId && row.team_id === expected.teamId &&
     row.max_budget === expected.budget && row.budget_duration === "1d" &&
     Array.isArray(row.models) && row.models.length === 1 && row.models[0] === model &&
-    row.blocked === expected.blocked && empty(row.metadata) && empty(row.config) &&
+    empty(row.metadata) && empty(row.config) &&
     empty(row.permissions) && empty(row.aliases) && empty(row.router_settings) &&
     empty(row.budget_fallbacks) && empty(row.model_max_budget) && empty(row.budget_limits) &&
     row.budget_id == null && row.project_id == null && row.organization_id == null && row.agent_id == null;
+}
+
+function exactKey(row: Record<string, unknown>, expected: { keyAlias: string; teamId: string; userId: string; blocked: boolean; budget: number }): boolean {
+  return exactKeyPolicy(row, expected) && row.blocked === expected.blocked;
 }
 
 function listedKeyHashes(reply: Reply | undefined): string[] | undefined {
   if (reply?.status !== 200 || !reply.parsed || !object(reply.body) || !Array.isArray(reply.body.keys)) return undefined;
   const hashes: string[] = [];
   for (const item of reply.body.keys) {
-    if (!object(item) || typeof item.token !== "string" || !/^[a-f0-9]{64}$/.test(item.token)) return undefined;
-    hashes.push(item.token);
+    if (typeof item !== "string" || !/^[a-f0-9]{64}$/.test(item)) return undefined;
+    hashes.push(item);
   }
   return hashes;
 }
@@ -262,7 +277,7 @@ const run = async () => {
     teamAttempted = true;
     const createTeam = await call("POST", "/team/new", { team_id: teamId, max_budget: 4, models: [model], budget_duration: "1d" });
     userAttempted = true;
-    const createUser = await call("POST", "/user/new", { user_id: userId, max_budget: 3, auto_create_key: false });
+    const createUser = await call("POST", "/user/new", { user_id: userId, max_budget: 3, auto_create_key: false, user_role: "internal_user" });
     const membership = await call("POST", "/team/member_add", {
       team_id: teamId, max_budget_in_team: 2, budget_duration: "1d", allowed_models: [model],
       member: { role: "user", user_id: userId },
@@ -281,10 +296,13 @@ const run = async () => {
     createdHashes.add(normalHash);
     const generated = await call("POST", "/key/generate", {
       key: normalKey, key_alias: alias, key_type: "llm_api", team_id: teamId, user_id: userId,
-      max_budget: 1, budget_duration: "1d", models: [model],
+      max_budget: 1, budget_duration: "1d", models: [model], blocked: false,
     });
     const lookup = classifyLookup(await hashLookup(normalHash), normalHash);
     const row = lookup.kind === "present" ? lookup.row : undefined;
+    const policyExact = row !== undefined && exactKeyPolicy(row, expected);
+    mismatch("normal-key-policy-exact", row ? policyExact : undefined);
+    mismatch("normal-key-blocked-false", row ? row.blocked === false : undefined);
     const createdExactly = generated?.status === 200 && generated.parsed && object(generated.body) && generated.body.key === normalKey &&
       row !== undefined && exactKey(row, expected);
     mark("caller-key-exact-and-hash-lookup", createdExactly ? "PASS" : lookup.kind === "malformed" ? "UNKNOWN" : "FAIL");
@@ -294,16 +312,30 @@ const run = async () => {
       await waitForCiAcknowledgement("key-checked");
     }
 
-    const teamReadback = await call("GET", `/team/info?team_id=${encodeURIComponent(teamId)}`);
-    const memberReadback = await call("GET", `/team/${teamId}/members/me`, undefined, normalKey);
+    const teamReadback = await call("GET", `/team/info?team_id=${encodeURIComponent(teamId)}`, undefined, master);
     const teamRecord = object(teamReadback?.body) && object(teamReadback.body.team_info) ? teamReadback.body.team_info : undefined;
-    const memberRecord = object(memberReadback?.body) ? memberReadback.body : undefined;
+    const memberships = object(teamReadback?.body) && Array.isArray(teamReadback.body.team_memberships)
+      ? teamReadback.body.team_memberships.filter((entry): entry is Record<string, unknown> => object(entry) && entry.team_id === teamId && entry.user_id === userId)
+      : undefined;
+    const memberRecord = memberships?.length === 1 ? memberships[0] : undefined;
     const memberBudget = memberRecord && object(memberRecord.litellm_budget_table) ? memberRecord.litellm_budget_table : undefined;
-    mark("team-membership-and-caps", createTeam?.status === 200 && membership?.status === 200 &&
-      teamReadback?.status === 200 && teamRecord?.max_budget === 4 && Array.isArray(teamRecord.models) &&
-      teamRecord.models.length === 1 && teamRecord.models[0] === model && empty(teamRecord.metadata) &&
-      memberReadback?.status === 200 && memberRecord?.user_id === userId && memberRecord.team_id === teamId &&
-      memberRecord.role === "user" && memberBudget?.max_budget === 2 && memberBudget.budget_duration === "1d" ? "PASS" : "FAIL");
+    const roleRecords = teamRecord && Array.isArray(teamRecord.members_with_roles)
+      ? teamRecord.members_with_roles.filter((entry): entry is Record<string, unknown> => object(entry) && entry.user_id === userId)
+      : undefined;
+    const teamReadbackAvailable = teamReadback?.status === 200 && teamRecord !== undefined;
+    mismatch("member-match-unique", memberships === undefined ? undefined : memberships.length === 1);
+    mismatch("budget-cap-exact", memberBudget ? memberBudget.max_budget === 2 : memberRecord ? undefined : memberships ? false : undefined);
+    mismatch("budget-duration-exact", memberBudget ? memberBudget.budget_duration === "1d" : memberRecord ? undefined : memberships ? false : undefined);
+    mismatch("models-exact", memberBudget ? Array.isArray(memberBudget.allowed_models) && memberBudget.allowed_models.length === 1 && memberBudget.allowed_models[0] === model : memberRecord ? undefined : memberships ? false : undefined);
+    mismatch("team-blocked-false", teamRecord ? teamRecord.blocked === false : undefined);
+    mismatch("team-metadata-empty", teamRecord ? empty(teamRecord.metadata) : undefined);
+    mismatch("member-role-exact", roleRecords === undefined ? undefined : roleRecords.length === 1 && roleRecords[0].role === "user");
+    mark("team-membership-and-caps", createTeam?.status === 200 && membership?.status === 200 && teamReadbackAvailable &&
+      teamRecord?.max_budget === 4 && Array.isArray(teamRecord.models) && teamRecord.models.length === 1 && teamRecord.models[0] === model &&
+      empty(teamRecord.metadata) && teamRecord.blocked === false && memberships?.length === 1 &&
+      memberBudget?.max_budget === 2 && memberBudget.budget_duration === "1d" &&
+      Array.isArray(memberBudget.allowed_models) && memberBudget.allowed_models.length === 1 && memberBudget.allowed_models[0] === model &&
+      roleRecords?.length === 1 && roleRecords[0].role === "user" ? "PASS" : "FAIL");
 
     const absentHash = fingerprint(randomKey());
     mark("hash-lookup-absent-is-not-error", classifyLookup(await hashLookup(absentHash), absentHash).kind === "absent" ? "PASS" : "UNKNOWN");
@@ -312,7 +344,7 @@ const run = async () => {
 
     const duplicate = await call("POST", "/key/generate", {
       key: normalKey, key_alias: alias, key_type: "llm_api", team_id: teamId, user_id: userId,
-      max_budget: 2, budget_duration: "1d", models: [model, "probe-unexpected"],
+      max_budget: 2, budget_duration: "1d", models: [model, "probe-unexpected"], blocked: false,
     });
     const duplicateBody = duplicate && object(duplicate.body) ? duplicate.body : undefined;
     if (typeof duplicateBody?.key === "string") {
@@ -322,8 +354,15 @@ const run = async () => {
     const afterDuplicate = classifyLookup(await hashLookup(normalHash), normalHash);
     const inventory = listedKeyHashes(await call("GET", `/key/list?user_id=${encodeURIComponent(userId)}`));
     if (inventory) for (const hash of inventory) if (!createdHashes.has(hash)) createdHashes.add(hash);
-    mark("duplicate-key-create-does-not-overwrite", afterDuplicate.kind === "present" && exactKey(afterDuplicate.row, expected) &&
-      inventory !== undefined && inventory.length === 1 && inventory[0] === normalHash ? "PASS" : "UNKNOWN");
+    const duplicatePolicyExact = afterDuplicate.kind === "present" ? exactKey(afterDuplicate.row, expected) : afterDuplicate.kind === "absent" ? false : undefined;
+    mismatch("normal-key-policy-exact", duplicatePolicyExact === undefined ? undefined : duplicatePolicyExact);
+    const duplicateInventoryExact = inventory ? inventory.length === 1 && inventory[0] === normalHash : undefined;
+    mismatch("duplicate-inventory-readable", inventory !== undefined);
+    mismatch("duplicate-inventory-exact", duplicateInventoryExact);
+    const duplicateStateKnown = (afterDuplicate.kind === "present" || afterDuplicate.kind === "absent") && inventory !== undefined;
+    mark("duplicate-key-create-does-not-overwrite", duplicateStateKnown
+      ? duplicatePolicyExact && duplicateInventoryExact ? "PASS" : "FAIL"
+      : "UNKNOWN");
 
     const blockedAlias = `probe-${randomUUID()}`;
     createdHashes.add(blockedHash);
@@ -372,7 +411,7 @@ const run = async () => {
     createdHashes.add(lostHash);
     const lostCreate = await call("POST", "/key/generate", {
       key: lostKey, key_alias: `probe-${randomUUID()}`, key_type: "llm_api", team_id: teamId, user_id: userId,
-      max_budget: 1, budget_duration: "1d", models: [model],
+      max_budget: 1, budget_duration: "1d", models: [model], blocked: false,
     }, master, true);
     const recovered = classifyLookup(await hashLookup(lostHash), lostHash);
     mark("lost-create-response-reconciles-by-hash", lostCreate?.dropped === true && recovered.kind === "present" &&
@@ -417,6 +456,7 @@ try {
   for (const name of CASES) if (!outcomes.has(name)) mark(name, "UNKNOWN");
 } finally {
   for (const name of CASES) console.log(`${outcomes.get(name) ?? "UNKNOWN"} ${name}`);
+  for (const [name, outcome] of diagnostics) console.log(`DIAGNOSTIC ${name} ${outcome}`);
   if (diagnosticCode) console.log(`DIAGNOSTIC ${diagnosticCode}`);
 }
 process.exitCode = failed ? 1 : 0;
