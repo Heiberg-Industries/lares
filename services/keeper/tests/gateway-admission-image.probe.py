@@ -150,7 +150,6 @@ else if(x.kind==='sdk'){
 }
 '''
 
-
 def command(*args, input=None, timeout=120):
     result = subprocess.run(args, input=input, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
     if result.returncode: raise RuntimeError("Fixture command failed: " + args[0])
@@ -308,6 +307,10 @@ class Proof:
             self.disposable_secrets.append(value.encode())
         (self.root/"service-key").write_bytes(secrets.token_bytes(32));(self.root/"service-key").chmod(0o600)
         self.disposable_secrets.append((self.root/"service-key").read_bytes())
+        self.native_barrier=self.root/"native-probe-barrier"
+        self.native_barrier.write_text("idle");self.native_barrier.chmod(0o600)
+        self.native_expected=self.root/"native-probe-expected"
+        self.native_expected.write_text("");self.native_expected.chmod(0o600)
         command("openssl","req","-x509","-newkey","rsa:2048","-nodes","-keyout",str(self.root/"tls-key.pem"),"-out",str(self.root/"ca.pem"),"-days","1","-subj","/CN=fixture","-addext","subjectAltName=DNS:fixture")
         (self.root/"fixture.py").write_text(FIXTURE)
         mount=["--mount",f"type=bind,src={self.root},dst=/fixture,readonly"]
@@ -315,8 +318,16 @@ class Proof:
         self.run("db",self.manifest["images"]["db"],[*mount,"--network-alias","db","-e","POSTGRES_USER=proof","-e","POSTGRES_DB=litellm","-e","POSTGRES_PASSWORD_FILE=/fixture/password"],[])
         self.wait(lambda:command("docker","exec",self.name+"-db","pg_isready","-U","proof","-d","litellm").endswith("accepting connections"),"Fixture database failed")
         self.run("fixture",self.manifest["images"]["lares-gateway"],[*mount,*assets,"--network-alias","fixture","--entrypoint","python","-e","PYTHONDONTWRITEBYTECODE=1"],["/fixture/fixture.py"])
-        # The role client has no fixture/master/service-key mount.
-        self.run("client",self.image,["--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly","--entrypoint","node"],["-e","setInterval(()=>{},60000)"])
+        # The client receives only the probe source, protected master-key file, and fixed phase barrier.
+        client_mounts=[
+            "--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/tmp/litellm-member-credential.live.mts,readonly",
+            "--mount",f"type=bind,src={self.root/'master'},dst=/tmp/gateway-master-key,readonly",
+            "--mount",f"type=bind,src={self.native_barrier},dst=/tmp/native-probe-barrier",
+            "--mount",f"type=bind,src={self.native_expected},dst=/tmp/native-probe-expected",
+            "--user","0:0","--entrypoint","node",
+        ]
+        self.run("client",self.image,client_mounts,["-e","setInterval(()=>{},60000)"])
         self.wait(lambda:self.control().get("mode")=="normal","HTTPS fixture failed")
 
     def start_gateway(self, provider, broken=None):
@@ -354,6 +365,127 @@ class Proof:
         require(type(meta["cooldownSeconds"]) is int and meta["cooldownSeconds"]==5,"Unexpected pinned gateway cooldown default")
         self.cooldown_idle_seconds=meta["cooldownSeconds"]+1
         return url
+
+    def start_native_admin(self, provider="openai"):
+        """Start LiteLLM itself on the same disposable digest/database/internal network.
+
+        This separate listener proves native admin APIs that Lares intentionally does not
+        expose through the guarded gateway's fixed route allowlist.
+        """
+        suffix="native-admin-contract"
+        folder=self.root/suffix;folder.mkdir()
+        document=self.config(provider)["config"]
+        settings=document.get("litellm_settings",{})
+        settings.pop("callbacks",None)
+        document["litellm_settings"]=settings
+        (folder/"config.yaml").write_text(json.dumps(document)) # JSON is a YAML subset; no secret values are embedded.
+        script=self.root/"native-admin-start.sh"
+        script.write_text("""#!/bin/sh
+set -eu
+LARES_MODEL_PROVIDER_KEY=$(cat /fixture/provider); export LARES_MODEL_PROVIDER_KEY
+LARES_GATEWAY_MASTER_KEY=$(cat /fixture/master); export LARES_GATEWAY_MASTER_KEY
+LARES_DATABASE_PASSWORD=$(cat /fixture/password)
+DATABASE_URL="postgresql://${PGUSER}:${LARES_DATABASE_PASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}"; export DATABASE_URL
+LARES_DATABASE_PASSWORD=
+CONFIG_FILE_PATH=/fixture/native-admin-contract/config.yaml; export CONFIG_FILE_PATH
+LITELLM_RUST=False; DISABLE_AIOHTTP_TRANSPORT=True; export LITELLM_RUST DISABLE_AIOHTTP_TRANSPORT
+litellm --config "$CONFIG_FILE_PATH" --skip_server_startup --enforce_prisma_migration_check
+exec litellm --config "$CONFIG_FILE_PATH"
+""");script.chmod(0o700)
+        arguments=["--network-alias",suffix,"--mount",f"type=bind,src={self.root},dst=/fixture,readonly","--mount",f"type=bind,src={folder}/config.yaml,dst=/etc/litellm/config.yaml,readonly","--entrypoint","/bin/sh"]
+        # The entrypoint script is inside the read-only fixture mount; no secrets enter argv.
+        env={"PGHOST":"db","PGPORT":"5432","PGDATABASE":"litellm","PGUSER":"proof","LITELLM_LOCAL_MODEL_COST_MAP":"True","LITELLM_TELEMETRY":"False"}
+        for k,v in env.items():arguments += ["-e",k+"="+v]
+        self.run(suffix,self.manifest["images"]["lares-gateway"],arguments,["/fixture/native-admin-start.sh"])
+        url="http://"+suffix+":4000"
+        health="fetch('http://native-admin-contract:4000/health/liveliness',{redirect:'manual',signal:AbortSignal.timeout(3000)}).then(r=>console.log(r.status)).catch(()=>console.log('0'))"
+        self.wait(lambda:command("docker","exec",self.name+"-client","node","-e",health)=="200","Native contract listener did not become ready",120)
+        return url
+
+    def native_membership_db_check(self, team_id, user_id):
+        if not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return False
+        statement = f'''SELECT (
+          (SELECT count(*)=1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}')
+          AND EXISTS (SELECT 1 FROM "LiteLLM_UserTable" WHERE user_id='{user_id}' AND max_budget=3
+            AND user_role NOT IN ('proxy_admin','proxy_admin_viewer') AND models=ARRAY[]::text[]
+            AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null') AND organization_id IS NULL)
+          AND (SELECT count(*)=0 FROM "LiteLLM_VerificationToken" WHERE user_id='{user_id}')
+          AND EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m
+            JOIN "LiteLLM_UserTable" u ON u.user_id=m.user_id
+            JOIN "LiteLLM_TeamTable" t ON t.team_id=m.team_id
+            JOIN "LiteLLM_BudgetTable" b ON b.budget_id=m.budget_id
+            WHERE u.user_id='{user_id}' AND t.team_id='{team_id}' AND t.max_budget=4 AND t.models=ARRAY['lares-brain']::text[]
+              AND t.budget_duration='1d' AND t.blocked IS FALSE AND COALESCE(t.metadata::text,'{{}}') IN ('{{}}','null')
+              AND b.max_budget=2 AND b.budget_duration='1d' AND b.allowed_models=ARRAY['lares-brain']::text[]
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(t.members_with_roles,'[]')::jsonb) r
+                WHERE r->>'user_id'=u.user_id AND r->>'role'='user'))
+        )::text'''
+        return self.sql(statement)=="true"
+
+    def native_key_db_check(self, token, team_id, user_id):
+        if not re.fullmatch(r"[a-f0-9]{64}",token) or not re.fullmatch(r"[0-9a-f-]{36}",team_id) or not re.fullmatch(r"probe-[0-9a-f-]{36}",user_id): return False
+        statement = f'''SELECT ((SELECT count(*)=1 FROM "LiteLLM_VerificationToken" WHERE user_id='{user_id}') AND EXISTS
+          (SELECT 1 FROM "LiteLLM_VerificationToken" WHERE token='{token}' AND key_type='llm_api'
+          AND key_alias LIKE 'probe-%' AND max_budget=1 AND budget_duration='1d'
+          AND models=ARRAY['lares-brain']::text[] AND blocked IS FALSE
+          AND COALESCE(metadata::text,'{{}}') IN ('{{}}','null') AND COALESCE(config::text,'{{}}') IN ('{{}}','null')
+          AND team_id='{team_id}' AND user_id='{user_id}' AND budget_id IS NULL AND project_id IS NULL AND organization_id IS NULL)
+          AND EXISTS (SELECT 1 FROM "LiteLLM_TeamMembership" m WHERE m.user_id='{user_id}' AND m.team_id='{team_id}'))::text'''
+        return self.sql(statement)=="true"
+
+    def native_contract(self):
+        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[]}
+        self.artifact["nativeCredentialContract"]=report
+        expected=("fixture-guard","member-create-without-key","team-membership-and-caps","caller-key-exact-and-hash-lookup",
+            "hash-lookup-absent-is-not-error","hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite",
+            "atomic-blocked-create","blocked-key-readback-and-native-auth","unblocked-key-readback-and-native-auth",
+            "lost-create-response-reconciles-by-hash","block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
+            "already-deleted-remains-absent","fixture-cleanup")
+        try:
+            native_url=self.start_native_admin()
+            self.native_barrier.write_text("idle")
+            args=["docker","exec","-i","-e","CI=true","-e","LARES_DISPOSABLE_GATEWAY=1","-e","LARES_PROBE_CI_BARRIER=1",
+                "-e","GATEWAY_URL="+native_url,"-e","GATEWAY_MASTER_KEY_FILE=/tmp/gateway-master-key","-e","GATEWAY_PROBE_MODEL=lares-brain",
+                "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/tmp/native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/tmp/native-probe-expected",self.name+"-client","node",
+                "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs","/tmp/litellm-member-credential.live.mts"]
+            process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            deadline=time.monotonic()+180
+            checked_members=False;checked_key=False
+            while process.poll() is None and time.monotonic()<deadline:
+                try:phase=self.native_barrier.read_text()
+                except OSError:phase=""
+                if phase=="members-ready":
+                    try:
+                        expected_values=self.native_expected.read_text().splitlines()
+                        ok=len(expected_values)==2 and self.native_membership_db_check(*expected_values)
+                    except Exception:ok=False
+                    report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":"pass" if ok else "fail"})
+                    self.native_barrier.write_text("members-checked");checked_members=True
+                elif phase=="key-ready":
+                    try:
+                        expected_values=self.native_expected.read_text().splitlines()
+                        ok=len(expected_values)==3 and self.native_key_db_check(*expected_values)
+                    except Exception:ok=False
+                    report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":"pass" if ok else "fail"})
+                    self.native_barrier.write_text("key-checked");checked_key=True
+                time.sleep(.05)
+            if process.poll() is None:process.kill()
+            stdout,_stderr=process.communicate(timeout=5)
+            parsed=[]
+            for line in stdout.splitlines()[:64]:
+                match=re.fullmatch(r"(PASS|FAIL|UNKNOWN|UNSUPPORTED) ([a-z][a-z0-9-]+)",line)
+                if match and match.group(2) in expected:parsed.append({"name":match.group(2),"outcome":match.group(1).lower()})
+            by_name={item["name"]:item["outcome"] for item in parsed}
+            report["cases"]=[{"name":name,"outcome":by_name.get(name,"unknown")} for name in expected]
+            report["runnerCompleted"]=process.returncode==0 and len(by_name)==len(expected)
+            if by_name.get("atomic-blocked-create")=="unsupported":report["findings"].append("atomic-blocked-create-unsupported")
+            if not checked_members:report["databaseCases"].append({"name":"native-db-member-and-no-key-rows","outcome":"unknown"})
+            if not checked_key:report["databaseCases"].append({"name":"native-db-key-hash-and-policy-row","outcome":"unknown"})
+        except Exception:
+            report["cases"]=[{"name":name,"outcome":"unknown"} for name in expected]
+            report["databaseCases"]=[{"name":"native-db-member-and-no-key-rows","outcome":"unknown"},
+                {"name":"native-db-key-hash-and-policy-row","outcome":"unknown"}]
+        report["passed"]=report.get("runnerCompleted") is True and all(case["outcome"]=="pass" for case in report["cases"]+report["databaseCases"])
 
     def startup_diagnostic(self,name,label):
         record={"case":label}
@@ -636,6 +768,7 @@ class Proof:
     def execute(self):
         try:
             self.setup()
+            self.native_contract()
             # A working native bootstrap must be established before negative cases;
             # a universal import/permission failure cannot count as six good refusals.
             openai_url=self.start_gateway("openai")
@@ -648,7 +781,8 @@ class Proof:
                 self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Restart did not restore native runtime",120)
                 self.case(provider+"-restart-persisted-key",lambda:require(self.sdk(url,key,"anthropic")["ok"],"Native key did not survive restart"))
                 command("docker","stop",name)
-            self.artifact["passed"]=True
+            self.artifact["passed"]=self.artifact["nativeCredentialContract"].get("passed") is True and all(case.get("passed") is True for case in self.artifact["cases"])
+            if not self.artifact["passed"]:raise RuntimeError("Pinned image proof did not pass")
         except Exception as error:
             self.artifact["passed"]=False
             self.artifact["failure"]=str(error) # fixed harness messages only, never raw responses/logs
