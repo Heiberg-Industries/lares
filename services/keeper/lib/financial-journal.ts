@@ -25,6 +25,13 @@ const controlSchema=z.object({journalId:id,database:FINANCIAL_DATABASE_SCHEMA,ch
 export type FinancialControl=z.infer<typeof controlSchema>;
 export type FinancialDatabase=z.infer<typeof FINANCIAL_DATABASE_SCHEMA>;
 export type FinancialCheckpoint=z.infer<typeof FINANCIAL_CHECKPOINT_SCHEMA>;
+export interface FinancialProjection {checkpoints:FinancialCheckpoint[];atoms:FinancialAtom[]}
+export function financialAtomKey(atom:FinancialAtom):string {
+  return atom.kind==='grant'?`${atom.kind}:${atom.attemptId}`:atom.kind==='tombstone'?`${atom.kind}:${atom.accountId}`:`${atom.kind}:${atom.id}`;
+}
+function assertUniqueFinancialAtoms(atoms:readonly FinancialAtom[]):void {
+  const keys=new Set<string>();for(const atom of atoms){const key=financialAtomKey(atom);if(keys.has(key))throw new Error('Duplicate financial atom');keys.add(key);}
+}
 const receiptSchema=z.object({version:z.literal(1),journalId:id,suppressionKeyFingerprint:hash}).strict();
 export interface JournalOptions {ownershipUid?:number;lock?:(fd:number)=>void;sync?:(fd:number)=>void;requirePrepared?:boolean}
 const operation=z.enum(['prepare','provision','admit','grant','unknown','settle','member-remove','erase-person']);
@@ -120,7 +127,7 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
 }
 export class HostFinancialJournal {
   #key:Buffer;
-  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private idle=new Set<()=>void>();private preparationComplete=false;
+  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
   private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
   /** No mkdir, key creation, restore adoption, tail repair or automatic initialization. */
@@ -204,8 +211,11 @@ export class HostFinancialJournal {
       else if(r.kind==='writer-open'){if(writer||this.pending)throw new Error('Journal writer overlap');writer=r.operationId;}
       else if(r.kind==='writer-close'){if(writer!==r.operationId||this.pending)throw new Error('Journal writer mismatch');writer=undefined;}
       else if(r.kind==='begin'){if(!writer||this.pending||operations.has(r.operationId))throw new Error('Journal operation replay');operations.add(r.operationId);this.pending={id:r.operationId};}
-      else if(r.kind==='proposal'){if(!this.pending||this.pending.id!==r.operationId||this.pending.proposal)throw new Error('Journal proposal mismatch');this.pending.proposal=frame.digest;}
-      else if(r.kind==='commit'){if(!this.pending?.proposal||this.pending.id!==r.operationId||this.pending.proposal!==r.proposalDigest)throw new Error('Journal commit mismatch');this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.pending=undefined;}
+      else if(r.kind==='proposal'){if(!this.pending||this.pending.id!==r.operationId||this.pending.proposal)throw new Error('Journal proposal mismatch');assertUniqueFinancialAtoms(r.atoms);this.pending.proposal=frame.digest;this.pending.atoms=structuredClone(r.atoms);}
+      else if(r.kind==='commit'){
+        if(!this.pending?.proposal||this.pending.id!==r.operationId||this.pending.proposal!==r.proposalDigest||!this.pending.atoms)throw new Error('Journal commit mismatch');
+        this.lastCheckpoint={operationId:r.operationId,journalId:this.journalId,sequence:r.sequence-1,digest:r.proposalDigest};this.checkpoints.push(this.lastCheckpoint);this.applyAtoms(this.pending.atoms);this.pending=undefined;
+      }
       else if(r.kind==='abort'){if(!this.pending||this.pending.id!==r.operationId||(this.pending.proposal??null)!==r.proposalDigest)throw new Error('Journal abort mismatch');this.pending=undefined;}
       else throw new Error('Repeated journal genesis');
       this.sequence++;this.head=frame.digest;
@@ -255,6 +265,7 @@ export class HostFinancialJournal {
     if(this.pending?.id!==operationId||this.pending.proposal)throw new Error('Financial proposal unavailable');
     financialProposalFrame(operationId,this.sequence,this.head,atoms);
     const checked=atoms.map(atom=>FINANCIAL_ATOM_SCHEMA.parse(atom));
+    assertUniqueFinancialAtoms(checked);
     const frame=this.append({kind:'proposal',atoms:checked},operationId);this.pending.proposal=frame.digest;this.pending.atoms=structuredClone(checked);
     return {journalId:this.journalId,operationId,sequence:frame.sequence,digest:frame.digest};
   }
@@ -266,7 +277,7 @@ export class HostFinancialJournal {
     if(this.pending?.id!==operationId||!this.pending.proposal||!this.pending.operation||!this.pending.atoms)throw new Error('Financial proposal unavailable');
     const proposal=this.pending.proposal,sequence=this.sequence-1,kind=this.pending.operation,atoms=this.pending.atoms;
     this.append({kind:'commit',proposalDigest:proposal},operationId);this.pending=undefined;
-    this.lastCheckpoint={operationId,journalId:this.journalId,sequence,digest:proposal};
+    this.lastCheckpoint={operationId,journalId:this.journalId,sequence,digest:proposal};this.checkpoints.push(this.lastCheckpoint);this.applyAtoms(atoms);
     if(this.control){this.control={...this.control,checkpoint:this.lastCheckpoint};this.append({kind:'control',control:this.control},this.writerId);}
     // Generic unprepared histories retain their existing commit behavior, but have no
     // database-bound control and cannot mint authority for native custody cleanup.
@@ -282,11 +293,34 @@ export class HostFinancialJournal {
     durableAbortReceipts.set(receipt,{finished:false});this.pendingAbortReceipt=receipt;return receipt;
   }
   freeze():void {this.persistFreeze('uncertain');}
-  /** Each observation is made on startup, before owned mutation, and immediately before
-   * COMMIT on that SAME client. A match cannot clear a previously durable freeze. */
-  verifyContinuity(database:FinancialDatabase,checkpoint:FinancialCheckpoint|null,proposed=false):void {
-    const expected=proposed&&this.pending?.proposal?{operationId:this.pending.id,journalId:this.journalId,sequence:this.sequence-1,digest:this.pending.proposal}:this.control?.checkpoint;
-    if(this.closed||this.frozen||!this.control||JSON.stringify(FINANCIAL_DATABASE_SCHEMA.parse(database))!==JSON.stringify(this.control.database)||JSON.stringify(checkpoint)!==JSON.stringify(expected)){
+  private applyAtoms(atoms:readonly FinancialAtom[]):void {
+    for(const atom of atoms)this.projection.set(financialAtomKey(atom),structuredClone(atom));
+  }
+  /** Snapshot only the committed fold, with the exact active proposal optionally overlaid
+   * for the writer's pre-COMMIT observation. Callers cannot select a pending operation. */
+  expectedProjection(proposed=false):FinancialProjection {
+    if(this.closed||this.frozen||!this.control)throw new Error('Financial continuity requires recovery');
+    const checkpoints=this.checkpoints.map(checkpoint=>({...checkpoint})),atoms=[...this.projection.values()].map(atom=>structuredClone(atom));
+    if(proposed){
+      if(!this.busy||!this.pending?.proposal||!this.pending.atoms)throw new Error('Financial proposal unavailable');
+      checkpoints.push({operationId:this.pending.id,journalId:this.journalId,sequence:this.sequence-1,digest:this.pending.proposal});
+      const overlay=new Map(atoms.map(atom=>[financialAtomKey(atom),atom]));
+      for(const atom of this.pending.atoms)overlay.set(financialAtomKey(atom),structuredClone(atom));
+      return {checkpoints,atoms:[...overlay.values()].sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
+    }
+    return {checkpoints,atoms:atoms.sort((left,right)=>financialAtomKey(left).localeCompare(financialAtomKey(right)))};
+  }
+  /** Startup, transaction-start and pre-COMMIT all compare the complete redacted fold.
+   * A match never clears a previously durable freeze. */
+  verifyContinuity(database:FinancialDatabase,checkpoints:readonly FinancialCheckpoint[],atoms:readonly FinancialAtom[],proposed=false):void {
+    let expected:FinancialProjection|undefined,actualCheckpoints:FinancialCheckpoint[]|undefined,actualAtoms:FinancialAtom[]|undefined;
+    try{
+      expected=this.expectedProjection(proposed);
+      actualCheckpoints=checkpoints.map(checkpoint=>FINANCIAL_CHECKPOINT_SCHEMA.parse(checkpoint));
+      actualAtoms=atoms.map(atom=>FINANCIAL_ATOM_SCHEMA.parse(atom));
+    }catch{this.persistFreeze('continuity');throw new Error('Financial continuity requires recovery');}
+    const expectedSqlAtoms=expected.atoms.filter(atom=>atom.kind!=='tombstone');
+    if(this.closed||this.frozen||!this.control||JSON.stringify(FINANCIAL_DATABASE_SCHEMA.parse(database))!==JSON.stringify(this.control.database)||!gatewayCanonical(actualCheckpoints).equals(gatewayCanonical(expected.checkpoints))||!gatewayCanonical(actualAtoms).equals(gatewayCanonical(expectedSqlAtoms))){
       this.persistFreeze('continuity');throw new Error('Financial continuity requires recovery');
     }
   }
