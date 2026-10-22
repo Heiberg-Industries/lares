@@ -269,6 +269,13 @@ export async function exportPerson(
     }
   }
 
+  // Historical studio rows have no reliable member link. Their owner must not be guessed from
+  // a current channel claim, aliases or a one-member installation.
+  if (!report.refusals.length && await countWhere(db, "SELECT count(*)::int AS n FROM studio_runs WHERE owner_member_id IS NULL")) {
+    report.refusals.push("Studio history contains records with no recorded owner. Nothing was written. Reconcile those records explicitly before exporting or erasing any member.");
+    return report;
+  }
+
   // ── Step 2: is this a place an export may be written? ────────────────────────────────────
   report.refusals.push(...outDirRefusals(outDir, vaults));
   if (report.refusals.length > 0) return report;

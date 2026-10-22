@@ -86,6 +86,15 @@ const SEED_ROWS: SeedRow[] = [
     `INSERT INTO users (id, display_name, primary_email) VALUES ($1, 'Fixture Second', 'second@fixture.test')`,
     [FIXTURE_SECOND]),
 
+  row("studio_runs", "owner_member_id", FIXTURE_OWNER,
+    `INSERT INTO studio_runs (brief, consensus, spread, principal, owner_member_id)
+     VALUES ('Fixture owner brief', 'Fixture grounding', '[]'::jsonb, 'U_fixture', $1)`,
+    [FIXTURE_OWNER]),
+  row("studio_runs", "owner_member_id", FIXTURE_SECOND,
+    `INSERT INTO studio_runs (brief, consensus, spread, principal, owner_member_id)
+     VALUES ('Fixture second brief', 'Fixture grounding', '[]'::jsonb, 'U_fixture2', $1)`,
+    [FIXTURE_SECOND]),
+
   ...[FIXTURE_OWNER,FIXTURE_SECOND].map((member,index) => row("approval_asks", "acting_member_id", member,
     `INSERT INTO approval_asks(request_id,call_id,agent,tool,payload_hash,acting_member_id) VALUES($1,$2,'fixture-agent','deadline_dismiss','fixture-hash',$3)`,
     [`fixture-approval-${index}`,`fixture-call-${index}`,member])),
@@ -490,7 +499,11 @@ function boxSqlFilesInOrder(): string[] {
  *  TWO people whose rows use all three id conventions.
  *  Nothing here ever connects to a real installation: the container is disposable and the
  *  connection string is generated. */
-export async function startThreeSpellingsDb(options: {vaultAreas?:boolean;financial?:boolean} = {}): Promise<TestDb> {
+export async function startThreeSpellingsDb(options: {
+  vaultAreas?: boolean;
+  financial?: boolean;
+  beforeMigration?: (pool: Pool, migration: string) => Promise<void>;
+} = {}): Promise<TestDb> {
   const container: StartedPostgreSqlContainer = await new PostgreSqlContainer(
     "pgvector/pgvector:pg16",
   ).start();
@@ -504,6 +517,7 @@ export async function startThreeSpellingsDb(options: {vaultAreas?:boolean;financ
   pool.on("connect", (client) => client.on("error", () => undefined));
 
   for (const file of boxSqlFilesInOrder()) {
+    await options.beforeMigration?.(pool, file);
     await pool.query(readFileSync(join(boxSqlDir, file), "utf8"));
   }
   for (const seed of [...SEED_ROWS,...(options.vaultAreas===false?[]:VAULT_ROWS)]) {

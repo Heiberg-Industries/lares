@@ -411,6 +411,14 @@ export async function erasePerson(
   }
   if (report.refusals.length > 0) return report;
 
+  // Studio runs written before member ownership was introduced contain private briefs and
+  // generated content whose owner cannot be inferred from a current channel claim or user list.
+  // Refuse the whole export/erase while any such row remains unknown.
+  if (await countWhere(db, "SELECT count(*)::int AS n FROM studio_runs WHERE owner_member_id IS NULL")) {
+    report.refusals.push("Studio history contains records with no recorded owner. Nothing was changed. Reconcile those records explicitly before exporting or erasing any member.");
+    return report;
+  }
+
   // Area metadata deliberately does not resolve or erase backing files. Refuse at the
   // shared preflight, including dry runs, so runErase cannot delete files before discovering
   // that these stable identities cannot yet be reconciled with storage.
