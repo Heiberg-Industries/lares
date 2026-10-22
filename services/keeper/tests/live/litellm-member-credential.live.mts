@@ -18,7 +18,7 @@
  * response bodies and transport errors are never printed.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstatSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, ftruncateSync, lstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
 const CASES = [
@@ -65,21 +65,60 @@ const barrierFile = process.env.GATEWAY_PROBE_CI_BARRIER_FILE;
 const expectedFile = process.env.GATEWAY_PROBE_CI_EXPECTED_FILE;
 let origin: string | undefined;
 let master: string | undefined;
+let diagnosticCode: "members-barrier-write-failed" | "members-expected-write-failed" |
+  "key-barrier-write-failed" | "key-expected-write-failed" | "barrier-ack-timeout" |
+  "fixture-guard-failed" | "unexpected-probe-failure" | undefined;
+
+function writeCiFile(file: string, contents: string, reason: "members-barrier-write-failed" | "members-expected-write-failed" | "key-barrier-write-failed" | "key-expected-write-failed"): void {
+  let descriptor: number | undefined;
+  try {
+    const stat = lstatSync(file);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new Error("unsafe fixture file");
+    descriptor = openSync(file, "r+");
+    ftruncateSync(descriptor, 0);
+    const data = Buffer.from(contents, "utf8");
+    if (writeSync(descriptor, data) !== data.byteLength) throw new Error("short fixture write");
+  } catch {
+    diagnosticCode = reason;
+    throw new Error("fixture coordination write failed");
+  } finally {
+    if (descriptor !== undefined) {
+      try { closeSync(descriptor); } catch { diagnosticCode = reason; throw new Error("fixture coordination close failed"); }
+    }
+  }
+}
 
 function setup(): boolean {
   try {
-    if (!explicit || !urlValue || !keyFile || !model || !/^[A-Za-z0-9_.:-]{1,160}$/.test(model)) return false;
-    if ((process.env.LARES_PROBE_CI_BARRIER === "1" || barrierFile || expectedFile) && (!ciBarrier || !barrierFile || !expectedFile)) return false;
+    if (!explicit || !urlValue || !keyFile || !model || !/^[A-Za-z0-9_.:-]{1,160}$/.test(model)) {
+      diagnosticCode = "fixture-guard-failed";
+      return false;
+    }
+    if ((process.env.LARES_PROBE_CI_BARRIER === "1" || barrierFile || expectedFile) &&
+        (!ciBarrier || barrierFile !== "/run/lares-native-probe-barrier" || expectedFile !== "/run/lares-native-probe-expected")) {
+      diagnosticCode = "fixture-guard-failed";
+      return false;
+    }
     const url = new URL(urlValue);
-    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) return false;
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" || url.search || url.hash) {
+      diagnosticCode = "fixture-guard-failed";
+      return false;
+    }
     const stat = lstatSync(keyFile);
-    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) return false;
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) {
+      diagnosticCode = "fixture-guard-failed";
+      return false;
+    }
     const candidate = readFileSync(keyFile, "utf8").trimEnd();
-    if (!candidate.startsWith("sk-") || candidate.length < 16) return false;
+    if (!candidate.startsWith("sk-") || candidate.length < 16) {
+      diagnosticCode = "fixture-guard-failed";
+      return false;
+    }
     origin = url.origin;
     master = candidate;
     return true;
   } catch {
+    diagnosticCode = "fixture-guard-failed";
     return false;
   }
 }
@@ -91,6 +130,7 @@ async function waitForCiAcknowledgement(phase: "members-checked" | "key-checked"
     try { if (readFileSync(barrierFile, "utf8") === phase) return; } catch { /* fixed timeout below */ }
     await delay(50);
   }
+  diagnosticCode = "barrier-ack-timeout";
   throw new Error("fixture barrier timeout");
 }
 
@@ -233,8 +273,8 @@ const run = async () => {
       createUser.body.user_id === userId && createUser.body.max_budget === 3 && noAutoKey?.status === 200 &&
       object(noAutoKeyBody) && Array.isArray(noAutoKeyBody.keys) && noAutoKeyBody.keys.length === 0 ? "PASS" : "FAIL");
     if (ciBarrier && barrierFile) {
-      writeFileSync(expectedFile!, `${teamId}\n${userId}\n`, { mode: 0o600 });
-      writeFileSync(barrierFile, "members-ready");
+      writeCiFile(expectedFile!, `${teamId}\n${userId}\n`, "members-expected-write-failed");
+      writeCiFile(barrierFile, "members-ready", "members-barrier-write-failed");
       await waitForCiAcknowledgement("members-checked");
     }
 
@@ -249,8 +289,8 @@ const run = async () => {
       row !== undefined && exactKey(row, expected);
     mark("caller-key-exact-and-hash-lookup", createdExactly ? "PASS" : lookup.kind === "malformed" ? "UNKNOWN" : "FAIL");
     if (ciBarrier && barrierFile) {
-      writeFileSync(expectedFile!, `${normalHash}\n${teamId}\n${userId}\n`, { mode: 0o600 });
-      writeFileSync(barrierFile, "key-ready");
+      writeCiFile(expectedFile!, `${normalHash}\n${teamId}\n${userId}\n`, "key-expected-write-failed");
+      writeCiFile(barrierFile, "key-ready", "key-barrier-write-failed");
       await waitForCiAcknowledgement("key-checked");
     }
 
@@ -373,8 +413,10 @@ try {
   await run();
 } catch {
   failed = true;
+  if (!diagnosticCode) diagnosticCode = "unexpected-probe-failure";
   for (const name of CASES) if (!outcomes.has(name)) mark(name, "UNKNOWN");
 } finally {
   for (const name of CASES) console.log(`${outcomes.get(name) ?? "UNKNOWN"} ${name}`);
+  if (diagnosticCode) console.log(`DIAGNOSTIC ${diagnosticCode}`);
 }
 process.exitCode = failed ? 1 : 0;

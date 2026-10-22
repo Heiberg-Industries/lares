@@ -323,8 +323,8 @@ class Proof:
             "--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly",
             "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/tmp/litellm-member-credential.live.mts,readonly",
             "--mount",f"type=bind,src={self.root/'master'},dst=/tmp/gateway-master-key,readonly",
-            "--mount",f"type=bind,src={self.native_barrier},dst=/tmp/native-probe-barrier",
-            "--mount",f"type=bind,src={self.native_expected},dst=/tmp/native-probe-expected",
+            "--mount",f"type=bind,src={self.native_barrier},dst=/run/lares-native-probe-barrier",
+            "--mount",f"type=bind,src={self.native_expected},dst=/run/lares-native-probe-expected",
             "--user","0:0","--entrypoint","node",
         ]
         self.run("client",self.image,client_mounts,["-e","setInterval(()=>{},60000)"])
@@ -434,7 +434,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
         return self.sql(statement)=="true"
 
     def native_contract(self):
-        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[]}
+        report={"scope":"committed native probe in the exact pinned image; disposable internal-only fixture; no provider calls", "cases":[], "databaseCases":[], "findings":[], "diagnostics":[]}
         self.artifact["nativeCredentialContract"]=report
         expected=("fixture-guard","member-create-without-key","team-membership-and-caps","caller-key-exact-and-hash-lookup",
             "hash-lookup-absent-is-not-error","hash-lookup-refused-is-not-absence","duplicate-key-create-does-not-overwrite",
@@ -446,7 +446,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             self.native_barrier.write_text("idle")
             args=["docker","exec","-i","-e","CI=true","-e","LARES_DISPOSABLE_GATEWAY=1","-e","LARES_PROBE_CI_BARRIER=1",
                 "-e","GATEWAY_URL="+native_url,"-e","GATEWAY_MASTER_KEY_FILE=/tmp/gateway-master-key","-e","GATEWAY_PROBE_MODEL=lares-brain",
-                "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/tmp/native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/tmp/native-probe-expected",self.name+"-client","node",
+                "-e","GATEWAY_PROBE_CI_BARRIER_FILE=/run/lares-native-probe-barrier","-e","GATEWAY_PROBE_CI_EXPECTED_FILE=/run/lares-native-probe-expected",self.name+"-client","node",
                 "--import","/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs","/tmp/litellm-member-credential.live.mts"]
             process=subprocess.Popen(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
             deadline=time.monotonic()+180
@@ -475,6 +475,8 @@ exec litellm --config "$CONFIG_FILE_PATH"
             for line in stdout.splitlines()[:64]:
                 match=re.fullmatch(r"(PASS|FAIL|UNKNOWN|UNSUPPORTED) ([a-z][a-z0-9-]+)",line)
                 if match and match.group(2) in expected:parsed.append({"name":match.group(2),"outcome":match.group(1).lower()})
+                diagnostic=re.fullmatch(r"DIAGNOSTIC (members-barrier-write-failed|members-expected-write-failed|key-barrier-write-failed|key-expected-write-failed|barrier-ack-timeout|fixture-guard-failed|unexpected-probe-failure)",line)
+                if diagnostic:report["diagnostics"].append(diagnostic.group(1))
             by_name={item["name"]:item["outcome"] for item in parsed}
             report["cases"]=[{"name":name,"outcome":by_name.get(name,"unknown")} for name in expected]
             report["runnerCompleted"]=process.returncode==0 and len(by_name)==len(expected)
@@ -485,6 +487,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             report["cases"]=[{"name":name,"outcome":"unknown"} for name in expected]
             report["databaseCases"]=[{"name":"native-db-member-and-no-key-rows","outcome":"unknown"},
                 {"name":"native-db-key-hash-and-policy-row","outcome":"unknown"}]
+            report["diagnostics"].append("fixture-runner-failure")
         report["passed"]=report.get("runnerCompleted") is True and all(case["outcome"]=="pass" for case in report["cases"]+report["databaseCases"])
 
     def startup_diagnostic(self,name,label):
