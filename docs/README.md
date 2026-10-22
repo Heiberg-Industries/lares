@@ -35,10 +35,10 @@ Numbering has gaps; see [`decisions/README.md`](decisions/README.md).
 
 ## releases
 
-Release notes say what changed, what breaks and how to upgrade. The newest is
-[`rc.11-notes.md`](releases/rc.11-notes.md); earlier ones are
-[rc.10](releases/rc.10-notes.md), [rc.9](releases/rc.9-notes.md), [rc.8](releases/rc.8-notes.md),
-[rc.7](releases/rc.7-notes.md) and [rc.6](releases/rc.6-notes.md).
+Release notes say what changed, what breaks and how to upgrade. The newest published notes are
+[`rc.12-notes.md`](releases/rc.12-notes.md); earlier ones are
+[rc.11](releases/rc.11-notes.md), [rc.10](releases/rc.10-notes.md), [rc.9](releases/rc.9-notes.md),
+[rc.8](releases/rc.8-notes.md), [rc.7](releases/rc.7-notes.md) and [rc.6](releases/rc.6-notes.md).
 
 ## installation
 
