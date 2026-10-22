@@ -1,12 +1,15 @@
 """Disposable CI-image runtime proof. No production data or provider credentials."""
-import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid
+import subprocess,json,pathlib,tempfile,time,urllib.request,http.server,threading,os,shutil,sys,uuid,secrets
 repo=pathlib.Path(__file__).resolve().parents[3]
 root=pathlib.Path(tempfile.mkdtemp(prefix='lares-image-proof-'));root.chmod(0o755)
+runtime_secrets=pathlib.Path(tempfile.mkdtemp(prefix='lares-runtime-secrets-'));runtime_secrets.chmod(0o755)
+offline_secrets=pathlib.Path(tempfile.mkdtemp(prefix='lares-offline-secrets-'));offline_secrets.chmod(0o700)
 name='lares-image-proof-'+uuid.uuid4().hex[:10];image=sys.argv[1]
+operator_password=secrets.token_urlsafe(32)
 def cmd(*a,input=None,timeout=120):
  try:return subprocess.check_output(a,input=input,text=True,stderr=subprocess.STDOUT,timeout=timeout).strip()
  except subprocess.CalledProcessError as e:print(e.output,flush=True);raise
-def sql(body):return cmd('docker','exec','-i',name+'-db','psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d','proof',input=body)
+def sql(body,database='proof'):return cmd('docker','exec','-i',name+'-db','psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d',database,input=body)
 def wait_healthy():
  # Docker can allocate a new ephemeral published port on restart.
  port=cmd('docker','port',name+'-runtime','3000').rsplit(':',1)[1]
@@ -29,11 +32,15 @@ def wait_quiet(what):
  q="SELECT (SELECT count(*) FROM workflow.workflow_steps WHERE status='running')+(SELECT count(*) FROM graphile_worker.jobs WHERE locked_at IS NOT NULL)"
  calm=0
  for i in range(60):
-  calm=calm+1 if cmd('docker','exec',name+'-db','psql','-X','-U','proof','-d','proof','-Atc',q)=='0' else 0
+  calm=calm+1 if cmd('docker','exec',name+'-db','psql','-X','-U','proof','-d','workflowproof','-Atc',q)=='0' else 0
   if calm==2:return
   time.sleep(.5)
  raise RuntimeError('Workflow work never went quiet '+what)
 requests=[]
+app_password=secrets.token_urlsafe(32)
+financial_password=secrets.token_urlsafe(32)
+workflow_provisioner_password=secrets.token_urlsafe(32)
+workflow_password=secrets.token_urlsafe(32)
 class Model(http.server.BaseHTTPRequestHandler):
  # : while `hold` is an Event, every reply waits on it and `held` says a request has arrived.
  hold=None;held=threading.Event()
@@ -51,19 +58,27 @@ class Model(http.server.BaseHTTPRequestHandler):
   except OSError:pass # a held reply's caller died with the restarted process
 server=http.server.ThreadingHTTPServer(('0.0.0.0',0),Model);threading.Thread(target=server.serve_forever,daemon=True).start()
 try:
- (root/'definition').mkdir();(root/'secrets').mkdir();(root/'blobs').mkdir();(root/'blobs').chmod(0o777)
+ (root/'definition').mkdir();(root/'blobs').mkdir();(root/'blobs').chmod(0o777)
  d=json.loads((repo/'packages/agent-kit/templates/chief-of-staff/definition.json').read_text());d.update(name='canary',role='chief-of-staff',grants=[{'capability':'echo','scope':'write-with-confirm'}],autonomy={'echo':'gated'},skills=[],channels=[],duties='duties.md')
  (root/'definition/agent.json').write_text(json.dumps(d));(root/'definition/duties.md').write_text('UNIQUE_CI_MOUNTED_DUTIES');(root/'definition/voice.md').write_text('Be concise.')
- for n in ['password','gateway','route','control']:(root/'secrets'/n).write_text('disposable-fixture-only')
+ for n in ['gateway','route','control']:
+  path=runtime_secrets/n;path.write_text('disposable-fixture-only');path.chmod(0o600)
+ for n,value in [('app-password',app_password),('workflow-password',workflow_password)]:
+  path=runtime_secrets/n;path.write_text(value);path.chmod(0o600)
+ for n,value in [('operator-password',operator_password),('financial-password',financial_password),('workflow-provisioner-password',workflow_provisioner_password)]:
+  path=offline_secrets/n;path.write_text(value);path.chmod(0o600)
+ cmd('docker','run','--rm','--platform','linux/amd64','--user','0:0','--mount',f'type=bind,src={runtime_secrets},dst=/runtime-secrets','--entrypoint','chown',image,'10001:10001','/runtime-secrets/gateway','/runtime-secrets/route','/runtime-secrets/control','/runtime-secrets/app-password','/runtime-secrets/workflow-password')
  cmd('docker','network','create',name)
- cmd('docker','run','-d','--name',name+'-db','--network',name,'--network-alias','proof-db','-e','POSTGRES_USER=proof','-e','POSTGRES_PASSWORD=disposable-fixture-only','-e','POSTGRES_DB=proof','pgvector/pgvector:pg16')
+ # initdb defaults host entries to trust; the image entrypoint appends its configured rule after
+ # those loopback entries. Set host authentication during initdb so loopback and network clients
+ # both exercise password checks.
+ cmd('docker','run','-d','--name',name+'-db','--network',name,'--network-alias','proof-db','-e','POSTGRES_USER=proof','-e','POSTGRES_PASSWORD='+operator_password,'-e','POSTGRES_DB=proof','-e','POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256','-e','POSTGRES_HOST_AUTH_METHOD=scram-sha-256','pgvector/pgvector:pg16')
  for i in range(60):
   # The image's temporary initialization server accepts Unix-socket connections
   # before POSTGRES_DB exists. Wait for the final TCP server and a real query.
-  try:cmd('docker','exec','-e','PGPASSWORD=disposable-fixture-only',name+'-db','psql','-h','127.0.0.1','-U','proof','-d','proof','-Atc','SELECT 1');break
+  try:cmd('docker','exec','-e','PGPASSWORD='+operator_password,name+'-db','psql','-h','127.0.0.1','-U','proof','-d','proof','-Atc','SELECT 1');break
   except subprocess.CalledProcessError:time.sleep(.5)
  else:raise RuntimeError('Disposable PostgreSQL database did not become ready')
- sql((repo/'services/chief-of-staff/sql/001-eve-workflow.sql').read_text())
  # The box schema is one baseline file today and any later numbered file after it. Apply every
  # file in number order, from an empty database, exactly as `migrate` does on a fresh install.
  applied=[]
@@ -74,17 +89,53 @@ try:
  # glob-pattern mistake fails the image build instead of silently skipping a file.
  on_disk={q.name for q in (repo/'services/box/sql').iterdir() if q.name[:3].isdigit() and q.name.endswith('.sql')}
  assert set(applied)==on_disk and '001_baseline.sql' in applied,f'Probe applied {sorted(applied)} but disk has {sorted(on_disk)} — a box migration was silently skipped'
- # Offline-owned memory and shared-source sync schemas are used by an ordinary application
- # login with table CRUD and schema USAGE only. It connects as a distinct role; no role switch
- # or runtime schema creation stands in for the published migration.
- sql("CREATE ROLE memory_probe_app LOGIN PASSWORD 'disposable-memory-proof-only' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS; GRANT USAGE ON SCHEMA public TO memory_probe_app; GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.dream_observations, public.dream_preferences, public.obligation_threads, public.karakeep_seen, public.route_cursor, public.route_proposals TO memory_probe_app")
- memory_access_probe = """import{Pool}from'pg';
+ # Apply the production privilege helper to the exact migrated engine inventory. Its source is
+ # mounted read-only into the existing crypto directory in this neutral role image.
+ engine_privileges=root/'prepare-engine-privileges.mts'
+ engine_privileges.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {provisionEngineDatabasePrivileges} from '/app/services/box/lib/database-privileges.ts';\n"
+   "const pool=new Pool({host:'proof-db',database:'proof',user:'proof',password:readFileSync('/offline-secrets/operator-password','utf8'),max:1});try{const client=await pool.connect();try{const result=await provisionEngineDatabasePrivileges(client,{expectedDatabase:'proof',passwords:{application:readFileSync('/secrets/app-password'),financial:readFileSync('/offline-secrets/financial-password')}});if(!['applied','verified'].includes(result.status))throw Error();}finally{client.release();}console.log('engine-privileges-ready');}finally{await pool.end();}\n")
+ helper_mount=['--mount',f'type=bind,src={repo}/services/box/lib/database-privileges.ts,dst=/app/services/box/lib/database-privileges.ts,readonly']
+ privilege_run=['docker','run','--rm','--user','0:0','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={offline_secrets},dst=/offline-secrets,readonly','--mount',f'type=bind,src={engine_privileges},dst=/app/services/chief-of-staff/prepare-engine-privileges.mts,readonly']+helper_mount+['--workdir','/app/services/chief-of-staff','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'/app/services/chief-of-staff/prepare-engine-privileges.mts']
+ assert cmd(*privilege_run)=='engine-privileges-ready','Production engine database privileges were not prepared'
+ # Build the pinned workflow template offline as the narrow provisioner, with its fixed owner
+ # role active for setupDatabase. The online worker login receives ACLs only after setup.
+ sql("CREATE ROLE lares_workflow_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS; CREATE ROLE lares_workflow_provisioner LOGIN NOINHERIT CREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '"+workflow_provisioner_password+"'; CREATE ROLE lares_workflow LOGIN NOINHERIT NOCREATEDB NOSUPERUSER NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '"+workflow_password+"'; GRANT lares_workflow_owner TO lares_workflow_provisioner; CREATE DATABASE empty_workflow OWNER lares_workflow_owner")
+ workflow_setup=root/'prepare-workflow-template.mts'
+ workflow_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {setupDatabase} from '@workflow/world-postgres/cli';\n"
+   "process.env.PGPASSWORD=readFileSync('/offline-secrets/workflow-provisioner-password','utf8');process.env.PGOPTIONS='-c role=lares_workflow_owner';process.env.WORKFLOW_POSTGRES_URL='postgres://lares_workflow_provisioner@proof-db:5432/empty_workflow';\n"
+   "const pool=new Pool({connectionString:process.env.WORKFLOW_POSTGRES_URL,max:1});try{const id=await pool.query('SELECT current_user,session_user,current_database()');if(id.rows[0]?.current_user!=='lares_workflow_owner'||id.rows[0]?.session_user!=='lares_workflow_provisioner'||id.rows[0]?.current_database!=='empty_workflow')throw Error();}finally{await pool.end();}await setupDatabase();\n")
+ workflow_helper_mount=['--mount',f'type=bind,src={repo}/services/box/lib/workflow-database-privileges.ts,dst=/app/services/box/lib/workflow-database-privileges.ts,readonly']
+ workflow_run=['docker','run','--rm','--user','0:0','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={offline_secrets},dst=/offline-secrets,readonly','--mount',f'type=bind,src={workflow_setup},dst=/app/services/chief-of-staff/prepare-workflow-template.mts,readonly']+workflow_helper_mount+['--workdir','/app/services/chief-of-staff','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'/app/services/chief-of-staff/prepare-workflow-template.mts']
+ cmd(*workflow_run)
+ workflow_acl_setup=root/'prepare-workflow-template-acls.mts'
+ workflow_acl_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {applyWorkflowRuntimePrivileges,verifyWorkflowRuntimePrivileges} from '/app/services/box/lib/workflow-database-privileges.ts';\n"
+   "process.env.PGPASSWORD=readFileSync('/offline-secrets/workflow-provisioner-password','utf8');process.env.PGOPTIONS='-c role=lares_workflow_owner';process.env.WORKFLOW_POSTGRES_URL='postgres://lares_workflow_provisioner@proof-db:5432/empty_workflow';\n"
+   "const ownerPool=new Pool({connectionString:process.env.WORKFLOW_POSTGRES_URL,max:1});try{const client=await ownerPool.connect();try{const id=await client.query('SELECT current_user,session_user');if(id.rows[0]?.current_user!=='lares_workflow_owner'||id.rows[0]?.session_user!=='lares_workflow_provisioner')throw Error();await applyWorkflowRuntimePrivileges(client);await client.query('RESET ROLE');}finally{client.release();}}finally{await ownerPool.end();}delete process.env.PGOPTIONS;const runtime=new Pool({host:'proof-db',database:'empty_workflow',user:'lares_workflow',password:readFileSync('/secrets/workflow-password','utf8'),max:1});try{const client=await runtime.connect();try{const id=await client.query('SELECT current_user,session_user');if(id.rows[0]?.current_user!=='lares_workflow'||id.rows[0]?.session_user!=='lares_workflow')throw Error();await verifyWorkflowRuntimePrivileges(client);const empty=await client.query(\"SELECT (SELECT count(*)::int FROM workflow.workflow_event_slots) AS event_slots,(SELECT count(*)::int FROM workflow.workflow_events) AS events,(SELECT count(*)::int FROM workflow.workflow_hooks) AS hooks,(SELECT count(*)::int FROM workflow.workflow_runs) AS runs,(SELECT count(*)::int FROM workflow.workflow_steps) AS steps,(SELECT count(*)::int FROM workflow.workflow_stream_chunks) AS stream_chunks,(SELECT count(*)::int FROM workflow.workflow_waits) AS waits,(SELECT count(*)::int FROM graphile_worker._private_job_queues) AS queues,(SELECT count(*)::int FROM graphile_worker._private_jobs) AS jobs,(SELECT count(*)::int FROM graphile_worker._private_known_crontabs) AS crontabs,(SELECT count(*)::int FROM graphile_worker._private_tasks) AS tasks\");if(Object.values(empty.rows[0]).some(value=>value!==0))throw Error();}finally{client.release();}}finally{await runtime.end();}console.log('workflow-template-ready');\n")
+ workflow_acl_run=['docker','run','--rm','--user','0:0','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={offline_secrets},dst=/offline-secrets,readonly','--mount',f'type=bind,src={workflow_acl_setup},dst=/app/services/chief-of-staff/prepare-workflow-template-acls.mts,readonly']+workflow_helper_mount+['--workdir','/app/services/chief-of-staff','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'/app/services/chief-of-staff/prepare-workflow-template-acls.mts']
+ assert cmd(*workflow_acl_run).splitlines()[-1]=='workflow-template-ready','Pinned workflow template ACLs were not prepared'
+ assert cmd('docker','exec',name+'-db','psql','-X','-v','ON_ERROR_STOP=1','-U','proof','-d','proof','-c','ALTER DATABASE empty_workflow IS_TEMPLATE true')
+ provisioner_password=workflow_provisioner_password
+ clone_result=subprocess.run(['docker','exec','-e','PGPASSWORD='+provisioner_password,name+'-db','psql','-h','127.0.0.1','-U','lares_workflow_provisioner','-d','postgres','-v','ON_ERROR_STOP=1','-c','CREATE DATABASE workflowproof OWNER lares_workflow_owner TEMPLATE empty_workflow'],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=30)
+ assert clone_result.returncode==0,'Provisioner could not clone the verified workflow template'
+ workflow_clone_setup=root/'prepare-workflow-clone.mts'
+ workflow_clone_setup.write_text("import {readFileSync} from 'node:fs';\nimport {Pool} from 'pg';\nimport {applyWorkflowRuntimePrivileges,verifyWorkflowRuntimePrivileges} from '/app/services/box/lib/workflow-database-privileges.ts';\n"
+   "process.env.PGPASSWORD=readFileSync('/offline-secrets/workflow-provisioner-password','utf8');process.env.PGOPTIONS='-c role=lares_workflow_owner';const provisioner=new Pool({connectionString:'postgres://lares_workflow_provisioner@proof-db:5432/workflowproof',max:1});try{const client=await provisioner.connect();try{const id=await client.query('SELECT current_user,session_user,current_database()');if(id.rows[0]?.current_user!=='lares_workflow_owner'||id.rows[0]?.session_user!=='lares_workflow_provisioner'||id.rows[0]?.current_database!=='workflowproof')throw Error();await applyWorkflowRuntimePrivileges(client);}finally{client.release();}}finally{await provisioner.end();}delete process.env.PGOPTIONS;const runtime=new Pool({host:'proof-db',database:'workflowproof',user:'lares_workflow',password:readFileSync('/secrets/workflow-password','utf8'),max:1});try{const client=await runtime.connect();try{const id=await client.query('SELECT current_user,session_user');if(id.rows[0]?.current_user!=='lares_workflow'||id.rows[0]?.session_user!=='lares_workflow')throw Error();await verifyWorkflowRuntimePrivileges(client);}finally{client.release();}}finally{await runtime.end();}console.log('workflow-clone-ready');\n")
+ workflow_clone_run=['docker','run','--rm','--user','0:0','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={offline_secrets},dst=/offline-secrets,readonly','--mount',f'type=bind,src={workflow_clone_setup},dst=/app/services/chief-of-staff/prepare-workflow-clone.mts,readonly']+workflow_helper_mount+['--workdir','/app/services/chief-of-staff','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'/app/services/chief-of-staff/prepare-workflow-clone.mts']
+ assert cmd(*workflow_clone_run).splitlines()[-1]=='workflow-clone-ready','Cloned workflow database privileges or runtime identity were not verified'
+ workflow_auth_probe="""import{Client}from'pg';import{readFileSync}from'node:fs';
+async function check(passwordFile,expectedFailure){const client=new Client({host:'proof-db',port:5432,database:'workflowproof',user:'lares_workflow',password:readFileSync(passwordFile,'utf8'),connectionTimeoutMillis:3000});try{await client.connect();if(expectedFailure)throw new Error('invalid credential unexpectedly connected');const result=await client.query('SELECT current_user AS user');if(result.rows[0]?.user!=='lares_workflow')throw new Error('valid credential selected an unexpected identity');console.log('workflow-valid-credential:connected');}catch(error){if(expectedFailure&&error?.code==='28P01'){console.log('workflow-invalid-credential:28P01');return;}console.log('workflow-credential-probe:unexpected-'+String(error?.code??'no-code'));process.exitCode=1;}finally{await client.end().catch(()=>{});}}
+await check('/secrets/workflow-password',false);await check('/secrets/app-password',true);
+"""
+ workflow_auth=subprocess.run(['docker','run','--rm','--platform','linux/amd64','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--workdir','/app/services/chief-of-staff','--entrypoint','node',image,'--input-type=module','-e',workflow_auth_probe],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=20)
+ assert workflow_auth.returncode==0 and workflow_auth.stdout.strip().splitlines()[-2:]==['workflow-valid-credential:connected','workflow-invalid-credential:28P01'],'Workflow network-path credentials did not produce the expected PostgreSQL identities'
+ memory_access_probe = """import{Pool}from'pg';import{readFileSync}from'node:fs';
 import{ensureDreamTables,makeDreamStore}from'/app/services/chief-of-staff/lib/dream/store.ts';
 import{ensureObligationsTable,upsertSeen,dismissedThreads,dismissObligation}from'/app/services/chief-of-staff/lib/obligations-store.ts';
 import{makePgSeenStore}from'/app/services/chief-of-staff/lib/karakeep.ts';
 import{ensureRouteTables,makeRouteStore}from'/app/services/chief-of-staff/lib/route-store.ts';
-const db=new Pool({connectionString:process.env.MEMORY_PROOF_DATABASE_URL,max:1,connectionTimeoutMillis:3000});
-async function main(){try{
+const databaseUrl=new URL(process.env.MEMORY_PROOF_DATABASE_URL);
+const db=new Pool({host:databaseUrl.hostname,port:Number(databaseUrl.port||5432),database:decodeURIComponent(databaseUrl.pathname.slice(1)),user:decodeURIComponent(databaseUrl.username),password:readFileSync('/secrets/app-password','utf8'),max:1,connectionTimeoutMillis:3000});
+async function main(){let stage='role privileges';try{
 const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcreatedb,r.rolcreaterole,r.rolinherit,r.rolreplication,r.rolbypassrls,
  (SELECT count(*) FROM pg_auth_members m WHERE m.member=r.oid)::int AS memberships,
  has_schema_privilege(current_user,'public','USAGE') AS schema_usage,has_schema_privilege(current_user,'public','CREATE') AS schema_create,
@@ -119,33 +170,38 @@ const role=await db.query(`SELECT current_user,session_user,r.rolsuper,r.rolcrea
  has_table_privilege(current_user,'public.route_proposals','DELETE') AS route_delete,
  has_table_privilege(current_user,'public.route_proposals','TRUNCATE') AS route_truncate
  FROM pg_roles r WHERE r.rolname=current_user`);
-const identity=role.rows[0];if(!identity||identity.current_user!=='memory_probe_app'||identity.session_user!=='memory_probe_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
+stage='role identity constraints';const identity=role.rows[0];if(!identity||identity.current_user!=='lares_app'||identity.session_user!=='lares_app'||identity.rolsuper||identity.rolcreatedb||identity.rolcreaterole||identity.rolinherit||identity.rolreplication||identity.rolbypassrls||identity.memberships!==0||!identity.schema_usage||identity.schema_create)throw Error();
+stage='ordinary CRUD grants';
 for(const table of ['observation','preference','obligation'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
 for(const table of ['seen','cursor','route'])for(const action of ['read','insert','update','delete'])if(!identity[table+'_'+action])throw Error();
+stage='truncate denied';
 if(identity.observation_truncate||identity.preference_truncate||identity.obligation_truncate||identity.seen_truncate||identity.cursor_truncate||identity.route_truncate)throw Error();
+stage='memory schema readiness';
 await ensureDreamTables(db);await ensureObligationsTable(db);
+stage='dream observation and recurrence';
 const dream=makeDreamStore(db,'fixture-owner'),observation=await dream.record({text:'prefers concise status updates',kind:'preference',subject:'communication',confidence:0.5,evidenceRefs:[]},'runtime-image-proof','owner');
 if(observation.origin!=='owner'||observation.owner!=='fixture-owner'||await dream.ownerRecurrenceCount('PREFERS concise status updates!')!==1)throw Error();
-const old=await dream.addPreference({text:'prefers weekly updates',kind:'preference',subject:'communication',confidence:0.6,origin:'owner'});
+stage='preference lifecycle';const old=await dream.addPreference({text:'prefers weekly updates',kind:'preference',subject:'communication',confidence:0.6,origin:'owner'});
 const current=await dream.addPreference({text:'prefers brief weekly updates',kind:'preference',subject:'communication',confidence:0.8,origin:'owner'});
 await dream.supersede(old.id,current.id);const active=await dream.activePreferences();if(active.length!==1||active[0].id!==current.id||active[0].owner!=='fixture-owner')throw Error();
-const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
+stage='obligation write';const threadId='runtime-image-obligation-proof',now=new Date('2026-10-22T12:00:00Z'),obligation={threadId,subject:'fixture only',counterpartyName:'Fixture peer',counterpartyAddress:'peer@example.invalid',lastMessageAt:now,ageHours:2,isRePing:false,unansweredCount:1,source:'gmail'};
 await upsertSeen(db,obligation,now,'fixture-principal');if((await dismissedThreads(db)).has(threadId))throw Error();
-const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
-const seen=makePgSeenStore(db);await seen.ensure();if(await seen.isSeen('runtime-image-bookmark-proof'))throw Error();await seen.markSeen('runtime-image-bookmark-proof');await seen.markSeen('runtime-image-bookmark-proof');if(!await seen.isSeen('runtime-image-bookmark-proof'))throw Error();
-const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
+stage='obligation dismissal';const dismissal=await dismissObligation(db,threadId,now);if(!dismissal.dismissed||dismissal.counterpartyAddress!=='peer@example.invalid'||!(await dismissedThreads(db)).has(threadId))throw Error();
+stage='bookmark seen store';const seen=makePgSeenStore(db);await seen.ensure();if(await seen.isSeen('runtime-image-bookmark-proof'))throw Error();await seen.markSeen('runtime-image-bookmark-proof');await seen.markSeen('runtime-image-bookmark-proof');if(!await seen.isSeen('runtime-image-bookmark-proof'))throw Error();
+stage='route cursor';const routes=makeRouteStore(db);await ensureRouteTables(db);if(await routes.getCursor()!==null)throw Error();
 const cursor='2026-10-22T12:00:00.000Z';await routes.setCursor(cursor);if(await routes.getCursor()!==cursor)throw Error();
+stage='route proposal persistence';
 const proposalArgs={personId:'runtime-image-person-proof',opportunityId:'runtime-image-opportunity-proof',brand:'runtime-image-brand-proof',proposedStage:'QUALIFIED',signalRef:'runtime-image-signal-proof',confidence:0.75};
 if(await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
 const proposal=await routes.recordProposal(proposalArgs);if(!proposal.id||!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef})||!await routes.proposedSince({personId:proposalArgs.personId,brand:proposalArgs.brand,sinceIso:'2000-01-01T00:00:00.000Z'}))throw Error();
 await routes.markResolved(proposal.id,'skipped');if(!await routes.alreadyProposed({personId:proposalArgs.personId,signalRef:proposalArgs.signalRef}))throw Error();
-const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
+stage='memory row cleanup';const deleted=await db.query('DELETE FROM dream_observations WHERE id=$1',[observation.id]);if(deleted.rowCount!==1)throw Error();
 await db.query('DELETE FROM dream_preferences WHERE id=ANY($1::uuid[])',[[old.id,current.id]]);await db.query('DELETE FROM obligation_threads WHERE thread_id=$1',[threadId]);
-for(const ddl of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads','ALTER TABLE public.karakeep_seen ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.karakeep_seen','ALTER TABLE public.route_cursor ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_cursor','ALTER TABLE public.route_proposals ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_proposals']){let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
+for(const [index,ddl] of ['CREATE TABLE public.memory_probe_ddl (id integer)','ALTER TABLE public.dream_observations ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.dream_observations','TRUNCATE TABLE public.dream_preferences','TRUNCATE TABLE public.obligation_threads','ALTER TABLE public.karakeep_seen ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.karakeep_seen','ALTER TABLE public.route_cursor ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_cursor','ALTER TABLE public.route_proposals ADD COLUMN memory_probe_ddl integer','TRUNCATE TABLE public.route_proposals'].entries()){stage='denied DDL '+index;let denied=false;try{await db.query(ddl);}catch(error){denied=error?.code==='42501';}if(!denied)throw Error();}
 console.log('memory-schema-proof:complete');
-}catch{console.log('memory-schema-proof:failed');process.exitCode=1;}finally{await db.end();}}
+}catch(error){const code=typeof error?.code==='string'&&/^[0-9A-Z]{5}$/.test(error.code)?error.code:'none';console.log('memory-schema-proof:failed stage='+stage+' sqlstate='+code);process.exitCode=1;}finally{await db.end();}}
 void main();"""
- memory_access_output=cmd('docker','run','--rm','--network',name,'--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://memory_probe_app:disposable-memory-proof-only@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
+ memory_access_output=cmd('docker','run','--rm','--user','10001:10001','--network',name,'--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--workdir','/app/services/chief-of-staff','-e','MEMORY_PROOF_DATABASE_URL=postgresql://lares_app@proof-db:5432/proof','--entrypoint','/app/services/chief-of-staff/node_modules/.bin/tsx',image,'-e',memory_access_probe)
  assert memory_access_output=='memory-schema-proof:complete','Fresh migration schema failed the nonowner readiness and store proof'
  # Reapplying the fixed schema migration must retain the existing shared cursor and dedup rows.
  sql((repo/'services/box/sql/027_shared_sync_schema.sql').read_text())
@@ -220,20 +276,20 @@ void main();"""
  sql((repo/'services/box/sql/007_member_identity_sessions.sql').read_text())
  sql("DO $$ BEGIN IF (SELECT status FROM users WHERE id='admission-invited')<>'invited' OR (SELECT status FROM users WHERE id='admission-removed')<>'removed' OR (SELECT count(*) FROM member_provider_identities WHERE member_id='admission-owner')<>1 OR (SELECT token_hash FROM member_sessions WHERE id='admission-session')<>repeat('a',64) THEN RAISE EXCEPTION 'Member migration changed existing data'; END IF; END $$")
  sql("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,state,runtime_control_token,pending) VALUES('canary','172.30.0.99','proof','owned','11111111-1111-4111-8111-111111111111','ready','11111111-1111-4111-8111-111111111111',false)")
- env={'DATABASE_URL':'postgres://proof@proof-db/proof','WORKFLOW_POSTGRES_URL':'postgres://proof@proof-db/proof','DATABASE_PASSWORD_FILE':'/secrets/password','GATEWAY_URL':'http://host.docker.internal:'+str(server.server_port),'GATEWAY_KEY_FILE':'/secrets/gateway','EVE_ROUTE_PASSWORD_FILE':'/secrets/route','LARES_AGENT_NAME':'canary','LARES_DEFINITION_DIR':'/definition','LARES_AGENT_INCARNATION':'11111111-1111-4111-8111-111111111111','LARES_RUNTIME_CONTROL_SECRET_FILE':'/secrets/control','AGENT_OWNER_USER_ID':'fixture-owner','EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0'}
+ env={'DATABASE_URL':'postgres://lares_app@proof-db:5432/proof','WORKFLOW_POSTGRES_URL':'postgres://lares_workflow@proof-db:5432/workflowproof','DATABASE_PASSWORD_FILE':'/secrets/app-password','WORKFLOW_POSTGRES_PASSWORD_FILE':'/secrets/workflow-password','GATEWAY_URL':'http://host.docker.internal:'+str(server.server_port),'GATEWAY_KEY_FILE':'/secrets/gateway','EVE_ROUTE_PASSWORD_FILE':'/secrets/route','LARES_AGENT_NAME':'canary','LARES_DEFINITION_DIR':'/definition','LARES_AGENT_INCARNATION':'11111111-1111-4111-8111-111111111111','LARES_RUNTIME_CONTROL_SECRET_FILE':'/secrets/control','AGENT_OWNER_USER_ID':'fixture-owner','EVE_SCHEDULES_LIVE':'0','EVE_DIGEST_LIVE':'0','EVE_DREAM_LIVE':'0'}
  # The image refuses BEFORE it serves anything when a required setting is missing. One
  # throwaway container, no mounts, ~1 s: every name above except GATEWAY_URL, so the refusal has
  # to name exactly that one, exit 78 (EX_CONFIG) and print no secret.
  # The secrets are mounted exactly as below, so the *_FILE probe ([ -r ], [ -s ]) has to PASS on
  # them as user 10001 against a read-only bind mount — only GATEWAY_URL may be named.
  short=[x for k,v in env.items() if k!='GATEWAY_URL' for x in ('-e',k+'='+v)]
- refusal=subprocess.run(['docker','run','--rm','--platform','linux/amd64','--read-only','--user','10001:10001','--mount',f'type=bind,src={root}/secrets,dst=/secrets,readonly']+short+[image],capture_output=True,text=True,timeout=120)
+ refusal=subprocess.run(['docker','run','--rm','--platform','linux/amd64','--read-only','--user','10001:10001','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly']+short+[image],capture_output=True,text=True,timeout=120)
  said=refusal.stdout+refusal.stderr
  assert refusal.returncode==78,f'A missing required setting exited {refusal.returncode}, not 78 (EX_CONFIG): {said}'
  assert 'GATEWAY_URL' in refusal.stderr,f'The refusal did not name the missing setting: {said}'
  assert 'DATABASE_PASSWORD_FILE' not in said,f'The guard failed a secret file that is mounted and readable: {said}'
  assert 'disposable-fixture-only' not in said,'The refusal printed a secret'
- args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={root}/secrets,dst=/secrets,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
+ args=['docker','run','-d','--platform','linux/amd64','--name',name+'-runtime','--network',name,'--read-only','--user','10001:10001','--cap-drop','ALL','--security-opt','no-new-privileges:true','--tmpfs','/tmp:uid=10001,gid=10001,mode=1770','--tmpfs','/app/services/chief-of-staff/.eve/sandbox-cache:uid=10001,gid=10001,mode=0700,size=256m','--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m','--tmpfs','/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m','-p','127.0.0.1::3000','--mount',f'type=bind,src={root}/definition,dst=/definition,readonly','--mount',f'type=bind,src={runtime_secrets},dst=/secrets,readonly','--mount',f'type=bind,src={root}/blobs,dst=/app/services/chief-of-staff/.eve/.workflow-data']
  args+=['--mount',f'type=bind,src={root},dst=/probe,readonly']
  if sys.platform!='darwin':args+=['--add-host','host.docker.internal:host-gateway']
  for k,v in env.items():args+=['-e',k+'='+v]
@@ -278,7 +334,7 @@ void main();"""
  assert len(requests)>request_count,'No new model call for the interrupted turn after restart'
  wait_quiet('after the recovered turn')
  request_count=len(requests);fifth=turn(fourth);assert fifth['sessionId']==third['sessionId'];assert len(requests)>request_count,'Recovered conversation did not answer a new message'
- print(json.dumps({'status':'PASS','image':image,'turns':[first,second,third,fourth,fifth],'mountedPersonaReachedModel':True,'aliasPinnedAcrossRestart':True,'dynamicCatalogueAndSkillToolsRetainedAcrossRestart':True,'newSessionHonorsRemovedCatalogueGrant':True,'newSessionHonorsRemovedSkill':True,'newSessionReadsNewAliasAndDuties':True,'restartMidTurnRecovers':True,'gateway':'local Anthropic protocol fixture; no provider call','projection':sql('SELECT count(*) FROM agent_conversations'),'root':str(root)},indent=2))
+ print(json.dumps({'status':'PASS','mountedPersonaReachedModel':True,'aliasPinnedAcrossRestart':True,'dynamicCatalogueAndSkillToolsRetainedAcrossRestart':True,'newSessionHonorsRemovedCatalogueGrant':True,'newSessionHonorsRemovedSkill':True,'newSessionReadsNewAliasAndDuties':True,'restartMidTurnRecovers':True,'separateApplicationLogin':True,'applicationCredentialRejectedByWorkflow':True,'workflowSchemaPreparedOffline':True,'gatewayIsLocalFixture':True}))
 except Exception:
  logs=subprocess.run(['docker','logs',name+'-runtime'],capture_output=True,text=True)
  print((logs.stdout+logs.stderr)[-24000:],flush=True)
@@ -287,9 +343,11 @@ except Exception:
  # step, a job still locked by the dead process, and a ':backstop:' job ~860 s out are the
  # three fingerprints of a restart that landed inside a turn's finishing work.
  for q in ["SELECT id,name,status,created_at,updated_at FROM workflow.workflow_runs ORDER BY created_at","SELECT run_id,step_id,step_name,status,attempt,started_at,completed_at FROM workflow.workflow_steps WHERE status<>'completed' ORDER BY created_at","SELECT id,key,attempts,max_attempts,run_at,locked_at,locked_by,left(last_error,160) AS err,now() FROM graphile_worker.jobs ORDER BY id","SELECT run_id,type,correlation_id,created_at FROM workflow.workflow_events ORDER BY created_at DESC LIMIT 40"]:
-  r=subprocess.run(['docker','exec','-i',name+'-db','psql','-X','-U','proof','-d','proof','-c',q],capture_output=True,text=True);print(q+'\n'+r.stdout+r.stderr,flush=True)
+  r=subprocess.run(['docker','exec','-i',name+'-db','psql','-X','-U','proof','-d','workflowproof','-c',q],capture_output=True,text=True);print(q+'\n'+r.stdout+r.stderr,flush=True)
  raise
 finally:
  (root/'runtime.log').write_text(subprocess.run(['docker','logs',name+'-runtime'],capture_output=True,text=True).stdout+subprocess.run(['docker','logs',name+'-runtime'],capture_output=True,text=True).stderr)
  for n in ['runtime','db']:subprocess.run(['docker','rm','-f',name+'-'+n],capture_output=True)
- subprocess.run(['docker','network','rm',name],capture_output=True);server.shutdown();print('Probe artifacts:',root)
+ subprocess.run(['docker','network','rm',name],capture_output=True);server.shutdown()
+ shutil.rmtree(runtime_secrets,ignore_errors=True);shutil.rmtree(offline_secrets,ignore_errors=True)
+ print('Probe artifacts:',root)

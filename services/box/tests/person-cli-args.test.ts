@@ -13,8 +13,13 @@ describe("the erase and export commands accept pnpm's bare -- separator", () => 
   });
 
   it("export-person", () => {
-    const args = parseExport(["--", "fixture-owner", "--out", "/var/tmp/an-export"]);
-    expect(args).toMatchObject({ person: "fixture-owner" });
+    const args = parseExport(["--", "fixture-owner", "--out", "/var/tmp/an-export", "--operator-password-file", "/etc/lares/operator/database-password"]);
+    expect(args).toMatchObject({ person: "fixture-owner", operatorPasswordFile: "/etc/lares/operator/database-password" });
+  });
+
+  it("requires absolute offline operator paths", () => {
+    expect(() => parseErase(["fixture-owner", "--operator-password-file", "relative/password"])).toThrow(/absolute path/);
+    expect(() => parseExport(["fixture-owner", "--operator-password-file", "relative/password"])).toThrow(/absolute path/);
   });
 
   it("still refuses a flag neither command knows", () => {

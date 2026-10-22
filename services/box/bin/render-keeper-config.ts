@@ -50,7 +50,6 @@ const ARGUMENTS = [
   "subnet",
   "proxyAddress",
   "gatewayUrl",
-  "pgUser",
   "pgDatabase",
   "ownerId",
   "credentialAdministrator",
@@ -126,7 +125,6 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     backupDir: at("backupDir"),
     egressDir: at("egressDir"),
     secretsDir: at("secretsDir"),
-    pgUser: at("pgUser"),
     pgDatabase: at("pgDatabase"),
     gatewayUrl: at("gatewayUrl"),
     ownerId: at("ownerId"),
@@ -168,11 +166,15 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     `LARES_SOCKET_DIR=${at("socketDir")}`,
     `LARES_HOST_SOCKET_DIR=${at("hostSocketDir")}`,
     `LARES_EGRESS_DIR=${at("egressDir")}`,
-    // The keeper READS the database password itself, eagerly, before it serves anything
-    // (bin/keeper.ts → keeperPool → readFileSync), so the directory keeper.json points at has
-    // to be inside the container too. It is mounted read-only; this names the path, never a
-    // value.
-    `LARES_SECRETS_DIR=${at("secretsDir")}`,
+    // Only exact credential files consumed by the keeper are mounted. The database operator
+    // credential has a separate host-only directory and is never named here.
+    `LARES_DATABASE_PASSWORD_FILE=${join(at("secretsDir"), "database-password")}`,
+    `LARES_FINANCIAL_DATABASE_PASSWORD_FILE=${join(at("secretsDir"), "financial-database-password")}`,
+    `LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE=${join(at("secretsDir"), "workflow-provisioner-password")}`,
+    `LARES_WORKFLOW_RUNTIME_PASSWORD_FILE=${join(at("secretsDir"), "workflow-password")}`,
+    `LARES_GATEWAY_MASTER_KEY_FILE=${join(at("secretsDir"), "gateway-master-key")}`,
+    `LARES_EVE_ROUTE_PASSWORD_FILE=${join(at("secretsDir"), "eve-route-password")}`,
+    `LARES_VAULT_SIGNING_KEY_FILE=${join(at("secretsDir"), "console-vault-signing-key")}`,
     `LARES_PROXY_ADDRESS=${at("proxyAddress")}`,
     `LARES_NETWORK=${at("network")}`,
     "",

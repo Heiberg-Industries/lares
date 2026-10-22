@@ -95,3 +95,41 @@ engine_run() {
   docker "${docker_args[@]:0:4}" --user "$runtime_user" "${docker_args[@]:4}" --entrypoint /app/services/box/node_modules/.bin/tsx \
     "$ENGINE_IMAGE" "/app/services/box/$script" "$@"
 }
+
+# operator_db_run COMPOSE_ARGS... -- PROGRAM ARGS...
+# Run a PostgreSQL client in a short-lived database image with the host-only offline operator
+# secret mounted only into that disposable client. The ordinary database container never gets
+# this mount. The secret value is read inside the disposable container, not put in host argv,
+# Compose values, or logs. Compose's db image supplies the matching client tools.
+operator_db_run() {
+  local operator_file="${LARES_OPERATOR_PASSWORD_FILE:-${LARES_PREFIX:-}/etc/lares/operator/database-password}"
+  local image_json image timeout_seconds="${OPERATOR_DB_TIMEOUT:-}"
+  local -a compose_args=() program=() docker_args=()
+  while [ "$#" -gt 0 ] && [ "$1" != -- ]; do compose_args+=("$1"); shift; done
+  [ "$#" -gt 0 ] || { echo "operator_db_run: no PostgreSQL command was named" >&2; return 64; }
+  shift
+  program=("$@")
+  [ "${#program[@]}" -gt 0 ] || { echo "operator_db_run: no PostgreSQL command was named" >&2; return 64; }
+  [ -f "$operator_file" ] && [ ! -L "$operator_file" ] && [ -s "$operator_file" ] \
+    || { echo "operator_db_run: offline operator credential is missing or unsafe; refusing database access" >&2; return 78; }
+  [ "$(stat -c '%u:%a' "$operator_file" 2>/dev/null || true)" = 0:600 ] \
+    || { echo "operator_db_run: offline operator credential must be root-owned mode 0600" >&2; return 78; }
+  if [ -n "$timeout_seconds" ]; then
+    [[ "$timeout_seconds" =~ ^[1-9][0-9]*$ ]] && command -v timeout >/dev/null 2>&1 \
+      || { echo "operator_db_run: requested timeout is invalid or unavailable" >&2; return 64; }
+  fi
+  if [ -n "$timeout_seconds" ]; then
+    image_json=$(timeout "$timeout_seconds" docker compose "${compose_args[@]}" config --format json) \
+      || { echo "operator_db_run: database Compose configuration could not be read" >&2; return 1; }
+  else
+    image_json=$(docker compose "${compose_args[@]}" config --format json) \
+    || { echo "operator_db_run: database Compose configuration could not be read" >&2; return 1; }
+  fi
+  image=$(printf '%s' "$image_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["db"]["image"])') \
+    || { echo "operator_db_run: database image could not be resolved" >&2; return 1; }
+  docker_args=(run --rm -i --network host --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+    -v "$operator_file:/run/secrets/database-operator:ro" \
+    -e PGPASSWORD_FILE=/run/secrets/database-operator -e PGHOST=127.0.0.1 -e PGPORT="${PGPORT:-5432}" -e PGUSER=lares_operator \
+    --entrypoint /bin/sh "$image" -ec 'export PGPASSWORD="$(cat "$PGPASSWORD_FILE")"; unset PGPASSWORD_FILE; exec "$@"' sh "${program[@]}")
+  if [ -n "$timeout_seconds" ]; then timeout "$timeout_seconds" docker "${docker_args[@]}"; else docker "${docker_args[@]}"; fi
+}

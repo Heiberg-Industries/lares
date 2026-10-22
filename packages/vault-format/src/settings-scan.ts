@@ -191,6 +191,8 @@ export const READ_INDIRECTLY: Readonly<Record<string, string>> = {
   // start.sh's guard and exported as PGPASSWORD by the same script — no TypeScript in this
   // repo ever names it.
   DATABASE_PASSWORD_FILE: "start.sh's own ${VAR:?...} guard in images/agent-runtime/start.sh",
+  WORKFLOW_POSTGRES_PASSWORD_FILE: "start.sh's workflow URL builder reads this file path through its Node bootstrap in images/agent-runtime/start.sh",
+  PGPASSWORD: "start.sh exports the application password for the role process in images/agent-runtime/start.sh",
   // The neutral stack's own containers (gateway, caddy) are shell/Caddyfile-only,
   // the same shape as DATABASE_PASSWORD_FILE above — no TypeScript in this repo reads them.
   MODEL_PROVIDER_KEY_FILE: "the gateway container's own ${VAR:?...} guard in images/gateway-runtime/start.sh",

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { parse } from "yaml";
 import { denylistPatterns } from "./helpers/denylist.js";
-import { renderStackCompose } from "../lib/stack-compose.js";
+import { renderDatabaseBootstrapCompose, renderStackCompose } from "../lib/stack-compose.js";
 import { optionalRegularFile } from "../bin/render-stack.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
@@ -30,7 +30,6 @@ const OPTS = {
   ownerId: "fixture-owner",
   ownerHomeTz: "Europe/Berlin",
   modelAlias: "lares-brain",
-  pgUser: "lares",
   pgDatabase: "lares_state",
   deadlineCalendarFile: null,
 };
@@ -90,11 +89,11 @@ describe("the generated stack compose file", () => {
     }
   });
 
-  it("mounts the database password under the name agents already use, never the other spelling", () => {
+  it("keeps operator credentials out of the normal database service", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.secrets["database-password"].file).toBe("/etc/lares/secrets/database-password");
-    expect(doc.services.db.environment.POSTGRES_PASSWORD_FILE).toBe("/run/secrets/database-password");
-    expect(doc.services.db.secrets).toContain("database-password");
+    expect(doc.services.db.environment).toBeUndefined();
+    expect(doc.services.db.secrets).toBeUndefined();
   });
 
   it("gives the console every secret it actually reads, or it cannot reach the database or an account", () => {
@@ -104,7 +103,7 @@ describe("the generated stack compose file", () => {
     expect(env.PGPASSWORD_FILE).toBe("/run/secrets/database-password");
     expect(env.PGHOST).toBe("db");
     expect(env.PGDATABASE).toBe(OPTS.pgDatabase);
-    expect(env.PGUSER).toBe(OPTS.pgUser);
+    expect(env.PGUSER).toBe("lares_app");
     expect(env.LARES_CONFIGURED_MODEL_ALIAS).toBe(OPTS.modelAlias);
     expect(env.CONSOLE_ALLOWED_EMAILS).toBe(OPTS.consoleAllowedEmails);
     expect(env.AGENT_OWNER_USER_ID).toBe(OPTS.ownerId);
@@ -225,15 +224,28 @@ describe("the generated stack compose file", () => {
     const env = doc.services["lares-gateway"].environment;
     expect(env.MODEL_PROVIDER_KEY_FILE).toBe("/run/secrets/model-provider-key");
     expect(env.GATEWAY_MASTER_KEY_FILE).toBe("/run/secrets/gateway-master-key");
-    expect(env.DATABASE_PASSWORD_FILE).toBe("/run/secrets/database-password");
+    expect(env.DATABASE_PASSWORD_FILE).toBe("/run/secrets/gateway-database-password");
     expect(env.PGHOST).toBe("db");
     expect(env.PGPORT).toBe("5432");
     expect(env.PGDATABASE).toBe("litellm");
-    expect(env.PGUSER).toBe(OPTS.pgUser);
+    expect(env.PGUSER).toBe("lares_gateway");
     expect(env.DATABASE_URL).toBeUndefined();
     expect(doc.services["lares-gateway"].secrets).toEqual(
-      expect.arrayContaining(["model-provider-key", "gateway-master-key", "database-password"]),
+      expect.arrayContaining(["model-provider-key", "gateway-master-key", "gateway-database-password"]),
     );
     expect(doc.services["lares-gateway"].depends_on).toContain("db");
+  });
+
+  it("renders a database-only bootstrap with the host-only operator file and no application services", () => {
+    const doc = parse(renderDatabaseBootstrapCompose(MANIFEST, {
+      operatorPasswordFile: "/etc/lares/operator/database-password",
+      dbDataDir: OPTS.dbDataDir,
+      network: OPTS.network,
+      subnet: OPTS.subnet,
+    })) as any;
+    expect(Object.keys(doc.services)).toEqual(["db"]);
+    expect(doc.services.db.environment.POSTGRES_USER).toBe("lares_operator");
+    expect(doc.services.db.environment.POSTGRES_PASSWORD_FILE).toBe("/run/secrets/operator-password");
+    expect(doc.secrets["operator-password"].file).toBe("/etc/lares/operator/database-password");
   });
 });

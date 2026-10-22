@@ -36,6 +36,7 @@ let composeDir: string;
 let composeFile: string;
 let release: string;
 let log: string;
+let operatorPasswordFile: string;
 
 /** A release the fixture installation can actually apply: both images match a running service. */
 function goodRelease(breaking: string[] = []) {
@@ -84,10 +85,14 @@ beforeEach(() => {
   release = join(dir, "release.json");
   writeFileSync(release, goodRelease());
   log = join(dir, "calls.log");
+  operatorPasswordFile = join(dir, "operator-password");
+  writeFileSync(operatorPasswordFile, "test-only-operator-password\n", { mode: 0o600 });
 
   // Every stub logs its own argv, one call per line, to the one shared log — the order of
   // those lines IS the property most of these tests are about.
   const logLine = 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"';
+
+  stub("stat", "echo 0:600");
 
   // docker: dispatches on shape the way the real CLI answers different subcommands.
   //  - `... psql ... -tAc ...`  -> the backup_status row the test staged
@@ -178,6 +183,7 @@ function run(args: string[], env: Record<string, string> = {}) {
         DB_COMPOSE_DIR: composeDir,
         UPDATE_COMPOSE_FILES: "compose.yaml",
         LARES_UPDATE_RECORDER: join(binDir, "record"),
+        LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
         ...env,
       },
       encoding: "utf8",
@@ -562,9 +568,14 @@ describe("updating a box whose engine is an image", () => {
     const secrets = join(prefix, "etc", "lares", "secrets");
     const dbRuns = engineRuns().filter((l) => !/update-record\.ts release/.test(l));
     expect(dbRuns).toHaveLength(4);
-    for (const line of dbRuns) {
+    const migration = dbRuns.find((line) => /migrate\.ts/.test(line))!;
+    expect(migration).toContain(`-v ${operatorPasswordFile}:${operatorPasswordFile}:ro`);
+    expect(migration).toContain(`-e DATABASE_PASSWORD_FILE=${operatorPasswordFile}`);
+    expect(migration).not.toContain("PGPASSWORD");
+    for (const line of dbRuns.filter((line) => !/migrate\.ts/.test(line))) {
       expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
-      expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+      expect(line).toContain(`-v ${secrets}/database-password:${secrets}/database-password:ro`);
+      expect(line).not.toContain(operatorPasswordFile);
       expect(line).not.toContain("PGPASSWORD");
     }
     // The release file is mounted read-only, at the same path inside.

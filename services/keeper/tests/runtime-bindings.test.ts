@@ -12,7 +12,7 @@ const roots:string[]=[];
 const root=()=>{const d=mkdtempSync(join(tmpdir(),'lares-bindings-'));roots.push(d);return d;};
 afterEach(()=>roots.splice(0).forEach(d=>rmSync(d,{recursive:true,force:true})));
 const image='node@sha256:'+'a'.repeat(64);
-const agent:AgentContainer={name:'writer',role:'creative',address:'172.18.0.24',doors:[],runtime:{databaseUrl:'postgres://u@db/domain',workflowUrl:'postgres://u@db/workflow',gatewayUrl:'https://gateway.example.test',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/etc/secrets/key',passwordFile:'/etc/secrets/password'}};
+const agent:AgentContainer={name:'writer',role:'creative',address:'172.18.0.24',doors:[],runtime:{databaseUrl:'postgres://lares_app@db/domain',workflowUrl:'postgres://lares_workflow@db/workflow',gatewayUrl:'https://gateway.example.test',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/etc/secrets/key',passwordFile:'/etc/secrets/password',workflowPasswordFile:'/etc/secrets/workflow-password'}};
 const opts={network:'test_network',imageByRole:{creative:image,'chief-of-staff':image},agentsDir:'/srv/agents',secretsDir:'/etc/secrets',modelPrefix:'lares'};
 const binding=(source:string,readOnly=false):RuntimeBindings=>({role:'creative',environment:{ATLAS_PATH:'/srv/atlas'},mounts:[{source,target:'/srv/atlas',readOnly}],secrets:{NOTION_TOKEN_FILE:'/etc/secrets/notion'}});
 

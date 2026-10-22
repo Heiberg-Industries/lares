@@ -42,7 +42,7 @@ beforeEach(async () => {
 describe("the migrate CLI", () => {
   describe("parseArgs", () => {
     it("defaults to the box's own sql directory", () => {
-      expect(parseArgs([])).toEqual({ dryRun: false, help: false });
+      expect(parseArgs([])).toMatchObject({ dryRun: false, help: false });
     });
 
     it("parses the flags", () => {

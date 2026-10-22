@@ -135,11 +135,11 @@ cmd_doctor() {
   . "$OPS/engine-run.sh"
   BOX_DIR="$CUR/services/box"
   engine_resolve_image "$CUR/release.json" || die "this release has no engine image recorded ($BOX_DIR/engine-image). Run get-lares.sh again. Nothing was changed." "$EX_USAGE"
-  local secrets="$PREFIX/etc/lares/secrets"
-  engine_run --ro "$secrets" \
-    --env "DATABASE_PASSWORD_FILE=$secrets/database-password" \
+  local database_password_file="$PREFIX/etc/lares/secrets/database-password"
+  engine_run --ro "$database_password_file" \
+    --env "DATABASE_PASSWORD_FILE=$database_password_file" \
     --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}" \
-    --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=${PGUSER:-lares}" \
+    --env "PGDATABASE=${PGDATABASE:-lares_state}" --env "PGUSER=lares_app" \
     bin/doctor.ts "$@"
 }
 

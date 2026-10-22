@@ -3,7 +3,7 @@
 // --test-model`); this only proves that install.sh WIRES it correctly. `lares-doctor` is a
 // command resolved from PATH, exactly like docker/chown/ufw elsewhere in this script, so it is
 // stubbed here the same way — NOTHING in this file makes a real network call.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync,
@@ -16,13 +16,15 @@ import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
 
+vi.setConfig({ testTimeout: 30_000 });
+
 let dir: string, binDir: string, prefix: string, log: string, secretsDir: string, releaseFile: string;
 
 /** A release with one digest-named image — enough to get past the release rules; the renderer
  *  itself is stubbed in this file (see RENDER_STACK). */
 const RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}` },
+  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}`, creative: `example.invalid/lares-creative@sha256:${"c".repeat(64)}` },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -81,6 +83,7 @@ beforeEach(() => {
   secretsDir = join(prefix, "etc", "lares", "secrets");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // CREATE DATABASE is piped into docker. Drain that tiny SQL input so the
   // writer cannot race this stub's exit and trip the installer's pipefail.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');

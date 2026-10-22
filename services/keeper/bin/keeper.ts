@@ -22,7 +22,7 @@ import { GitBackup } from "../lib/git-backup.js";
 import { readSetting } from "../lib/settings.js";
 import { ownedDocker } from "../lib/docker.js";
 import { AgentLifecycle } from "../lib/lifecycle.js";
-import { keeperPool, loadKeeperConfig } from "../lib/config.js";
+import { keeperFinancialPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     let nativeCustody:BudgetNativeCustodyStore|undefined;
     let pool!:ReturnType<typeof keeperPool>;
     let vaultPool:ReturnType<typeof keeperPool>|undefined;
-    let budgetPool!:ReturnType<typeof keeperPool>;
+    let financialPool:ReturnType<typeof keeperPool>|undefined;
     let admin:ReturnType<typeof keeperPool>|undefined;
     const stops: Array<() => Promise<void>> = [];
     let financialJournal:HostFinancialJournal|undefined;
@@ -59,8 +59,8 @@ async function main(): Promise<void> {
     vaultPool?.on('error',()=>{});
     // Independent bounded pool: a slow machine RPC cannot queue behind human actions or
     // occupy their connections. HTTP deadlines never authorize a late allow.
-    budgetPool=keeperPool(config.db,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
-    budgetPool.on('error',()=>{});
+    financialPool=keeperFinancialPool(config,{max:2,connectionTimeoutMillis:500,query_timeout:1750,options:'-c statement_timeout=1500 -c lock_timeout=750 -c idle_in_transaction_session_timeout=2500'});
+    financialPool?.on('error',()=>{});
     admin=config.lifecycle?keeperPool(config.lifecycle.adminDb):undefined;
     const docker=config.lifecycle?ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}):undefined;
     // Verify native custody before creating the optional vault runtime directory or
@@ -73,6 +73,7 @@ async function main(): Promise<void> {
         console.warn("keeper: Vault reader unavailable until its dedicated runtime directory is repaired");
     }
     const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir},docker):undefined;
+    if(lifecycle)await lifecycle.storage.verifyReadyDatabases();
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
     const managed = config.credentials?.prepared === true;
@@ -85,9 +86,10 @@ async function main(): Promise<void> {
         // Native custody is opened and verified before the journal or any action can mutate
         // source rows or files. An unbound leftover is recovery, never an empty legacy store.
         if(config.budgetFinancial){
+            if(!financialPool)throw new Error('Financial database credentials unavailable');
             financialJournal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
             // The startup observer is owned/released before sockets become reachable.
-            const db=await budgetPool.connect();
+            const db=await financialPool.connect();
             try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
         }
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
@@ -103,9 +105,10 @@ async function main(): Promise<void> {
             ?`${result.remaining} native key cleanup item(s) remain`:'native key cleanup blocked; inspection is required'});
         registerAction({name:'budget.provision-accounts',hostOnly:true,input:budgetAccountProvisionPlanSchema,secretFields:['memberIds'],run:async input=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
-            return provisionBudgetAccounts(budgetPool,financialJournal,input);
+            if(!financialPool||!financialJournal)throw new Error('Financial custody is not configured');
+            return provisionBudgetAccounts(financialPool,financialJournal,input);
         },successDetail:result=>`closed unreconciled accounts provisioned for ${result.members} members`});
-        registerMemberRemovalAction({pool:budgetPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
+        if(financialPool)registerMemberRemovalAction({pool:financialPool,journal:financialJournal,designatedOwnerId:config.designatedOwnerId,nativeCustody});
         registerDefinitionActions({
             namespaceGuard, administrator: config.credentials?.administrator,
             pool, agentsDir: config.agentsDir, retiredDir: config.retiredDir, secretsDir: config.secretsDir,
@@ -138,7 +141,7 @@ async function main(): Promise<void> {
         registerOutsideToolActions({ pool, agentsDir: config.agentsDir, secretsDir: config.secretsDir });
         stops.push(await serve({ socket: "/run/lares/keeper.sock", host: false, context }));
         stops.push(await serve({ socket: "/run/lares-host/keeper.sock", host: true, context }));
-        stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(budgetPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
+        if(financialPool)stops.push(await serveGatewayBudget({socket:'/run/lares/gateway-budget.sock',authority:productionGatewayBudgetAuthority(financialPool,config.gatewayBudget?.serviceKeyFile,financialJournal)}));
         // Vault is optional for older installations: missing custody removes only its dedicated
         // reader sockets and never prevents unrelated conversations or Keeper actions.
         if (vaultPool) {
@@ -155,7 +158,7 @@ async function main(): Promise<void> {
         await Promise.allSettled(stops.map(stop=>stop()));
         try{await nativeCustody?.drainForShutdown();}catch{}
         try{await financialJournal?.drainForShutdown();}catch{}
-        await Promise.allSettled([pool?.end(),vaultPool?.end(),budgetPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
+        await Promise.allSettled([pool?.end(),vaultPool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
         try{nativeCustody?.close();}catch{}
         try{financialJournal?.close();}catch{}
         throw new Error("keeper: startup failed");
@@ -171,7 +174,7 @@ async function main(): Promise<void> {
         for(const stop of stops)try{await stop();}catch(error){failures.push(error);}
         try{await nativeCustody?.drainForShutdown();}catch(error){failures.push(error);}
         try{await financialJournal?.drainForShutdown();}catch(error){failures.push(error);}
-        const pools=[pool.end(),vaultPool?.end(),budgetPool.end(),admin?.end()].filter(Boolean) as Promise<void>[];
+        const pools=[pool.end(),vaultPool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
         for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
         try{nativeCustody?.close();}catch(error){failures.push(error);}
         try{financialJournal?.close();}catch(error){failures.push(error);}

@@ -17,7 +17,7 @@
 // this output is handing somebody a copy of everything about them, and is not necessarily a
 // developer. `main` never throws.
 
-import { poolFromEnv } from "../lib/db.js";
+import { operatorPoolFromFile } from "../lib/db.js";
 import { exportPerson, renderExportReport } from "../lib/export-person.js";
 import type { Pool } from "pg";
 
@@ -26,10 +26,11 @@ export interface ParsedExportArgs {
   outDir?: string;
   help: boolean;
   vaults: string[];
+  operatorPasswordFile?: string;
 }
 
 const HELP_TEXT = [
-  "pnpm -C services/box run export-person -- <who> --out <dir> [--vault <path> ...] [--help]",
+  "pnpm -C services/box run export-person -- <who> --out <dir> --operator-password-file <path> [--vault <path> ...] [--help]",
   "",
   "Writes out everything this installation holds about one of its members: one file per place in",
   "the database, plus their notes from every vault given, plus a manifest. Saved sign-ins are",
@@ -40,6 +41,8 @@ const HELP_TEXT = [
   "                 not already have anything in it.",
   "  --vault <path> A vault to also read, on this filesystem. Repeatable. Without at least one, no",
   "                 notes are read at all, and the report says so.",
+  "  --operator-password-file <path>  Required absolute path to the protected host-only database",
+  "                 operator credential. It is used only for this offline export command.",
   "  --help         Show this message.",
   "",
   "Exit codes:",
@@ -54,6 +57,7 @@ export function parseArgs(argv: readonly string[]): ParsedExportArgs {
   let outDir: string | undefined;
   let help = false;
   const vaults: string[] = [];
+  let operatorPasswordFile: string | undefined;
 
   const valueAfter = (argv_: readonly string[], i: number, flag: string, example: string): string => {
     const value = argv_[i + 1];
@@ -74,9 +78,14 @@ export function parseArgs(argv: readonly string[]): ParsedExportArgs {
     } else if (arg === "--vault") {
       vaults.push(valueAfter(argv, i, "--vault", "/srv/brain"));
       i += 1;
+    } else if (arg === "--operator-password-file") {
+      const value = valueAfter(argv, i, "--operator-password-file", "/etc/lares/operator/database-password");
+      if (!value.startsWith("/")) throw new Error("export-person: --operator-password-file must be an absolute path");
+      operatorPasswordFile = value;
+      i += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(
-        `export-person: unknown flag "${arg}". Known flags: --out · --vault · --help`,
+        `export-person: unknown flag "${arg}". Known flags: --out · --vault · --operator-password-file · --help`,
       );
     } else if (person === undefined) person = arg;
     else {
@@ -92,6 +101,7 @@ export function parseArgs(argv: readonly string[]): ParsedExportArgs {
     ...(outDir !== undefined ? { outDir } : {}),
     help,
     vaults,
+    ...(operatorPasswordFile !== undefined ? { operatorPasswordFile } : {}),
   };
 }
 
@@ -145,15 +155,25 @@ export async function main(
 }
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
-  const db = poolFromEnv();
-  main(process.argv.slice(2), { db, out: (s) => process.stdout.write(s + "\n") })
-    .then(async (code) => {
-      await db.end();
-      process.exit(code);
-    })
-    .catch(async (err) => {
-      process.stdout.write(messageOf(err) + "\n");
-      await db.end().catch(() => undefined);
-      process.exit(1);
-    });
+  const argv=process.argv.slice(2);
+  let parsed:ParsedExportArgs;
+  try { parsed=parseArgs(argv); }
+  catch(err) { process.stdout.write(messageOf(err)+"\n");process.exit(1); }
+  if(parsed.help){
+    main(argv,{db:{} as Pool,out:(s)=>process.stdout.write(s+"\n")}).then(code=>process.exit(code));
+  }else if(!parsed.operatorPasswordFile){
+    process.stdout.write("export-person: --operator-password-file <absolute-path> is required for offline database access. Nothing was written.\n");
+    process.exit(1);
+  }else{
+    void (async()=>{
+      let db:Pool|undefined;
+      try{
+        const {loadKeeperConfig}=await import('../../keeper/lib/config.js');
+        const config=loadKeeperConfig();
+        db=await operatorPoolFromFile(parsed.operatorPasswordFile!,config.db);
+        process.exitCode=await main(argv,{db,out:(s)=>process.stdout.write(s+"\n")});
+      }catch(err){process.stdout.write(messageOf(err)+"\n");process.exitCode=1;}
+      finally{await db?.end().catch(()=>undefined);}
+    })();
+  }
 }

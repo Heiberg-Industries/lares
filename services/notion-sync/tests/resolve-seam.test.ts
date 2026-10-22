@@ -54,7 +54,21 @@ let tdb: TestDb;
 let db: Pool;
 let root: string;
 let vaultPath: string;
-let prevEnv: Record<string, string | undefined>;
+let prevEnv: Record<string, string | undefined> = {};
+let cleanupPasswordFile: (() => Promise<void>) | undefined;
+
+async function setTestDatabasePasswordFile(connectionString: string): Promise<() => Promise<void>> {
+  const dir = await mkdtemp(join(tmpdir(), "notion-sync-resolve-db-secret-"));
+  const passwordFile = join(dir, "database-password");
+  await writeFile(passwordFile, `${decodeURIComponent(new URL(connectionString).password)}\n`, { mode: 0o600 });
+  const previous = process.env.DATABASE_PASSWORD_FILE;
+  process.env.DATABASE_PASSWORD_FILE = passwordFile;
+  return async () => {
+    if (previous === undefined) delete process.env.DATABASE_PASSWORD_FILE;
+    else process.env.DATABASE_PASSWORD_FILE = previous;
+    await rm(dir, { recursive: true, force: true });
+  };
+}
 
 function git(...args: string[]): string {
   return execFileSync("git", ["-C", vaultPath, ...args]).toString().trim();
@@ -63,6 +77,7 @@ function git(...args: string[]): string {
 beforeAll(async () => {
   tdb = await startTestDb();
   db = tdb.pool;
+  cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
 
   // A real clone with a real remote: apply writes the vault through
   // makeVaultWriter, which takes the fleet's note lock and commits + pushes.
@@ -98,6 +113,7 @@ beforeAll(async () => {
     PGDATABASE: process.env.PGDATABASE,
     PGUSER: process.env.PGUSER,
     PGPASSWORD: process.env.PGPASSWORD,
+    DATABASE_PASSWORD_FILE: process.env.DATABASE_PASSWORD_FILE,
     NOTION_SYNC_CONFIG: process.env.NOTION_SYNC_CONFIG,
     NOTION_TOKEN: process.env.NOTION_TOKEN,
   };
@@ -115,6 +131,7 @@ afterAll(async () => {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
+  await cleanupPasswordFile?.();
   await rm(root, { recursive: true, force: true });
   await tdb?.stop();
 });

@@ -43,6 +43,7 @@ export interface AgentContainer {
         schedulesLive?: boolean;
         gatewayKeyFile: string;
         passwordFile: string;
+        workflowPasswordFile: string;
         endpoints?: Record<string, string>;
     };
 }
@@ -79,14 +80,14 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         addresses.add(a.address);
         const r = a.runtime;
         const bindings = bindingsFor(a.role, a.bindings);
-        for (const value of [r.databaseUrl, r.workflowUrl]) {
+        for (const [value, username] of [[r.databaseUrl, 'lares_app'], [r.workflowUrl, 'lares_workflow']] as const) {
             const u = new URL(value);
-            if (!['postgres:', 'postgresql:'].includes(u.protocol) || u.password || !u.pathname.slice(1))
-                throw new Error('Explicit password-free database URL required');
+            if (!['postgres:', 'postgresql:'].includes(u.protocol) || decodeURIComponent(u.username) !== username || u.password || !u.pathname.slice(1) || [...u.searchParams.keys()].some(key=>/pass|secret/i.test(key)))
+                throw new Error('Explicit password-free database URL for the designated login required');
         }
         if (!/^https?:$/.test(new URL(r.gatewayUrl).protocol) || !/^http:$/.test(new URL(r.proxyUrl).protocol))
             throw new Error('Invalid gateway/proxy URL');
-        const environment: Record<string, string> = { LARES_DEFINITION_DIR: '/definition', LARES_AGENT_NAME: a.name, DATABASE_URL: r.databaseUrl, WORKFLOW_POSTGRES_URL: r.workflowUrl, GATEWAY_URL: r.gatewayUrl, LARES_MODEL_PREFIX: opts.modelPrefix, GATEWAY_KEY_FILE: '/run/secrets/gateway-key', DATABASE_PASSWORD_FILE: '/run/secrets/database-password', HTTPS_PROXY: r.proxyUrl, HTTP_PROXY: r.proxyUrl, SLACK_PROXY_URL: r.proxyUrl, TELEGRAM_PROXY_URL: r.proxyUrl, EGRESS_PROXY_URL: r.proxyUrl, EVE_SCHEDULES_LIVE: r.schedulesLive === true ? '1' : '0' };
+        const environment: Record<string, string> = { LARES_DEFINITION_DIR: '/definition', LARES_AGENT_NAME: a.name, DATABASE_URL: r.databaseUrl, WORKFLOW_POSTGRES_URL: r.workflowUrl, WORKFLOW_POSTGRES_PASSWORD_FILE: '/run/secrets/workflow-password', GATEWAY_URL: r.gatewayUrl, LARES_MODEL_PREFIX: opts.modelPrefix, GATEWAY_KEY_FILE: '/run/secrets/gateway-key', DATABASE_PASSWORD_FILE: '/run/secrets/database-password', HTTPS_PROXY: r.proxyUrl, HTTP_PROXY: r.proxyUrl, SLACK_PROXY_URL: r.proxyUrl, TELEGRAM_PROXY_URL: r.proxyUrl, EGRESS_PROXY_URL: r.proxyUrl, EVE_SCHEDULES_LIVE: r.schedulesLive === true ? '1' : '0' };
         Object.assign(environment, bindings?.environment);
         if (bindings?.secrets.LANGFUSE_KEY_FILE) environment.LANGFUSE_PROXY_URL = r.proxyUrl;
         for (const [key, value] of Object.entries(r.endpoints ?? {})) {
@@ -195,6 +196,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
                 environment.SLACK_TOKEN_PRINCIPAL_ID = bindings.ownerId;
         }
         secret(`${a.name}-database-password`, r.passwordFile, 'database-password');
+        secret(`${a.name}-workflow-password`, r.workflowPasswordFile, 'workflow-password');
         for (const door of a.doors)
             if (door.enabled) {
                 if (!ROLE_DOORS[a.role]?.includes(door.kind)) throw new Error('Role does not support this door');

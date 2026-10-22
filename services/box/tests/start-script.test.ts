@@ -16,6 +16,7 @@ const FULL = () => ({
   DATABASE_URL: "postgres://proof@db/proof",
   WORKFLOW_POSTGRES_URL: "postgres://proof@db/proof",
   DATABASE_PASSWORD_FILE: join(secrets, "database-password"),
+  WORKFLOW_POSTGRES_PASSWORD_FILE: join(secrets, "workflow-password"),
   GATEWAY_URL: "http://gateway:4000",
   GATEWAY_KEY_FILE: join(secrets, "gateway-key"),
   LARES_AGENT_NAME: "helper",
@@ -40,12 +41,13 @@ beforeEach(() => {
   binDir = join(dir, "bin"); mkdirSync(binDir);
   secrets = join(dir, "secrets"); mkdirSync(secrets);
   mkdirSync(join(dir, "definition"));
-  writeFileSync(join(secrets, "database-password"), "disposable-fixture-only\n");
-  writeFileSync(join(secrets, "gateway-key"), "disposable-fixture-only\n");
+  writeFileSync(join(secrets, "database-password"), "app-fixture-password\n");
+  writeFileSync(join(secrets, "workflow-password"), "workflow-fixture-password\n");
+  writeFileSync(join(secrets, "gateway-key"), "gateway-fixture-key\n");
   eveLog = join(dir, "eve.log");
   mkdirSync(join(dir, "node_modules", ".bin"), { recursive: true });
   const eve = join(dir, "node_modules", ".bin", "eve");
-  writeFileSync(eve, `#!/bin/sh\nprintf '%s\\n' "$@" >> "${eveLog}"\nexit 0\n`);
+  writeFileSync(eve, `#!/bin/sh\nprintf 'PGPASSWORD=%s\\nWORKFLOW_POSTGRES_URL=%s\\n' "$PGPASSWORD" "$WORKFLOW_POSTGRES_URL" >> "${eveLog}"\nprintf '%s\\n' "$@" >> "${eveLog}"\nexit 0\n`);
   chmodSync(eve, 0o755);
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -54,7 +56,11 @@ describe("the runtime image's start script", () => {
   it("starts eve when every required setting is there", () => {
     const r = run(FULL());
     expect(r.code).toBe(0);
-    expect(readFileSync(eveLog, "utf8")).toContain("start");
+    const log = readFileSync(eveLog, "utf8");
+    expect(log).toContain("start");
+    expect(log).toContain("PGPASSWORD=app-fixture-password");
+    expect(log).toContain("WORKFLOW_POSTGRES_URL=postgres://proof:workflow-fixture-password@db/proof");
+    expect(log).not.toContain("gateway-fixture-key");
   });
 
   it("refuses with 78 and one line per missing setting, naming no value", () => {
@@ -67,7 +73,8 @@ describe("the runtime image's start script", () => {
     expect(r.stderr).toContain("GATEWAY_URL");
     expect(r.stderr).toContain("LARES_AGENT_NAME");
     expect(r.stderr).not.toContain("postgres://proof@db/proof");
-    expect(r.stderr).not.toContain("disposable-fixture-only");
+    expect(r.stderr).not.toContain("app-fixture-password");
+    expect(r.stderr).not.toContain("workflow-fixture-password");
   });
 
   it("still refuses when a secret file is unreadable, and says which PATH, not its contents", () => {
@@ -94,7 +101,8 @@ describe("the runtime image's start script", () => {
     expect(r.code).toBe(78);
     expect(existsSync(eveLog)).toBe(false);
     expect(r.stderr).toContain("empty-key");
-    expect(r.stderr).not.toContain("disposable-fixture-only");
+    expect(r.stderr).not.toContain("app-fixture-password");
+    expect(r.stderr).not.toContain("workflow-fixture-password");
     expect(r.stderr).not.toMatch(/\b(23|24) bytes\b/);
   });
 

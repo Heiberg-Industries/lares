@@ -66,12 +66,14 @@ VAULT_STORAGE_PRESENT=0
 VAULT_STORAGE_PATHS=()
 vault_storage_unlock() { :; }
 VAULT_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/vault-storage.sh"
+ENGINE_HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/engine-run.sh"
 if [ -r "$VAULT_HELPER" ]; then
   . "$VAULT_HELPER"
   vault_storage_load "${LARES_PREFIX:-}" || exit 1
 elif [ -e "${LARES_PREFIX:-}/srv/vault" ] || [ -e "${LARES_PREFIX:-}/var/lib/lares-vault-git" ] || [ -e "${LARES_PREFIX:-}/srv/lares/installation/vault-storage.json" ]; then
   echo 'vault storage: recovery helper missing; refusing an incomplete operation' >&2; exit 1
 fi
+[ -r "$ENGINE_HELPER" ] && . "$ENGINE_HELPER"
 
 if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
   for path in "${VAULT_STORAGE_PATHS[@]}" "${LARES_PREFIX:-}/srv/lares/installation"; do
@@ -147,25 +149,23 @@ echo "export: working in $WORKDIR" >&2
 if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify-files; vault_storage_lock; vault_storage_load "${LARES_PREFIX:-}"; fi
 if declare -F vault_storage_verify >/dev/null; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify; fi
 
-# --- 1. Postgres: roles + every database, through the db container -----------------------
-# Exactly backup.sh:49-94's technique, copied rather than shared: read the database
-# list first, dump each one with </dev/null, and assert every dump landed non-empty.
+# --- 1. Postgres: roles + every database, through a disposable operator client ------------
+# This is an offline operator action. Its protected credential is mounted only into the
+# temporary PostgreSQL client, never into the long-running database container.
 COMPOSE=(-f "$EXPORT_COMPOSE_FILE")
-dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
+operator_db() { operator_db_run "${COMPOSE[@]}" -- "$@"; }
+DB_USER=lares_operator
 
-# The role this installation uses. Same overridable name ops/install.sh, ops/update.sh and
-# lib/db.ts read, with the same default — an installation that kept an older role name
-# sets PGUSER in this script's environment. See §3.
-DB_USER="${PGUSER:-lares}"
+operator_db pg_isready -U "$DB_USER" >/dev/null || { echo "export: postgres unreachable — refusing an incomplete export" >&2; exit 1; }
 
-dc pg_isready -U "$DB_USER" >/dev/null || { echo "export: postgres unreachable — refusing an incomplete export" >&2; exit 1; }
+# Role password hashes are credentials too; this archive carries role definitions only.
+operator_db pg_dumpall -U "$DB_USER" -l postgres --globals-only --no-role-passwords > "$WORKDIR/globals.sql"
 
-dc pg_dumpall -U "$DB_USER" -l postgres --globals-only > "$WORKDIR/globals.sql"
-
-# THE DATABASE LIST IS READ FIRST, NOT PIPED INTO THE LOOP. `dc` is `docker compose
-# exec`, which consumes stdin even with -T, so piping the list into a while-read loop
-# would dump only the first database and silently skip the rest (an earlier failure of backup.sh). `</dev/null` on the dump call is the belt to that braces.
-DBS=$(dc psql -U "$DB_USER" -d postgres -tAc \
+# THE DATABASE LIST IS READ FIRST, NOT PIPED INTO THE LOOP. `operator_db` runs a disposable
+# client with `-i`, which consumes stdin, so piping the list into a while-read loop would dump
+# only the first database and silently skip the rest (an earlier failure of backup.sh).
+# `</dev/null` on the dump call is the belt to that braces.
+DBS=$(operator_db psql -U "$DB_USER" -d postgres -tAc \
   "SELECT datname FROM pg_database WHERE datistemplate=false")
 [ -n "$DBS" ] || { echo "export: postgres returned NO databases — refusing an incomplete export" >&2; exit 1; }
 
@@ -173,7 +173,7 @@ EXPECTED=0
 for db in $DBS; do
   [ -n "$db" ] || continue
   EXPECTED=$((EXPECTED + 1))
-  dc pg_dump -U "$DB_USER" --format=custom "$db" > "$WORKDIR/${db}.dump" </dev/null
+  operator_db pg_dump -U "$DB_USER" --create --format=custom "$db" > "$WORKDIR/${db}.dump" </dev/null
 done
 
 # All of them, non-empty — the same assertion backup.sh makes, for the same reason:

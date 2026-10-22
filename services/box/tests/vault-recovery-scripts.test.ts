@@ -12,8 +12,9 @@ beforeEach(() => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'vault-recovery-scripts-')));
     bin = join(root, 'bin');
     mkdirSync(bin);
-    for (const dir of ['ops', 'etc/lares/secrets', 'srv/lares/agents', 'srv/lares/retired', 'srv/lares/installation', 'srv/taste', 'opt/lares', 'var/backups', 'export', 'tmp'])
+    for (const dir of ['ops', 'etc/lares/secrets', 'etc/lares/operator', 'srv/lares/agents', 'srv/lares/retired', 'srv/lares/installation', 'srv/taste', 'opt/lares', 'var/backups', 'export', 'tmp'])
         mkdirSync(join(root, dir), { recursive: true });
+    writeFileSync(join(root, 'etc/lares/operator/database-password'), 'fixture-only-operator-password\n', { mode: 0o600 });
     writeFileSync(join(root, 'srv/taste/taste.md'), 'unchanged taste canary');
     writeFileSync(join(root, 'opt/lares/compose.yaml'), 'services: {}\n');
     const ids = [randomUUID(), randomUUID()];
@@ -41,15 +42,16 @@ beforeEach(() => {
     writeFileSync(join(root, 'opt/lares/vault-recovery-engine-image'), image);
     const verify = join(root, 'verify.mts');
     writeFileSync(verify, `import {loadVaultStorageInventory,verifyVaultStorageFiles} from ${JSON.stringify(new URL('../lib/vault-storage.ts', import.meta.url).href)};const options={prefix:process.argv[2],rootUid:process.getuid(),originPrefix:''};verifyVaultStorageFiles(loadVaultStorageInventory(options),options);`);
-    stub('docker', `case "$*" in *bin/vault-storage.ts*) exec "$VERIFY_RUNNER" "$VERIFY_SCRIPT" "$LARES_PREFIX";; esac\ncase "$*" in *pg_isready*) exit 0;; *pg_dumpall*) echo '-- fixture roles';; *pg_dump*) python3 -c 'print("x"*2048)';; *psql*) printf 'lares_state\\npostgres\\n';; esac`);
-    stub('stat', `python3 -c 'import os,sys;print(os.stat(sys.argv[-1]).st_size)' "$@"`);
+    stub('docker', `printf '%s\\n' "$*" >> "$DOCKER_CALLS"\ncase "$*" in *bin/vault-storage.ts*) exec "$VERIFY_RUNNER" "$VERIFY_SCRIPT" "$LARES_PREFIX";; *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16-alpine"}}}\\n'; exit 0;; esac\ncase "$*" in *pg_isready*) exit 0;; *pg_dumpall*) echo '-- fixture roles';; *pg_dump*) python3 -c 'print("x"*2048)';; *psql*) printf 'lares_state\\npostgres\\n';; esac`);
+    stub('stat', `python3 -c 'import os,sys;a=sys.argv[1:];print("0:600" if len(a)>2 and a[-2]=="%u:%a" and a[-1].endswith("/etc/lares/operator/database-password") else os.stat(a[-1]).st_size)' "$@"`);
     stub('restic', `python3 - <<'PYCAPTURE'\nimport os,tarfile\nr=os.environ['LARES_PREFIX']\nwith tarfile.open(r+'/backup-capture.tar','w') as t:\n for p in ['srv/vault','var/lib/lares-vault-git','srv/lares/installation','srv/taste']:\n  t.add(r+'/'+p,arcname=p,filter=lambda info:None if info.name.endswith('/.git/lares-vault.lock') else info)\nPYCAPTURE`);
     const key = join(root, 'identity');
     execFileSync('age-keygen', ['-o', key], { stdio: 'pipe' });
     const recipient = execFileSync('age-keygen', ['-y', key], { encoding: 'utf8' }).trim();
     const config = join(root, 'backup.env');
     writeFileSync(config, `LARES_CURRENT_LAYOUT=1\nRESTIC_REPOSITORY=fixture\nRESTIC_PASSWORD_FILE=/dev/null\nAGE_SECRETS_RECIPIENT=${recipient}\n`);
-    env = { ...process.env, LARES_PREFIX: root, LARES_ENGINE_IMAGE: image, AGENT_BOX_BACKUP_ENV: config, AGENT_BOX_EXPORT_ENV: config, PATH: bin + ':' + process.env.PATH, VERIFY_RUNNER: resolve('node_modules/.bin/tsx'), VERIFY_SCRIPT: verify, EXPORT_VAULT_PATHS: '', EXPORT_DATA_PATHS: join(root, 'srv/taste'), EXPORT_DIR: join(root, 'export'), EXPORT_WORKDIR_ROOT: join(root, 'tmp'), EXPORT_COMPOSE_FILE: join(root, 'opt/lares/compose.yaml') };
+    env = { ...process.env, LARES_PREFIX: root, LARES_ENGINE_IMAGE: image, AGENT_BOX_BACKUP_ENV: config, AGENT_BOX_EXPORT_ENV: config, DOCKER_CALLS: join(root, 'docker-calls.log'), PATH: bin + ':' + process.env.PATH, VERIFY_RUNNER: resolve('node_modules/.bin/tsx'), VERIFY_SCRIPT: verify, EXPORT_VAULT_PATHS: '', EXPORT_DATA_PATHS: join(root, 'srv/taste'), EXPORT_DIR: join(root, 'export'), EXPORT_WORKDIR_ROOT: join(root, 'tmp'), EXPORT_COMPOSE_FILE: join(root, 'opt/lares/compose.yaml') };
+    writeFileSync(env.DOCKER_CALLS!, '');
     for (const name of ['vault-storage.sh', 'engine-run.sh'])
         cpSync(resolve('ops', name), join(root, 'ops', name));
     let backup = readFileSync(resolve('ops/backup.sh'), 'utf8');
@@ -68,6 +70,9 @@ it('backs up both full working trees, local bare repositories and inventory whil
     expect(existsSync(join(root, 'srv', a.relativePath, '.git/lares-vault.lock'))).toBe(false); });
 it('adds managed stores to an export even with custom data paths, including working-only content', () => {
     execFileSync('bash', [resolve('ops/export.sh')], { env, stdio: 'pipe' });
+    const vaultCalls = readFileSync(env.DOCKER_CALLS!, 'utf8').split('\n').filter(line => line.includes('bin/vault-storage.ts'));
+    expect(vaultCalls.some(line => line.includes(`-v ${join(root, 'etc/lares/secrets/database-password')}:${join(root, 'etc/lares/secrets/database-password')}:ro`) && line.includes('-e PGUSER=lares_app'))).toBe(true);
+    expect(vaultCalls.every(line => !line.includes(`${join(root, 'etc/lares/secrets')}:${join(root, 'etc/lares/secrets')}:ro`))).toBe(true);
     const out = join(root, 'export', readdirSync(join(root, 'export'))[0]), folder = join(root, 'export-contents');
     mkdirSync(folder);
     execFileSync('tar', ['-xf', out, '-C', folder]);

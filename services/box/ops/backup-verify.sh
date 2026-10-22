@@ -85,12 +85,11 @@ else
   DB_COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/agent-box}"
   COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml")
 fi
-# The database and role this installation uses. Same overridable names ops/install.sh,
-# ops/update.sh and lib/db.ts read, with the same defaults — an installation that kept the
-# installation-specific database and role names sets PGDATABASE and PGUSER in this script's
-# environment. See §3.
-DB_USER="${PGUSER:-lares}"
+# Verification reads databases, global role state and the backup ledger as the explicit offline operator.
+DB_USER=lares_operator
 DB_NAME="${PGDATABASE:-lares_state}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/engine-run.sh"
 
 # A database this script cannot reach is a FAILED check, and the failure names what it
 # tried. Both psql reads below used to discard stderr and the exit code, so an
@@ -163,15 +162,13 @@ SQL
   # Bounded to 20s when `timeout` exists (the server has it; some Mac dev shells do
   # not) — a hung docker/db must never hang the script itself, only this bookkeeping.
   if command -v timeout >/dev/null 2>&1; then
-    if printf '%s\n' "$sql" | timeout 20 docker compose "${COMPOSE[@]}" \
-          exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    if printf '%s\n' "$sql" | OPERATOR_DB_TIMEOUT=20 operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
     fi
   else
-    if printf '%s\n' "$sql" | docker compose "${COMPOSE[@]}" \
-          exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    if printf '%s\n' "$sql" | operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
@@ -327,7 +324,7 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
 else
   DB_QUERY="SELECT datname FROM pg_database WHERE datistemplate=false AND datname<>'postgres'"
 fi
-if DBS=$(docker compose "${COMPOSE[@]}" exec -T db psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY" 2>"$DB_ERR_FILE"); then
+if DBS=$(operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d postgres -tAc "$DB_QUERY" 2>"$DB_ERR_FILE"); then
   DBS=$(printf '%s' "$DBS" | tr -d '\r' | sed '/^$/d')
 else
   fail "$(db_unreachable_msg postgres), so the snapshot's database coverage cannot be verified — treat an unreachable check as failing, never as passing"
@@ -410,12 +407,10 @@ DRILL_ROW_SQL="SELECT ok, (last_pass_at IS NULL), floor(extract(epoch from now()
 # Two branches rather than an optional-argument array: bash 3.2 on the Mac treats an empty
 # array as unbound under `set -u`.
 if command -v timeout >/dev/null 2>&1; then
-  DRILL_ROW=$(timeout 20 docker compose "${COMPOSE[@]}" \
-        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
+  DRILL_ROW=$(OPERATOR_DB_TIMEOUT=20 operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
     || fail "$(db_unreachable_msg "$DB_NAME") while reading the restore-drill status — treat an unreachable check as failing, never as passing"
 else
-  DRILL_ROW=$(docker compose "${COMPOSE[@]}" \
-        exec -T db psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
+  DRILL_ROW=$(operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -tAc "$DRILL_ROW_SQL" 2>"$DB_ERR_FILE") \
     || fail "$(db_unreachable_msg "$DB_NAME") while reading the restore-drill status — treat an unreachable check as failing, never as passing"
 fi
 DRILL_ROW=$(printf '%s' "$DRILL_ROW" | tr -d '\r' | sed '/^$/d')

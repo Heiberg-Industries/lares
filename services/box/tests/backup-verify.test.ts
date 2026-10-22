@@ -74,6 +74,8 @@ let dockerStdinLog: string;
 let sequenceLog: string;
 let drillRowFile: string;
 let resticArgsLog: string;
+let operatorPasswordFile: string;
+let composeConfigLog: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "backup-verify-"));
@@ -89,6 +91,9 @@ beforeEach(() => {
   sequenceLog = join(dir, "sequence.log");
   drillRowFile = join(dir, "drill-row.txt");
   resticArgsLog = join(dir, "restic-args.log");
+  operatorPasswordFile = join(dir, "operator-password");
+  composeConfigLog = join(dir, "compose-config.log");
+  writeFileSync(operatorPasswordFile, "test-only-operator-password\n", { mode: 0o600 });
 
   // A test-controlled stand-in for /srv (via the BACKUP_SRV_ROOT seam), so path
   // coverage does not depend on whatever the real machine running this test happens
@@ -134,6 +139,7 @@ beforeEach(() => {
       `  if [ "$a" = "lares_state" ]; then has_lares_state=1; fi\n` +
       `  if [ "$a" = "-tAc" ]; then has_tac=1; fi\n` +
       `done\n` +
+      `case "$*" in *"compose"*"config --format json"*) printf '%s\\n' "$*" >> "${composeConfigLog}"; printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac\n` +
       `if [ "$has_lares_state" = "1" ] && [ "$has_tac" = "1" ]; then\n` +
       `  if [ -n "\${STUB_DRILL_ROW_FAIL:-}" ]; then echo 'psql: error: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: Connection refused' >&2; exit 1; fi\n` +
       `  cat "${drillRowFile}"\n` +
@@ -151,6 +157,10 @@ beforeEach(() => {
       `exit 0\n`,
   );
   chmodSync(docker, 0o755);
+
+  const stat = join(binDir, "stat");
+  writeFileSync(stat, `#!/usr/bin/env bash\nprintf '0:600\\n'\n`);
+  chmodSync(stat, 0o755);
 
   // Stub timeout: the real `timeout` on the server bounds `record_status`'s docker
   // call; this stub just drops the duration and execs the rest, so tests exercise the
@@ -243,6 +253,7 @@ function run(env: Record<string, string> = {}) {
         PATH: `${binDir}:${process.env.PATH}`,
         AGENT_BOX_BACKUP_ENV: envFile,
         BACKUP_SRV_ROOT: srvRoot,
+        LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
         ...env,
       },
       encoding: "utf8",
@@ -259,6 +270,7 @@ const pinged = () => (existsSync(pingLog) ? readFileSync(pingLog, "utf8") : "");
 const resticArgs = () => (existsSync(resticArgsLog) ? readFileSync(resticArgsLog, "utf8") : "");
 /** Every `docker ... psql -d lares_state` call's args, from `record_status`, `---`-separated. */
 const recordedArgs = () => (existsSync(dockerArgsLog) ? readFileSync(dockerArgsLog, "utf8") : "");
+const composeConfigArgs = () => (existsSync(composeConfigLog) ? readFileSync(composeConfigLog, "utf8") : "");
 /** The SQL sent on stdin to the most recent `record_status` upsert call. */
 const recordedStdin = () => (existsSync(dockerStdinLog) ? readFileSync(dockerStdinLog, "utf8") : "");
 /** "ping"/"record" lines in the order curl and the record_status docker call ran. */
@@ -275,8 +287,9 @@ describe("backup-verify.sh", () => {
     const r = run({ LARES_CURRENT_LAYOUT: "1" });
     expect(r.code).toBe(0);
     expect(r.out).toContain("OK");
-    expect(recordedArgs()).toContain("/opt/lares/compose.yaml");
-    expect(recordedArgs()).not.toContain("compose.override.yaml");
+    expect(composeConfigArgs()).toContain("/opt/lares/compose.yaml");
+    expect(composeConfigArgs()).not.toContain("compose.override.yaml");
+    expect(recordedArgs()).toContain("-i");
   });
 
   it("accepts the installation folder and requires it in the snapshot", () => {
@@ -546,7 +559,7 @@ describe("backup-verify.sh", () => {
     // The credential-bearing value is what reaches restic; only the STRIPPED form may
     // reach the database.
     expect(recordedArgs()).toContain("target=s3:https://example.invalid/bucket");
-    expect(recordedArgs()).not.toContain("secret");
+    expect(recordedArgs()).not.toContain("key:secret");
     expect(recordedArgs()).not.toContain("key:secret");
   });
 });

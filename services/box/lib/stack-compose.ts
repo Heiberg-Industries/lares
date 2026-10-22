@@ -47,13 +47,20 @@ export interface StackComposeOptions {
   readonly ownerHomeTz: string;
   /** The only purpose alias the on-box gateway config actually defines. */
   readonly modelAlias: string;
-  readonly pgUser: string;
   readonly pgDatabase: string;
   /** Host path of the installation's deadline calendar when the file exists, else null. When
    *  set, the console gets the file read-only at the same path the engine documents and
    *  `DEADLINE_CALENDAR_FILE` naming it; the setting alone would point at a file the container
    *  cannot see. Never a directory mount: Docker would invent a missing source. */
   readonly deadlineCalendarFile: string | null;
+}
+
+export interface DatabaseBootstrapComposeOptions {
+  /** Absolute root-only credential path, outside every container's ordinary mounts. */
+  readonly operatorPasswordFile: string;
+  readonly dbDataDir: string;
+  readonly network: string;
+  readonly subnet: string;
 }
 
 /** Where the deadline calendar sits inside the console container (docs/install.md, section 7). */
@@ -80,12 +87,6 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     db: {
       image: imageFor(manifest, "db"),
       restart: "unless-stopped",
-      environment: {
-        POSTGRES_DB: opts.pgDatabase,
-        POSTGRES_USER: opts.pgUser,
-        POSTGRES_PASSWORD_FILE: "/run/secrets/database-password",
-      },
-      secrets: ["database-password"],
       volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
       ports: ["127.0.0.1:5432:5432"],
       networks: [opts.network],
@@ -129,7 +130,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         PGHOST: "db",
         PGPORT: "5432",
         PGDATABASE: opts.pgDatabase,
-        PGUSER: opts.pgUser,
+        PGUSER: "lares_app",
         PGPASSWORD_FILE: "/run/secrets/database-password",
         NODE_ENV: "production",
         ...(opts.deadlineCalendarFile ? { DEADLINE_CALENDAR_FILE: DEADLINE_CALENDAR_IN_CONTAINER } : {}),
@@ -143,12 +144,9 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // The installer runs on the host and proves one model completion before migrations.
       // Keep this diagnostic route private to the host; agents use the Compose service name.
       ports: ["127.0.0.1:4000:4000"],
-      // Virtual keys are persisted by LiteLLM, not represented in config.yaml. The gateway
-      // therefore needs its own database and the same file-only database credential discipline
-      // as every other service in this stack. install.sh creates the `litellm` database before
-      // it starts this service; the entrypoint turns these non-secret coordinates plus the
-      // mounted password file into DATABASE_URL without ever putting the password in Compose.
-      secrets: ["gateway-key", "gateway-master-key", "model-provider-key", "database-password"],
+      // Virtual keys are persisted by LiteLLM, not represented in config.yaml. The gateway has
+      // its own login and password file; it never receives the app or operator credentials.
+      secrets: ["gateway-key", "gateway-master-key", "model-provider-key", "gateway-database-password"],
       volumes: [
         `${opts.gatewayConfigFile}:/etc/litellm/config.yaml:ro`,
         `${opts.gatewayStartScript}:${startScriptInContainer}:ro`,
@@ -205,11 +203,11 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         // The paths mirror the on-disk secret names exactly, as every other service's do.
         MODEL_PROVIDER_KEY_FILE: "/run/secrets/model-provider-key",
         GATEWAY_MASTER_KEY_FILE: "/run/secrets/gateway-master-key",
-        DATABASE_PASSWORD_FILE: "/run/secrets/database-password",
+        DATABASE_PASSWORD_FILE: "/run/secrets/gateway-database-password",
         PGHOST: "db",
         PGPORT: "5432",
         PGDATABASE: "litellm",
-        PGUSER: opts.pgUser,
+        PGUSER: "lares_gateway",
       },
       depends_on: ["db"],
       networks: [opts.network],
@@ -238,6 +236,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     "gateway-key": secret("gateway-key"),
     "gateway-master-key": secret("gateway-master-key"),
     "model-provider-key": secret("model-provider-key"),
+    "gateway-database-password": secret("gateway-database-password"),
     "token-enc-key": secret("token-enc-key"),
   };
 
@@ -254,5 +253,36 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     },
   };
 
+  return stringify({ services, secrets, networks });
+}
+
+/** One-shot first-init stack. install.sh removes this container before starting the normal
+ *  stack, whose database service has no operator secret mount. */
+export function renderDatabaseBootstrapCompose(manifest: ReleaseManifest, opts: DatabaseBootstrapComposeOptions): string {
+  if (!isAbsolute(opts.operatorPasswordFile) || /[\n\r\0]/.test(opts.operatorPasswordFile))
+    throw new Error("Database operator password path must be absolute");
+  const services = {
+    db: {
+      image: imageFor(manifest, "db"),
+      restart: "unless-stopped",
+      environment: {
+        POSTGRES_DB: "postgres",
+        POSTGRES_USER: "lares_operator",
+        POSTGRES_PASSWORD_FILE: "/run/secrets/operator-password",
+      },
+      secrets: ["operator-password"],
+      volumes: [`${opts.dbDataDir}:/var/lib/postgresql/data`],
+      ports: ["127.0.0.1:5432:5432"],
+      networks: [opts.network],
+    },
+  };
+  const secrets = { "operator-password": { file: opts.operatorPasswordFile } };
+  const networks = {
+    [opts.network]: {
+      name: opts.network,
+      driver: "bridge",
+      ipam: { config: [{ subnet: opts.subnet }] },
+    },
+  };
   return stringify({ services, secrets, networks });
 }

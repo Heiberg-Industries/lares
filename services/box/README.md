@@ -56,7 +56,7 @@ repository. Each takes `--help` or documents itself in its file header.
 | `pnpm -C services/box installation-settings` | Write the two settings the first-agent page needs (model alias prefix, agent ceiling) if they are missing; never overwrites. |
 | `pnpm -C services/box render-stack` | Render `/opt/lares/compose.yaml` from a release file. |
 | `pnpm -C services/box render-keeper-config` | Render `/etc/lares/keeper.json` from a release file. |
-| `pnpm -C services/box export-person -- <who> --out <dir>` | Export what the installation holds about one member. Read-only. |
+| `pnpm -C services/box export-person -- <who> --out <dir> --operator-password-file <absolute-path>` | Export what the installation holds about one member. Read-only; uses an explicit host-only offline operator credential. |
 | `pnpm -C services/box erase-person -- <who>` | Practice-run one person erasure. Applying requires root on Linux and existing prepared financial custody; see [erasing a person](../../docs/how-to/erasing-a-person.md). |
 
 ### `lares doctor`

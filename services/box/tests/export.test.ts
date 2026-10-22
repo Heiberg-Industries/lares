@@ -38,6 +38,9 @@ let dataLares: string;
 let dataTaste: string;
 let exportDir: string;
 let workdirRoot: string;
+let prefix: string;
+let operatorPasswordFile: string;
+let dockerLog: string;
 
 function git(cwd: string, ...args: string[]) {
   execFileSync("git", ["-C", cwd, ...args], { stdio: "pipe" });
@@ -69,10 +72,14 @@ import sys
 a = sys.argv
 dbs = ${JSON.stringify(dbs)}
 fail_db = ${JSON.stringify(failDb ?? "")}
-if "pg_isready" in a:
+with open(${JSON.stringify(dockerLog)}, "a") as log:
+    log.write(" ".join(a[1:]) + "\\n")
+if a[1:3] == ["compose", "-f"] and "config" in a:
+    print('{"services":{"db":{"image":"postgres:16-alpine"}}}')
+elif "pg_isready" in a:
     sys.exit(0)
 elif "pg_dumpall" in a:
-    print("-- fixture roles")
+    print("-- fixture role definitions; hashes excluded")
 elif "pg_dump" in a:
     db = a[-1]
     if fail_db and db == fail_db:
@@ -90,6 +97,9 @@ function baseEnv(overrides: Record<string, string> = {}) {
   return {
     ...process.env,
     PATH: binDir + ":" + process.env.PATH,
+    LARES_PREFIX: prefix,
+    LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+    DOCKER_LOG: dockerLog,
     AGENT_BOX_EXPORT_ENV: envFile,
     EXPORT_VAULT_PATHS: `${vault1} ${vault2}`,
     EXPORT_DATA_PATHS: `${dataLares} ${dataTaste}`,
@@ -127,6 +137,13 @@ beforeEach(() => {
   exportDir = join(dir, "export-out");
   workdirRoot = join(dir, "workdir-root");
   mkdirSync(workdirRoot, { recursive: true });
+  prefix = join(dir, "prefix");
+  operatorPasswordFile = join(prefix, "etc", "lares", "operator", "database-password");
+  mkdirSync(dirname(operatorPasswordFile), { recursive: true });
+  writeFileSync(operatorPasswordFile, "offline-fixture-operator-password\n", { mode: 0o600 });
+  dockerLog = join(dir, "docker.log");
+  writeFileSync(dockerLog, "");
+  writeFileSync(join(binDir, "stat"), `#!/bin/sh\nif [ "$3" = "${operatorPasswordFile}" ]; then printf '0:600\\n'; else exec /usr/bin/stat "$@"; fi\n`, { mode: 0o755 });
 
   // No settings are actually needed from the sourced file in these tests (everything
   // is passed as real env vars instead, exactly what AGENT_BOX_EXPORT_ENV would set
@@ -141,6 +158,14 @@ it("produces one archive with a dump per database, both vault bundles, both data
   writeDockerStub(["dbone", "dbtwo"]);
   const result = spawnSync("bash", [SCRIPT], { env: baseEnv(), encoding: "utf8" });
   expect(result.status).toBe(0);
+  const calls = readFileSync(dockerLog, "utf8");
+  expect(calls).toContain(`-v ${operatorPasswordFile}:/run/secrets/database-operator:ro`);
+  expect(calls).toContain("pg_dumpall -U lares_operator -l postgres --globals-only --no-role-passwords");
+  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom dbone");
+  expect(calls).toContain("pg_dump -U lares_operator --create --format=custom dbtwo");
+  expect(calls).toContain("run --rm -i --network host");
+  expect(calls).not.toContain("compose exec");
+  expect(calls).not.toContain("/etc/lares/secrets:");
 
   const finalPath = join(exportDir, `lares-export-${todayUTC()}.tar`);
   expect(existsSync(finalPath)).toBe(true);
@@ -162,6 +187,7 @@ it("produces one archive with a dump per database, both vault bundles, both data
   const extractDir = mkdtempSync(join(tmpdir(), "export-extract-"));
   roots.push(extractDir);
   execFileSync("tar", ["-xf", finalPath, "-C", extractDir]);
+  expect(readFileSync(join(extractDir, "globals.sql"), "utf8")).not.toMatch(/password|md5|scram/i);
   const manifest = JSON.parse(readFileSync(join(extractDir, "manifest.json"), "utf8"));
   expect(manifest.engineVersion).toBe("9.9.9-fixture");
   expect(typeof manifest.date).toBe("string");

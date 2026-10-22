@@ -51,8 +51,8 @@ const secret = (n: string) => { const p = join(dirs.secrets!, n); writeFileSync(
 const config: any = {
   network: 'lar98-net', subnet: '172.30.0.0/24', reservedAddresses: [], composeFile: join(root, 'compose.agents.yaml'), egressDir: dirs.egress,
   imageByRole: { 'chief-of-staff': image, creative: image }, proxyContainer: 'lares-egress-proxy', squidImage: image, firewallImage: image,
-  adminDb: { host: 'db', port: 5432, user: 'lares', database: 'lares_state', passwordFile: '/secret' }, workflowTemplate: 'lares_workflow_template', workflowOwner: 'lares',
-  runtime: { schedulesLive: false, databaseUrl: 'postgres://lares@db/lares_state', workflowServer: 'postgres://lares@db/', gatewayUrl: 'https://gateway.example.test', proxyUrl: 'http://proxy:8888', passwordFile: secret('db'),
+  adminDb: { host: 'db', port: 5432, user: 'lares_workflow_provisioner', database: 'postgres', passwordFile: '/secret' }, workflowTemplate: 'lares_workflow_template', workflowOwner: 'lares_workflow_owner',
+  runtime: { schedulesLive: false, databaseUrl: 'postgres://lares_app@db/lares_state', workflowServer: 'postgres://lares_workflow@db/', gatewayUrl: 'https://gateway.example.test', proxyUrl: 'http://proxy:8888', passwordFile: secret('db'), workflowPasswordFile:secret('workflow-db'),
     gatewayKeys: { 'chief-of-staff': secret('cos-key'), creative: secret('creative-key') },
     google: { principal: process.env.REHEARSAL_KEEPER_PRINCIPAL ?? 'owner', tokenKeyFile: secret('token-key'), clients: { acme: { clientIdFile: secret('cid'), clientSecretFile: secret('csec') } } } },
   egress: { endpoints: {}, legacyConsumers: [], internalNetworks: ['172.30.0.0/24'], directDestinations: [], infrastructureHosts: ['gateway.example.test'] }, installationPrepared: true,

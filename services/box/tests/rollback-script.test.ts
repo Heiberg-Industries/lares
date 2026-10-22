@@ -39,6 +39,7 @@ let composeDir: string;
 let composeFile: string;
 let state: string;
 let log: string;
+let operatorPasswordFile: string;
 
 /** What the installation is running: two digest-pinned services and one that is not. */
 function composeYaml(digest: string) {
@@ -85,6 +86,8 @@ beforeEach(() => {
   state = join(dir, "update-history.tsv");
   writeFileSync(state, updateRow("ok"));
   log = join(dir, "calls.log");
+  operatorPasswordFile = join(dir, "operator-password");
+  writeFileSync(operatorPasswordFile, "fixture-only-operator-password\n", { mode: 0o600 });
 
   const logLine = 'printf "%s %s\\n" "$(basename "$0")" "$*" >> "$STUB_LOG"';
 
@@ -96,6 +99,7 @@ beforeEach(() => {
       logLine,
       'args="$*"',
       'case "$args" in',
+      '  *"config --format json"*) printf \'{"services":{"db":{"image":"postgres:16-alpine"}}}\\n\'; exit 0 ;;',
       "  *psql*-tAc*)",
       '    printf "%s\\n" "${STUB_BACKUP_STATUS-t|3600}"',
       "    ;;",
@@ -112,6 +116,8 @@ beforeEach(() => {
       "exit 0",
     ].join("\n"),
   );
+  // update.sh's offline database step validates the operator credential's owner and mode.
+  stub("stat", "echo 0:600");
 
   // pnpm: rollback.sh must never reach for it. Only update.sh does, for the migration runner.
   stub("pnpm", [logLine, "exit 0"].join("\n"));
@@ -126,6 +132,7 @@ beforeEach(() => {
     "record",
     [
       logLine,
+      'if [ -n "${TEST_LOG_ENV:-}" ]; then printf "record env PGUSER=%s DATABASE_PASSWORD_FILE=%s\\n" "${PGUSER-}" "${DATABASE_PASSWORD_FILE-}" >> "$STUB_LOG"; fi',
       'state="$STUB_STATE"',
       'case "$1" in',
       "  begin)",
@@ -150,6 +157,7 @@ beforeEach(() => {
       "exit 0",
     ].join("\n"),
   );
+  stub("node", 'case "$1:$2" in */bin/update-record.ts:release) exec "$TEST_REAL_NODE" "$@" ;; */bin/update-record.ts:*) shift; exec "$TEST_RECORD" "$@" ;; *) exec "$TEST_REAL_NODE" "$@" ;; esac');
 });
 
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
@@ -166,6 +174,9 @@ function runScript(script: string, args: string[], env: Record<string, string> =
         DB_COMPOSE_DIR: composeDir,
         UPDATE_COMPOSE_FILES: "compose.yaml",
         LARES_UPDATE_RECORDER: join(binDir, "record"),
+        LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+        TEST_RECORD: join(binDir, "record"),
+        TEST_REAL_NODE: process.execPath,
         ...env,
       },
       encoding: "utf8",
@@ -191,6 +202,18 @@ const FINISH = /record finish/;
 const compose = () => readFileSync(composeFile, "utf8");
 
 describe("putting the previous version back", () => {
+  it("pins the host recorder to the application role and password file", () => {
+    const r = run(["--dry-run"], {
+      LARES_UPDATE_RECORDER: "",
+      TEST_LOG_ENV: "1",
+      PGUSER: "legacy_role",
+      DATABASE_PASSWORD_FILE: "/legacy/password",
+    });
+    expect(r.code, r.stderr).toBe(0);
+    expect(calls()).toContain("record env PGUSER=lares_app DATABASE_PASSWORD_FILE=/etc/lares/secrets/database-password");
+    expect(calls()).not.toContain("record env PGUSER=legacy_role DATABASE_PASSWORD_FILE=/legacy/password");
+  });
+
   it("shows what it would put back, and asks, before it does anything", () => {
     const r = run(["--dry-run"]);
     expect(r.code).toBe(0);
@@ -304,7 +327,8 @@ describe("putting the previous version back", () => {
         breaking: [],
       }),
     );
-    expect(runScript(UPDATE_SCRIPT, ["--release", release, "--yes"]).code).toBe(0);
+    const update = runScript(UPDATE_SCRIPT, ["--release", release, "--yes"]);
+    expect(update.code, update.stderr).toBe(0);
     expect(compose()).toContain(CUR);
 
     const first = run(["--yes"]);
@@ -503,7 +527,9 @@ describe("rolling back a box whose engine is an image", () => {
     const secrets = join(prefix, "etc", "lares", "secrets");
     for (const line of engineRuns()) {
       expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
-      expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+      expect(line).toContain(`-v ${secrets}/database-password:${secrets}/database-password:ro`);
+      expect(line).toContain("-e PGUSER=lares_app");
+      expect(line).not.toContain(`-v ${secrets}:${secrets}:ro`);
       expect(line).not.toContain("PGPASSWORD");
     }
   });

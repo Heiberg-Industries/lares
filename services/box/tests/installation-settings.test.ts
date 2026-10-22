@@ -16,7 +16,7 @@ beforeAll(async () => {
   container = await new PostgreSqlContainer("pgvector/pgvector:pg16").start();
   pool = quiet(new Pool({ connectionString: container.getConnectionUri() }));
   await pool.query(readFileSync(new URL("../sql/001_baseline.sql", import.meta.url), "utf8"));
-});
+}, 180_000);
 
 beforeEach(async () => {
   await pool.query("TRUNCATE settings, settings_audit RESTART IDENTITY");

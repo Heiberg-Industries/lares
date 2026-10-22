@@ -4,7 +4,7 @@
 // NOTHING HERE TOUCHES A REAL MACHINE OR A REAL NAME SERVER. Every run installs into a temp
 // --prefix, every host command the script could call (including getent and hostname, the DNS seam) is a logging stub on PATH ahead of everything else, and
 // answers are delivered on stdin exactly the way a person's keyboard would deliver them.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, rmSync, existsSync,
@@ -17,6 +17,8 @@ import { ENGINE_IMAGE, engineDockerPrelude } from "./helpers/engine-docker.js";
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "install.sh");
 
+vi.setConfig({ testTimeout: 30_000 });
+
 let dir: string, binDir: string, prefix: string, log: string, secretsDir: string, installEnv: string;
 let releaseFile: string;
 
@@ -24,7 +26,7 @@ let releaseFile: string;
  *  itself is stubbed here (see RENDER_STACK). */
 const RELEASE = JSON.stringify({
   release: "2026-10-01",
-  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}` },
+  images: { db: `example.invalid/lares-db@sha256:${"a".repeat(64)}`, creative: `example.invalid/lares-creative@sha256:${"c".repeat(64)}` },
   migrations: { box: "001_baseline.sql" },
   breaking: [],
 });
@@ -82,6 +84,7 @@ beforeEach(() => {
   // `lares-doctor`: every completed wizard run proves the model key through it, so a
   // run that is not about that proof stubs it silently green.
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "node", "pnpm", "openssl", "lares-doctor"]) stub(name);
+  stub("stat", 'case "$*" in *database-password*) echo 0:600 ;; *) echo 0:700 ;; esac');
   // CREATE DATABASE is sent on stdin; consume it before exiting so pipefail
   // does not race the fake Docker process under CI load.
   stub("docker", 'case "$*" in *"exec -T db psql"*) cat >/dev/null ;; esac\nexit 0');

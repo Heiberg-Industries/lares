@@ -287,8 +287,10 @@ describe("lares", () => {
     const d = calls().find((l) => l.startsWith("docker run "))!;
     expect(d).toContain(KEEPER);
     expect(d).toContain("/app/services/box/bin/doctor.ts");
-    expect(d).toContain(`${prefix}/etc/lares/secrets:${prefix}/etc/lares/secrets:ro`);
-    expect(d).toContain("DATABASE_PASSWORD_FILE=");
+    expect(d).toContain(`${prefix}/etc/lares/secrets/database-password:${prefix}/etc/lares/secrets/database-password:ro`);
+    expect(d).toContain(`DATABASE_PASSWORD_FILE=${prefix}/etc/lares/secrets/database-password`);
+    expect(d).toContain("PGUSER=lares_app");
+    expect(d).not.toContain(`${prefix}/etc/lares/secrets:${prefix}/etc/lares/secrets:ro`);
     expect(d).not.toMatch(/PGPASSWORD/);
   });
 

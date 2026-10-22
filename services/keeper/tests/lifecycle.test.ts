@@ -7,16 +7,26 @@ import { quiet } from './helpers/quiet-pool.js';
 import { beforeAll,afterAll,beforeEach,it,expect,vi } from 'vitest';
 import { AgentLifecycle } from '../lib/lifecycle.js';
 import { WorkflowStorage } from '../lib/workflow-storage.js';
+import type { WorkflowDatabaseConnections, WorkflowPrivilegeContract } from '../lib/workflow-storage.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
 import { credentialRecordSchema, initialCredentialRecord } from '../lib/credential-state.js';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
-let pg:StartedPostgreSqlContainer,pool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
+let pg:StartedPostgreSqlContainer,pool:Pool,adminPool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
 const definition:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/agent.json'),'utf8')),name:'bookkeeper',role:'creative',doors:[],grants:[]};
 const step=async(s:string)=>{events.push(s);if(fail===s)throw new Error('injected '+s);};
 const docker:DockerBoundary={inventory:async()=>['172.18.0.1','172.18.0.20','172.18.0.21'],config:()=>step('config'),start:(n,address)=>{started.push(address);return step('start:'+n);},stop:n=>step('stop:'+n),remove:n=>step('remove:'+n),validateSquid:()=>step('parse-squid'),reloadSquid:()=>step('reload-squid'),firewall:(_s,check)=>step(check?'parse-nft':'apply-nft')};
-const lifecycle=()=>new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{});
+const testWorkflowConnections:WorkflowDatabaseConnections={
+ provisioner:database=>{const url=new URL(pg.getConnectionUri());url.username='lares_workflow_provisioner';url.password='test-only-provisioner';url.pathname=`/${database}`;return quiet(new Pool({connectionString:url.toString()}));},
+ runtime:database=>{const url=new URL(pg.getConnectionUri());url.username='lares_workflow';url.password='test-only-workflow';url.pathname=`/${database}`;return quiet(new Pool({connectionString:url.toString()}));},
+};
+const testWorkflowPrivileges:WorkflowPrivilegeContract={
+ apply:async()=>{},verify:async()=>{},
+ assertProvisioner:async(client,database,owner)=>{const r=await client.query('SELECT current_user,session_user,current_database(),rolcreatedb,rolcreaterole,rolsuper,pg_has_role(current_user,$1,\'MEMBER\') AS member FROM pg_roles WHERE rolname=current_user',[owner]);const x=r.rows[0];if(x?.current_user!=='lares_workflow_provisioner'||x.session_user!=='lares_workflow_provisioner'||x.current_database!==database||!x.rolcreatedb||x.rolcreaterole||x.rolsuper||!x.member)throw new Error(`test workflow provisioner identity mismatch ${JSON.stringify(x)}`);},
+ assertRuntime:async(client,database,owner)=>{const r=await client.query('SELECT current_user,session_user,current_database(),rolcreatedb,rolcreaterole,rolsuper,rolbypassrls,pg_has_role(current_user,$1,\'MEMBER\') AS member FROM pg_roles WHERE rolname=current_user',[owner]);const x=r.rows[0];if(x?.current_user!=='lares_workflow'||x.session_user!=='lares_workflow'||x.current_database!==database||x.rolcreatedb||x.rolcreaterole||x.rolsuper||x.rolbypassrls||x.member)throw new Error('test workflow runtime identity mismatch');},
+};
+const lifecycle=()=>new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
 it('credential reconciliation preserves applied definitions, grants, unrelated bindings and durable disconnect', async () => {
  const l=lifecycle(); await l.create('bookkeeper',definition);
  const notion=join(root,'secrets/notion-token'), other=join(root,'secrets/other-key');
@@ -76,13 +86,19 @@ it('mounts the managed key only into a granted chief of staff, only when a key r
 });
 beforeAll(async()=>{
  pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:pg.getConnectionUri()}));
+ await pool.query("CREATE ROLE lares_workflow_owner NOLOGIN NOINHERIT");
+ await pool.query("CREATE ROLE lares_workflow_provisioner LOGIN NOINHERIT CREATEDB PASSWORD 'test-only-provisioner'");
+ await pool.query("GRANT lares_workflow_owner TO lares_workflow_provisioner");
+ await pool.query("CREATE ROLE lares_workflow LOGIN NOINHERIT PASSWORD 'test-only-workflow'");
  for(const name of ['001_baseline.sql','008_connected_accounts.sql','012_connected_account_credentials.sql']) await pool.query(readFileSync(join(repo,'services/box/sql',name),'utf8'));
- await pool.query('CREATE DATABASE empty_workflow');
+ await pool.query('CREATE DATABASE empty_workflow OWNER lares_workflow_owner');
  const template=quiet(new Pool({connectionString:pg.getConnectionUri().replace(/\/[^/]+$/,'/empty_workflow')}));
- await template.query('CREATE SCHEMA workflow; CREATE TABLE workflow.memory(value text)');await template.end();
+ await template.query('CREATE SCHEMA workflow AUTHORIZATION lares_workflow_owner; CREATE TABLE workflow.memory(value text)');await template.query('ALTER TABLE workflow.memory OWNER TO lares_workflow_owner');await template.end();
+ await pool.query('ALTER DATABASE empty_workflow IS_TEMPLATE true');
+ {const url=new URL(pg.getConnectionUri());url.username='lares_workflow_provisioner';url.password='test-only-provisioner';url.pathname='/postgres';adminPool=quiet(new Pool({connectionString:url.toString()}));}
  await pool.query("CREATE TABLE standing_facts(value text); INSERT INTO standing_facts VALUES ('shared-owner')");
 });
-afterAll(async()=>{await pool?.end();await pg?.stop();if(root)rmSync(root,{recursive:true,force:true});});
+afterAll(async()=>{await adminPool?.end();await pool?.end();await pg?.stop();if(root)rmSync(root,{recursive:true,force:true});});
 beforeEach(async()=>{
  const rows=(await pool.query("SELECT datname FROM pg_database WHERE datname LIKE 'lares_%'")).rows;
  for(const row of rows)await pool.query(`DROP DATABASE "${row.datname}" WITH (FORCE)`);
@@ -90,7 +106,8 @@ beforeEach(async()=>{
  await pool.query("INSERT INTO settings(key,value,updated_by) VALUES('models.alias_prefix','\"lares\"','test') ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value");
  if(root)rmSync(root,{recursive:true,force:true});root=mkdtempSync(join(tmpdir(),'lares-owned-'));
  for(const d of ['agents','secrets','egress'])mkdirSync(join(root,d));
- config={network:'test_default',subnet:'172.18.0.0/24',reservedAddresses:['172.18.0.22'],composeFile:join(root,'compose.lares-agents.yaml'),egressDir:join(root,'egress'),imageByRole:{creative:image,'chief-of-staff':image},proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image,adminDb:{host:'db',port:5432,user:pg.getUsername(),database:pg.getDatabase(),passwordFile:'/secret'},workflowTemplate:'empty_workflow',workflowOwner:pg.getUsername(),runtime:{schedulesLive:false,databaseUrl:'postgres://user@db/domain',workflowServer:'postgres://user@db/',gatewayUrl:'https://brain.example.com',proxyUrl:'http://proxy:8888',passwordFile:join(root,'secrets','db'),gatewayKeys:{bookkeeper:join(root,'secrets','key')}},egress:{endpoints:{},legacyConsumers:[{name:'sync',address:'172.18.0.23',hosts:['api.notion.com']}],internalNetworks:['172.18.0.0/24'],directDestinations:[],infrastructureHosts:['brain.example.com']},installationPrepared:true};
+ config={network:'test_default',subnet:'172.18.0.0/24',reservedAddresses:['172.18.0.22'],composeFile:join(root,'compose.lares-agents.yaml'),egressDir:join(root,'egress'),imageByRole:{creative:image,'chief-of-staff':image},proxyContainer:'lares-egress-proxy',squidImage:image,firewallImage:image,adminDb:{host:'db',port:5432,user:'lares_workflow_provisioner',database:'postgres',passwordFile:'/secret'},workflowTemplate:'empty_workflow',workflowOwner:'lares_workflow_owner',runtime:{schedulesLive:false,databaseUrl:'postgres://lares_app@db/domain',workflowServer:'postgres://lares_workflow@db/',gatewayUrl:'https://brain.example.com',proxyUrl:'http://proxy:8888',passwordFile:join(root,'secrets','db'),workflowPasswordFile:join(root,'secrets','workflow-db'),gatewayKeys:{bookkeeper:join(root,'secrets','key')}},egress:{endpoints:{},legacyConsumers:[{name:'sync',address:'172.18.0.23',hosts:['api.notion.com']}],internalNetworks:['172.18.0.0/24'],directDestinations:[],infrastructureHosts:['brain.example.com']},installationPrepared:true};
+ writeFileSync(config.runtime.workflowPasswordFile,'synthetic-workflow-db');
  await pool.query("INSERT INTO agent_definitions(name,hash,definition,valid_at,status) VALUES($1,'test',$2::jsonb,now(),'valid')",['bookkeeper',JSON.stringify(definition)]);
  events=[];started=[];fail=undefined;
 });
@@ -123,7 +140,7 @@ it('preserves installation bindings on repeated reconciles and refuses missing d
  const integrationKey=join(root,'secrets','notion');writeFileSync(integrationKey,'test-only');
  config.bindings={bookkeeper:{role:'creative',ownerId:'prior-owner',environment:{ATLAS_PATH:'/srv/atlas'},mounts:[{source:atlas,target:'/srv/atlas',readOnly:false}],secrets:{NOTION_TOKEN_FILE:integrationKey},workflowVolume:'preserved-workflow-files'}};
  const provisioned:string[]=[];
- const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{});
+ const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);const first=readFileSync(config.composeFile,'utf8');
  await l.reconcile('bookkeeper',definition);
  expect(readFileSync(config.composeFile,'utf8')).toBe(first);expect(provisioned).toContain(integrationKey);
@@ -168,7 +185,7 @@ it('provisions an arbitrary agent key after durable storage and before its runti
  });
  const remove=vi.fn(async()=>{});
  const lifecycleRow=async()=>new WorkflowStorage(pool,pool,config.workflowTemplate,config.workflowOwner).row('bookkeeper');
- const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{}, {ensure,remove});
+ const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{}, {ensure,remove},testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);
  expect(ensure).toHaveBeenCalledWith({gatewayUrl:'https://brain.example.com',masterKeyFile,secretFile:join(root,'secrets','bookkeeper-gateway-key'),name:'bookkeeper',aliasPrefix:'lares'});
  const service=parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
@@ -185,7 +202,7 @@ it('does not start an unsealed agent, persists pending failure, and permits expl
  expect(events).not.toContain('apply-nft');expect(events).not.toContain('start:bookkeeper');expect((await l.status('bookkeeper')).pending).toBe(true);
  fail=undefined;await l.reconcile('bookkeeper',definition);expect((await l.status('bookkeeper')).pending).toBe(false);
 });
-const lifecycleWith=(d:DockerBoundary)=>new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},d,()=>{},()=>{});
+const lifecycleWith=(d:DockerBoundary)=>new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},d,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
 it('treats a health wait that runs out as a running agent, not an error',async()=>{
  const slow:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);throw new AgentNotHealthyError();}};
  const l=lifecycleWith(slow);
@@ -257,7 +274,7 @@ it('opens the https host of an outside tool and mounts its token file; plain-htt
 });
 it('provisions outside token files before stopping the agent, and a changed token list needs a restart',async()=>{
  const provisioned:string[]=[];
- const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{});
+ const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);await l.reconcile('bookkeeper',definition);
  const withToken={...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
  expect((await l.saved('bookkeeper',withToken)).pending).toBe(true);
@@ -633,7 +650,7 @@ function personalGoogleFixture() {
 const personalChief=()=>({...definition,role:'chief-of-staff',grants:[{capability:'gmail',scope:'read'}],autonomy:{}});
 it('mounts personal clients without any email door, claim, legacy principal or OAuth token selection',async()=>{
  const google=personalGoogleFixture(),chief=personalChief(),provisioned:string[]=[];
- const l=new AgentLifecycle(pool,pool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,path=>{provisioned.push(path);},()=>{});
+ const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',chief);
  const doc=parse(readFileSync(config.composeFile,'utf8')),env=doc.services['lares-bookkeeper'].environment;
  expect(Object.keys(JSON.parse(env.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme','second']);

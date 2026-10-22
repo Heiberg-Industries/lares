@@ -2,12 +2,12 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { keeperPool, loadKeeperConfig } from "../lib/config.js";
+import { keeperFinancialPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 const dirs: string[] = [];
 const fixture = () => {
   const dir = mkdtempSync(join(tmpdir(), "keeper-config-"));
   dirs.push(dir);
-  return { dir, file: join(dir, "keeper.json"), config: { mode: "overlay", project: "lares", dir, files: ["compose.yaml"], agentsDir: dir, retiredDir: dir, secretsDir: dir, rolesDir: dir, templatesDir: dir, backupDir: dir, db: { host: "db", port: 5432, database: "lares_state", user: "lares", passwordFile: join(dir, "password") } } };
+  return { dir, file: join(dir, "keeper.json"), config: { mode: "overlay", project: "lares", dir, files: ["compose.yaml"], agentsDir: dir, retiredDir: dir, secretsDir: dir, rolesDir: dir, templatesDir: dir, backupDir: dir, db: { host: "db", port: 5432, database: "lares_state", user: "lares_app", passwordFile: join(dir, "password") } } };
 };
 afterEach(() => {
   for (const dir of dirs.splice(0))
@@ -77,6 +77,29 @@ it("reads the password only when creating a pool", async () => {
   rmSync(f.config.db.passwordFile);
   expect(() => keeperPool(f.config.db)).toThrow("credentials unavailable");
 });
+it.each([
+  ["missing", undefined],
+  ["empty", ""],
+  ["newline-only", "\n"],
+  ["CRLF-only", "\r\n"],
+])("refuses %s app and financial password files without falling back to ambient PGPASSWORD", (_label, contents) => {
+  const f = fixture(), passwordFile = join(f.dir, "missing-password");
+  const previous = process.env.PGPASSWORD;
+  process.env.PGPASSWORD = "ambient-only-secret";
+  try {
+    if (contents !== undefined) writeFileSync(passwordFile, contents);
+    const app = { ...f.config.db, passwordFile };
+    const financial = { ...app, user: "lares_financial" as const };
+    const appError = catchError(() => keeperPool(app));
+    const financialError = catchError(() => keeperFinancialPool({ budgetFinancial: { directory: "/var/lib/lares/budget-financial", db: financial } }));
+    expect(appError.message).toBe("keeper: database credentials unavailable");
+    expect(financialError.message).toBe("keeper: database credentials unavailable");
+    expect(appError.message + financialError.message).not.toContain("ambient-only-secret");
+  } finally {
+    if (previous === undefined) delete process.env.PGPASSWORD;
+    else process.env.PGPASSWORD = previous;
+  }
+});
 function catchError(fn: () => unknown): Error {
   try {
     fn();
@@ -105,10 +128,10 @@ it('loads digit-leading canonical Google orgs while preserving exact legacy keys
   const client={clientIdFile:join(f.dir,'client-id'),clientSecretFile:join(f.dir,'client-secret')};
   const lifecycle={network:'fixture_default',subnet:'172.18.0.0/24',reservedAddresses:[],
     composeFile:join(f.dir,'compose.yaml'),egressDir:f.dir,imageByRole:{'chief-of-staff':image,creative:image},
-    proxyContainer:'lares-proxy',squidImage:image,firewallImage:image,adminDb:f.config.db,
-    workflowTemplate:'template',workflowOwner:'lares',installationPrepared:true,
-    runtime:{databaseUrl:'postgres://lares@db/lares',workflowServer:'postgres://lares@db/',gatewayUrl:'https://gateway.example',
-      proxyUrl:'http://proxy:8888',passwordFile:join(f.dir,'password'),gatewayKeys:{},
+    proxyContainer:'lares-proxy',squidImage:image,firewallImage:image,adminDb:{...f.config.db,database:'postgres',user:'lares_workflow_provisioner'},
+    workflowTemplate:'template',workflowOwner:'lares_workflow_owner',installationPrepared:true,
+    runtime:{databaseUrl:'postgres://lares_app@db/lares',workflowServer:'postgres://lares_workflow@db/',gatewayUrl:'https://gateway.example',
+      proxyUrl:'http://proxy:8888',passwordFile:join(f.dir,'password'),workflowPasswordFile:join(f.dir,'workflow-password'),gatewayKeys:{},
       google:{tokenKeyFile:join(f.dir,'token-key'),clients:{'123':client,'1acme':client,ac_me:client,'old-client':client,['legacy'+'a'.repeat(40)]:client}}},
     egress:{endpoints:{},legacyConsumers:[],internalNetworks:[],directDestinations:[],infrastructureHosts:[]}};
   const load=(clients:Record<string,typeof client>)=>{
@@ -122,17 +145,26 @@ it('loads digit-leading canonical Google orgs while preserving exact legacy keys
 });
 
 it('keeps financial custody optional and only accepts its dedicated backup-excluded path',()=>{
-  const f=fixture(),budgetFinancial={directory:'/var/lib/lares/budget-financial'};
+  const f=fixture(),budgetFinancial={directory:'/var/lib/lares/budget-financial',db:{...f.config.db,user:'lares_financial'}};
   writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial}));expect(loadKeeperConfig(f.file).budgetFinancial).toEqual(budgetFinancial);
-  for(const invalid of [{directory:'/etc/lares/budget-financial'},{directory:'/srv/lares/budget-financial'},{directory:budgetFinancial.directory,reset:true},{directory:budgetFinancial.directory,enabled:true}]){
+  for(const invalid of [{directory:'/etc/lares/budget-financial',db:budgetFinancial.db},{directory:'/srv/lares/budget-financial',db:budgetFinancial.db},{directory:budgetFinancial.directory,db:budgetFinancial.db,reset:true},{directory:budgetFinancial.directory,db:budgetFinancial.db,enabled:true}]){
     writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial:invalid}));expect(()=>loadKeeperConfig(f.file)).toThrow('budgetFinancial');
   }
+});
+it('never creates a financial connection from the ordinary app login',async()=>{
+  const f=fixture();
+  expect(keeperFinancialPool({})).toBeUndefined();
+  writeFileSync(join(f.dir,'financial-password'),'financial-secret');
+  const financial=keeperFinancialPool({budgetFinancial:{directory:'/var/lib/lares/budget-financial',db:{...f.config.db,user:'lares_financial',passwordFile:join(f.dir,'financial-password')}}});
+  expect(financial?.options.user).toBe('lares_financial');
+  expect(financial?.options.database).toBe('lares_state');
+  await financial?.end();
 });
 it('requires prepared financial custody for the fixed native custody path',()=>{
   const f=fixture(),budgetNative={directory:'/var/lib/lares/budget-native'};
   writeFileSync(f.file,JSON.stringify({...f.config,budgetNative}));
   expect(()=>loadKeeperConfig(f.file)).toThrow('budgetNative: requires prepared financial custody');
-  const budgetFinancial={directory:'/var/lib/lares/budget-financial'};
+  const budgetFinancial={directory:'/var/lib/lares/budget-financial',db:{...f.config.db,user:'lares_financial'}};
   writeFileSync(f.file,JSON.stringify({...f.config,budgetFinancial,budgetNative}));
   expect(loadKeeperConfig(f.file).budgetNative).toEqual(budgetNative);
   for(const invalid of [{directory:'/etc/lares/budget-native'},{directory:'/srv/lares/budget-native'},{directory:budgetNative.directory,reset:true}]){

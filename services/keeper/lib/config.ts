@@ -5,7 +5,9 @@ import { z } from "zod";
 import { lifecycleSchema } from "./lifecycle-config.js";
 import { credentialConfigSchema } from "./credential-state.js";
 const absolute = z.string().refine(isAbsolute, "must be an absolute path");
-export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial')}).strict();
+const databaseConnectionSchema = z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict();
+export type KeeperDatabaseConfig = z.infer<typeof databaseConnectionSchema>;
+export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial'),db:databaseConnectionSchema.extend({user:z.literal('lares_financial')})}).strict();
 export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native')}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
@@ -25,9 +27,10 @@ const configSchema = z.object({
   dir: absolute, files: z.array(z.string().min(1).refine(s => !s.includes("\u0000"))).min(1),
   agentsDir: absolute, retiredDir: absolute, secretsDir: absolute,
   rolesDir: absolute, templatesDir: absolute, backupDir: absolute,
-  db: z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict(),
+  db: databaseConnectionSchema.extend({user:z.literal('lares_app')}),
 }).strict().superRefine((value,context)=>{
   if(value.budgetNative&&!value.budgetFinancial)context.addIssue({code:'custom',path:['budgetNative'],message:'requires prepared financial custody'});
+  if(value.budgetFinancial&&(value.budgetFinancial.db.host!==value.db.host||value.budgetFinancial.db.port!==value.db.port||value.budgetFinancial.db.database!==value.db.database))context.addIssue({code:'custom',path:['budgetFinancial','db'],message:'must connect to the same engine database as db'});
 });
 export type KeeperConfig = z.infer<typeof configSchema>;
 /**
@@ -65,11 +68,16 @@ export function loadKeeperConfig(path = "/etc/lares/keeper.json"): KeeperConfig 
   const more = parsed.error.issues.length > 10 ? `; and ${parsed.error.issues.length - 10} more` : "";
   throw new Error(`keeper: invalid configuration in ${path}: ${problems.join("; ")}${more}`);
 }
-export function keeperPool(db: KeeperConfig["db"],limits:Pick<PoolConfig,'max'|'connectionTimeoutMillis'|'query_timeout'|'options'>={}): Pool {
+export function keeperPool(db: KeeperDatabaseConfig,limits:Pick<PoolConfig,'max'|'connectionTimeoutMillis'|'query_timeout'|'options'>={}): Pool {
   try {
-    return new Pool({ host: db.host, port: db.port, database: db.database, user: db.user, password: readFileSync(db.passwordFile, "utf8").trimEnd(), connectionTimeoutMillis: 5000,...limits });
+    const password = readFileSync(db.passwordFile, "utf8").trimEnd();
+    if (!password) throw new Error("empty database credential");
+    return new Pool({ host: db.host, port: db.port, database: db.database, user: db.user, password, connectionTimeoutMillis: 5000,...limits });
   }
   catch {
     throw new Error("keeper: database credentials unavailable");
   }
+}
+export function keeperFinancialPool(config: Pick<KeeperConfig, 'budgetFinancial'>, limits: Pick<PoolConfig,'max'|'connectionTimeoutMillis'|'query_timeout'|'options'> = {}): Pool | undefined {
+  return config.budgetFinancial ? keeperPool(config.budgetFinancial.db, limits) : undefined;
 }

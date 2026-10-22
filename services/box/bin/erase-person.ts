@@ -35,6 +35,7 @@ export interface ParsedEraseArgs {
   apply: boolean;
   help: boolean;
   vaults: string[];
+  operatorPasswordFile?: string;
 }
 
 export function rootApplyRefusal(platform:string,uid:number|undefined):string|undefined{
@@ -42,7 +43,7 @@ export function rootApplyRefusal(platform:string,uid:number|undefined):string|un
 }
 
 const HELP_TEXT = [
-  "tsx services/box/bin/erase-person.ts <who> [--vault <path> ...] [--apply] [--help]",
+  "tsx services/box/bin/erase-person.ts <who> [--vault <path> ...] [--apply] [--operator-password-file <absolute-path>] [--help]",
   "",
   "Removes one member of this installation from every table in this database that names them,",
   "and — for every --vault given — from that vault's notes too. An apply uses the prepared financial",
@@ -53,6 +54,9 @@ const HELP_TEXT = [
   "                 no vault is looked at at all, and the report says so.",
   "  --apply        Actually do it. Root on Linux only; prepared financial custody is required.",
   "                 Without this flag nothing is changed and you get a practice run.",
+  "  --operator-password-file <path>  Required for a full dry run when no prepared financial",
+  "                 database binding exists. The protected host-only",
+  "                 file is read only for this command; it is never an application fallback.",
   "  --help         Show this message.",
   "",
   "Exit codes:",
@@ -67,6 +71,7 @@ export function parseArgs(argv: readonly string[]): ParsedEraseArgs {
   let apply = false;
   let help = false;
   const vaults: string[] = [];
+  let operatorPasswordFile: string | undefined;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -81,9 +86,15 @@ export function parseArgs(argv: readonly string[]): ParsedEraseArgs {
       }
       vaults.push(value);
       i += 1;
+    } else if (arg === "--operator-password-file") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) throw new Error("erase-person: --operator-password-file needs an absolute path");
+      if (!value.startsWith("/")) throw new Error("erase-person: --operator-password-file must be an absolute path");
+      operatorPasswordFile = value;
+      i += 1;
     } else if (arg.startsWith("--")) {
       throw new Error(
-        `erase-person: unknown flag "${arg}". Known flags: --vault · --apply · --help`,
+        `erase-person: unknown flag "${arg}". Known flags: --vault · --apply · --operator-password-file · --help`,
       );
     } else if (person === undefined) person = arg;
     else {
@@ -94,7 +105,7 @@ export function parseArgs(argv: readonly string[]): ParsedEraseArgs {
     }
   }
 
-  return { ...(person !== undefined ? { person } : {}), apply, help, vaults };
+  return { ...(person !== undefined ? { person } : {}), apply, help, vaults, ...(operatorPasswordFile ? { operatorPasswordFile } : {}) };
 }
 
 function messageOf(err: unknown): string {
@@ -145,28 +156,41 @@ export async function main(
 
 if (process.argv[1] && import.meta.url === `file://${process.argv[1]}`) {
   let db:Pool|undefined,journal:HostFinancialJournal|undefined,nativeCustody:BudgetNativeCustodyStore|undefined;
+  let earlyExitCode:number|undefined;
   const args=process.argv.slice(2);
+  let parsed:ParsedEraseArgs;
+  try { parsed=parseArgs(args); }
+  catch(err) { process.stdout.write(messageOf(err)+"\n"); process.exit(1); }
   const apply=args.includes('--apply')&&!args.includes('--help');
   const rootRefusal=apply?rootApplyRefusal(process.platform,process.getuid?.()):undefined;
   if(rootRefusal){
     process.stdout.write(rootRefusal+"\n");process.exit(1);
   }
   try{
-    if(args.includes('--help')){
+    if(parsed.help){
       process.exitCode=await main(args,{db:{} as Pool,out:(s)=>process.stdout.write(s+"\n")});
-    }else if(apply){
-      const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
+    }else{
+      const {loadKeeperConfig,keeperFinancialPool}=await import('../../keeper/lib/config.js');
       const {openConfiguredNativeCustody}=await import('../../keeper/lib/budget-native-cleanup.js');
       const {HostFinancialJournal}=await import('../../keeper/lib/financial-journal.js');
+      const {operatorPoolFromFile}=await import('../lib/db.js');
       const config=loadKeeperConfig();
-      nativeCustody=openConfiguredNativeCustody(config.budgetNative?.directory);
-      if(config.budgetFinancial)journal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
-      db=keeperPool(config.db);
-    }else{
-      const {loadKeeperConfig,keeperPool}=await import('../../keeper/lib/config.js');
-      const config=loadKeeperConfig();db=keeperPool(config.db);
+      if(config.budgetFinancial){
+        if(apply)journal=HostFinancialJournal.openExisting(config.budgetFinancial.directory,{requirePrepared:true});
+        if(apply)nativeCustody=openConfiguredNativeCustody(config.budgetNative?.directory);
+        db=keeperFinancialPool(config)!;
+        if(!db)throw new Error('configured financial database credential is unavailable');
+      }else{
+        if(apply){
+          earlyExitCode=await main(args,{db:{} as Pool,out:(s)=>process.stdout.write(s+"\n")});
+        }else{
+          const operatorPath=parsed.operatorPasswordFile;
+          if(!operatorPath)throw new Error('No prepared financial database binding exists. Supply --operator-password-file <absolute-path> for explicit offline database access.');
+          db=await operatorPoolFromFile(operatorPath,config.db);
+        }
+      }
     }
-    if(!args.includes('--help'))process.exitCode=await main(args, { db:db!,journal,nativeCustody,out: (s) => process.stdout.write(s + "\n") });
+    if(!parsed.help)process.exitCode=earlyExitCode??await main(args, { db:db!,journal,nativeCustody,out: (s) => process.stdout.write(s + "\n") });
   }
   catch(err){process.stdout.write(messageOf(err)+"\n");process.exitCode=1;}
   finally{

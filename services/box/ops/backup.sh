@@ -81,6 +81,8 @@ if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
 else
   COMPOSE=(-f /opt/agent-box/compose.yaml -f /opt/agent-box/compose.override.yaml)
 fi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/engine-run.sh"
 DUMP=/var/backups/pg
 mkdir -p "$DUMP"
 if [ "${LARES_CURRENT_LAYOUT:-0}" = 1 ]; then
@@ -95,12 +97,10 @@ if [ "$VAULT_STORAGE_PRESENT" = 1 ]; then
 fi
 if declare -F vault_storage_verify >/dev/null; then vault_storage_verify "${LARES_PREFIX:-}" "${PGDATABASE:-lares_state}" verify; fi
 
-dc() { docker compose "${COMPOSE[@]}" exec -T db "$@"; }
+dc() { operator_db_run "${COMPOSE[@]}" -- "$@"; }
 
-# The role this installation uses. Same overridable name ops/install.sh, ops/update.sh and
-# lib/db.ts read, with the same default — an installation that kept an older role name
-# sets PGUSER in this script's environment. See §3.
-DB_USER="${PGUSER:-lares}"
+# Backups include global role state and all databases, so they use the explicit offline operator.
+DB_USER=lares_operator
 
 # 1. Postgres: roles + each DB in custom format, dumped THROUGH the container so the
 #    client version always matches the server. A DB we cannot reach is a FAILED backup,
@@ -128,7 +128,7 @@ EXPECTED=0
 for db in $DBS; do
   [ -n "$db" ] || continue
   EXPECTED=$((EXPECTED + 1))
-  dc pg_dump -U "$DB_USER" --format=custom "$db" > "$DUMP/${db}.dump" </dev/null
+  dc pg_dump -U "$DB_USER" --create --format=custom "$db" > "$DUMP/${db}.dump" </dev/null
 done
 
 # A dump that exists but is empty/truncated restores to nothing. Prove each one carries

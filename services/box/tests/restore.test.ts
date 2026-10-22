@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, rmSync, existsSync, symlinkSync, statSync, realpathSync,
+  mkdtempSync, mkdirSync, writeFileSync, chmodSync, readdirSync, readFileSync, rmSync, existsSync, symlinkSync, statSync, lstatSync, realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -24,6 +24,14 @@ const SCRIPT = join(BOX, "ops", "restore.sh");
 const NEWEST_SQL = readdirSync(join(BOX, "sql")).filter((f) => /^[0-9].*\.sql$/.test(f)).sort().pop()!;
 
 let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string;
+const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
+const financialBinding = () => ({ directory: '/var/lib/lares/budget-financial', db: { ...appDatabase(), user: 'lares_financial', passwordFile: join(prefix, 'etc/lares/secrets/financial-database-password') } });
+const keeperConfig = (extra: Record<string, unknown> = {}) => JSON.stringify({
+  project: 'lares', db: appDatabase(),
+  lifecycle: { runtime: { workflowPasswordFile: join(prefix, 'etc/lares/secrets/workflow-database-password') } },
+  ...extra,
+});
+const workflowDatabase = `lares_${'a'.repeat(32)}`;
 
 function stub(name: string, body = "exit 0") {
   const p = join(binDir, name);
@@ -61,13 +69,22 @@ function linkSystemTools() {
 }
 
 function run(args: string[], opts: { env?: Record<string, string>; input?: string } = {}) {
+  const mode = (rel: string) => {
+    try { return (lstatSync(join(prefix, rel)).mode & 0o777).toString(8); }
+    catch { return "0"; }
+  };
   const r = spawnSync("/bin/bash", [SCRIPT, "--prefix", prefix, ...args], {
     encoding: "utf8",
     timeout: 20_000,
     input: opts.input ?? "",
     env: {
       PATH: binDir, STUB_LOG: log, HOME: dir, ARCHIVE_ROOT: archive, LEDGER_FILE: ledgerFile,
-      DRILL_SCRATCH_ROOT: scratchParent, DRILL_MIN_FREE_MB: "1", ...opts.env,
+      DRILL_SCRATCH_ROOT: scratchParent, DRILL_MIN_FREE_MB: "1",
+      WORKFLOW_ROWS: `${workflowDatabase}\towned\t11111111-1111-4111-8111-111111111111\tlares_workflow_owner\tlares-owned:11111111-1111-4111-8111-111111111111`,
+      RESTORE_OPERATOR_MODE: mode("etc/lares/operator/database-password"),
+      RESTORE_APP_MODE: mode("etc/lares/secrets/database-password"),
+      RESTORE_FINANCIAL_MODE: mode("etc/lares/secrets/financial-database-password"),
+      ...opts.env,
     },
   });
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
@@ -89,23 +106,35 @@ beforeEach(() => {
   ledgerFile = join(dir, "ledger.txt");
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   linkSystemTools();
+  const stat = join(binDir, 'stat'); writeFileSync(stat, `#!/usr/bin/env bash
+format="$2"; file="$3"
+case "$file" in
+  */etc/lares/operator/database-password) printf '%s:%s\\n' "\${RESTORE_OPERATOR_UID:-0}" "\${RESTORE_OPERATOR_MODE:-600}" ;;
+  */etc/lares/secrets/database-password) printf '%s:%s:%s\\n' "\${RESTORE_APP_UID:-0}" "\${RESTORE_APP_GID:-10001}" "\${RESTORE_APP_MODE:-440}" ;;
+  */etc/lares/secrets/financial-database-password) printf '%s:%s:%s\\n' "\${RESTORE_FINANCIAL_UID:-0}" "\${RESTORE_FINANCIAL_GID:-10001}" "\${RESTORE_FINANCIAL_MODE:-440}" ;;
+  *) exit 1 ;;
+esac
+`); chmodSync(stat, 0o755);
 
   // A finished fresh install: stack, keeper, secrets, the owner-copied files, no agents.
   write("opt/lares/compose.yaml", "services:\n  caddy:\n    environment:\n      LARES_DOMAIN: example.test\n");
   write("opt/lares/compose.lares-keeper.yaml", "services: {}\n");
   write("etc/lares/installation.env", "LARES_DOMAIN=example.test\n");
   write("etc/lares/keeper.env", "LARES_ROOT=/srv/lares\n");
-  write("etc/lares/keeper.json", '{"project":"lares"}\n');
+  write("etc/lares/keeper.json", `${keeperConfig()}\n`);
   write("etc/lares/backup.env", "RESTIC_REPOSITORY='/fake/repository'\nRESTIC_PASSWORD_FILE='/etc/lares/restic-password'\nLARES_CURRENT_LAYOUT='1'\n");
   write("etc/lares/restic-password", "not-a-real-password\n");
-  write("etc/lares/secrets/database-password", "not-a-real-db-password\n");
+  write("etc/lares/secrets/database-password", "not-a-real-db-password\n", 0o440);
+  write("etc/lares/secrets/financial-database-password", "not-a-real-financial-db-password\n", 0o440);
+  write("etc/lares/secrets/workflow-database-password", "not-a-real-workflow-db-password\n");
+  write("etc/lares/operator/database-password", "test-only-operator-password\n", 0o600);
   write("srv/lares/secrets/alpha-gateway-key", "not-a-real-key\n");
   write("srv/lares/secrets/alpha-telegram-token", "not-a-real-token\n");
   mkdirSync(join(prefix, "srv/lares/agents"), { recursive: true });
   mkdirSync(join(prefix, "srv/taste"), { recursive: true });
 
   // The snapshot.
-  for (const db of ["lares_state", "postgres", "litellm", "empty_workflow"]) writeArchive(`var/backups/pg/${db}.dump`, `dump of ${db}\n`);
+  for (const db of ["lares_state", "postgres", "litellm", workflowDatabase]) writeArchive(`var/backups/pg/${db}.dump`, `dump of ${db}\n`);
   writeArchive("var/backups/pg/globals.sql", "-- roles\n");
   writeArchive("var/backups/pg/secrets/agent-box-secrets.tar.age", "ciphertext\n");
   writeArchive("srv/lares/agents/alpha/agent.json", '{"name":"alpha"}\n', 0o640);
@@ -129,11 +158,13 @@ case " $* " in
 esac
 exit 0`);
   stub("docker", `
+case "$*" in *"compose"*"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
 case " $* " in
   *" pg_isready "*) cat >/dev/null 2>&1 </dev/null; exit "\${PG_ISREADY_RC:-0}" ;;
+  *ownership_token*) printf '%s\\n' "\${WORKFLOW_ROWS:-}"; exit 0 ;;
   *" psql "*) echo "\${FRESH_COUNTS:-0 0 0}"; exit 0 ;;
   *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE"; exit 0 ;;
-  *" pg_restore "*) cat >/dev/null; case " $* " in *" -d \${PG_RESTORE_FAIL_DB:-@none@} "*) exit 1 ;; esac; exit 0 ;;
+  *" pg_restore "*) input=$(cat); [ "$input" != "dump of \${PG_RESTORE_FAIL_DB:-@none@}" ] || exit 1; exit 0 ;;
   *" ps -q"*) echo "\${AGENTS_RUNNING:-}"; exit 0 ;;
 esac
 exit 0`);
@@ -149,14 +180,14 @@ describe("restore.sh: a good restore", () => {
     const stopRest = idx(/compose -f \S+compose\.yaml stop console caddy lares-gateway/);
     const firstDrop = idx(/dropdb/);
     const lastRestore = lastIdx(/pg_restore .*--exit-on-error/);
-    const migrate = idx(/^pnpm -C \S+ migrate$/);
+    const migrate = idx(/^pnpm .*migrate/);
     const baseUp = idx(/compose -f \S+compose\.yaml up -d$/);
     const keeperUp = idx(/compose --env-file \S+keeper\.env up -d$/);
     expect(stopKeeper).toBeGreaterThan(-1);
     expect(stopRest).toBeGreaterThan(stopKeeper);
     expect(firstDrop).toBeGreaterThan(stopRest);
     expect(migrate).toBeGreaterThan(lastRestore);
-    expect(baseUp).toBeGreaterThan(migrate);
+    expect(baseUp, logLines().join("\n")).toBeGreaterThan(migrate);
     expect(keeperUp).toBeGreaterThan(baseUp);
     expect(logLines().length - 1).toBe(keeperUp); // the keeper is the very last command
     expect(readFileSync(join(prefix, "etc/lares/keeper.env"), "utf8")).toContain(`COMPOSE_FILE="${join(prefix, "opt/lares/compose.lares-keeper.yaml")}"`);
@@ -192,16 +223,14 @@ describe("restore.sh: a good restore", () => {
 
   it("restores every dump except postgres into a dropped-and-recreated database, and postgres.dump into postgres", () => {
     expect(run(base()).code).toBe(0);
-    for (const db of ["lares_state", "litellm", "empty_workflow"]) {
-      const drop = idx(new RegExp(`dropdb -U lares --if-exists --force ${db}$`));
-      const create = idx(new RegExp(`createdb -U lares ${db}$`));
-      const restore = idx(new RegExp(`pg_restore --exit-on-error --no-owner --no-privileges -U lares -d ${db}$`));
+    for (const db of ["lares_state", "litellm", workflowDatabase]) {
+      const drop = idx(new RegExp(`dropdb -U lares_operator --if-exists --force ${db}`));
       expect(drop, db).toBeGreaterThan(-1);
-      expect(create, db).toBeGreaterThan(drop);
-      expect(restore, db).toBeGreaterThan(create);
     }
-    expect(idx(/pg_restore --exit-on-error --no-owner --no-privileges -U lares -d postgres$/)).toBeGreaterThan(-1);
-    expect(logLines().filter((l) => /(dropdb|createdb)/.test(l) && /\bpostgres$/.test(l))).toEqual([]);
+    expect(logLines().filter((l) => /pg_restore .*--create/.test(l))).toHaveLength(3);
+    expect(idx(/pg_restore --exit-on-error -U lares_operator -d postgres/)).toBeGreaterThan(-1);
+    expect(logLines().filter((l) => /pg_restore .*--no-owner|pg_restore .*--no-privileges/.test(l))).toEqual([]);
+    expect(logLines().filter((l) => /createdb/.test(l))).toEqual([]);
   });
 
   it("migrates with the database password in the environment, never on the command line", () => {
@@ -311,6 +340,44 @@ describe("restore.sh: every refusal changes nothing", () => {
   });
   it("the database does not answer", () => {
     refused(run(base(), { env: { PG_ISREADY_RC: "1" } }), /database container is not answering/);
+  });
+  it("accepts the installed credential modes while keeping the operator file separate", () => {
+    expect(statSync(join(prefix, "etc/lares/secrets/database-password")).mode & 0o777).toBe(0o440);
+    expect(statSync(join(prefix, "etc/lares/secrets/financial-database-password")).mode & 0o777).toBe(0o440);
+    expect(statSync(join(prefix, "etc/lares/operator/database-password")).mode & 0o777).toBe(0o600);
+    const r = run(["--snapshot", "abc123", "--dry-run"]);
+    expect(r.code, r.all).toBe(0);
+    expect(changes()).toEqual([]);
+  });
+  it("refuses an app password file with the wrong owner before destructive actions", () => {
+    refused(run(base(), { env: { RESTORE_APP_UID: "1001" } }), /credential file is missing or unsafe/);
+  });
+  it("refuses a financial password file with the wrong group before destructive actions", () => {
+    refused(run(base(), { env: { RESTORE_FINANCIAL_GID: "1000" } }), /credential file is missing or unsafe/);
+  });
+  it("refuses an online password file whose mode differs from the installed mode", () => {
+    chmodSync(join(prefix, "etc/lares/secrets/database-password"), 0o600);
+    refused(run(base()), /credential file is missing or unsafe/);
+  });
+  it("refuses an empty financial password file", () => {
+    const file = join(prefix, "etc/lares/secrets/financial-database-password");
+    chmodSync(file, 0o600);
+    writeFileSync(file, "");
+    chmodSync(file, 0o440);
+    refused(run(base()), /credential file is missing or unsafe/);
+  });
+  it("refuses a symlinked online password file", () => {
+    const file = join(prefix, "etc/lares/secrets/financial-database-password");
+    const target = join(prefix, "etc/lares/secrets/other-password");
+    writeFileSync(target, "not-a-financial-password\n", { mode: 0o440 });
+    expect(existsSync(target)).toBe(true);
+    rmSync(file);
+    symlinkSync(target, file);
+    refused(run(base()), /credential file is missing or unsafe/);
+  });
+  it("still requires the operator password file to be root-only mode 0600", () => {
+    chmodSync(join(prefix, "etc/lares/operator/database-password"), 0o440);
+    refused(run(base()), /offline operator credential is missing or unsafe/);
   });
   it("--yes without --old-server-stopped", () => {
     refused(run(["--snapshot", "abc123", "--yes"]), /OLD server is switched off/);
@@ -425,15 +492,15 @@ describe("restore.sh: a box whose engine is an image", () => {
   it("does not need pnpm, and migrates in the engine image after the last restore and before the stack starts", () => {
     const r = run(base(), { env: { LARES_ENGINE_IMAGE: ENGINE } });
     expect(r.code, r.all).toBe(0);
-    const secrets = join(prefix, "etc", "lares", "secrets");
-    const migrate = idx(/^docker run .*migrate\.ts$/);
+    const operator = join(prefix, "etc", "lares", "operator", "database-password");
+    const migrate = idx(/^docker run .*migrate\.ts --schema-owner$/);
     expect(migrate).toBeGreaterThan(lastIdx(/pg_restore .*--exit-on-error/));
     expect(migrate).toBeLessThan(idx(/compose -f \S+compose\.yaml up -d$/));
     const line = logLines()[migrate]!;
     expect(line).toContain(ENGINE);
     expect(line).toContain("--network host --user 0:0 --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges");
-    expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${secrets}/database-password`);
-    expect(line).toContain(`-v ${secrets}:${secrets}:ro`);
+    expect(line).toContain(`-e DATABASE_PASSWORD_FILE=${operator}`);
+    expect(line).toContain(`-v ${operator}:${operator}:ro`);
     expect(line).not.toContain("PGPASSWORD");
     expect(line).not.toContain("docker.sock");
     expect(logLines().join("\n")).not.toContain("not-a-real-db-password");
@@ -461,6 +528,7 @@ exit 0`);
 
   it("a failed migration in the image leaves the keeper stopped", () => {
     stub("docker", `
+case "$*" in *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac
 case " $* " in
   *" pg_isready "*) exit 0 ;;
   *" psql "*) echo "0 0 0"; exit 0 ;;
@@ -477,11 +545,11 @@ exit 0`);
 });
 
 it('refuses a missing prepared financial custody before stopping services or replacing any database',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding()}));
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('financial custody');expect(changes()).toEqual([]);
 });
 it('refuses configured native custody that is missing before stopping services or replacing any database',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding(),budgetNative:{directory:'/var/lib/lares/budget-native'}}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
 });
@@ -490,7 +558,7 @@ it('refuses an unbound native custody directory before restoring',()=>{
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('native custody');expect(changes()).toEqual([]);
 });
 it('freezes prepared custody before the keeper stop while PostgreSQL stays running',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding(),budgetNative:{directory:'/var/lib/lares/budget-native'}}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
   const result=run(base());expect(result.code).toBe(0);
@@ -500,15 +568,15 @@ it('freezes prepared custody before the keeper stop while PostgreSQL stays runni
   expect(logLines().some(line=>/compose.* stop.*\bdb\b/.test(line))).toBe(false);
 });
 it('does not freeze prepared custody on dry-run',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'},budgetNative:{directory:'/var/lib/lares/budget-native'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding(),budgetNative:{directory:'/var/lib/lares/budget-native'}}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   mkdirSync(join(prefix,'var/lib/lares/budget-native'),{recursive:true});
   const result=run([...base(),'--dry-run']);expect(result.code).toBe(0);expect(idx(/budget-financial.ts/)).toBe(-1);expect(changes()).toEqual([]);
 });
 it('refuses a failed live and fallback financial freeze before service stop or drop',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding()}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
-  stub('docker','case " $* " in *" budget-financial.ts "*|*" /app/services/keeper/bin/budget-financial.ts "*) exit 1 ;; *" psql "*) echo "0 0 0" ;; *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE" ;; esac');
+  stub('docker',`case "$*" in *"config --format json"*) printf '{"services":{"db":{"image":"postgres:16"}}}\\n'; exit 0 ;; esac; case " $* " in *" budget-financial.ts "*|*" /app/services/keeper/bin/budget-financial.ts "*) exit 1 ;; *" psql "*) echo "0 0 0" ;; *" pg_restore "*" -f - "*) cat >/dev/null; cat "$LEDGER_FILE" ;; esac`);
   stub('pnpm','exit 1');
   const result=run(base());expect(result.code).toBe(78);expect(result.all).toContain('not durably acknowledged');
   expect(logLines().filter(line=>/compose.* stop|dropdb|createdb|pg_restore.* -d /.test(line))).toEqual([]);
@@ -519,7 +587,7 @@ it('refuses an unbound existing financial directory instead of treating it as a 
 });
 
 it('reports prepared restored data as recovery-required without keeper or runtime readiness instructions',()=>{
-  write('etc/lares/keeper.json',JSON.stringify({project:'lares',budgetFinancial:{directory:'/var/lib/lares/budget-financial'}}));
+  write('etc/lares/keeper.json',keeperConfig({budgetFinancial:financialBinding()}));
   mkdirSync(join(prefix,'var/lib/lares/budget-financial'),{recursive:true});
   const result=run(base());expect(result.code).toBe(0);expect(result.all).toContain('Financial recovery is required');expect(result.all).toContain('keeper startup refuses');
   expect(result.all).not.toContain('Sign in to the console');expect(result.all).not.toContain('Apply each agent');expect(result.all).not.toContain('keeper started');expect(result.all).toContain('Keep agents stopped');

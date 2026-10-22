@@ -39,6 +39,15 @@ function dropRetiredRoleBindings(value: unknown): unknown {
     return kept;
 }
 const db = z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/), passwordFile: path }).strict();
+function passwordFreeDatabaseUrl(username: string, requireDatabaseName = true) {
+    return z.string().url().superRefine((value, ctx) => {
+        try {
+            const url = new URL(value);
+            if (!['postgres:', 'postgresql:'].includes(url.protocol) || decodeURIComponent(url.username) !== username || url.password || (requireDatabaseName && !url.pathname.slice(1)) || [...url.searchParams.keys()].some(key=>/pass|secret/i.test(key)))
+                ctx.addIssue({ code: 'custom', message: `must be a password-free PostgreSQL URL for ${username}` });
+        } catch { ctx.addIssue({ code: 'custom', message: `must be a password-free PostgreSQL URL for ${username}` }); }
+    });
+}
 const defaultBindings = z.partialRecord(role, runtimeBindingsSchema).superRefine((bindings, ctx) => {
     for (const [key, binding] of Object.entries(bindings))
         if (binding && binding.role !== key)
@@ -50,9 +59,9 @@ export const lifecycleSchema = z.object({
     network: z.string().min(1), subnet: z.string().min(1), reservedAddresses: z.array(z.string()),
     composeFile: path, egressDir: path, imageByRole: z.preprocess(dropRetiredRoleEntries, z.object({ 'chief-of-staff': image, creative: image }).strict()),
     proxyContainer: z.string().regex(/^lares-[a-z0-9_-]+$/), squidImage: image, firewallImage: image,
-    adminDb: db, workflowTemplate: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/), workflowOwner: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/),
+    adminDb: db.extend({ database: z.string().refine(value=>value==='postgres','must be postgres'), user: z.string().refine(value=>value==='lares_workflow_provisioner','must be lares_workflow_provisioner') }), workflowTemplate: z.string().regex(/^[a-z][a-z0-9_]{0,62}$/), workflowOwner: z.string().refine(value=>value==='lares_workflow_owner','must be lares_workflow_owner'),
     // Installation-only master switch: definitions cannot turn schedules on by themselves.
-    runtime: z.object({ schedulesLive: z.boolean().default(false), databaseUrl: z.string().url(), workflowServer: z.string().url(), gatewayUrl: z.string().url(), proxyUrl: z.string().url(), passwordFile: path,
+    runtime: z.object({ schedulesLive: z.boolean().default(false), databaseUrl: passwordFreeDatabaseUrl('lares_app'), workflowServer: passwordFreeDatabaseUrl('lares_workflow', false), gatewayUrl: z.string().url(), proxyUrl: z.string().url(), passwordFile: path, workflowPasswordFile: path,
         // Exact entries retain existing/external-gateway installations. A fresh on-box
         // installation instead supplies its admin key and lets the keeper mint one stable,
         // budgeted virtual key per agent under its managed secrets root.

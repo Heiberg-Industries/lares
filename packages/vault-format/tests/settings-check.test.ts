@@ -18,13 +18,14 @@ const FULL: NodeJS.ProcessEnv = {
   DATABASE_URL: "postgres://proof@db/proof",
   WORKFLOW_POSTGRES_URL: "postgres://proof@db/proof",
   DATABASE_PASSWORD_FILE: "/run/secrets/database-password",
+  WORKFLOW_POSTGRES_PASSWORD_FILE: "/run/secrets/workflow-password",
   GATEWAY_URL: "http://gateway:4000",
   GATEWAY_KEY_FILE: "/run/secrets/gateway-key",
   LARES_AGENT_NAME: "helper",
   LARES_DEFINITION_DIR: "/definition",
 };
 
-const GOOD_FILES = new Set(["/run/secrets/database-password", "/run/secrets/gateway-key"]);
+const GOOD_FILES = new Set(["/run/secrets/database-password", "/run/secrets/workflow-password", "/run/secrets/gateway-key"]);
 
 /** A file probe with no real files: everything named in FULL is present, readable and non-empty;
  *  anything else does not exist. */
@@ -59,7 +60,7 @@ describe("what a missing setting says", () => {
     const dummyProbe: ProbeFile = () => ({ exists: false, readable: false, empty: true });
     const report = settingsReport(checkSettings("chief-of-staff", {}, dummyProbe));
     const lines = report.split("\n").filter((l) => l.startsWith("  - "));
-    expect(lines.length).toBe(7);
+    expect(lines.length).toBe(8);
     expect(lines[0]).toContain("DATABASE_URL");
   });
 
@@ -88,10 +89,12 @@ describe("what a missing setting says", () => {
     const dir = mkdtempSync(join(tmpdir(), "settings-check-"));
     try {
       const secretPath = join(dir, "gateway-key");
-      const otherFilePath = join(dir, "database-password"); // a stand-in for the other *_FILE
+      const otherFilePath = join(dir, "database-password"); // a stand-in for another *_FILE
+      const workflowFilePath = join(dir, "workflow-password");
       const secretBytes = "disposable-fixture-only";
       writeFileSync(secretPath, secretBytes);
       writeFileSync(otherFilePath, "also-disposable");
+      writeFileSync(workflowFilePath, "distinctly-disposable");
 
       // A "real" probe: it reads the file to decide exists/readable/empty, exactly like a real
       // caller (startup, doctor) would — but it only ever RETURNS the three booleans.
@@ -104,7 +107,7 @@ describe("what a missing setting says", () => {
           return { exists: false, readable: false, empty: true };
         }
       };
-      const env = { ...FULL, GATEWAY_KEY_FILE: secretPath, DATABASE_PASSWORD_FILE: otherFilePath };
+      const env = { ...FULL, GATEWAY_KEY_FILE: secretPath, DATABASE_PASSWORD_FILE: otherFilePath, WORKFLOW_POSTGRES_PASSWORD_FILE: workflowFilePath };
 
       const fine = checkSettings("chief-of-staff", env, realProbe);
       expect(fine).toEqual([]);

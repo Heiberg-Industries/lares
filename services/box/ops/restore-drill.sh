@@ -70,12 +70,12 @@ else
   COMPOSE=(-f "$DB_COMPOSE_DIR/compose.yaml" -f "$DB_COMPOSE_DIR/compose.override.yaml")
   DEFAULT_RESTORE_PATHS='/srv/lares /opt/agent-box'
 fi
-# The database and role this installation uses. Same overridable names ops/install.sh,
-# ops/update.sh and lib/db.ts read, with the same defaults — an installation that kept the
-# installation-specific database and role names sets PGDATABASE and PGUSER in this script's
-# environment. See §3.
-DB_USER="${PGUSER:-lares}"
+# The rehearsal creates/drops scratch databases and restores ownership/ACLs, so it uses the
+# explicit offline operator credential in a short-lived database client container.
+DB_USER=lares_operator
 DB_NAME="${PGDATABASE:-lares_state}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$SCRIPT_DIR/engine-run.sh"
 # Same meaning as in backup-verify.sh: the path whose presence proves an archive
 # actually carries the databases, not just everything around them.
 REQUIRED_PATH="${BACKUP_REQUIRED_PATH:-/var/backups/pg}"
@@ -168,8 +168,7 @@ drill_db_name() {
 
 psql_exec_c() {
   local dbname="$1" sql="$2"
-  docker compose "${COMPOSE[@]}" \
-    exec -T db psql -U "$DB_USER" -d "$dbname" -v ON_ERROR_STOP=1 -c "$sql"
+  operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$dbname" -v ON_ERROR_STOP=1 -c "$sql"
 }
 
 # CREATE DATABASE cannot run inside a transaction/against the database being created,
@@ -276,15 +275,13 @@ SQL
   )
   local recorded=1
   if command -v timeout >/dev/null 2>&1; then
-    if printf '%s\n' "$sql" | timeout 20 docker compose "${COMPOSE[@]}" \
-          exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    if printf '%s\n' "$sql" | OPERATOR_DB_TIMEOUT=20 operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
     fi
   else
-    if printf '%s\n' "$sql" | docker compose "${COMPOSE[@]}" \
-          exec -T db psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    if printf '%s\n' "$sql" | operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
           -v ok="$ok" -v detail="$detail" -v target="$target" >/dev/null 2>&1
     then
       recorded=0
@@ -407,8 +404,7 @@ fi
 # write. `pg_tables` (not information_schema.tables) so views never inflate the count.
 table_count() {
   local dbname="$1"
-  docker compose "${COMPOSE[@]}" \
-    exec -T db psql -U "$DB_USER" -d "$dbname" -tAc \
+  operator_db_run "${COMPOSE[@]}" -- psql -U "$DB_USER" -d "$dbname" -tAc \
     "SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname NOT IN ('pg_catalog','information_schema')" \
     2>/dev/null | tr -d '\r' | tr -d ' '
 }
@@ -425,8 +421,7 @@ for dumpfile in "${dumps[@]}"; do
 
   # The 29 September current-layout drill confirmed that pg_restore reads
   # custom-format dumps from stdin through the database container.
-  docker compose "${COMPOSE[@]}" \
-      exec -T db pg_restore --no-owner -U "$DB_USER" -d "$drill_db" < "$dumpfile" \
+  operator_db_run "${COMPOSE[@]}" -- pg_restore -U "$DB_USER" -d "$drill_db" < "$dumpfile" \
     || fail "pg_restore into $drill_db failed for $dumpfile — the archived dump for $db does not restore cleanly"
 
   drill_count=$(table_count "$drill_db") || fail "could not read the table count of restored database $drill_db"
