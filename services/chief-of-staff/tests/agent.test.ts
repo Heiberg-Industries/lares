@@ -27,7 +27,10 @@ vi.mock('eve/context', () => ({
   }),
 }));
 vi.mock('@lares/agent-kit/private-console-surface', () => ({ verifyPrivateConsoleModel: async () => undefined }));
-vi.mock('../agent/lib/model-purpose.js', () => ({ claimModelPurposeForInvocation: async () => undefined }));
+vi.mock('../agent/lib/model-purpose.js', () => ({
+  claimModelPurposeForInvocation: async () => undefined,
+  prepareModelPurposeInvocation: () => undefined,
+}));
 
 describe("chief-of-staff agent config", () => {
   let dir: string;

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MockLanguageModelV3 } from 'ai/test';
+import type { DynamicResolveContext } from 'eve/tools';
 import * as privateSurface from '../src/private-console-surface.js';
 import { currentModelInvocation } from '../src/model-invocation.js';
 import { DEFAULT_MAX_OUTPUT_TOKENS, guardDefinitionModel, resolveDefinitionForModel, assertModelDefinitionReady, pinSessionGatewayAlias, sessionGatewayModel, definitionModel } from '../src/definition-model.js';
@@ -90,13 +91,13 @@ describe('the agent model resolver', () => {
   });
 
   it('reads the definition once and reuses the pin on every later step of the session', async () => {
-    const resolveAlias = vi.fn(async (_sessionId: string | undefined) => 'tenant-brain');
+    const resolveAlias = vi.fn(async (_sessionId: string | undefined, _session: DynamicResolveContext['session'] | undefined) => 'tenant-brain');
     const provider = vi.fn((alias: string) => new MockLanguageModelV3({ modelId: alias }));
     const step = stepOf(definitionModel({ resolveAlias, provider }));
     const first = await step(event, { session: session('session-one') } as never);
     const second = await step(event, { session: session('session-one') } as never);
     // ONE read for the conversation — the contract `session.started` used to carry.
-    expect(resolveAlias.mock.calls).toEqual([['session-one']]);
+    expect(resolveAlias.mock.calls).toEqual([['session-one', session('session-one')]]);
     // ...and every step still rebuilds the provider from the pinned alias, because eve keeps a
     // live provider object only for the step it was selected in.
     expect(provider.mock.calls).toEqual([['tenant-brain'], ['tenant-brain']]);
@@ -112,7 +113,7 @@ describe('the agent model resolver', () => {
     try {
       const context = { session: session('original-session') };
       const originalEvent = { type: 'step.started', data: { turnId: 'original-turn', sequence: 2, stepIndex: 3 } };
-      const resolveAlias = vi.fn(async (_id: string | undefined) => 'fixture-brain');
+      const resolveAlias = vi.fn(async (_id: string | undefined, _capturedSession: DynamicResolveContext['session'] | undefined) => 'fixture-brain');
       const providerCall = vi.fn(async () => {
         expect(currentModelInvocation()).toMatchObject({
           session: { id: 'original-session' },
@@ -127,7 +128,7 @@ describe('the agent model resolver', () => {
       originalEvent.data.sequence = 5;
       release();
       const selection = await selected;
-      expect(resolveAlias).toHaveBeenCalledExactlyOnceWith('original-session');
+      expect(resolveAlias).toHaveBeenCalledExactlyOnceWith('original-session', session('original-session'));
       expect(verify).toHaveBeenCalledWith({ session: session('original-session') });
       await expect((selection.model as MockLanguageModelV3).doGenerate({ prompt: [] })).rejects.toThrow('captured provider reached');
       expect(providerCall).toHaveBeenCalledTimes(1);
