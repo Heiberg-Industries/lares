@@ -17,6 +17,12 @@ export const PUBLIC_DOCS = Object.freeze([
   Object.freeze({ id: "using-the-console", sourcePath: "docs/how-to/using-the-console.md", filePath: "pages/using-the-console.md", title: "Using the console", route: "/docs/console" }),
 ]);
 
+export type PublicDocId = typeof PUBLIC_DOCS[number]["id"];
+export const PUBLIC_DOC_IDS = Object.freeze(PUBLIC_DOCS.map((page) => page.id)) as readonly [
+  PublicDocId,
+  ...PublicDocId[],
+];
+
 export interface PublicDocsIdentity {
   readonly release: string;
   readonly sourceCommit: string;
