@@ -35,6 +35,20 @@ import { docRenderHash } from "../lib/pull-sync.js";
 import { makeCreateScope } from "../lib/desk-scope.js";
 import { sha256 } from "../lib/wiki-sync.js";
 
+/** The real composition roots call poolFromEnv(), whose app password must come from a file. */
+async function setTestDatabasePasswordFile(connectionString: string): Promise<() => Promise<void>> {
+  const dir = await mkdtemp(join(tmpdir(), "notion-sync-db-secret-"));
+  const passwordFile = join(dir, "database-password");
+  await writeFile(passwordFile, `${decodeURIComponent(new URL(connectionString).password)}\n`, { mode: 0o600 });
+  const previous = process.env.DATABASE_PASSWORD_FILE;
+  process.env.DATABASE_PASSWORD_FILE = passwordFile;
+  return async () => {
+    if (previous === undefined) delete process.env.DATABASE_PASSWORD_FILE;
+    else process.env.DATABASE_PASSWORD_FILE = previous;
+    await rm(dir, { recursive: true, force: true });
+  };
+}
+
 /** A vault with one passing file and two failing (aliased-wikilink) files, one
  *  under wiki/ and one under desks/example-service/ — shared by every runFidelityOnce test. */
 async function withFidelityVault(fn: (vaultPath: string) => Promise<void>): Promise<void> {
@@ -626,6 +640,7 @@ describe("runAdoptionReportOnce — the adoption report, through the real compos
     prevEnv = {
       PGHOST: process.env.PGHOST, PGPORT: process.env.PGPORT, PGDATABASE: process.env.PGDATABASE,
       PGUSER: process.env.PGUSER, PGPASSWORD: process.env.PGPASSWORD,
+      DATABASE_PASSWORD_FILE: process.env.DATABASE_PASSWORD_FILE,
       NOTION_SYNC_CONFIG: process.env.NOTION_SYNC_CONFIG, NOTION_TOKEN: process.env.NOTION_TOKEN,
     };
     // No PG* vars set to anything reachable — see "never opens a database
@@ -635,6 +650,7 @@ describe("runAdoptionReportOnce — the adoption report, through the real compos
     delete process.env.PGDATABASE;
     delete process.env.PGUSER;
     delete process.env.PGPASSWORD;
+    delete process.env.DATABASE_PASSWORD_FILE;
     process.env.NOTION_SYNC_CONFIG = cfgPath;
     process.env.NOTION_TOKEN = "test-notion-token";
   });
@@ -958,11 +974,13 @@ describe("runFidelityOnce — record: true persists via replaceFidelity, real Po
   // to point PG* at this container for the duration of the test.
   let tdb: TestDb;
   let db: Pool;
-  let prevEnv: Record<string, string | undefined>;
+  let prevEnv: Record<string, string | undefined> = {};
+  let cleanupPasswordFile: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     tdb = await startTestDb();
     db = tdb.pool;
+    cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
     const url = new URL(tdb.connectionString);
     prevEnv = {
       PGHOST: process.env.PGHOST,
@@ -983,6 +1001,7 @@ describe("runFidelityOnce — record: true persists via replaceFidelity, real Po
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    await cleanupPasswordFile?.();
     await tdb?.stop();
   });
 
@@ -1033,11 +1052,13 @@ describe("the proposals surface (listOpenProposals / approve / reject / resolve)
   let tdb: TestDb;
   let db: Pool;
   let vaultPath: string;
-  let prevEnv: Record<string, string | undefined>;
+  let prevEnv: Record<string, string | undefined> = {};
+  let cleanupPasswordFile: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
     tdb = await startTestDb();
     db = tdb.pool;
+    cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
     vaultPath = await mkdtemp(join(tmpdir(), "notion-sync-proposals-cli-"));
     await mkdir(join(vaultPath, "desks", "example-service"), { recursive: true });
 
@@ -1083,6 +1104,7 @@ describe("the proposals surface (listOpenProposals / approve / reject / resolve)
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    await cleanupPasswordFile?.();
     await rm(vaultPath, { recursive: true, force: true });
     await tdb?.stop();
   });
@@ -1601,7 +1623,8 @@ describe("makeDocRender, reconcile and enable-two-way (real Postgres, fake Notio
   let tdb: TestDb;
   let db: Pool;
   let vaultPath: string;
-  let prevEnv: Record<string, string | undefined>;
+  let prevEnv: Record<string, string | undefined> = {};
+  let cleanupPasswordFile: (() => Promise<void>) | undefined;
 
   const DESK = "desks/example-service";
   // runEnableTwoWay's live leg also refuses a file with no lares_origin
@@ -1613,6 +1636,7 @@ describe("makeDocRender, reconcile and enable-two-way (real Postgres, fake Notio
   beforeAll(async () => {
     tdb = await startTestDb();
     db = tdb.pool;
+    cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
     vaultPath = await mkdtemp(join(tmpdir(), "notion-sync-t7-"));
     await mkdir(join(vaultPath, DESK), { recursive: true });
     await mkdir(join(vaultPath, "wiki"), { recursive: true });
@@ -1656,6 +1680,7 @@ describe("makeDocRender, reconcile and enable-two-way (real Postgres, fake Notio
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    await cleanupPasswordFile?.();
     await rm(vaultPath, { recursive: true, force: true });
     await tdb?.stop();
   });
@@ -2165,13 +2190,15 @@ describe("syncArchiveExcludedOnce — real Postgres, fake Notion", () => {
   let db: Pool;
   let vaultPath: string;
   let cfgPath: string;
-  let prevEnv: Record<string, string | undefined>;
+  let prevEnv: Record<string, string | undefined> = {};
+  let cleanupPasswordFile: (() => Promise<void>) | undefined;
 
   const DESK = "acme";
 
   beforeAll(async () => {
     tdb = await startTestDb();
     db = tdb.pool;
+    cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
     vaultPath = await mkdtemp(join(tmpdir(), "notion-sync-archive-excluded-"));
 
     cfgPath = join(vaultPath, "config.json");
@@ -2213,6 +2240,7 @@ describe("syncArchiveExcludedOnce — real Postgres, fake Notion", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    await cleanupPasswordFile?.();
     await rm(vaultPath, { recursive: true, force: true });
     await tdb?.stop();
   });
@@ -2323,13 +2351,15 @@ describe("the Notion-owned wiring, through the real composition roots", () => {
   let db: Pool;
   let vaultPath: string;
   let cfgPath: string;
-  let prevEnv: Record<string, string | undefined>;
+  let prevEnv: Record<string, string | undefined> = {};
+  let cleanupPasswordFile: (() => Promise<void>) | undefined;
 
   const DESK = "acme";
 
   beforeAll(async () => {
     tdb = await startTestDb();
     db = tdb.pool;
+    cleanupPasswordFile = await setTestDatabasePasswordFile(tdb.connectionString);
     vaultPath = await mkdtemp(join(tmpdir(), "notion-sync-owned-wiring-"));
     await mkdir(join(vaultPath, DESK), { recursive: true });
     // A real git repo: createVaultFile commits what it writes (that is the whole
@@ -2375,6 +2405,7 @@ describe("the Notion-owned wiring, through the real composition roots", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    await cleanupPasswordFile?.();
     await rm(vaultPath, { recursive: true, force: true });
     await tdb?.stop();
   });
