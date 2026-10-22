@@ -98,7 +98,7 @@ try:
     console_signing=secrets.token_hex(32)
     incarnation=str(uuid.uuid4())
     owner='first-use-owner';members=['first-use-member-a','first-use-member-b'];agent='proof-agent';alias='lares-brain'
-    write_secret('app-password',application_password);write_secret('financial-database-password',financial_password)
+    write_raw_secret('app-password',application_password);write_raw_secret('financial-database-password',financial_password)
     write_secret('workflow-password',workflow_password);write_secret('route-password',route_password)
     (secrets_dir/'workflow-provisioner-password').write_text(workflow_provisioner_password+'\n')
     (secrets_dir/'workflow-provisioner-password').chmod(0o600)
