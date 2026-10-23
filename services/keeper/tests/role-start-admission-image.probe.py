@@ -259,24 +259,40 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
 
 def start_database() -> None:
     pg_password = secrets.token_hex(20)
+    global stage
+    stage = "database-container-start"
     docker("run", "--detach", "--name", db_name, "--network", network, "--network-alias", "db",
            "--env", "POSTGRES_PASSWORD=" + pg_password, "--env", "POSTGRES_DB=lares_state", DB_IMAGE)
+    proof["stages"]["databaseContainerStarted"] = True
+    stage = "database-ready-tcp"
     deadline = time.monotonic() + 90
     while time.monotonic() < deadline:
-        ready = docker("exec", db_name, "pg_isready", "-U", "postgres", "-d", "lares_state", check=False, timeout=8)
+        # The Postgres image starts a temporary initialization server on its Unix socket
+        # before the final server is listening. Check the Compose network alias so this
+        # readiness gate cannot accept that temporary socket-only server.
+        ready = docker("exec", db_name, "pg_isready", "-h", "db", "-p", "5432",
+                       "-U", "postgres", "-d", "lares_state", check=False, timeout=8)
         if ready.returncode == 0:
             break
         time.sleep(0.25)
     else:
         raise ProbeFailure("postgres-ready-timeout")
+    proof["stages"]["databaseTcpReady"] = True
     password = (secrets_dir / "database-password").read_text(encoding="ascii").strip()
     workflow_password = (secrets_dir / "workflow-password").read_text(encoding="ascii").strip()
-    setup = ("CREATE ROLE lares_app LOGIN SUPERUSER PASSWORD '" + password + "';\n" +
-             "CREATE ROLE lares_workflow LOGIN SUPERUSER PASSWORD '" + workflow_password + "';\n" +
-             "CREATE DATABASE lares_workflow OWNER lares_workflow;\n")
-    db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", input_data=setup)
+    stage = "database-role-creation"
+    roles = ("CREATE ROLE lares_app LOGIN SUPERUSER PASSWORD '" + password + "';\n" +
+             "CREATE ROLE lares_workflow LOGIN SUPERUSER PASSWORD '" + workflow_password + "';\n")
+    db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", input_data=roles)
+    proof["stages"]["databaseRolesCreated"] = True
+    stage = "workflow-database-creation"
+    db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres",
+            input_data="CREATE DATABASE lares_workflow OWNER lares_workflow;\n")
+    proof["stages"]["workflowDatabaseCreated"] = True
+    stage = "database-baseline"
     db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "lares_state",
             input_data=(REPO / "services/box/sql/001_baseline.sql").read_bytes(), timeout=120)
+    proof["stages"]["databaseBaselineApplied"] = True
     proof["stages"]["disposableDatabase"] = True
 
 
