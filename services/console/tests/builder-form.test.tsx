@@ -56,6 +56,13 @@ it('says plainly when a started agent is not answering yet, and when it runs',()
  render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:false,reason:null,running:true,healthy:true}})}/>);
  expect(document.body.innerHTML).toContain('Running. Saved connections are applied.');
 });
+it('shows current native activation hold ahead of pending details and offers no restart action',()=>{
+ render(<DefinitionForm {...base} initial={startInitial({runtime:{pending:true,reason:'Native budget activation required',running:false,healthy:null}})}/>);
+ expect(document.body.textContent).toContain('Native budget activation is required before this agent can start.');
+ expect(document.body.textContent).not.toContain('Connection changes are pending.');
+ expect(document.body.textContent).not.toContain('Apply connection changes (restarts agent)');
+ expect(document.body.textContent).not.toContain('Start agent (applies saved definition)');
+});
 it('shows a grant the engine no longer knows, and removes it only when asked',()=>{
  const base0=startInitial();
  const definition={...base0.definition,grants:[...base0.definition.grants,{capability:'atlas',scope:'read'}],autonomy:{...base0.definition.autonomy,atlas:'gated'}} as any;
