@@ -31,6 +31,7 @@ const COMMITTED_CADDYFILE = join(here, "..", "ops", "Caddyfile");
 /** The gateway's start script, committed once and installed — never re-generated, never
  *  transcribed. Same repo-root resolution tests/gateway-start-script.test.ts already uses. */
 const COMMITTED_GATEWAY_START = join(here, "..", "..", "..", "images", "gateway-runtime", "start.sh");
+const COMMITTED_GATEWAY_ADMISSION = join(here, "..", "..", "..", "images", "gateway-runtime", "gateway_admission.py");
 
 /** The pnpm this machine has, by absolute path — see the `pnpm` stub below. */
 const REAL_NODE = execFileSync("/bin/sh", ["-c", "command -v node"], { encoding: "utf8" }).trim();
@@ -248,13 +249,27 @@ describe("the stack the installer brings up", () => {
       read_only: true, bind: { create_host_path: false },
     });
     const gateway = doc.services["lares-gateway"];
-    const mount = (gateway.volumes as string[]).find((v) => v.startsWith(`${join(prefix, "etc", "lares", "gateway-start.sh")}:`));
+    const mount = (gateway.volumes as unknown[]).find((v) => typeof v === "string" && v.startsWith(`${join(prefix, "etc", "lares", "gateway-start.sh")}:`));
     expect(mount, "the compose file mounts no start script into the gateway").toBeTruthy();
     const [source, target] = String(mount).split(":");
-    expect(gateway.entrypoint, "the mounted path and the executed path have drifted apart")
-      .toEqual([target]);
+    expect(gateway.entrypoint).toEqual([
+      "python", "-I", "/opt/lares-gateway/gateway_admission.py", "guard",
+      "/run/lares-maintenance/admission", receipt.installationId, String(receipt.epoch), "--",
+    ]);
+    expect(gateway.command).toEqual([target]);
     expect(existsSync(source!), `${source} was never written`).toBe(true);
     expect(readFileSync(source!, "utf8")).toBe(readFileSync(COMMITTED_GATEWAY_START, "utf8"));
+    const guardSource = join(prefix, "etc", "lares", "gateway-start.sh.gateway_admission.py");
+    expect(gateway.volumes).toContainEqual({
+      type: "bind", source: guardSource, target: "/opt/lares-gateway/gateway_admission.py",
+      read_only: true, bind: { create_host_path: false },
+    });
+    expect(readFileSync(guardSource, "utf8")).toBe(readFileSync(COMMITTED_GATEWAY_ADMISSION, "utf8"));
+    expect(statSync(guardSource).mode & 0o777).toBe(0o644);
+    expect(gateway.volumes).toContainEqual({
+      type: "bind", source: admissionDir, target: "/run/lares-maintenance/admission",
+      read_only: true, bind: { create_host_path: false },
+    });
   });
 
   // The mode is not decoration: an entrypoint the container cannot execute is a gateway that

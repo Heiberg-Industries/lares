@@ -160,6 +160,23 @@ describe("the generated stack compose file", () => {
     expect(() => renderStackCompose(MANIFEST, { ...OPTS, maintenanceAdmission: { ...OPTS.maintenanceAdmission, epoch: 0 } })).toThrow(/admission identity/);
   });
 
+  it("starts the gateway only through the fixed Python guard and exact readonly custody binds", () => {
+    const gateway = (parse(renderStackCompose(MANIFEST, OPTS)) as any).services["lares-gateway"];
+    expect(gateway.entrypoint).toEqual([
+      "python", "-I", "/opt/lares-gateway/gateway_admission.py", "guard",
+      "/run/lares-maintenance/admission", OPTS.maintenanceAdmission.installationId, "7", "--",
+    ]);
+    expect(gateway.command).toEqual(["/usr/local/bin/lares-gateway-start"]);
+    expect(gateway.volumes).toContainEqual({
+      type: "bind", source: `${OPTS.gatewayStartScript}.gateway_admission.py`,
+      target: "/opt/lares-gateway/gateway_admission.py", read_only: true, bind: { create_host_path: false },
+    });
+    expect(gateway.volumes).toContainEqual({
+      type: "bind", source: OPTS.maintenanceAdmission.directory,
+      target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false },
+    });
+  });
+
   it("refuses when the manifest names no image for a service this file needs", () => {
     const { console: _drop, ...images } = MANIFEST.images;
     expect(() => renderStackCompose({ ...MANIFEST, images }, OPTS)).toThrow(/console/);
@@ -317,27 +334,19 @@ describe("the generated stack compose file", () => {
       .toContain(`${OPTS.gatewayConfigFile}:/etc/litellm/config.yaml:ro`);
   });
 
-  // ONE PLACE NAMES THE CONFIG PATH, and it is the start script. Previously the
-  // service carried `command: ["--config", "/etc/litellm/config.yaml"]` AND the script ended
-  // `exec litellm --config /etc/litellm/config.yaml`: two spellings of one path, and once the
-  // script is the entrypoint the compose one is argv handed to a script that never reads `$@`.
-  // Silently dead, and free to drift from the path this same file mounts the config at.
-  it("makes the engine's own start script the entrypoint and lets it alone name the config path", () => {
+  // The guard replaces upstream's default CMD with the one fixed script it admits.
+  it("makes the fixed guard admit only the mounted engine start script", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     const gateway = doc.services["lares-gateway"];
-    const mount = (gateway.volumes as string[]).find((v) => v.startsWith(`${OPTS.gatewayStartScript}:`));
+    const mount = (gateway.volumes as unknown[]).find((v) => typeof v === "string" && v.startsWith(`${OPTS.gatewayStartScript}:`));
     expect(mount, "the gateway's start script is not mounted into the container at all").toBeTruthy();
     const [, target, mode] = String(mount).split(":");
-    // The two strings that must agree or the container starts nothing: what the volume mounts
-    // the script AT, and what the entrypoint EXECUTES. Asserted against each other, never
-    // against a literal transcribed twice.
-    expect(gateway.entrypoint).toEqual([target]);
+    expect(gateway.entrypoint).toEqual([
+      "python", "-I", "/opt/lares-gateway/gateway_admission.py", "guard",
+      "/run/lares-maintenance/admission", OPTS.maintenanceAdmission.installationId, "7", "--",
+    ]);
+    expect(gateway.command).toEqual([target]);
     expect(mode, "the start script is mounted writable").toBe("ro");
-    expect(
-      gateway.command,
-      "the compose `command:` is back — it is argv to a start script that ignores $@, so it " +
-        "is a second, dead spelling of the config path the script already names",
-    ).toBeUndefined();
   });
 
   it("gives the gateway file-only credentials and its own database coordinates", () => {

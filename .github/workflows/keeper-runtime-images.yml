@@ -104,7 +104,7 @@ jobs:
         run: sudo env CI=true python3 -B services/keeper/tests/runtime-image.probe.py lares-runtime:test
       - name: Prove guarded gateway ingress and physical dispatch in pinned upstream image
         if: matrix.role == 'chief-of-staff'
-        run: python3 -B services/keeper/tests/gateway-admission-image.probe.py lares-runtime:test "$RUNNER_TEMP/gateway-admission-proof.json"
+        run: sudo env CI=true HOME="$HOME" PATH="$PATH" python3 -B services/keeper/tests/gateway-admission-image.probe.py lares-runtime:test "$RUNNER_TEMP/gateway-admission-proof.json"
       - uses: actions/upload-artifact@v4
         if: always() && matrix.role == 'chief-of-staff'
         with:

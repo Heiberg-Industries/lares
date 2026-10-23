@@ -1,5 +1,9 @@
 #!/bin/sh
 set -eu
+# This is deliberately the first action after shell safety flags. Direct starts are admitted
+# only by the receipt-bound helper that owns inherited fd 9; identity environment alone is
+# not authority. Keep this before every secret read and LiteLLM migration effect.
+python -I /opt/lares-gateway/gateway_admission.py verify
 : "${MODEL_PROVIDER_KEY_FILE:?MODEL_PROVIDER_KEY_FILE required}"
 : "${GATEWAY_MASTER_KEY_FILE:?GATEWAY_MASTER_KEY_FILE required}"
 : "${DATABASE_PASSWORD_FILE:?DATABASE_PASSWORD_FILE required}"
