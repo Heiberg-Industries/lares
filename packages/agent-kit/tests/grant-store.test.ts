@@ -318,7 +318,7 @@ describe('agent grants on disposable PostgreSQL',()=>{
     await db.query('UPDATE agent_definitions SET hash=$1 WHERE name=$2',[outsideDefinitionHash,agent.id]);
 
     const accessExpected=await expected();
-    await resolveWait(accessExpected,'UPDATE agent_access SET revision=revision+1 WHERE agent_name=$1',[agent.id],
+    await resolveWait(accessExpected,"UPDATE agent_access SET revision=nextval('resource_access_revision_seq') WHERE agent_name=$1",[agent.id],
       'SELECT 1 FROM agent_access WHERE agent_name=$1 AND revision=$2',undefined);
 
     await set([named('second')]);
