@@ -345,7 +345,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         runner_call = next(node for node in ast.walk(self.tree)
             if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "client_result" for target in node.targets))
-        self.assertEqual(ast.unparse(runner_call.value), "invoke_compiled_client()")
+        self.assertEqual(ast.unparse(runner_call.value),
+            "invoke_first_use_and_capture(invoke_compiled_client, lambda: gateway_model_request_diagnostic(network + '-gateway'), proof)")
 
     def test_phase_reader_is_strict_bounded_and_redacts_invalid_content(self) -> None:
         phase_constant = next(node for node in self.tree.body if isinstance(node, ast.Assign)
