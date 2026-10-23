@@ -59,6 +59,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "backup-verify.sh");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 let dir: string;
 let binDir: string;
@@ -76,9 +77,15 @@ let drillRowFile: string;
 let resticArgsLog: string;
 let operatorPasswordFile: string;
 let composeConfigLog: string;
+let admissionPrefix: string;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "backup-verify-"));
+  admissionPrefix = join(dir, "root");
+  mkdirSync(admissionPrefix);
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", admissionPrefix, "172.30.0.0/24", "--confirm-fresh", "--test-owner"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
   binDir = join(dir, "bin");
   mkdirSync(binDir);
   envFile = join(dir, "backup.env");
@@ -254,6 +261,8 @@ function run(env: Record<string, string> = {}) {
         AGENT_BOX_BACKUP_ENV: envFile,
         BACKUP_SRV_ROOT: srvRoot,
         LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+        LARES_MAINTENANCE_TESTING: "1",
+        LARES_MAINTENANCE_TEST_PREFIX: admissionPrefix,
         ...env,
       },
       encoding: "utf8",

@@ -3,6 +3,7 @@
 set -euo pipefail
 umask 077
 HERE="$(cd "$(dirname "$0")" && pwd)"
+ORIGINAL_ARGS=("$@")
 PREFIX="${LARES_PREFIX:-}"
 DRY=0
 CHECK=0
@@ -10,7 +11,7 @@ while [ "$#" -gt 0 ]; do
  case "$1" in --prefix) PREFIX="$2";shift 2;; --dry-run) DRY=1;shift;; --check) CHECK=1;shift;; *) echo 'recovery refresh: unknown argument' >&2;exit 78;; esac
 done
 PREFIX="${PREFIX%/}"
-SCRIPTS='backup.sh export.sh restore.sh backup-verify.sh restore-drill.sh setup-backups.sh vault-storage.sh engine-run.sh refresh-recovery.sh'
+SCRIPTS='backup.sh export.sh restore.sh backup-verify.sh restore-drill.sh setup-backups.sh maintenance-custody.py vault-storage.sh engine-run.sh refresh-recovery.sh'
 UNITS='lares-backup.service lares-backup.timer lares-backup-verify.service lares-backup-verify.timer lares-restore-drill.service lares-restore-drill.timer'
 # Validate every ancestor as well as the destination before changing installed files.
 python3 - "$PREFIX" <<'PYSAFE'
@@ -45,6 +46,16 @@ done
 RECOVERY_IMAGE="${LARES_ENGINE_IMAGE:-}"
 [ -n "$RECOVERY_IMAGE" ] || RECOVERY_IMAGE=$(cat "$HERE/../engine-image" 2>/dev/null || true)
 printf '%s' "$RECOVERY_IMAGE" | grep -Eq '^[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}$' || { echo 'recovery refresh: pinned verifier image unavailable' >&2;exit 78; }
+ADMISSION_PREFIX="${PREFIX:-/}"
+TEST_OWNER_FLAG=""
+[ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && TEST_OWNER_FLAG=1
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" = 1 ]; then
+ if [ "$TEST_OWNER_FLAG" = 1 ];then python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" refresh-recovery --test-owner || exit 78
+ else python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" refresh-recovery || exit 78;fi
+else
+ if [ "$TEST_OWNER_FLAG" = 1 ];then exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" refresh-recovery --test-owner -- "${ORIGINAL_ARGS[@]}"
+ else exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" refresh-recovery -- "${ORIGINAL_ARGS[@]}";fi
+fi
 mkdir -p "$PREFIX/opt/lares" "$PREFIX/etc/systemd/system"
 for name in $SCRIPTS $UNITS; do
  case "$name" in *.service|*.timer) to="$PREFIX/etc/systemd/system/$name";mode=0644;; *) to="$PREFIX/opt/lares/$name";mode=0750;; esac

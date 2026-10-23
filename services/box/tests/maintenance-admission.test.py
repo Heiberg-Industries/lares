@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import importlib.util
 import ast
+import fcntl
 import json
 import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +45,361 @@ class MaintenanceAdmissionTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def _installed_bundle(self) -> tuple[Path, Path]:
+        prefix = self.root / "installed-host"
+        prefix.mkdir()
+        custody.prepare_fresh(prefix, "172.30.0.0/24", expected_uid=self.owner)
+        installed = prefix / "opt/lares"
+        installed.mkdir(parents=True)
+        for source in OPS.iterdir():
+            if source.is_file():
+                shutil.copy2(source, installed / source.name)
+        return prefix, installed
+
+    def _test_env(self, prefix: Path, **values: str) -> dict[str, str]:
+        env = os.environ.copy()
+        env.update({"LARES_MAINTENANCE_TESTING": "1",
+                    "LARES_MAINTENANCE_TEST_PREFIX": str(prefix),
+                    "PATH": "/usr/bin:/bin"})
+        env.update(values)
+        return env
+
+    def _run_installed(self, prefix: Path, installed: Path, script: str,
+                       *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+        env = self._test_env(prefix, **(extra_env or {}))
+        if script == "setup-backups.sh":
+            bindir = self.root / "bin"
+            bindir.mkdir(exist_ok=True)
+            id_stub = bindir / "id"
+            id_stub.write_text("#!/bin/sh\necho 0\n", encoding="utf8")
+            id_stub.chmod(0o755)
+            env["PATH"] = f"{bindir}:/usr/bin:/bin"
+        return subprocess.run(["/bin/bash", str(installed / script), *args], env=env,
+                              text=True, capture_output=True, timeout=5)
+
+    def test_installed_backup_timer_bundle_refuses_before_settings_and_effects(self) -> None:
+        prefix, installed = self._installed_bundle()
+        custody.transition(prefix / "var/lib/lares-maintenance/custody",
+                           prefix / "var/lib/lares-maintenance/admission",
+                           custody.validate(prefix)["installationId"], 1, "entering",
+                           expected_uid=self.owner)
+        sentinel = self.root / "settings-were-sourced"
+        settings = self.root / "backup.env"
+        settings.write_text(f"touch '{sentinel}'\n", encoding="utf8")
+        effects = self.root / "effects.log"
+        bindir = self.root / "bin"
+        bindir.mkdir(exist_ok=True)
+        for name in ("mktemp", "restic", "docker", "psql", "curl", "systemctl", "rm"):
+            stub = bindir / name
+            stub.write_text(f"#!/bin/sh\nprintf '%s\\n' '{name}' >> '{effects}'\nexit 0\n", encoding="utf8")
+            stub.chmod(0o755)
+        settings_env = {"AGENT_BOX_BACKUP_ENV": str(settings), "LARES_ENGINE_IMAGE": "example.invalid/engine@sha256:" + "a" * 64}
+        cases = [
+            ("backup.sh", ()),
+            ("backup-verify.sh", ()),
+            ("restore-drill.sh", ()),
+            ("setup-backups.sh", ("--prefix", str(prefix), "--dry-run")),
+            ("refresh-recovery.sh", ("--prefix", str(prefix))),
+        ]
+        for script, args in cases:
+            with self.subTest(script=script):
+                result = self._run_installed(prefix, installed, script, *args,
+                                             extra_env={**settings_env, "PATH": f"{bindir}:/usr/bin:/bin"})
+                self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+                self.assertIn("maintenance admission: refused", result.stderr)
+                self.assertFalse(sentinel.exists())
+                self.assertFalse(effects.exists())
+
+    def test_run_normal_holds_same_shared_descriptor_through_bash_and_fd9(self) -> None:
+        prefix, installed = self._installed_bundle()
+        gate = prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+        if sys.platform.startswith("linux"):
+            self.assertNotEqual(str(gate.stat().st_ino), format(gate.stat().st_ino, "x"),
+                                "the Linux test must exercise differing decimal/hex inode spellings")
+        script = installed / "backup.sh"
+        script.write_text("""#!/bin/bash
+set -euo pipefail
+python3 \"$(dirname \"$0\")/maintenance-custody.py\" assert-normal-held \"$LARES_MAINTENANCE_TEST_PREFIX\" backup --test-owner
+python3 - \"$1\" \"$2\" <<'PY'
+import json,os,sys
+os.write(1,(json.dumps({'args':sys.argv[1:],'lease':(os.fstat(197).st_dev,os.fstat(197).st_ino),'fd9':os.fstat(9).st_ino})+'\\n').encode())
+PY
+""", encoding="utf8")
+        script.chmod(0o750)
+        fd9_path = self.root / "fd9-marker"
+        fd9_path.write_text("fd9 remains open", encoding="utf8")
+        fd9 = os.open(fd9_path, os.O_RDONLY)
+        saved9 = -1
+        try:
+            try:
+                saved9 = os.dup(9)
+            except OSError:
+                pass
+            os.dup2(fd9, 9, inheritable=True)
+            os.set_inheritable(9, True)
+            result = subprocess.run(["python3", str(installed / "maintenance-custody.py"),
+                                     "run-normal", str(prefix), "backup", "--test-owner", "--",
+                                     "alpha", "two words"], env=self._test_env(prefix),
+                                    pass_fds=(9,), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            observed = json.loads(result.stdout)
+            self.assertEqual(observed["args"], ["alpha", "two words"])
+            self.assertEqual(tuple(observed["lease"]), (gate.stat().st_dev, gate.stat().st_ino))
+            self.assertEqual(observed["fd9"], fd9_path.stat().st_ino)
+        finally:
+            if saved9 >= 0:
+                os.dup2(saved9, 9, inheritable=True)
+                os.close(saved9)
+            else:
+                os.close(9)
+            os.close(fd9)
+
+    def test_inherited_open_but_unlocked_and_forged_environment_refuse(self) -> None:
+        prefix, installed = self._installed_bundle()
+        script = installed / "backup.sh"
+        script.write_text("#!/bin/sh\necho ran > '$LARES_MAINTENANCE_TEST_PREFIX/ran'\n", encoding="utf8")
+        script.chmod(0o750)
+        gate = prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+        gate_fd = os.open(gate, os.O_RDONLY)
+        saved197 = -1
+        try:
+            try:
+                saved197 = os.dup(197)
+            except OSError:
+                pass
+            os.dup2(gate_fd, 197, inheritable=True)
+            result = subprocess.run(["python3", str(installed / "maintenance-custody.py"),
+                                     "run-normal", str(prefix), "backup", "--test-owner", "--"],
+                                    env=self._test_env(prefix), pass_fds=(197,), text=True,
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 78)
+            self.assertFalse((prefix / "ran").exists())
+            forged = subprocess.run(["python3", str(installed / "maintenance-custody.py"),
+                                     "assert-normal-held", str(prefix), "backup", "--test-owner"],
+                                    env=self._test_env(prefix, LARES_MAINTENANCE_ADMITTED="1"),
+                                    text=True, capture_output=True, timeout=5)
+            self.assertEqual(forged.returncode, 78)
+        finally:
+            if saved197 >= 0:
+                os.dup2(saved197, 197, inheritable=True)
+                os.close(saved197)
+            else:
+                os.close(197)
+            os.close(gate_fd)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux /proc/self/fdinfo is the production proof")
+    def test_inherited_exclusive_lease_is_rejected_without_conversion(self) -> None:
+        prefix, installed = self._installed_bundle()
+        ran = self.root / "ran"
+        script = installed / "backup.sh"
+        script.write_text(f"#!/bin/sh\ntouch '{ran}'\n", encoding="utf8")
+        script.chmod(0o750)
+        gate = prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+        gate_fd = os.open(gate, os.O_RDONLY)
+        fcntl.flock(gate_fd, fcntl.LOCK_EX)
+        saved197 = -1
+        try:
+            try:
+                saved197 = os.dup(197)
+            except OSError:
+                pass
+            os.dup2(gate_fd, 197, inheritable=True)
+            result = subprocess.run(
+                ["python3", str(installed / "maintenance-custody.py"),
+                 "run-normal", str(prefix), "backup", "--test-owner", "--"],
+                env=self._test_env(prefix),
+                pass_fds=(197,), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+            self.assertFalse(ran.exists())
+            self.assertEqual(custody._linux_lock_mode_for_fd(197, os.fstat(gate_fd)), "WRITE")
+        finally:
+            if saved197 >= 0:
+                os.dup2(saved197, 197, inheritable=True)
+                os.close(saved197)
+            else:
+                os.close(197)
+            fcntl.flock(gate_fd, fcntl.LOCK_UN)
+            os.close(gate_fd)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux fdinfo ties evidence to fd197")
+    def test_unrelated_shared_holder_cannot_authorize_unlocked_fd197(self) -> None:
+        prefix, installed = self._installed_bundle()
+        ran = self.root / "ran"
+        script = installed / "backup.sh"
+        script.write_text(f"#!/bin/sh\ntouch '{ran}'\n", encoding="utf8")
+        script.chmod(0o750)
+        gate = prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+        gate_info = gate.stat()
+        holder_fd = os.open(gate, os.O_RDONLY)
+        unlocked_fd = os.open(gate, os.O_RDONLY)
+        fcntl.flock(holder_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        saved197 = -1
+        try:
+            try:
+                saved197 = os.dup(197)
+            except OSError:
+                pass
+            os.dup2(unlocked_fd, 197, inheritable=True)
+            self.assertIsNone(custody._linux_lock_mode_for_fd(197, gate_info))
+            result = subprocess.run(
+                ["python3", str(installed / "maintenance-custody.py"),
+                 "run-normal", str(prefix), "backup", "--test-owner", "--"],
+                env=self._test_env(prefix, LARES_MAINTENANCE_HOLDER_PID=str(os.getpid())),
+                pass_fds=(197,), text=True, capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+            self.assertFalse(ran.exists())
+            self.assertEqual(custody._linux_lock_mode_for_fd(holder_fd, gate_info), "READ")
+            self.assertIsNone(custody._linux_lock_mode_for_fd(197, gate_info))
+        finally:
+            if saved197 >= 0:
+                os.dup2(saved197, 197, inheritable=True)
+                os.close(saved197)
+            else:
+                os.close(197)
+            os.close(unlocked_fd)
+            fcntl.flock(holder_fd, fcntl.LOCK_UN)
+            os.close(holder_fd)
+
+    def test_wrong_inherited_descriptor_refuses_without_starting_the_fixed_script(self) -> None:
+        prefix, installed = self._installed_bundle()
+        ran = self.root / "ran"
+        script = installed / "backup.sh"
+        script.write_text(f"#!/bin/sh\ntouch '{ran}'\n", encoding="utf8")
+        script.chmod(0o750)
+        decoy = self.root / "decoy"
+        decoy.write_text("not the service gate", encoding="utf8")
+        decoy_fd = os.open(decoy, os.O_RDONLY)
+        saved197 = -1
+        try:
+            try:
+                saved197 = os.dup(197)
+            except OSError:
+                pass
+            os.dup2(decoy_fd, 197, inheritable=True)
+            result = subprocess.run(
+                ["python3", str(installed / "maintenance-custody.py"),
+                 "run-normal", str(prefix), "backup", "--test-owner", "--"],
+                env=self._test_env(prefix), pass_fds=(197,), text=True,
+                capture_output=True, timeout=5)
+            self.assertEqual(result.returncode, 78, result.stdout + result.stderr)
+            self.assertFalse(ran.exists())
+        finally:
+            if saved197 >= 0:
+                os.dup2(saved197, 197, inheritable=True)
+                os.close(saved197)
+            else:
+                os.close(197)
+            os.close(decoy_fd)
+
+    def test_lock_and_intent_open_races_to_fifo_fail_without_blocking(self) -> None:
+        gate_path = self.admission_dir / "service-gate.lock"
+        gate_fd = os.open(self.admission_dir, custody._DIRECTORY_FLAGS)
+        original_open = os.open
+        replaced = False
+
+        def swap_gate(name: str | bytes, flags: int, *args: object, **kwargs: object) -> int:
+            nonlocal replaced
+            if name == "service-gate.lock" and kwargs.get("dir_fd") == gate_fd and not replaced:
+                replaced = True
+                gate_path.unlink()
+                os.mkfifo(gate_path, 0o444)
+            return original_open(name, flags, *args, **kwargs)
+
+        try:
+            started = time.monotonic()
+            with patch.object(custody.os, "open", side_effect=swap_gate):
+                with self.assertRaisesRegex(ValueError, "changed while opening"):
+                    custody._open_fixed_file(gate_fd, "service-gate.lock", 0o444, self.owner)
+            self.assertTrue(replaced)
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            os.close(gate_fd)
+
+        gate_path.unlink()
+        gate_path.write_bytes(b"")
+        gate_path.chmod(0o444)
+        admission_fd, directory_info = custody._open_directory(self.admission_dir, 0o755, self.owner)
+        intent_path = self.admission_dir / "intent.json"
+        replaced = False
+
+        def swap_intent(name: str | bytes, flags: int, *args: object, **kwargs: object) -> int:
+            nonlocal replaced
+            if name == "intent.json" and kwargs.get("dir_fd") == admission_fd and not replaced:
+                replaced = True
+                intent_path.unlink()
+                os.mkfifo(intent_path, 0o444)
+            return original_open(name, flags, *args, **kwargs)
+
+        try:
+            started = time.monotonic()
+            with patch.object(custody.os, "open", side_effect=swap_intent):
+                with self.assertRaisesRegex(ValueError, "intent changed while opening"):
+                    custody._read_fd(admission_fd, self.admission_dir, directory_info, self.owner)
+            self.assertTrue(replaced)
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            os.close(admission_fd)
+            intent_path.unlink(missing_ok=True)
+            intent_path.write_bytes(custody._record(self.installation_id, 1, "normal"))
+            intent_path.chmod(0o444)
+
+    def test_command_lock_contention_has_a_monotonic_deadline(self) -> None:
+        path = self.custody_dir / "command.lock"
+        first = os.open(path, os.O_RDWR)
+        second = os.open(path, os.O_RDWR | os.O_NONBLOCK)
+        try:
+            fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            started = time.monotonic()
+            with self.assertRaisesRegex(ValueError, "busy"):
+                custody._lock_with_deadline(second, fcntl.LOCK_EX, "test admission")
+            elapsed = time.monotonic() - started
+            self.assertGreaterEqual(elapsed, 0.9)
+            self.assertLess(elapsed, 1.5)
+        finally:
+            fcntl.flock(first, fcntl.LOCK_UN)
+            os.close(first)
+            os.close(second)
+
+    def test_entering_publishes_while_an_admitted_process_drains(self) -> None:
+        prefix, installed = self._installed_bundle()
+        started, release = self.root / "started", self.root / "release"
+        script = installed / "backup.sh"
+        script.write_text(f"""#!/bin/bash
+set -euo pipefail
+python3 \"$(dirname \"$0\")/maintenance-custody.py\" assert-normal-held \"$LARES_MAINTENANCE_TEST_PREFIX\" backup --test-owner
+touch '{started}'
+while [ ! -e '{release}' ]; do sleep 0.01; done
+""", encoding="utf8")
+        script.chmod(0o750)
+        command = ["python3", str(installed / "maintenance-custody.py"), "run-normal",
+                   str(prefix), "backup", "--test-owner", "--"]
+        process = subprocess.Popen(command, env=self._test_env(prefix), text=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 5
+            while not started.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(started.exists(), "the admitted job did not start")
+            receipt = custody.validate(prefix)
+            custody.transition(prefix / "var/lib/lares-maintenance/custody",
+                               prefix / "var/lib/lares-maintenance/admission",
+                               receipt["installationId"], 1, "entering", expected_uid=self.owner)
+            self.assertEqual(custody.read_intent(prefix / "var/lib/lares-maintenance/admission",
+                                                 expected_uid=self.owner)["state"], "entering")
+            nested = subprocess.run(command, env=self._test_env(prefix), text=True,
+                                     capture_output=True, timeout=5)
+            self.assertEqual(nested.returncode, 78)
+            gate_fd = os.open(prefix / "var/lib/lares-maintenance/admission/service-gate.lock", os.O_RDONLY)
+            try:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(gate_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(gate_fd)
+        finally:
+            release.touch()
+            stdout, stderr = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 0, stdout + stderr)
 
     def test_state_is_durable_one_way_and_keeps_service_lock_inode(self) -> None:
         lock = self.admission_dir / "service-gate.lock"
