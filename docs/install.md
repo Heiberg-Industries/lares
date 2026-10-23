@@ -14,9 +14,10 @@ switches over once; see the [rc.12 notes](releases/rc.12-notes.md#switching-a-se
 Installing through a coding agent (Claude Code, Codex)? Point it at
 [Installing Lares with a coding agent](install-with-an-agent.md); it drives this guide for you.
 
-The installer stops at the console's "create your first agent" page. Creating the first agent
-and talking to it is done in the console; [Using the console](how-to/using-the-console.md) is a
-tour of its pages.
+The installer prepares the infrastructure and Console, then leaves the owner to sign in, confirm
+this host and complete explicit model budget setup. Creating the first agent and talking to it
+happens afterwards in the console; [Using the console](how-to/using-the-console.md) is a tour of
+its pages.
 
 ## 1. What you need
 
@@ -28,7 +29,8 @@ tour of its pages.
   The installer checks this before it writes anything and stops if the name does not resolve to
   this machine.
 - **A model provider key.** The shipped gateway configuration uses an Anthropic API key. A chat
-  subscription does not include API access. The installer tests the key with a real call.
+  subscription does not include API access. The installer does not test the key with a model call;
+  after sign-in, the owner completes explicit model budget setup before creating an agent.
 - **A Google OAuth client for console sign-in.** Create an OAuth web client in your Google Cloud
   project and register the redirect address `https://example.com/api/auth/callback` (with your
   own domain). You need its client id and client secret. Connecting Gmail and Calendar later
@@ -187,11 +189,13 @@ bash get-lares.sh --release <release-name> --yes \
   --model-key-file /root/model-key.txt
 ```
 
-The installer then, in order: generates the secrets, writes the four answers, renders and starts
-the stack, proves the model key with a real call through the gateway, creates and migrates the
-database, makes you the first member of the installation, configures and starts the keeper, and
-checks that the console answers at `https://example.com`. Only after it succeeds does
-`get-lares.sh` switch `/opt/lares/current` to the release and install the `lares` command.
+The installer then, in order: generates the secrets, writes the four answers, renders the stack,
+prepares and verifies the database offline, starts Console and Caddy, makes you the first member
+of the installation, configures the keeper and checks that Console answers at
+`https://example.com`. It does not start the gateway or make a model call. After the owner
+confirms this host and completes explicit model budget setup, they can create an agent. Only after
+the installer succeeds does `get-lares.sh` switch `/opt/lares/current` to the release and install
+the `lares` command.
 
 It is safe to run again after any failure, with the same command. A secret or answer that already
 exists is left as it is. An existing `/srv/lares` makes the run an update of what is there, not a
@@ -207,15 +211,19 @@ does not restore. To restore onto a new server, see section 9. The
 
 ## 6. First start and checking it worked
 
-When the installer finishes it prints `https://example.com/agents/new`. It says plainly that no
-agent is running yet. To check the stack:
+When the installer finishes it prints `https://example.com/sign-in`. Infrastructure and Console
+are ready. The installer does not start or stop the gateway: a fresh install leaves it stopped,
+and a repair leaves an existing gateway as it was. No model call or conversation was tested. Sign
+in to confirm this host and finish explicit model budget setup before creating an agent.
+To check the stack:
 
 ```bash
 docker compose -f /opt/lares/compose.yaml ps
 docker compose -f /opt/lares/compose.yaml logs --tail 200 console caddy
 ```
 
-You should see `db`, `console`, `lares-gateway` and `caddy` running. The keeper and the egress
+You should see `db`, `console` and `caddy` running. The gateway starts during explicit model
+budget setup. The keeper and the egress
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
 `env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps`.
 
@@ -249,9 +257,10 @@ use the stored identity binding. This bootstrap is only for the first owner on a
 installation. Existing installations or a setup that is no longer fresh require separately
 reviewed recovery; do not set or edit the protected mapping by hand.
 
-Create your first agent on `/agents/new`. To end the session, use **Sign out** at the bottom of
-the sidebar. To admit another member, create an invitation from **Members**; changing the
-legacy email list has no effect on admission.
+After confirming this host and completing model budget setup, create your first agent on
+`/agents/new`. To end the session, use **Sign out** at the bottom of the sidebar. To admit another
+member, create an invitation from **Members**; changing the legacy email list has no effect on
+admission.
 
 To check the installation from the command line, run `lares doctor`, a read-only check that says in
 plain sentences what is wrong and what to type to fix it (settings, database, migrations, owner,

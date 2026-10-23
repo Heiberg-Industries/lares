@@ -90,6 +90,8 @@ export interface KeeperConfigOptions {
   /** The schedules master switch of an earlier keeper.json, kept across installer runs. */
   readonly previousSchedulesLive?: boolean;
   readonly previousBudgetFinancial?: KeeperConfig["budgetFinancial"];
+  readonly previousBudgetNative?: KeeperConfig["budgetNative"];
+  readonly previousGatewayBudget?: KeeperConfig["gatewayBudget"];
   /** Optional Console model-purpose signer. Omit only when the installation has no custody file. */
   readonly modelPurposeConsoleSigningKeyFile?: string | null;
   /** Dedicated shared socket subdirectory for the chief-only model-purpose claim socket. */
@@ -123,6 +125,8 @@ export function renderKeeperConfig(
       previousDb.passwordFile !== financialDb.passwordFile)
       throw new Error("Existing financial custody does not use the explicit financial database credential; operator recovery is required.");
   }
+  if (opts.previousBudgetNative && !opts.previousBudgetFinancial)
+    throw new Error("Existing native custody has no prepared financial custody binding; operator recovery is required.");
 
   const tzEnvironment: Record<string, string> = opts.ownerHomeTz ? { OWNER_HOME_TZ: opts.ownerHomeTz } : {};
   return {
@@ -134,6 +138,8 @@ export function renderKeeperConfig(
         db: financialDb,
       },
     } : {}),
+    ...(opts.previousBudgetNative ? { budgetNative: opts.previousBudgetNative } : {}),
+    ...(opts.previousGatewayBudget ? { gatewayBudget: opts.previousGatewayBudget } : {}),
     // The installer owns this signer in its protected secrets directory. Keeper reads the
     // exact file through the existing read-only installer-secrets mount; it is never copied.
     vaultConsoleSigningKeyFile: join(opts.secretsDir, "console-vault-signing-key"),

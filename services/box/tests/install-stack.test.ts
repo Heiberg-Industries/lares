@@ -1,11 +1,9 @@
-// The stack comes up BEFORE the model key is tested, and the release file the
-// installer was given is the one it uses.
+// The installer renders the release it was given and starts only the services needed
+// for infrastructure readiness; gateway activation belongs to explicit budget setup.
 //
-// THE ORDER IS THE POINT. The model check used to sit inside run_wizard and call
-// http://lares-gateway:4000 before anything had started that container, so a fresh install
-// always died with "the model key did not work" — naming the one thing that was not wrong. The
-// order test below reads the shared stub log and asserts that `docker compose … up -d` is
-// written there BEFORE `lares-doctor --test-model`. No Docker, no network, no server.
+// THE ORDER IS THE POINT. The order test reads the shared stub log and verifies database
+// bootstrap removal precedes Console+Caddy startup, without starting the gateway or calling
+// the model provider. No Docker, no network, no server.
 //
 // UNLIKE THE OTHER INSTALLER TESTS, THE RENDER HERE IS NOT FAKED. `pnpm` is still a stub, but
 // it hands the ONE call it is given for `render-stack` to the real pnpm, so the release file is
@@ -13,8 +11,8 @@
 // manifest,lib/stack-compose}.ts — the same discipline tests/update-script.test.ts uses for its
 // own release read. So "a release named by a tag is refused" is a test of the engine's own
 // rule, and "the stack file is written" is a test of the real renderer, not of a stub restating
-// either. Everything else that would touch this machine (docker, migrate, first-owner,
-// lares-doctor, chown, …) is a logging stub, and every write lands in a temp --prefix.
+// either. Everything else that would touch this machine (docker, migrate, first-owner, chown,
+// …) is a logging stub, and every write lands in a temp --prefix.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
@@ -260,7 +258,8 @@ describe("the stack the installer brings up", () => {
   it("starts the online stack only after the database-only bootstrap", () => {
     okRun(run(["--release", releaseFile]));
     const callsLog = calls();
-    expect(callsLog).toMatch(/docker compose -f \S+compose\.yaml up -d console lares-gateway caddy/);
+    expect(callsLog).toMatch(/docker compose -f \S+compose\.yaml up -d console caddy/);
+    expect(callsLog).not.toMatch(/compose\.yaml up -d .*lares-gateway/);
     expect(callsLog.indexOf("compose.bootstrap.yaml down")).toBeLessThan(callsLog.indexOf("compose.yaml up -d console"));
   });
 
@@ -291,7 +290,7 @@ describe("the stack the installer brings up", () => {
   // LiteLLM publishes a `-non_root` image variant — the image comes from the release manifest, so the engine does not get
   // to assume the process reading this runs as root. A root-owned 0640 config is unreadable to
   // an unprivileged LiteLLM, which fails exactly the way the missing file did: the gateway
-  // never serves, and the model check blames the key. Nothing here is secret — the provider key
+  // never serves, and a gateway check could blame the key. Nothing here is secret — the provider key
   // is an `os.environ/…` reference, never a value.
   it("leaves the gateway's configuration readable by an unprivileged LiteLLM, not only by root", () => {
     okRun(run(["--release", releaseFile]));
@@ -304,10 +303,8 @@ describe("the stack the installer brings up", () => {
     ).not.toBe(0);
   });
 
-  // THE ORDER IS THE POINT, same as the model-check test below: a container mounts this file
-  // read-only at start, so a config written after `docker compose … up -d` is a config the
-  // gateway never sees. render-stack writes both files inside one call, logged here as one
-  // `pnpm … render-stack` line, so pinning that line against the stub log is pinning the write.
+  // The config remains prepared for explicit gateway activation. render-stack writes the config
+  // in the same call as the compose file, so it is ready before any later service start.
   it("writes the gateway's own configuration before the stack comes up", () => {
     okRun(run(["--release", releaseFile]));
     const rendered = at(/pnpm .*render-stack/);
@@ -322,39 +319,17 @@ describe("the stack the installer brings up", () => {
     ).toBeLessThan(up);
   });
 
-  // THE ORDER TEST. This is the defect the slice exists to close: the model check calls the
-  // gateway by its compose service name, so it can only answer once the stack is up. A right
-  // value checked too early is not something any other installer test can see.
-  it("tests the model key only after the gateway it calls is running", () => {
+  it("does not start the gateway or invoke the model check", () => {
     okRun(run(["--release", releaseFile]));
-    const up = at(/docker compose -f \S+compose\.yaml up -d/);
-    const check = at(/lares-doctor .*--test-model/);
-    expect(up, "the stack was never brought up").toBeGreaterThan(-1);
-    expect(check, "the model key was never tested").toBeGreaterThan(-1);
-    expect(
-      up,
-      "the model check ran before the stack was up. It calls the gateway by its compose " +
-        "service name, so there is nothing there to answer it yet, and the install dies saying " +
-        "the key is wrong when it is not. Fix: in install.sh's dispatch block, run_stack goes " +
-        "before run_model_check.",
-    ).toBeLessThan(check);
-  });
-
-  it("presents the gateway's master key to the check, never the model provider's own key", () => {
-    // F4's config sets general_settings.master_key, so LiteLLM authenticates callers against
-    // its master key or a DB-backed virtual key — never the Anthropic provider key. Before any
-    // per-agent key has been minted, the master key is the only credential it will accept.
-    okRun(run(["--release", releaseFile]));
-    const line = calls().split("\n").find((l) => l.includes("--test-model"))!;
-    expect(line).toContain("gateway-master-key");
-    expect(line).not.toContain("model-provider-key");
+    expect(calls()).not.toMatch(/--test-model|lares-doctor/);
+    expect(calls()).not.toMatch(/curl .*127\.0\.0\.1:4000/);
   });
 
   it("stops before the database when the stack cannot be brought up, and changes nothing else", () => {
     stub("docker", 'printf "%s %s\\n" "docker" "$*" >> "$STUB_LOG"\ncase "$*" in *"up -d"*) echo "docker: no such image" >&2; exit 1 ;; esac\nexit 0');
     const r = run(["--release", releaseFile]);
     expect(r.code).toBe(78);
-    expect(at(/lares-doctor .*--test-model/)).toBe(-1);
+    expect(calls()).not.toMatch(/lares-doctor|--test-model/);
     expect(calls()).not.toMatch(/pnpm -C .*migrate/);
     // Everything generated before this point survives, so a re-run resumes rather than restarts.
     expect(existsSync(join(prefix, "etc", "lares", "secrets", "token-enc-key"))).toBe(true);

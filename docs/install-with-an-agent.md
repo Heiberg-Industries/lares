@@ -199,9 +199,12 @@ bash get-lares.sh --release <release-name> --yes \
   --model-key-file /root/lares-model-key
 ```
 
-It takes several minutes: it writes secrets, renders and starts the stack, proves the model key
-with one real call, creates and migrates the database, makes the person the first member and starts
-the keeper. Running it again is always safe; nothing that already exists is overwritten.
+It takes several minutes: it writes secrets, prepares and verifies the database offline, starts
+Console and Caddy, makes the person the first member and prepares the keeper. It does not start or
+stop the gateway and makes no model call. A fresh install leaves the gateway stopped; a repair
+leaves an existing gateway as it was. The owner signs in to confirm this host and finish explicit
+model budget setup before creating an agent. Running it again is always safe; nothing that already
+exists is overwritten.
 
 What the exit code means, and what to do:
 
@@ -211,7 +214,7 @@ What the exit code means, and what to do:
 | 64 | Bad arguments, or an answer it could not use | Read the message. Usually a typo in a flag, a missing `--yes`, or a model key file that is not one clean line (have the person run the step 4 command again). |
 | 75 | A download, the image pull or a service did not work in time | Usually the internet connection, slow image pulls or a slow first start. Run the same command again. If it repeats, read `docker compose -f /opt/lares/compose.yaml logs --tail 200` and tell the person what it says. |
 | 77 | Not root | Reconnect as root. |
-| 78 | A check failed; the reason is printed | Do what the message says, then run the same command again. Common causes: the domain does not point at this server yet; the model key was refused (wrong key, or no API credit); the Google client file is missing or its ID is malformed. |
+| 78 | A check failed; the reason is printed | Do what the message says, then run the same command again. Common causes: the domain does not point at this server yet, or the Google client file is missing or its ID is malformed. The installer does not make a model-provider call. |
 
 When the run finished, remove the model key file. The installer has copied the key into its own
 secrets folder:
@@ -222,8 +225,10 @@ rm -f /root/lares-model-key
 
 ## 6. Check it worked
 
-The installer's last lines print `https://example.com/agents/new` and say that no agent runs yet.
-That is the expected end.
+The installer's last lines print `https://example.com/sign-in`. Infrastructure and Console are
+ready. The installer does not start or stop the gateway: a fresh install leaves it stopped, and a
+repair leaves an existing gateway as it was. No model call or conversation was tested. The owner
+signs in to confirm this host and finish explicit model budget setup before creating an agent.
 
 Check the stack:
 
@@ -232,8 +237,9 @@ docker compose -f /opt/lares/compose.yaml ps
 env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps
 ```
 
-The first should show `db`, `console`, `lares-gateway` and `caddy` running; the second the keeper
-and the egress proxy. Then check the console answers over HTTPS, from your own machine:
+The first should show `db`, `console` and `caddy` running; the gateway starts during explicit
+model budget setup. The second shows the keeper and egress proxy. Then check the console answers
+over HTTPS, from your own machine:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' https://example.com/
@@ -270,7 +276,8 @@ A successful installer run or email match alone does not prove sign-in worked.
 
 Stop here. These are the person's to do, in the console and with their own keys:
 
-- **The first agent.** They create it on `https://example.com/agents/new`.
+- **The first agent.** After confirming this host and completing model budget setup, they create
+  it on `https://example.com/agents/new`.
   [Using the console](how-to/using-the-console.md) is a tour of the pages.
 - **Backups.** The install does not switch them on. Tell the person, plainly, not to rely on the
   installation for anything they need to keep until backups are on. They run

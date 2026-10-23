@@ -9,6 +9,7 @@ const databaseConnectionSchema = z.object({ host: z.string().min(1), port: z.num
 export type KeeperDatabaseConfig = z.infer<typeof databaseConnectionSchema>;
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial'),db:databaseConnectionSchema.extend({user:z.literal('lares_financial')})}).strict();
 export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native'),reviewedPolicyFile:absolute.optional()}).strict();
+export const gatewayBudgetConfigSchema=z.object({serviceKeyFile:absolute}).strict();
 const configSchema = z.object({
   lifecycle: lifecycleSchema.optional(),
   /** Trusted identity written by the installer from the same ownerId used in role bindings.
@@ -19,7 +20,7 @@ const configSchema = z.object({
   credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),
   // Optional protected gateway service key only. No recovery bypass or console copy.
-  gatewayBudget: z.object({serviceKeyFile:absolute}).strict().optional(),
+  gatewayBudget: gatewayBudgetConfigSchema.optional(),
   // Optional installer-owned Vault signer. Kept separate from the Keeper's writable secrets
   // directory so the same protected file is never copied into role custody.
   vaultConsoleSigningKeyFile: absolute.optional(),
