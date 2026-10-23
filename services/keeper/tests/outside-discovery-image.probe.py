@@ -1,0 +1,948 @@
+"""Configured outside discovery proof; Linux disposable CI only."""
+import hashlib
+import ipaddress
+import json
+import os
+import pathlib
+import platform
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+from unittest.mock import patch
+
+DB_IMAGE = "docker.io/pgvector/pgvector@sha256:ccc6e83d6e35e931dc7c5def2022729d5a6c370318d099181995567ff1fb4d6b"
+repo = pathlib.Path(__file__).resolve().parents[3]
+self_test_mode = sys.argv[1:] == ["--self-test"]
+if self_test_mode:
+    keeper_ref = squid_ref = firewall_ref = expected_sha = output = ""
+else:
+    keeper_ref, squid_ref, firewall_ref, expected_sha, output = sys.argv[1:]
+report = {"format": 1, "source": os.environ.get("GITHUB_SHA"), "status": "not-started",
+          "checks": [], "unproven": [
+              "source spoof and missing selected source refusal",
+              "TLS/URL mismatch, malformed/cursor/depth/byte/stall refusals",
+              "abort physical closure and competing namespace ordering",
+              "delayed SQL expiry, validator lifetime and lost COMMIT acknowledgements",
+              "revocation lock orders, capacity, and graceful shutdown drain",
+              "unchanged executable head/candidate under a second consent",
+          ], "cleanupOkay": False}
+root = None
+network = None
+agent_container_id = None
+owner = uuid.uuid4().hex
+worker_container = "lares-outside-worker-" + owner[:10]
+worker_container_id = None
+resource_names = []
+worker_stopped = True
+cleanup_failures = []
+phase = "guards"
+
+
+def run(*args, input=None, timeout=90, check=True):
+    """Capture all command output; failure messages never echo config or credentials."""
+    try:
+        result = subprocess.run(args, input=input, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("fixture command timed out") from None
+    if check and result.returncode:
+        raise RuntimeError("fixture command failed")
+    return result
+
+
+def command(*args, input=None, timeout=90):
+    return run(*args, input=input, timeout=timeout).stdout.strip()
+
+
+def record(label, ok):
+    if not ok:
+        raise RuntimeError("proof assertion failed: " + label)
+    report["checks"].append(label)
+
+
+def write_secret(path, value, mode=0o600):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path.write_text(value, encoding="utf-8")
+    path.chmod(mode)
+
+
+def inspect_local_digest(reference, expected_tag):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9./:_-]*@sha256:[a-f0-9]{64}", reference):
+        raise RuntimeError("fixture image reference is not digest-pinned")
+    if not reference.startswith(expected_tag + "@sha256:"):
+        raise RuntimeError("fixture image digest does not match the loaded build tag")
+    result = run("docker", "image", "inspect", reference, "--format", "{{json .Id}}", check=False)
+    if result.returncode != 0:
+        raise RuntimeError("build-result digest does not resolve to the locally loaded image")
+    inspected = json.loads(result.stdout.strip())
+    if not isinstance(inspected, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", inspected):
+        raise RuntimeError("digest-pinned fixture image did not resolve locally")
+    return {"reference": reference, "imageId": inspected}
+
+
+def nft_host(*args, check=True):
+    name = "lares-outside-nft-" + owner[:10] + "-" + uuid.uuid4().hex[:6]
+    result = run("docker", "run", "--name", name, "--label", "lares.proof.owner=" + owner,
+                 "--network", "host", "--read-only", "--cap-drop", "ALL", "--cap-add", "NET_ADMIN",
+                 "--entrypoint", "nft", firewall_ref, *args, check=check, timeout=30)
+    remove_owned_container(name, owner, timeout=15)
+    return result
+
+
+def container_facts(name):
+    result = run("docker", "inspect", "--format",
+                 "{{json .Id}}|{{json .Config.Labels}}|{{json .State.Running}}|{{json .State.Status}}|{{json .State.ExitCode}}|{{json .Image}}|{{json .Mounts}}",
+                 name, check=False, timeout=15)
+    if result.returncode:
+        if re.fullmatch(r"[a-f0-9]{64}", name):
+            remaining = run("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "id=" + name,
+                            check=False, timeout=15)
+        else:
+            remaining = run("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter", "name=^/" + name + "$",
+                            check=False, timeout=15)
+        if remaining.returncode == 0 and not remaining.stdout.strip():
+            return None
+        raise RuntimeError("fixture container state could not be verified")
+    parts = result.stdout.strip().split("|")
+    if len(parts) != 7:
+        raise RuntimeError("fixture container ownership could not be verified")
+    try:
+        facts = [json.loads(part) for part in parts]
+    except json.JSONDecodeError:
+        raise RuntimeError("fixture container ownership could not be verified") from None
+    if not isinstance(facts[0], str) or not re.fullmatch(r"[a-f0-9]{64}", facts[0]):
+        raise RuntimeError("fixture container identity is invalid")
+    return {"id": facts[0], "labels": facts[1] or {}, "running": facts[2], "status": facts[3],
+            "exitCode": facts[4], "imageId": facts[5], "mounts": facts[6] or []}
+
+
+def remove_owned_container(name, expected_owner, timeout=30):
+    facts = container_facts(name)
+    if facts is None:
+        return True
+    if facts["labels"].get("lares.proof.owner") != expected_owner:
+        raise RuntimeError("fixture refused to remove a container without its exact owner label")
+    pinned_id = facts["id"]
+    if facts["running"] is True:
+        run("docker", "stop", "--time", "3", pinned_id, timeout=timeout)
+    facts = container_facts(pinned_id)
+    if facts is None:
+        return container_facts(name) is None
+    if facts["id"] != pinned_id or facts["labels"].get("lares.proof.owner") != expected_owner or facts["running"] is True:
+        raise RuntimeError("owned fixture container did not stop safely")
+    run("docker", "rm", pinned_id, timeout=timeout)
+    remaining_id = container_facts(pinned_id)
+    remaining_name = container_facts(name)
+    if remaining_name is not None and remaining_name["id"] != pinned_id:
+        raise RuntimeError("fixture name was replaced after ownership inspection")
+    return remaining_id is None and remaining_name is None
+
+
+def stop_pinned_worker(pinned_id, expected_owner):
+    facts = container_facts(pinned_id)
+    if facts is None:
+        return True, False
+    if facts["id"] != pinned_id or facts["labels"].get("lares.proof.owner") != expected_owner:
+        return False, False
+    stop_failed = False
+    if facts["running"] is True:
+        try:
+            stopped = run("docker", "stop", "--time", "3", pinned_id, check=False, timeout=15)
+            stop_failed = stopped.returncode != 0
+        except Exception:
+            stop_failed = True
+    try:
+        final = container_facts(pinned_id)
+    except Exception:
+        return False, True
+    stopped = final is None or (final["id"] == pinned_id and
+        final["labels"].get("lares.proof.owner") == expected_owner and final["running"] is False)
+    return stopped, stop_failed
+
+
+def stop_worker_then_helpers(pinned_id, expected_owner, root_path):
+    stopped, stop_failed = stop_pinned_worker(pinned_id, expected_owner)
+    if not stopped:
+        return False, stop_failed, False
+    remove_owned_docker_helpers(root_path)
+    return True, stop_failed, True
+
+
+def discover_owned_docker_helpers(root_path):
+    """Find only real ownedDocker helper children bound to this unique proof directory."""
+    ids = command("docker", "ps", "--all", "--quiet", "--no-trunc").splitlines()
+    if len(ids) > 2000 or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in ids):
+        raise RuntimeError("fixture helper inventory could not be verified")
+    expected_images = {report.get("images", {}).get("squid", {}).get("imageId"),
+                       report.get("images", {}).get("firewall", {}).get("imageId")}
+    sources = {str(root_path / "egress")}
+    matches = []
+    for container_id in ids:
+        result = run("docker", "inspect", "--format", "{{json .Id}}|{{json .Image}}|{{json .State.Running}}|{{json .Mounts}}",
+                     container_id, check=False, timeout=15)
+        if result.returncode:
+            raise RuntimeError("fixture helper inventory changed during inspection")
+        try:
+            identity, image_id, running, mounts = (json.loads(value) for value in result.stdout.strip().split("|"))
+        except (ValueError, json.JSONDecodeError):
+            raise RuntimeError("fixture helper inventory could not be parsed") from None
+        if not isinstance(mounts, list):
+            raise RuntimeError("fixture helper mount inventory is invalid")
+        if identity != container_id:
+            raise RuntimeError("fixture helper identity changed during inspection")
+        exact_mount = any(mount.get("Type") == "bind" and mount.get("Source") in sources for mount in mounts)
+        if exact_mount and image_id in expected_images:
+            matches.append({"id": identity, "running": running})
+    return matches
+
+
+def remove_owned_docker_helpers(root_path):
+    helpers = discover_owned_docker_helpers(root_path)
+    failed = False
+    for helper in helpers:
+        try:
+            if helper["running"] is True:
+                run("docker", "stop", "--time", "3", helper["id"], timeout=15)
+            facts = run("docker", "inspect", "--format", "{{json .Id}}|{{json .Image}}|{{json .State.Running}}|{{json .Mounts}}",
+                        helper["id"], check=False, timeout=15)
+            if facts.returncode:
+                continue
+            try:
+                identity, image_id, running, mounts = (json.loads(value) for value in facts.stdout.strip().split("|"))
+            except (ValueError, json.JSONDecodeError):
+                raise RuntimeError("fixture helper cleanup ownership could not be verified") from None
+            if identity != helper["id"] or image_id not in {
+                    report.get("images", {}).get("squid", {}).get("imageId"),
+                    report.get("images", {}).get("firewall", {}).get("imageId")} or running is True or not any(
+                        mount.get("Type") == "bind" and mount.get("Source") == str(root_path / "egress")
+                        for mount in mounts if isinstance(mount, dict)):
+                raise RuntimeError("fixture helper cleanup ownership could not be verified")
+            run("docker", "rm", helper["id"], timeout=15)
+        except Exception:
+            failed = True
+    if discover_owned_docker_helpers(root_path):
+        failed = True
+    if failed:
+        raise RuntimeError("owned Docker helpers did not all stop and disappear")
+
+
+def remove_labelled_containers(expected_owner):
+    ids = command("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter",
+                  "label=lares.proof.owner=" + expected_owner).splitlines()
+    if len(ids) > 64 or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in ids):
+        raise RuntimeError("fixture owned-container inventory is invalid")
+    failed = False
+    for container_id in ids:
+        try:
+            facts = container_facts(container_id)
+            if facts is None or facts["id"] != container_id or facts["labels"].get("lares.proof.owner") != expected_owner:
+                raise RuntimeError("fixture refused to remove a container without exact ownership")
+            if facts["running"] is True:
+                run("docker", "stop", "--time", "3", container_id, timeout=20)
+            facts = container_facts(container_id)
+            if facts is None:
+                continue
+            if facts["id"] != container_id or facts["labels"].get("lares.proof.owner") != expected_owner or facts["running"] is True:
+                raise RuntimeError("owned fixture container did not stop safely")
+            run("docker", "rm", container_id, timeout=20)
+            if container_facts(container_id) is not None:
+                raise RuntimeError("owned container ID remained after removal")
+        except Exception:
+            failed = True
+    remaining = command("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter",
+                        "label=lares.proof.owner=" + expected_owner)
+    if failed or remaining.strip():
+        raise RuntimeError("owned fixture container remained after cleanup")
+
+
+def cleanup_exact_network(name, expected_owner):
+    if not name:
+        return
+    ids = command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter", "name=^" + name + "$").splitlines()
+    if len(ids) > 1 or any(not re.fullmatch(r"[a-f0-9]{64}", value) for value in ids):
+        raise RuntimeError("fixture network inventory is ambiguous")
+    if not ids:
+        return
+    metadata = json.loads(command("docker", "network", "inspect", ids[0]))
+    if len(metadata) != 1 or metadata[0].get("Name") != name or metadata[0].get("Labels", {}).get("lares.proof.owner") != expected_owner:
+        raise RuntimeError("fixture refused to remove a network without exact ownership")
+    if metadata[0].get("Containers"):
+        raise RuntimeError("fixture network still has attached containers")
+    command("docker", "network", "rm", ids[0])
+    remaining = command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter", "name=^" + name + "$")
+    if remaining.strip():
+        raise RuntimeError("owned fixture network remained after cleanup")
+
+
+def remove_generated_firewall(root_path, expected_source):
+    table_lines = nft_host("list", "tables", check=False)
+    if table_lines.returncode:
+        raise RuntimeError("fixture firewall inventory could not be verified")
+    exists = any(line.strip() == "table inet lares_egress" for line in table_lines.stdout.splitlines())
+    if not exists:
+        return
+    installed = root_path / "egress" / "installed-stage"
+    try:
+        stage = installed.read_text(encoding="ascii").strip()
+    except OSError:
+        raise RuntimeError("fixture firewall ownership evidence is missing") from None
+    if not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", stage):
+        raise RuntimeError("fixture firewall stage identity is invalid")
+    generated = root_path / "egress" / (stage + ".nft")
+    try:
+        contents = generated.read_text(encoding="ascii")
+    except OSError:
+        raise RuntimeError("fixture generated firewall source is missing") from None
+    if "# Generated by keeper; apply the whole file atomically with nft -f." not in contents or \
+            not re.search(r"ip saddr != \{[^}]*\b" + re.escape(expected_source) + r"\b[^}]*\}", contents):
+        raise RuntimeError("fixture firewall stage does not identify its selected source")
+    nft_host("delete", "table", "inet", "lares_egress")
+    after = nft_host("list", "tables", check=False)
+    if after.returncode or any(line.strip() == "table inet lares_egress" for line in after.stdout.splitlines()):
+        raise RuntimeError("fixture firewall table remained after cleanup")
+
+
+def safe_cleanup(label, action):
+    global cleanup_failures
+    try:
+        action()
+        return True
+    except Exception:
+        cleanup_failures.append(label)
+        return False
+
+
+def import_worker_evidence(root_path):
+    """Accept only fixed worker fields and enum values; never copy arbitrary worker output."""
+    worker_path = root_path / "worker.json"
+    try:
+        value = json.loads(worker_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    valid_checks = {
+        "actual configured lares_app and lares_outside_custody logins",
+        "neutral definition, finite human session and real owner adoption/use grant",
+        "public saved lifecycle installed and acknowledged generated route without native authority",
+        "direct target traffic increments generated drop counter and closes TCP before TLS",
+        "normal consentAndDiscover returned bounded two-page JSON and SSE projection",
+        "durable result decrypts under generated key/AAD and rejects changed request identity",
+        "executable definition, ownership and applied state remain unchanged",
+    }
+    phases = {"configuration", "role identities", "neutral authorization fixture",
+              "generated route admission", "direct-path firewall counter", "worker"}
+    checks = value.get("checks")
+    failure = value.get("failure")
+    if not isinstance(checks, list) or any(not isinstance(item, str) or item not in valid_checks for item in checks):
+        return None
+    if value.get("success") is True and set(checks) != valid_checks:
+        return None
+    evidence = {"checks": checks, "firewallApplied": value.get("firewallApplied") is True,
+                "directTargetBlocked": value.get("directTargetBlocked") is True,
+                "success": value.get("success") is True}
+    if isinstance(failure, dict):
+        phase_value = failure.get("phase")
+        reason_value = failure.get("reason")
+        evidence["failure"] = {
+            "phase": phase_value if phase_value in phases else "worker",
+            "reason": reason_value if reason_value == "configured outside discovery worker failed" else "worker failed",
+        }
+    return evidence
+
+
+def offline_cleanup_self_test():
+    """Exercise partial starts, pinned names, stop recovery, timeout continuation and safe evidence."""
+    probe_owner = "a" * 32
+    container_id = "b" * 64
+    facts = {"id": container_id, "labels": {"lares.proof.owner": probe_owner},
+             "running": True, "status": "running", "exitCode": 0, "imageId": "sha256:" + "c" * 64, "mounts": []}
+    present = {container_id: facts}
+    actions = []
+
+    def fake_command(*args, **kwargs):
+        if args[:4] == ("docker", "ps", "--all", "--quiet"):
+            return "\n".join(present)
+        raise AssertionError("unexpected cleanup command")
+
+    def fake_facts(name):
+        return present.get(name)
+
+    def fake_run(*args, **kwargs):
+        actions.append(args[1])
+        if args[1] == "stop":
+            present[container_id]["running"] = False
+        elif args[1] == "rm":
+            present.pop(container_id, None)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with patch(__name__ + ".command", fake_command), patch(__name__ + ".container_facts", fake_facts), \
+            patch(__name__ + ".run", fake_run):
+        remove_labelled_containers(probe_owner)
+    if actions != ["stop", "rm"] or present:
+        raise RuntimeError("partial-start owner cleanup regression")
+
+    original_id, replacement_id = "d" * 64, "e" * 64
+    name_map = {"replaceable-worker": original_id}
+    by_id = {
+        original_id: {"id": original_id, "labels": {"lares.proof.owner": probe_owner}, "running": True},
+        replacement_id: {"id": replacement_id, "labels": {"lares.proof.owner": "f" * 32}, "running": True},
+    }
+    targeted = []
+
+    def replacement_facts(identity):
+        target = name_map.get(identity, identity)
+        return by_id.get(target)
+
+    def replacement_run(*args, **kwargs):
+        action, target = args[1], args[-1]
+        targeted.append((action, target))
+        if action == "stop" and target == original_id:
+            by_id[original_id]["running"] = False
+            name_map["replaceable-worker"] = replacement_id
+        elif action == "rm" and target == original_id:
+            by_id.pop(original_id, None)
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with patch(__name__ + ".container_facts", replacement_facts), patch(__name__ + ".run", replacement_run):
+        try:
+            remove_owned_container("replaceable-worker", probe_owner)
+        except RuntimeError:
+            pass
+        else:
+            raise RuntimeError("container-name replacement was not detected")
+    if targeted != [("stop", original_id), ("rm", original_id)] or replacement_id not in by_id:
+        raise RuntimeError("cleanup acted on a replacement container name")
+
+    timed_worker_id = "9" * 64
+    timed_worker = {"id": timed_worker_id, "labels": {"lares.proof.owner": probe_owner}, "running": True}
+    timed_actions = []
+    prior_timeout = True
+    worker_stopped = False
+    helper_cleanup = []
+
+    def timed_facts(identity):
+        return timed_worker if identity == timed_worker_id else None
+
+    def timed_run(*args, **kwargs):
+        timed_actions.append(args[1:])
+        if args[1] == "stop":
+            timed_worker["running"] = False
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    with patch(__name__ + ".container_facts", timed_facts), patch(__name__ + ".run", timed_run), \
+            patch(__name__ + ".remove_owned_docker_helpers", lambda path: helper_cleanup.append(path)):
+        worker_stopped, stop_failed, helpers_removed = stop_worker_then_helpers(
+            timed_worker_id, probe_owner, pathlib.Path("/fixture-root"))
+    if not prior_timeout or not worker_stopped or stop_failed or not helpers_removed or not helper_cleanup:
+        raise RuntimeError("verified worker stop did not release helper cleanup after the main timeout")
+    if not timed_actions or timed_actions[0][0:3] != ("stop", "--time", "3") or timed_actions[0][-1] != timed_worker_id:
+        raise RuntimeError("worker cleanup did not stop the pinned ID")
+
+    cleanup_failures.clear()
+    continued = []
+    def timed_out_action():
+        raise RuntimeError("simulated bounded cleanup timeout")
+    safe_cleanup("simulated-timeout", timed_out_action)
+    safe_cleanup("following-cleanup", lambda: continued.append(True))
+    if continued != [True] or cleanup_failures != ["simulated-timeout"]:
+        raise RuntimeError("cleanup timeout prevented independent cleanup")
+
+    with tempfile.TemporaryDirectory(prefix="lares-outside-proof-selftest-") as directory:
+        worker_path = pathlib.Path(directory) / "worker.json"
+        worker_path.write_text(json.dumps({"success": False, "checks": [],
+            "failure": {"phase": "generated route admission", "reason": "credential-secret-detail"}}), encoding="utf-8")
+        evidence = import_worker_evidence(pathlib.Path(directory))
+        if not evidence or evidence.get("failure") != {
+                "phase": "generated route admission", "reason": "worker failed"}:
+            raise RuntimeError("worker failure artifact was not reduced to allowlisted fields")
+
+
+def postgres_ready(container, password):
+    for _ in range(90):
+        result = run("docker", "exec", "-e", "PGPASSWORD=" + password, container,
+                     "psql", "-X", "-h", "127.0.0.1", "-U", "proof", "-d", "proof",
+                     "-Atc", "SELECT 1", timeout=5, check=False)
+        if result.returncode == 0 and result.stdout.strip() == "1":
+            return
+        time.sleep(.2)
+    raise RuntimeError("isolated fixture database did not become ready")
+
+
+def choose_unused_subnet():
+    ids = command("docker", "network", "ls", "--quiet").splitlines()
+    occupied = []
+    if ids:
+        networks = json.loads(command("docker", "network", "inspect", *ids))
+        for network_info in networks:
+            for entry in network_info.get("IPAM", {}).get("Config", []):
+                value = entry.get("Subnet")
+                if value:
+                    try:
+                        occupied.append(ipaddress.ip_network(value, strict=False))
+                    except ValueError:
+                        raise RuntimeError("existing Docker network has invalid address metadata") from None
+    routes = json.loads(command("ip", "-j", "-4", "route", "show"))
+    for route in routes:
+        destination = route.get("dst")
+        if destination and destination != "default":
+            try:
+                occupied.append(ipaddress.ip_network(destination, strict=False))
+            except ValueError:
+                raise RuntimeError("runner route has invalid address metadata") from None
+    for _ in range(128):
+        candidate = ipaddress.ip_network(f"10.{secrets.randbelow(192) + 32}.{secrets.randbelow(256)}.0/24")
+        if not any(candidate.overlaps(value) for value in occupied):
+            return candidate
+    raise RuntimeError("no unused private Docker subnet was found")
+
+
+if self_test_mode:
+    offline_cleanup_self_test()
+    print("outside proof cleanup self-test passed")
+    raise SystemExit(0)
+
+
+try:
+    if os.environ.get("CI") != "true" or os.environ.get("GITHUB_ACTIONS") != "true":
+        raise RuntimeError("proof is restricted to disposable GitHub CI")
+    if platform.system() != "Linux" or platform.machine() != "x86_64" or os.geteuid() != 0:
+        raise RuntimeError("proof requires a disposable root-owned Linux runner")
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_sha) or expected_sha != report["source"]:
+        raise RuntimeError("source revision identity mismatch")
+    actual_sha = command("git", "-C", str(repo), "rev-parse", "HEAD")
+    record("checked out proof source matches the workflow revision", actual_sha == expected_sha)
+
+    phase = "loaded-images"
+    report["images"] = {"keeper": inspect_local_digest(keeper_ref, "lares-keeper:test"),
+                        "squid": inspect_local_digest(squid_ref, "lares-squid:test"),
+                        "firewall": inspect_local_digest(firewall_ref, "lares-nft:test")}
+    report["postgresImage"] = DB_IMAGE
+
+    phase = "network"
+    suffix = owner[:10]
+    network = "lares-outside-proof-" + suffix
+    project = "outsideproof" + suffix
+    db_container = network + "-db"
+    proxy_container = network + "-proxy"
+    peer_container = network + "-peer"
+    role_container = "lares-outside-role-" + suffix
+    generator_container = "lares-outside-generator-" + suffix
+    agent = "fixture-agent"
+    agent_container = "lares-" + agent
+    resource_names = [db_container, proxy_container, peer_container, worker_container,
+                      role_container, generator_container]
+    if any(container_facts(name) is not None for name in resource_names):
+        raise RuntimeError("unique fixture container name is already in use")
+    if command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter",
+               "name=^" + network + "$").strip():
+        raise RuntimeError("unique fixture network name is already in use")
+    subnet = choose_unused_subnet()
+    command("docker", "network", "create", "--internal", "--subnet", str(subnet),
+            "--label", "lares.proof=outside-discovery", "--label", "lares.proof.owner=" + owner, network)
+    network_metadata = json.loads(command("docker", "network", "inspect", network))[0]
+    if network_metadata.get("Internal") is not True or network_metadata.get("Labels", {}).get("lares.proof") != "outside-discovery" or network_metadata.get("Labels", {}).get("lares.proof.owner") != owner:
+        raise RuntimeError("proof network isolation or ownership labels were not established")
+    configured_subnets = {entry.get("Subnet") for entry in network_metadata.get("IPAM", {}).get("Config", [])}
+    if str(subnet) not in configured_subnets:
+        raise RuntimeError("proof network static-address subnet did not match the selected range")
+    if subnet.version != 4 or subnet.num_addresses < 32:
+        raise RuntimeError("Docker selected an unsuitable isolated IPv4 subnet")
+    ips = {"db": str(subnet.network_address + 10), "proxy": str(subnet.network_address + 11),
+           "peer": str(subnet.network_address + 12), "agent": str(subnet.network_address + 13),
+           "source": str(subnet.network_address + 14)}
+    report["network"] = {"internal": True, "subnet": str(subnet), "fixtureAddresses": ips}
+
+    # The generated firewall owns this one table. It may replace it on the
+    # disposable runner, so refuse any pre-existing table and verify removal.
+    existing_tables = nft_host("list", "tables").stdout.splitlines()
+    if any(line.strip() == "table inet lares_egress" for line in existing_tables):
+        raise RuntimeError("disposable runner already has the Lares egress firewall table")
+
+    phase = "fixture-files"
+    root = pathlib.Path(tempfile.mkdtemp(prefix="lares-outside-discovery-proof-"))
+    root.chmod(0o700)
+    (root / "egress").mkdir(mode=0o700)
+    (root / "certs").mkdir(mode=0o700)
+    (root / "config").mkdir(mode=0o700)
+    key_dir = root / "outside-custody"
+    key_dir.mkdir(mode=0o700)
+    key = secrets.token_bytes(32)
+    (key_dir / "key").write_bytes(key)
+    (key_dir / "key").chmod(0o400)
+    key_fingerprint = hashlib.sha256(key).hexdigest()
+
+    # The local CA is used through Node's ordinary extra-CA mechanism; TLS validation remains on.
+    command("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
+            "-subj", "/CN=Lares isolated outside proof CA", "-keyout", str(root / "certs/ca.key"),
+            "-out", str(root / "certs/ca.pem"))
+    (root / "certs/server.ext").write_text("subjectAltName=DNS:mcp.example.org\nextendedKeyUsage=serverAuth\n", encoding="ascii")
+    command("openssl", "req", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=mcp.example.org",
+            "-keyout", str(root / "certs/server.key"), "-out", str(root / "certs/server.csr"))
+    command("openssl", "x509", "-req", "-days", "1", "-in", str(root / "certs/server.csr"),
+            "-CA", str(root / "certs/ca.pem"), "-CAkey", str(root / "certs/ca.key"),
+            "-CAcreateserial", "-extfile", str(root / "certs/server.ext"), "-out", str(root / "certs/server.pem"))
+
+    password = secrets.token_urlsafe(32)
+    app_password = secrets.token_urlsafe(32)
+    outside_password = secrets.token_urlsafe(32)
+    admin_password = secrets.token_urlsafe(32)
+    workflow_password = secrets.token_urlsafe(32)
+    session_token = secrets.token_urlsafe(32)
+    bearer = secrets.token_urlsafe(32)
+    incarnation = str(uuid.uuid4())
+    env_file = root / "fixture.env"
+    env_values = {
+        "PGPASSWORD": password, "PROOF_ADMIN_PASSWORD": password, "PROOF_APP_PASSWORD": app_password,
+        "PROOF_OUTSIDE_PASSWORD": outside_password, "PROOF_WORKFLOW_PASSWORD": workflow_password,
+        "PROOF_ADMIN_ROLE_PASSWORD": admin_password, "FIXTURE_SESSION_TOKEN": session_token,
+        "FIXTURE_BEARER": bearer, "FIXTURE_NETWORK": network, "FIXTURE_ROOT": str(root),
+        "FIXTURE_DB_IP": ips["db"], "FIXTURE_PROXY_IP": ips["proxy"], "FIXTURE_PEER_IP": ips["peer"],
+        "FIXTURE_AGENT_IP": ips["agent"], "FIXTURE_SOURCE_IP": ips["source"],
+        "FIXTURE_PROJECT": project, "FIXTURE_AGENT": agent, "FIXTURE_KEY_FINGERPRINT": key_fingerprint,
+        "FIXTURE_KEY_HEX": key.hex(), "FIXTURE_INCARNATION": incarnation,
+        "NODE_EXTRA_CA_CERTS": str(root / "certs/ca.pem"), "FIXTURE_PEER_REPORT": str(root / "peer.json"),
+        "FIXTURE_WORKER_REPORT": str(root / "worker.json"),
+    }
+    env_file.write_text("".join(f"{name}={value}\n" for name, value in env_values.items()), encoding="ascii")
+    env_file.chmod(0o600)
+    role_env = root / "roles.env"
+    role_env.write_text(f"PGPASSWORD={password}\nFIXTURE_ROOT={root}\n", encoding="ascii")
+    role_env.chmod(0o600)
+    peer_env = root / "peer.env"
+    peer_env.write_text(f"FIXTURE_BEARER={bearer}\nFIXTURE_PEER_REPORT=/fixture/peer.json\n", encoding="ascii")
+    peer_env.chmod(0o600)
+    worker_env = root / "worker.env"
+    worker_keys = ("PROOF_ADMIN_PASSWORD", "FIXTURE_SESSION_TOKEN", "FIXTURE_BEARER", "FIXTURE_ROOT",
+                   "FIXTURE_AGENT", "FIXTURE_INCARNATION", "FIXTURE_KEY_HEX", "FIXTURE_SOURCE_IP",
+                   "FIXTURE_AGENT_IP", "FIXTURE_PEER_REPORT", "FIXTURE_WORKER_REPORT", "FIXTURE_OWNER",
+                   "NODE_EXTRA_CA_CERTS")
+    env_values["FIXTURE_OWNER"] = owner
+    env_values["FIXTURE_FIREWALL_IMAGE"] = firewall_ref
+    worker_keys += ("FIXTURE_FIREWALL_IMAGE",)
+    worker_env.write_text("".join(f"{name}={env_values[name]}\n" for name in worker_keys), encoding="ascii")
+    worker_env.chmod(0o600)
+    for filename, value in (("proof-password", password), ("app-password", app_password),
+                            ("outside-password", outside_password), ("workflow-password", workflow_password),
+                            ("admin-password", admin_password)):
+        write_secret(root / "config" / filename, value)
+
+    lifecycle = {
+        "network": network, "subnet": str(subnet), "reservedAddresses": [],
+        "maintenanceAdmission": {"hostDirectory": str(root / "admission"),
+            "installationId": str(uuid.uuid4()), "epoch": 1},
+        "composeFile": str(root / "compose.yaml"), "egressDir": str(root / "egress"),
+        "imageByRole": {"chief-of-staff": keeper_ref, "creative": keeper_ref},
+        "proxyContainer": proxy_container, "squidImage": squid_ref, "firewallImage": firewall_ref,
+        "adminDb": {"host": "proof-db", "port": 5432, "database": "postgres",
+            "user": "lares_workflow_provisioner", "passwordFile": str(root / "config/admin-password")},
+        "workflowTemplate": "empty_workflow", "workflowOwner": "lares_workflow_owner",
+        "runtime": {"schedulesLive": False, "databaseUrl": "postgresql://lares_app@proof-db:5432/proof",
+            "workflowServer": "postgresql://lares_workflow@proof-db:5432", "gatewayUrl": "https://gateway.example.invalid",
+            "proxyUrl": "http://lares-egress-proxy:8888/", "passwordFile": str(root / "config/app-password"),
+            "workflowPasswordFile": str(root / "config/workflow-password"), "gatewayKeys": {}},
+        "egress": {"endpoints": {}, "legacyConsumers": [{"name": "outside-proof-source", "address": ips["source"], "hosts": ["mcp.example.org"]}],
+            "internalNetworks": [ips["db"] + "/32", ips["proxy"] + "/32"], "directDestinations": [], "infrastructureHosts": []},
+        "installationPrepared": True,
+    }
+    config = {"mode": "rendered", "project": project, "dir": str(root), "files": [str(root / "compose.yaml")],
+        "agentsDir": str(root / "agents"), "retiredDir": str(root / "retired"), "secretsDir": str(root / "secrets"),
+        "rolesDir": "/app/packages/agent-kit/templates", "templatesDir": "/app/packages/agent-kit/templates",
+        "backupDir": str(root / "backup"), "db": {"host": "proof-db", "port": 5432, "database": "proof",
+            "user": "lares_app", "passwordFile": str(root / "config/app-password")},
+        "lifecycle": lifecycle, "outsideCustody": {"db": {"host": "proof-db", "port": 5432,
+            "database": "proof", "user": "lares_outside_custody", "passwordFile": str(root / "config/outside-password")},
+            "keyFile": "/var/lib/lares/outside-custody/key", "keyFingerprint": key_fingerprint,
+            "routeConsumerName": "outside-proof-source"}}
+    (root / "admission").mkdir(mode=0o700)
+    (root / "agents").mkdir(mode=0o700)
+    (root / "retired").mkdir(mode=0o700)
+    (root / "secrets").mkdir(mode=0o700)
+    (root / "backup").mkdir(mode=0o700)
+    (root / "config/keeper.json").write_text(json.dumps(config), encoding="utf-8")
+    (root / "config/keeper.json").chmod(0o600)
+    (root / "egress/squid.conf").write_text("", encoding="ascii")
+
+    phase = "database"
+    db_env = root / "postgres.env"
+    db_env.write_text(f"POSTGRES_USER=proof\nPOSTGRES_PASSWORD={password}\nPOSTGRES_DB=proof\n", encoding="ascii")
+    db_env.chmod(0o600)
+    command("docker", "run", "-d", "--name", db_container, "--label", "lares.proof.owner=" + owner,
+            "--network", network,
+            "--network-alias", "proof-db", "--ip", ips["db"], "--env-file", str(db_env), DB_IMAGE)
+    postgres_ready(db_container, password)
+    migrations = sorted((repo / "services/box/sql").glob("[0-9][0-9][0-9]_*.sql"))
+    if not migrations or migrations[0].name != "001_baseline.sql":
+        raise RuntimeError("numbered engine migrations are incomplete")
+    applied = []
+    for migration in migrations:
+        command("docker", "exec", "-i", db_container, "psql", "-X", "-v", "ON_ERROR_STOP=1",
+                "-U", "proof", "-d", "proof", input=migration.read_text(encoding="utf-8"), timeout=90)
+        applied.append(migration.name)
+    on_disk = {path.name for path in (repo / "services/box/sql").iterdir()
+               if path.name[:3].isdigit() and path.name.endswith(".sql")}
+    record("every numbered engine migration applied", set(applied) == on_disk)
+
+    phase = "engine-roles"
+    role_code = """import{Pool}from'pg';import{readFileSync}from'node:fs';import{provisionEngineDatabasePrivileges}from'/app/services/box/lib/database-privileges.ts';
+const p=new Pool({host:'proof-db',database:'proof',user:'proof',password:process.env.PGPASSWORD,max:1,connectionTimeoutMillis:3000});
+void(async()=>{try{const c=await p.connect();try{const r=await provisionEngineDatabasePrivileges(c,{expectedDatabase:'proof',passwords:{application:readFileSync(process.env.FIXTURE_ROOT+'/config/app-password'),financial:Buffer.from('fixture-financial-password-0123456789'),outsideCustody:readFileSync(process.env.FIXTURE_ROOT+'/config/outside-password')}});if(!['applied','verified'].includes(r.status))throw Error();}finally{c.release()}console.log('roles-ready')}finally{await p.end()}})().catch(()=>{process.exitCode=1});"""
+    command("docker", "run", "--rm", "--name", role_container, "--label", "lares.proof.owner=" + owner,
+            "--network", network, "--env-file", str(role_env),
+            "--mount", f"type=bind,src={root},dst={root},readonly", "--entrypoint",
+            "/app/services/keeper/node_modules/.bin/tsx", keeper_ref, "-e", role_code)
+
+    phase = "proxy-config"
+    generator = "import('/app/services/keeper/lib/egress.ts').then(({generateEgress})=>require('node:fs').writeFileSync(process.env.FIXTURE_ROOT+'/egress/squid.conf',generateEgress([]).squid))"
+    command("docker", "run", "--rm", "--name", generator_container, "--label", "lares.proof.owner=" + owner,
+            "--network", "none", "--env-file", str(env_file),
+            "--mount", f"type=bind,src={root},dst={root}", "--entrypoint",
+            "/app/services/keeper/node_modules/.bin/tsx", keeper_ref, "-e", generator)
+    command("docker", "run", "--rm", "--network", "none", "--read-only", "--cap-drop", "ALL",
+            "--cap-add", "SETUID", "--cap-add", "SETGID", "--mount",
+            f"type=bind,src={root / 'egress'},dst=/config,readonly", "--entrypoint", "squid",
+            squid_ref, "-k", "parse", "-f", "/config/squid.conf")
+    command("docker", "run", "-d", "--init", "--name", proxy_container, "--label", "lares.proof.owner=" + owner,
+            "--network", network,
+            "--network-alias", "lares-egress-proxy", "--ip", ips["proxy"], "--mount",
+            f"type=bind,src={root / 'egress'},dst=/config,readonly", squid_ref)
+
+    phase = "compose-held-runtime"
+    compose = f"""services:
+  {agent_container}:
+    image: {keeper_ref}
+    entrypoint: [\"/bin/sh\", \"-c\"]
+    command: [\"sleep 600\"]
+    labels:
+      lares.incarnation: {incarnation}
+      lares.proof.owner: {owner}
+    networks:
+      proof:
+        ipv4_address: {ips['agent']}
+networks:
+  proof:
+    name: {network}
+    external: true
+"""
+    (root / "compose.yaml").write_text(compose, encoding="utf-8")
+    pre_compose_hash = hashlib.sha256((root / "compose.yaml").read_bytes()).hexdigest()
+    existing_project_containers = command("docker", "ps", "--all", "--quiet", "--filter",
+                                          "label=com.docker.compose.project=" + project)
+    if existing_project_containers:
+        raise RuntimeError("fixture Compose project identifier is already in use")
+    command("docker", "compose", "--project-name", project, "--project-directory", str(root),
+            "-f", str(root / "compose.yaml"), "create", agent_container)
+    agent_container_id = command("docker", "compose", "--project-name", project, "--project-directory", str(root),
+                                 "-f", str(root / "compose.yaml"), "ps", "--all", "--quiet")
+    if not re.fullmatch(r"[0-9a-f]{12,64}", agent_container_id):
+        raise RuntimeError("neutral Compose-created service identity unavailable")
+    state = json.loads(command("docker", "inspect", "--format", "{{json .State}}", agent_container_id))
+    record("neutral owned service is created but never started", state.get("Running") is False and state.get("StartedAt", "").startswith("0001-"))
+    record("fixture Compose file has stable pre-lifecycle hash", hashlib.sha256((root / "compose.yaml").read_bytes()).hexdigest() == pre_compose_hash)
+
+    phase = "https-peer"
+    peer_report_path = root / "peer.json"
+    peer_report_path.write_text(json.dumps({"ready": False}), encoding="ascii")
+    peer_report_path.chmod(0o600)
+    command("docker", "run", "-d", "--name", peer_container, "--label", "lares.proof.owner=" + owner,
+            "--network", network,
+            "--network-alias", "mcp.example.org", "--ip", ips["peer"], "--env-file", str(peer_env),
+            "--mount", f"type=bind,src={root / 'certs'},dst=/fixture/certs,readonly",
+            "--mount", f"type=bind,src={peer_report_path},dst=/fixture/peer.json",
+            "--mount",
+            f"type=bind,src={repo / 'services/keeper/tests/outside-discovery-image.probe.mts'},dst=/app/services/keeper/tests/outside-discovery-image.probe.mts,readonly", "--entrypoint",
+            "/app/services/keeper/node_modules/.bin/tsx", keeper_ref,
+            "/app/services/keeper/tests/outside-discovery-image.probe.mts", "peer")
+    for _ in range(100):
+        if command("docker", "inspect", "--format", "{{.State.Running}}", peer_container) != "true":
+            raise RuntimeError("local MCP peer did not stay ready")
+        try:
+            peer_ready = json.loads((root / "peer.json").read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            peer_ready = {}
+        if peer_ready.get("ready") is True:
+            break
+        time.sleep(.1)
+    else:
+        raise RuntimeError("local MCP peer did not become ready")
+    peer_ready = json.loads((root / "peer.json").read_text(encoding="utf-8"))
+    record("local MCP peer is listening with generated hostname certificate", peer_ready.get("ready") is True)
+
+    phase = "configured-discovery"
+    # Initial denial is installed before the real Keeper path applies its generated route.
+    # No service is ever started by this fixture.
+    worker_result = run("docker", "run", "-d", "--name", worker_container,
+            "--label", "lares.proof.owner=" + owner, "--network", network, "--ip", ips["source"],
+            "--env-file", str(worker_env), "--mount", "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock",
+            "--mount", f"type=bind,src={root},dst={root}", "--mount",
+            f"type=bind,src={key_dir},dst=/var/lib/lares/outside-custody,readonly", "--mount",
+            f"type=bind,src={repo / 'services/keeper/tests/outside-discovery-image.probe.mts'},dst=/app/services/keeper/tests/outside-discovery-image.probe.mts,readonly", "--entrypoint",
+            "/app/services/keeper/node_modules/.bin/tsx", keeper_ref,
+            "/app/services/keeper/tests/outside-discovery-image.probe.mts", "run", check=False, timeout=30)
+    facts = container_facts(worker_container)
+    if facts is None or facts["labels"].get("lares.proof.owner") != owner or facts["imageId"] != report["images"]["keeper"]["imageId"] or not any(
+            mount.get("Type") == "bind" and mount.get("Source") == str(root) for mount in facts["mounts"]):
+        raise RuntimeError("configured worker identity and fixture mount could not be verified")
+    worker_container_id = facts["id"]
+    if worker_result.returncode != 0 and facts["status"] not in {"created", "exited", "dead"}:
+        raise RuntimeError("configured worker start did not settle to a known state")
+    worker_stopped = facts["running"] is False
+    deadline = time.monotonic() + 120
+    while not worker_stopped and time.monotonic() < deadline:
+        time.sleep(.25)
+        facts = container_facts(worker_container_id)
+        if facts is None or facts["id"] != worker_container_id or facts["labels"].get("lares.proof.owner") != owner:
+            raise RuntimeError("configured worker ownership changed while running")
+        worker_stopped = facts["running"] is False
+    if not worker_stopped:
+        run("docker", "stop", "--time", "3", worker_container_id, check=False, timeout=15)
+        facts = container_facts(worker_container_id)
+        worker_stopped = facts is not None and facts["id"] == worker_container_id and \
+            facts["labels"].get("lares.proof.owner") == owner and facts["running"] is False
+        raise RuntimeError("configured worker exceeded its bounded lifetime")
+    facts = container_facts(worker_container_id)
+    if facts is None or facts["id"] != worker_container_id or facts["status"] != "exited" or facts["exitCode"] != 0:
+        worker_evidence = import_worker_evidence(root)
+        if worker_evidence:
+            report["workerFailure"] = worker_evidence
+        raise RuntimeError("configured production discovery worker did not complete")
+    worker_evidence = import_worker_evidence(root)
+    if not worker_evidence or worker_evidence.get("success") is not True:
+        raise RuntimeError("configured production discovery worker did not complete")
+    report["configuredDiscovery"] = worker_evidence
+    record("normal configured consentAndDiscover completes through the actual route", True)
+    record("selected-source direct target traffic is firewall-dropped and socket closes", worker_evidence.get("directTargetBlocked") is True)
+
+    phase = "first-hop-evidence"
+    peer_final = json.loads((root / "peer.json").read_text(encoding="utf-8"))
+    record("MCP peer observed exact path, protocol, session and fixed discovery exchange",
+           peer_final.get("methods") == ["initialize", "notifications/initialized", "tools/list", "tools/list"] and
+           peer_final.get("requestCount") == 4 and peer_final.get("bearerMatches") is True and
+           peer_final.get("tlsServername") is True and peer_final.get("pathMatches") is True and
+           peer_final.get("protocolVersionMatches") is True and peer_final.get("initializeMatches") is True and
+           peer_final.get("paginationCursorMatches") is True and peer_final.get("sessionMatches") is True)
+    access_log = command("docker", "exec", proxy_container, "sh", "-c", "cat /var/log/squid/access.log 2>/dev/null || true")
+    access_lines = [line for line in access_log.splitlines() if "mcp.example.org:443" in line]
+    record("Squid access log attributes CONNECT to the selected Keeper source", bool(access_lines) and all(ips["source"] in line for line in access_lines))
+    report["peerEvidence"] = {"methods": peer_final.get("methods", []), "bearerMatches": peer_final.get("bearerMatches") is True,
+                              "tlsServername": peer_final.get("tlsServername") is True,
+                              "pathMatches": peer_final.get("pathMatches") is True,
+                              "protocolVersionMatches": peer_final.get("protocolVersionMatches") is True,
+                              "paginationCursorMatches": peer_final.get("paginationCursorMatches") is True,
+                              "sessionMatches": peer_final.get("sessionMatches") is True,
+                              "requestCount": peer_final.get("requestCount", 0)}
+
+    phase = "postconditions"
+    state_after = json.loads(command("docker", "inspect", "--format", "{{json .State}}", agent_container_id))
+    record("held service remains stopped after lifecycle and discovery", state_after.get("Running") is False and state_after.get("StartedAt", "").startswith("0001-"))
+    record("lifecycle did not replace the supplied Compose file", hashlib.sha256((root / "compose.yaml").read_bytes()).hexdigest() == pre_compose_hash)
+    report["status"] = "bounded-discovery-passed"
+    report["success"] = True
+except Exception as error:
+    report["status"] = "failed"
+    # Never place subprocess output, config values, credentials or arbitrary exception text in evidence.
+    safe_phases = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
+                   "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
+                   "first-hop-evidence", "postconditions"}
+    report["failure"] = {"phase": phase if phase in safe_phases else "fixture",
+                         "reason": "fixture operation failed"}
+    if root is not None:
+        worker_evidence = import_worker_evidence(root)
+        if worker_evidence is not None and worker_evidence.get("success") is not True:
+            report["workerFailure"] = worker_evidence
+finally:
+    phase_before_cleanup = phase
+    try:
+        named_worker = container_facts(worker_container)
+    except Exception:
+        named_worker = None
+        worker_stopped = False
+        cleanup_failures.append("worker-state-verification")
+    if worker_container_id is None and named_worker is not None:
+        if named_worker["labels"].get("lares.proof.owner") == owner:
+            worker_container_id = named_worker["id"]
+        else:
+            worker_stopped = False
+            cleanup_failures.append("worker-ownership-verification")
+    if worker_container_id is not None:
+        if named_worker is not None and named_worker["id"] != worker_container_id:
+            worker_stopped = False
+            cleanup_failures.append("worker-name-replaced")
+        else:
+            try:
+                if root is not None:
+                    worker_stopped, stop_failed, helpers_stopped = stop_worker_then_helpers(
+                        worker_container_id, owner, root)
+                else:
+                    worker_stopped, stop_failed = stop_pinned_worker(worker_container_id, owner)
+                    helpers_stopped = worker_stopped
+                if stop_failed:
+                    cleanup_failures.append("worker-stop-command")
+            except Exception:
+                worker_stopped = False
+                helpers_stopped = False
+                cleanup_failures.append("worker-state-verification")
+    else:
+        helpers_stopped = worker_stopped
+        if root is not None and worker_stopped:
+            helpers_stopped = safe_cleanup("owned-helper-stop", lambda: remove_owned_docker_helpers(root))
+    if root is not None and not worker_stopped:
+        cleanup_failures.append("worker-still-running")
+
+    resources_removed = worker_stopped and helpers_stopped
+    if resources_removed:
+        resources_removed = safe_cleanup("owned-container-remove", lambda: remove_labelled_containers(owner))
+    network_removed = resources_removed
+    if network is not None and worker_stopped and helpers_stopped:
+        network_removed = safe_cleanup("owned-network-remove", lambda: cleanup_exact_network(network, owner))
+
+    # Only the absent-at-preflight table with a generated, installed stage that names this
+    # source is owned by the proof. A fixed table name alone is never cleanup authority.
+    expected_source = report.get("network", {}).get("fixtureAddresses", {}).get("source")
+    if root is not None and worker_stopped and helpers_stopped and resources_removed and network_removed and expected_source:
+        safe_cleanup("generated-firewall-remove", lambda: remove_generated_firewall(root, expected_source))
+
+    if worker_stopped and helpers_stopped:
+        safe_cleanup("owned-container-final-sweep", lambda: remove_labelled_containers(owner))
+    consumers_absent = worker_stopped and helpers_stopped and resources_removed and network_removed
+    if consumers_absent:
+        try:
+            remaining_owner = command("docker", "ps", "--all", "--quiet", "--no-trunc", "--filter",
+                                      "label=lares.proof.owner=" + owner)
+            remaining_network = command("docker", "network", "ls", "--quiet", "--no-trunc",
+                                        "--filter", "name=^" + network + "$") if network else ""
+            remaining_helpers = discover_owned_docker_helpers(root) if root is not None else []
+            if remaining_owner.strip() or remaining_network.strip() or remaining_helpers:
+                consumers_absent = False
+                cleanup_failures.append("consumer-absence-verification")
+        except Exception:
+            consumers_absent = False
+            cleanup_failures.append("consumer-absence-verification")
+
+    if root is not None and consumers_absent:
+        def remove_root():
+            shutil.rmtree(root)
+            if root.exists():
+                raise RuntimeError("fixture directory remained after cleanup")
+        safe_cleanup("fixture-root-remove", remove_root)
+    elif root is not None:
+        cleanup_failures.append("fixture-root-preserved-for-live-consumer")
+
+    report["cleanupOkay"] = not cleanup_failures
+    report["cleanupFailures"] = sorted(set(cleanup_failures))
+    report["cleanupPhase"] = phase_before_cleanup
+    report_path = pathlib.Path(output)
+    try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+        report_path.chmod(0o644)
+    except Exception:
+        report["cleanupOkay"] = False
+        report["cleanupFailures"] = sorted(set(report["cleanupFailures"] + ["artifact-write"]))
+if not report.get("success") or not report.get("cleanupOkay"):
+    raise SystemExit(1)

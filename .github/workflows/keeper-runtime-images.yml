@@ -178,13 +178,45 @@ jobs:
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: '${{ github.actor }}', password: '${{ secrets.GITHUB_TOKEN }}'}
       - uses: docker/build-push-action@v6
+        id: keeper-image
         with: {context: ., file: services/keeper/Dockerfile, pull: true, load: true, tags: 'lares-keeper:test'}
+      - uses: docker/build-push-action@v6
+        id: squid-image
+        with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
+      - uses: docker/build-push-action@v6
+        id: firewall-image
+        with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
       - name: Scan final keeper image
         run: scripts/scan-image.sh lares-keeper:test "$RUNNER_TEMP/image-scans/keeper"
+      - name: Scan final network helper images
+        run: |
+          scripts/scan-image.sh lares-squid:test "$RUNNER_TEMP/image-scans/egress"
+          scripts/scan-image.sh lares-nft:test "$RUNNER_TEMP/image-scans/firewall"
+      - name: Check bounded outside proof cleanup and safe failure evidence
+        run: python3 -B services/keeper/tests/outside-discovery-image.probe.py --self-test
+      - name: Prove configured outside discovery through the final Keeper and network helper images
+        run: |
+          proof="$RUNNER_TEMP/outside-discovery-proof.json"
+          printf '{"format":1,"status":"not-started","cleanupOkay":false}\n' > "$proof"
+          status=0
+          sudo env CI=true GITHUB_ACTIONS=true "GITHUB_SHA=$GITHUB_SHA" python3 -B services/keeper/tests/outside-discovery-image.probe.py \
+            "lares-keeper:test@${{ steps.keeper-image.outputs.digest }}" \
+            "lares-squid:test@${{ steps.squid-image.outputs.digest }}" \
+            "lares-nft:test@${{ steps.firewall-image.outputs.digest }}" \
+            "$GITHUB_SHA" "$proof" || status=$?
+          sudo chown "$(id -u):$(id -g)" "$proof" || status=1
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keeper-outside-discovery-proof
+          path: ${{ runner.temp }}/outside-discovery-proof.json
+          if-no-files-found: error
+      - name: Prove fixed database roles in the final Keeper image
+        if: always() && !cancelled() && steps.keeper-image.outcome == 'success'
+        run: python3 -B services/keeper/tests/database-privileges-image.probe.py lares-keeper:test
       - name: Verify keeper runtime imports without starting sockets or migrations
         run: docker run --rm --network none --entrypoint /app/services/keeper/node_modules/.bin/tsx lares-keeper:test -e "import('/app/services/keeper/lib/lifecycle.ts').then(m => { if (!m.AgentLifecycle) process.exit(1) })"
-      - name: Prove fixed database roles in the final Keeper image
-        run: python3 -B services/keeper/tests/database-privileges-image.probe.py lares-keeper:test
       - name: Prove financial journal custody with the actual Linux kernel and final keeper image
         run: python3 services/keeper/tests/financial-journal-image.probe.py lares-keeper:test
       - name: Prove protected custody across PostgreSQL restart and restore
@@ -234,14 +266,6 @@ jobs:
           diff "$RUNNER_TEMP/engine-expected.txt" "$RUNNER_TEMP/engine-actual.txt"
           test "$(cat "$RUNNER_TEMP/engine-out/ci-check/services/box/engine-image")" = "$digest"
 
-      - uses: docker/build-push-action@v6
-        with: {context: ., file: images/egress-proxy/Dockerfile, pull: true, load: true, tags: 'lares-squid:test'}
-      - uses: docker/build-push-action@v6
-        with: {context: ., file: images/firewall-helper/Dockerfile, pull: true, load: true, tags: 'lares-nft:test'}
-      - name: Scan final network helper images
-        run: |
-          scripts/scan-image.sh lares-squid:test "$RUNNER_TEMP/image-scans/egress"
-          scripts/scan-image.sh lares-nft:test "$RUNNER_TEMP/image-scans/firewall"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
