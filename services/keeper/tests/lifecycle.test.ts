@@ -1,4 +1,4 @@
-import { mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync } from 'node:fs';
+import { existsSync,mkdtempSync,mkdirSync,readdirSync,readFileSync,rmSync,writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join,resolve } from 'node:path';
 import { PostgreSqlContainer,type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
@@ -12,6 +12,7 @@ import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentNotHealthyError, NoOwnedContainerError, type DockerBoundary } from '../lib/docker.js';
 import { parse } from 'yaml';
 import { credentialRecordSchema, initialCredentialRecord } from '../lib/credential-state.js';
+import { definitionSchema, hashOf } from '@lares/agent-kit/definition';
 const repo=resolve('../..'), image='example/image@sha256:'+'a'.repeat(64);
 let pg:StartedPostgreSqlContainer,pool:Pool,adminPool:Pool,root:string,config:LifecycleConfig,events:string[],started:string[],fail:string|undefined;
 const definition:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/creative/agent.json'),'utf8')),name:'bookkeeper',role:'creative',doors:[],grants:[]};
@@ -26,7 +27,7 @@ const testWorkflowPrivileges:WorkflowPrivilegeContract={
  assertProvisioner:async(client,database,owner)=>{const r=await client.query('SELECT current_user,session_user,current_database(),rolcreatedb,rolcreaterole,rolsuper,pg_has_role(current_user,$1,\'MEMBER\') AS member FROM pg_roles WHERE rolname=current_user',[owner]);const x=r.rows[0];if(x?.current_user!=='lares_workflow_provisioner'||x.session_user!=='lares_workflow_provisioner'||x.current_database!==database||!x.rolcreatedb||x.rolcreaterole||x.rolsuper||!x.member)throw new Error(`test workflow provisioner identity mismatch ${JSON.stringify(x)}`);},
  assertRuntime:async(client,database,owner)=>{const r=await client.query('SELECT current_user,session_user,current_database(),rolcreatedb,rolcreaterole,rolsuper,rolbypassrls,pg_has_role(current_user,$1,\'MEMBER\') AS member FROM pg_roles WHERE rolname=current_user',[owner]);const x=r.rows[0];if(x?.current_user!=='lares_workflow'||x.session_user!=='lares_workflow'||x.current_database!==database||x.rolcreatedb||x.rolcreaterole||x.rolsuper||x.rolbypassrls||x.member)throw new Error('test workflow runtime identity mismatch');},
 };
-const lifecycle=()=>new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+const lifecycle=()=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
 it('credential reconciliation preserves applied definitions, grants, unrelated bindings and durable disconnect', async () => {
  const l=lifecycle(); await l.create('bookkeeper',definition);
  const notion=join(root,'secrets/notion-token'), other=join(root,'secrets/other-key');
@@ -50,7 +51,11 @@ it('credential reconciliation preserves applied definitions, grants, unrelated b
  expect(service.labels['lares.notion-revision']).toBe('disconnected'); expect(service.environment.NOTION_TOKEN_FILE).toBeUndefined();
  expect(service.environment.EVE_ROUTE_PASSWORD_FILE).toBe('/run/secrets/eve-route-password');
  expect((await l.storage.row('bookkeeper')).applied_definition).toEqual(before.applied_definition);
- expect(readFileSync(other,'utf8')).toBe('unrelated'); start.mockRestore();
+ expect(readFileSync(other,'utf8')).toBe('unrelated');
+ state={...state,effectiveRevision:null,activationIntent:{targetRevision:null}};
+ start.mockRejectedValueOnce(new AgentNotHealthyError());
+ await expect(l.reconcileCredential('bookkeeper',null)).rejects.toBeInstanceOf(AgentNotHealthyError);
+ start.mockRestore();
 });
 it('mounts the managed key only into a granted chief of staff, only when a key revision exists, and never invents a binding',async()=>{
  const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[]};
@@ -83,6 +88,128 @@ it('mounts the managed key only into a granted chief of staff, only when a key r
  l=lifecycle(); l.setCredentialState(async()=>record({effectiveRevision:revision}));
  await l.reconcile('bookkeeper',chief); expect(compose().environment.NOTION_TOKEN_FILE).toBe('/run/secrets/notion-token');
  expect(l.installationBindsNotion('bookkeeper')).toBe(true);
+});
+it('stages rendered native runtimes without a legacy key and checks current authority around each start',async()=>{
+ const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'bookkeeper',role:'chief-of-staff',doors:[],grants:[]};
+ const modelPurposeRuntimeDir=join(root,'model-purpose');
+ config.bindings={bookkeeper:{role:'chief-of-staff',environment:{},mounts:[],secrets:{}}};
+ const duties='Native lifecycle duties',voice='Native lifecycle voice';
+ const digest=hashOf({definition:definitionSchema.parse(chief),dutiesMd:duties,voiceMd:voice});
+ await pool.query('UPDATE agent_definitions SET definition=$1::jsonb,duties=$2,voice=$3,hash=$4,status=$5 WHERE name=$6',[JSON.stringify(chief),duties,voice,digest,'valid','bookkeeper']);
+ const keyPath=config.runtime.gatewayKeys.bookkeeper!;writeFileSync(keyPath,'synthetic-legacy-key');
+ const provisioned:string[]=[];let allow=false,reads=0,acceptedHash=digest;
+ const authority={current:async(identity:any)=>{reads++;expect(identity).toMatchObject({agent:'bookkeeper',purposeAlias:chief.model});return allow&&identity.definitionHash===acceptedHash?{state:'active' as const}:{state:'held' as const,reason:'Native budget activation required' as const};}};
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,authority);
+ await l.create('bookkeeper',chief);
+ const staged=await l.storage.row('bookkeeper');
+ expect(staged).toMatchObject({state:'ready',pending:false,applied_definition:chief});
+ expect(events).not.toContain('start:bookkeeper');
+ expect((await l.status('bookkeeper'))).toEqual({pending:false,reason:'Native budget activation required'});
+ const service=parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
+ expect(service.environment.GATEWAY_KEY_FILE).toBeUndefined();
+ expect(service.secrets).not.toContainEqual(expect.objectContaining({source:'bookkeeper-gateway-key'}));
+ expect(l.ownedSecrets('bookkeeper')).toEqual([]);
+ expect(provisioned).not.toContain(keyPath);
+ const noReader=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker);
+ expect(await noReader.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
+ await expect(l.credentialPreflight(['bookkeeper'])).rejects.toThrow('Native budget activation required');
+ await expect(l.reconcileCredential('bookkeeper',null)).rejects.toThrow('Native budget activation required');
+ expect(events).not.toContain('start:bookkeeper');
+ allow=true;events=[];await l.reconcile('bookkeeper',chief);
+ expect(events).toContain('start:bookkeeper');expect(reads).toBeGreaterThanOrEqual(3);
+ const unhealthyActiveDocker:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);throw new AgentNotHealthyError();}};
+ const unhealthyActive=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},unhealthyActiveDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,authority);
+ events=[];expect(await unhealthyActive.reconcile('bookkeeper',chief)).toEqual({pending:false,reason:null,running:true,healthy:false});
+ expect(events.at(-1)).toBe('start:bookkeeper');expect(events.filter(event=>event==='stop:bookkeeper')).toHaveLength(1);
+ const changedHash=hashOf({definition:definitionSchema.parse(chief),dutiesMd:'Changed duties',voiceMd:voice});
+ await pool.query('UPDATE agent_definitions SET duties=$1,hash=$2 WHERE name=$3',['Changed duties',changedHash,'bookkeeper']);
+ events=[];await l.saved('bookkeeper',chief);
+ expect(events).toContain('stop:bookkeeper');
+ expect(await l.status('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required'});
+ const observedDocker:DockerBoundary={...docker,inspect:async()=>({id:'container',running:true,incarnation:'11111111-1111-4111-8111-111111111111',notionRevision:null,image,mounts:[],addresses:[]}),healthy:async()=>true};
+ const heldAuthority={current:async()=>({state:'held' as const,reason:'Native budget activation required' as const})};
+ const observed=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},observedDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,heldAuthority);
+ expect(await observed.liveStatus('bookkeeper')).toEqual({pending:false,reason:'Native budget activation required',running:true,healthy:true});
+
+ let credentialBecameStale=false;const credentialDocker:DockerBoundary={...docker,
+  start:async n=>{events.push('start:'+n);credentialBecameStale=true;},
+  stop:async n=>{events.push('stop:'+n);}};
+ const credentialAuthority={current:async()=>credentialBecameStale
+  ?{state:'held' as const,reason:'Native budget activation required' as const}:{state:'active' as const}};
+ const credentialRestart=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},credentialDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,credentialAuthority);
+ credentialRestart.setCredentialState(async()=>({...initialCredentialRecord(),effectiveRevision:null,activationIntent:{targetRevision:null}} as any));
+ events=[];await expect(credentialRestart.reconcileCredential('bookkeeper',null)).rejects.toThrow('Native budget activation required');
+ expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+
+ let postStartHeld=false;const start=async(n:string)=>{events.push('start:'+n);postStartHeld=true;};
+ const stop=async(n:string)=>{events.push('stop:'+n);};
+ const raceDocker:DockerBoundary={...docker,start,stop};
+ const raceAuthority={current:async()=>postStartHeld?{state:'held' as const,reason:'Native budget activation required' as const}:{state:'active' as const}};
+ const raced=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},raceDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,raceAuthority);
+ events=[];const result=await raced.reconcile('bookkeeper',chief);
+ expect(result).toEqual({pending:false,reason:'Native budget activation required',running:false,healthy:null});
+ expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+ postStartHeld=false;events=[];
+ const failedStartDocker:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);postStartHeld=true;throw new Error('docker start failed');},stop:async n=>{events.push('stop:'+n);}};
+ const failedStart=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},failedStartDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,raceAuthority);
+ expect(await failedStart.reconcile('bookkeeper',chief)).toEqual({pending:false,reason:'Native budget activation required',running:false,healthy:null});
+ expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+ postStartHeld=false;events=[];
+ let unhealthyStops=0;
+ const unhealthyDocker:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);postStartHeld=true;throw new AgentNotHealthyError();},stop:async n=>{events.push('stop:'+n);if(++unhealthyStops>1)throw new Error('stop refused');}};
+ const unhealthy=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},unhealthyDocker,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges,raceAuthority);
+ await expect(unhealthy.reconcile('bookkeeper',chief)).rejects.toThrow('could not be stopped');
+ expect(events.slice(-2)).toEqual(['start:bookkeeper','stop:bookkeeper']);
+});
+it('refuses registered Chief create and save before publication while a retained Creative runtime remains inspectable',async()=>{
+ const {registerDefinitionActions}=await import('../lib/definitions.js');
+ const {resetActions,runAction}=await import('../lib/actions.js');
+ const {deployedToolsFor}=await import('@lares/agent-kit/persona');
+ const modelPurposeRuntimeDir=join(root,'model-purpose');mkdirSync(modelPurposeRuntimeDir);
+ const agentsDir=join(root,'agents'),retiredDir=join(root,'retired');mkdirSync(retiredDir);
+ // This fixture definition has no runtime. It is retired so it is absent from the active registry
+ // while the Chief is created; the test then gives it a real retained resource row.
+ await pool.query("UPDATE agent_definitions SET status='retired' WHERE name='bookkeeper'");
+ const chief:any={...JSON.parse(readFileSync(join(repo,'packages/agent-kit/templates/chief-of-staff/agent.json'),'utf8')),name:'chief-one',role:'chief-of-staff',doors:[]};
+ const provisioned:string[]=[],backups=vi.fn(async()=>{});
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'rendered',agentsDir,secretsDir:join(root,'secrets'),modelPurposeRuntimeDir},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ resetActions();registerDefinitionActions({pool,agentsDir,retiredDir,secretsDir:join(root,'secrets'),ceiling:async()=>8,compose:l,storage:l,backup:{commit:backups},roleInfo:r=>({roleMd:readFileSync(join(repo,'packages/agent-kit/templates',r,'role.md'),'utf8'),deployedTools:deployedToolsFor(join(repo,'services',r))})});
+ const ctx={actor:'owner@example.test',audit:async()=>{}};
+ await runAction('definition.create',{name:'chief-one',startingPoint:'chief-of-staff',definition:chief,duties:'Chief duties',voice:'Chief voice'},ctx);
+ await l.storage.provision('bookkeeper','172.18.0.30');
+ await pool.query("UPDATE agent_resources SET state='retired' WHERE name='bookkeeper'");
+ // Keep both the definition and resource as retired. publishCompose includes this retained row
+ // and its runtime-control token would make its Creative container reach the guarded renderer.
+ await pool.query("UPDATE agent_definitions SET status='retired' WHERE name='bookkeeper'");
+ expect(await l.storage.row('bookkeeper')).toMatchObject({state:'retired',ownership:'owned'});
+ const composeBefore=readFileSync(config.composeFile,'utf8');
+ const sealFiles=()=>readdirSync(config.egressDir).sort().map(name=>[name,readFileSync(join(config.egressDir,name),'utf8')]);
+ const sealBefore=sealFiles(),resourceCount=Number((await pool.query('SELECT count(*)::int AS count FROM agent_resources')).rows[0].count);
+ const backupCalls=backups.mock.calls.length,provisionCalls=provisioned.length,eventsBefore=[...events];
+ const keyFile=join(root,'secrets/second-chief-runtime-control');
+ const create=()=>runAction('definition.create',{name:'second-chief',startingPoint:'chief-of-staff',definition:{...chief,name:'second-chief'},duties:'New duties',voice:'New voice'},ctx);
+ const save=()=>runAction('definition.save',{name:'chief-one',definition:chief,duties:'Changed duties',voice:'Changed voice'},ctx);
+ await expect(create()).rejects.toThrow('separate migration');
+ await expect(save()).rejects.toThrow('separate migration');
+ expect(existsSync(join(agentsDir,'second-chief'))).toBe(false);
+ expect((await pool.query("SELECT name FROM agent_definitions WHERE name='second-chief'")).rows).toEqual([]);
+ expect(readFileSync(join(agentsDir,'chief-one','duties.md'),'utf8')).toBe('Chief duties');
+ expect(readFileSync(config.composeFile,'utf8')).toBe(composeBefore);
+ expect(sealFiles()).toEqual(sealBefore);
+ expect(Number((await pool.query('SELECT count(*)::int AS count FROM agent_resources')).rows[0].count)).toBe(resourceCount);
+ expect(backups).toHaveBeenCalledTimes(backupCalls);
+ expect(provisioned).toHaveLength(provisionCalls);
+ expect(existsSync(keyFile)).toBe(false);
+ expect(events).toEqual(eventsBefore);
+
+ // An active owned Creative is refused by the same prepublication check.
+ await pool.query("UPDATE agent_resources SET state='ready' WHERE name='bookkeeper'");
+ await pool.query("UPDATE agent_definitions SET status='valid' WHERE name='bookkeeper'");
+ await expect(save()).rejects.toThrow('separate migration');
+ expect(readFileSync(config.composeFile,'utf8')).toBe(composeBefore);
+ expect(sealFiles()).toEqual(sealBefore);
+ expect(backups).toHaveBeenCalledTimes(backupCalls);
+ expect(events).toEqual(eventsBefore);
 });
 beforeAll(async()=>{
  pg=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:pg.getConnectionUri()}));
@@ -140,7 +267,7 @@ it('preserves installation bindings on repeated reconciles and refuses missing d
  const integrationKey=join(root,'secrets','notion');writeFileSync(integrationKey,'test-only');
  config.bindings={bookkeeper:{role:'creative',ownerId:'prior-owner',environment:{ATLAS_PATH:'/srv/atlas'},mounts:[{source:atlas,target:'/srv/atlas',readOnly:false}],secrets:{NOTION_TOKEN_FILE:integrationKey},workflowVolume:'preserved-workflow-files'}};
  const provisioned:string[]=[];
- const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);const first=readFileSync(config.composeFile,'utf8');
  await l.reconcile('bookkeeper',definition);
  expect(readFileSync(config.composeFile,'utf8')).toBe(first);expect(provisioned).toContain(integrationKey);
@@ -185,7 +312,7 @@ it('provisions an arbitrary agent key after durable storage and before its runti
  });
  const remove=vi.fn(async()=>{});
  const lifecycleRow=async()=>new WorkflowStorage(pool,pool,config.workflowTemplate,config.workflowOwner).row('bookkeeper');
- const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{}, {ensure,remove},testWorkflowConnections,testWorkflowPrivileges);
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,p=>{provisioned.push(p);},()=>{}, {ensure,remove},testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);
  expect(ensure).toHaveBeenCalledWith({gatewayUrl:'https://brain.example.com',masterKeyFile,secretFile:join(root,'secrets','bookkeeper-gateway-key'),name:'bookkeeper',aliasPrefix:'lares'});
  const service=parse(readFileSync(config.composeFile,'utf8')).services['lares-bookkeeper'];
@@ -202,7 +329,7 @@ it('does not start an unsealed agent, persists pending failure, and permits expl
  expect(events).not.toContain('apply-nft');expect(events).not.toContain('start:bookkeeper');expect((await l.status('bookkeeper')).pending).toBe(true);
  fail=undefined;await l.reconcile('bookkeeper',definition);expect((await l.status('bookkeeper')).pending).toBe(false);
 });
-const lifecycleWith=(d:DockerBoundary)=>new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},d,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+const lifecycleWith=(d:DockerBoundary)=>new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},d,()=>{},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
 it('treats a health wait that runs out as a running agent, not an error',async()=>{
  const slow:DockerBoundary={...docker,start:async n=>{events.push('start:'+n);throw new AgentNotHealthyError();}};
  const l=lifecycleWith(slow);
@@ -274,7 +401,7 @@ it('opens the https host of an outside tool and mounts its token file; plain-htt
 });
 it('provisions outside token files before stopping the agent, and a changed token list needs a restart',async()=>{
  const provisioned:string[]=[];
- const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,(p:string)=>{provisioned.push(p);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',definition);await l.reconcile('bookkeeper',definition);
  const withToken={...definition,grants:[{capability:'outside',scope:'write-with-confirm'}],autonomy:{outside:'gated'},outsideTools:[{name:'registry',url:'https://tools.example.org/mcp',description:'Looks up companies.',token:true,tools:{allow:['lookup'],read:['lookup']}}]};
  expect((await l.saved('bookkeeper',withToken)).pending).toBe(true);
@@ -650,7 +777,7 @@ function personalGoogleFixture() {
 const personalChief=()=>({...definition,role:'chief-of-staff',grants:[{capability:'gmail',scope:'read'}],autonomy:{}});
 it('mounts personal clients without any email door, claim, legacy principal or OAuth token selection',async()=>{
  const google=personalGoogleFixture(),chief=personalChief(),provisioned:string[]=[];
- const l=new AgentLifecycle(pool,adminPool,config,{agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
+ const l=new AgentLifecycle(pool,adminPool,config,{mode:'overlay',agentsDir:join(root,'agents'),secretsDir:join(root,'secrets')},docker,path=>{provisioned.push(path);},()=>{},undefined,testWorkflowConnections,testWorkflowPrivileges);
  await l.create('bookkeeper',chief);
  const doc=parse(readFileSync(config.composeFile,'utf8')),env=doc.services['lares-bookkeeper'].environment;
  expect(Object.keys(JSON.parse(env.LARES_PERSONAL_GOOGLE_CLIENTS))).toEqual(['acme','second']);

@@ -2,7 +2,7 @@ import { randomUUID, createHash, randomBytes } from 'node:crypto';
 import { lstatSync, readFileSync, writeFileSync, renameSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
-import { doorsOf, definitionSchema, type AgentDefinition } from '@lares/agent-kit/definition';
+import { doorsOf, definitionSchema, hashOf, type AgentDefinition } from '@lares/agent-kit/definition';
 import { outsideHttpsHosts, outsideSecretName, outsideToolsInEffect } from '@lares/agent-kit/outside-tools';
 import { CAPABILITY_DOCS } from '@lares/agent-kit/persona';
 import { generateEgress } from './egress.js';
@@ -31,6 +31,10 @@ finally {
 const RETIREMENT_PENDING = 'Retirement pending; retry definition.retire';
 /** In the egress folder: the stage whose nft file is the firewall last installed. Written only after nft applied it. */
 const INSTALLED_STAGE = 'installed-stage';
+export type NativeRuntimeIdentity = { agent: string; incarnation: string; definitionHash: string; purposeAlias: string };
+export type NativeRuntimeState = { state: 'active' } | { state: 'held'; reason: 'Native budget activation required' };
+export type NativeRuntimeAuthority = { current(identity: NativeRuntimeIdentity): Promise<NativeRuntimeState> };
+const NATIVE_HELD = 'Native budget activation required' as const;
 function refusePendingRetirement(row: any): void {
     if (row?.pending && row.pending_reason === RETIREMENT_PENDING)
         throw new KeeperRefusedError('Retry definition.retire to complete pending retirement');
@@ -48,6 +52,7 @@ function fingerprint(d: AgentDefinition) { return createHash('sha256').update(JS
 export class AgentLifecycle {
     readonly storage: WorkflowStorage;
     private credentialState?: () => Promise<CredentialRecord>;
+    private get nativeGuarded(): boolean { return this.paths.mode === 'rendered' || this.nativeAuthority !== undefined; }
     setCredentialState(read: () => Promise<CredentialRecord>): void { this.credentialState = read; }
     private async notionRevision(): Promise<string | null | undefined> {
         const credential = await this.credentialState?.();
@@ -63,6 +68,7 @@ export class AgentLifecycle {
         return !!b?.secrets.NOTION_TOKEN_FILE;
     }
     constructor(private pool: Pool, admin: Pool, private config: LifecycleConfig, private paths: {
+        mode: 'overlay' | 'rendered';
         agentsDir: string;
         secretsDir: string;
         vaultRuntimeDir?: string;
@@ -71,7 +77,8 @@ export class AgentLifecycle {
     }, private docker: DockerBoundary, private provisionSecret = runtimeSecret, private verifySecrets = verifySecretRoot,
     private gatewayKeyProvisioner: GatewayKeyProvisioner = new LiteLLMGatewayKeys(),
     workflowConnections?: WorkflowDatabaseConnections,
-    workflowPrivileges?: WorkflowPrivilegeContract) {
+    workflowPrivileges?: WorkflowPrivilegeContract,
+    private nativeAuthority?: NativeRuntimeAuthority) {
         const runtimeUrl = new URL(config.runtime.workflowServer);
         const connections: WorkflowDatabaseConnections = workflowConnections ?? {
             provisioner: database => keeperPool({ ...config.adminDb, database }),
@@ -84,6 +91,100 @@ export class AgentLifecycle {
         if (exact) return exact;
         if (this.config.runtime.gatewayMasterKeyFile) return join(this.paths.secretsDir, `${name}-gateway-key`);
         throw new KeeperRefusedError('Installation must supply or manage this agent gateway key');
+    }
+    private async currentNative(name: string): Promise<NativeRuntimeState> {
+        if (!this.nativeGuarded) return { state: 'active' };
+        if (!this.nativeAuthority) return { state: 'held', reason: NATIVE_HELD };
+        try {
+            const result = await this.pool.query(`SELECT d.definition,d.duties,d.voice,d.hash,d.status,
+                    r.ownership_token,r.runtime_control_token,r.state,r.pending,r.applied_definition
+                FROM agent_definitions d LEFT JOIN agent_resources r ON r.name=d.name WHERE d.name=$1`, [name]);
+            const row = result.rows[0];
+            if (!row || !row.definition || typeof row.duties !== 'string' || typeof row.voice !== 'string' ||
+                row.status !== 'valid' || typeof row.ownership_token !== 'string' ||
+                row.runtime_control_token !== row.ownership_token || row.state !== 'ready' || row.pending !== false ||
+                !row.applied_definition || JSON.stringify(row.applied_definition) !== JSON.stringify(row.definition))
+                return { state: 'held', reason: NATIVE_HELD };
+            const definition = definitionSchema.parse(row.definition);
+            const definitionHash = hashOf({ definition, dutiesMd: row.duties, voiceMd: row.voice });
+            if (row.hash !== definitionHash || definition.role !== 'chief-of-staff' || typeof definition.model !== 'string')
+                return { state: 'held', reason: NATIVE_HELD };
+            const identity: NativeRuntimeIdentity = {
+                agent: name,
+                incarnation: row.ownership_token,
+                definitionHash,
+                purposeAlias: definition.model,
+            };
+            const current = await this.nativeAuthority.current(identity);
+            return current?.state === 'active' ? { state: 'active' } : { state: 'held', reason: NATIVE_HELD };
+        } catch {
+            return { state: 'held', reason: NATIVE_HELD };
+        }
+    }
+    private async refuseUnsupportedNativeInventory(): Promise<void> {
+        if (!this.nativeGuarded) return;
+        const rows = await this.pool.query(`SELECT d.name,d.status,d.definition,r.state,r.applied_definition,
+                r.ownership_token,r.runtime_control_token
+            FROM agent_definitions d LEFT JOIN agent_resources r ON r.name=d.name
+            WHERE d.status<>'retired' OR r.name IS NOT NULL`);
+        for (const row of rows.rows) {
+            const current = definitionSchema.safeParse(row.definition);
+            const applied = row.applied_definition == null ? undefined : definitionSchema.safeParse(row.applied_definition);
+            if (isRetiredRole(current.success ? current.data.role : undefined) ||
+                isRetiredRole(applied?.success ? applied.data.role : undefined)) continue;
+            if (row.state === 'deleting') {
+                if (row.status !== 'retired')
+                    throw new KeeperRefusedError('Rendered native lifecycle cannot publish while an existing runtime needs a separate migration');
+                continue;
+            }
+            // publishCompose renders retained retired rows too. It only adds rows with
+            // runtime-control ownership to the Compose file, but that final render would
+            // still reject a retained Creative container after definition publication.
+            if (row.state === 'retired' && !runtimeControlled(row)) continue;
+            if (row.state == null) {
+                if (row.status !== 'retired')
+                    throw new KeeperRefusedError('Rendered native lifecycle cannot publish while an existing runtime needs a separate migration');
+                continue;
+            }
+            if (!current.success || current.data.role !== 'chief-of-staff' ||
+                applied && (!applied.success || applied.data.role !== 'chief-of-staff'))
+                throw new KeeperRefusedError('Rendered native lifecycle cannot publish while an existing runtime needs a separate migration');
+        }
+    }
+    private async startWithCurrentAuthority(name: string, address: string, credential = false) {
+        if (this.nativeGuarded) {
+            const before = await this.currentNative(name);
+            if (before.state !== 'active') {
+                if (credential) throw new KeeperRefusedError(NATIVE_HELD);
+                return { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
+            }
+        }
+        let startError: unknown;
+        let unhealthy = false;
+        try {
+            if (credential) await this.docker.start(name, address, true);
+            else await this.docker.start(name, address, false, 15);
+        }
+        catch (error) {
+            startError = error;
+            unhealthy = error instanceof AgentNotHealthyError;
+            if (!this.nativeGuarded) {
+                if (credential || !unhealthy) throw error;
+            }
+        }
+        if (this.nativeGuarded) {
+            const after = await this.currentNative(name);
+            if (after.state !== 'active') {
+                try { await this.docker.stop(name); }
+                catch (error) { throw new Error('Native runtime authority changed during start and the owned runtime could not be stopped', { cause: error }); }
+                if (credential) throw new KeeperRefusedError(NATIVE_HELD);
+                return { pending: false, reason: NATIVE_HELD, running: false, healthy: null } as const;
+            }
+        }
+        if (startError !== undefined) {
+            if (credential || !unhealthy) throw startError;
+        }
+        return { pending: false, reason: null, running: true, healthy: unhealthy ? false : true } as const;
     }
     private async ensureGatewayKey(name: string): Promise<void> {
         if (this.config.runtime.gatewayKeys[name]) return;
@@ -106,6 +207,7 @@ export class AgentLifecycle {
         });
     }
     private async removeGatewayKey(name: string): Promise<void> {
+        if (this.nativeGuarded) return;
         if (this.config.runtime.gatewayKeys[name]) return;
         const masterKeyFile = this.config.runtime.gatewayMasterKeyFile;
         if (!masterKeyFile) return;
@@ -117,6 +219,7 @@ export class AgentLifecycle {
         });
     }
     ownedSecrets(name: string): string[] {
+        if (this.nativeGuarded) return [];
         return !this.config.runtime.gatewayKeys[name] && this.config.runtime.gatewayMasterKeyFile
             ? [`${name}-gateway-key`]
             : [];
@@ -129,8 +232,10 @@ export class AgentLifecycle {
         const c = this.config, r = c.runtime;
         const url = new URL(r.workflowServer);
         url.pathname = `/${row.workflow_database}`;
-        const gatewayKeyFile = this.gatewayKeyFile(row.name);
         const role = d.role!;
+        if (this.nativeGuarded && role !== 'chief-of-staff')
+            throw new KeeperRefusedError('Native budget activation is supported only for the chief of staff runtime');
+        const gatewayKeyFile = this.nativeGuarded ? undefined : this.gatewayKeyFile(row.name);
         const roleDefault = role === 'chief-of-staff' || role === 'creative'
             ? c.defaultBindings?.[role]
             : undefined;
@@ -150,7 +255,7 @@ export class AgentLifecycle {
             const { NOTION_TOKEN_FILE: _, ...secrets } = binding.secrets;
             binding = { ...binding, secrets };
         }
-        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, gatewayKeyFile, passwordFile: r.passwordFile, workflowPasswordFile: r.workflowPasswordFile, endpoints: c.egress.endpoints } };
+        return { name: row.name, incarnation: row.ownership_token, role, notionRevision: managedRevision, bindings: bindingsFor(role, binding), address: String(row.address).split('/')[0], doors: doorsOf(d), ...(personalGoogle ? { personalGoogle } : {}), ...(personalMicrosoft ? { personalMicrosoft } : {}), ...outsideTokensOf(d), runtime: { databaseUrl: r.databaseUrl, workflowUrl: url.toString(), gatewayUrl: r.gatewayUrl, proxyUrl: r.proxyUrl, schedulesLive: r.schedulesLive, ...(gatewayKeyFile ? { gatewayKeyFile } : {}), passwordFile: r.passwordFile, workflowPasswordFile: r.workflowPasswordFile, endpoints: c.egress.endpoints } };
     }
     private async render(override?: {
         name: string;
@@ -316,7 +421,12 @@ export class AgentLifecycle {
     }
     async prepare(name: string, d: AgentDefinition, create: boolean) {
         // Preflight BEFORE definition writes. New database/address provision is later, after audited publication.
-        this.gatewayKeyFile(name);
+        if (this.nativeGuarded) {
+            if (d.role !== 'chief-of-staff') throw new KeeperRefusedError('Native budget activation is supported only for the chief of staff runtime');
+            if (!this.paths.modelPurposeRuntimeDir) throw new KeeperRefusedError('Managed model-purpose transport is not configured');
+            if (typeof d.model !== 'string' || !/^[a-z][a-z0-9-]{1,63}$/.test(d.model)) throw new KeeperRefusedError('Managed model-purpose alias is required');
+            await this.refuseUnsupportedNativeInventory();
+        } else this.gatewayKeyFile(name);
         for (const door of doorsOf(d))
             if (door.enabled) {
                 if(!ROLE_DOORS[d.role??'']?.includes(door.kind))throw new KeeperRefusedError('This role does not support that door');
@@ -350,6 +460,10 @@ export class AgentLifecycle {
         if (create) this.refuseUnknownGrants(name, d); else await this.plan({ name, definition: d });
     }
     async create(name: string, d: AgentDefinition) {
+        if (this.nativeGuarded && (d.role !== 'chief-of-staff' || !this.paths.modelPurposeRuntimeDir || typeof d.model !== 'string' || !/^[a-z][a-z0-9-]{1,63}$/.test(d.model)))
+            throw new KeeperRefusedError(d.role !== 'chief-of-staff'
+                ? 'Native budget activation is supported only for the chief of staff runtime'
+                : 'Managed model-purpose transport is not configured');
         const c = this.config, rows = await this.rows();
         const taken = [...await this.docker.inventory(c.network), ...c.reservedAddresses, ...c.egress.legacyConsumers.map(x => x.address), ...rows.map(r => String(r.address).split('/')[0])];
         await this.storage.provision(name, nextAddress(taken, c.subnet));
@@ -360,12 +474,14 @@ export class AgentLifecycle {
         if (!runtimeControlled(row))
             throw new KeeperRefusedError('Migrate this existing agent runtime control before saving');
         refusePendingRetirement(row);
-        await this.ensureGatewayKey(name);
+        if (!this.nativeGuarded) await this.ensureGatewayKey(name);
         // Before any stop: a list that cannot be built changes no rule, so the agent keeps running its applied definition.
         const plan = await this.plan({ name, definition: d }).catch(async error => {
             if (!(error instanceof KeeperRefusedError)) await this.pool.query('UPDATE agent_resources SET pending=true,pending_reason=$2,updated_at=now() WHERE name=$1', [name, 'Egress list could not be built; nothing was changed']);
             throw error;
         });
+        const nativeState = this.nativeGuarded ? await this.currentNative(name) : { state: 'active' as const };
+        if (this.nativeGuarded && nativeState.state !== 'active') await this.docker.stop(name);
         const pending = row.pending || !row.applied_definition || fingerprint(row.applied_definition) !== fingerprint(d) || row.state === 'provisioning';
         await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, true, 'Egress reconciliation in progress']);
         try {
@@ -377,14 +493,14 @@ export class AgentLifecycle {
         }
         const reason = pending ? 'Apply connection changes (restarts agent)' : null;
         await this.pool.query('UPDATE agent_resources SET pending=$2,pending_reason=$3,updated_at=now() WHERE name=$1', [name, pending, reason]);
-        return { pending, reason };
+        return { pending, reason: nativeState.state === 'held' ? nativeState.reason : reason };
     }
     async reconcile(name: string, d: AgentDefinition) {
         let row = await this.storage.row(name);
         if (!runtimeControlled(row) || !['ready','provisioning'].includes(row.state) || (row.state === 'provisioning' && row.ownership !== 'owned'))
             throw new KeeperRefusedError('Active runtime control required for reconciliation');
         refusePendingRetirement(row);
-        await this.ensureGatewayKey(name);
+        if (!this.nativeGuarded) await this.ensureGatewayKey(name);
         if (row.state === 'provisioning')
             row = await this.storage.provision(name, String(row.address).split('/')[0]);
         if (row.state !== 'ready')
@@ -400,7 +516,7 @@ export class AgentLifecycle {
         try { const fd = openSync(controlSecret, 'wx', 0o600); try { writeFileSync(fd, randomBytes(32).toString('hex')); fsyncSync(fd); } finally { closeSync(fd); } }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
         this.provisionSecret(controlSecret);
-        for (const path of [a.runtime.gatewayKeyFile!, a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
+        for (const path of [...(a.runtime.gatewayKeyFile ? [a.runtime.gatewayKeyFile] : []), a.runtime.passwordFile, a.runtime.workflowPasswordFile, ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a), ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)])
             this.provisionSecret(path);
         await this.publishCompose({ name, definition: d });
         await this.docker.stop(name); // Explicit action announces restart; no invented drain guarantee.
@@ -408,13 +524,8 @@ export class AgentLifecycle {
         // Applied is recorded once stop and the egress seal both succeeded and before start: the container that starts is exactly this setup.
         await this.pool.query(`UPDATE agent_door_connections SET applied_revision=revision,applied_connection=jsonb_build_object('kind',kind,'principal',principal,'revision',revision,'owner_email',owner_email,'org',org,'mailbox',mailbox) WHERE agent=$1 AND incarnation=$2::uuid AND principal IS NOT NULL`,[name,row.ownership_token]);
         await this.pool.query('UPDATE agent_resources SET applied_definition=$2::jsonb,pending=false,pending_reason=NULL,updated_at=now() WHERE name=$1', [name, JSON.stringify(d)]);
-        try { await this.docker.start(name, a.address, false, 15); }
-        catch (error) {
-            // A slow first start is not a failed apply: the console reads live status and shows "not answering yet".
-            if (error instanceof AgentNotHealthyError) return { pending: false, reason: null, running: true, healthy: false };
-            throw error;
-        }
-        return { pending: false, reason: null, running: true, healthy: true };
+        // A held native runtime remains fully staged and ready for the explicit provision/activate/reconcile flow.
+        return this.startWithCurrentAuthority(name, a.address);
     }
     /** No provisioning, provider access, claim application or definition writes. Uses the
      * existing compose, seals and private health route for one already-owned ready runtime. */
@@ -422,13 +533,14 @@ export class AgentLifecycle {
         await this.plan();
         this.verifySecrets(this.paths.secretsDir);
         for (const name of names) {
+            if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') throw new KeeperRefusedError(NATIVE_HELD);
             const row = await this.storage.row(name);
             if (!runtimeControlled(row) || row.state !== 'ready' || row.pending || !row.applied_definition)
                 throw new KeeperRefusedError('Ready applied runtime required');
             this.refuseUnknownGrants(name, row.applied_definition);
             const a = await this.connections(this.container(row, row.applied_definition, null, await this.notionGranted()), false);
             verifyBindingSources(a.bindings);
-            for (const path of [a.runtime.gatewayKeyFile!, a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
+            for (const path of [...(a.runtime.gatewayKeyFile ? [a.runtime.gatewayKeyFile] : []), a.runtime.passwordFile, a.runtime.workflowPasswordFile, join(this.paths.secretsDir, `${name}-runtime-control`),
                 ...Object.values(a.bindings?.secrets ?? {}), ...personalReadSecretFiles(a),
                 ...a.doors.filter(d => d.enabled).flatMap(d => Object.values(DOOR_FILES[d.kind as keyof typeof DOOR_FILES] ?? {}).map(s => join(this.paths.secretsDir, `${name}-${s}`))), ...outsideTokenFiles(this.paths.secretsDir, name, a.outsideTokens)]) {
                 const st = lstatSync(path);
@@ -437,6 +549,7 @@ export class AgentLifecycle {
         }
     }
     async reconcileCredential(name: string, revision: string | null): Promise<void> {
+        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') throw new KeeperRefusedError(NATIVE_HELD);
         const record = await this.credentialState?.();
         const grantOp = !!record?.activationIntent?.grantChange;
         // A grant change keeps the active key and moves only who is bound; the per-agent revision is
@@ -451,7 +564,7 @@ export class AgentLifecycle {
         await this.publishCompose();
         await this.docker.stop(name);
         await this.apply(plan);
-        await this.docker.start(name, String(row.address).split('/')[0], true);
+        await this.startWithCurrentAuthority(name, String(row.address).split('/')[0], true);
     }
     async stop(name: string) {
         const row = await this.storage.row(name);
@@ -485,7 +598,12 @@ export class AgentLifecycle {
         await this.pool.query("UPDATE agent_resources SET pending=true,pending_reason='Apply connection changes (restarts agent)',updated_at=now() WHERE name=$1", [name]);
     }
     async deleted(name: string) { await this.pool.query("DELETE FROM agent_resources WHERE name=$1 AND state='deleting'", [name]); }
-    async status(name: string) { const row = await this.storage.row(name); return row ? { pending: row.pending, reason: row.pending_reason } : { pending: true, reason: 'Ownership migration required' }; }
+    async status(name: string) {
+        const row = await this.storage.row(name);
+        if (!row) return { pending: true, reason: 'Ownership migration required' };
+        if (this.nativeGuarded && (await this.currentNative(name)).state !== 'active') return { pending: row.pending, reason: NATIVE_HELD };
+        return { pending: row.pending, reason: row.pending_reason };
+    }
     /** status plus what the container is doing now. Never throws because of Docker: unknown is null. */
     async liveStatus(name: string) {
         const base = await this.status(name);

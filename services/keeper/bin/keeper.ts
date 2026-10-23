@@ -34,11 +34,13 @@ import { prepareVaultRuntimeDirectory, serveConsoleVaultBroker } from "../lib/va
 import { serveModelPurposeBroker } from "../lib/model-purpose-broker.js";
 import { DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET, serveModelPurposeTransport } from "../lib/model-purpose-transport.js";
 import { registerMemberRemovalAction } from "../lib/member-removal.js";
+import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
 import {BudgetNativeCustodyStore} from '../lib/budget-native-custody.js';
 import {cleanupOneNativeCredential,openConfiguredNativeCustody} from '../lib/budget-native-cleanup.js';
 import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
 import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
 import {createNativeCredentialClient,readBudgetNativePolicyDocument,selectBudgetNativeReviewedPolicy,registerBudgetNativeHostActions} from '../lib/budget-native-host.js';
+import {createKeeperNativeRuntimeReader} from '../lib/native-runtime-reader.js';
 async function main(): Promise<void> {
     if (process.argv[2] !== "serve")
         throw new Error("usage: keeper serve");
@@ -53,6 +55,7 @@ async function main(): Promise<void> {
     let admin:ReturnType<typeof keeperPool>|undefined;
     const stops: Array<() => Promise<void>> = [];
     let financialJournal:HostFinancialJournal|undefined;
+    let modelPurposeTransportReady=false;
     try {
     pool = keeperPool(config.db);
     // Vault reads use a dedicated, bounded pool so disconnected clients cannot occupy
@@ -83,7 +86,19 @@ async function main(): Promise<void> {
         console.warn("keeper: Vault reader unavailable until its dedicated runtime directory is repaired");
     }
     const modelPurposeRuntimeDir=modelPurposeKeyPath?config.modelPurposeRuntimeDir:undefined;
-    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir,modelPurposeRuntimeDir},docker):undefined;
+    const nativeRuntimeReader=config.budgetNative||nativeCustody?createKeeperNativeRuntimeReader({
+        policyFile:config.budgetNative?.reviewedPolicyFile,
+        custody:()=>nativeCustody,
+        journal:()=>financialJournal,
+        pool:()=>financialPool,
+        designatedOwnerId:()=>config.designatedOwnerId,
+        gatewayUrl:()=>config.lifecycle?.runtime.gatewayUrl,
+        runtimeTransportReady:()=>!!modelPurposePool&&!!modelPurposeKeyPath&&!!modelPurposeRuntimeDir&&modelPurposeTransportReady,
+    }):undefined;
+    // Lifecycle construction precedes journal preparation; the reader above resolves custody,
+    // journal and transport state on every check instead of capturing startup-time absence.
+    const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir,modelPurposeRuntimeDir},docker,
+        undefined,undefined,undefined,undefined,undefined,nativeRuntimeReader):undefined;
     if(lifecycle)await lifecycle.storage.verifyReadyDatabases();
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
@@ -105,6 +120,7 @@ async function main(): Promise<void> {
             try{await verifyFinancialContinuity(financialJournal,db);}finally{db.release();}
             financialJournal.acquireWriterLease();
         }
+        registerInitialMemberBudgetActions({pool:financialPool,designatedOwnerId:config.designatedOwnerId});
         registerAction({name:'budget.freeze',hostOnly:true,input:z.object({}).strict(),run:async()=>{
             if(!financialJournal)throw new Error('Financial custody is not configured');
             await nativeCustody?.drainForShutdown();
@@ -185,6 +201,7 @@ async function main(): Promise<void> {
                 try{
                     const transportStop=await serveModelPurposeTransport({socket:DEFAULT_MODEL_PURPOSE_GATEWAY_SOCKET,runtimeSecretsDir:config.secretsDir,
                         custody:nativeCustody,ticketPool:modelPurposePool});
+                    modelPurposeTransportReady=true;
                     stops.push(async()=>{await transportStop();await brokerStop();});
                 }catch(error){await brokerStop();throw error;}
             }else stops.push(brokerStop);
@@ -209,6 +226,7 @@ async function main(): Promise<void> {
         if (stopping)
             return;
         stopping = true;
+        modelPurposeTransportReady=false;
         // Stop accepting commands first; keep both pools alive while an active native
         // action finishes any journal it already owns. Only then stop journal admission.
         const failures:unknown[]=[];
