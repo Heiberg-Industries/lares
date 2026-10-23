@@ -608,7 +608,7 @@ def run_database_proof() -> None:
         raise ProbeFailure("database")
     proof["claims"]["externalHbaIsSelected"] = True
     stage = "operator-host-route"
-    source_address = operator_query(compose_files, "SELECT inet_client_addr()::text")
+    source_address = operator_query(compose_files, "SELECT host(inet_client_addr())")
     try:
         parsed_source = ipaddress.ip_address(source_address)
         approved_network = ipaddress.ip_network(subnet)
