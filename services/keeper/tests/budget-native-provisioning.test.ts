@@ -11,6 +11,7 @@ import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
 import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
 import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
+import {createNativeRuntimeAuthority} from '../lib/budget-native-runtime-authority.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
@@ -18,7 +19,7 @@ import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definiti
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {createNativeTestCustody,nativeTestPolicy,nativeTestTarget} from './helpers/native-cleanup.js';
 
-let container:StartedPostgreSqlContainer;
+let container!:StartedPostgreSqlContainer;
 let pool:Pool;
 const journals:HostFinancialJournal[]=[],roots:string[]=[];
 const policy=nativeTestPolicy();
@@ -55,7 +56,7 @@ async function migrate():Promise<void>{
   const sqlDir=new URL('../../box/sql/',import.meta.url);
   for(const name of readdirSync(sqlDir).filter(name=>/^\d{3}_.*\.sql$/.test(name)).sort())await pool.query(readFileSync(new URL(name,sqlDir),'utf8'));
 }
-async function seed(memberId:string,agents:string[],incarnation:string,existingOrg?:string):Promise<{org:string;member:string}> {
+async function seed(memberId:string,agents:string[],incarnation:string,existingOrg?:string,roles:Record<string,string|null|undefined>={}):Promise<{org:string;member:string}> {
   const org=existingOrg??id(),member=memberId;
   if(!existingOrg)await pool.query('INSERT INTO orgs(id,display_name) VALUES($1,$2)',[org,'Provisioning test']);
   await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active')",[member,org]);
@@ -64,7 +65,7 @@ async function seed(memberId:string,agents:string[],incarnation:string,existingO
   for(const name of agents){
     const resourceNumber=addressCounter++;
     const raw=JSON.parse(readFileSync(new URL('../../../packages/agent-kit/templates/chief-of-staff/agent.json',import.meta.url),'utf8')) as Record<string,unknown>;
-    raw.name=name;raw.model='lares-brain';
+    raw.name=name;raw.model='lares-brain';raw.role='chief-of-staff';if(Object.hasOwn(roles,name)){if(roles[name]===null)delete raw.role;else raw.role=roles[name];}
     const definition=parseDefinition(definitionSchema.parse(raw)),duties='',voice='',definitionHash=hashOf({definition,dutiesMd:duties,voiceMd:voice});
     await pool.query('INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2,$3,$4,$5,\'valid\')',[name,JSON.stringify(definition),duties,voice,definitionHash]);
     await pool.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,$2,$3,'owned',$4,$4,'ready',$5::jsonb,false)",[name,`127.0.1.${resourceNumber}`,`neutral_test_${resourceNumber}`,incarnation,JSON.stringify(definition)]);
@@ -74,8 +75,9 @@ async function seed(memberId:string,agents:string[],incarnation:string,existingO
 }
 
 beforeAll(async()=>{
-  container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
-  pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
+  const socket=process.env.LARES_TEST_PG_SOCKET;
+  if(socket){pool=quiet(new Pool({host:socket,port:Number(process.env.LARES_TEST_PG_PORT),user:process.env.LARES_TEST_PG_USER,database:process.env.LARES_TEST_PG_DATABASE,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));}
+  else{container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));}
   await migrate();
 },120_000);
 afterAll(async()=>{
@@ -445,3 +447,200 @@ it('keeps an unknown financial commit unpublished in fresh custody',async()=>{
     unknownCommitStore?.close();
   }
 },120_000);
+
+it('keeps native runtime eligibility read-only across source, custody, journal, and role denials',async()=>{
+  const owner=id(),secondOwner=id(),duplicateOwner=id(),creativeOwner=id(),missingOwner=id(),unknownOwner=id(),capOwner=id(),grantOwner=id(),grantee=id(),incarnation=id();
+  const chief='neutral-runtime-chief',duplicateAgent='neutral-runtime-duplicate',creative='neutral-runtime-creative',missing='neutral-runtime-missing',unknown='neutral-runtime-unknown',capChief='neutral-runtime-cap',delegated='neutral-runtime-grant';
+  const selected=await seed(owner,[chief],incarnation);
+  await seed(creativeOwner,[creative],incarnation,selected.org,{[creative]:'creative'});
+  await seed(secondOwner,[],incarnation,selected.org);
+  await seed(duplicateOwner,[duplicateAgent],incarnation,selected.org);
+  await seed(missingOwner,[missing],incarnation,selected.org,{[missing]:null});
+  await seed(unknownOwner,[unknown],incarnation,selected.org,{[unknown]:'unadapted-role'});
+  await seed(capOwner,[capChief],incarnation,selected.org);
+  await seed(grantOwner,[delegated],incarnation,selected.org);
+  await seed(grantee,[],incarnation,selected.org);
+  const members=[owner,secondOwner,duplicateOwner,creativeOwner,missingOwner,unknownOwner,capOwner,grantOwner,grantee];
+  const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-runtime-authority-'));chmodSync(root,0o700);roots.push(root);
+  const directory=join(root,'financial'),db=await pool.connect();try{await prepareFinancialCustody(directory,db,journalOptions);}finally{db.release();}
+  const journal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(journal);
+  await provisionBudgetAccounts(pool,journal,{installationCap:'100',memberIds:members});
+  let grantId=id();
+  await pool.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision,expires_at)
+    SELECT $1,'agent',$2,$3,'use',owner_member_id,revision,clock_timestamp()+interval '1 hour' FROM agent_access WHERE agent_name=$2`,[grantId,delegated,grantee]);
+  const chiefGrantId=id();
+  await pool.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision,expires_at)
+    SELECT $1,'agent',$2,$3,'use',owner_member_id,revision,clock_timestamp()+interval '1 hour' FROM agent_access WHERE agent_name=$2`,[chiefGrantId,chief,secondOwner]);
+  const custodyPath=join(root,'native'),custody=createNativeTestCustody(custodyPath),fake=nativeFake(),provisioner=new BudgetNativeProvisioner(pool,journal,custody,fake.native,nativeTestTarget,policy);
+  const entries=[{member:owner,agent:chief},{member:creativeOwner,agent:creative},{member:missingOwner,agent:missing},{member:unknownOwner,agent:unknown},{member:capOwner,agent:capChief},{member:grantee,agent:delegated},{member:duplicateOwner,agent:duplicateAgent}];
+  const bindings=new Map<string,string>();
+  const emptyAuthority=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash});
+  await expect(emptyAuthority.current({agent:chief,incarnation,definitionHash:'a'.repeat(64),purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'held'});
+  expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
+  const readerFor=async(member:string,agent:string,selectedJournal=journal)=>{
+    const inventory=await custody.withGate(gate=>Promise.resolve(gate.inventory()));
+    const operation=inventory.operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.association.agent===agent);
+    if(!operation)throw new Error('Test operation unavailable');
+    return {authority:createNativeRuntimeAuthority({custody,journal:selectedJournal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:member,gatewayOrigin:nativeTestTarget.origin,endpointHash:nativeTestTarget.hash}),
+      identity:{...operation.association}};
+  };
+  try{
+    for(const entry of entries){
+      const binding=id();bindings.set(entry.agent,binding);
+      await expect(provisioner.provision({bindingId:binding,credentialGeneration:'0',memberId:entry.member,agent:entry.agent,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
+    }
+    const secondChiefBinding=id();
+    await expect(provisioner.provision({bindingId:secondChiefBinding,credentialGeneration:'0',memberId:secondOwner,agent:chief,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
+    const chiefReader=await readerFor(owner,chief);
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'held',reason:'Native budget activation required'});
+    expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
+    const activator=new BudgetNativeActivator(pool,journal,custody,fake.native);
+    await expect(activator.activate({bindingId:bindings.get(chief)!,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+    for(const entry of entries.slice(1)){await expect(activator.activate({bindingId:bindings.get(entry.agent)!,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});}
+    await expect(activator.activate({bindingId:secondChiefBinding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+    const duplicateReader=await readerFor(duplicateOwner,duplicateAgent);
+    await expect(duplicateReader.authority.current(duplicateReader.identity)).resolves.toEqual({state:'active'});
+    const duplicateBinding=bindings.get(duplicateAgent)!;
+    const duplicateOperation=await custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===duplicateBinding)));
+    expect(duplicateOperation).toBeDefined();
+    await custody.withGate(gate=>{gate.prepareOperation({bindingId:id(),credentialGeneration:'0',userOwnershipId:duplicateOperation!.userOwnershipId,
+      association:duplicateReader.identity,reviewedPolicy:policy},`sk-${'x'.repeat(43)}`);return Promise.resolve();});
+    await expect(duplicateReader.authority.current(duplicateReader.identity)).resolves.toMatchObject({state:'held'});
+    expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
+    const changedEndpointReader=createNativeRuntimeAuthority({custody,journal,pool:pool as never,reviewedPolicy:policy,designatedOwnerId:owner,
+      gatewayOrigin:nativeTestTarget.origin,endpointHash:'b'.repeat(64)});
+    await expect(changedEndpointReader.current(chiefReader.identity)).resolves.toMatchObject({state:'held'});
+    for(const entry of entries.slice(1,4)){
+      const reader=await readerFor(entry.member,entry.agent);
+      await expect(reader.authority.current(reader.identity)).resolves.toEqual({state:'held',reason:'Native budget activation required'});
+    }
+
+    await pool.query("UPDATE agent_definitions SET duties='stale source' WHERE name=$1",[chief]);
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toMatchObject({state:'held'});
+    await pool.query("UPDATE agent_definitions SET duties='' WHERE name=$1",[chief]);
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+
+    await pool.query('UPDATE resource_grants SET revoked_at=clock_timestamp() WHERE id=$1',[grantId]);
+    const delegatedReader=await readerFor(grantee,delegated);
+    await expect(delegatedReader.authority.current(delegatedReader.identity)).resolves.toMatchObject({state:'held'});
+    grantId=id();
+    await pool.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision,expires_at)
+      SELECT $1,'agent',$2,$3,'use',owner_member_id,revision,clock_timestamp()+interval '2 months' FROM agent_access WHERE agent_name=$2`,[grantId,delegated,grantee]);
+    await expect(delegatedReader.authority.current(delegatedReader.identity)).resolves.toEqual({state:'active'});
+    await pool.query('UPDATE resource_grants SET revoked_at=clock_timestamp() WHERE id=$1',[grantId]);
+    grantId=id();
+    await pool.query(`INSERT INTO resource_grants(id,resource_kind,resource_id,principal_member_id,permission,grantor_member_id,issued_access_revision,expires_at)
+      SELECT $1,'agent',$2,$3,'use',owner_member_id,revision,clock_timestamp()+interval '5 seconds' FROM agent_access WHERE agent_name=$2`,[grantId,delegated,grantee]);
+    const originalPoolConnectDescriptor=Object.getOwnPropertyDescriptor(pool,'connect');
+    const originalConnect=pool.connect.bind(pool) as (...args:any[])=>any;
+    type WrappedClient={client:any;queryDescriptor:PropertyDescriptor|undefined;releaseDescriptor:PropertyDescriptor|undefined;originalQuery:any;originalRelease:any;
+      restore:()=>void;restoredAtRelease:boolean};
+    const wrappedClients:WrappedClient[]=[];
+    const restoreProperty=(client:any,key:'query'|'release',descriptor:PropertyDescriptor|undefined):void=>{
+      if(descriptor)Object.defineProperty(client,key,descriptor);else delete client[key];
+    };
+    const installCommitDelay=(client:any)=>{
+      const entry:WrappedClient={client,queryDescriptor:Object.getOwnPropertyDescriptor(client,'query'),releaseDescriptor:Object.getOwnPropertyDescriptor(client,'release'),
+        originalQuery:client.query,originalRelease:client.release,restore:()=>{},restoredAtRelease:false};
+      let restored=false;
+      entry.restore=()=>{if(restored)return;restored=true;restoreProperty(client,'query',entry.queryDescriptor);restoreProperty(client,'release',entry.releaseDescriptor);};
+      const wrappedQuery=function(...args:any[]){
+        const sql=typeof args[0]==='string'?args[0]:args[0]?.text;
+        const result=entry.originalQuery.apply(client,args);
+        if(!/^COMMIT$/i.test(String(sql))||args.some(value=>typeof value==='function'))return result;
+        return Promise.resolve(result).then(async acknowledged=>{
+          commitsReached++;await entry.originalQuery.call(client,'SELECT pg_sleep(5.5)');
+          expiredAtAcknowledgement=(await entry.originalQuery.call(client,'SELECT expires_at<=clock_timestamp() AS expired FROM resource_grants WHERE id=$1',[grantId])).rows[0]!.expired===true;
+          return acknowledged;
+        });
+      };
+      const wrappedRelease=function(...args:any[]){
+        entry.restore();entry.restoredAtRelease=client.query===entry.originalQuery&&client.release===entry.originalRelease;
+        return entry.originalRelease.apply(client,args);
+      };
+      Object.defineProperty(client,'query',{configurable:true,writable:true,value:wrappedQuery});
+      Object.defineProperty(client,'release',{configurable:true,writable:true,value:wrappedRelease});
+      wrappedClients.push(entry);return client;
+    };
+    let commitsReached=0;
+    let expiredAtAcknowledgement=false;
+    (pool as any).connect=(...args:any[])=>{
+      const callbackIndex=args.findIndex(value=>typeof value==='function');
+      if(callbackIndex>=0){const forwarded=[...args],callback=forwarded[callbackIndex];forwarded[callbackIndex]=(error:any,client:any,...rest:any[])=>callback(error,client?installCommitDelay(client):client,...rest);return originalConnect(...forwarded);}
+      return Promise.resolve(originalConnect(...args)).then(installCommitDelay);
+    };
+    let expiryResult;
+    try{expiryResult=await delegatedReader.authority.current(delegatedReader.identity);}finally{
+      if(originalPoolConnectDescriptor)Object.defineProperty(pool,'connect',originalPoolConnectDescriptor);else delete (pool as any).connect;
+      for(const entry of wrappedClients)entry.restore();
+    }
+    expect(commitsReached).toBe(1);
+    expect(expiryResult).toMatchObject({state:'held'});
+    expect(expiredAtAcknowledgement).toBe(true);
+    expect(wrappedClients).toHaveLength(1);
+    expect(wrappedClients[0]!.restoredAtRelease).toBe(true);
+    expect(wrappedClients.every(entry=>entry.client.query===entry.originalQuery&&entry.client.release===entry.originalRelease)).toBe(true);
+    const afterExpiryConnection=await pool.connect();
+    try{await expect(afterExpiryConnection.query('SELECT 1 AS ok')).resolves.toMatchObject({rows:[{ok:1}]});}finally{afterExpiryConnection.release();}
+    expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
+
+    const capReader=await readerFor(capOwner,capChief);
+    await expect(capReader.authority.current(capReader.identity)).resolves.toEqual({state:'active'});
+    const policyUpdate=await pool.connect();try{await policyUpdate.query('UPDATE org_member_policy SET spend_cap_usd_month=24.99 WHERE user_id=$1',[capOwner]);}finally{policyUpdate.release();}
+    await expect(capReader.authority.current(capReader.identity)).resolves.toMatchObject({state:'held'});
+    expect(JSON.parse(readFileSync(join(custodyPath,'control.json'),'utf8')).state).toBe('open');
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+
+    let busyResult;
+    await journal.operation('member-remove',async operationId=>{
+      expect(journal.aborted(operationId,'not-started')).toBeDefined();
+      busyResult=await chiefReader.authority.current(chiefReader.identity);
+    });
+    expect(busyResult).toMatchObject({state:'held'});
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+
+    const accountLookup=await pool.connect();let memberAccount:string;
+    try{memberAccount=(await accountLookup.query("SELECT id FROM budget_accounts WHERE kind='member' AND live_member_id=$1",[owner])).rows[0]!.id;}finally{accountLookup.release();}
+    const organisationWriter=await pool.connect(),monitor=await pool.connect();let restoreConnect:(()=>Promise<any>)|undefined;
+    try{
+      await organisationWriter.query('BEGIN');
+      await organisationWriter.query("SELECT pg_advisory_xact_lock(hashtextextended('lares-console-source:' || $1,0))",[selected.org]);
+      let readerPid:number|undefined;
+      const connect=pool.connect.bind(pool);restoreConnect=connect;(pool as any).connect=async()=>{const client=await connect();await client.query("SET application_name='lares-runtime-authority-lock-reader'");readerPid=Number((await client.query('SELECT pg_backend_pid() AS pid')).rows[0]!.pid);return client;};
+      const read=chiefReader.authority.current(chiefReader.identity);
+      let waiting=false,activity:unknown[]=[];
+      for(let attempt=0;attempt<100&&!waiting;attempt++){
+        activity=(await monitor.query("SELECT pid,application_name,state,wait_event_type,wait_event,left(query,160) AS query FROM pg_stat_activity WHERE pid=$1",[readerPid??-1])).rows;
+        waiting=activity.some((row:any)=>Number(row.pid)===readerPid&&row.application_name==='lares-runtime-authority-lock-reader'&&row.wait_event_type==='Lock');
+        if(!waiting)await new Promise(resolve=>setTimeout(resolve,20));
+      }
+      expect(waiting,JSON.stringify(activity)).toBe(true);
+      await organisationWriter.query("SET LOCAL lock_timeout='300ms'");
+      await expect(organisationWriter.query('SELECT id FROM budget_accounts WHERE id=$1 FOR UPDATE',[memberAccount])).resolves.toMatchObject({rowCount:1});
+      await organisationWriter.query('COMMIT');
+      await expect(read).resolves.toEqual({state:'active'});
+    }finally{if(restoreConnect)(pool as any).connect=restoreConnect;try{await organisationWriter.query('ROLLBACK');}catch{}organisationWriter.release();monitor.release();}
+
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toEqual({state:'active'});
+    await journal.drainForShutdown();
+    await expect(chiefReader.authority.current(chiefReader.identity)).resolves.toMatchObject({state:'held'});
+
+    // A journal's writer marker is part of its custody. Exercise each transition on
+    // the original directory with a clean close/reopen instead of copying live state.
+    journal.close();
+    const closedJournal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(closedJournal);
+    const closedReader=await readerFor(owner,chief,closedJournal);
+    await expect(closedReader.authority.current(closedReader.identity)).resolves.toEqual({state:'active'});
+    closedJournal.close();
+    await expect(closedReader.authority.current(closedReader.identity)).resolves.toMatchObject({state:'held'});
+
+    const frozenJournal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(frozenJournal);
+    const frozenReader=await readerFor(owner,chief,frozenJournal);
+    await expect(frozenReader.authority.current(frozenReader.identity)).resolves.toEqual({state:'active'});
+    frozenJournal.freeze();
+    await expect(frozenReader.authority.current(frozenReader.identity)).resolves.toMatchObject({state:'held'});
+
+  }finally{custody.close();}
+},60_000);
