@@ -156,8 +156,25 @@ def safe_startup_container_state(*, found, status='', running=False, exit_code=N
 def safe_startup_log_categories(log_text):
     # Inspect only a bounded tail and return fixed booleans. Never place log bytes in proof output.
     text=str(log_text)[-32768:].lower()
-    patterns={
-      'missingSettings':r'required settings|startup settings check',
+    # These names and line prefixes match the committed generated guard. Anchor at the line
+    # start and include its punctuation so longer identifiers and quoted log text cannot match.
+    file_settings=('DATABASE_PASSWORD_FILE','WORKFLOW_POSTGRES_PASSWORD_FILE','GATEWAY_KEY_FILE')
+    value_settings=('DATABASE_URL','WORKFLOW_POSTGRES_URL','GATEWAY_URL',
+                    'LARES_AGENT_NAME','LARES_DEFINITION_DIR')
+    patterns={'missingSettings':r'(?m)^lares: (?:'+'|'.join(
+      name.lower() for name in value_settings + file_settings)+r') is not set\. '}
+    for name in value_settings + file_settings:
+      patterns['unset_'+name]=rf'(?m)^lares: {name.lower()} is not set\. '
+    for name in file_settings:
+      patterns['unreadable_'+name]=rf'(?m)^lares: {name.lower()} points to a file that does not exist or cannot be read \('
+      patterns['empty_'+name]=rf'(?m)^lares: {name.lower()} points to a file that exists but is empty \('
+    patterns.update({
+      'managedIncarnationInvalid':r'(?m)^lares: managed incarnation is invalid$',
+      'managedSocketNotConfigured':r'(?m)^lares: managed model-purpose socket is not configured$',
+      'runtimeControlFileUnavailable':r'(?m)^lares: runtime-control file is missing, unreadable, or empty$',
+      'modelPurposeSocketUnavailable':r'(?m)^lares: model-purpose runtime socket is unavailable$',
+      'gatewayRuntimeSocketUnavailable':r'(?m)^lares: model-purpose gateway socket is unavailable$',
+      'workflowCredentialsUnavailable':r'(?m)^lares: workflow database credentials are unavailable\.$',
       'invalidConfiguration':r'invalid config|configuration error|failed to load config',
       'moduleResolution':r'err_module_not_found|cannot find (?:package|module)',
       'permissionDenied':r'eacces|permission denied',
@@ -165,7 +182,7 @@ def safe_startup_log_categories(log_text):
       'databaseUnavailable':r'econnrefused|database connection|password authentication failed',
       'addressInUse':r'eaddrinuse|address already in use',
       'memoryExhaustion':r'heap out of memory|out of memory|oomkilled',
-    }
+    })
     return {name:re.search(pattern,text) is not None for name,pattern in patterns.items()}
 
 def bounded_compiled_runtime_logs(name):
