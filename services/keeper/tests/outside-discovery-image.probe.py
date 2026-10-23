@@ -1,4 +1,5 @@
 """Configured outside discovery proof; Linux disposable CI only."""
+import ast
 import hashlib
 import ipaddress
 import copy
@@ -45,6 +46,16 @@ resource_names = []
 worker_stopped = True
 cleanup_failures = []
 phase = "guards"
+network_stage = "network"
+NETWORK_FAILURE_STAGES = frozenset({
+    "container-name-preflight", "network-name-preflight", "docker-network-inventory",
+    "docker-network-inspect", "route-inventory", "subnet-selection", "network-create",
+    "network-inspect", "network-isolation-check", "network-ipam-check",
+    "network-address-validation", "firewall-preflight",
+})
+SAFE_FAILURE_PHASES = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
+                      "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
+                      "first-hop-evidence", "postconditions"}
 
 
 def run(*args, input=None, timeout=90, check=True):
@@ -67,6 +78,196 @@ def record(label, ok):
     if not ok:
         raise RuntimeError("proof assertion failed: " + label)
     report["checks"].append(label)
+
+
+def set_network_stage(stage):
+    global network_stage
+    network_stage = stage if stage in NETWORK_FAILURE_STAGES else "network"
+
+
+def fixture_failure_record(failure_phase, failure_network_stage):
+    safe_phase = failure_phase if failure_phase in SAFE_FAILURE_PHASES else "fixture"
+    failure = {"phase": safe_phase, "reason": "fixture operation failed"}
+    if safe_phase == "network":
+        failure["networkStage"] = (failure_network_stage if failure_network_stage in NETWORK_FAILURE_STAGES
+                                   else "network")
+    return failure
+
+
+def offline_network_diagnostics_self_test():
+    """Execute production network AST with stub failures, without running network commands."""
+    secret_like = "sentinel-secret-config-route-value"
+    if NETWORK_FAILURE_STAGES != frozenset({
+            "container-name-preflight", "network-name-preflight", "docker-network-inventory",
+            "docker-network-inspect", "route-inventory", "subnet-selection", "network-create",
+            "network-inspect", "network-isolation-check", "network-ipam-check",
+            "network-address-validation", "firewall-preflight"}):
+        raise RuntimeError("network diagnostic stage allowlist changed unexpectedly")
+
+    source = ast.parse(pathlib.Path(__file__).read_text(encoding="utf-8"))
+    main_try = next(node for node in source.body if isinstance(node, ast.Try) and any(
+        isinstance(statement, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "phase"
+        for target in statement.targets) and isinstance(statement.value, ast.Constant) and
+        statement.value.value == "network" for statement in node.body))
+
+    def phase_assignment(statement, value):
+        return isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "phase" for target in statement.targets
+        ) and isinstance(statement.value, ast.Constant) and statement.value.value == value
+
+    def report_network_assignment(statement):
+        return isinstance(statement, ast.Assign) and any(
+            isinstance(target, ast.Subscript) and isinstance(target.value, ast.Name) and
+            target.value.id == "report" and isinstance(target.slice, ast.Constant) and
+            target.slice.value == "network" for target in statement.targets)
+
+    setup_start = next(index for index, node in enumerate(main_try.body) if phase_assignment(node, "network"))
+    setup_end = next(index for index in range(setup_start, len(main_try.body))
+                     if report_network_assignment(main_try.body[index]))
+    setup_nodes = main_try.body[setup_start:setup_end + 1]
+    selector_node = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                         and node.name == "choose_unused_subnet")
+    selector_call = ast.Expr(value=ast.Call(func=ast.Name(id="choose_unused_subnet", ctx=ast.Load()),
+                                            args=[], keywords=[]))
+    setter_node = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                       and node.name == "set_network_stage")
+    firewall_start = next(index for index, node in enumerate(main_try.body) if any(
+        isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and
+        call.func.id == "set_network_stage" and call.args and
+        isinstance(call.args[0], ast.Constant) and call.args[0].value == "firewall-preflight"
+        for call in ast.walk(node)))
+    firewall_end = next(index for index in range(firewall_start + 1, len(main_try.body))
+                        if phase_assignment(main_try.body[index], "fixture-files"))
+    firewall_nodes = main_try.body[firewall_start:firewall_end]
+
+    def execute(nodes, namespace):
+        module = ast.Module(body=[copy.deepcopy(node) for node in nodes], type_ignores=[])
+        exec(compile(ast.fix_missing_locations(module), __file__, "exec"), namespace)
+
+    def base_namespace():
+        namespace = {
+            "__name__": "outside_network_diagnostic_selftest",
+            "NETWORK_FAILURE_STAGES": NETWORK_FAILURE_STAGES,
+            "SAFE_FAILURE_PHASES": SAFE_FAILURE_PHASES,
+            "fixture_failure_record": fixture_failure_record,
+            "json": json, "ipaddress": ipaddress, "secrets": secrets,
+            "owner": "a" * 32, "worker_container": "lares-outside-worker-aaaaaaaaaa",
+            "network_stage": "network", "report": {},
+        }
+        execute([setter_node, selector_node], namespace)
+        return namespace
+
+    def failure_for(namespace, nodes, expected_stage):
+        try:
+            execute(nodes, namespace)
+        except Exception:
+            failure = fixture_failure_record(namespace.get("phase", "network"),
+                                             namespace.get("network_stage", "network"))
+        else:
+            raise RuntimeError("stubbed network operation did not fail")
+        if failure != {"phase": "network", "reason": "fixture operation failed",
+                       "networkStage": expected_stage}:
+            raise RuntimeError("production network operation selected the wrong diagnostic stage")
+        if secret_like in json.dumps(failure, sort_keys=True):
+            raise RuntimeError("network failure evidence exposed stub output")
+        return failure
+
+    selector_stages = {
+        "docker-network-inventory": ("inventory",),
+        "docker-network-inspect": ("inspect",),
+        "route-inventory": ("routes",),
+        "subnet-selection": ("no-subnet",),
+    }
+    for expected_stage, fault in selector_stages.items():
+        namespace = base_namespace()
+
+        def selector_command(*args, **kwargs):
+            if args[:3] == ("docker", "network", "ls"):
+                if fault[0] == "inventory":
+                    raise RuntimeError(secret_like)
+                return "b" * 64 + "\n" if fault[0] == "inspect" else ""
+            if args[:3] == ("docker", "network", "inspect"):
+                if fault[0] == "inspect":
+                    return secret_like
+                raise RuntimeError("unexpected Docker inspect in selector stub")
+            if args[:2] == ("ip", "-j"):
+                if fault[0] == "routes":
+                    raise RuntimeError(secret_like)
+                if fault[0] == "no-subnet":
+                    return json.dumps([{"dst": "10.0.0.0/8"}])
+            raise RuntimeError("unexpected selector command")
+
+        namespace["command"] = selector_command
+        failure_for(namespace, [selector_call], expected_stage)
+
+    setup_faults = {
+        "container-name-preflight", "network-name-preflight", "network-create",
+        "network-inspect", "network-isolation-check", "network-ipam-check",
+        "network-address-validation",
+    }
+    for fault in setup_faults:
+        namespace = base_namespace()
+        selected_subnet = ipaddress.ip_network(
+            "2001:db8::/128" if fault == "network-address-validation" else "192.0.2.0/24")
+        namespace["choose_unused_subnet"] = lambda selected=selected_subnet: selected
+
+        def container_stub(name):
+            if fault == "container-name-preflight":
+                raise RuntimeError(secret_like)
+            return None
+
+        def setup_command(*args, **kwargs):
+            if args[:3] == ("docker", "network", "ls") and "--filter" in args:
+                if fault == "network-name-preflight":
+                    raise RuntimeError(secret_like)
+                return ""
+            if args[:3] == ("docker", "network", "create"):
+                if fault == "network-create":
+                    raise RuntimeError(secret_like)
+                return ""
+            if args[:3] == ("docker", "network", "inspect"):
+                if fault == "network-inspect":
+                    return secret_like
+                internal = fault != "network-isolation-check"
+                configured = str(selected_subnet)
+                if fault == "network-ipam-check":
+                    configured = "192.0.3.0/24"
+                metadata = {"Internal": internal,
+                            "Labels": {"lares.proof": "outside-discovery",
+                                       "lares.proof.owner": namespace["owner"]},
+                            "IPAM": {"Config": [{"Subnet": configured}]}}
+                return json.dumps([metadata])
+            raise RuntimeError("unexpected fixture setup command")
+
+        namespace["container_facts"] = container_stub
+        namespace["command"] = setup_command
+        failure_for(namespace, setup_nodes, fault)
+
+    namespace = base_namespace()
+    selected_subnet = ipaddress.ip_network("192.0.2.0/24")
+    namespace["choose_unused_subnet"] = lambda: selected_subnet
+    namespace["container_facts"] = lambda name: None
+    namespace["command"] = lambda *args, **kwargs: (
+        json.dumps([{"Internal": True,
+                     "Labels": {"lares.proof": "outside-discovery",
+                                "lares.proof.owner": namespace["owner"]},
+                     "IPAM": {"Config": [{"Subnet": str(selected_subnet)}]}}])
+        if args[:3] == ("docker", "network", "inspect") else "")
+    execute(setup_nodes, namespace)
+    if namespace["report"].get("network", {}).get("subnet") != str(selected_subnet):
+        raise RuntimeError("production network setup success path changed in offline context")
+    namespace["nft_host"] = lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError(secret_like))
+    failure_for(namespace, firewall_nodes, "firewall-preflight")
+
+    namespace = base_namespace()
+    namespace["set_network_stage"]("untrusted-stage-" + secret_like)
+    failure = fixture_failure_record("network", namespace["network_stage"])
+    if failure != {"phase": "network", "reason": "fixture operation failed", "networkStage": "network"}:
+        raise RuntimeError("unexpected network stage did not use the fixed fallback")
+    if secret_like in json.dumps(failure, sort_keys=True):
+        raise RuntimeError("network fallback evidence exposed untrusted stage text")
+    if "networkStage" in fixture_failure_record("database", "network-create"):
+        raise RuntimeError("network stage leaked outside network failure phase")
 
 
 def write_secret(path, value, mode=0o600):
@@ -879,9 +1080,12 @@ def postgres_ready(container, password):
 
 
 def choose_unused_subnet():
+    global network_stage
+    set_network_stage("docker-network-inventory")
     ids = command("docker", "network", "ls", "--quiet").splitlines()
     occupied = []
     if ids:
+        set_network_stage("docker-network-inspect")
         networks = json.loads(command("docker", "network", "inspect", *ids))
         for network_info in networks:
             for entry in network_info.get("IPAM", {}).get("Config", []):
@@ -891,6 +1095,7 @@ def choose_unused_subnet():
                         occupied.append(ipaddress.ip_network(value, strict=False))
                     except ValueError:
                         raise RuntimeError("existing Docker network has invalid address metadata") from None
+    set_network_stage("route-inventory")
     routes = json.loads(command("ip", "-j", "-4", "route", "show"))
     for route in routes:
         destination = route.get("dst")
@@ -899,6 +1104,7 @@ def choose_unused_subnet():
                 occupied.append(ipaddress.ip_network(destination, strict=False))
             except ValueError:
                 raise RuntimeError("runner route has invalid address metadata") from None
+    set_network_stage("subnet-selection")
     for _ in range(128):
         candidate = ipaddress.ip_network(f"10.{secrets.randbelow(192) + 32}.{secrets.randbelow(256)}.0/24")
         if not any(candidate.overlaps(value) for value in occupied):
@@ -1166,6 +1372,7 @@ def offline_image_store_self_test():
 if self_test_mode:
     offline_image_store_self_test()
     offline_cleanup_self_test()
+    offline_network_diagnostics_self_test()
     print("outside proof cleanup self-test passed")
     raise SystemExit(0)
 
@@ -1214,20 +1421,27 @@ try:
     agent_container = "lares-" + agent
     resource_names = [db_container, proxy_container, peer_container, worker_container,
                       role_container, generator_container]
+    set_network_stage("container-name-preflight")
     if any(container_facts(name) is not None for name in resource_names):
         raise RuntimeError("unique fixture container name is already in use")
+    set_network_stage("network-name-preflight")
     if command("docker", "network", "ls", "--quiet", "--no-trunc", "--filter",
                "name=^" + network + "$").strip():
         raise RuntimeError("unique fixture network name is already in use")
     subnet = choose_unused_subnet()
+    set_network_stage("network-create")
     command("docker", "network", "create", "--internal", "--subnet", str(subnet),
             "--label", "lares.proof=outside-discovery", "--label", "lares.proof.owner=" + owner, network)
+    set_network_stage("network-inspect")
     network_metadata = json.loads(command("docker", "network", "inspect", network))[0]
+    set_network_stage("network-isolation-check")
     if network_metadata.get("Internal") is not True or network_metadata.get("Labels", {}).get("lares.proof") != "outside-discovery" or network_metadata.get("Labels", {}).get("lares.proof.owner") != owner:
         raise RuntimeError("proof network isolation or ownership labels were not established")
+    set_network_stage("network-ipam-check")
     configured_subnets = {entry.get("Subnet") for entry in network_metadata.get("IPAM", {}).get("Config", [])}
     if str(subnet) not in configured_subnets:
         raise RuntimeError("proof network static-address subnet did not match the selected range")
+    set_network_stage("network-address-validation")
     if subnet.version != 4 or subnet.num_addresses < 32:
         raise RuntimeError("Docker selected an unsuitable isolated IPv4 subnet")
     ips = {"db": str(subnet.network_address + 10), "proxy": str(subnet.network_address + 11),
@@ -1237,6 +1451,7 @@ try:
 
     # The generated firewall owns this one table. It may replace it on the
     # disposable runner, so refuse any pre-existing table and verify removal.
+    set_network_stage("firewall-preflight")
     existing_tables = nft_host("list", "tables").stdout.splitlines()
     if any(line.strip() == "table inet lares_egress" for line in existing_tables):
         raise RuntimeError("disposable runner already has the Lares egress firewall table")
@@ -1523,16 +1738,12 @@ networks:
 except Exception as error:
     report["status"] = "failed"
     # Never place subprocess output, config values, credentials or arbitrary exception text in evidence.
-    safe_phases = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
-                   "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
-                   "first-hop-evidence", "postconditions"}
     if isinstance(error, ImageResolutionRefusal):
         report["failure"] = {"phase": "loaded-images", "reason": "local image resolution failed",
                              "role": error.role, "resolutionStage": error.stage,
                              "category": error.category}
     else:
-        report["failure"] = {"phase": phase if phase in safe_phases else "fixture",
-                             "reason": "fixture operation failed"}
+        report["failure"] = fixture_failure_record(phase, network_stage)
     if root is not None:
         worker_evidence = import_worker_evidence(root)
         if worker_evidence is not None and worker_evidence.get("success") is not True:
