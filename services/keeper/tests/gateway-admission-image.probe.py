@@ -765,9 +765,14 @@ print('ok')
             canonical_ports[0].get("host_ip")=="127.0.0.1" and canonical_ports[0].get("protocol")=="tcp",
             "Canonical Compose changed the Gateway host-only port contract")
         canonical_secrets=canonical_service.get("secrets")
-        require(type(canonical_secrets) is list and
-            {item.get("source") for item in canonical_secrets if type(item) is dict}==set(service.get("secrets",[])) and
-            all(item.get("target")==item.get("source") for item in canonical_secrets if type(item) is dict),
+        expected_secret_sources=service.get("secrets")
+        require(type(expected_secret_sources) is list and type(canonical_secrets) is list and
+            all(type(name) is str for name in expected_secret_sources) and
+            len(canonical_secrets)==len(expected_secret_sources) and
+            all(type(item) is dict and type(item.get("source")) is str and
+                item.get("source") in expected_secret_sources for item in canonical_secrets) and
+            {item.get("source") for item in canonical_secrets if type(item) is dict}==set(expected_secret_sources) and
+            all(item.get("target")=="/run/secrets/"+item["source"] for item in canonical_secrets),
             "Canonical Compose changed the Gateway secret source/target contract")
         dependencies=canonical_service.get("depends_on",{})
         networks=canonical_service.get("networks",{})
