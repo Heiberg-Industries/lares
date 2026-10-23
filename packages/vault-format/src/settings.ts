@@ -194,7 +194,7 @@ export const SETTINGS: readonly SettingDef[] = [
     requiredFor: ROLES,
     fallback: null,
     secret: false,
-    breaksWithout: "The role image's own startup guard refuses to start; the gateway would refuse every request as unauthenticated.",
+    breaksWithout: "The role image refuses to start without this file or the chief-only Keeper managed transport; without either, gateway requests would be unauthenticated.",
     readAt: ["images/agent-runtime/start.sh:7", "images/agent-runtime/start.sh:10", "packages/agent-kit/src/gateway-provider.ts:86", "services/keeper/lib/compose-agents.ts:69"],
   },
   {

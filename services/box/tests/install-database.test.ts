@@ -101,9 +101,6 @@ beforeEach(() => {
   // leak — so a test can only see it this way, exactly the shape ops/backup-verify.sh uses.
   stub("docker", 'case "$*" in *"ps -q db"*) case "$*" in *compose.bootstrap*) echo bootstrap-container ;; *) echo normal-container ;; esac ;; *"inspect -f"*) exit 0 ;; *"inspect bootstrap-container"*) exit 1 ;; *psql*) cat >> "$STUB_LOG" 2>/dev/null ;; esac; exit 0');
   stub("pnpm");
-  // `lares-doctor`: every completed wizard run proves the model key through it, so a
-  // run that is not about that proof stubs it silently green.
-  stub("lares-doctor");
   stub("id", "echo 0");                                   // running as root
   stub("uname", "echo Linux");
   stub("free", 'echo "Mem: 8192 1024 7168"');
@@ -140,7 +137,8 @@ describe("the database the installer creates", () => {
     expect(calls).toMatch(/pnpm -C .*database-setup/);
     expect(calls).toMatch(/pnpm -C .*migrate --schema-owner/);
     expect(calls).toContain("PGUSER=lares_operator");
-    expect(calls).toMatch(/docker compose -f .*compose\.yaml up -d console lares-gateway caddy/);
+    expect(calls).toMatch(/docker compose -f .*compose\.yaml up -d console caddy/);
+    expect(calls).not.toMatch(/compose\.yaml up -d .*lares-gateway/);
     expect(calls).toMatch(/pnpm -C .*services\/box installation-settings/);
     expect(calls.indexOf("bin/database-setup.ts")).toBeLessThan(calls.indexOf("migrate.ts --schema-owner"));
     expect(calls.indexOf("migrate.ts --schema-owner")).toBeLessThan(calls.indexOf("installation-settings"));

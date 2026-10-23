@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { createServer } from "node:net";
 import {
   checkSettings,
   settingsReport,
@@ -26,6 +28,7 @@ const FULL: NodeJS.ProcessEnv = {
 };
 
 const GOOD_FILES = new Set(["/run/secrets/database-password", "/run/secrets/workflow-password", "/run/secrets/gateway-key"]);
+const CHIEF_GUARD = join(import.meta.dirname, "../../../images/agent-runtime/required-settings-chief-of-staff.sh");
 
 /** A file probe with no real files: everything named in FULL is present, readable and non-empty;
  *  anything else does not exist. */
@@ -33,6 +36,20 @@ const probeOk: ProbeFile = (path) =>
   GOOD_FILES.has(path)
     ? { exists: true, readable: true, empty: false }
     : { exists: false, readable: false, empty: true };
+
+const MANAGED_ENV = {
+  ...Object.fromEntries(Object.entries(FULL).filter(([name]) => name !== "GATEWAY_KEY_FILE")),
+  LARES_AGENT_INCARNATION: "22222222-2222-4222-8222-222222222222",
+  LARES_RUNTIME_CONTROL_SECRET_FILE: "/run/secrets/runtime-control",
+  LARES_MODEL_PURPOSE_RUNTIME_SOCKET: "/run/lares/model-purpose/model-purpose.sock",
+};
+const managedProbe: ProbeFile = (path) => {
+  if (path === "/run/lares/model-purpose/model-purpose.sock" || path === "/run/lares/model-purpose/gateway.sock")
+    return { exists: true, readable: true, empty: false, isSocket: true };
+  if (path === "/run/secrets/runtime-control")
+    return { exists: true, readable: true, empty: false, isFile: true };
+  return probeOk(path);
+};
 
 describe("what a missing setting says", () => {
   it("says nothing at all when everything required is there", () => {
@@ -85,6 +102,18 @@ describe("what a missing setting says", () => {
     expect(settingsReport(problems)).toMatch(/exists but is empty/);
   });
 
+  it("accepts only the exact chief managed transport when its two sockets and control file are verified", () => {
+    expect(checkSettings("chief-of-staff", MANAGED_ENV, managedProbe)).toEqual([]);
+    expect(checkSettings("creative", MANAGED_ENV, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", { ...MANAGED_ENV, LARES_MODEL_PURPOSE_RUNTIME_SOCKET: "/tmp/arbitrary.sock" }, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", { ...MANAGED_ENV, LARES_AGENT_INCARNATION: "not-an-incarnation" }, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", { ...MANAGED_ENV, LARES_AGENT_INCARNATION: "2222222--2222-4222-8222-222222222222" }, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", { ...MANAGED_ENV, LARES_RUNTIME_CONTROL_SECRET_FILE: "/tmp/control" }, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", MANAGED_ENV, (path) => path === "/run/secrets/runtime-control" ? { exists: true, readable: true, empty: false } : managedProbe(path)).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", MANAGED_ENV, (path) => path === "/run/lares/model-purpose/gateway.sock" ? { exists: true, readable: true, empty: false, isSocket: false } : managedProbe(path)).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+    expect(checkSettings("chief-of-staff", { ...MANAGED_ENV, GATEWAY_KEY_FILE: "" }, managedProbe).map((p) => p.name)).toContain("GATEWAY_KEY_FILE");
+  });
+
   it("never lets a secret file's bytes into a sentence, even when the probe itself reads them", () => {
     const dir = mkdtempSync(join(tmpdir(), "settings-check-"));
     try {
@@ -129,5 +158,43 @@ describe("what a missing setting says", () => {
     expect(body).not.toMatch(/declare -A|\$\{[A-Za-z_]+\^\^\}|mapfile/);
     // No value is ever echoed — only the NAME and the sentence.
     expect(body).not.toMatch(/echo .*\$\{?[A-Z_]+\}?"?\s*$/m);
+  });
+
+  it("the chief shell guard accepts real fixed-contract sockets and rejects a missing endpoint", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "settings-managed-shell-"));
+    const runtimeSocket = join(dir, "model-purpose.sock"), gatewaySocket = join(dir, "gateway.sock");
+    const controlFile = join(dir, "runtime-control"), databasePassword = join(dir, "database-password"), workflowPassword = join(dir, "workflow-password"), gatewayKey = join(dir, "gateway-key"), script = join(dir, "guard.sh");
+    const runtimeServer = createServer(), gatewayServer = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => runtimeServer.listen(runtimeSocket, resolve).once("error", reject));
+      await new Promise<void>((resolve, reject) => gatewayServer.listen(gatewaySocket, resolve).once("error", reject));
+      writeFileSync(controlFile, "control-fixture-only");
+      writeFileSync(databasePassword, "database-fixture-only");
+      writeFileSync(workflowPassword, "workflow-fixture-only");
+      writeFileSync(gatewayKey, "gateway-key-fixture-only");
+      const source = readFileSync(CHIEF_GUARD, "utf8")
+        .replaceAll("/run/lares/model-purpose/model-purpose.sock", runtimeSocket)
+        .replaceAll("/run/lares/model-purpose/gateway.sock", gatewaySocket)
+        .replaceAll("/run/secrets/runtime-control", controlFile)
+        .replaceAll("/run/secrets/database-password", databasePassword)
+        .replaceAll("/run/secrets/workflow-password", workflowPassword);
+      writeFileSync(script, source);
+      const env: NodeJS.ProcessEnv = { ...process.env, ...MANAGED_ENV, ...Object.fromEntries(Object.entries(FULL).filter(([name]) => name !== "GATEWAY_KEY_FILE")), DATABASE_PASSWORD_FILE: databasePassword, WORKFLOW_POSTGRES_PASSWORD_FILE: workflowPassword, LARES_MODEL_PURPOSE_RUNTIME_SOCKET: runtimeSocket, LARES_RUNTIME_CONTROL_SECRET_FILE: controlFile };
+      delete env.GATEWAY_KEY_FILE;
+      expect(execFileSync("/bin/sh", [script], { env, encoding: "utf8" })).toBe("");
+      expect(execFileSync("/bin/sh", [script], { env: { ...env, GATEWAY_KEY_FILE: gatewayKey }, encoding: "utf8" })).toBe("");
+      expect(() => execFileSync("/bin/sh", [script], { env: { ...env, LARES_MODEL_PURPOSE_RUNTIME_SOCKET: "/tmp/arbitrary.sock" }, encoding: "utf8", stdio: "pipe" })).toThrow();
+      expect(() => execFileSync("/bin/sh", [script], { env: { ...env, LARES_AGENT_INCARNATION: "22222222-0222-0222-0222-222222222222" }, encoding: "utf8", stdio: "pipe" })).toThrow();
+      expect(() => execFileSync("/bin/sh", [script], { env: { ...env, LARES_AGENT_INCARNATION: "2222222--2222-4222-8222-222222222222" }, encoding: "utf8", stdio: "pipe" })).toThrow();
+      writeFileSync(controlFile, "");
+      expect(() => execFileSync("/bin/sh", [script], { env, encoding: "utf8", stdio: "pipe" })).toThrow();
+      writeFileSync(controlFile, "control-fixture-only");
+      await new Promise<void>((resolve, reject) => gatewayServer.close((error) => error ? reject(error) : resolve()));
+      expect(() => execFileSync("/bin/sh", [script], { env, encoding: "utf8", stdio: "pipe" })).toThrow();
+    } finally {
+      await new Promise<void>((resolve) => runtimeServer.close(() => resolve()));
+      await new Promise<void>((resolve) => gatewayServer.close(() => resolve()));
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

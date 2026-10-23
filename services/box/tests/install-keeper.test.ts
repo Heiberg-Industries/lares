@@ -6,7 +6,7 @@
 // reads or asserts against that shape. This step needs three more (`lares-keeper`,
 // `lares-egress-proxy`, `lares-firewall-helper`) plus the three role images, and its cases run
 // the installer all the way through the database and the owner rather than stopping at the
-// model check. Widening that fixture to carry ten images would change what every one of its
+// database setup. Widening that fixture to carry ten images would change what every one of its
 // cases is testing; a second file with its own release keeps each one honest.
 //
 // SAME DISCIPLINE AS install-stack.test.ts: every host command is a logging stub on PATH,
