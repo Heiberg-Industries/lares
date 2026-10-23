@@ -848,12 +848,20 @@ console.log(JSON.stringify({profile,config,pricing,maximumLiability:gatewayMaxim
       '--mount',f'type=bind,src={repo}/services/console/lib/gateway-budget-relay.ts,dst=/app/services/keeper/lib/gateway-budget-relay.ts,readonly',
       '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/admission-bridge.mts');container_names.append(network+'-admission-bridge')
     sql('proof',"CREATE DATABASE native_litellm")
+    admission_prefix=root/'admission-installation'
+    admission_prefix.mkdir(mode=0o755)
+    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+    custody.prepare_fresh(admission_prefix, admission_subnet)
+    admission_identity=custody.validate(admission_prefix, admission_subnet)
+    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
     manifest=json.loads((repo/'releases/2026-10-21-rc.12.json').read_text())
     gateway=manifest['images']['lares-gateway']
     endpoint_origin='http://native-gateway:4000'
     endpoint_hash=hashlib.sha256(('lares.native-endpoint.v1\0'+endpoint_origin+'\0'+capability['providerBaseUrl']).encode()).hexdigest()
     gateway_args=['run','-d','--name',network+'-gateway','--network',network,'--network-alias','native-gateway',
       '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777','--mount',f'type=bind,src={repo}/images/gateway-runtime,dst=/opt/lares-gateway,readonly',
+      '--mount',f'type=bind,src={repo}/images/gateway-runtime/start.sh,dst=/usr/local/bin/lares-gateway-start,readonly',
+      '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
       '--mount',f'type=bind,src={native_dir},dst=/etc/litellm,readonly',
       '--mount',f'type=bind,src={secrets_dir},dst=/run/secrets,readonly','--mount',f'type=bind,src={tls_runtime},dst=/fixture/tls,readonly',
       '-e','MODEL_PROVIDER_KEY_FILE=/run/secrets/model-provider-key','-e','GATEWAY_MASTER_KEY_FILE=/run/secrets/gateway-master',
@@ -861,13 +869,15 @@ console.log(JSON.stringify({profile,config,pricing,maximumLiability:gatewayMaxim
       '-e','LARES_GATEWAY_ADMISSION_URL=https://admission-bridge:8443','-e','LARES_GATEWAY_SERVICE_KEY_FILE=/run/secrets/gateway-budget-service-key',
       '-e','LARES_GATEWAY_ENDPOINT_HASH='+endpoint_hash,'-e','LARES_GATEWAY_PROFILE_FILE=/etc/litellm/profile.json','-e','SSL_CERT_FILE=/fixture/tls/ca.pem',
       '-e','LITELLM_LOCAL_MODEL_COST_MAP=True','-e','LITELLM_TELEMETRY=False','-e','PYTHONDONTWRITEBYTECODE=1','-e','CI=true',
-      '-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1','--entrypoint','/bin/sh',gateway,'/opt/lares-gateway/start.sh']
+      '-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1','--entrypoint','python','--restart','unless-stopped',gateway,
+      '-I','/opt/lares-gateway/gateway_admission.py','guard','/run/lares-maintenance/admission',
+      admission_identity['installationId'],str(admission_identity['epoch']),'--','/usr/local/bin/lares-gateway-start']
     stage = 'pinned-production-gateway-start'
     docker(*gateway_args);container_names.append(network+'-gateway')
     proof['images']['nativeGatewayRef']=gateway
     proof['images']['nativeGateway']=image_identity(gateway)
     proof['images']['syntheticUpstream']=proof['images']['chief']
-    proof['adapter']={name:hashlib.sha256((repo/'images/gateway-runtime'/name).read_bytes()).hexdigest() for name in ('start.sh','lares_gateway.py','admission_contract.py')}
+    proof['adapter']={name:hashlib.sha256((repo/'images/gateway-runtime'/name).read_bytes()).hexdigest() for name in ('start.sh','gateway_admission.py','lares_gateway.py','admission_contract.py')}
     proof['productionRelaySha256']=hashlib.sha256((repo/'services/console/lib/gateway-budget-relay.ts').read_bytes()).hexdigest()
     proof['internalTlsFrontSha256']=hashlib.sha256(admission_bridge.read_bytes()).hexdigest()
     proof['syntheticProviderSha256']=hashlib.sha256(upstream.read_bytes()).hexdigest()
@@ -945,12 +955,6 @@ print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion
           'workflowPasswordFile':'/etc/lares/secrets/workflow-password','gatewayKeys':{},'gatewayMasterKeyFile':'/etc/lares/secrets/gateway-master'}},
       'gatewayBudget':{'serviceKeyFile':'/etc/lares/secrets/gateway-budget-service-key'},
       'modelPurposeConsoleSigningKeyFile':'/etc/lares/secrets/console-model-purpose-signing-key','modelPurposeRuntimeDir':'/fixture-install/run/model-purpose'}
-    admission_prefix=root/'admission-installation'
-    admission_prefix.mkdir(mode=0o755)
-    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
-    custody.prepare_fresh(admission_prefix, admission_subnet)
-    admission_identity=custody.validate(admission_prefix, admission_subnet)
-    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
     base_config['lifecycle']['maintenanceAdmission']={
       'hostDirectory':str(admission_dir),
       'installationId':admission_identity['installationId'],

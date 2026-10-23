@@ -138,6 +138,8 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
   // after `up -d` has already exited 0. The name mirrors the console image's own
   // `/usr/local/bin/lares-console-start`.
   const startScriptInContainer = "/usr/local/bin/lares-gateway-start";
+  const admissionDirectoryInContainer = "/run/lares-maintenance/admission";
+  const admissionHelperInContainer = "/opt/lares-gateway/gateway_admission.py";
 
   const services: Record<string, unknown> = {
     db: {
@@ -212,9 +214,11 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       volumes: [
         `${opts.gatewayConfigFile}:/etc/litellm/config.yaml:ro`,
         `${opts.gatewayStartScript}:${startScriptInContainer}:ro`,
+        { type: "bind", source: `${opts.gatewayStartScript}.gateway_admission.py`, target: admissionHelperInContainer, read_only: true, bind: { create_host_path: false } },
         `${opts.gatewayStartScript}.admission_contract.py:/opt/lares-gateway/admission_contract.py:ro`,
         `${opts.gatewayStartScript}.lares_gateway.py:/opt/lares-gateway/lares_gateway.py:ro`,
         `${opts.gatewayConfigFile}.profile.json:/etc/litellm/profile.json:ro`,
+        { type: "bind", source: admission.directory, target: admissionDirectoryInContainer, read_only: true, bind: { create_host_path: false } },
         ...(authority ? [{ type: "bind", source: authority.serviceKeyFile, target: "/run/secrets/gateway-budget-service-key", read_only: true, bind: { create_host_path: false } }] : []),
       ],
       // THE ENGINE SHIPS NO GATEWAY IMAGE, AND MAY NOT. The obvious way to give LiteLLM our
@@ -245,13 +249,10 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
       // fleet's own network, and reads a config that names no secret value.
       // (The alternative — `-non_root` plus `user: "65534:<runtime gid>"` here — needs that
       // gid plumbed through bin/render-stack.ts, and is a separate decision, not this one.)
-      entrypoint: [startScriptInContainer],
-      // NO `command:`. It used to read `["--config", "/etc/litellm/config.yaml"]`, which is
-      // argv handed to the entrypoint above — a script that never reads `$@`. One path, one
-      // place: `images/gateway-runtime/start.sh` ends `exec litellm --config
-      // /etc/litellm/config.yaml`, and that is the only spelling of it. Upstream's own
-      // `Cmd: ["--port", "4000"]` goes the same way, harmlessly: 4000 is litellm's default
-      // port, which is what `GATEWAY_URL` (http://lares-gateway:4000) already expects.
+      entrypoint: ["python", "-I", admissionHelperInContainer, "guard", admissionDirectoryInContainer,
+        admission.installationId, String(admission.epoch), "--"],
+      // Replace upstream's `--port 4000` CMD with the one fixed script the guard admits.
+      command: [startScriptInContainer],
       environment: {
         // LiteLLM documents this as an env-only switch (not a config.yaml key): loading its
         // bundled cost map instead of fetching one over the network at start.

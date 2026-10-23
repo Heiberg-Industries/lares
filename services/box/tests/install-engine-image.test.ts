@@ -270,6 +270,8 @@ describe("the renderers, run for real through the translated call", () => {
     expect(keeper.lifecycle.imageByRole["chief-of-staff"]).toBe(D("chief-of-staff"));
     expect(readFileSync(join(prefix, "etc", "lares", "gateway-start.sh"), "utf8"))
       .toBe(readFileSync(join(BOX, "..", "..", "images", "gateway-runtime", "start.sh"), "utf8"));
+    expect(readFileSync(join(prefix, "etc", "lares", "gateway-start.sh.gateway_admission.py"), "utf8"))
+      .toBe(readFileSync(join(BOX, "..", "..", "images", "gateway-runtime", "gateway_admission.py"), "utf8"));
     // The same run went through the engine image for every helper, and the renderer was given
     // the folder keeper.json lives in (it reads the previous file there and writes beside it).
     expect(engineRuns()).toHaveLength(13);
