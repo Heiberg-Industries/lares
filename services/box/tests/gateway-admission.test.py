@@ -27,6 +27,64 @@ from admission_contract import RequestState, Refused, request_hash, sign, verify
 
 
 class ContractTests(unittest.TestCase):
+    def test_financial_continuity_native_admin_fixture_matches_production_setting(self):
+        probe_path = ROOT / "services/keeper/tests/financial-continuity-image.probe.py"
+        probe_tree = ast.parse(probe_path.read_text())
+        builder = next(
+            node for node in probe_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "build_native_admin_config"
+        )
+        namespace = {}
+        exec(compile(ast.Module(body=[builder], type_ignores=[]), str(probe_path), "exec"), namespace)
+        config = namespace["build_native_admin_config"]()
+        self.assertIs(config["general_settings"]["disable_auto_add_proxy_admin_to_teams"], True)
+
+    def test_actual_typescript_gateway_configs_match_the_python_profile_exactly(self):
+        # Exercise the production renderer and profile builder without contacting either provider.
+        script = """
+import { createRequire } from 'node:module';
+import { renderGatewayConfig, gatewayAdmissionProfile } from './services/box/lib/gateway-config.ts';
+const { parse } = createRequire(new URL('./services/box/package.json', import.meta.url))('yaml');
+const targets = [
+  { alias: 'fixture-brain', providerModel: 'openai/gpt-4o-mini', providerBaseUrl: 'https://provider.example.invalid/v1' },
+  { alias: 'fixture-brain', providerModel: 'anthropic/claude-sonnet-4-5', providerBaseUrl: 'https://provider.example.invalid' },
+];
+console.log(JSON.stringify(targets.map((options) => ({
+  config: parse(renderGatewayConfig(options)),
+  profile: gatewayAdmissionProfile(options),
+}))));
+"""
+        rendered = subprocess.run(
+            ["node", "--import", "tsx", "--input-type=module", "-e", script],
+            cwd=ROOT, check=True, capture_output=True, text=True, timeout=30,
+        )
+        cases = json.loads(rendered.stdout)
+        self.assertEqual([case["profile"]["provider"] for case in cases], ["openai", "anthropic"])
+        for case in cases:
+            with self.subTest(provider=case["profile"]["provider"]):
+                expected = Profile(case["profile"]).expected_config()
+                profile = Profile(case["profile"])
+                config = case["config"]
+                self.assertEqual(config, expected)
+                self.assertIs(config["general_settings"]["disable_auto_add_proxy_admin_to_teams"], True)
+                profile.validate_config(config)
+
+                # Exercise the same validation method the gateway startup path calls.
+                invalid_configs = []
+                missing = json.loads(json.dumps(config))
+                del missing["general_settings"]["disable_auto_add_proxy_admin_to_teams"]
+                invalid_configs.append(missing)
+                for value in (False, "true", 1, 1.0):
+                    wrong = json.loads(json.dumps(config))
+                    wrong["general_settings"]["disable_auto_add_proxy_admin_to_teams"] = value
+                    invalid_configs.append(wrong)
+                unknown = json.loads(json.dumps(config))
+                unknown["general_settings"]["unexpected_setting"] = True
+                invalid_configs.append(unknown)
+                for invalid in invalid_configs:
+                    with self.subTest(invalid_general_settings=invalid.get("general_settings")):
+                        with self.assertRaises(Refused): profile.validate_config(invalid)
+
     def test_raw_bytes_and_route_are_bound(self):
         a = request_hash("POST", "/v1/messages", b'{"a":1}')
         self.assertNotEqual(a, request_hash("POST", "/v1/messages", b'{ "a":1}'))
