@@ -123,16 +123,17 @@ const run = () => {
   writeProtected(join(egress, "squid.conf"), "http_port 3128\n", 0o640);
 
   mkdirSync(opt, { recursive: true, mode: 0o755 });
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(prefix, request.subnet);
   const stack = renderStackCompose(manifest, {
     secretsDir: secrets, socketDir: join(prefix, "run", "lares"), tasteDir: join(prefix, "srv", "taste"),
     gatewayConfigFile: join(etc, "litellm-config.yaml"), gatewayStartScript: join(etc, "gateway-start.sh"), caddyfile: join(etc, "Caddyfile"),
     caddyDataDir: join(prefix, "var", "lib", "lares", "caddy"), dbDataDir: join(prefix, "var", "lib", "lares", "postgres"),
     databaseAuthDir,
+    maintenanceAdmission,
     network: request.network, subnet: request.subnet, domain, consoleAllowedEmails: "owner@example.test", ownerId,
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
   const profileText = `${JSON.stringify(profile)}\n`;
-  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(prefix, request.subnet);
   const environmentKeeper = { ...previousKeeper, lifecycle: { maintenanceAdmission: {
     hostDirectory: maintenanceAdmission.directory,
     installationId: maintenanceAdmission.installationId,

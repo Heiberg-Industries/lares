@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest } from "../lib/release-manifest.js";
 import { assertDatabaseAuthDirectory, renderStackCompose } from "../lib/stack-compose.js";
+import { validateMaintenanceAdmissionIdentity } from "./render-keeper-config.js";
 import { renderGatewayConfig, gatewayAdmissionProfile } from "../lib/gateway-config.js";
 
 /** The arguments, in order. Positional on purpose: install.sh passes paths it built itself, and
@@ -114,6 +115,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
 
   const manifest = parseReleaseManifest(readFileSync(at("releaseFile"), "utf8"));
   assertDatabaseAuthDirectory(at("databaseAuthDir"), at("prefix"), at("subnet"));
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(at("prefix"), at("subnet"));
 
   // Read BEFORE the first write, so an engine tree that arrived without this file refuses by
   // name with nothing written, rather than bringing up a gateway whose entrypoint is a
@@ -143,6 +145,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     caddyDataDir: at("caddyDataDir"),
     dbDataDir: at("dbDataDir"),
     databaseAuthDir: at("databaseAuthDir"),
+    maintenanceAdmission,
     network: at("network"),
     subnet: at("subnet"),
     domain: at("domain"),
