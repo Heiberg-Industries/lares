@@ -586,11 +586,24 @@ def main(argv: list[str]) -> int:
             if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
                 raise PermissionError("maintenance custody validation requires root")
             validate(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "validate-identity":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
+                raise PermissionError("maintenance custody validation requires root")
+            receipt = validate(argv[2], argv[3])
+            # Emit only the independently validated identity needed by generated Compose.
+            # Never expose the rest of the custody receipt through this narrow interface.
+            print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
+                             separators=(",", ":")))
         elif (len(argv) == 5 and argv[1] == "validate" and argv[4] == "--test-owner" and
               os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
             validate(argv[2], argv[3])
+        elif (len(argv) == 5 and argv[1] == "validate-identity" and argv[4] == "--test-owner" and
+              os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
+            receipt = validate(argv[2], argv[3])
+            print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
+                             separators=(",", ":")))
         else:
-            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | validate <prefix> <subnet>")
+            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | validate <prefix> <subnet> | validate-identity <prefix> <subnet>")
         return 0
     except (OSError, ValueError) as error:
         print(f"maintenance custody: {error}", file=sys.stderr)

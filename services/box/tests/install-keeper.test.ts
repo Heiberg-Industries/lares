@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -90,7 +90,8 @@ function run(args: string[] = ["--release", ""], input = answers, extraEnv: Reco
       encoding: "utf8",
       env: {
         LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir, LARES_MAINTENANCE_TESTING: "1",
+        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
+        LARES_MAINTENANCE_TESTING: "1",
         ...extraEnv,
       },
     });
@@ -126,7 +127,7 @@ function keeperEnv(): Record<string, string> {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-install-keeper-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, release());
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
@@ -149,6 +150,12 @@ describe("the keeper the installer configures and starts", () => {
   it("normalizes an empty or root host prefix without probing live host directories", () => {
     expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "", "/srv/vault"], { encoding: "utf8" })).toBe("/srv/vault\n");
     expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "/", "/var/lib/lares-vault-git"], { encoding: "utf8" })).toBe("/var/lib/lares-vault-git\n");
+  });
+
+  it("passes the canonical root prefix to the admission identity validator", () => {
+    const shellValue = execFileSync("/bin/bash", ["-c", 'PREFIX=""; printf %s "${PREFIX:-/}"'], { encoding: "utf8" });
+    expect(shellValue).toBe("/");
+    expect(readFileSync(SCRIPT, "utf8")).toContain('"${PREFIX:-/}"; then');
   });
 
   it("writes role defaults that bind any first-agent name to the owner just created", () => {
@@ -262,6 +269,28 @@ describe("the keeper the installer configures and starts", () => {
     expect(env.LARES_VAULT_WORKING_ROOT).toBe(`"${join(prefix, "srv", "vault")}"`);
     expect(env.LARES_VAULT_BARE_ROOT).toBe(`"${join(prefix, "var", "lib", "lares-vault-git")}"`);
     expect(env.COMPOSE_FILE).toBe(`"${join(prefix, "opt", "lares", "compose.lares-keeper.yaml")}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}"`);
+  });
+
+  it("renders the validated receipt identity into the exact read-only Keeper admission bind", () => {
+    expect(install().code).toBe(0);
+    const receipt = JSON.parse(readFileSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"), "utf8"));
+    const env = keeperEnv();
+    const admission = join(prefix, "var/lib/lares-maintenance/admission");
+    expect(env.LARES_MAINTENANCE_ADMISSION_DIR).toBe(admission);
+    expect(env.LARES_MAINTENANCE_INSTALLATION_ID).toBe(receipt.installationId);
+    expect(env.LARES_MAINTENANCE_EPOCH).toBe(String(receipt.epoch));
+    const compose = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const keeper = compose.services["lares-keeper"];
+    expect(keeper.entrypoint).toEqual([
+      "/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission",
+      "${LARES_MAINTENANCE_INSTALLATION_ID:?validated installation id required}",
+      "${LARES_MAINTENANCE_EPOCH:?validated maintenance epoch required}", "--",
+    ]);
+    const mounts = keeper.volumes.filter((mount: any) => mount?.target === "/run/lares-maintenance/admission");
+    expect(mounts).toEqual([{
+      type: "bind", source: "${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}",
+      target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false },
+    }]);
   });
 
   // THE DEFECT THIS CATCHES, AND WHY NO OTHER TEST HERE COULD. `bin/keeper.ts` does

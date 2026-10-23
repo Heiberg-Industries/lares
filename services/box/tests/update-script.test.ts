@@ -18,7 +18,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parse } from "yaml";
+import { parse, stringify } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "update.sh");
@@ -29,6 +29,8 @@ const CONSOLE_OLD = `registry.example/lares-console@sha256:${OLD}`;
 const CONSOLE_NEW = `registry.example/lares-console@sha256:${NEW}`;
 const ROLE_OLD = `registry.example/lares-chief-of-staff@sha256:${OLD}`;
 const ROLE_NEW = `registry.example/lares-chief-of-staff@sha256:${NEW}`;
+const KEEPER_OLD = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+const KEEPER_NEW = `registry.example/lares-keeper@sha256:${"e".repeat(64)}`;
 
 let dir: string;
 let binDir: string;
@@ -74,6 +76,26 @@ function composeYaml() {
     "    external: true",
     "",
   ].join("\n");
+}
+
+/** Test fixture derived from the committed Keeper service template. The update script rewrites
+ * only the image line; this checks that its real output retains the guarded launch fields. */
+function keeperComposeYaml(image: string, envFile: string) {
+  const template = readFileSync(join(here, "..", "compose.lares-keeper.yaml"), "utf8");
+  const committed = parse(template) as {
+    services: Record<string, Record<string, unknown>>;
+  };
+  const keeper = { ...committed.services["lares-keeper"]! };
+  keeper.image = image;
+  keeper.env_file = [envFile];
+  keeper.entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"];
+  const volumes = keeper.volumes as Array<string | Record<string, unknown>>;
+  keeper.volumes = volumes.map((volume) => typeof volume === "string" ? volume :
+    volume.target === "/run/lares-maintenance/admission" ? {
+      ...volume, source: "/tmp/keeper-admission-fixture", read_only: true,
+      bind: { ...(volume.bind as Record<string, unknown>), create_host_path: false },
+    } : volume);
+  return stringify({ services: { "lares-keeper": keeper } });
 }
 
 function stub(name: string, body: string, where = binDir) {
@@ -238,6 +260,33 @@ function expectNormalAuthCompose() {
 }
 
 describe("updating this installation", () => {
+  it("rewrites the real script's Keeper fixture image while preserving its guarded launch and identity", () => {
+    const keeperCompose = join(composeDir, "keeper.yaml");
+    const keeperEnv = join(composeDir, "keeper.env");
+    const identityEnv = "LARES_MAINTENANCE_INSTALLATION_ID=fixture-installation-id\nLARES_MAINTENANCE_EPOCH=7\n";
+    writeFileSync(keeperCompose, keeperComposeYaml(KEEPER_OLD, keeperEnv));
+    writeFileSync(keeperEnv, identityEnv);
+    writeFileSync(release, JSON.stringify({
+      release: "2026-10-01",
+      images: { console: CONSOLE_NEW, "chief-of-staff": ROLE_NEW, "lares-keeper": KEEPER_NEW },
+      migrations: { box: "001_baseline.sql" }, breaking: [],
+    }));
+
+    const r = run(["--release", release, "--yes"], {
+      UPDATE_COMPOSE_FILES: "compose.yaml keeper.yaml",
+      STUB_RUNNING: "lares-console lares-chief-of-staff lares-keeper",
+    });
+    expect(r.code, r.stderr).toBe(0);
+    const output = parse(readFileSync(keeperCompose, "utf8")) as {
+      services: { "lares-keeper": { image?: string; entrypoint?: string[]; volumes?: Array<string | { source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    const service = output.services["lares-keeper"];
+    expect(service.image).toBe(KEEPER_NEW);
+    expect(service.entrypoint).toEqual(["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"]);
+    expect(service.volumes).toContainEqual(expect.objectContaining({ source: "/tmp/keeper-admission-fixture", target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false } }));
+    expect(readFileSync(keeperEnv, "utf8")).toBe(identityEnv);
+  });
+
   it("takes a backup FIRST, and only then touches anything", () => {
     const r = run(["--release", release, "--yes"]);
     expect(r.stderr).toBe("");

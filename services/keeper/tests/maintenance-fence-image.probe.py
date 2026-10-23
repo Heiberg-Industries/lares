@@ -102,6 +102,9 @@ proof = {
         "missingExternalHbaRefusesStartup": False,
         "malformedExternalHbaRefusesStartup": False,
         "externalHbaSurvivesPermissivePgdataRestore": False,
+        "keeperGeneratedComposeUsesBakedAdmissionEntryPoint": False,
+        "keeperMainProcessRetainsSharedLeaseAfterComposeReturns": False,
+        "keeperCommandOverrideReceivesRestoredWorkingDirectory": False,
         "twoCooperatingReadOnlyHoldersBlockExclusive": False,
         "durableEnteringDeniesNewAdmissionBeforeExclusive": False,
         "boundedIntentReadRefusesOversize": False,
@@ -305,6 +308,400 @@ def generate_rendered_compose() -> None:
        (root / "gateway.yml").read_bytes() != rendered_gateway or \
        (root / "gateway-start.sh").read_bytes() != rendered_start:
         raise ProbeFailure("renderer-path")
+    proof["claims"]["bothActualRenderersRejectRedirectedAuthWithoutOutputChanges"] = True
+
+
+def prove_keeper_default_admission() -> None:
+    """Exercise the committed Keeper Compose entrypoint with the image's baked guard.
+
+    The real Keeper `serve` command is left as the generated default. This checks its actual
+    container admission and main-process lease after detached Compose returns; it does not
+    claim descendant/child-container inheritance or production quiescence.
+    """
+    keeper_root = fixture_prefix / "srv/lares"
+    keeper_root.mkdir(parents=True, exist_ok=True, mode=0o755)
+    agents_dir = keeper_root / "agents"
+    retired_dir = keeper_root / "retired"
+    backup_dir = keeper_root / "backup"
+    egress_dir = keeper_root / "egress"
+    for directory in (agents_dir, retired_dir, backup_dir, egress_dir,
+                      fixture_prefix / "run/lares", fixture_prefix / "run/lares-host",
+                      fixture_prefix / "etc/lares"):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    (egress_dir / "squid.conf").write_text("http_port 3128\nhttp_access deny all\n", encoding="ascii")
+
+    # The actual renderer needs the same files Compose will mount. Credentials are disposable
+    # fixture values provisioned for this isolated database proof.
+    for name in ("database-password", "financial-database-password", "workflow-provisioner-password",
+                 "workflow-password", "gateway-database-password"):
+        source = private_root / name
+        if source.exists():
+            value = source.read_bytes()
+        elif name == "gateway-database-password":
+            value = (private_root / "gateway-database-password").read_bytes()
+        else:
+            value = (secrets.token_urlsafe(32) + "\n").encode("ascii")
+        destination = secrets_dir / name
+        destination.write_bytes(value)
+        destination.chmod(0o600)
+    for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key"):
+        destination = secrets_dir / name
+        destination.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
+        destination.chmod(0o600)
+
+    release_path = REPO / "releases/2026-10-21-rc.12.json"
+    release_in_container = "/release.json"
+    keeper_config = fixture_prefix / "etc/lares/keeper.json"
+    keeper_env = fixture_prefix / "etc/lares/keeper.env"
+    renderer_args = [
+        release_in_container, str(keeper_config), str(keeper_env), str(keeper_config),
+        project, str(keeper_root), str(agents_dir), str(retired_dir), str(backup_dir),
+        str(egress_dir), str(secrets_dir), str(fixture_prefix / "run/lares"),
+        str(fixture_prefix / "run/lares-host"), network, subnet,
+        str(ipaddress.ip_network(subnet).network_address + 2),
+        "http://gateway.invalid", "lares_state", "proof-owner", "owner@example.invalid",
+        "proof.invalid", "UTC", str(fixture_prefix),
+    ]
+    render = docker("run", "--rm", "--network", "none",
+        "--mount", f"type=bind,src={root},dst={root}",
+        "--mount", f"type=bind,src={release_path},dst={release_in_container},readonly",
+        "--workdir", "/app", "--entrypoint", "/app/services/keeper/node_modules/.bin/tsx",
+        IMAGE, "/app/services/box/bin/render-keeper-config.ts", *renderer_args,
+        check=False, timeout=60)
+    if render.returncode != 0 or not keeper_config.is_file() or not keeper_env.is_file():
+        raise ProbeFailure("keeper-render")
+
+    compose_file = REPO / "services/box/compose.lares-keeper.yaml"
+    compose_args = ["compose", "-p", project, "-f", str(compose_file), "--env-file", str(keeper_env)]
+    local_image_env = {"LARES_KEEPER_IMAGE": IMAGE}
+    image_config_result = docker("image", "inspect", "--format", "{{json .Config}}", IMAGE)
+    try:
+        image_config = json.loads(image_config_result.stdout)
+    except json.JSONDecodeError:
+        raise ProbeFailure("keeper-image-config") from None
+    expected_image_entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1"]
+    expected_command = ["/app/services/keeper/node_modules/.bin/tsx",
+        "/app/services/keeper/bin/keeper.ts", "serve"]
+    if image_config.get("Entrypoint") != expected_image_entrypoint or \
+       image_config.get("Cmd") != expected_command or image_config.get("Healthcheck") is not None:
+        raise ProbeFailure("keeper-image-config")
+    proof["claims"]["keeperImageConfigMatchesGuardedCommandAndHasNoHealthcheck"] = True
+    effective = run("docker", *compose_args, "config", "--format", "json", check=False, timeout=45,
+                    env=local_image_env)
+    if effective.returncode != 0:
+        raise ProbeFailure("keeper-compose-config")
+    try:
+        service = json.loads(effective.stdout)["services"]["lares-keeper"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise ProbeFailure("keeper-compose-config") from None
+    identity = custody.validate(fixture_prefix, subnet)
+    expected_entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1",
+        "/run/lares-maintenance/admission", identity["installationId"], str(identity["epoch"]), "--"]
+    admission_mounts = [mount for mount in service.get("volumes", [])
+        if isinstance(mount, dict) and mount.get("target") == "/run/lares-maintenance/admission"]
+    if service.get("entrypoint") != expected_entrypoint or service.get("command") != expected_command or \
+       len(admission_mounts) != 1 or admission_mounts[0].get("type") != "bind" or \
+       admission_mounts[0].get("source") != str(fixture_prefix / "var/lib/lares-maintenance/admission") or \
+       admission_mounts[0].get("read_only") is not True or any(
+           mount.get("target") == "/usr/local/lib/lares/maintenance-admission-v1"
+           for mount in service.get("volumes", []) if isinstance(mount, dict)):
+        raise ProbeFailure("keeper-compose-contract")
+    template = compose_file.read_text(encoding="utf-8")
+    if "create_host_path: false" not in template:
+        raise ProbeFailure("keeper-compose-contract")
+    proof["claims"]["keeperGeneratedComposeUsesBakedAdmissionEntryPoint"] = True
+
+    # Negative attempts get a FIFO keeper.json as a tripwire. If the fixed entrypoint ever
+    # reaches Keeper before refusing, the normal synchronous config read hangs and cannot be
+    # mistaken for the expected exit 78. The existing good Keeper remains the lock holder.
+    sentinel_config = root / "keeper-config-must-not-be-read"
+    os.mkfifo(sentinel_config, 0o600)
+    keeper_container_name = project + "-keeper-admission"
+
+    def socket_snapshot() -> tuple[tuple[int, int], tuple[int, int]]:
+        app, host = app_socket.stat(), host_socket.stat()
+        return (app.st_dev, app.st_ino), (host.st_dev, host.st_ino)
+
+    def run_generated_refusal(label: str, admission_source: pathlib.Path,
+                              command: list[str] | None = None) -> None:
+        name = project + "-guard-deny-" + label
+        attempt_env = {**local_image_env,
+            "LARES_MAINTENANCE_ADMISSION_DIR": str(admission_source),
+            "LARES_KEEPER_CONFIG": str(sentinel_config)}
+        before_sockets = socket_snapshot()
+        before_admission = {}
+        if admission_source.is_dir():
+            for path in sorted(admission_source.iterdir()):
+                file_stat = path.lstat()
+                before_admission[path.name] = (file_stat.st_dev, file_stat.st_ino,
+                    stat.S_IMODE(file_stat.st_mode), path.is_symlink(),
+                    path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+        attempt = run("docker", *compose_args, "run", "--detach", "--no-deps", "--name", name,
+            "lares-keeper", *(command or []), check=False, timeout=30, env=attempt_env)
+        known_containers.append(name)
+        waited = docker("wait", name, check=False, timeout=8)
+        inspected = docker("inspect", name, check=False, timeout=15)
+        if inspected.returncode != 0:
+            raise ProbeFailure("keeper-denied-inspect")
+        try:
+            state = json.loads(inspected.stdout)[0].get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-denied-inspect") from None
+        logs = docker("logs", "--tail", "5", name, check=False, timeout=10)
+        if attempt.returncode != 0 or waited.returncode != 0 or waited.stdout.strip() != "78" or \
+           state.get("Running") is not False or state.get("ExitCode") != 78 or \
+           logs.stdout.strip() != "maintenance admission refused" or socket_snapshot() != before_sockets:
+            raise ProbeFailure("keeper-denied-outcome")
+        after_admission = {}
+        if admission_source.is_dir():
+            for path in sorted(admission_source.iterdir()):
+                file_stat = path.lstat()
+                after_admission[path.name] = (file_stat.st_dev, file_stat.st_ino,
+                    stat.S_IMODE(file_stat.st_mode), path.is_symlink(),
+                    path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+        if after_admission != before_admission:
+            raise ProbeFailure("keeper-denied-admission-preservation")
+        container_remove = docker("rm", "--force", name, check=False, timeout=15)
+        if container_remove.returncode != 0:
+            raise ProbeFailure("keeper-denied-cleanup")
+        known_containers.remove(name)
+        holder = docker("inspect", keeper_container_name, check=False, timeout=10)
+        try:
+            holder_state = json.loads(holder.stdout)[0].get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-denied-holder") from None
+        if holder.returncode != 0 or holder_state.get("Running") is not True or \
+           run("flock", "--nonblock", "--exclusive", str(lock_path),
+               "-c", "true", check=False).returncode != 1:
+            raise ProbeFailure("keeper-denied-holder")
+        proof["stages"]["keeperGeneratedRefusal-" + label] = True
+
+    def copied_admission(label: str, mutate) -> pathlib.Path:
+        candidate = root / ("admission-" + label)
+        candidate.mkdir(mode=0o755)
+        candidate.chmod(0o755)
+        candidate_lock = candidate / "service-gate.lock"
+        candidate_lock.write_bytes(lock_path.read_bytes())
+        candidate_lock.chmod(0o444)
+        intent = candidate / "intent.json"
+        intent.write_bytes(custody._record(identity["installationId"], identity["epoch"], "normal"))
+        intent.chmod(0o444)
+        mutate(candidate, intent)
+        return candidate
+
+    name = keeper_container_name
+    known_containers.append(name)
+    created = run("docker", *compose_args, "run", "--detach", "--no-deps", "--name", name,
+                  "lares-keeper", check=False, timeout=60, env=local_image_env)
+    if created.returncode != 0:
+        raise ProbeFailure("keeper-start")
+    deadline = time.monotonic() + 45
+    info: dict[str, object] | None = None
+    lock_path = fixture_prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+    app_socket = fixture_prefix / "run/lares/keeper.sock"
+    host_socket = fixture_prefix / "run/lares-host/keeper.sock"
+    readiness_request = (
+        "const net=require('node:net');const s=net.createConnection(process.argv[1]);let b='';"
+        "const t=setTimeout(()=>{s.destroy();process.exit(2)},3000);"
+        "s.once('connect',()=>s.end(JSON.stringify({action:'credential.status',"
+        "input:{slot:'notion:shared'},actor:'host'})+'\\n'));"
+        "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
+        "try{r=JSON.parse(b)}catch{process.exit(3)};"
+        "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
+        "r.result?.state!=='host-administration-required'||"
+        "r.result?.guidance!=='prepare-managed-slot')process.exit(4);"
+        "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
+        "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
+    )
+    readiness_result: subprocess.CompletedProcess | None = None
+    while time.monotonic() < deadline:
+        inspected = docker("inspect", name, check=False, timeout=15)
+        if inspected.returncode == 0:
+            try:
+                info = json.loads(inspected.stdout)[0]
+            except (json.JSONDecodeError, IndexError, TypeError):
+                raise ProbeFailure("keeper-inspect") from None
+            if info.get("State", {}).get("Running") is not True:
+                raise ProbeFailure("keeper-startup-exited")
+            if app_socket.is_socket() and host_socket.is_socket():
+                readiness_result = docker("exec", name, "node", "-e", readiness_request,
+                    "/run/lares-host/keeper.sock", check=False, timeout=8)
+                if readiness_result.returncode == 0:
+                    break
+        time.sleep(0.25)
+    if not info or info.get("State", {}).get("Running") is not True:
+        raise ProbeFailure("keeper-startup-timeout")
+    if not app_socket.is_socket() or not host_socket.is_socket() or \
+       readiness_result is None or readiness_result.returncode != 0:
+        raise ProbeFailure("keeper-ready-rpc-timeout")
+    proof["claims"]["keeperDefaultServePassedDatabaseReadinessAndBothSockets"] = True
+    proof["stages"]["keeperAuthenticatedReadinessRequest"] = True
+    if info.get("Path") != expected_entrypoint[0] or info.get("Args") != [
+        *expected_entrypoint[1:], *expected_command,
+    ]:
+        raise ProbeFailure("keeper-startup-command")
+    if info.get("Config", {}).get("Entrypoint") != expected_entrypoint or \
+       info.get("Config", {}).get("Cmd") != expected_command or \
+       info.get("Config", {}).get("Healthcheck") is not None:
+        raise ProbeFailure("keeper-container-config")
+    mount = [item for item in info.get("Mounts", []) if item.get("Destination") == expected_entrypoint[1]]
+    if len(mount) != 1 or mount[0].get("Source") != str(lock_path.parent) or mount[0].get("RW") is not False:
+        raise ProbeFailure("keeper-admission-mount")
+    host_lock = lock_path.stat()
+    container_pid1_lock = docker("exec", name, "stat", "-Lc", "%d:%i", "/proc/1/fd/9")
+    if container_pid1_lock.stdout.strip() != f"{host_lock.st_dev}:{host_lock.st_ino}":
+        raise ProbeFailure("keeper-admission-inode")
+    exclusive = run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False)
+    if exclusive.returncode != 1:
+        raise ProbeFailure("keeper-admission-lease")
+    proof["claims"]["keeperMainProcessRetainsSharedLeaseAfterComposeReturns"] = True
+    proof["stages"]["keeperDefaultAdmissionLease"] = True
+
+    # Exercise unsafe/missing states through the same generated Compose service and baked
+    # entrypoint. Only disposable directories below this probe's root are mutated.
+    variants = [
+        ("missing-intent", lambda _d, intent: intent.unlink()),
+        ("missing-lock", lambda d, _i: (d / "service-gate.lock").unlink()),
+        ("symlink-intent", lambda d, i: (i.unlink(), i.symlink_to(root / "valid-intent-copy"))),
+        ("hardlink-intent", lambda d, i: os.link(i, d / "intent-link")),
+        ("unsafe-mode-intent", lambda _d, i: i.chmod(0o644)),
+        ("oversize-intent", lambda _d, i: (i.write_bytes(b"x" * 257), i.chmod(0o444))),
+        ("malformed-intent", lambda _d, i: (i.write_bytes(b"{\n"), i.chmod(0o444))),
+        ("wrong-installation-id", lambda _d, i: (i.write_bytes(custody._record(str(uuid.uuid4()), identity["epoch"], "normal")), i.chmod(0o444))),
+        ("wrong-epoch", lambda _d, i: (i.write_bytes(custody._record(identity["installationId"], identity["epoch"] + 1, "normal")), i.chmod(0o444))),
+    ]
+    for label, mutate in variants:
+        candidate = copied_admission(label, mutate)
+        run_generated_refusal(label, candidate)
+
+    missing_source = root / "admission-missing-source"
+    missing_env = {**local_image_env, "LARES_MAINTENANCE_ADMISSION_DIR": str(missing_source),
+                   "LARES_KEEPER_CONFIG": str(sentinel_config)}
+    missing_name = project + "-guard-deny-missing-source"
+    missing_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name", missing_name,
+        "lares-keeper", check=False, timeout=30, env=missing_env)
+    if missing_result.returncode == 0 or missing_source.exists() or \
+       not re.search(r"does not exist|no such file|not found", missing_result.stdout, re.IGNORECASE):
+        raise ProbeFailure("keeper-missing-source")
+    proof["stages"]["keeperGeneratedRefusal-missing-source"] = True
+
+    old_release = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text(encoding="utf-8"))
+    old_keeper_image = old_release["images"]["lares-keeper"]
+    old_image_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name",
+        project + "-old-keeper-image", "lares-keeper", check=False, timeout=45,
+        env={**local_image_env, "LARES_KEEPER_IMAGE": old_keeper_image,
+             "LARES_KEEPER_CONFIG": str(sentinel_config)})
+    if old_image_result.returncode != 1 or \
+       not re.search(r"maintenance-admission-v1.*(no such file|not found|executable file)|"
+                     r"(no such file|not found|executable file).*maintenance-admission-v1",
+                     old_image_result.stdout, re.IGNORECASE):
+        raise ProbeFailure("keeper-old-image-entrypoint")
+    proof["claims"]["pinnedPreGuardImageCannotStartThroughGeneratedCompose"] = True
+
+    original_intent = lock_path.parent.joinpath("intent.json").read_bytes()
+
+    def publish_test_state(state: str) -> None:
+        replacement = lock_path.parent / (".probe-intent-" + secrets.token_hex(8))
+        replacement.write_bytes(custody._record(identity["installationId"], identity["epoch"], state))
+        replacement.chmod(0o444)
+        os.replace(replacement, lock_path.parent / "intent.json")
+        custody._sync_dir(lock_path.parent)
+
+    def restart_refuses_for(state: str) -> None:
+        expected_intent = lock_path.parent / "intent.json"
+        intent_bytes = expected_intent.read_bytes()
+        intent_inode = expected_intent.stat()
+        before_sockets = socket_snapshot()
+        override = root / ("keeper-restart-no-policy-" + state + ".yaml")
+        override.write_text('services:\n  lares-keeper:\n    restart: "no"\n', encoding="ascii")
+        restart_project = project + "-restart-" + state
+        restart_args = ["compose", "-p", restart_project, "-f", str(compose_file), "-f", str(override),
+                        "--env-file", str(keeper_env)]
+        restart_env = {**local_image_env, "LARES_KEEPER_CONFIG": str(sentinel_config)}
+        started = run("docker", *restart_args, "up", "-d", "--no-deps", "lares-keeper",
+                      check=False, timeout=30, env=restart_env)
+        listed = run("docker", *restart_args, "ps", "--all", "--quiet", "lares-keeper",
+                     check=False, timeout=15, env=restart_env)
+        container_id = listed.stdout.strip().splitlines()
+        if not container_id or len(container_id) != 1:
+            raise ProbeFailure("keeper-restart-container")
+        cid = container_id[0]
+        known_containers.append(cid)
+        if started.returncode != 0:
+            raise ProbeFailure("keeper-restart-start")
+        waited = docker("wait", cid, check=False, timeout=15)
+        before = docker("inspect", cid, check=False, timeout=10)
+        if waited.returncode != 0 or waited.stdout.strip() != "78" or before.returncode != 0:
+            raise ProbeFailure("keeper-restart-inspect")
+        try:
+            before_info = json.loads(before.stdout)[0]
+            before_state = before_info.get("State", {})
+            restart_policy = before_info.get("HostConfig", {}).get("RestartPolicy", {}).get("Name")
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-restart-inspect") from None
+        if before_state.get("ExitCode") != 78 or restart_policy != "no" or \
+           docker("logs", cid, check=False, timeout=10).stdout.strip() != "maintenance admission refused":
+            raise ProbeFailure("keeper-restart-refusal")
+        restarted = docker("start", cid, check=False, timeout=15)
+        waited = docker("wait", cid, check=False, timeout=15)
+        after = docker("inspect", cid, check=False, timeout=10)
+        try:
+            after_info = json.loads(after.stdout)[0]
+            after_state = after_info.get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-restart-inspect") from None
+        log_lines = docker("logs", cid, check=False, timeout=10).stdout.strip().splitlines()
+        if restarted.returncode != 0 or waited.returncode != 0 or waited.stdout.strip() != "78" or \
+           after_state.get("Running") is not False or after_state.get("ExitCode") != 78 or \
+           log_lines != ["maintenance admission refused", "maintenance admission refused"] or \
+           socket_snapshot() != before_sockets or \
+           expected_intent.read_bytes() != intent_bytes or \
+           (expected_intent.stat().st_dev, expected_intent.stat().st_ino) != \
+           (intent_inode.st_dev, intent_inode.st_ino):
+            raise ProbeFailure("keeper-restart-refusal")
+        removed = docker("rm", "--force", cid, check=False, timeout=15)
+        if removed.returncode != 0:
+            raise ProbeFailure("keeper-restart-cleanup")
+        known_containers.remove(cid)
+        proof["stages"]["keeperGeneratedRestartRefusal-" + state] = True
+
+    try:
+        for state in ("entering", "blocked"):
+            publish_test_state(state)
+            run_generated_refusal(state + "-default", lock_path.parent)
+            run_generated_refusal(state + "-command-override", lock_path.parent,
+                                  ["sh", "-ec", "exit 42"])
+            restart_refuses_for(state)
+            if run("flock", "--nonblock", "--exclusive", str(lock_path),
+                   "-c", "true", check=False).returncode != 1:
+                raise ProbeFailure("keeper-held-while-denying")
+            # This direct atomic write models a durable test fixture transition while an
+            # admitted holder remains live; it is not an installed transition command/API.
+            publish_test_state("normal")
+    finally:
+        temporary = lock_path.parent / (".probe-intent-restore-" + secrets.token_hex(8))
+        temporary.write_bytes(original_intent)
+        temporary.chmod(0o444)
+        os.replace(temporary, lock_path.parent / "intent.json")
+        custody._sync_dir(lock_path.parent)
+    proof["claims"]["keeperGeneratedEnteringAndBlockedStartsAndRestartsRefuseBeforeConfig"] = True
+
+    removed = docker("rm", "--force", name, check=False, timeout=20)
+    if removed.returncode != 0:
+        raise ProbeFailure("keeper-cleanup")
+    known_containers.remove(name)
+    exclusive = run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False)
+    if exclusive.returncode != 0:
+        raise ProbeFailure("keeper-admission-release")
+
+    # A harmless command override still passes through the same image entrypoint. Verify the
+    # guard restores the image's physical WORKDIR before handing control to that command.
+    cwd_probe = run("docker", *compose_args, "run", "--rm", "--no-deps", "lares-keeper",
+        "sh", "-ec", 'test "$(pwd -P)" = /app', check=False, timeout=30, env=local_image_env)
+    if cwd_probe.returncode != 0:
+        raise ProbeFailure("keeper-cwd-restore")
+    proof["claims"]["keeperCommandOverrideReceivesRestoredWorkingDirectory"] = True
+    proof["stages"]["keeperAdmissionCwdRestored"] = True
 
 
 
@@ -584,6 +981,29 @@ def run_database_proof() -> None:
         raise ProbeFailure("workflow-template-setup")
     proof["claims"]["productionWorkflowTemplatePathUsed"] = True
     proof["stages"]["productionWorkflowTemplatePath"] = True
+    stage = "production-schema-owner-migrations"
+    migrate = engine_box("migrate.ts", ["--schema-owner"], [operator_path], {
+        "DATABASE_PASSWORD_FILE": "/run/operator-password",
+        "LARES_OPERATOR_PASSWORD_FILE": "/run/operator-password",
+        "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGDATABASE": "lares_state",
+        "PGUSER": "lares_operator",
+    })
+    if migrate.returncode != 0:
+        raise ProbeFailure("schema-owner-migrations")
+    proof["claims"]["productionSchemaOwnerMigrationPathUsed"] = True
+    proof["stages"]["productionSchemaOwnerMigrations"] = True
+    stage = "production-installation-settings"
+    settings = engine_box("bin/installation-settings.ts", [], [credential_files["database-password"]], {
+        "DATABASE_PASSWORD_FILE": "/run/database-password",
+        "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGDATABASE": "lares_state",
+        "PGUSER": "lares_app",
+    })
+    if settings.returncode != 0:
+        raise ProbeFailure("installation-settings")
+    proof["claims"]["productionInstallationSettingsPathUsed"] = True
+    proof["stages"]["productionInstallationSettings"] = True
+    stage = "keeper-default-entrypoint-admission"
+    prove_keeper_default_admission()
     stage = "normal-container-secret-boundary"
     database_container = compose("ps", "-q", "db").stdout.strip()
     if not re.fullmatch(r"[a-f0-9]{12,64}", database_container):

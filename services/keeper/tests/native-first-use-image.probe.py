@@ -1,8 +1,10 @@
 """CI-only end-to-end first-use proof: compiled Eve, production Keeper and local fixtures."""
-import hashlib, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
+import hashlib, importlib.util, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
 
 if os.environ.get('CI') != 'true':
     raise SystemExit('Combined native first-use proof runs only in disposable CI')
+if os.geteuid() != 0:
+    raise SystemExit('Combined native first-use proof needs root-owned disposable admission custody')
 if len(sys.argv) != 5:
     raise SystemExit('usage: native-first-use-image.probe.py <chief-image> <keeper-image> <source-sha> <proof.json>')
 
@@ -15,6 +17,11 @@ if not re_full_sha(source_sha):
     raise SystemExit('Combined proof needs the checked-out source identity')
 
 repo = pathlib.Path(__file__).resolve().parents[3]
+custody_spec = importlib.util.spec_from_file_location(
+    'maintenance_custody', repo / 'services/box/ops/maintenance-custody.py')
+custody = importlib.util.module_from_spec(custody_spec)
+assert custody_spec and custody_spec.loader
+custody_spec.loader.exec_module(custody)
 root = pathlib.Path(tempfile.mkdtemp(prefix='lares-native-first-use-')).resolve()
 root.chmod(0o755)
 secrets_dir = root / 'secrets'; secrets_dir.mkdir(mode=0o755)
@@ -855,6 +862,17 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     stage = 'production-keeper-startup'
     # Pre-provision both members before either activation. The root CLI talks only to the real
     # host-only socket; no direct provisioner/activator construction is used.
+    # Prepare and validate the normal root-owned admission receipt through the same helper as installation.
+    admission_prefix=root/'admission-installation'
+    admission_prefix.mkdir(mode=0o755)
+    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+    custody.prepare_fresh(admission_prefix, admission_subnet)
+    admission_identity=custody.validate(admission_prefix, admission_subnet)
+    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
+    keeper_image_cmd=json.loads(docker('image','inspect','--format','{{json .Config.Cmd}}',keeper_image))
+    expected_keeper_cmd=['/app/services/keeper/node_modules/.bin/tsx','/app/services/keeper/bin/keeper.ts','serve']
+    if keeper_image_cmd != expected_keeper_cmd:
+        raise RuntimeError('Production Keeper image command changed; refusing to substitute a fixture command')
     host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
     lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
     keeper_name=network+'-keeper'
@@ -862,8 +880,10 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
       '--mount',f'type=volume,src={volume},dst=/var/lib/lares',
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
       '--mount',f'type=bind,src={install_root},dst=/fixture-install',
+      '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
       '--mount',f'type=bind,src={host_socket_dir},dst=/run/lares-host','--mount',f'type=bind,src={run_dir},dst=/run/lares',
-      '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777',keeper_image]
+      '--tmpfs','/tmp:rw,noexec,nosuid,nodev,mode=1777',keeper_image,
+      '/run/lares-maintenance/admission',admission_identity['installationId'],str(admission_identity['epoch']),'--',*keeper_image_cmd]
     docker(*keeper_cmd);container_names.append(keeper_name)
     def wait_socket(path,container=keeper_name):
         for _ in range(120):

@@ -20,8 +20,9 @@
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
 import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema} from "../../keeper/lib/config.js";
 import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
@@ -40,7 +41,44 @@ export interface KeeperComposeEnvironmentInput {
   readonly secretsDir: string;
   readonly proxyAddress: string;
   readonly network: string;
+  readonly maintenanceAdmission: ValidatedMaintenanceAdmission;
   readonly gatewayAuthority?: { readonly serviceKeyFile: string; readonly policyFile: string };
+}
+
+export interface ValidatedMaintenanceAdmission {
+  readonly directory: string;
+  readonly installationId: string;
+  readonly epoch: number;
+}
+
+/** Uses the same completed-receipt validator as normal-auth-v3 and returns only the
+ *  installation identity needed to bind Keeper's fixed admission command. */
+export function validateMaintenanceAdmissionIdentity(prefix: string, subnet: string): ValidatedMaintenanceAdmission {
+  if (!isAbsolute(prefix) || resolve(prefix) !== prefix || /[\n\r\0]/.test(prefix))
+    throw new Error("Maintenance admission prefix must be absolute and normalized");
+  if (!subnet || /[\n\r\0]/.test(subnet)) throw new Error("Maintenance admission subnet is invalid");
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING !== "1")
+    throw new Error("Maintenance custody validation requires root");
+  const checker = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "maintenance-custody.py");
+  const args = [checker, "validate-identity", prefix, subnet];
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING === "1") args.push("--test-owner");
+  const text = execFileSync("python3", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch { throw new Error("Maintenance custody validator returned an invalid identity"); }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Maintenance custody validator returned an invalid identity");
+  const identity = value as Record<string, unknown>;
+  if (Object.keys(identity).sort().join(",") !== "epoch,installationId" ||
+      typeof identity.installationId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(identity.installationId) ||
+      typeof identity.epoch !== "number" || !Number.isSafeInteger(identity.epoch) || identity.epoch < 1 || identity.epoch > 2147483647)
+    throw new Error("Maintenance custody validator returned an invalid identity");
+  return {
+    directory: join(prefix, "var/lib/lares-maintenance/admission"),
+    installationId: identity.installationId,
+    epoch: identity.epoch,
+  };
 }
 
 export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input: KeeperComposeEnvironmentInput, config: KeeperConfig): string {
@@ -80,6 +118,9 @@ export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input:
     ...(config.modelPurposeConsoleSigningKeyFile ? [`LARES_MODEL_PURPOSE_SIGNING_KEY_FILE=${config.modelPurposeConsoleSigningKeyFile}`] : []),
     `LARES_PROXY_ADDRESS=${input.proxyAddress}`,
     `LARES_NETWORK=${input.network}`,
+    `LARES_MAINTENANCE_ADMISSION_DIR=${input.maintenanceAdmission.directory}`,
+    `LARES_MAINTENANCE_INSTALLATION_ID=${input.maintenanceAdmission.installationId}`,
+    `LARES_MAINTENANCE_EPOCH=${input.maintenanceAdmission.epoch}`,
     "",
   ].join("\n");
 }
@@ -109,6 +150,7 @@ const ARGUMENTS = [
   "credentialAdministrator",
   "domain", // the installation's public domain; becomes publicDoorOrigin (https://<domain>)
   "ownerHomeTz", // the owner's time zone, "" when unknown
+  "maintenancePrefix", // host prefix whose completed custody receipt is validated before reads
 ] as const;
 
 const HELP_TEXT = [
@@ -141,6 +183,7 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     return 1;
   }
   const at = (name: (typeof ARGUMENTS)[number]): string => argv[ARGUMENTS.indexOf(name)]!;
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(at("maintenancePrefix"), at("subnet"));
 
   if (!credentialConfigSchema.shape.administrator.safeParse(at("credentialAdministrator")).success) {
     out("Configure one credential administrator email; nothing was written");
@@ -204,6 +247,7 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     root: at("root"), keeperConfig: at("keeperConfig"), socketDir: at("socketDir"),
     hostSocketDir: at("hostSocketDir"), egressDir: at("egressDir"), secretsDir: at("secretsDir"),
     proxyAddress: at("proxyAddress"), network: at("network"), gatewayAuthority,
+    maintenanceAdmission,
   }, config);
 
   // 0600, and chmod'd as well as passed as a mode: `mode:` is masked by the caller's umask, and

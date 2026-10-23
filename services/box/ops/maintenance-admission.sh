@@ -1,5 +1,5 @@
 #!/bin/sh
-# CI-proved participant admission primitive. This is not wired into production starts.
+# Keeper startup admission primitive; CI proves the generated production Compose path.
 set -eu
 refuse() { printf '%s\n' 'maintenance admission refused' >&2; exit 78; }
 
@@ -13,6 +13,12 @@ shift
 [ "$#" -gt 0 ] || refuse
 case "$directory" in /*) ;; *) refuse ;; esac
 [ -d "$directory" ] && [ ! -L "$directory" ] || refuse
+
+# Keeper starts from /app so its fixed relative workspace command resolves after admission.
+# Record the physical caller directory before pinning custody; fail closed if it cannot be
+# restored after the checks.
+caller_directory=$(pwd -P 2>/dev/null) || refuse
+case "$caller_directory" in /*) ;; *) refuse ;; esac
 
 # Pin the working directory first. All subsequent lock and intent operations are relative to
 # this directory descriptor, so replacing a path component cannot redirect an open/read.
@@ -89,4 +95,6 @@ NODE
 
 # The same open-file-description remains held across exec. Only explicit participants retaining
 # this descriptor are covered; arbitrary descendants are not certified by this primitive.
+cd "$caller_directory" 2>/dev/null || refuse
+[ "$(pwd -P 2>/dev/null)" = "$caller_directory" ] || refuse
 exec "$@"
