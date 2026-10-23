@@ -52,10 +52,12 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         functions = [node for node in source.body
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in wanted]
         self.assertEqual({node.name for node in functions}, wanted)
-        calls: list[tuple[list[str], list[str], bool]] = []
+        calls: list[tuple[list[str], list[str], bool, dict[str, int]]] = []
 
-        def operator_call(compose_args: list[str], program: list[str], *, check: bool = True):
-            calls.append((compose_args, program, check))
+        def operator_call(compose_args: list[str], program: list[str], *, check: bool = True,
+                          timeout: int = 60, operator_timeout: int = 30):
+            calls.append((compose_args, program, check,
+                          {"timeout": timeout, "operator_timeout": operator_timeout}))
             return SimpleNamespace(stdout="1\n")
 
         namespace = {"operator_call": operator_call}
@@ -67,7 +69,7 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         self.assertTrue(calls[-1][2])
 
         self.assertEqual(namespace["observe_update_client_lock"](compose_args, "update_history"), "1")
-        observed_args, observed_program, observed_check = calls[-1]
+        observed_args, observed_program, observed_check, observed_timeouts = calls[-1]
         self.assertEqual(observed_args, compose_args)
         self.assertFalse(observed_check)
         self.assertEqual(observed_program[observed_program.index("-d") + 1], "lares_state")
@@ -75,6 +77,7 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         self.assertIn("database=(SELECT oid FROM pg_database WHERE datname=current_database())", sql)
         self.assertIn("relation='update_history'::regclass", sql)
         self.assertIn("mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()", sql)
+        self.assertEqual(observed_timeouts, {"timeout": 60, "operator_timeout": 30})
 
         proof = next(node for node in source.body if isinstance(node, ast.FunctionDef)
                      and node.name == "prove_update_history_client_lease")
@@ -1011,6 +1014,198 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
             for record in bad_records:
                 with self.subTest(record=record):
                     self.assertNotEqual(run(record).returncode, 0)
+
+    def test_update_client_lease_poll_waits_for_created_and_requires_all_live_signals(self) -> None:
+        source = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"))
+        helper = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "poll_update_client_lease")
+        proof = next(node for node in source.body if isinstance(node, ast.FunctionDef)
+                     and node.name == "prove_update_history_client_lease")
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "poll_update_client_lease" for node in ast.walk(proof)),
+                        "the image proof must use the tested lease polling helper")
+        nested = {node.name: node for node in ast.walk(proof)
+                  if isinstance(node, ast.FunctionDef)
+                  and node.name in {"inspect_fd9", "observe_database_wait", "deny_host_exclusive"}}
+        self.assertEqual(set(nested), {"inspect_fd9", "observe_database_wait", "deny_host_exclusive"})
+        for callback in nested.values():
+            self.assertEqual([arg.arg for arg in callback.args.args], ["timeout"])
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "docker"
+                            and any(keyword.arg == "timeout" for keyword in node.keywords)
+                            for node in ast.walk(nested["inspect_fd9"])))
+        query_call = next(node for node in ast.walk(nested["observe_database_wait"])
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                          and node.func.id == "operator_query")
+        self.assertEqual({keyword.arg: ast.dump(keyword.value) for keyword in query_call.keywords
+                          if keyword.arg in {"timeout", "operator_timeout"}},
+                         {"timeout": "Name(id='timeout', ctx=Load())",
+                          "operator_timeout": "Name(id='timeout', ctx=Load())"})
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "run"
+                            and any(keyword.arg == "timeout" and isinstance(keyword.value, ast.Name)
+                                    and keyword.value.id == "timeout" for keyword in node.keywords)
+                            for node in ast.walk(nested["deny_host_exclusive"])))
+        poll_call = next(node for node in ast.walk(proof)
+                         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                         and node.func.id == "poll_update_client_lease")
+        inspect_binding = next(keyword.value for keyword in poll_call.keywords
+                               if keyword.arg == "inspect_owned")
+        self.assertIsInstance(inspect_binding, ast.Lambda)
+        self.assertEqual([arg.arg for arg in inspect_binding.args.args], ["timeout"])
+        self.assertTrue(any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                            and node.func.id == "owned_info"
+                            and node.args and isinstance(node.args[-1], ast.Name)
+                            and node.args[-1].id == "timeout" for node in ast.walk(inspect_binding)))
+        namespace: dict[str, object] = {}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        poll = namespace["poll_update_client_lease"]
+
+        def run_case(states: list[dict[str, object]], *, fd9: bool = True,
+                     database_wait: bool = True, exclusive_denied: bool = True,
+                     alive: list[bool] | None = None,
+                     callback_advance: dict[str, float] | None = None,
+                     dies_during: str | None = None, deadline: float = 5.0
+                     ) -> tuple[bool, dict[str, object], list[str], list[float]]:
+            now = [0.0]
+            observed: list[str] = []
+            sleeps: list[float] = []
+            state_index = [0]
+            advances = callback_advance or {}
+
+            def inspect_owned(timeout: int) -> dict[str, object]:
+                self.assertGreaterEqual(timeout, 1)
+                now[0] += advances.get("inspect", 0.0)
+                index = min(state_index[0], len(states) - 1)
+                state_index[0] += 1
+                if dies_during == "inspect" and alive is not None:
+                    alive[0] = False
+                return states[index]
+
+            alive_index = [0]
+            def launcher_alive() -> bool:
+                if alive is None:
+                    return True
+                index = min(alive_index[0], len(alive) - 1)
+                alive_index[0] += 1
+                return alive[index]
+
+            def mark(name: str, result: bool, timeout: int) -> bool:
+                self.assertGreaterEqual(timeout, 1)
+                observed.append(name)
+                now[0] += advances.get(name, 0.0)
+                if dies_during == name and alive is not None:
+                    alive[0] = False
+                return result
+
+            def sleep(seconds: float) -> None:
+                sleeps.append(seconds)
+                now[0] += seconds
+
+            result, diagnostics = poll(
+                deadline, inspect_owned=inspect_owned, launcher_alive=launcher_alive,
+                fd9_check=lambda timeout: mark("fd9", fd9, timeout),
+                database_wait=lambda timeout: mark("database", database_wait, timeout),
+                exclusive_denied=lambda timeout: mark("exclusive", exclusive_denied, timeout),
+                monotonic=lambda: now[0], sleep=sleep)
+            return result, diagnostics, observed, sleeps
+
+        created = {"State": {"Status": "created", "Running": False}}
+        running = {"State": {"Status": "running", "Running": True}}
+        result, diagnostics, observed, sleeps = run_case([created, running])
+        self.assertTrue(result)
+        self.assertEqual(diagnostics["failureClass"], "none")
+        self.assertEqual(diagnostics["pollCount"], 2)
+        self.assertTrue(diagnostics["createdSeen"])
+        self.assertTrue(diagnostics["runningSeen"])
+        self.assertEqual(observed, ["fd9", "database", "exclusive"])
+        self.assertEqual(sleeps, [0.25])
+
+        for status in ("exited", "dead", "paused", "restarting", "unexpected-status"):
+            with self.subTest(status=status):
+                result, diagnostics, observed, _ = run_case(
+                    [{"State": {"Status": status, "Running": False}}])
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"],
+                                 "client-state-terminal" if status in {"exited", "dead", "paused", "restarting"}
+                                 else "client-state-unexpected")
+                self.assertEqual(observed, [])
+
+        result, diagnostics, observed, _ = run_case([created], alive=[False])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+        self.assertEqual(observed, [])
+
+        observed_identity_failure: list[str] = []
+        identity_result, identity_diagnostics = poll(
+            1.0, inspect_owned=lambda _timeout: (_ for _ in ()).throw(ValueError("untrusted details")),
+            launcher_alive=lambda: True,
+            fd9_check=lambda _timeout: observed_identity_failure.append("fd9") is None,
+            database_wait=lambda _timeout: observed_identity_failure.append("database") is None,
+            exclusive_denied=lambda _timeout: observed_identity_failure.append("exclusive") is None,
+            monotonic=lambda: 0.0, sleep=lambda _seconds: None)
+        self.assertFalse(identity_result)
+        self.assertEqual(identity_diagnostics["failureClass"], "client-identity-unverified")
+        self.assertEqual(observed_identity_failure, [])
+
+        result, diagnostics, _, sleeps = run_case([created])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-created-timeout")
+        self.assertEqual(diagnostics["pollCount"], 18)
+        self.assertEqual(sleeps, [0.25] * 17)
+        self.assertLessEqual(sum(sleeps), 5.0)
+
+        for failed_signal, values, expected_missing in (
+            ("fd9", (False, True, True), ["fd9", "host-exclusive-denial"]),
+            ("database", (True, False, True), ["database-wait", "host-exclusive-denial"]),
+        ):
+            with self.subTest(failed_signal=failed_signal):
+                result, diagnostics, _, _ = run_case([running], fd9=values[0],
+                    database_wait=values[1], exclusive_denied=values[2])
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "lease-observation-deadline")
+                self.assertEqual(diagnostics["missingPredicates"], expected_missing)
+
+        result, diagnostics, observed, _ = run_case([running], exclusive_denied=False)
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "host-exclusive-not-denied")
+        self.assertEqual(observed, ["fd9", "database", "exclusive"])
+
+        for delayed_callback in ("inspect", "fd9", "database", "exclusive"):
+            with self.subTest(delayed_callback=delayed_callback):
+                result, diagnostics, observed, _ = run_case(
+                    [running], callback_advance={delayed_callback: 1.0}, deadline=1.0)
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "lease-observation-deadline"
+                                 if delayed_callback != "inspect" else "client-start-timeout")
+                expected = {
+                    "inspect": [],
+                    "fd9": ["fd9"],
+                    "database": ["fd9", "database"],
+                    "exclusive": ["fd9", "database", "exclusive"],
+                }[delayed_callback]
+                self.assertEqual(observed, expected)
+                self.assertEqual(diagnostics["fd9Observed"], delayed_callback in {"database", "exclusive"})
+                self.assertEqual(diagnostics["databaseWaitObserved"], delayed_callback == "exclusive")
+
+        result, diagnostics, observed, _ = run_case([running], alive=[False])
+        self.assertFalse(result)
+        self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+        self.assertEqual(observed, [])
+
+        for dying_callback in ("inspect", "fd9", "database", "exclusive"):
+            with self.subTest(dying_callback=dying_callback):
+                result, diagnostics, observed, _ = run_case(
+                    [running], alive=[True], dies_during=dying_callback)
+                self.assertFalse(result)
+                self.assertEqual(diagnostics["failureClass"], "client-launcher-exited")
+                expected = {
+                    "inspect": [],
+                    "fd9": ["fd9"],
+                    "database": ["fd9", "database"],
+                    "exclusive": ["fd9", "database", "exclusive"],
+                }[dying_callback]
+                self.assertEqual(observed, expected)
 
     def test_update_client_probe_recovers_only_exact_intent_and_isolates_cleanup(self) -> None:
         tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))

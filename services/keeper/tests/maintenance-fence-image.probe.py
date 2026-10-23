@@ -123,6 +123,7 @@ proof = {
     "failureKind": None,
     "cleanupOkay": False,
     "candidateKeeperImageConfigId": None,
+    "clientLeaseDiagnostics": {},
 }
 stage = "fixture-setup"
 
@@ -820,10 +821,11 @@ def prove_update_history_client_lease() -> None:
     lock_path = fixture_prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
     lock_stat = lock_path.stat()
 
-    def owned_info(container_id: str, owner: str, operation: str) -> dict[str, object]:
+    def owned_info(container_id: str, owner: str, operation: str,
+                   timeout: int = 10) -> dict[str, object]:
         if not re.fullmatch(r"[a-f0-9]{64}", container_id):
             raise ProbeFailure("update-client-identity")
-        result = docker("inspect", container_id, check=False, timeout=10)
+        result = docker("inspect", container_id, check=False, timeout=timeout)
         if result.returncode != 0:
             raise ProbeFailure("update-client-identity")
         try:
@@ -1004,27 +1006,37 @@ def prove_update_history_client_lease() -> None:
 
             query_user = pguser
             query_pattern = query_needle.replace("'", "''")
-            deadline = time.monotonic() + 45
-            retained = False
-            while time.monotonic() < deadline:
-                state = owned_info(client_id, client_owner, "update").get("State", {})
-                if state.get("Running") is not True:
-                    break
+            def inspect_fd9(timeout: int) -> bool:
                 evidence = docker("exec", client_id, "python3", "-c", inspect_script,
                     str(lock_stat.st_dev), str(lock_stat.st_ino),
-                    "/app/services/box/" + script, check=False, timeout=8)
+                    "/app/services/box/" + script, check=False, timeout=min(8, timeout))
+                return evidence.returncode == 0 and evidence.stdout.strip() == "ok"
+
+            def observe_database_wait(timeout: int) -> bool:
                 waiting = operator_query(compose_files,
                     "SELECT count(*)::text FROM pg_stat_activity WHERE datname='lares_state' " +
                     "AND usename='" + query_user + "' AND wait_event_type='Lock' AND query LIKE '%" +
-                    query_pattern + "%'", check=False)
-                if evidence.returncode == 0 and evidence.stdout.strip() == "ok" and waiting == "1":
-                    retained = True
-                    break
-                if launcher.poll() is not None:
-                    break
-                time.sleep(0.25)
-            if not retained or run("flock", "--nonblock", "--exclusive", str(lock_path),
-                                   "-c", "true", check=False).returncode != 1:
+                    query_pattern + "%'", check=False, timeout=timeout,
+                    operator_timeout=timeout)
+                return waiting == "1"
+
+            def deny_host_exclusive(timeout: int) -> bool:
+                return run("flock", "--nonblock", "--exclusive", str(lock_path),
+                           "-c", "true", check=False, timeout=timeout).returncode == 1
+
+            stem = "updateHistoryClient" if script == "bin/update-record.ts" else "migrationClient"
+            retained, lease_diagnostics = poll_update_client_lease(
+                time.monotonic() + 45,
+                inspect_owned=lambda timeout: owned_info(client_id, client_owner, "update", timeout),
+                launcher_alive=lambda: launcher.poll() is None,
+                fd9_check=inspect_fd9,
+                database_wait=observe_database_wait,
+                exclusive_denied=deny_host_exclusive,
+                monotonic=time.monotonic,
+                sleep=time.sleep,
+            )
+            proof["clientLeaseDiagnostics"][stem] = lease_diagnostics
+            if not retained:
                 raise ProbeFailure("update-client-lease")
 
             os.killpg(launcher.pid, signal.SIGKILL)
@@ -1046,7 +1058,6 @@ def prove_update_history_client_lease() -> None:
             if run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False).returncode != 0:
                 raise ProbeFailure("update-client-release")
 
-            stem = "updateHistoryClient" if script == "bin/update-record.ts" else "migrationClient"
             proof["claims"][stem + "RetainsIndependentAdmissionLease"] = True
             proof["claims"][stem + "LeaseSurvivesCallerExit"] = True
             proof["claims"][stem + "OwnedContainerCleanupVerified"] = True
@@ -1158,9 +1169,11 @@ def operator_call(compose_args: list[str], program: list[str], *, input_data: st
 
 
 def operator_query(compose_args: list[str], sql: str, *, check: bool = True,
-                   database: str = "postgres") -> str:
+                   database: str = "postgres", timeout: int = 60,
+                   operator_timeout: int = 30) -> str:
     result = operator_call(compose_args, ["psql", "-X", "-A", "-t", "-q", "-v", "ON_ERROR_STOP=1",
-                                         "-U", "lares_operator", "-d", database, "-c", sql], check=check)
+                                         "-U", "lares_operator", "-d", database, "-c", sql],
+                           check=check, timeout=timeout, operator_timeout=operator_timeout)
     return result.stdout.strip()
 
 
@@ -1173,6 +1186,215 @@ def update_client_lock_query(table: str) -> str:
 def observe_update_client_lock(compose_args: list[str], table: str) -> str:
     return operator_query(compose_args, update_client_lock_query(table), check=False,
                           database="lares_state")
+
+
+def poll_update_client_lease(deadline: float, *, inspect_owned, launcher_alive,
+                             fd9_check, database_wait, exclusive_denied,
+                             monotonic, sleep) -> tuple[bool, dict[str, object]]:
+    """Wait for a verified running client and require every independent lease signal."""
+    diagnostics: dict[str, object] = {
+        "pollCount": 0,
+        "createdSeen": False,
+        "runningSeen": False,
+        "stateClass": "not-observed",
+        "fd9Observed": False,
+        "databaseWaitObserved": False,
+        "exclusiveDenialObserved": False,
+        "failureClass": "client-start-timeout",
+    }
+
+    def fail(category: str) -> tuple[bool, dict[str, object]]:
+        diagnostics["failureClass"] = category
+        return False, diagnostics
+
+    def remaining_timeout() -> int | None:
+        remaining = deadline - monotonic()
+        if remaining < 1:
+            return None
+        return int(remaining)
+
+    def expired() -> bool:
+        return monotonic() >= deadline
+
+    def launcher_is_alive() -> bool | None:
+        try:
+            alive = bool(launcher_alive())
+        except Exception:
+            return None
+        if expired():
+            return None
+        return alive
+
+    def deadline_failure() -> tuple[bool, dict[str, object]]:
+        if diagnostics["createdSeen"] and not diagnostics["runningSeen"]:
+            return fail("client-created-timeout")
+        if diagnostics["runningSeen"]:
+            missing = []
+            if not diagnostics["fd9Observed"]:
+                missing.append("fd9")
+            if not diagnostics["databaseWaitObserved"]:
+                missing.append("database-wait")
+            if not diagnostics["exclusiveDenialObserved"]:
+                missing.append("host-exclusive-denial")
+            diagnostics["missingPredicates"] = missing
+            return fail("lease-observation-deadline")
+        return fail("client-start-timeout")
+
+    while monotonic() < deadline:
+        diagnostics["pollCount"] = int(diagnostics["pollCount"]) + 1
+        timeout = remaining_timeout()
+        if timeout is None:
+            return deadline_failure()
+        try:
+            info = inspect_owned(timeout)
+        except Exception:
+            if expired():
+                return deadline_failure()
+            return fail("client-identity-unverified")
+        if expired():
+            return deadline_failure()
+        state = info.get("State", {}) if isinstance(info, dict) else {}
+        status = state.get("Status") if isinstance(state, dict) else None
+        running = state.get("Running") if isinstance(state, dict) else None
+
+        if status == "created" and running is False:
+            diagnostics["createdSeen"] = True
+            diagnostics["stateClass"] = "created"
+            alive = launcher_is_alive()
+            if alive is None:
+                if expired():
+                    return deadline_failure()
+                return fail("client-launcher-state-unknown")
+            if not alive:
+                return fail("client-launcher-exited")
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                return deadline_failure()
+            sleep(min(0.25, remaining))
+            if expired():
+                return deadline_failure()
+            continue
+
+        if status != "running" or running is not True:
+            terminal = {"exited", "dead", "paused", "restarting", "removing"}
+            is_terminal = isinstance(status, str) and status in terminal
+            diagnostics["stateClass"] = status if is_terminal else "unexpected"
+            return fail("client-state-terminal" if is_terminal else "client-state-unexpected")
+
+        diagnostics["runningSeen"] = True
+        diagnostics["stateClass"] = "running"
+
+        alive = launcher_is_alive()
+        if alive is None:
+            if expired():
+                return deadline_failure()
+            return fail("client-launcher-state-unknown")
+        if not alive:
+            return fail("client-launcher-exited")
+
+        def observe(callback) -> bool | None:
+            timeout = remaining_timeout()
+            if timeout is None:
+                return None
+            try:
+                result = bool(callback(timeout))
+            except Exception:
+                result = False
+            if expired():
+                return None
+            alive_now = launcher_is_alive()
+            if alive_now is None or not alive_now:
+                diagnostics["failureClass"] = (
+                    "client-launcher-exited" if alive_now is False
+                    else "client-launcher-state-unknown")
+                return None
+            if expired():
+                return None
+            return result
+
+        try:
+            fd9_result = observe(fd9_check)
+            if fd9_result is None:
+                if diagnostics["failureClass"] in {"client-launcher-exited", "client-launcher-state-unknown"}:
+                    return False, diagnostics
+                return deadline_failure()
+            fd9_ok = fd9_result
+            diagnostics["fd9Observed"] = bool(diagnostics["fd9Observed"]) or fd9_ok
+            database_result = observe(database_wait)
+            if database_result is None:
+                if diagnostics["failureClass"] in {"client-launcher-exited", "client-launcher-state-unknown"}:
+                    return False, diagnostics
+                return deadline_failure()
+            database_ok = database_result
+            diagnostics["databaseWaitObserved"] = (
+                bool(diagnostics["databaseWaitObserved"]) or database_ok)
+        except Exception:
+            return fail("lease-observation-failed")
+
+        # Preserve the original independent exclusive-refusal check: reach it only after
+        # the same poll observed the real descriptor and the matching blocked DB query.
+        if fd9_ok and database_ok:
+            exclusive_result = observe(exclusive_denied)
+            if exclusive_result is None:
+                if diagnostics["failureClass"] in {"client-launcher-exited", "client-launcher-state-unknown"}:
+                    return False, diagnostics
+                return deadline_failure()
+            exclusive_ok = exclusive_result
+            diagnostics["exclusiveDenialObserved"] = exclusive_ok
+            if not exclusive_ok:
+                return fail("host-exclusive-not-denied")
+            if expired():
+                return deadline_failure()
+            alive = launcher_is_alive()
+            if alive is None:
+                if expired():
+                    return deadline_failure()
+                return fail("client-launcher-state-unknown")
+            if not alive:
+                return fail("client-launcher-exited")
+            if expired():
+                return deadline_failure()
+            diagnostics["failureClass"] = "none"
+            return True, diagnostics
+
+        alive = launcher_is_alive()
+        if alive is None:
+            if expired():
+                return deadline_failure()
+            return fail("client-launcher-state-unknown")
+        if not alive:
+            return fail("client-launcher-exited")
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return deadline_failure()
+        sleep(min(0.25, remaining))
+        if expired():
+            return deadline_failure()
+
+    if expired():
+        return deadline_failure()
+    alive = launcher_is_alive()
+    if alive is None:
+        if expired():
+            return deadline_failure()
+        return fail("client-launcher-state-unknown")
+    if not alive:
+        return fail("client-launcher-exited")
+    if expired():
+        return deadline_failure()
+    if diagnostics["createdSeen"] and not diagnostics["runningSeen"]:
+        return fail("client-created-timeout")
+    if diagnostics["runningSeen"]:
+        missing = []
+        if not diagnostics["fd9Observed"]:
+            missing.append("fd9")
+        if not diagnostics["databaseWaitObserved"]:
+            missing.append("database-wait")
+        if not diagnostics["exclusiveDenialObserved"]:
+            missing.append("host-exclusive-denial")
+        diagnostics["missingPredicates"] = missing
+        return fail("lease-predicate-not-observed" if missing else "lease-predicates-not-concurrent")
+    return fail("client-start-timeout")
 
 
 def operator_script(compose_args: list[str], script: str) -> subprocess.CompletedProcess:
