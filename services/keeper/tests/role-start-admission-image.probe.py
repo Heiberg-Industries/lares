@@ -7,6 +7,7 @@ import json
 import os
 import pathlib
 import re
+import selectors
 import secrets
 import shutil
 import subprocess
@@ -121,6 +122,144 @@ def current_container_id() -> str:
     if not container_id:
         raise ProbeFailure("compose-role-container-not-resolved")
     return container_id
+
+
+CONTAINER_STATUSES = frozenset(("created", "running", "restarting", "paused", "exited", "dead", "removing"))
+HEALTH_RESULTS = frozenset(("ready", "connect-error", "non-2xx", "invalid-json", "json-not-ready",
+                            "not-running", "probe-error", "unavailable"))
+LOG_CLASSES = (
+    (b"maintenance admission refused", "admission-refused"),
+    (b"set them in the installation's settings and start it again.", "required-setting-missing"),
+    (b"startup settings check is missing from this image", "required-settings-image-check-missing"),
+    (b"workflow database credentials are unavailable.", "workflow-credentials-unavailable"),
+    (b"[definition] this agent has no usable definition", "definition-unusable"),
+    (b"could not connect to server", "runtime-database-connect-failure"),
+    (b"econnrefused", "runtime-connect-failure"),
+    (b"etimedout", "runtime-connect-failure"),
+    (b"enotfound", "runtime-connect-failure"),
+    (b"password authentication failed", "runtime-database-auth-failure"),
+    (b"err_module_not_found", "module-load-failure"),
+    (b"cannot find module", "module-load-failure"),
+    (b"uncaughtexception", "node-uncaught-error"),
+    (b"unhandledrejection", "node-uncaught-error"),
+    (b"fatal error", "node-fatal-error"),
+)
+MAX_STARTUP_LOG_BYTES = 32 * 1024
+
+
+def parse_container_state(output: str, returncode: int) -> dict[str, object]:
+    """Keep only bounded, fixed-format container state; never retain Docker output."""
+    result: dict[str, object] = {
+        "status": "inspect-error", "running": False, "exitCode": None,
+        "oomKilled": None, "restartCount": None,
+    }
+    if returncode != 0:
+        return result
+    try:
+        encoded_state, separator, raw_restarts = output.strip().partition("|")
+        state = json.loads(encoded_state) if separator else None
+        restart_count = int(raw_restarts) if separator and re.fullmatch(r"\d{1,7}", raw_restarts) else None
+    except (ValueError, TypeError, json.JSONDecodeError):
+        result["status"] = "unknown"
+        return result
+    if not isinstance(state, dict):
+        result["status"] = "unknown"
+        return result
+    status = state.get("Status")
+    result["status"] = status if isinstance(status, str) and status in CONTAINER_STATUSES else "unknown"
+    result["running"] = state.get("Running") is True
+    exit_code = state.get("ExitCode")
+    if isinstance(exit_code, int) and not isinstance(exit_code, bool) and 0 <= exit_code <= 255:
+        result["exitCode"] = exit_code
+    if type(state.get("OOMKilled")) is bool:
+        result["oomKilled"] = state["OOMKilled"]
+    if restart_count is not None and restart_count <= 1_000_000:
+        result["restartCount"] = restart_count
+    return result
+
+
+def classify_health_result(returncode: int, output: str) -> str:
+    if returncode != 0:
+        return "probe-error"
+    value = output.strip()
+    return value if value in HEALTH_RESULTS else "probe-error"
+
+
+def classify_startup_logs(output: bytes) -> list[str]:
+    lowered = output.lower()
+    return sorted({label for marker, label in LOG_CLASSES if marker in lowered})
+
+
+def read_bounded_startup_logs(container: str) -> tuple[bytes, str]:
+    """Read at most 32 KiB from the last 200 log lines, with an eight-second deadline."""
+    process: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
+    chunks: list[bytes] = []
+    size = 0
+    read_status = "ok"
+    try:
+        process = subprocess.Popen(
+            ["docker", "logs", "--tail", "200", container],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0,
+        )
+        assert process.stdout is not None
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + 8
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                read_status = "timeout"
+                break
+            events = selector.select(min(remaining, 0.25))
+            if not events:
+                if process.poll() is not None:
+                    break
+                continue
+            chunk = os.read(process.stdout.fileno(), min(4096, MAX_STARTUP_LOG_BYTES - size + 1))
+            if not chunk:
+                break
+            kept = chunk[:MAX_STARTUP_LOG_BYTES - size]
+            if kept:
+                chunks.append(kept)
+                size += len(kept)
+            if len(kept) != len(chunk):
+                read_status = "truncated"
+                break
+        if read_status != "ok" and process.poll() is None:
+            process.kill()
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+        if process.returncode not in (0, None) and read_status == "ok":
+            read_status = "unavailable"
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        read_status = "unavailable"
+        if process is not None and process.poll() is None:
+            process.kill()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+    finally:
+        if selector is not None:
+            selector.close()
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
+    return b"".join(chunks), read_status
+
+
+def startup_diagnostic_record(diagnostics: dict[str, object], health_result: str) -> dict[str, object]:
+    return {
+        "containerStatusesObserved": sorted(diagnostics["containerStatusesObserved"]),
+        "healthResultsObserved": sorted(diagnostics["healthResultsObserved"]),
+        "startupLogClasses": sorted(diagnostics["startupLogClasses"]),
+        "logReadStatusesObserved": sorted(diagnostics["logReadStatusesObserved"]),
+        "lastContainer": diagnostics["lastContainer"],
+        "lastHealthResult": health_result,
+    }
 
 
 def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
@@ -298,18 +437,58 @@ def start_database() -> None:
 
 def wait_ready() -> None:
     deadline = time.monotonic() + 90
+    diagnostics = {
+        "containerStatusesObserved": set(), "healthResultsObserved": set(),
+        "startupLogClasses": set(), "logReadStatusesObserved": set(),
+        "lastContainer": None, "lastHealthResult": "unavailable",
+    }
+    last_log_state: tuple[object, object] | None = None
+    last_log_read = 0.0
     while time.monotonic() < deadline:
-        inspect = docker("inspect", "--format", "{{.State.Running}}", current_container_id(), check=False, timeout=8)
-        if inspect.returncode == 0 and inspect.stdout.strip() == "true":
-            response = docker("exec", current_container_id(), "node", "-e",
-                "fetch('http://127.0.0.1:3000/eve/v1/health').then(r=>{if(!r.ok)process.exit(1);return r.text()}).then(t=>{if(!t)process.exit(2)}).catch(()=>process.exit(3))",
-                check=False, timeout=10)
-            if response.returncode == 0:
-                return
-            logs = docker("logs", current_container_id(), check=False, timeout=8)
-            if "maintenance admission refused" in logs.stdout:
+        try:
+            inspect = docker("inspect", "--format", "{{json .State}}|{{.RestartCount}}",
+                             current_container_id(), check=False, timeout=8)
+            container = parse_container_state(inspect.stdout, inspect.returncode)
+        except ProbeFailure:
+            container = parse_container_state("", 1)
+        diagnostics["lastContainer"] = container
+        diagnostics["containerStatusesObserved"].add(container["status"])
+
+        health_result = "not-running"
+        if container["status"] == "running" and container["running"] is True:
+            health_script = (
+                "fetch('http://127.0.0.1:3000/eve/v1/health',{signal:AbortSignal.timeout(3000),redirect:'error'})"
+                ".then(async r=>{if(!r.ok){process.stdout.write('non-2xx');return;}"
+                "try{const b=await r.json();process.stdout.write(b?.ok===true?'ready':'json-not-ready')}"
+                "catch{process.stdout.write('invalid-json')}})"
+                ".catch(()=>process.stdout.write('connect-error'))"
+            )
+            try:
+                response = docker("exec", current_container_id(), "node", "-e", health_script,
+                                  check=False, timeout=5)
+                health_result = classify_health_result(response.returncode, response.stdout)
+            except ProbeFailure:
+                health_result = "probe-error"
+        diagnostics["lastHealthResult"] = health_result
+        diagnostics["healthResultsObserved"].add(health_result)
+        if health_result == "ready":
+            proof["startupDiagnostics"] = startup_diagnostic_record(diagnostics, health_result)
+            return
+
+        now = time.monotonic()
+        log_state = (container["status"], container["restartCount"])
+        should_read_logs = log_state != last_log_state or now - last_log_read >= 5
+        if should_read_logs:
+            log_bytes, read_status = read_bounded_startup_logs(current_container_id())
+            log_classes = classify_startup_logs(log_bytes)
+            diagnostics["startupLogClasses"].update(log_classes)
+            diagnostics["logReadStatusesObserved"].add(read_status)
+            last_log_state, last_log_read = log_state, now
+            if "admission-refused" in diagnostics["startupLogClasses"]:
+                proof["startupDiagnostics"] = startup_diagnostic_record(diagnostics, health_result)
                 raise ProbeFailure("normal-start-refused")
         time.sleep(0.25)
+    proof["startupDiagnostics"] = startup_diagnostic_record(diagnostics, diagnostics["lastHealthResult"])
     raise ProbeFailure("compiled-server-not-ready")
 
 
