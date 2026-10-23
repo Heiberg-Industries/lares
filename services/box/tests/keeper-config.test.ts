@@ -10,10 +10,12 @@
 // to a real file and hands it to `loadKeeperConfig`, the function the keeper container itself
 // calls at startup. Nothing here runs Docker, reaches a network, or names a real registry,
 // domain or person.
-import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { loadKeeperConfig } from "../../keeper/lib/config.js";
 import { main as renderConfigCommand } from "../bin/render-keeper-config.js";
 import { renderKeeperConfig, AGENTS_COMPOSE_FILE } from "../lib/keeper-config.js";
@@ -21,6 +23,9 @@ import type { KeeperConfigOptions } from "../lib/keeper-config.js";
 import type { ReleaseManifest } from "../lib/release-manifest.js";
 
 const D = (n: string) => `example.invalid/lares-${n}@sha256:${"a".repeat(64)}`;
+const here = dirname(fileURLToPath(import.meta.url));
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
+const originalMaintenanceTesting = process.env.LARES_MAINTENANCE_TESTING;
 
 /** Every image this configuration names, and nothing else. `lares-egress-proxy` and
  *  `lares-firewall-helper` are their OWN keys: `compose.lares-keeper.yaml` names
@@ -51,6 +56,7 @@ const OPTS: KeeperConfigOptions = {
   project: "lares",
   network: "lares-network",
   subnet: "172.30.0.0/24",
+  maintenanceAdmission: { hostDirectory: "/var/lib/lares-maintenance/admission", installationId: "11111111-1111-4111-8111-111111111111", epoch: 7 },
   proxyAddress: "172.30.0.2",
   dir: "/srv/lares",
   agentsDir: "/srv/lares/agents",
@@ -65,9 +71,22 @@ const OPTS: KeeperConfigOptions = {
 };
 
 const dirs: string[] = [];
+beforeEach(() => { process.env.LARES_MAINTENANCE_TESTING = "1"; });
 afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  if (originalMaintenanceTesting === undefined) delete process.env.LARES_MAINTENANCE_TESTING;
+  else process.env.LARES_MAINTENANCE_TESTING = originalMaintenanceTesting;
 });
+
+function createPreparedPrefix(parent: string): string {
+  const prefixPath = join(parent, "maintenance-prefix");
+  mkdirSync(prefixPath);
+  const prefix = realpathSync(prefixPath);
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, OPTS.subnet, "--confirm-fresh"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1" },
+  });
+  return prefix;
+}
 
 /** Writes the rendered object exactly as `install.sh` will, and reads it back through the
  *  keeper's own loader — the one function whose refusal is a keeper that does not boot. */
@@ -82,6 +101,7 @@ function loadAsKeeperWould(config: unknown) {
 describe("fresh install settings", () => {
   it("writes the public door origin the keeper reads", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
+    expect(config.lifecycle!.maintenanceAdmission).toEqual(OPTS.maintenanceAdmission);
     expect(config.publicDoorOrigin).toBe("https://lares.example.com");
     expect(config.designatedOwnerId).toBe(OPTS.ownerId);
     expect(config.vaultConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-vault-signing-key");
@@ -112,10 +132,16 @@ describe("fresh install settings", () => {
 
   it("the command keeps a schedules value an earlier keeper.json held, and writes origin and zone", () => {
     const f = mkdtempSync(join(tmpdir(), "keeper-rerun-")); dirs.push(f);
+    const prefixPath = join(f, "prefix"); mkdirSync(prefixPath);
+    const prefix = realpathSync(prefixPath);
+    const previousTesting = process.env.LARES_MAINTENANCE_TESTING;
+    process.env.LARES_MAINTENANCE_TESTING = "1";
+    try {
+    execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, OPTS.subnet, "--confirm-fresh"]);
     const release = join(f, "release.json");
     writeFileSync(release, JSON.stringify(MANIFEST));
     const out = join(f, "keeper.json.partial"), env = join(f, "keeper.env"), live = join(f, "keeper.json");
-    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Berlin"];
+    const args = [release, out, env, live, "lares", "/srv/lares", "/srv/lares/agents", "/srv/lares/retired", "/srv/lares/backup", "/srv/lares/egress", "/etc/lares/secrets", "/run/lares", "/run/lares-host", "lares-network", "172.30.0.0/24", "172.30.0.2", "http://lares-gateway:4000", "lares_state", "fixture-owner", "owner@example.invalid", "lares.example.com", "Europe/Berlin", prefix];
     expect(renderConfigCommand(args, () => {})).toBe(0);
     const first = JSON.parse(readFileSync(out, "utf8"));
     expect(first.publicDoorOrigin).toBe("https://lares.example.com");
@@ -126,6 +152,10 @@ describe("fresh install settings", () => {
     writeFileSync(live, JSON.stringify(first));
     expect(renderConfigCommand(args, () => {})).toBe(0);
     expect(JSON.parse(readFileSync(out, "utf8")).lifecycle.runtime.schedulesLive).toBe(false);
+    } finally {
+      if (previousTesting === undefined) delete process.env.LARES_MAINTENANCE_TESTING;
+      else process.env.LARES_MAINTENANCE_TESTING = previousTesting;
+    }
   });
 });
 
@@ -274,7 +304,8 @@ it("renderer rejects ambiguous or malformed administrator emails before writing 
   for (const administrator of ["a..b@example.com", ".a@example.com", "one@example.invalid,two@example.invalid", ""]) {
     const f=mkdtempSync(join(tmpdir(),"keeper-admin-render-"));dirs.push(f);
     const out=join(f,"keeper.json"),env=join(f,"keeper.env");
-    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Berlin"];
+    const prefix=createPreparedPrefix(f);
+    const args=[join(f,"missing-release.json"),out,env,out,"lares","/srv/lares","/srv/lares/agents","/srv/lares/retired","/srv/lares/backup","/srv/lares/egress","/etc/lares/secrets","/run/lares","/run/lares-host","lares-network","172.30.0.0/24","172.30.0.2","http://lares-gateway:4000","lares_state","fixture-owner",administrator,"lares.example.com","Europe/Berlin",prefix];
     const messages:string[]=[];
     expect(renderConfigCommand(args,message=>messages.push(message))).toBe(1);
     expect(messages).toEqual(["Configure one credential administrator email; nothing was written"]);
@@ -294,8 +325,9 @@ describe('optional prepared financial custody',()=>{
   it('preserves prepared binding across a real renderer rerun and refuses invalid prior binding before writing',()=>{
     const f=mkdtempSync(join(tmpdir(),'keeper-financial-rerun-'));dirs.push(f);
     const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
+    const prefix=createPreparedPrefix(f);
     writeFileSync(release,JSON.stringify(MANIFEST));
-    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com',''];
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix];
     writeFileSync(live,JSON.stringify({...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding}));
     expect(renderConfigCommand(args,()=>{})).toBe(0);expect(JSON.parse(readFileSync(out,'utf8')).budgetFinancial).toEqual(binding);
     const before=readFileSync(out),beforeEnv=readFileSync(env);
@@ -319,8 +351,9 @@ describe('optional prepared financial custody',()=>{
   it('preserves both bindings across CLI reruns and refuses malformed or inconsistent fields before either write',()=>{
     const f=mkdtempSync(join(tmpdir(),'keeper-custody-rerun-'));dirs.push(f);
     const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
+    const prefix=createPreparedPrefix(f);
     writeFileSync(release,JSON.stringify(MANIFEST));
-    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com',''];
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com','',prefix];
     const first={...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway};
     writeFileSync(live,JSON.stringify(first));
     expect(renderConfigCommand(args,()=>{})).toBe(0);

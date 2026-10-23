@@ -9,6 +9,10 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import hashlib
+import ipaddress
+import re
+import sys
 import secrets
 import stat
 import uuid
@@ -268,3 +272,343 @@ def read_intent(admission_dir: str | Path, *, expected_uid: int = 0) -> dict[str
         return _read_fd(admission_fd, admission, directory_info, expected_uid)
     finally:
         os.close(admission_fd)
+
+
+_NORMAL_POLICY_VERSION = 1
+
+
+def _normal_hba(subnet: str) -> bytes:
+    network = ipaddress.ip_network(subnet, strict=True)
+    if network.version != 4:
+        raise ValueError("installation database subnet must be IPv4")
+    roles = ("lares_app", "lares_financial", "lares_workflow_provisioner",
+             "lares_workflow", "lares_gateway")
+    lines = [
+        "# Lares normal authentication policy v1; generated during explicit fresh preparation.",
+        "local all lares_operator scram-sha-256",
+        "host all lares_operator 127.0.0.1/32 scram-sha-256",
+        "host all lares_operator ::1/128 scram-sha-256",
+        f"host all lares_operator {network.with_prefixlen} scram-sha-256",
+        # These two named roles run the installer's workflow bootstrap from a host-network
+        # container, so their checked production route is loopback as well as the bridge.
+        "host all lares_workflow_provisioner 127.0.0.1/32 scram-sha-256",
+        "host all lares_workflow 127.0.0.1/32 scram-sha-256",
+    ]
+    lines.extend(f"host all {role} {network.with_prefixlen} scram-sha-256" for role in roles)
+    lines.extend((
+        "host replication all 0.0.0.0/0 reject",
+        "host replication all ::/0 reject",
+        "host all all 0.0.0.0/0 reject",
+        "host all all ::/0 reject",
+        "local all all reject",
+        ""))
+    return "\n".join(lines).encode("ascii")
+
+
+def _open_safe_chain(path: Path, uid: int) -> tuple[int, os.stat_result]:
+    """Pin an existing absolute directory and validate every ancestor without following links."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    fd = os.open("/", _DIRECTORY_FLAGS)
+    current = Path("/")
+    try:
+        _safe_parent(os.fstat(fd), current, uid)
+        for part in path.parts[1:]:
+            current /= part
+            next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+            info = os.fstat(fd)
+            _safe_parent(info, current, uid)
+        info = os.fstat(fd)
+        result, fd = fd, -1
+        return result, info
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def _open_child_dir(parent_fd: int, name: str, mode: int, uid: int, *, create: bool = False) -> int:
+    try:
+        fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise
+        os.mkdir(name, mode, dir_fd=parent_fd)
+        fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        os.fchown(fd, uid, os.getegid() if uid == os.geteuid() else 0)
+        os.fchmod(fd, mode)
+        os.fsync(fd)
+        os.fsync(parent_fd)
+    info = os.fstat(fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != mode:
+        os.close(fd)
+        raise ValueError("maintenance custody directory ownership or mode is unsafe")
+    return fd
+
+
+def _create_child_dir_exclusive(parent_fd: int, name: str, mode: int, uid: int) -> int:
+    """Create a new custody root relative to its pinned parent; never adopt EEXIST."""
+    os.mkdir(name, mode, dir_fd=parent_fd)
+    fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+    try:
+        os.fchown(fd, uid, os.getegid() if uid == os.geteuid() else 0)
+        os.fchmod(fd, mode)
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != uid or stat.S_IMODE(info.st_mode) != mode:
+            raise ValueError("new maintenance custody root ownership or mode is unsafe")
+        os.fsync(fd)
+        os.fsync(parent_fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _write_exclusive_at(directory_fd: int, name: str, payload: bytes, mode: int, uid: int) -> None:
+    fd = os.open(name, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_NOFOLLOW", 0),
+                 mode, dir_fd=directory_fd)
+    try:
+        os.fchown(fd, uid, os.getegid() if uid == os.geteuid() else 0)
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.fsync(directory_fd)
+    except BaseException:
+        raise
+
+
+def _existing_path(prefix_fd: int, parts: tuple[str, ...]) -> bool:
+    """Return true for any existing evidence, refusing symlinked or non-directory ancestors."""
+    fd = os.dup(prefix_fd)
+    try:
+        for index, part in enumerate(parts):
+            try:
+                info = os.stat(part, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                return False
+            if stat.S_ISLNK(info.st_mode):
+                return True
+            if index == len(parts) - 1:
+                return True
+            if not stat.S_ISDIR(info.st_mode):
+                return True
+            next_fd = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return False
+    finally:
+        os.close(fd)
+
+
+def _receipt(identity: str, epoch: int, subnet: str, hba: bytes) -> bytes:
+    value = {"version": 1, "installationId": identity, "epoch": epoch,
+             "normalPolicyVersion": _NORMAL_POLICY_VERSION,
+             "databaseSubnet": str(ipaddress.ip_network(subnet, strict=True)),
+             "hbaSha256": hashlib.sha256(hba).hexdigest(), "complete": True}
+    return (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii")
+
+
+def prepare_fresh(prefix: str | Path, subnet: str, *, expected_uid: int | None = None) -> None:
+    """Create first-install authentication custody. Existing or partial state is never adopted."""
+    requested = Path(prefix)
+    if not requested.is_absolute() or ".." in requested.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    uid = 0 if expected_uid is None else expected_uid
+    if expected_uid is None and os.geteuid() != 0:
+        raise PermissionError("fresh maintenance custody preparation requires root")
+    if expected_uid is not None and (uid != os.geteuid() or uid == 0):
+        raise PermissionError("the internal test-owner seam is only available to a non-root test process")
+    prefix_fd, prefix_info = _open_safe_chain(requested, uid)
+    evidence = (
+        ("srv", "lares"), ("srv", "taste"), ("srv", "vault"),
+        ("etc", "lares", "installation.env"), ("etc", "lares", "database-bootstrap-complete"),
+        ("etc", "lares", "operator"), ("etc", "lares", "secrets"),
+        ("var", "lib", "lares", "postgres"), ("var", "lib", "lares", "budget-financial"),
+        ("var", "lib", "lares", "budget-native"), ("var", "lib", "lares-vault-git"),
+        ("var", "lib", "lares-maintenance"),
+        ("opt", "lares", "compose.yaml"), ("opt", "lares", "compose.lares-keeper.yaml"),
+        ("opt", "lares", "database-bootstrap-complete"),
+    )
+    try:
+        if any(_existing_path(prefix_fd, item) for item in evidence):
+            raise ValueError("existing installation or maintenance evidence found; fresh custody cannot adopt it")
+        # Parent directories are opened and pinned one component at a time. No realpath or
+        # recursive mkdir can redirect writes through an unsafe prefix/var symlink.
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid, create=True)
+        try:
+            lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid, create=True)
+        finally:
+            os.close(var_fd)
+    except BaseException:
+        os.close(prefix_fd)
+        raise
+    hba = _normal_hba(subnet)
+    identity, epoch = str(uuid.uuid4()), 1
+    root_fd = custody_fd = admission_fd = auth_fd = -1
+    try:
+        root_fd = _create_child_dir_exclusive(lib_fd, "lares-maintenance", 0o755, uid)
+        custody_fd = _open_child_dir(root_fd, "custody", 0o700, uid, create=True)
+        admission_fd = _open_child_dir(root_fd, "admission", 0o755, uid, create=True)
+        auth_fd = _open_child_dir(root_fd, "postgres-auth", 0o755, uid, create=True)
+        # A closed marker is durable before any policy becomes visible. Validation refuses it;
+        # it is removed only after receipt and directory durability have been acknowledged.
+        _write_exclusive_at(custody_fd, "preparation.pending", b"incomplete\n", 0o600, uid)
+        _write_exclusive_at(auth_fd, "pg_hba.conf", hba, 0o644, uid)
+        _write_exclusive_at(admission_fd, "service-gate.lock", b"", 0o444, uid)
+        _write_exclusive_at(custody_fd, "command.lock", b"", 0o600, uid)
+        _write_exclusive_at(admission_fd, "intent.json", _record(identity, epoch, "normal"), 0o444, uid)
+        _assert_path_matches(requested, prefix_info, uid)
+        _assert_path_matches(requested / "var/lib/lares-maintenance", os.fstat(root_fd), uid)
+        _assert_path_matches(requested / "var/lib/lares-maintenance/custody", os.fstat(custody_fd), uid)
+        _assert_path_matches(requested / "var/lib/lares-maintenance/admission", os.fstat(admission_fd), uid)
+        _assert_path_matches(requested / "var/lib/lares-maintenance/postgres-auth", os.fstat(auth_fd), uid)
+        _write_exclusive_at(custody_fd, "preparation.json", _receipt(identity, epoch, subnet, hba), 0o600, uid)
+        os.fsync(root_fd)
+        os.fsync(lib_fd)
+        os.fsync(prefix_fd)
+        # The durable receipt plus the root/lib/prefix syncs above are the commit point.
+        # Before it, the pending marker keeps normal validation closed. After it, a failed
+        # cleanup sync is uncertainty about marker removal, not a failed authority commit.
+        os.unlink("preparation.pending", dir_fd=custody_fd)
+        try:
+            os.fsync(custody_fd)
+        except OSError as error:
+            try:
+                _write_exclusive_at(custody_fd, "preparation.pending", b"uncertain\n", 0o600, uid)
+            except OSError as marker_error:
+                print(f"maintenance custody committed; pending-marker cleanup durability is uncertain "
+                      f"({error}; marker recreation also failed: {marker_error})", file=sys.stderr)
+                validate(prefix, subnet)
+                return
+            raise OSError(f"maintenance custody is committed but pending-marker cleanup is uncertain: {error}") from error
+        validate(prefix, subnet)
+    finally:
+        for fd in (auth_fd, admission_fd, custody_fd, root_fd, lib_fd, prefix_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def validate(prefix: str | Path, subnet: str | None = None) -> dict[str, object]:
+    requested = Path(prefix)
+    if not requested.is_absolute() or ".." in requested.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    uid = os.geteuid()
+    prefix_fd, _ = _open_safe_chain(requested, uid)
+    var_fd = lib_fd = root_fd = custody_fd = admission_fd = auth_fd = -1
+    try:
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid)
+        lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid)
+        root_fd = _open_child_dir(lib_fd, "lares-maintenance", 0o755, uid)
+        custody_fd = _open_child_dir(root_fd, "custody", 0o700, uid)
+        admission_fd = _open_child_dir(root_fd, "admission", 0o755, uid)
+        auth_fd = _open_child_dir(root_fd, "postgres-auth", 0o755, uid)
+        try:
+            _file_at(custody_fd, "preparation.pending", 0o600, uid, maximum_size=128)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError("maintenance preparation is incomplete or uncertain")
+
+        def read(name: str, directory_fd: int, mode: int, maximum_size: int = 4096) -> bytes:
+            info = _file_at(directory_fd, name, mode, uid, maximum_size=maximum_size)
+            fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+            try:
+                opened = os.fstat(fd)
+                if not _same_file(info, opened):
+                    raise ValueError("maintenance custody file changed while opening")
+                data = os.read(fd, maximum_size + 1)
+                if len(data) != opened.st_size or len(data) > maximum_size or not _same_file(opened, os.fstat(fd)):
+                    raise ValueError("maintenance custody file changed while reading")
+            finally:
+                os.close(fd)
+            return data
+
+        expected_subnet = str(ipaddress.ip_network(subnet, strict=True)) if subnet else None
+        hba = read("pg_hba.conf", auth_fd, 0o644)
+        receipt_raw = read("preparation.json", custody_fd, 0o600)
+        try:
+            receipt = json.loads(receipt_raw)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("maintenance preparation receipt is malformed") from error
+        if not isinstance(receipt, dict) or receipt_raw != (json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n").encode("ascii"):
+            raise ValueError("maintenance preparation receipt is not canonical")
+        required = {"version", "installationId", "epoch", "normalPolicyVersion", "databaseSubnet", "hbaSha256", "complete"}
+        if (set(receipt) != required or type(receipt["version"]) is not int or receipt["version"] != 1 or
+                type(receipt["epoch"]) is not int or receipt["epoch"] != 1 or
+                type(receipt["normalPolicyVersion"]) is not int or receipt["normalPolicyVersion"] != _NORMAL_POLICY_VERSION or
+                type(receipt["complete"]) is not bool or receipt["complete"] is not True or
+                not isinstance(receipt["databaseSubnet"], str) or not isinstance(receipt["hbaSha256"], str) or
+                not re.fullmatch(r"[0-9a-f]{64}", receipt["hbaSha256"])):
+            raise ValueError("maintenance preparation receipt is incomplete or unsupported")
+        try:
+            if not isinstance(receipt["installationId"], str) or str(uuid.UUID(receipt["installationId"])) != receipt["installationId"]:
+                raise ValueError
+            normalized_subnet = str(ipaddress.ip_network(receipt["databaseSubnet"], strict=True))
+        except (ValueError, TypeError, AttributeError) as error:
+            raise ValueError("maintenance preparation identity or subnet is invalid") from error
+        approved_hba = _normal_hba(receipt["databaseSubnet"])
+        if (receipt["hbaSha256"] != hashlib.sha256(hba).hexdigest() or hba != approved_hba or
+                receipt["databaseSubnet"] != normalized_subnet):
+            raise ValueError("maintenance preparation receipt does not match the normal policy")
+        if expected_subnet is not None and receipt["databaseSubnet"] != expected_subnet:
+            raise ValueError("maintenance preparation subnet changed")
+        _file_at(custody_fd, "command.lock", 0o600, uid)
+        admission_path = requested / "var/lib/lares-maintenance/admission"
+        intent = _read_fd(admission_fd, admission_path, os.fstat(admission_fd), uid)
+        if intent["installationId"] != receipt["installationId"] or intent["epoch"] != receipt["epoch"] or intent["state"] != "normal":
+            raise ValueError("maintenance admission state is not normal for this preparation receipt")
+        for path, fd in ((requested, prefix_fd), (requested / "var/lib/lares-maintenance", root_fd),
+                         (requested / "var/lib/lares-maintenance/custody", custody_fd),
+                         (admission_path, admission_fd),
+                         (requested / "var/lib/lares-maintenance/postgres-auth", auth_fd)):
+            _assert_path_matches(path, os.fstat(fd), uid)
+        return receipt
+    finally:
+        for fd in (auth_fd, admission_fd, custody_fd, root_fd, lib_fd, var_fd, prefix_fd):
+            if fd >= 0:
+                os.close(fd)
+
+
+def main(argv: list[str]) -> int:
+    try:
+        if len(argv) == 5 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1":
+                prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+            else:
+                prepare_fresh(argv[2], argv[3])
+        elif (len(argv) == 6 and argv[1] == "prepare-fresh" and argv[4] == "--confirm-fresh" and
+              argv[5] == "--test-owner" and os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
+            prepare_fresh(argv[2], argv[3], expected_uid=os.geteuid())
+        elif len(argv) == 4 and argv[1] == "validate":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
+                raise PermissionError("maintenance custody validation requires root")
+            validate(argv[2], argv[3])
+        elif len(argv) == 4 and argv[1] == "validate-identity":
+            if os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
+                raise PermissionError("maintenance custody validation requires root")
+            receipt = validate(argv[2], argv[3])
+            # Emit only the independently validated identity needed by generated Compose.
+            # Never expose the rest of the custody receipt through this narrow interface.
+            print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
+                             separators=(",", ":")))
+        elif (len(argv) == 5 and argv[1] == "validate" and argv[4] == "--test-owner" and
+              os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
+            validate(argv[2], argv[3])
+        elif (len(argv) == 5 and argv[1] == "validate-identity" and argv[4] == "--test-owner" and
+              os.geteuid() != 0 and os.environ.get("LARES_MAINTENANCE_TESTING") == "1"):
+            receipt = validate(argv[2], argv[3])
+            print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
+                             separators=(",", ":")))
+        else:
+            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | validate <prefix> <subnet> | validate-identity <prefix> <subnet>")
+        return 0
+    except (OSError, ValueError) as error:
+        print(f"maintenance custody: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

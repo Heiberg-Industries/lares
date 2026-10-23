@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import hmac
 import importlib.util
+import ipaddress
 import json
 import os
 import pathlib
@@ -13,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -44,12 +46,18 @@ custody_dir = root / "custody"
 admission_dir = root / "admission"
 db_custody_dir = root / "database-custody"
 db_admission_dir = root / "database-admission"
-auth_dir = root / "database-auth"
+project = "lares-maintenance-" + uuid.uuid4().hex[:12]
+network = project + "-network"
+subnet = f"172.29.{secrets.randbelow(200) + 20}.0/24"
+fixture_prefix = root / "installed-prefix"
+fixture_prefix.mkdir(mode=0o755)
+custody.prepare_fresh(fixture_prefix, subnet)
+auth_dir = fixture_prefix / "var/lib/lares-maintenance/postgres-auth"
 data_dir = root / "database-data"
 secrets_dir = root / "compose-secrets"
 marker_dir = root / "participant-markers"
 for directory, mode in ((custody_dir, 0o700), (admission_dir, 0o755),
-                        (db_custody_dir, 0o700), (db_admission_dir, 0o755), (auth_dir, 0o755),
+                        (db_custody_dir, 0o700), (db_admission_dir, 0o755),
                         (data_dir, 0o700), (secrets_dir, 0o755), (marker_dir, 0o755)):
     directory.mkdir(mode=mode)
     directory.chmod(mode)
@@ -62,23 +70,19 @@ operator_path = private_root / "operator-password"
 operator_password = secrets.token_urlsafe(32)
 operator_path.write_text(operator_password + "\n", encoding="ascii")
 operator_path.chmod(0o600)
-app_private = pathlib.Path(tempfile.mkdtemp(prefix="lares-maintenance-app-")).resolve()
-app_private.chmod(0o700)
-app_password_path = app_private / "app-password"
 app_password = secrets.token_urlsafe(32)
-app_password_path.write_text(app_password + "\n", encoding="ascii")
-app_password_path.chmod(0o444)
+role_login_dir = private_root / "role-login-fixtures"
+role_login_dir.mkdir(mode=0o700)
+role_login_dir.chmod(0o700)
+app_password_path: pathlib.Path
+role_password_paths: dict[str, pathlib.Path] = {}
 
 installation_id = str(uuid.uuid4())
 epoch = 1
-project = "lares-maintenance-" + uuid.uuid4().hex[:12]
-network = project + "-network"
-subnet = f"172.29.{secrets.randbelow(200) + 20}.0/24"
 bootstrap_file = root / "bootstrap-compose.yml"
 normal_file = root / "normal-compose.yml"
-override_file = root / "auth-override.yml"
-compose_files = ["-f", str(normal_file), "-f", str(override_file)]
-bootstrap_files = ["-f", str(bootstrap_file), "-f", str(override_file)]
+compose_files = ["-f", str(normal_file)]
+bootstrap_files = ["-f", str(bootstrap_file)]
 holder_names = [project + "-holder-a", project + "-holder-b"]
 known_containers: list[str] = []
 active_exclusive_fd: int | None = None
@@ -90,9 +94,17 @@ proof = {
         "actualRenderersUsed": False,
         "actualOperatorDbRunUsed": False,
         "externalHbaIsSelected": False,
+        "normalPolicyAllowsOnlyIntendedRoles": False,
         "maintenanceHbaDeniesNewAppAndUnknownLogins": False,
         "existingAppSessionTerminatedExplicitly": False,
-        "externalHbaSurvivesPgdataHbaAndRestart": False,
+        "externalHbaSurvivesMaintenanceRestart": False,
+        "operatorHostRouteMatchesApprovedRule": False,
+        "missingExternalHbaRefusesStartup": False,
+        "malformedExternalHbaRefusesStartup": False,
+        "externalHbaSurvivesPermissivePgdataRestore": False,
+        "keeperGeneratedComposeUsesBakedAdmissionEntryPoint": False,
+        "keeperMainProcessRetainsSharedLeaseAfterComposeReturns": False,
+        "keeperCommandOverrideReceivesRestoredWorkingDirectory": False,
         "twoCooperatingReadOnlyHoldersBlockExclusive": False,
         "durableEnteringDeniesNewAdmissionBeforeExclusive": False,
         "boundedIntentReadRefusesOversize": False,
@@ -110,6 +122,18 @@ stage = "fixture-setup"
 class ProbeFailure(Exception):
     def __init__(self, kind: str = "assertion") -> None:
         self.kind = kind
+
+
+def write_role_login_fixture(role: str, password: str) -> pathlib.Path:
+    """Keep app-client credentials separate from root-only setup inputs."""
+    path = role_login_dir / (role + "-password")
+    path.write_text(password + "\n", encoding="ascii")
+    os.chown(path, 10001, 10001)
+    path.chmod(0o400)
+    info = path.stat()
+    if info.st_uid != 10001 or info.st_gid != 10001 or stat.S_IMODE(info.st_mode) != 0o400:
+        raise ProbeFailure("credential-fixture")
+    return path
 
 
 def run(*args: str, check: bool = True, timeout: int = 60,
@@ -138,32 +162,39 @@ def compose(*args: str, bootstrap: bool = False, check: bool = True,
                   *args, check=check, timeout=timeout)
 
 
-def write_hba(content: str) -> None:
+def engine_box(script: str, args: list[str], secret_files: list[pathlib.Path] = (),
+               env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
+    mounts: list[str] = []
+    for path in secret_files:
+        mounts.extend(("--mount", f"type=bind,src={path},dst=/run/{path.name},readonly"))
+    environment: list[str] = []
+    for key, value in (env or {}).items():
+        environment.extend(("--env", f"{key}={value}"))
+    return docker("run", "--rm", "--network", "host", "--read-only", "--tmpfs", "/tmp",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", *mounts, *environment,
+        "--workdir", "/app/services/box", "--entrypoint", "/app/services/keeper/node_modules/.bin/tsx",
+        IMAGE, "/app/services/box/" + script, *args, check=False, timeout=120)
+
+
+def write_hba(content: bytes) -> None:
     temporary = auth_dir / (".pg_hba-" + secrets.token_hex(8))
-    temporary.write_text(content, encoding="ascii")
+    temporary.write_bytes(content)
     temporary.chmod(0o644)
     os.replace(temporary, auth_dir / "pg_hba.conf")
     custody._sync_dir(auth_dir)
 
 
-NORMAL_HBA = """# disposable fixture; normal authenticated access
-local all lares_operator scram-sha-256
-host all lares_operator 0.0.0.0/0 scram-sha-256
-host all lares_operator ::/0 scram-sha-256
-local all all scram-sha-256
-host all all 0.0.0.0/0 scram-sha-256
-host all all ::/0 scram-sha-256
-"""
-MAINTENANCE_HBA = """# disposable fixture; exact offline operator only
-local all lares_operator scram-sha-256
-host all lares_operator 0.0.0.0/0 scram-sha-256
-host all lares_operator ::/0 scram-sha-256
-local all all reject
-host all all 0.0.0.0/0 reject
-host all all ::/0 reject
-host replication all 0.0.0.0/0 reject
-host replication all ::/0 reject
-"""
+NORMAL_HBA = custody._normal_hba(subnet)
+MAINTENANCE_HBA = (
+    "# disposable fixture; exact offline operator only\n"
+    "local all lares_operator scram-sha-256\n"
+    f"host all lares_operator {subnet} scram-sha-256\n"
+    "host replication all 0.0.0.0/0 reject\n"
+    "host replication all ::/0 reject\n"
+    "host all all 0.0.0.0/0 reject\n"
+    "host all all ::/0 reject\n"
+    "local all all reject\n"
+).encode("ascii")
 
 
 def generate_rendered_compose() -> None:
@@ -172,9 +203,10 @@ def generate_rendered_compose() -> None:
         "tasteDir": str(root / "taste"), "gatewayConfigFile": str(root / "gateway.yml"),
         "gatewayStartScript": str(root / "gateway-start.sh"), "caddyfile": str(root / "Caddyfile"),
         "caddyDataDir": str(root / "caddy-data"), "dbDataDir": str(data_dir),
+        "databaseAuthDir": str(auth_dir),
         "network": network, "subnet": subnet, "domain": "proof.invalid",
         "consoleAllowedEmails": "owner@example.invalid", "ownerId": "proof-owner",
-        "ownerHomeTz": "UTC", "modelAlias": "proof-model", "pgDatabase": "proof",
+        "ownerHomeTz": "UTC", "modelAlias": "lares-brain", "pgDatabase": "lares_state",
     }
     for path in (root / "socket", root / "taste", root / "caddy-data"):
         path.mkdir(mode=0o755)
@@ -185,37 +217,492 @@ def generate_rendered_compose() -> None:
                  "gateway-master-key", "model-provider-key", "gateway-database-password", "token-enc-key"):
         (secrets_dir / name).write_text("fixture-only\n", encoding="ascii")
         (secrets_dir / name).chmod(0o600)
-    args = {
-        "release": "/release.json",
-        "bootstrap": str(bootstrap_file), "normal": str(normal_file),
-        "operator": str(operator_path), "data": str(data_dir), "network": network, "subnet": subnet,
-        "stack": source,
-    }
-    code = """const fs=require('node:fs');
-Promise.all([import('/app/services/box/lib/release-manifest.ts'),import('/app/services/box/lib/stack-compose.ts')]).then(([r,s])=>{
-const manifest=r.parseReleaseManifest(fs.readFileSync('__RELEASE__','utf8'));
-if(manifest.images.db!=='__DBIMAGE__')throw Error();
-const bootstrap=s.renderDatabaseBootstrapCompose(manifest,{operatorPasswordFile:'__OPERATOR__',dbDataDir:'__DATA__',network:'__NETWORK__',subnet:'__SUBNET__'});
-const normal=s.renderStackCompose(manifest,__STACK__);
-fs.writeFileSync('__BOOTSTRAP__',bootstrap,{mode:0o600});fs.writeFileSync('__NORMAL__',normal,{mode:0o600});
-}).catch(()=>process.exitCode=2);"""
-    replacements = {
-        "__RELEASE__": args["release"], "__DBIMAGE__": PINNED_DB_IMAGE,
-        "__OPERATOR__": str(operator_path), "__DATA__": str(data_dir), "__NETWORK__": network,
-        "__SUBNET__": subnet, "__BOOTSTRAP__": str(bootstrap_file), "__NORMAL__": str(normal_file),
-        "__STACK__": json.dumps(source, separators=(",", ":")),
-    }
-    for key, value in replacements.items():
-        code = code.replace(key, json.dumps(value)[1:-1] if key != "__STACK__" else value)
-    docker("run", "--rm", "--network", "none", "--mount", f"type=bind,src={root},dst={root}",
-           "--mount", f"type=bind,src={REPO / 'releases/2026-10-21-rc.12.json'},dst=/release.json,readonly",
-           "--entrypoint", "/app/services/keeper/node_modules/.bin/tsx", IMAGE, "-e", code, timeout=45)
-    override_file.write_text(
-        "services:\n  db:\n    command:\n      - postgres\n      - -c\n      - hba_file=/run/lares-auth/pg_hba.conf\n"
-        "    volumes:\n      - type: bind\n        source: " + str(auth_dir) +
-        "\n        target: /run/lares-auth\n        read_only: true\n        bind:\n          create_host_path: false\n",
-        encoding="utf-8")
-    override_file.chmod(0o600)
+    release_path = REPO / "releases/2026-10-21-rc.12.json"
+    release_in_container = "/release.json"
+    docker_mounts = ["--mount", f"type=bind,src={root},dst={root}",
+                     "--mount", f"type=bind,src={release_path},dst={release_in_container},readonly"]
+    tsx = "/app/services/keeper/node_modules/.bin/tsx"
+    common = ["run", "--rm", "--network", "none", *docker_mounts,
+              "--workdir", "/app", "--entrypoint", tsx, IMAGE]
+    python_check = docker("run", "--rm", "--network", "none", "--entrypoint", "python3", IMAGE,
+                          "-c", "import sys; assert sys.version_info >= (3, 11)", check=False, timeout=20)
+    if python_check.returncode != 0:
+        raise ProbeFailure("image-runtime")
+    bootstrap_args = [release_in_container, str(bootstrap_file), str(operator_path), str(data_dir),
+                      network, subnet, str(auth_dir), str(fixture_prefix)]
+    docker(*common, "/app/services/box/bin/render-database-bootstrap.ts", *bootstrap_args, timeout=45)
+    installation_dir = root / "srv/lares/installation"
+    stack_args = [release_in_container, str(normal_file), str(secrets_dir), str(root / "gateway.yml"),
+                  str(root / "Caddyfile"), str(root / "caddy-data"), str(data_dir), network, subnet,
+                  "proof.invalid", "lares_state", "lares-brain", "openai/gpt-4o-mini", str(root / "gateway-start.sh"),
+                  "owner@example.invalid", str(root / "socket"), "proof-owner", "UTC", str(root / "taste"),
+                  str(installation_dir), str(auth_dir), str(fixture_prefix)]
+    docker(*common, "/app/services/box/bin/render-stack.ts", *stack_args, timeout=45)
+    def assert_effective_auth(path: pathlib.Path) -> None:
+        raw = path.read_text(encoding="utf-8")
+        raw_auth_mount = re.search(
+            r"- type: bind\n\s+source: " + re.escape(str(auth_dir)) +
+            r"\n\s+target: /run/lares-auth\n\s+read_only: true\n\s+bind:\n\s+create_host_path: false(?:\n|$)",
+            raw,
+        )
+        if raw_auth_mount is None:
+            raise ProbeFailure("compose-source")
+        effective = docker("compose", "-p", project, "-f", str(path), "config", "--format", "json", timeout=45)
+        if effective.returncode != 0:
+            raise ProbeFailure("compose-config")
+        try:
+            db = json.loads(effective.stdout)["services"]["db"]
+        except (json.JSONDecodeError, KeyError, TypeError):
+            raise ProbeFailure("compose-config") from None
+        auth_mount = [mount for mount in db.get("volumes", [])
+            if isinstance(mount, dict) and mount.get("target") == "/run/lares-auth"]
+        bind_options = auth_mount[0].get("bind") if len(auth_mount) == 1 else None
+        create_host_path_safe = isinstance(bind_options, dict) and (
+            "create_host_path" not in bind_options or bind_options["create_host_path"] is False)
+        if db.get("command") != ["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"] or \
+           len(auth_mount) != 1 or auth_mount[0].get("source") != str(auth_dir) or \
+           auth_mount[0].get("type") != "bind" or auth_mount[0].get("read_only") is not True or \
+           not create_host_path_safe:
+            raise ProbeFailure("compose-config")
+    assert_effective_auth(bootstrap_file)
+    assert_effective_auth(normal_file)
+    # Supplemental simulations only: rewrite image references to approximate update/rollback
+    # files and reuse the retained file for restore. These are not outputs from those scripts;
+    # actual script-output acceptance lives in update/rollback/restore CI tests.
+    original_stack = normal_file.read_text(encoding="utf-8")
+    updated_stack = re.sub(r"(@sha256:)[a-f0-9]{64}", lambda match: match.group(1) + "b" * 64, original_stack)
+    rollback_stack = re.sub(r"(@sha256:)[a-f0-9]{64}", lambda match: match.group(1) + "c" * 64, original_stack)
+    for label, content in (("update-success", updated_stack), ("update-failure-restore", original_stack),
+                           ("rollback", rollback_stack), ("restore-retained-file", original_stack)):
+        scenario = root / ("simulated-image-variant-" + label + ".compose.yml")
+        scenario.write_text(content, encoding="utf-8")
+        assert_effective_auth(scenario)
+        proof["stages"]["simulatedImageVariant-" + label + "EffectiveComposeAuth"] = True
+    proof["claims"]["effectiveBootstrapAndNormalComposeAuthMatch"] = True
+    proof["claims"]["simulatedImageReferenceVariantsRetainEffectiveComposeAuth"] = True
+
+    # Both real renderer entry points must refuse a lexically redirected auth path before
+    # touching output. This recreates the prefix/jump/../... class of mismatch at the CLI seam.
+    redirect = fixture_prefix / "jump"
+    target = fixture_prefix / "elsewhere/child"
+    target.mkdir(parents=True)
+    redirect.symlink_to(target, target_is_directory=True)
+    redirected_auth = str(fixture_prefix / "jump/../var/lib/lares-maintenance/postgres-auth")
+    rejected_bootstrap = root / "rejected-bootstrap.yml"
+    bad_bootstrap_args = [*bootstrap_args]
+    bad_bootstrap_args[1] = str(rejected_bootstrap)
+    bad_bootstrap_args[6] = redirected_auth
+    rejected = docker(*common, "/app/services/box/bin/render-database-bootstrap.ts", *bad_bootstrap_args,
+                      check=False, timeout=45)
+    if rejected.returncode == 0 or rejected_bootstrap.exists():
+        raise ProbeFailure("renderer-path")
+    rejected_stack = root / "rejected-stack.yml"
+    bad_stack_args = [*stack_args]
+    bad_stack_args[1] = str(rejected_stack)
+    bad_stack_args[20] = redirected_auth
+    rendered_gateway = (root / "gateway.yml").read_bytes()
+    rendered_start = (root / "gateway-start.sh").read_bytes()
+    rejected = docker(*common, "/app/services/box/bin/render-stack.ts", *bad_stack_args,
+                      check=False, timeout=45)
+    if rejected.returncode == 0 or rejected_stack.exists() or \
+       (root / "gateway.yml").read_bytes() != rendered_gateway or \
+       (root / "gateway-start.sh").read_bytes() != rendered_start:
+        raise ProbeFailure("renderer-path")
+    proof["claims"]["bothActualRenderersRejectRedirectedAuthWithoutOutputChanges"] = True
+
+
+def prove_keeper_default_admission() -> None:
+    """Exercise the committed Keeper Compose entrypoint with the image's baked guard.
+
+    The real Keeper `serve` command is left as the generated default. This checks its actual
+    container admission and main-process lease after detached Compose returns; it does not
+    claim descendant/child-container inheritance or production quiescence.
+    """
+    keeper_root = fixture_prefix / "srv/lares"
+    keeper_root.mkdir(parents=True, exist_ok=True, mode=0o755)
+    agents_dir = keeper_root / "agents"
+    retired_dir = keeper_root / "retired"
+    backup_dir = keeper_root / "backup"
+    egress_dir = keeper_root / "egress"
+    for directory in (agents_dir, retired_dir, backup_dir, egress_dir,
+                      fixture_prefix / "run/lares", fixture_prefix / "run/lares-host",
+                      fixture_prefix / "etc/lares"):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o755)
+    (egress_dir / "squid.conf").write_text("http_port 3128\nhttp_access deny all\n", encoding="ascii")
+
+    # The actual renderer needs the same files Compose will mount. Credentials are disposable
+    # fixture values provisioned for this isolated database proof.
+    for name in ("database-password", "financial-database-password", "workflow-provisioner-password",
+                 "workflow-password", "gateway-database-password"):
+        source = private_root / name
+        if source.exists():
+            value = source.read_bytes()
+        elif name == "gateway-database-password":
+            value = (private_root / "gateway-database-password").read_bytes()
+        else:
+            value = (secrets.token_urlsafe(32) + "\n").encode("ascii")
+        destination = secrets_dir / name
+        destination.write_bytes(value)
+        destination.chmod(0o600)
+    for name in ("gateway-master-key", "eve-route-password", "console-vault-signing-key"):
+        destination = secrets_dir / name
+        destination.write_text(secrets.token_urlsafe(32) + "\n", encoding="ascii")
+        destination.chmod(0o600)
+
+    release_path = REPO / "releases/2026-10-21-rc.12.json"
+    release_in_container = "/release.json"
+    keeper_config = fixture_prefix / "etc/lares/keeper.json"
+    keeper_env = fixture_prefix / "etc/lares/keeper.env"
+    renderer_args = [
+        release_in_container, str(keeper_config), str(keeper_env), str(keeper_config),
+        project, str(keeper_root), str(agents_dir), str(retired_dir), str(backup_dir),
+        str(egress_dir), str(secrets_dir), str(fixture_prefix / "run/lares"),
+        str(fixture_prefix / "run/lares-host"), network, subnet,
+        str(ipaddress.ip_network(subnet).network_address + 2),
+        "http://gateway.invalid", "lares_state", "proof-owner", "owner@example.invalid",
+        "proof.invalid", "UTC", str(fixture_prefix),
+    ]
+    render = docker("run", "--rm", "--network", "none",
+        "--mount", f"type=bind,src={root},dst={root}",
+        "--mount", f"type=bind,src={release_path},dst={release_in_container},readonly",
+        "--workdir", "/app", "--entrypoint", "/app/services/keeper/node_modules/.bin/tsx",
+        IMAGE, "/app/services/box/bin/render-keeper-config.ts", *renderer_args,
+        check=False, timeout=60)
+    if render.returncode != 0 or not keeper_config.is_file() or not keeper_env.is_file():
+        raise ProbeFailure("keeper-render")
+
+    compose_file = REPO / "services/box/compose.lares-keeper.yaml"
+    compose_args = ["compose", "-p", project, "-f", str(compose_file), "--env-file", str(keeper_env)]
+    local_image_env = {"LARES_KEEPER_IMAGE": IMAGE}
+    image_config_result = docker("image", "inspect", "--format", "{{json .Config}}", IMAGE)
+    try:
+        image_config = json.loads(image_config_result.stdout)
+    except json.JSONDecodeError:
+        raise ProbeFailure("keeper-image-config") from None
+    expected_image_entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1"]
+    expected_command = ["/app/services/keeper/node_modules/.bin/tsx",
+        "/app/services/keeper/bin/keeper.ts", "serve"]
+    if image_config.get("Entrypoint") != expected_image_entrypoint or \
+       image_config.get("Cmd") != expected_command or image_config.get("Healthcheck") is not None:
+        raise ProbeFailure("keeper-image-config")
+    proof["claims"]["keeperImageConfigMatchesGuardedCommandAndHasNoHealthcheck"] = True
+    effective = run("docker", *compose_args, "config", "--format", "json", check=False, timeout=45,
+                    env=local_image_env)
+    if effective.returncode != 0:
+        raise ProbeFailure("keeper-compose-config")
+    try:
+        service = json.loads(effective.stdout)["services"]["lares-keeper"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        raise ProbeFailure("keeper-compose-config") from None
+    identity = custody.validate(fixture_prefix, subnet)
+    expected_entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1",
+        "/run/lares-maintenance/admission", identity["installationId"], str(identity["epoch"]), "--"]
+    admission_mounts = [mount for mount in service.get("volumes", [])
+        if isinstance(mount, dict) and mount.get("target") == "/run/lares-maintenance/admission"]
+    if service.get("entrypoint") != expected_entrypoint or service.get("command") != expected_command or \
+       len(admission_mounts) != 1 or admission_mounts[0].get("type") != "bind" or \
+       admission_mounts[0].get("source") != str(fixture_prefix / "var/lib/lares-maintenance/admission") or \
+       admission_mounts[0].get("read_only") is not True or any(
+           mount.get("target") == "/usr/local/lib/lares/maintenance-admission-v1"
+           for mount in service.get("volumes", []) if isinstance(mount, dict)):
+        raise ProbeFailure("keeper-compose-contract")
+    template = compose_file.read_text(encoding="utf-8")
+    if "create_host_path: false" not in template:
+        raise ProbeFailure("keeper-compose-contract")
+    proof["claims"]["keeperGeneratedComposeUsesBakedAdmissionEntryPoint"] = True
+
+    # Negative attempts get a FIFO keeper.json as a tripwire. If the fixed entrypoint ever
+    # reaches Keeper before refusing, the normal synchronous config read hangs and cannot be
+    # mistaken for the expected exit 78. The existing good Keeper remains the lock holder.
+    sentinel_config = root / "keeper-config-must-not-be-read"
+    os.mkfifo(sentinel_config, 0o600)
+    keeper_container_name = project + "-keeper-admission"
+
+    def socket_snapshot() -> tuple[tuple[int, int], tuple[int, int]]:
+        app, host = app_socket.stat(), host_socket.stat()
+        return (app.st_dev, app.st_ino), (host.st_dev, host.st_ino)
+
+    def run_generated_refusal(label: str, admission_source: pathlib.Path,
+                              command: list[str] | None = None) -> None:
+        name = project + "-guard-deny-" + label
+        attempt_env = {**local_image_env,
+            "LARES_MAINTENANCE_ADMISSION_DIR": str(admission_source),
+            "LARES_KEEPER_CONFIG": str(sentinel_config)}
+        before_sockets = socket_snapshot()
+        before_admission = {}
+        if admission_source.is_dir():
+            for path in sorted(admission_source.iterdir()):
+                file_stat = path.lstat()
+                before_admission[path.name] = (file_stat.st_dev, file_stat.st_ino,
+                    stat.S_IMODE(file_stat.st_mode), path.is_symlink(),
+                    path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+        attempt = run("docker", *compose_args, "run", "--detach", "--no-deps", "--name", name,
+            "lares-keeper", *(command or []), check=False, timeout=30, env=attempt_env)
+        known_containers.append(name)
+        waited = docker("wait", name, check=False, timeout=8)
+        inspected = docker("inspect", name, check=False, timeout=15)
+        if inspected.returncode != 0:
+            raise ProbeFailure("keeper-denied-inspect")
+        try:
+            state = json.loads(inspected.stdout)[0].get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-denied-inspect") from None
+        logs = docker("logs", "--tail", "5", name, check=False, timeout=10)
+        if attempt.returncode != 0 or waited.returncode != 0 or waited.stdout.strip() != "78" or \
+           state.get("Running") is not False or state.get("ExitCode") != 78 or \
+           logs.stdout.strip() != "maintenance admission refused" or socket_snapshot() != before_sockets:
+            raise ProbeFailure("keeper-denied-outcome")
+        after_admission = {}
+        if admission_source.is_dir():
+            for path in sorted(admission_source.iterdir()):
+                file_stat = path.lstat()
+                after_admission[path.name] = (file_stat.st_dev, file_stat.st_ino,
+                    stat.S_IMODE(file_stat.st_mode), path.is_symlink(),
+                    path.read_bytes() if path.is_file() and not path.is_symlink() else None)
+        if after_admission != before_admission:
+            raise ProbeFailure("keeper-denied-admission-preservation")
+        container_remove = docker("rm", "--force", name, check=False, timeout=15)
+        if container_remove.returncode != 0:
+            raise ProbeFailure("keeper-denied-cleanup")
+        known_containers.remove(name)
+        holder = docker("inspect", keeper_container_name, check=False, timeout=10)
+        try:
+            holder_state = json.loads(holder.stdout)[0].get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-denied-holder") from None
+        if holder.returncode != 0 or holder_state.get("Running") is not True or \
+           run("flock", "--nonblock", "--exclusive", str(lock_path),
+               "-c", "true", check=False).returncode != 1:
+            raise ProbeFailure("keeper-denied-holder")
+        proof["stages"]["keeperGeneratedRefusal-" + label] = True
+
+    def copied_admission(label: str, mutate) -> pathlib.Path:
+        candidate = root / ("admission-" + label)
+        candidate.mkdir(mode=0o755)
+        candidate.chmod(0o755)
+        candidate_lock = candidate / "service-gate.lock"
+        candidate_lock.write_bytes(lock_path.read_bytes())
+        candidate_lock.chmod(0o444)
+        intent = candidate / "intent.json"
+        intent.write_bytes(custody._record(identity["installationId"], identity["epoch"], "normal"))
+        intent.chmod(0o444)
+        mutate(candidate, intent)
+        return candidate
+
+    name = keeper_container_name
+    known_containers.append(name)
+    created = run("docker", *compose_args, "run", "--detach", "--no-deps", "--name", name,
+                  "lares-keeper", check=False, timeout=60, env=local_image_env)
+    if created.returncode != 0:
+        raise ProbeFailure("keeper-start")
+    deadline = time.monotonic() + 45
+    info: dict[str, object] | None = None
+    lock_path = fixture_prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+    app_socket = fixture_prefix / "run/lares/keeper.sock"
+    host_socket = fixture_prefix / "run/lares-host/keeper.sock"
+    readiness_request = (
+        "const net=require('node:net');const s=net.createConnection(process.argv[1]);let b='';"
+        "const t=setTimeout(()=>{s.destroy();process.exit(2)},3000);"
+        "s.once('connect',()=>s.end(JSON.stringify({action:'credential.status',"
+        "input:{slot:'notion:shared'},actor:'host'})+'\\n'));"
+        "s.on('data',x=>b+=x);s.on('end',()=>{clearTimeout(t);let r;"
+        "try{r=JSON.parse(b)}catch{process.exit(3)};"
+        "if(r.ok!==true||r.result?.slot!=='notion:shared'||"
+        "r.result?.state!=='host-administration-required'||"
+        "r.result?.guidance!=='prepare-managed-slot')process.exit(4);"
+        "console.log(JSON.stringify({ready:true,state:r.result.state}))});"
+        "s.on('error',()=>{clearTimeout(t);process.exit(5)})"
+    )
+    readiness_result: subprocess.CompletedProcess | None = None
+    while time.monotonic() < deadline:
+        inspected = docker("inspect", name, check=False, timeout=15)
+        if inspected.returncode == 0:
+            try:
+                info = json.loads(inspected.stdout)[0]
+            except (json.JSONDecodeError, IndexError, TypeError):
+                raise ProbeFailure("keeper-inspect") from None
+            if info.get("State", {}).get("Running") is not True:
+                raise ProbeFailure("keeper-startup-exited")
+            if app_socket.is_socket() and host_socket.is_socket():
+                readiness_result = docker("exec", name, "node", "-e", readiness_request,
+                    "/run/lares-host/keeper.sock", check=False, timeout=8)
+                if readiness_result.returncode == 0:
+                    break
+        time.sleep(0.25)
+    if not info or info.get("State", {}).get("Running") is not True:
+        raise ProbeFailure("keeper-startup-timeout")
+    if not app_socket.is_socket() or not host_socket.is_socket() or \
+       readiness_result is None or readiness_result.returncode != 0:
+        raise ProbeFailure("keeper-ready-rpc-timeout")
+    proof["claims"]["keeperDefaultServePassedDatabaseReadinessAndBothSockets"] = True
+    proof["stages"]["keeperAuthenticatedReadinessRequest"] = True
+    if info.get("Path") != expected_entrypoint[0] or info.get("Args") != [
+        *expected_entrypoint[1:], *expected_command,
+    ]:
+        raise ProbeFailure("keeper-startup-command")
+    if info.get("Config", {}).get("Entrypoint") != expected_entrypoint or \
+       info.get("Config", {}).get("Cmd") != expected_command or \
+       info.get("Config", {}).get("Healthcheck") is not None:
+        raise ProbeFailure("keeper-container-config")
+    mount = [item for item in info.get("Mounts", []) if item.get("Destination") == expected_entrypoint[1]]
+    if len(mount) != 1 or mount[0].get("Source") != str(lock_path.parent) or mount[0].get("RW") is not False:
+        raise ProbeFailure("keeper-admission-mount")
+    host_lock = lock_path.stat()
+    container_pid1_lock = docker("exec", name, "stat", "-Lc", "%d:%i", "/proc/1/fd/9")
+    if container_pid1_lock.stdout.strip() != f"{host_lock.st_dev}:{host_lock.st_ino}":
+        raise ProbeFailure("keeper-admission-inode")
+    exclusive = run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False)
+    if exclusive.returncode != 1:
+        raise ProbeFailure("keeper-admission-lease")
+    proof["claims"]["keeperMainProcessRetainsSharedLeaseAfterComposeReturns"] = True
+    proof["stages"]["keeperDefaultAdmissionLease"] = True
+
+    # Exercise unsafe/missing states through the same generated Compose service and baked
+    # entrypoint. Only disposable directories below this probe's root are mutated.
+    variants = [
+        ("missing-intent", lambda _d, intent: intent.unlink()),
+        ("missing-lock", lambda d, _i: (d / "service-gate.lock").unlink()),
+        ("symlink-intent", lambda d, i: (i.unlink(), i.symlink_to(root / "valid-intent-copy"))),
+        ("hardlink-intent", lambda d, i: os.link(i, d / "intent-link")),
+        ("unsafe-mode-intent", lambda _d, i: i.chmod(0o644)),
+        ("oversize-intent", lambda _d, i: (i.write_bytes(b"x" * 257), i.chmod(0o444))),
+        ("malformed-intent", lambda _d, i: (i.write_bytes(b"{\n"), i.chmod(0o444))),
+        ("wrong-installation-id", lambda _d, i: (i.write_bytes(custody._record(str(uuid.uuid4()), identity["epoch"], "normal")), i.chmod(0o444))),
+        ("wrong-epoch", lambda _d, i: (i.write_bytes(custody._record(identity["installationId"], identity["epoch"] + 1, "normal")), i.chmod(0o444))),
+    ]
+    for label, mutate in variants:
+        candidate = copied_admission(label, mutate)
+        run_generated_refusal(label, candidate)
+
+    missing_source = root / "admission-missing-source"
+    missing_env = {**local_image_env, "LARES_MAINTENANCE_ADMISSION_DIR": str(missing_source),
+                   "LARES_KEEPER_CONFIG": str(sentinel_config)}
+    missing_name = project + "-guard-deny-missing-source"
+    missing_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name", missing_name,
+        "lares-keeper", check=False, timeout=30, env=missing_env)
+    if missing_result.returncode == 0 or missing_source.exists() or \
+       not re.search(r"does not exist|no such file|not found", missing_result.stdout, re.IGNORECASE):
+        raise ProbeFailure("keeper-missing-source")
+    proof["stages"]["keeperGeneratedRefusal-missing-source"] = True
+
+    old_release = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text(encoding="utf-8"))
+    old_keeper_image = old_release["images"]["lares-keeper"]
+    old_image_result = run("docker", *compose_args, "run", "--rm", "--no-deps", "--name",
+        project + "-old-keeper-image", "lares-keeper", check=False, timeout=45,
+        env={**local_image_env, "LARES_KEEPER_IMAGE": old_keeper_image,
+             "LARES_KEEPER_CONFIG": str(sentinel_config)})
+    if old_image_result.returncode != 1 or \
+       not re.search(r"maintenance-admission-v1.*(no such file|not found|executable file)|"
+                     r"(no such file|not found|executable file).*maintenance-admission-v1",
+                     old_image_result.stdout, re.IGNORECASE):
+        raise ProbeFailure("keeper-old-image-entrypoint")
+    proof["claims"]["pinnedPreGuardImageCannotStartThroughGeneratedCompose"] = True
+
+    original_intent = lock_path.parent.joinpath("intent.json").read_bytes()
+
+    def publish_test_state(state: str) -> None:
+        replacement = lock_path.parent / (".probe-intent-" + secrets.token_hex(8))
+        replacement.write_bytes(custody._record(identity["installationId"], identity["epoch"], state))
+        replacement.chmod(0o444)
+        os.replace(replacement, lock_path.parent / "intent.json")
+        custody._sync_dir(lock_path.parent)
+
+    def restart_refuses_for(state: str) -> None:
+        expected_intent = lock_path.parent / "intent.json"
+        intent_bytes = expected_intent.read_bytes()
+        intent_inode = expected_intent.stat()
+        before_sockets = socket_snapshot()
+        override = root / ("keeper-restart-no-policy-" + state + ".yaml")
+        override.write_text('services:\n  lares-keeper:\n    restart: "no"\n', encoding="ascii")
+        restart_project = project + "-restart-" + state
+        restart_args = ["compose", "-p", restart_project, "-f", str(compose_file), "-f", str(override),
+                        "--env-file", str(keeper_env)]
+        restart_env = {**local_image_env, "LARES_KEEPER_CONFIG": str(sentinel_config)}
+        started = run("docker", *restart_args, "up", "-d", "--no-deps", "lares-keeper",
+                      check=False, timeout=30, env=restart_env)
+        listed = run("docker", *restart_args, "ps", "--all", "--quiet", "lares-keeper",
+                     check=False, timeout=15, env=restart_env)
+        container_id = listed.stdout.strip().splitlines()
+        if not container_id or len(container_id) != 1:
+            raise ProbeFailure("keeper-restart-container")
+        cid = container_id[0]
+        known_containers.append(cid)
+        if started.returncode != 0:
+            raise ProbeFailure("keeper-restart-start")
+        waited = docker("wait", cid, check=False, timeout=15)
+        before = docker("inspect", cid, check=False, timeout=10)
+        if waited.returncode != 0 or waited.stdout.strip() != "78" or before.returncode != 0:
+            raise ProbeFailure("keeper-restart-inspect")
+        try:
+            before_info = json.loads(before.stdout)[0]
+            before_state = before_info.get("State", {})
+            restart_policy = before_info.get("HostConfig", {}).get("RestartPolicy", {}).get("Name")
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-restart-inspect") from None
+        if before_state.get("ExitCode") != 78 or restart_policy != "no" or \
+           docker("logs", cid, check=False, timeout=10).stdout.strip() != "maintenance admission refused":
+            raise ProbeFailure("keeper-restart-refusal")
+        restarted = docker("start", cid, check=False, timeout=15)
+        waited = docker("wait", cid, check=False, timeout=15)
+        after = docker("inspect", cid, check=False, timeout=10)
+        try:
+            after_info = json.loads(after.stdout)[0]
+            after_state = after_info.get("State", {})
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("keeper-restart-inspect") from None
+        log_lines = docker("logs", cid, check=False, timeout=10).stdout.strip().splitlines()
+        if restarted.returncode != 0 or waited.returncode != 0 or waited.stdout.strip() != "78" or \
+           after_state.get("Running") is not False or after_state.get("ExitCode") != 78 or \
+           log_lines != ["maintenance admission refused", "maintenance admission refused"] or \
+           socket_snapshot() != before_sockets or \
+           expected_intent.read_bytes() != intent_bytes or \
+           (expected_intent.stat().st_dev, expected_intent.stat().st_ino) != \
+           (intent_inode.st_dev, intent_inode.st_ino):
+            raise ProbeFailure("keeper-restart-refusal")
+        removed = docker("rm", "--force", cid, check=False, timeout=15)
+        if removed.returncode != 0:
+            raise ProbeFailure("keeper-restart-cleanup")
+        known_containers.remove(cid)
+        proof["stages"]["keeperGeneratedRestartRefusal-" + state] = True
+
+    try:
+        for state in ("entering", "blocked"):
+            publish_test_state(state)
+            run_generated_refusal(state + "-default", lock_path.parent)
+            run_generated_refusal(state + "-command-override", lock_path.parent,
+                                  ["sh", "-ec", "exit 42"])
+            restart_refuses_for(state)
+            if run("flock", "--nonblock", "--exclusive", str(lock_path),
+                   "-c", "true", check=False).returncode != 1:
+                raise ProbeFailure("keeper-held-while-denying")
+            # This direct atomic write models a durable test fixture transition while an
+            # admitted holder remains live; it is not an installed transition command/API.
+            publish_test_state("normal")
+    finally:
+        temporary = lock_path.parent / (".probe-intent-restore-" + secrets.token_hex(8))
+        temporary.write_bytes(original_intent)
+        temporary.chmod(0o444)
+        os.replace(temporary, lock_path.parent / "intent.json")
+        custody._sync_dir(lock_path.parent)
+    proof["claims"]["keeperGeneratedEnteringAndBlockedStartsAndRestartsRefuseBeforeConfig"] = True
+
+    removed = docker("rm", "--force", name, check=False, timeout=20)
+    if removed.returncode != 0:
+        raise ProbeFailure("keeper-cleanup")
+    known_containers.remove(name)
+    exclusive = run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False)
+    if exclusive.returncode != 0:
+        raise ProbeFailure("keeper-admission-release")
+
+    # A harmless command override still passes through the same image entrypoint. Verify the
+    # guard restores the image's physical WORKDIR before handing control to that command.
+    cwd_probe = run("docker", *compose_args, "run", "--rm", "--no-deps", "lares-keeper",
+        "sh", "-ec", 'test "$(pwd -P)" = /app', check=False, timeout=30, env=local_image_env)
+    if cwd_probe.returncode != 0:
+        raise ProbeFailure("keeper-cwd-restore")
+    proof["claims"]["keeperCommandOverrideReceivesRestoredWorkingDirectory"] = True
+    proof["stages"]["keeperAdmissionCwdRestored"] = True
+
 
 
 def operator_call(compose_args: list[str], program: list[str], *, input_data: str | None = None,
@@ -275,9 +762,10 @@ def app_client(role: str, *, check: bool) -> subprocess.CompletedProcess:
     js = """const {Client}=require('pg');const fs=require('node:fs');
 const c=new Client({host:'db',port:5432,database:'postgres',user:process.argv[1],password:fs.readFileSync('/run/app-password','utf8').trim(),connectionTimeoutMillis:4000});
 c.connect().then(()=>c.query('SELECT 1')).then(r=>{if(r.rows[0]?.['?column?']!==1)process.exitCode=2;else process.stdout.write('connected');}).catch(()=>{process.exitCode=1;}).finally(()=>c.end().catch(()=>{}));"""
+    password_path = role_password_paths.get(role, app_password_path)
     result = docker("run", "--rm", "--network", network, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,mode=1777",
         "--user", "10001:10001", "--workdir", "/app/services/keeper",
-        "--mount", f"type=bind,src={app_password_path},dst=/run/app-password,readonly",
+        "--mount", f"type=bind,src={password_path},dst=/run/app-password,readonly",
         "--entrypoint", "node", IMAGE, "-e", js, role, check=check, timeout=20)
     return result
 
@@ -367,7 +855,7 @@ def start_holder_session() -> tuple[str, pathlib.Path]:
     script = root / "session-client.cjs"
     script.write_text("""const {Client}=require('pg'),fs=require('node:fs');
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-(async()=>{const c=new Client({host:'db',port:5432,database:'postgres',user:'proof_app',password:fs.readFileSync('/run/app-password','utf8').trim(),connectionTimeoutMillis:4000});
+(async()=>{const c=new Client({host:'db',port:5432,database:'postgres',user:'lares_app',password:fs.readFileSync('/run/app-password','utf8').trim(),connectionTimeoutMillis:4000});
 let expectedWindow=false, idleError=false, unexpectedError=false;
 c.on('error',()=>{if(expectedWindow)idleError=true;else unexpectedError=true;});
 await c.connect();const r=await c.query('SELECT pg_backend_pid() AS pid');fs.writeFileSync('/control/ready',String(r.rows[0].pid));
@@ -392,12 +880,47 @@ await c.end().catch(()=>{});
 
 
 def run_database_proof() -> None:
-    global active_exclusive_fd, stage
+    global stage, app_password_path, role_password_paths
     stage = "release-identity"
     release = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text(encoding="utf-8"))
     if release.get("images", {}).get("db") != PINNED_DB_IMAGE:
         raise ProbeFailure()
-    write_hba(NORMAL_HBA)
+    creative_image = release.get("images", {}).get("creative", "")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9./_-]*@sha256:[a-f0-9]{64}", creative_image):
+        raise ProbeFailure("workflow-image")
+    credentials = {"operator-password": operator_password, "database-password": app_password,
+        "financial-database-password": secrets.token_urlsafe(40),
+        "workflow-provisioner-password": secrets.token_urlsafe(40),
+        "workflow-password": secrets.token_urlsafe(40), "gateway-database-password": secrets.token_urlsafe(40)}
+    credential_files: dict[str, pathlib.Path] = {}
+    for name, value in credentials.items():
+        path = private_root / name
+        path.write_text(value + "\n", encoding="ascii")
+        path.chmod(0o600)
+        credential_files[name] = path
+    role_password_paths = {
+        "lares_app": write_role_login_fixture("lares_app", credentials["database-password"]),
+        "lares_financial": write_role_login_fixture("lares_financial", credentials["financial-database-password"]),
+        "lares_workflow_provisioner": write_role_login_fixture("lares_workflow_provisioner", credentials["workflow-provisioner-password"]),
+        "lares_workflow": write_role_login_fixture("lares_workflow", credentials["workflow-password"]),
+        "lares_gateway": write_role_login_fixture("lares_gateway", credentials["gateway-database-password"]),
+    }
+    app_password_path = role_password_paths["lares_app"]
+    setup_files = list(credential_files.values())
+
+    # Verify the exact pinned runtime image's declared user can read its own disposable
+    # provisioner fixture before any database container is started.
+    stage = "workflow-image-credential-readability"
+    workflow_image_probe = docker("run", "--rm", "--network", "none", "--read-only", "--tmpfs", "/tmp",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--mount", f"type=bind,src={role_password_paths['lares_workflow_provisioner']},dst=/run/workflow-provisioner-password,readonly",
+        "--workdir", "/app/services/creative", "--entrypoint", "/bin/sh", creative_image, "-ec",
+        'test "$(id -u)" = 10001 && test "$(id -g)" = 10001 && test -r /run/workflow-provisioner-password && test -n "$(cat /run/workflow-provisioner-password)"',
+        timeout=60)
+    if workflow_image_probe.returncode != 0:
+        raise ProbeFailure("workflow-image-credential-readability")
+    proof["stages"]["pinnedWorkflowImageCredentialReadableAsDefaultUid"] = True
+
     stage = "renderer"
     generate_rendered_compose()
     proof["claims"]["actualRenderersUsed"] = True
@@ -405,17 +928,82 @@ def run_database_proof() -> None:
     stage = "bootstrap-start"
     compose("up", "-d", "db", bootstrap=True, timeout=180)
     proof["stages"]["bootstrapStarted"] = True
-    # Readiness and every SQL action use the actual shipped operator_db_run from engine-run.sh.
     stage = "bootstrap-operator-login"
     wait_operator_ready(bootstrap_files, budget_seconds=90)
     proof["claims"]["actualOperatorDbRunUsed"] = True
     proof["stages"]["bootstrapOperatorAuthentication"] = True
+    stage = "production-database-setup"
+    setup_args = [
+        "--operator-password-file", "/run/operator-password",
+        "--app-password-file", "/run/database-password",
+        "--financial-password-file", "/run/financial-database-password",
+        "--workflow-provisioner-password-file", "/run/workflow-provisioner-password",
+        "--workflow-password-file", "/run/workflow-password",
+        "--gateway-password-file", "/run/gateway-database-password",
+    ]
+    setup = engine_box("bin/database-setup.ts", setup_args, setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
+    if setup.returncode != 0:
+        raise ProbeFailure("database-setup")
+    proof["claims"]["productionDatabaseSetupUsed"] = True
+    proof["stages"]["productionDatabaseSetup"] = True
     stage = "replace-bootstrap-with-normal-stack"
     compose("down", bootstrap=True, timeout=90)
     compose("up", "-d", "db", timeout=180)
-    stage = "normal-operator-readiness"
     wait_operator_ready(compose_files, budget_seconds=90)
     proof["stages"]["normalDatabaseStarted"] = True
+    stage = "production-workflow-template-setup"
+    workflow_script = 'PGPASSWORD="$(cat /run/workflow-provisioner-password)"; export PGPASSWORD; exec node --input-type=module -e "$1"'
+    workflow_program = (
+        'import { Pool } from "pg"; import { setupDatabase } from "@workflow/world-postgres/cli"; '
+        'const pool = new Pool({ connectionString: process.env.WORKFLOW_POSTGRES_URL, max: 1 }); '
+        'try { const r = await pool.query("SELECT current_user, session_user, current_database()"); '
+        'if (r.rows[0]?.current_user !== "lares_workflow_owner" || r.rows[0]?.session_user !== "lares_workflow_provisioner" || '
+        'r.rows[0]?.current_database !== "empty_workflow") throw new Error("workflow template authority check failed"); } '
+        'finally { await pool.end(); } await setupDatabase();'
+    )
+    workflow_setup = docker("run", "--rm", "--network", "host", "--read-only", "--tmpfs", "/tmp",
+        "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001",
+        "--workdir", "/app/services/creative",
+        "--mount", f"type=bind,src={role_password_paths['lares_workflow_provisioner']},dst=/run/workflow-provisioner-password,readonly",
+        "--env", "PGPASSWORD_FILE=/run/workflow-provisioner-password", "--env", "PGOPTIONS=-c role=lares_workflow_owner",
+        "--env", "WORKFLOW_POSTGRES_URL=postgres://lares_workflow_provisioner@127.0.0.1:5432/empty_workflow",
+        "--entrypoint", "/bin/sh", creative_image, "-ec", workflow_script, "workflow", workflow_program,
+        check=False, timeout=180)
+    if workflow_setup.returncode != 0:
+        raise ProbeFailure("workflow-template-setup")
+    workflow_apply = engine_box("bin/workflow-template.ts", ["apply", "--host", "127.0.0.1", "--port", "5432",
+        "--provisioner-password-file", "/run/workflow-provisioner-password",
+        "--runtime-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
+    workflow_finalize = engine_box("bin/database-setup.ts", ["--finalize-workflow-template",
+        "--operator-password-file", "/run/operator-password",
+        "--workflow-password-file", "/run/workflow-password"], setup_files, {"PGHOST": "127.0.0.1", "PGPORT": "5432"})
+    if workflow_apply.returncode != 0 or workflow_finalize.returncode != 0:
+        raise ProbeFailure("workflow-template-setup")
+    proof["claims"]["productionWorkflowTemplatePathUsed"] = True
+    proof["stages"]["productionWorkflowTemplatePath"] = True
+    stage = "production-schema-owner-migrations"
+    migrate = engine_box("migrate.ts", ["--schema-owner"], [operator_path], {
+        "DATABASE_PASSWORD_FILE": "/run/operator-password",
+        "LARES_OPERATOR_PASSWORD_FILE": "/run/operator-password",
+        "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGDATABASE": "lares_state",
+        "PGUSER": "lares_operator",
+    })
+    if migrate.returncode != 0:
+        raise ProbeFailure("schema-owner-migrations")
+    proof["claims"]["productionSchemaOwnerMigrationPathUsed"] = True
+    proof["stages"]["productionSchemaOwnerMigrations"] = True
+    stage = "production-installation-settings"
+    settings = engine_box("bin/installation-settings.ts", [], [credential_files["database-password"]], {
+        "DATABASE_PASSWORD_FILE": "/run/database-password",
+        "PGHOST": "127.0.0.1", "PGPORT": "5432", "PGDATABASE": "lares_state",
+        "PGUSER": "lares_app",
+    })
+    if settings.returncode != 0:
+        raise ProbeFailure("installation-settings")
+    proof["claims"]["productionInstallationSettingsPathUsed"] = True
+    proof["stages"]["productionInstallationSettings"] = True
+    stage = "keeper-default-entrypoint-admission"
+    prove_keeper_default_admission()
     stage = "normal-container-secret-boundary"
     database_container = compose("ps", "-q", "db").stdout.strip()
     if not re.fullmatch(r"[a-f0-9]{12,64}", database_container):
@@ -423,68 +1011,77 @@ def run_database_proof() -> None:
     mounts = docker("inspect", "--format", "{{json .Mounts}}", database_container)
     env = docker("inspect", "--format", "{{json .Config.Env}}", database_container)
     try:
-        mount_rows = json.loads(mounts.stdout)
-        env_rows = json.loads(env.stdout)
+        mount_rows, env_rows = json.loads(mounts.stdout), json.loads(env.stdout)
     except json.JSONDecodeError:
         raise ProbeFailure("database") from None
+    auth_mount = [item for item in mount_rows if item.get("Destination") == "/run/lares-auth"]
+    if len(auth_mount) != 1 or auth_mount[0].get("Source") != str(auth_dir) or auth_mount[0].get("RW") is not False:
+        raise ProbeFailure("database")
     if any(item.get("Source") == str(operator_path) for item in mount_rows) or any(
         item.split("=", 1)[0] == "POSTGRES_PASSWORD_FILE" for item in env_rows):
         raise ProbeFailure()
     proof["stages"]["normalContainerHasNoOperatorSecret"] = True
     stage = "external-hba-selected"
-    proof["claims"]["externalHbaIsSelected"] = operator_query(compose_files,
-        "SELECT current_setting('hba_file') || '|' || count(*)::text FROM pg_hba_file_rules WHERE error IS NOT NULL") == "/run/lares-auth/pg_hba.conf|0"
-    if not proof["claims"]["externalHbaIsSelected"]:
+    selected = operator_query(compose_files,
+        "SELECT current_setting('hba_file') || '|' || count(*)::text FROM pg_hba_file_rules WHERE error IS NOT NULL")
+    if selected != "/run/lares-auth/pg_hba.conf|0":
         raise ProbeFailure("database")
+    proof["claims"]["externalHbaIsSelected"] = True
+    stage = "operator-host-route"
+    source_address = operator_query(compose_files, "SELECT host(inet_client_addr())")
+    try:
+        parsed_source = ipaddress.ip_address(source_address)
+        approved_network = ipaddress.ip_network(subnet)
+    except ValueError:
+        raise ProbeFailure("database") from None
+    if not (parsed_source.is_loopback or parsed_source in approved_network):
+        raise ProbeFailure("operator-client")
+    proof["claims"]["operatorHostRouteMatchesApprovedRule"] = True
     stage = "normal-role-controls"
-    verifier = scram_verifier(app_password)
-    operator_script(compose_files, "CREATE ROLE proof_app LOGIN PASSWORD '" + verifier + "';\n"
-        "CREATE ROLE proof_unknown LOGIN PASSWORD '" + verifier + "';\n")
-    if app_client("proof_app", check=True).stdout.strip() != "connected" or \
-       app_client("proof_unknown", check=True).stdout.strip() != "connected":
+    intended = ("lares_app", "lares_financial", "lares_workflow_provisioner", "lares_workflow", "lares_gateway")
+    operator_script(compose_files, "CREATE ROLE proof_unknown LOGIN PASSWORD '" + scram_verifier(app_password) + "';\n")
+    if any(app_client(role, check=True).stdout.strip() != "connected" for role in intended):
         raise ProbeFailure("database")
+    if app_client("proof_unknown", check=False).returncode == 0:
+        raise ProbeFailure("database")
+    proof["claims"]["normalPolicyAllowsOnlyIntendedRoles"] = True
     proof["stages"]["normalLoginControl"] = True
+
     stage = "existing-app-session"
     session_name, session_control = start_holder_session()
     backend_pid = wait_file(session_control / "ready")
     if not backend_pid.isdigit():
-        raise ProbeFailure()
-
-    # This separate fixture generation binds the database HBA steps to a durable entering marker
-    # and the same Linux shared/exclusive lock family. It is not wired to installation processes.
+        raise ProbeFailure("database")
     custody.prepare(db_custody_dir, db_admission_dir, installation_id, epoch)
     custody.transition(db_custody_dir, db_admission_dir, installation_id, epoch, "entering")
+    global active_exclusive_fd
     active_exclusive_fd = os.open(db_admission_dir / "service-gate.lock", os.O_RDONLY)
     fcntl.flock(active_exclusive_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     stage = "maintenance-hba-reload"
     write_hba(MAINTENANCE_HBA)
-    if operator_query(compose_files, "SELECT pg_reload_conf()") != "t":
-        raise ProbeFailure("database")
-    if operator_query(compose_files, "SELECT count(*)::text FROM pg_hba_file_rules WHERE error IS NOT NULL") != "0":
+    if operator_query(compose_files, "SELECT pg_reload_conf()") != "t" or \
+       operator_query(compose_files, "SELECT count(*)::text FROM pg_hba_file_rules WHERE error IS NOT NULL") != "0":
         raise ProbeFailure("database")
     proof["stages"]["maintenanceReloadParsed"] = True
-    stage = "reload-existing-and-new-connections"
+    stage = "maintenance-reload-preserves-session"
     (session_control / "query").write_text("go\n", encoding="ascii")
     if wait_file(session_control / "still-works") != "ok":
         raise ProbeFailure("database")
-    if app_client("proof_app", check=False).returncode == 0 or \
-       app_client("proof_unknown", check=False).returncode == 0:
+    if any(app_client(role, check=False).returncode == 0 for role in (*intended, "proof_unknown")):
         raise ProbeFailure("database")
     if operator_query(compose_files, "SELECT current_user") != "lares_operator":
         raise ProbeFailure("database")
     proof["stages"]["existingSessionSurvivesReloadAndNewLoginsRefuse"] = True
     stage = "terminate-existing-session"
     (session_control / "expect-termination").write_text("go\n", encoding="ascii")
-    if wait_file(session_control / "armed") != "ok":
-        raise ProbeFailure("database")
-    if operator_query(compose_files, "SELECT pg_terminate_backend(" + backend_pid + ")") != "t":
+    if wait_file(session_control / "armed") != "ok" or \
+       operator_query(compose_files, "SELECT pg_terminate_backend(" + backend_pid + ")") != "t":
         raise ProbeFailure("database")
     (session_control / "query-terminated").write_text("go\n", encoding="ascii")
     if wait_file(session_control / "terminated") != "ok":
         raise ProbeFailure("database")
     proof["claims"]["existingAppSessionTerminatedExplicitly"] = True
     proof["stages"]["existingSessionTerminated"] = True
-    # The direct session should now exit; Docker cleanup below is a bounded fallback only.
     for _ in range(40):
         state = docker("inspect", "--format", "{{.State.Running}}", session_name, check=False)
         if state.returncode != 0:
@@ -497,8 +1094,92 @@ def run_database_proof() -> None:
             break
         time.sleep(0.1)
 
-    stage = "restart-retained-data"
-    # A crafted permissive PGDATA policy must not override the stable external directory mount.
+    stage = "maintenance-hba-restart"
+    compose("restart", "db", timeout=120)
+    wait_operator_ready(compose_files, budget_seconds=60)
+    if operator_query(compose_files, "SELECT current_setting('hba_file')") != "/run/lares-auth/pg_hba.conf" or \
+       any(app_client(role, check=False).returncode == 0 for role in (*intended, "proof_unknown")):
+        raise ProbeFailure("database")
+    proof["claims"]["maintenanceHbaDeniesNewAppAndUnknownLogins"] = True
+    proof["claims"]["externalHbaSurvivesMaintenanceRestart"] = True
+    proof["stages"]["maintenanceHbaRestart"] = True
+    write_hba(NORMAL_HBA)
+    custody._sync_dir(auth_dir)
+    active_exclusive_fd = None
+
+    def failed_auth_restart(content: bytes | None, claim: str, label: str, expected_error: re.Pattern[str]) -> None:
+        compose("stop", "db", timeout=45)
+        compose("rm", "--force", "db", timeout=45)
+        hba = auth_dir / "pg_hba.conf"
+        saved = auth_dir / "pg_hba.saved"
+        os.replace(hba, saved)
+        if content is not None:
+            write_hba(content)
+        try:
+            created = compose("create", "db", timeout=90, check=False)
+            container = compose("ps", "--all", "-q", "db", check=False).stdout.strip()
+            if created.returncode != 0 or not re.fullmatch(r"[a-f0-9]{12,64}", container):
+                raise ProbeFailure("database")
+            # The production service restarts automatically. Disable that policy on this
+            # disposable container before starting it so its first failure remains inspectable.
+            docker("update", "--restart=no", container)
+            started = docker("start", container, check=False, timeout=30)
+            deadline = time.monotonic() + 12
+            expected_refusal = False
+            while time.monotonic() < deadline:
+                inspected = docker("inspect", "--format", "{{.State.Status}}|{{.State.ExitCode}}|{{.State.Error}}", container, check=False)
+                if inspected.returncode != 0:
+                    raise ProbeFailure("database")
+                fields = inspected.stdout.strip().split("|", 2)
+                state = fields[0]
+                exit_code = fields[1] if len(fields) > 1 else ""
+                logs = docker("logs", "--tail", "100", container, check=False).stdout
+                if state == "exited":
+                    if exit_code.isdigit() and int(exit_code) != 0 and expected_error.search(logs):
+                        expected_refusal = True
+                        break
+                    raise ProbeFailure("database")
+                if state not in ("created", "running"):
+                    raise ProbeFailure("database")
+                time.sleep(0.25)
+            if not expected_refusal:
+                raise ProbeFailure("timeout")
+            if started.returncode != 0 and not expected_error.search(started.stdout):
+                raise ProbeFailure("database")
+            proof["claims"][claim] = True
+            return
+        finally:
+            current = auth_dir / "pg_hba.conf"
+            if current.exists():
+                current.unlink()
+            os.replace(saved, current)
+            custody._sync_dir(auth_dir)
+            compose("up", "-d", "db", timeout=90)
+            wait_operator_ready(compose_files, budget_seconds=60)
+
+    stage = "missing-external-hba"
+    failed_auth_restart(None, "missingExternalHbaRefusesStartup", "missing-auth", re.compile(r"could not open file .*/run/lares-auth/pg_hba\.conf", re.IGNORECASE))
+    stage = "malformed-external-hba"
+    failed_auth_restart(b"this is not a PostgreSQL HBA rule\n", "malformedExternalHbaRefusesStartup", "malformed-auth", re.compile(r"invalid authentication method|invalid connection type|syntax error in file", re.IGNORECASE))
+    stage = "missing-external-auth-directory"
+    compose("stop", "db", timeout=45)
+    compose("rm", "--force", "db", timeout=45)
+    saved_auth_dir = auth_dir.with_name("postgres-auth.saved")
+    os.replace(auth_dir, saved_auth_dir)
+    try:
+        failed = compose("create", "db", timeout=60, check=False)
+        if failed.returncode == 0 or str(auth_dir) not in failed.stdout or auth_dir.exists():
+            raise ProbeFailure("database")
+        if compose("ps", "--all", "-q", "db", check=False).stdout.strip():
+            raise ProbeFailure("database")
+        proof["claims"]["missingExternalAuthDirectoryRefusesComposeCreate"] = True
+    finally:
+        os.replace(saved_auth_dir, auth_dir)
+        compose("up", "-d", "db", timeout=90)
+        wait_operator_ready(compose_files, budget_seconds=60)
+    stage = "permissive-pgdata-restore"
+    # Model a restored PGDATA carrying a permissive in-data policy; the production mount must
+    # remain authoritative across restart and normal PGDATA replacement.
     pgdata_hba = data_dir / "pg_hba.conf"
     if not pgdata_hba.is_file():
         raise ProbeFailure("database")
@@ -508,11 +1189,10 @@ def run_database_proof() -> None:
     wait_operator_ready(compose_files, budget_seconds=60)
     if operator_query(compose_files, "SELECT current_setting('hba_file')") != "/run/lares-auth/pg_hba.conf":
         raise ProbeFailure("database")
-    if app_client("proof_app", check=False).returncode == 0 or \
+    if any(app_client(role, check=True).returncode != 0 for role in intended) or \
        app_client("proof_unknown", check=False).returncode == 0:
         raise ProbeFailure("database")
-    proof["claims"]["externalHbaSurvivesPgdataHbaAndRestart"] = True
-    proof["claims"]["maintenanceHbaDeniesNewAppAndUnknownLogins"] = True
+    proof["claims"]["externalHbaSurvivesPermissivePgdataRestore"] = True
     proof["stages"]["restartPreservesExternalPolicy"] = True
 
 
@@ -524,7 +1204,7 @@ def cleanup() -> bool:
                 okay = False
         except Exception:
             okay = False
-    if (bootstrap_file.exists() or normal_file.exists()) and override_file.exists():
+    if bootstrap_file.exists() or normal_file.exists():
         try:
             result = compose("down", "--remove-orphans", check=False, timeout=45)
             okay = okay and result.returncode == 0
@@ -532,7 +1212,7 @@ def cleanup() -> bool:
             okay = okay and result.returncode == 0
         except Exception:
             okay = False
-    for directory in (root, private_root, app_private):
+    for directory in (root, private_root):
         try:
             shutil.rmtree(directory)
         except FileNotFoundError:
@@ -540,6 +1220,21 @@ def cleanup() -> bool:
         except Exception:
             okay = False
     return okay
+
+
+def publish_result(exit_code: int) -> int:
+    """Always record the sanitized outcome, including when fixture cleanup fails."""
+    proof["cleanupOkay"] = cleanup()
+    if not proof["cleanupOkay"]:
+        proof["status"] = "failed"
+        proof["failedStage"] = proof["failedStage"] or "cleanup"
+        proof["failureKind"] = proof["failureKind"] or "cleanup"
+        exit_code = 1
+    output_path = pathlib.Path(PROOF_PATH)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
+    output_path.chmod(0o644)
+    return exit_code
 
 
 exit_code = 0
@@ -560,14 +1255,5 @@ except Exception:
     proof["failedStage"] = stage
     proof["failureKind"] = "unexpected"
 finally:
-    proof["cleanupOkay"] = cleanup()
-    if not proof["cleanupOkay"]:
-        proof["status"] = "failed"
-        proof["failedStage"] = proof["failedStage"] or "cleanup"
-        proof["failureKind"] = proof["failureKind"] or "cleanup"
-        exit_code = 1
-    output_path = pathlib.Path(PROOF_PATH)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(proof, sort_keys=True, separators=(",", ":")) + "\n", encoding="utf-8")
-    output_path.chmod(0o644)
+    exit_code = publish_result(exit_code)
 sys.exit(exit_code)

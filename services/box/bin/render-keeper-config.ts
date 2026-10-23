@@ -20,15 +20,114 @@
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
 import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema} from "../../keeper/lib/config.js";
 import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseReleaseManifest, imageFor } from "../lib/release-manifest.js";
 import { renderKeeperConfig } from "../lib/keeper-config.js";
 import type { KeeperConfig } from "../../keeper/lib/config.js";
+import type { ReleaseManifest } from "../lib/release-manifest.js";
 
 type KeeperMicrosoft = NonNullable<NonNullable<KeeperConfig["lifecycle"]>["runtime"]["microsoft"]>;
 type KeeperGoogle = NonNullable<NonNullable<KeeperConfig["lifecycle"]>["runtime"]["google"]>;
+
+export interface KeeperComposeEnvironmentInput {
+  readonly root: string;
+  readonly keeperConfig: string;
+  readonly socketDir: string;
+  readonly hostSocketDir: string;
+  readonly egressDir: string;
+  readonly secretsDir: string;
+  readonly proxyAddress: string;
+  readonly network: string;
+  readonly maintenanceAdmission: ValidatedMaintenanceAdmission;
+  readonly gatewayAuthority?: { readonly serviceKeyFile: string; readonly policyFile: string };
+}
+
+export interface ValidatedMaintenanceAdmission {
+  readonly directory: string;
+  readonly installationId: string;
+  readonly epoch: number;
+}
+
+/** Uses the same completed-receipt validator as normal-auth-v3 and returns only the
+ *  installation identity needed to bind Keeper's fixed admission command. */
+export function validateMaintenanceAdmissionIdentity(prefix: string, subnet: string): ValidatedMaintenanceAdmission {
+  if (!isAbsolute(prefix) || resolve(prefix) !== prefix || /[\n\r\0]/.test(prefix))
+    throw new Error("Maintenance admission prefix must be absolute and normalized");
+  if (!subnet || /[\n\r\0]/.test(subnet)) throw new Error("Maintenance admission subnet is invalid");
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING !== "1")
+    throw new Error("Maintenance custody validation requires root");
+  const checker = join(dirname(fileURLToPath(import.meta.url)), "..", "ops", "maintenance-custody.py");
+  const args = [checker, "validate-identity", prefix, subnet];
+  if (process.getuid?.() !== 0 && process.env.LARES_MAINTENANCE_TESTING === "1") args.push("--test-owner");
+  const text = execFileSync("python3", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  let value: unknown;
+  try { value = JSON.parse(text); }
+  catch { throw new Error("Maintenance custody validator returned an invalid identity"); }
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Maintenance custody validator returned an invalid identity");
+  const identity = value as Record<string, unknown>;
+  if (Object.keys(identity).sort().join(",") !== "epoch,installationId" ||
+      typeof identity.installationId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(identity.installationId) ||
+      typeof identity.epoch !== "number" || !Number.isSafeInteger(identity.epoch) || identity.epoch < 1 || identity.epoch > 2147483647)
+    throw new Error("Maintenance custody validator returned an invalid identity");
+  return {
+    directory: join(prefix, "var/lib/lares-maintenance/admission"),
+    installationId: identity.installationId,
+    epoch: identity.epoch,
+  };
+}
+
+export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input: KeeperComposeEnvironmentInput, config: KeeperConfig): string {
+  const admission = config.lifecycle?.maintenanceAdmission;
+  if (!admission || admission.hostDirectory !== input.maintenanceAdmission.directory ||
+      admission.installationId !== input.maintenanceAdmission.installationId || admission.epoch !== input.maintenanceAdmission.epoch)
+    throw new Error("Validated maintenance admission does not match keeper.json");
+  if (input.gatewayAuthority && (config.gatewayBudget?.serviceKeyFile !== input.gatewayAuthority.serviceKeyFile ||
+      config.budgetNative?.reviewedPolicyFile !== input.gatewayAuthority.policyFile))
+    throw new Error("Prepared gateway authority does not match keeper.json");
+  return [
+    "# The keeper's compose variables, written by services/box/ops/install.sh.",
+    "# Every name below is one compose.lares-keeper.yaml refuses to start without. The two",
+    "# image digests come from the release file this installation was given; the paths are this",
+    "# installation's own. Nothing here is a secret — no value, only names and paths.",
+    `LARES_KEEPER_IMAGE=${imageFor(manifest, "lares-keeper")}`,
+    `LARES_SQUID_IMAGE=${imageFor(manifest, "lares-egress-proxy")}`,
+    `LARES_ROOT=${input.root}`,
+    `LARES_KEEPER_CONFIG=${input.keeperConfig}`,
+    `LARES_SOCKET_DIR=${input.socketDir}`,
+    `LARES_HOST_SOCKET_DIR=${input.hostSocketDir}`,
+    `LARES_EGRESS_DIR=${input.egressDir}`,
+    `LARES_DATABASE_PASSWORD_FILE=${join(input.secretsDir, "database-password")}`,
+    `LARES_FINANCIAL_DATABASE_PASSWORD_FILE=${join(input.secretsDir, "financial-database-password")}`,
+    `LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE=${join(input.secretsDir, "workflow-provisioner-password")}`,
+    `LARES_WORKFLOW_RUNTIME_PASSWORD_FILE=${join(input.secretsDir, "workflow-password")}`,
+    `LARES_GATEWAY_MASTER_KEY_FILE=${join(input.secretsDir, "gateway-master-key")}`,
+    `LARES_EVE_ROUTE_PASSWORD_FILE=${join(input.secretsDir, "eve-route-password")}`,
+    `LARES_VAULT_SIGNING_KEY_FILE=${join(input.secretsDir, "console-vault-signing-key")}`,
+    ...(input.gatewayAuthority ? [
+      `LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE=${input.gatewayAuthority.serviceKeyFile}`,
+      `LARES_NATIVE_POLICY_FILE=${input.gatewayAuthority.policyFile}`,
+      `LARES_GATEWAY_BUDGET_SERVICE_KEY_TARGET=${input.gatewayAuthority.serviceKeyFile}`,
+      `LARES_NATIVE_POLICY_TARGET=${input.gatewayAuthority.policyFile}`,
+    ] : [
+      "LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE=/dev/null",
+      "LARES_NATIVE_POLICY_FILE=/dev/null",
+      "LARES_GATEWAY_BUDGET_SERVICE_KEY_TARGET=/run/secrets/gateway-budget-unused-key",
+      "LARES_NATIVE_POLICY_TARGET=/etc/lares/native-policy-unused.json",
+    ]),
+    ...(config.modelPurposeConsoleSigningKeyFile ? [`LARES_MODEL_PURPOSE_SIGNING_KEY_FILE=${config.modelPurposeConsoleSigningKeyFile}`] : []),
+    `LARES_PROXY_ADDRESS=${input.proxyAddress}`,
+    `LARES_NETWORK=${input.network}`,
+    `LARES_MAINTENANCE_ADMISSION_DIR=${input.maintenanceAdmission.directory}`,
+    `LARES_MAINTENANCE_INSTALLATION_ID=${input.maintenanceAdmission.installationId}`,
+    `LARES_MAINTENANCE_EPOCH=${input.maintenanceAdmission.epoch}`,
+    "",
+  ].join("\n");
+}
 
 /** Positional on purpose, like render-stack's: install.sh passes paths it built itself, and a
  *  flag parser here would be one more place for the two to disagree about a name. */
@@ -55,6 +154,7 @@ const ARGUMENTS = [
   "credentialAdministrator",
   "domain", // the installation's public domain; becomes publicDoorOrigin (https://<domain>)
   "ownerHomeTz", // the owner's time zone, "" when unknown
+  "maintenancePrefix", // host prefix whose completed custody receipt is validated before reads
 ] as const;
 
 const HELP_TEXT = [
@@ -75,7 +175,7 @@ const HELP_TEXT = [
   "  1  refused — nothing was written (including an existing keeper.json that is not valid JSON)",
 ].join("\n");
 
-export function main(argv: readonly string[], out: (s: string) => void): number {
+export function main(argv: readonly string[], out: (s: string) => void, gatewayAuthority?: { serviceKeyFile: string; policyFile: string }): number {
   if (argv.includes("--help") || argv.includes("-h")) {
     out(HELP_TEXT);
     return 0;
@@ -87,6 +187,7 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     return 1;
   }
   const at = (name: (typeof ARGUMENTS)[number]): string => argv[ARGUMENTS.indexOf(name)]!;
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(at("maintenancePrefix"), at("subnet"));
 
   if (!credentialConfigSchema.shape.administrator.safeParse(at("credentialAdministrator")).success) {
     out("Configure one credential administrator email; nothing was written");
@@ -123,6 +224,11 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
     project: at("project"),
     network: at("network"),
     subnet: at("subnet"),
+    maintenanceAdmission: {
+      hostDirectory: maintenanceAdmission.directory,
+      installationId: maintenanceAdmission.installationId,
+      epoch: maintenanceAdmission.epoch,
+    },
     proxyAddress: at("proxyAddress"),
     dir: at("root"),
     agentsDir: at("agentsDir"),
@@ -141,12 +247,17 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   });
   if (previous.microsoft !== undefined) config.lifecycle!.runtime.microsoft = previous.microsoft;
   if (previous.google !== undefined) config.lifecycle!.runtime.google = previous.google;
+  if (gatewayAuthority && (config.gatewayBudget?.serviceKeyFile !== gatewayAuthority.serviceKeyFile ||
+      config.budgetNative?.reviewedPolicyFile !== gatewayAuthority.policyFile))
+    throw new Error("Prepared gateway authority does not match keeper.json; nothing was written");
 
-  // Looked up BEFORE the first byte is written: a release missing the keeper's own image or
-  // its egress proxy's must refuse with nothing on disk, not with a keeper.json already written
-  // and an env file that never arrived.
-  const keeperImage = imageFor(manifest, "lares-keeper");
-  const squidImage = imageFor(manifest, "lares-egress-proxy");
+  // Compute both complete outputs before the first byte is written.
+  const env = renderKeeperComposeEnvironment(manifest, {
+    root: at("root"), keeperConfig: at("keeperConfig"), socketDir: at("socketDir"),
+    hostSocketDir: at("hostSocketDir"), egressDir: at("egressDir"), secretsDir: at("secretsDir"),
+    proxyAddress: at("proxyAddress"), network: at("network"), gatewayAuthority,
+    maintenanceAdmission,
+  }, config);
 
   // 0600, and chmod'd as well as passed as a mode: `mode:` is masked by the caller's umask, and
   // install.sh sets `umask 077`, so a wider mode asked for here would silently not happen. This file names every path this installation keeps a secret at, and
@@ -159,32 +270,6 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   // here, in one file, so `docker compose --env-file` carries the whole set: a variable left to
   // the shell's environment is one a later change can drop without anything noticing until an
   // install fails on a box.
-  const env = [
-    "# The keeper's compose variables, written by services/box/ops/install.sh.",
-    "# Every name below is one compose.lares-keeper.yaml refuses to start without. The two",
-    "# image digests come from the release file this installation was given; the paths are this",
-    "# installation's own. Nothing here is a secret — no value, only names and paths.",
-    `LARES_KEEPER_IMAGE=${keeperImage}`,
-    `LARES_SQUID_IMAGE=${squidImage}`,
-    `LARES_ROOT=${at("root")}`,
-    `LARES_KEEPER_CONFIG=${at("keeperConfig")}`,
-    `LARES_SOCKET_DIR=${at("socketDir")}`,
-    `LARES_HOST_SOCKET_DIR=${at("hostSocketDir")}`,
-    `LARES_EGRESS_DIR=${at("egressDir")}`,
-    // Only exact credential files consumed by the keeper are mounted. The database operator
-    // credential has a separate host-only directory and is never named here.
-    `LARES_DATABASE_PASSWORD_FILE=${join(at("secretsDir"), "database-password")}`,
-    `LARES_FINANCIAL_DATABASE_PASSWORD_FILE=${join(at("secretsDir"), "financial-database-password")}`,
-    `LARES_WORKFLOW_PROVISIONER_PASSWORD_FILE=${join(at("secretsDir"), "workflow-provisioner-password")}`,
-    `LARES_WORKFLOW_RUNTIME_PASSWORD_FILE=${join(at("secretsDir"), "workflow-password")}`,
-    `LARES_GATEWAY_MASTER_KEY_FILE=${join(at("secretsDir"), "gateway-master-key")}`,
-    `LARES_EVE_ROUTE_PASSWORD_FILE=${join(at("secretsDir"), "eve-route-password")}`,
-    `LARES_VAULT_SIGNING_KEY_FILE=${join(at("secretsDir"), "console-vault-signing-key")}`,
-    ...(config.modelPurposeConsoleSigningKeyFile ? [`LARES_MODEL_PURPOSE_SIGNING_KEY_FILE=${config.modelPurposeConsoleSigningKeyFile}`] : []),
-    `LARES_PROXY_ADDRESS=${at("proxyAddress")}`,
-    `LARES_NETWORK=${at("network")}`,
-    "",
-  ].join("\n");
   writeFileSync(at("envOutFile"), env, { mode: 0o640 });
   chmodSync(at("envOutFile"), 0o640);
   return 0;

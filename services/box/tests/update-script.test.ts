@@ -18,6 +18,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse, stringify } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "update.sh");
@@ -28,6 +29,8 @@ const CONSOLE_OLD = `registry.example/lares-console@sha256:${OLD}`;
 const CONSOLE_NEW = `registry.example/lares-console@sha256:${NEW}`;
 const ROLE_OLD = `registry.example/lares-chief-of-staff@sha256:${OLD}`;
 const ROLE_NEW = `registry.example/lares-chief-of-staff@sha256:${NEW}`;
+const KEEPER_OLD = `registry.example/lares-keeper@sha256:${"d".repeat(64)}`;
+const KEEPER_NEW = `registry.example/lares-keeper@sha256:${"e".repeat(64)}`;
 
 let dir: string;
 let binDir: string;
@@ -59,11 +62,40 @@ function composeYaml() {
     `    image: ${ROLE_OLD}`,
     "  db:",
     "    image: postgres:16-alpine",
+    "    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]",
+    "    volumes:",
+    "      - /var/lib/lares/postgres:/var/lib/postgresql/data",
+    "      - type: bind",
+    "        source: /var/lib/lares-maintenance/postgres-auth",
+    "        target: /run/lares-auth",
+    "        read_only: true",
+    "        bind:",
+    "          create_host_path: false",
     "networks:",
     "  lares:",
     "    external: true",
     "",
   ].join("\n");
+}
+
+/** Test fixture derived from the committed Keeper service template. The update script rewrites
+ * only the image line; this checks that its real output retains the guarded launch fields. */
+function keeperComposeYaml(image: string, envFile: string) {
+  const template = readFileSync(join(here, "..", "compose.lares-keeper.yaml"), "utf8");
+  const committed = parse(template) as {
+    services: Record<string, Record<string, unknown>>;
+  };
+  const keeper = { ...committed.services["lares-keeper"]! };
+  keeper.image = image;
+  keeper.env_file = [envFile];
+  keeper.entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"];
+  const volumes = keeper.volumes as Array<string | Record<string, unknown>>;
+  keeper.volumes = volumes.map((volume) => typeof volume === "string" ? volume :
+    volume.target === "/run/lares-maintenance/admission" ? {
+      ...volume, source: "/tmp/keeper-admission-fixture", read_only: true,
+      bind: { ...(volume.bind as Record<string, unknown>), create_host_path: false },
+    } : volume);
+  return stringify({ services: { "lares-keeper": keeper } });
 }
 
 function stub(name: string, body: string, where = binDir) {
@@ -184,6 +216,7 @@ function run(args: string[], env: Record<string, string> = {}) {
         UPDATE_COMPOSE_FILES: "compose.yaml",
         LARES_UPDATE_RECORDER: join(binDir, "record"),
         LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
+        LARES_MAINTENANCE_TESTING: "1",
         ...env,
       },
       encoding: "utf8",
@@ -208,8 +241,52 @@ const MIGRATE = /pnpm .*migrate/;
 const BACKUP = /backup\.sh/;
 const BEGIN = /record begin/;
 const compose = () => readFileSync(composeFile, "utf8");
+function expectNormalAuthCompose() {
+  const db = (parse(compose()) as { services: Record<string, { command?: string | string[]; volumes?: Array<string | { type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> }> }).services.db!;
+  expect(Array.isArray(db.command) ? db.command.join(" ") : db.command).toContain("hba_file=/run/lares-auth/pg_hba.conf");
+  const mount = db.volumes?.find((volume) => typeof volume !== "string" && volume.target === "/run/lares-auth");
+  expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
+  if (process.env.CI === "true") {
+    const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
+      services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    const effectiveAuthMount = effective.services.db?.volumes?.find((volume) => volume.source === "/var/lib/lares-maintenance/postgres-auth" && volume.target === "/run/lares-auth");
+    expect(effectiveAuthMount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true });
+    const bind = effectiveAuthMount?.bind;
+    expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
+      (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
+  }
+}
 
 describe("updating this installation", () => {
+  it("rewrites the real script's Keeper fixture image while preserving its guarded launch and identity", () => {
+    const keeperCompose = join(composeDir, "keeper.yaml");
+    const keeperEnv = join(composeDir, "keeper.env");
+    const identityEnv = "LARES_MAINTENANCE_INSTALLATION_ID=fixture-installation-id\nLARES_MAINTENANCE_EPOCH=7\n";
+    writeFileSync(keeperCompose, keeperComposeYaml(KEEPER_OLD, keeperEnv));
+    writeFileSync(keeperEnv, identityEnv);
+    writeFileSync(release, JSON.stringify({
+      release: "2026-10-01",
+      images: { console: CONSOLE_NEW, "chief-of-staff": ROLE_NEW, "lares-keeper": KEEPER_NEW },
+      migrations: { box: "001_baseline.sql" }, breaking: [],
+    }));
+
+    const r = run(["--release", release, "--yes"], {
+      UPDATE_COMPOSE_FILES: "compose.yaml keeper.yaml",
+      STUB_RUNNING: "lares-console lares-chief-of-staff lares-keeper",
+    });
+    expect(r.code, r.stderr).toBe(0);
+    const output = parse(readFileSync(keeperCompose, "utf8")) as {
+      services: { "lares-keeper": { image?: string; entrypoint?: string[]; volumes?: Array<string | { source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    const service = output.services["lares-keeper"];
+    expect(service.image).toBe(KEEPER_NEW);
+    expect(service.entrypoint).toEqual(["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"]);
+    expect(service.volumes).toContainEqual(expect.objectContaining({ source: "/tmp/keeper-admission-fixture", target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false } }));
+    expect(readFileSync(keeperEnv, "utf8")).toBe(identityEnv);
+  });
+
   it("takes a backup FIRST, and only then touches anything", () => {
     const r = run(["--release", release, "--yes"]);
     expect(r.stderr).toBe("");
@@ -255,6 +332,7 @@ describe("updating this installation", () => {
     expect(calls()).not.toMatch(BEGIN);
     expect(r.stderr).toMatch(/backup/i);
     expect(compose()).toBe(composeYaml());
+    expectNormalAuthCompose();
   });
 
   it("stops when the backup was never verified, unless told otherwise in so many words", () => {
@@ -396,6 +474,7 @@ describe("updating this installation", () => {
     expect(compose()).not.toContain(OLD);
     expect(compose()).toContain("postgres:16-alpine");
     expect(compose()).toContain("restart: unless-stopped");
+    expectNormalAuthCompose();
   });
 
   it("says what it would do and does nothing, on a dry run", () => {
@@ -406,6 +485,7 @@ describe("updating this installation", () => {
     expect(calls()).not.toMatch(BEGIN);
     expect(r.stdout).toContain(CONSOLE_NEW);
     expect(compose()).toBe(composeYaml());
+    expectNormalAuthCompose();
   });
 
   it("reads the release's breaking changes out loud before it starts", () => {

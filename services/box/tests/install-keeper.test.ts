@@ -16,7 +16,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, rmSync, statSync, realpathSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -33,6 +33,7 @@ const SCRIPT = join(here, "..", "ops", "install.sh");
 const KEEPER_VAULT_ROOTS = join(here, "..", "ops", "keeper-vault-roots.py");
 const COMMITTED_KEEPER_COMPOSE = join(here, "..", "compose.lares-keeper.yaml");
 const COMMITTED_KEEPER_VAULT_COMPOSE = join(here, "..", "compose.lares-keeper-vault.yaml");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 const REAL_PNPM = execFileSync("/bin/sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).trim();
 
@@ -59,6 +60,13 @@ const release = (images: Record<string, string> = IMAGES) =>
     breaking: [],
   });
 
+/** Prepare disposable, test-owned custody before a fixture creates existing-install evidence. */
+function prepareFreshCustody() {
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1", LARES_SUBNET: "172.30.0.0/24" },
+  });
+}
+
 let dir: string, binDir: string, prefix: string, log: string, releaseFile: string;
 
 function stub(name: string, body = "exit 0") {
@@ -83,6 +91,7 @@ function run(args: string[] = ["--release", ""], input = answers, extraEnv: Reco
       env: {
         LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
         STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
+        LARES_MAINTENANCE_TESTING: "1",
         ...extraEnv,
       },
     });
@@ -118,7 +127,7 @@ function keeperEnv(): Record<string, string> {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "lares-install-keeper-"));
   binDir = join(dir, "bin"); mkdirSync(binDir);
-  prefix = join(dir, "root"); mkdirSync(prefix);
+  prefix = join(dir, "root"); mkdirSync(prefix); prefix = realpathSync(prefix);
   log = join(dir, "stubs.log"); writeFileSync(log, "");
   releaseFile = join(dir, "release.json"); writeFileSync(releaseFile, release());
   for (const name of ["docker", "systemctl", "useradd", "groupadd", "chown", "chmod", "ufw", "curl", "openssl"]) stub(name);
@@ -141,6 +150,12 @@ describe("the keeper the installer configures and starts", () => {
   it("normalizes an empty or root host prefix without probing live host directories", () => {
     expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "", "/srv/vault"], { encoding: "utf8" })).toBe("/srv/vault\n");
     expect(execFileSync("python3", [KEEPER_VAULT_ROOTS, "path", "/", "/var/lib/lares-vault-git"], { encoding: "utf8" })).toBe("/var/lib/lares-vault-git\n");
+  });
+
+  it("passes the canonical root prefix to the admission identity validator", () => {
+    const shellValue = execFileSync("/bin/bash", ["-c", 'PREFIX=""; printf %s "${PREFIX:-/}"'], { encoding: "utf8" });
+    expect(shellValue).toBe("/");
+    expect(readFileSync(SCRIPT, "utf8")).toContain('"${PREFIX:-/}"; then');
   });
 
   it("writes role defaults that bind any first-agent name to the owner just created", () => {
@@ -200,6 +215,7 @@ describe("the keeper the installer configures and starts", () => {
   }, 20_000);
 
   it("refuses a linked keeper-managed secret root", () => {
+    prepareFreshCustody();
     const root = join(prefix, "srv", "lares");
     const outside = join(dir, "outside");
     mkdirSync(root, { recursive: true });
@@ -255,6 +271,28 @@ describe("the keeper the installer configures and starts", () => {
     expect(env.COMPOSE_FILE).toBe(`"${join(prefix, "opt", "lares", "compose.lares-keeper.yaml")}:${join(prefix, "opt", "lares", "compose.lares-keeper-vault.yaml")}"`);
   });
 
+  it("renders the validated receipt identity into the exact read-only Keeper admission bind", () => {
+    expect(install().code).toBe(0);
+    const receipt = JSON.parse(readFileSync(join(prefix, "var/lib/lares-maintenance/custody/preparation.json"), "utf8"));
+    const env = keeperEnv();
+    const admission = join(prefix, "var/lib/lares-maintenance/admission");
+    expect(env.LARES_MAINTENANCE_ADMISSION_DIR).toBe(admission);
+    expect(env.LARES_MAINTENANCE_INSTALLATION_ID).toBe(receipt.installationId);
+    expect(env.LARES_MAINTENANCE_EPOCH).toBe(String(receipt.epoch));
+    const compose = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const keeper = compose.services["lares-keeper"];
+    expect(keeper.entrypoint).toEqual([
+      "/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission",
+      "${LARES_MAINTENANCE_INSTALLATION_ID:?validated installation id required}",
+      "${LARES_MAINTENANCE_EPOCH:?validated maintenance epoch required}", "--",
+    ]);
+    const mounts = keeper.volumes.filter((mount: any) => mount?.target === "/run/lares-maintenance/admission");
+    expect(mounts).toEqual([{
+      type: "bind", source: "${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}",
+      target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false },
+    }]);
+  });
+
   // THE DEFECT THIS CATCHES, AND WHY NO OTHER TEST HERE COULD. `bin/keeper.ts` does
   // `loadKeeperConfig()` and then `keeperPool(config.db)` as its first two statements, and
   // `keeperPool` reads `db.passwordFile` EAGERLY — `readFileSync` inside the Pool constructor,
@@ -286,8 +324,8 @@ describe("the keeper the installer configures and starts", () => {
     // targets rather than sources also keeps this file's "mount keeper-owned roots at the SAME
     // absolute path" rule honest — a mount that renamed a directory on the way in would move
     // the path out from under the keeper and this would say so.
-    const mounted = (doc.services["lares-keeper"].volumes as string[])
-      .map((v) => expand(v).split(":")[1]!);
+    const mounted = (doc.services["lares-keeper"].volumes as Array<string | { target: string }>)
+      .map((v) => typeof v === "string" ? expand(v).split(":")[1]! : expand(v.target));
 
     /** Every absolute path the rendered configuration names, wherever it sits in the tree. */
     const paths: string[] = [];
@@ -301,9 +339,23 @@ describe("the keeper the installer configures and starts", () => {
     expect(paths.length).toBeGreaterThan(5);
 
     // The in-container side of a runtime binding is a path inside the AGENT's container, not the
-    // keeper's; only those exact values (mount targets and DEADLINE_CALENDAR_FILE) are exempt.
+    // keeper's. This set also records configuration paths passed to Docker as host-side bind
+    // sources, which the keeper itself does not open.
     const chief = readKeeperConfig().lifecycle.defaultBindings["chief-of-staff"];
     const keeperHostMountSources = new Set<string>();
+    const admissionHostDirectory = config.lifecycle.maintenanceAdmission.hostDirectory;
+    const admissionMounts = doc.services["lares-keeper"].volumes.filter((mount: any) =>
+      mount && typeof mount === "object" && mount.target === "/run/lares-maintenance/admission",
+    );
+    expect(admissionMounts).toEqual([{
+      type: "bind",
+      source: "${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}",
+      target: "/run/lares-maintenance/admission",
+      read_only: true,
+      bind: { create_host_path: false },
+    }]);
+    expect(expand(admissionMounts[0].source)).toBe(admissionHostDirectory);
+    keeperHostMountSources.add(admissionHostDirectory);
     if (config.modelPurposeRuntimeDir) {
       // This is a host path passed to Docker when Keeper renders the chief's Compose file. It
       // need not exist inside Keeper at the same absolute path; the keeper compose mounts the
@@ -335,6 +387,28 @@ describe("the keeper the installer configures and starts", () => {
           "lares-keeper service at the same absolute path, and give run_keeper the variable.",
       ).toBe(true);
     }
+  });
+
+  it("mounts staged gateway-budget sources as exact read-only Keeper files only", () => {
+    const keeper = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const volumes = keeper.services["lares-keeper"].volumes as Array<string | Record<string, unknown>>;
+    const key = volumes.find(value => typeof value !== "string" && String(value.source).includes("GATEWAY_BUDGET_SERVICE_KEY_FILE")) as Record<string, any>;
+    const policy = volumes.find(value => typeof value !== "string" && String(value.source).includes("NATIVE_POLICY_FILE")) as Record<string, any>;
+    expect(key).toMatchObject({
+      type: "bind",
+      source: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE:-/dev/null}",
+      target: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_TARGET:-/run/secrets/gateway-budget-unused-key}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(policy).toMatchObject({
+      type: "bind",
+      source: "${LARES_NATIVE_POLICY_FILE:-/dev/null}",
+      target: "${LARES_NATIVE_POLICY_TARGET:-/etc/lares/native-policy-unused.json}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(Object.keys(keeper.services)).toEqual(["lares-keeper", "lares-egress-proxy"]);
   });
 
   it("installs the keeper's own compose file at the path it brings up, unchanged", () => {
@@ -423,6 +497,7 @@ describe("the keeper the installer configures and starts", () => {
     };
 
     it("binds the calendar for the chief of staff only when the file is there", () => {
+      prepareFreshCustody();
       putCalendar();
       expect(install().code).toBe(0);
       const { defaultBindings } = readKeeperConfig().lifecycle;
@@ -439,6 +514,7 @@ describe("the keeper the installer configures and starts", () => {
     });
 
     it("warns and binds nothing when the calendar is a link", () => {
+      prepareFreshCustody();
       mkdirSync(dirname(calendar()), { recursive: true });
       writeFileSync(join(dir, "elsewhere.json"), "[]");
       symlinkSync(join(dir, "elsewhere.json"), calendar());

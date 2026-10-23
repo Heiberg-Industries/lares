@@ -17,7 +17,7 @@ RUN pnpm --filter @lares/agent-kit build
 FROM node:24-bookworm-slim AS runtime
 ENV EVE_TELEMETRY_DISABLED=1
 RUN apt-get update && apt-get upgrade -y \
-    && apt-get install -y --no-install-recommends git openssh-client ca-certificates util-linux \
+    && apt-get install -y --no-install-recommends git openssh-client ca-certificates util-linux python3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=dockercli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
@@ -27,7 +27,11 @@ RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack 
     && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 WORKDIR /app
 COPY --from=build /app /app
+# The Keeper image's fixed main command must pass normal-state admission before it can read
+# keeper.json or any credentials. Keep the primitive baked into the image, never host-mounted.
+COPY --chmod=0555 services/box/ops/maintenance-admission.sh /usr/local/lib/lares/maintenance-admission-v1
 # Native TypeScript declaration compilation is a CI build step, never runtime
 # work. Preserve package/link layout and JS helpers; omit only its compiler.
 RUN find /app/node_modules/.pnpm -type f -path '*/node_modules/@typescript/typescript-linux-x64/lib/tsc' -delete
+ENTRYPOINT ["/usr/local/lib/lares/maintenance-admission-v1"]
 CMD ["/app/services/keeper/node_modules/.bin/tsx", "/app/services/keeper/bin/keeper.ts", "serve"]

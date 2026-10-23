@@ -2,14 +2,18 @@ import { parse } from 'yaml';
 import { expect,it,vi,afterEach } from 'vitest';
 import { renderAgentsCompose,nextAddress,type AgentContainer } from '../lib/compose-agents.js';
 const image='ghcr.io/example/runtime@sha256:'+'a'.repeat(64);
-const opts={network:'test_default',imageByRole:{creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',modelPrefix:'lares'};
+const opts={network:'test_default',imageByRole:{creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',maintenanceAdmission:{hostDirectory:'/var/lib/lares-maintenance/admission',installationId:'11111111-1111-4111-8111-111111111111',epoch:7},modelPrefix:'lares'};
 const agent:AgentContainer={name:'bookkeeper',role:'creative',address:'172.18.0.24',doors:[{kind:'slack',enabled:true},{kind:'telegram',enabled:false}],runtime:{databaseUrl:'postgres://lares_app@db/domain',workflowUrl:'postgres://lares_workflow@db/owned',gatewayUrl:'https://brain.example.com',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/srv/secrets/bookkeeper-key',passwordFile:'/srv/secrets/db',workflowPasswordFile:'/srv/secrets/bookkeeper-workflow'}};
 it('renders real YAML with own identity, two Slack secrets and stable read-only directory mount',()=>{
  const doc=parse(renderAgentsCompose([agent],opts)),s=doc.services['lares-bookkeeper'];
  expect(s.image).toBe(image);expect(s.read_only).toBe(true);expect(s.user).toBe('10001:10001');
+  expect(s.command).toEqual(['/usr/local/bin/lares-start']);
  expect(s.environment).toMatchObject({LARES_AGENT_NAME:'bookkeeper',LARES_DEFINITION_DIR:'/definition',SLACK_SIGNING_SECRET_FILE:'/run/secrets/bookkeeper-slack-signing-secret',WORKFLOW_POSTGRES_URL:'postgres://lares_workflow@db/owned',WORKFLOW_POSTGRES_PASSWORD_FILE:'/run/secrets/workflow-password'});
  expect(doc.secrets['bookkeeper-workflow-password']).toEqual({file:'/srv/secrets/bookkeeper-workflow'});
- expect(s.volumes).toEqual(['/srv/agents/bookkeeper:/definition:ro']);
+ expect(s.volumes).toContain('/srv/agents/bookkeeper:/definition:ro');
+ expect(s.volumes).toContainEqual({type:'bind',source:'/var/lib/lares-maintenance/admission',target:'/run/lares-maintenance/admission',read_only:true,bind:{create_host_path:false}});
+ expect(s.entrypoint).toEqual(['/usr/local/lib/lares/maintenance-admission-v1','/run/lares-maintenance/admission','11111111-1111-4111-8111-111111111111','7','--']);
+ expect(s.volumes.filter((mount:{target?:string})=>mount.target==='/run/lares-maintenance/admission')).toHaveLength(1);
  expect(JSON.stringify(doc)).not.toContain('telegram-token');expect(s.networks.test_default.ipv4_address).toBe(agent.address);
  expect(Object.keys(doc.services)).toEqual(['lares-bookkeeper']);
 });
@@ -17,10 +21,21 @@ it('mounts Keeper-prepared Vault sockets only for the chief runtime',()=>{
  const chief={...agent,role:'chief-of-staff' as const};
  const chiefOpts={...opts,imageByRole:{'chief-of-staff':image}};
  const without=parse(renderAgentsCompose([chief],chiefOpts)).services['lares-bookkeeper'];
- expect(without.volumes).toEqual(['/srv/agents/bookkeeper:/definition:ro']);
+ expect(without.command).toEqual(['/usr/local/bin/lares-start']);
+ expect(without.volumes).toContain('/srv/agents/bookkeeper:/definition:ro');
+ expect(without.volumes.some((mount:{target?:string})=>mount.target==='/run/lares-maintenance/admission')).toBe(true);
  const withVault=parse(renderAgentsCompose([chief],{...chiefOpts,vaultRuntimeDir:'/srv/lares/run/vault'})).services['lares-bookkeeper'];
  expect(withVault.volumes).toContainEqual({type:'bind',source:'/srv/lares/run/vault',target:'/run/lares-vault',read_only:true,bind:{create_host_path:false}});
  expect(JSON.stringify(withVault)).not.toContain('/srv/lares/vault');
+});
+it('requires a canonical receipt identity and normalized host admission path',()=>{
+ for(const maintenanceAdmission of [
+  undefined,
+  {hostDirectory:'relative/path',installationId:'11111111-1111-4111-8111-111111111111',epoch:7},
+  {hostDirectory:'/var/lib/lares/../admission',installationId:'11111111-1111-4111-8111-111111111111',epoch:7},
+  {hostDirectory:'/var/lib/lares-maintenance/admission',installationId:'not-a-uuid',epoch:7},
+  {hostDirectory:'/var/lib/lares-maintenance/admission',installationId:'11111111-1111-4111-8111-111111111111',epoch:0},
+ ]) expect(()=>renderAgentsCompose([agent],{...opts,maintenanceAdmission} as typeof opts)).toThrow();
 });
 it('mounts the Keeper model-purpose runtime socket directory read-only only for the chief',()=>{
  const chief={...agent,role:'chief-of-staff' as const},chiefOpts={...opts,imageByRole:{'chief-of-staff':image}};

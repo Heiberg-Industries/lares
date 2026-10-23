@@ -27,7 +27,9 @@ function assertProductionKeyPath() {
     'lares-keeper': digest, 'lares-egress-proxy': digest, 'lares-firewall-helper': digest,
     'chief-of-staff': digest, creative: digest,
   }, migrations: { box: '001_baseline.sql' }, breaking: [] }, {
-    project: 'vault-proof', network: 'vault-proof-network', subnet: '172.30.0.0/24', proxyAddress: '172.30.0.2',
+    project: 'vault-proof', network: 'vault-proof-network', subnet: '172.30.0.0/24',
+    maintenanceAdmission: { hostDirectory: '/var/lib/lares-maintenance/admission', installationId: '11111111-1111-4111-8111-111111111111', epoch: 7 },
+    proxyAddress: '172.30.0.2',
     dir: '/srv/lares', agentsDir: '/srv/lares/agents', retiredDir: '/srv/lares/retired', backupDir: '/srv/lares/backup',
     egressDir: '/srv/lares/egress', secretsDir: '/etc/lares/secrets', pgDatabase: 'lares_state',
     gatewayUrl: 'http://gateway:4000', ownerId: member, publicDoorOrigin: 'https://example.invalid',

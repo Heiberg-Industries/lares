@@ -20,6 +20,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, chmodSync, existsS
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse, stringify } from "yaml";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(here, "..", "ops", "rollback.sh");
@@ -31,6 +32,9 @@ const PREV = "b".repeat(64);
 const CUR = "c".repeat(64);
 const CONSOLE = "registry.example/lares-console";
 const ROLE = "registry.example/lares-chief-of-staff";
+const KEEPER = "registry.example/lares-keeper";
+const KEEPER_PREV = `${KEEPER}@sha256:${"d".repeat(64)}`;
+const KEEPER_CUR = `${KEEPER}@sha256:${"e".repeat(64)}`;
 
 let dir: string;
 let binDir: string;
@@ -52,11 +56,39 @@ function composeYaml(digest: string) {
     `    image: ${ROLE}@sha256:${digest}`,
     "  db:",
     "    image: postgres:16-alpine",
+    "    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]",
+    "    volumes:",
+    "      - /var/lib/lares/postgres:/var/lib/postgresql/data",
+    "      - type: bind",
+    "        source: /var/lib/lares-maintenance/postgres-auth",
+    "        target: /run/lares-auth",
+    "        read_only: true",
+    "        bind:",
+    "          create_host_path: false",
     "networks:",
     "  lares:",
     "    external: true",
     "",
   ].join("\n");
+}
+
+/** Disposable fixture composition derived from the committed Keeper service template. */
+function keeperComposeYaml(image: string, envFile: string) {
+  const template = readFileSync(join(here, "..", "compose.lares-keeper.yaml"), "utf8");
+  const committed = parse(template) as {
+    services: Record<string, Record<string, unknown>>;
+  };
+  const keeper = { ...committed.services["lares-keeper"]! };
+  keeper.image = image;
+  keeper.env_file = [envFile];
+  keeper.entrypoint = ["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"];
+  const volumes = keeper.volumes as Array<string | Record<string, unknown>>;
+  keeper.volumes = volumes.map((volume) => typeof volume === "string" ? volume :
+    volume.target === "/run/lares-maintenance/admission" ? {
+      ...volume, source: "/tmp/keeper-admission-fixture", read_only: true,
+      bind: { ...(volume.bind as Record<string, unknown>), create_host_path: false },
+    } : volume);
+  return stringify({ services: { "lares-keeper": keeper } });
 }
 
 /** One row of update_history, in the order the `record` stub stores its columns. */
@@ -177,6 +209,7 @@ function runScript(script: string, args: string[], env: Record<string, string> =
         LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
         TEST_RECORD: join(binDir, "record"),
         TEST_REAL_NODE: process.execPath,
+        LARES_MAINTENANCE_TESTING: "1",
         ...env,
       },
       encoding: "utf8",
@@ -189,6 +222,7 @@ function runScript(script: string, args: string[], env: Record<string, string> =
 }
 
 const run = (args: string[], env: Record<string, string> = {}) => runScript(SCRIPT, args, env);
+const runUpdate = (args: string[], env: Record<string, string> = {}) => runScript(UPDATE_SCRIPT, args, env);
 const calls = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
 /** Where a call matching `re` first appears in the log, or -1 — the ordering primitive. */
 function at(re: RegExp): number {
@@ -200,8 +234,53 @@ const UP = /docker compose .*up -d/;
 const READ = /record previous-images/;
 const FINISH = /record finish/;
 const compose = () => readFileSync(composeFile, "utf8");
+function expectNormalAuthCompose() {
+  const db = (parse(compose()) as { services: Record<string, { command?: string | string[]; volumes?: Array<string | { type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> }> }).services.db!;
+  expect(Array.isArray(db.command) ? db.command.join(" ") : db.command).toContain("hba_file=/run/lares-auth/pg_hba.conf");
+  const mount = db.volumes?.find((volume) => typeof volume !== "string" && volume.target === "/run/lares-auth");
+  expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
+  if (process.env.CI === "true") {
+    const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
+      services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+    const effectiveAuthMount = effective.services.db?.volumes?.find((volume) => volume.source === "/var/lib/lares-maintenance/postgres-auth" && volume.target === "/run/lares-auth");
+    expect(effectiveAuthMount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true });
+    const bind = effectiveAuthMount?.bind;
+    expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
+      (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
+  }
+}
 
 describe("putting the previous version back", () => {
+  it("keeps the committed Keeper guard fields through a failed update and the real rollback script", () => {
+    const keeperCompose = join(composeDir, "keeper.yaml");
+    const keeperEnv = join(composeDir, "keeper.env");
+    const identityEnv = "LARES_MAINTENANCE_INSTALLATION_ID=fixture-installation-id\nLARES_MAINTENANCE_EPOCH=7\n";
+    writeFileSync(keeperCompose, keeperComposeYaml(KEEPER_PREV, keeperEnv));
+    writeFileSync(keeperEnv, identityEnv);
+    const release = join(dir, "release.json");
+    writeFileSync(release, JSON.stringify({
+      release: "2026-10-01",
+      images: { console: `${CONSOLE}@sha256:${CUR}`, "chief-of-staff": `${ROLE}@sha256:${CUR}`, "lares-keeper": KEEPER_CUR },
+      migrations: { box: "001_baseline.sql" }, breaking: [],
+    }));
+    const filesEnv = { UPDATE_COMPOSE_FILES: "compose.yaml keeper.yaml", STUB_RUNNING: "lares-console lares-chief-of-staff lares-keeper" };
+    const updated = runUpdate(["--release", release, "--yes"], { ...filesEnv, STUB_UP_FAIL: "1" });
+    expect(updated.code, updated.stderr).toBe(70);
+    expect(readFileSync(keeperCompose, "utf8")).toContain(KEEPER_CUR);
+    const rolledBack = run(["--yes"], filesEnv);
+    expect(rolledBack.code, rolledBack.stderr).toBe(0);
+    const output = parse(readFileSync(keeperCompose, "utf8")) as {
+      services: { "lares-keeper": { image?: string; entrypoint?: string[]; volumes?: Array<string | { source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+    };
+    const service = output.services["lares-keeper"];
+    expect(service.image).toBe(KEEPER_PREV);
+    expect(service.entrypoint).toEqual(["/usr/local/lib/lares/maintenance-admission-v1", "/run/lares-maintenance/admission", "fixture-installation-id", "7", "--"]);
+    expect(service.volumes).toContainEqual(expect.objectContaining({ source: "/tmp/keeper-admission-fixture", target: "/run/lares-maintenance/admission", read_only: true, bind: { create_host_path: false } }));
+    expect(readFileSync(keeperEnv, "utf8")).toBe(identityEnv);
+  });
+
   it("pins the host recorder to the application role and password file", () => {
     const r = run(["--dry-run"], {
       LARES_UPDATE_RECORDER: "",
@@ -235,6 +314,7 @@ describe("putting the previous version back", () => {
     // Everything that was not in the record is left exactly as it was.
     expect(compose()).toContain("postgres:16-alpine");
     expect(compose()).toContain("restart: unless-stopped");
+    expectNormalAuthCompose();
   });
 
   it("runs its steps in exactly one order, and records the rollback last", () => {
@@ -413,6 +493,7 @@ describe("putting the previous version back", () => {
     expect(r.code).toBe(70);
     expect(r.stderr).toMatch(/could not be started/);
     expect(compose()).toBe(composeYaml(PREV));
+    expectNormalAuthCompose();
     expect(calls()).not.toMatch(FINISH);
     expect(readFileSync(state, "utf8")).not.toContain("rolled-back");
   });
@@ -432,6 +513,7 @@ describe("putting the previous version back", () => {
     expect(calls()).not.toMatch(/docker compose/);
     expect(at(READ)).toBeGreaterThan(-1);
     expect(compose()).toBe(composeYaml(CUR));
+    expectNormalAuthCompose();
   });
 
   it("refuses an argument it does not know, rather than guessing what was meant", () => {

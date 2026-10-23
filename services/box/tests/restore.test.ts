@@ -1,13 +1,13 @@
 // restore.sh puts an installation back from a nightly restic snapshot onto a fresh server
 // (docs/install.md, "Restoring onto a new server"). These tests drive it with logging stubs
 // on PATH (restic, docker, pnpm, id, df) and a temporary prefix, the same pattern as
-// tests/setup-backups.test.ts. Nothing here touches a real repository, Docker or Postgres.
+// tests/setup-backups.test.ts. CI asks Compose to resolve the retained stack file after restore,
+// without starting containers or touching Postgres.
 //
 // The properties that matter most are about what does NOT happen: every refusal must leave
 // the server exactly as it was (no service stopped, no database dropped), a bad dump name must
 // refuse before any database command, and the private scratch folder must be gone afterwards,
-// pass or fail. A stub proves the order of the steps and the shape of the commands; only a run
-// against a real restic repository and a real Postgres proves the restore itself.
+// pass or fail. A stub proves the order of the restore steps and the shape of the commands.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import {
@@ -22,6 +22,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const BOX = join(here, "..");
 const SCRIPT = join(BOX, "ops", "restore.sh");
 const NEWEST_SQL = readdirSync(join(BOX, "sql")).filter((f) => /^[0-9].*\.sql$/.test(f)).sort().pop()!;
+const RESTORE_FIXTURE_CADDY_IMAGE = (JSON.parse(readFileSync(
+  join(here, "..", "..", "..", "releases", "2026-10-21-rc.12.json"), "utf8",
+)) as { images: { caddy: string } }).images.caddy;
 
 let dir: string, binDir: string, prefix: string, log: string, archive: string, scratchParent: string, ledgerFile: string;
 const appDatabase = () => ({ host: '127.0.0.1', port: 5432, database: 'lares_state', user: 'lares_app', passwordFile: join(prefix, 'etc/lares/secrets/database-password') });
@@ -84,12 +87,33 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
       RESTORE_OPERATOR_MODE: mode("etc/lares/operator/database-password"),
       RESTORE_APP_MODE: mode("etc/lares/secrets/database-password"),
       RESTORE_FINANCIAL_MODE: mode("etc/lares/secrets/financial-database-password"),
+      LARES_MAINTENANCE_TESTING: "1",
       ...opts.env,
     },
   });
   return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr, all: r.stdout + r.stderr };
 }
 const base = () => ["--snapshot", "abc123", "--yes", "--old-server-stopped"];
+function expectEffectiveRestoreAuth() {
+  if (process.env.CI !== "true") return;
+  const result = spawnSync("docker", ["compose", "-f", join(prefix, "opt/lares/compose.yaml"), "config", "--format", "json"], { encoding: "utf8" });
+  expect(result.status, result.stderr).toBe(0);
+  const effective = JSON.parse(result.stdout) as {
+    services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+  };
+  expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
+  const effectiveAuthMount = effective.services.db?.volumes?.find((volume) =>
+    volume.source === join(prefix, "var/lib/lares-maintenance/postgres-auth") && volume.target === "/run/lares-auth");
+  expect(effectiveAuthMount).toMatchObject({
+    type: "bind",
+    source: join(prefix, "var/lib/lares-maintenance/postgres-auth"),
+    target: "/run/lares-auth",
+    read_only: true,
+  });
+  const bind = effectiveAuthMount?.bind;
+  expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
+    (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
+}
 const logLines = () => readFileSync(log, "utf8").split("\n").filter(Boolean);
 const idx = (re: RegExp, from = 0) => logLines().findIndex((l, i) => i >= from && re.test(l));
 const lastIdx = (re: RegExp) => logLines().map((l, i) => (re.test(l) ? i : -1)).filter((i) => i >= 0).pop() ?? -1;
@@ -117,7 +141,7 @@ esac
 `); chmodSync(stat, 0o755);
 
   // A finished fresh install: stack, keeper, secrets, the owner-copied files, no agents.
-  write("opt/lares/compose.yaml", "services:\n  caddy:\n    environment:\n      LARES_DOMAIN: example.test\n");
+  write("opt/lares/compose.yaml", `services:\n  caddy:\n    image: ${RESTORE_FIXTURE_CADDY_IMAGE}\n    environment:\n      LARES_DOMAIN: example.test\n  db:\n    image: postgres:16\n    command: [postgres, -c, hba_file=/run/lares-auth/pg_hba.conf]\n    volumes:\n      - ${prefix}/var/lib/lares/postgres:/var/lib/postgresql/data\n      - type: bind\n        source: ${prefix}/var/lib/lares-maintenance/postgres-auth\n        target: /run/lares-auth\n        read_only: true\n        bind:\n          create_host_path: false\n`);
   write("opt/lares/compose.lares-keeper.yaml", "services: {}\n");
   write("etc/lares/installation.env", "LARES_DOMAIN=example.test\n");
   write("etc/lares/keeper.env", "LARES_ROOT=/srv/lares\n");
@@ -236,6 +260,37 @@ describe("restore.sh: a good restore", () => {
   it("migrates with the database password in the environment, never on the command line", () => {
     expect(run(base()).code).toBe(0);
     expect(logLines().join("\n")).not.toContain("not-a-real-db-password");
+  });
+
+  it("preserves complete external armed custody sentinels byte-for-byte through restore", () => {
+    const sentinels = [
+      ["var/lib/lares-maintenance/custody/preparation.json", '{"complete":false,"sentinel":"armed-receipt"}\n', 0o600],
+      ["var/lib/lares-maintenance/admission/intent.json", '{"state":"armed","sentinel":"armed-intent"}\n', 0o444],
+      ["var/lib/lares-maintenance/postgres-auth/pg_hba.conf", "sentinel hba: armed custody\n", 0o644],
+      ["var/lib/lares-maintenance/custody/command.lock", "sentinel command lock\n", 0o600],
+      ["var/lib/lares-maintenance/admission/service-gate.lock", "sentinel service gate lock\n", 0o444],
+    ] as const;
+    const before = sentinels.map(([rel, contents, mode]) => {
+      write(rel, contents, mode);
+      const file = join(prefix, rel);
+      return { rel, contents, mode, inode: statSync(file, { bigint: true }).ino };
+    });
+    // A snapshot must never replace host-owned external custody, even if it contains a
+    // same-named path. The restore command only restores application data under srv/.
+    for (const [rel] of sentinels) writeArchive(rel, "untrusted archived custody\n");
+    expect(run(base()).code).toBe(0);
+    expectEffectiveRestoreAuth();
+    for (const sentinel of before) {
+      const file = join(prefix, sentinel.rel);
+      expect(readFileSync(file, "utf8"), sentinel.rel).toBe(sentinel.contents);
+      expect(statSync(file, { bigint: true }).mode & 0o777n, sentinel.rel).toBe(BigInt(sentinel.mode));
+      expect(statSync(file, { bigint: true }).ino, sentinel.rel).toBe(sentinel.inode);
+    }
+  });
+
+  it("does not recreate missing external custody while restoring application data", () => {
+    expect(run(base()).code).toBe(0);
+    expect(existsSync(join(prefix, "var/lib/lares-maintenance"))).toBe(false);
   });
 
   it("copies the folders from the snapshot with their modes, and leaves nothing in the scratch root", () => {

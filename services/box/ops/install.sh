@@ -604,6 +604,20 @@ if [ "$DRY_RUN" -eq 0 ]; then
   esac
 fi
 
+LARES_NETWORK="${LARES_NETWORK:-lares-network}"
+LARES_SUBNET="${LARES_SUBNET:-172.30.0.0/24}"
+
+# Establish or validate the external database-authentication boundary before the installer
+# creates a secret or asks the wizard to write installation settings. Fresh custody is only
+# created after screen one accepted a new installation; existing state is never repaired here.
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ "$REPAIR_MODE" -eq 0 ]; then
+    python3 "$HERE/maintenance-custody.py" prepare-fresh "${PREFIX:-/}" "$LARES_SUBNET" --confirm-fresh || die "fresh database authentication custody could not be prepared; any partial evidence was retained." "$EX_REFUSED"
+  else
+    python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "this installation has missing or invalid database authentication custody; no repair was attempted." "$EX_REFUSED"
+  fi
+fi
+
 # --- 7. the installation's own credentials -----------------------------------------
 # OWNER DECISION: a secret is a FILE under /etc/lares/secrets/, root:lares 0440, mounted
 # into containers as a Docker secret. Never an environment value (they leak into
@@ -1190,9 +1204,6 @@ run_wizard() {
 # and every one of those names is a digest out of the release file (the release rules refuse
 # anything else), so promise 3 in this file's header holds without this script fetching an
 # image itself.
-LARES_NETWORK="${LARES_NETWORK:-lares-network}"
-LARES_SUBNET="${LARES_SUBNET:-172.30.0.0/24}"
-
 run_stack() {
   local compose_file="$PREFIX/opt/lares/compose.yaml"
   local caddyfile="$PREFIX/etc/lares/Caddyfile"
@@ -1206,6 +1217,7 @@ run_stack() {
   local gateway_start="$PREFIX/etc/lares/gateway-start.sh"
   local caddy_data="$PREFIX/var/lib/lares/caddy"
   local db_data="$PREFIX/var/lib/lares/postgres"
+  local database_auth_dir="$PREFIX/var/lib/lares-maintenance/postgres-auth"
   local taste_dir="$PREFIX/srv/taste"
   # The same overridable names run_database and run_first_owner read, with the same defaults.
   local db_name="${PGDATABASE:-lares_state}"
@@ -1233,6 +1245,7 @@ run_stack() {
   provider_model=$(read_setting LARES_MODEL "$INSTALL_ENV")
   [ -n "$provider_model" ] || die "the model is not written down in $INSTALL_ENV, so the gateway's configuration cannot be rendered. Nothing has been brought up." "$EX_REFUSED"
 
+  python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "the installation's database authentication custody is missing or invalid; nothing was rendered or started." "$EX_REFUSED"
   do_or_say mkdir -p "$(dirname "$compose_file")" "$(dirname "$caddyfile")" "$(dirname "$gateway_config")" "$caddy_data" "$db_data"
   [ ! -L "$taste_dir" ] || die "$taste_dir is a symbolic link; refusing to mount it into the console." "$EX_REFUSED"
   do_or_say mkdir -p "$taste_dir"
@@ -1248,12 +1261,12 @@ run_stack() {
   # (two directories, mounted read-write) and reads the release file and, when there is one,
   # the installation's deadline calendar (read-only, mounted only if it exists: docker would
   # otherwise create the missing source as an empty root-owned folder).
-  local -a render_mounts=(--rw "$(dirname "$compose_file")" --rw "$(dirname "$gateway_config")" --ro "$RELEASE_FILE")
+  local -a render_mounts=(--rw "$(dirname "$compose_file")" --rw "$(dirname "$gateway_config")" --ro "$RELEASE_FILE" --ro "${PREFIX:-/}/var/lib/lares-maintenance")
   [ ! -d "$PREFIX/srv/lares/installation" ] || render_mounts+=(--ro "$PREFIX/srv/lares/installation")
   if ! engine_run "${render_mounts[@]}" bin/render-stack.ts \
       "$RELEASE_FILE" "$tmp" "$SECRETS_DIR" "$gateway_config" "$caddyfile" \
       "$caddy_data" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$domain" \
-      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation"; then
+      "$db_name" "$model_alias" "$provider_model" "$gateway_start" "$allowed_emails" "$PREFIX/run/lares" "$owner_id" "$owner_home_tz" "$taste_dir" "$PREFIX/srv/lares/installation" "$database_auth_dir" "${PREFIX:-/}"; then
     rm -f "$tmp"
     # Not "the release file was refused": this one call also installs the gateway's start script,
     # and a missing script is not a bad release. Naming the wrong thing is the failure this
@@ -1324,9 +1337,10 @@ BOOTSTRAP_DB_CONTAINER_ID=""
 run_database_bootstrap() {
   local db_name="${PGDATABASE:-lares_state}" db_host="${PGHOST:-127.0.0.1}" db_port="${PGPORT:-5432}"
   local compose_file="$PREFIX/opt/lares/compose.bootstrap.yaml" final_file="$PREFIX/opt/lares/compose.yaml"
-  local db_data="$PREFIX/var/lib/lares/postgres" marker="$PREFIX/etc/lares/database-bootstrap-complete"
+  local db_data="$PREFIX/var/lib/lares/postgres" database_auth_dir="$PREFIX/var/lib/lares-maintenance/postgres-auth" marker="$PREFIX/etc/lares/database-bootstrap-complete"
   local old_container role_image
   local tmp="$compose_file.partial" tries=0
+  python3 "$HERE/maintenance-custody.py" validate "${PREFIX:-/}" "$LARES_SUBNET" || die "the installation's database authentication custody is missing or invalid; bootstrap was refused." "$EX_REFUSED"
   [ "$db_name" = "lares_state" ] || die "this database cutover is defined for lares_state. Refusing the PGDATABASE override '$db_name'." "$EX_REFUSED"
   [ ! -f "$marker" ] || { say "database roles and template — already prepared by this installer."; return; }
   [ -d "$db_data" ] && [ -n "$(ls -A "$db_data" 2>/dev/null)" ] \
@@ -1335,8 +1349,8 @@ run_database_bootstrap() {
 
   mkdir -p "$(dirname "$compose_file")" "$(dirname "$db_data")"
   rm -f "$tmp"
-  if ! engine_run --rw "$(dirname "$compose_file")" --ro "$RELEASE_FILE" bin/render-database-bootstrap.ts \
-      "$RELEASE_FILE" "$tmp" "$OPERATOR_PASSWORD_FILE" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET"; then
+  if ! engine_run --rw "$(dirname "$compose_file")" --ro "$RELEASE_FILE" --ro "${PREFIX:-/}/var/lib/lares-maintenance" bin/render-database-bootstrap.ts \
+      "$RELEASE_FILE" "$tmp" "$OPERATOR_PASSWORD_FILE" "$db_data" "$LARES_NETWORK" "$LARES_SUBNET" "$database_auth_dir" "${PREFIX:-/}"; then
     rm -f "$tmp"
     die "the database-only bootstrap file could not be rendered." "$EX_REFUSED"
   fi
@@ -1683,7 +1697,10 @@ run_keeper() {
   # The renderer reads the release file, the keeper.json already on this box and the installation's
   # deadline calendar, and writes its two outputs next to keeper.json. All of that lives under two
   # directories; the secrets folder is not needed (the renderer is only told its path).
-  local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE")
+  # The one-shot renderer validates the completed normal receipt before reading keeper.json.
+  # Give that renderer a read-only view of the maintenance root; the long-running Keeper gets
+  # only the exact admission child through its own Compose bind.
+  local -a keeper_mounts=(--rw "$(dirname "$keeper_config")" --ro "$RELEASE_FILE" --ro "$PREFIX/var/lib/lares-maintenance")
   [ ! -d "$root/installation" ] || keeper_mounts+=(--ro "$root/installation")
   if ! engine_run "${keeper_mounts[@]}" bin/render-keeper-config.ts \
       "$RELEASE_FILE" "$tmp" "$env_tmp" "$keeper_config" \
@@ -1691,7 +1708,7 @@ run_keeper() {
       "$SECRETS_DIR" "$socket_dir" "$host_socket_dir" \
       "$LARES_NETWORK" "$LARES_SUBNET" "$LARES_PROXY_ADDRESS" "$gateway_url" \
       "$db_name" "$OWNER_ID" "$(read_setting LARES_OWNER_EMAIL "$INSTALL_ENV")" \
-      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")"; then
+      "$(read_setting LARES_DOMAIN "$INSTALL_ENV")" "$(read_setting OWNER_HOME_TZ "$INSTALL_ENV")" "${PREFIX:-/}"; then
     rm -f "$tmp" "$env_tmp"
     die "the keeper's configuration could not be rendered from '$RELEASE_FILE' and the keeper.json already on this box (the reason is printed above; $keeper_config itself is untouched). The keeper has not been configured or started, and everything written before this — every secret, $INSTALL_ENV, the stack and its containers, the database, the owner — is left exactly as it is." "$EX_REFUSED"
   fi
