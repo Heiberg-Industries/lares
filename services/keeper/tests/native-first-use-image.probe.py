@@ -1,5 +1,5 @@
 """CI-only end-to-end first-use proof: compiled Eve, production Keeper and local fixtures."""
-import hashlib, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tempfile, time, uuid
+import hashlib, io, json, os, pathlib, re, secrets, select, shutil, subprocess, sys, tarfile, tempfile, time, uuid
 
 if os.environ.get('CI') != 'true':
     raise SystemExit('Combined native first-use proof runs only in disposable CI')
@@ -212,6 +212,8 @@ COMPILED_CLIENT_RESULT_STATUSES={'completed','failed','waiting','unknown'}
 MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','native-dispatch','native-response'}
 MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','apiKeyPresent','ticketPresent','contentTypeJson',
     'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved'}
+MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
+MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
 
 def validated_model_request_diagnostic(raw):
     if len(raw)>2048:return 'unknown'
@@ -227,24 +229,95 @@ def validated_model_request_diagnostic(raw):
         any(type(value) is not bool for value in parsed['checks'].values())):return 'unknown'
     return parsed
 
-def gateway_model_request_diagnostic(name):
-    path=root/'gateway-model-request-diagnostic.json'
+def validated_model_purpose_diagnostic(raw):
+    if len(raw)>1024:return 'unknown'
+    try:parsed=json.loads(raw)
+    except (TypeError,ValueError):return 'unknown'
+    expected={'schema','requestCount','stage','statusCode','checks'}
+    if (type(parsed) is not dict or set(parsed)!=expected or type(parsed.get('schema')) is not int or parsed['schema']!=1 or
+        type(parsed.get('requestCount')) is not int or parsed['requestCount'] not in (0,1) or
+        parsed.get('stage') not in MODEL_PURPOSE_DIAGNOSTIC_STAGES or
+        type(parsed.get('statusCode')) is not int or not 0<=parsed['statusCode']<=599 or
+        type(parsed.get('checks')) is not dict or set(parsed['checks'])!=MODEL_PURPOSE_DIAGNOSTIC_CHECKS or
+        any(type(value) is not bool for value in parsed['checks'].values())):return 'unknown'
+    return parsed
+
+def bounded_marker_archive(name,filename):
+    process=None;captured=bytearray();deadline=time.monotonic()+5
     try:
-        copied=run('docker','cp',name+':/tmp/lares-gateway-model-request.json',str(path),check=False,timeout=5)
-        if copied.returncode!=0 or not path.is_file() or path.stat().st_size>2048:return 'unknown'
-        return validated_model_request_diagnostic(path.read_bytes())
-    except Exception:return 'unknown'
+        process=subprocess.Popen(['docker','cp',name+':/tmp/'+filename,'-'],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+        while time.monotonic()<deadline:
+            ready,_,_=select.select([process.stdout],[],[],max(0,deadline-time.monotonic()))
+            if not ready:return {'state':'timeout'}
+            chunk=os.read(process.stdout.fileno(),min(4096,16385-len(captured)))
+            if not chunk:break
+            captured.extend(chunk)
+            if len(captured)>16384:return {'state':'oversize'}
+        if process.poll() is None:process.wait(timeout=max(.01,deadline-time.monotonic()))
+        if process.returncode!=0:return {'state':'capture-failed'}
+        return {'state':'captured','archive':bytes(captured)}
+    except Exception:return {'state':'capture-failed'}
+    finally:
+        if process is not None:
+            if process.poll() is None:process.kill()
+            try:process.wait(timeout=1)
+            except subprocess.TimeoutExpired:process.kill();process.wait(timeout=1)
+            if process.stdout is not None:process.stdout.close()
+
+def marker_from_archive(raw,filename,validator):
+    if len(raw)>16384:return {'state':'oversize'}
+    try:
+        with tarfile.open(fileobj=io.BytesIO(raw),mode='r:') as archive:
+            members=archive.getmembers()
+            if len(members)!=1:return {'state':'invalid'}
+            member=members[0]
+            if member.name!=filename or not member.isreg():return {'state':'invalid'}
+            if member.size>2048:return {'state':'oversize'}
+            with archive.extractfile(member) as source:record=validator(source.read(2049))
+        return {'state':'present','record':record} if record!='unknown' else {'state':'invalid'}
+    except (tarfile.TarError,OSError,ValueError,TypeError):return {'state':'invalid'}
+
+def collect_marker(name,filename,validator):
+    captured=bounded_marker_archive(name,filename)
+    if captured['state']!='captured':return {'state':captured['state']}
+    return marker_from_archive(captured['archive'],filename,validator)
+
+def gateway_model_request_diagnostic(name):
+    return collect_marker(name,'lares-gateway-model-request.json',validated_model_request_diagnostic)
+
+def keeper_model_purpose_diagnostic(name,wait_for_request=False):
+    deadline=time.monotonic()+1 if wait_for_request else 0
+    while True:
+        marker=collect_marker(name,'lares-model-purpose-transport.json',validated_model_purpose_diagnostic)
+        if (not wait_for_request or marker.get('state')!='present' or
+            marker['record'].get('requestCount')!=0):return marker
+        if time.monotonic()>=deadline:return {'state':'pending'}
+        time.sleep(min(.05,max(0,deadline-time.monotonic())))
+
+def first_use_model_diagnostics(gateway_name,keeper_name):
+    return {'gateway':gateway_model_request_diagnostic(gateway_name),
+        'keeper':keeper_model_purpose_diagnostic(keeper_name,wait_for_request=True)}
 
 def invoke_first_use_and_capture(invoke, collect, proof):
     """Collect bounded gateway metadata on both success and failure, before fixture cleanup."""
     try:
         result=invoke()
     except Exception:
-        try:proof['gatewayModelRequestDiagnostic']=collect()
-        except Exception:proof['gatewayModelRequestDiagnostic']='unknown'
+        try:
+            records=collect()
+            proof['gatewayModelRequestDiagnostic']=records['gateway']
+            proof['keeperModelPurposeDiagnostic']=records['keeper']
+        except Exception:
+            proof['gatewayModelRequestDiagnostic']={'state':'capture-failed'}
+            proof['keeperModelPurposeDiagnostic']={'state':'capture-failed'}
         raise
-    try:proof['gatewayModelRequestDiagnostic']=collect()
-    except Exception:proof['gatewayModelRequestDiagnostic']='unknown'
+    try:
+        records=collect()
+        proof['gatewayModelRequestDiagnostic']=records['gateway']
+        proof['keeperModelPurposeDiagnostic']=records['keeper']
+    except Exception:
+        proof['gatewayModelRequestDiagnostic']={'state':'capture-failed'}
+        proof['keeperModelPurposeDiagnostic']={'state':'capture-failed'}
     return result
 
 def unknown_compiled_client_result_summary():
@@ -734,7 +807,8 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     host_socket_dir=root/'host-socket';host_socket_dir.mkdir(mode=0o755)
     lares_dir=root/'run-sockets';lares_dir.mkdir(mode=0o755)
     keeper_name=network+'-keeper'
-    keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'--mount',f'type=volume,src={volume},dst=/var/lib/lares',
+    keeper_cmd=['run','-d','--name',keeper_name,'--network',network,'-e','CI=true','-e','LARES_GATEWAY_PROBE_DIAGNOSTICS=1',
+      '--mount',f'type=volume,src={volume},dst=/var/lib/lares',
       '--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={config_dir_path},dst=/etc/lares/keeper.json,readonly',
       '--mount',f'type=bind,src={install_root},dst=/fixture-install',
       '--mount',f'type=bind,src={host_socket_dir},dst=/run/lares-host','--mount',f'type=bind,src={run_dir},dst=/run/lares',
@@ -1089,8 +1163,10 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     cases['compiledChiefRuntimeReady']=True
 
     stage = 'console-signature-and-first-model-request'
+    proof['gatewayModelRequestDiagnosticBeforeFirstUse']=gateway_model_request_diagnostic(network+'-gateway')
+    proof['keeperModelPurposeDiagnosticBeforeFirstUse']=keeper_model_purpose_diagnostic(keeper_name)
     client_result=invoke_first_use_and_capture(invoke_compiled_client,
-      lambda:gateway_model_request_diagnostic(network+'-gateway'),proof)
+      lambda:first_use_model_diagnostics(network+'-gateway',keeper_name),proof)
     request_result=json.loads(client_result)
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')

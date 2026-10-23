@@ -1009,11 +1009,13 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
 
     def test_first_use_reader_accepts_only_fixed_schema(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
-        names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic"}
+        names={"MODEL_REQUEST_DIAGNOSTIC_STAGES","MODEL_REQUEST_DIAGNOSTIC_CHECKS","validated_model_request_diagnostic",
+            "MODEL_PURPOSE_DIAGNOSTIC_STAGES","MODEL_PURPOSE_DIAGNOSTIC_CHECKS","validated_model_purpose_diagnostic",
+            "marker_from_archive","collect_marker","keeper_model_purpose_diagnostic","first_use_model_diagnostics"}
         nodes=[node for node in source.body if isinstance(node,(ast.Assign,ast.FunctionDef)) and
             ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
              (isinstance(node,ast.FunctionDef) and node.name in names))]
-        namespace={"json":json}
+        namespace={"json":json,"io":io,"tarfile":tarfile}
         exec(compile(ast.Module(body=nodes,type_ignores=[]),"first-use-diagnostic-reader","exec"),namespace)
         record={"schema":1,"requestCount":1,"stage":"native-response","statusCode":400,
             "checks":{name:False for name in namespace["MODEL_REQUEST_DIAGNOSTIC_CHECKS"]},
@@ -1023,6 +1025,45 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         contaminated={**record,"unknown_private_key":"do not retain"}
         self.assertEqual(namespace["validated_model_request_diagnostic"](json.dumps(contaminated).encode()),"unknown")
         self.assertEqual(namespace["validated_model_request_diagnostic"]((b" "*2049)),"unknown")
+
+        purpose={"schema":1,"requestCount":1,"stage":"headers","statusCode":400,
+            "checks":{name:False for name in namespace["MODEL_PURPOSE_DIAGNOSTIC_CHECKS"]}}
+        purpose_raw=json.dumps(purpose,separators=(",",":")).encode()
+        self.assertEqual(namespace["validated_model_purpose_diagnostic"](purpose_raw),purpose)
+        malformed={**purpose,"rawBody":"never retain"}
+        self.assertEqual(namespace["validated_model_purpose_diagnostic"](json.dumps(malformed).encode()),"unknown")
+
+        archive=io.BytesIO()
+        with tarfile.open(fileobj=archive,mode="w:") as tar:
+            info=tarfile.TarInfo("lares-model-purpose-transport.json");info.size=len(purpose_raw)
+            tar.addfile(info,io.BytesIO(purpose_raw))
+        parsed=namespace["marker_from_archive"](archive.getvalue(),"lares-model-purpose-transport.json",
+            namespace["validated_model_purpose_diagnostic"])
+        self.assertEqual(parsed,{"state":"present","record":purpose})
+        self.assertEqual(namespace["marker_from_archive"](archive.getvalue(),"other.json",
+            namespace["validated_model_purpose_diagnostic"]),{"state":"invalid"})
+        namespace["bounded_marker_archive"]=lambda _name,_filename:{"state":"captured","archive":archive.getvalue()}
+        self.assertEqual(namespace["collect_marker"]("fixture","lares-model-purpose-transport.json",
+            namespace["validated_model_purpose_diagnostic"]),{"state":"present","record":purpose})
+        namespace["bounded_marker_archive"]=lambda _name,_filename:{"state":"capture-failed"}
+        self.assertEqual(namespace["collect_marker"]("fixture","marker.json",lambda _raw:purpose),{"state":"capture-failed"})
+
+        class FakeTime:
+            current=0
+            def monotonic(self):return self.current
+            def sleep(self,seconds):self.current+=seconds
+        namespace["time"]=FakeTime()
+        later={**purpose,"requestCount":1,"stage":"headers"}
+        markers=iter(({"state":"present","record":{**purpose,"requestCount":0,"stage":"idle","statusCode":0,
+                    "checks":{name:False for name in namespace["MODEL_PURPOSE_DIAGNOSTIC_CHECKS"]}}},
+            {"state":"present","record":later}))
+        namespace["collect_marker"]=lambda *_args:next(markers)
+        self.assertEqual(namespace["keeper_model_purpose_diagnostic"]("fixture",wait_for_request=True),
+            {"state":"present","record":later})
+        namespace["gateway_model_request_diagnostic"]=lambda name:{"container":name}
+        namespace["keeper_model_purpose_diagnostic"]=lambda name,wait_for_request=False:{"container":name,"wait":wait_for_request}
+        self.assertEqual(namespace["first_use_model_diagnostics"]("gateway-container","keeper-container"),
+            {"gateway":{"container":"gateway-container"},"keeper":{"container":"keeper-container","wait":True}})
 
     def test_first_use_failure_collects_before_cleanup_and_preserves_error(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
@@ -1036,7 +1077,8 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         def collect():
             self.assertNotIn("cleanup",events)
             events.append("collect")
-            return {"stage":"native-response","statusCode":400}
+            return {"gateway":{"state":"present","record":{"stage":"native-response","statusCode":400}},
+                "keeper":{"state":"present","record":{"stage":"headers","statusCode":400}}}
         try:
             namespace["invoke_first_use_and_capture"](invoke,collect,proof)
         except RuntimeError as error:
@@ -1044,7 +1086,8 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         else: self.fail("Original first-use client failure was not propagated")
         finally: events.append("cleanup")
         self.assertEqual(events,["client","collect","cleanup"])
-        self.assertEqual(proof["gatewayModelRequestDiagnostic"],{"stage":"native-response","statusCode":400})
+        self.assertEqual(proof["gatewayModelRequestDiagnostic"],{"state":"present","record":{"stage":"native-response","statusCode":400}})
+        self.assertEqual(proof["keeperModelPurposeDiagnostic"],{"state":"present","record":{"stage":"headers","statusCode":400}})
 
     def test_gateway_launch_passes_existing_diagnostic_opt_in(self):
         source=ast.parse((ROOT / "services/keeper/tests/native-first-use-image.probe.py").read_text())
@@ -1058,6 +1101,20 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
             pairs.append(pair)
         self.assertIn(("-e","CI=true"),pairs)
         self.assertIn(("-e","LARES_GATEWAY_PROBE_DIAGNOSTICS=1"),pairs)
+        keeper=next(node for node in ast.walk(source) if isinstance(node,ast.Assign) and
+            any(isinstance(target,ast.Name) and target.id=="keeper_cmd" for target in node.targets))
+        keeper_elements=keeper.value.elts
+        keeper_pairs=[]
+        for index in range(len(keeper_elements)-1):
+            try: pair=(ast.literal_eval(keeper_elements[index]),ast.literal_eval(keeper_elements[index+1]))
+            except (ValueError,TypeError): continue
+            keeper_pairs.append(pair)
+        self.assertIn(("-e","CI=true"),keeper_pairs)
+        self.assertIn(("-e","LARES_GATEWAY_PROBE_DIAGNOSTICS=1"),keeper_pairs)
+        client_call=next(node for node in ast.walk(source) if isinstance(node,ast.Assign) and
+            any(isinstance(target,ast.Name) and target.id=="client_result" for target in node.targets))
+        self.assertEqual(ast.unparse(client_call.value),
+            "invoke_first_use_and_capture(invoke_compiled_client, lambda: first_use_model_diagnostics(network + '-gateway', keeper_name), proof)")
 
 
 if __name__ == "__main__": unittest.main()
