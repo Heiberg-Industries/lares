@@ -4,6 +4,10 @@ All clients and destinations use an internal Docker network. No published ports,
 credentials, providers, installation state or host Docker socket mounts.
 """
 import base64
+import copy
+import fcntl
+import hashlib
+import importlib.util
 import ipaddress
 import json
 import os
@@ -23,15 +27,36 @@ image, client_image, output = sys.argv[1:]
 root = pathlib.Path(tempfile.mkdtemp(prefix='lares-proxy-proof-'))
 root.chmod(0o755)
 name = 'lares-proxy-proof-' + uuid.uuid4().hex[:10]
-proxy, target = name + '-proxy', name + '-target'
+network = name
+target_name = name + '-target'
+proxy_name = 'lares-egress-proxy'
+owner_label = 'org.lares.egress-proof'
+owner_token = uuid.uuid4().hex
+custody_prefix = root / 'fixture-prefix'
+admission = custody_prefix / 'var/lib/lares-maintenance/admission'
+config_root = root / 'egress'
+compose_file = root / 'proxy-compose.json'
+proxy_id = target_id = sentinel_id = None
+proxy_project = None
+network_id = None
+network_probe_id = None
+primary_error = None
+cleanup_errors = []
+action = 'initialize'
 report = {'source': os.environ['GITHUB_SHA'], 'checks': [], 'success': False}
+sys.dont_write_bytecode = True
+custody_spec = importlib.util.spec_from_file_location(
+    'maintenance_custody', pathlib.Path('services/box/ops/maintenance-custody.py').resolve())
+custody = importlib.util.module_from_spec(custody_spec)
+assert custody_spec and custody_spec.loader
+custody_spec.loader.exec_module(custody)
 
 
 def cmd(*args, input=None):
     result = subprocess.run(args, input=input, text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, timeout=60)
     if result.returncode:
-        raise RuntimeError(f'{args[:3]} failed: {result.stdout}{result.stderr}')
+        raise RuntimeError(action)
     return result.stdout.strip()
 
 
@@ -39,6 +64,244 @@ def check(label, condition):
     assert condition, label
     report['checks'].append(label)
     print('PASS:', label, flush=True)
+
+
+def inspect_container(identifier):
+    return json.loads(cmd('docker', 'inspect', identifier))[0]
+
+
+def inspect_network(identifier):
+    return json.loads(cmd('docker', 'network', 'inspect', identifier))[0]
+
+
+def container_name_is_free():
+    matches = cmd('docker', 'ps', '-aq', '--filter', f'name={proxy_name}')
+    for identifier in matches.splitlines():
+        if inspect_container(identifier).get('Name') == '/' + proxy_name:
+            return False
+    return True
+
+
+def verify_container_owner(identifier, *, service=None, role=None, project=None):
+    item = inspect_container(identifier)
+    labels = item.get('Config', {}).get('Labels') or {}
+    if service is not None:
+        return labels.get('com.docker.compose.project') == (project or name) and \
+            labels.get('com.docker.compose.service') == service and item.get('Name') == '/' + proxy_name
+    return labels.get(owner_label) == owner_token and labels.get(owner_label + '.role') == role
+
+
+def remove_owned_container(identifier, *, service=None, role=None, project=None):
+    if not identifier:
+        return True
+    try:
+        if not verify_container_owner(identifier, service=service, role=role, project=project):
+            cleanup_errors.append('container ownership could not be verified')
+            return False
+        item = inspect_container(identifier)
+        if item.get('State', {}).get('Running'):
+            cmd('docker', 'stop', '--time', '10', identifier)
+        item = inspect_container(identifier)
+        if item.get('State', {}).get('Running') or item.get('State', {}).get('Status') not in ('exited', 'created'):
+            cleanup_errors.append('owned container did not stop cleanly')
+            return False
+        cmd('docker', 'rm', identifier)
+        remaining = cmd('docker', 'ps', '-aq', '--no-trunc', '--filter', f'id={identifier}')
+        if remaining:
+            cleanup_errors.append('owned container remained after removal')
+            return False
+        return True
+    except Exception:
+        cleanup_errors.append('owned container cleanup failed')
+        return False
+
+
+def remove_owned_network(identifier):
+    if not identifier:
+        return True
+    try:
+        item = inspect_network(identifier)
+        labels = item.get('Labels') or {}
+        if labels.get(owner_label) != owner_token or labels.get(owner_label + '.role') not in (
+                'network', 'ipam-probe'):
+            cleanup_errors.append('network ownership could not be verified')
+            return False
+        cmd('docker', 'network', 'rm', identifier)
+        remaining = cmd('docker', 'network', 'ls', '-q', '--no-trunc', '--filter', f'id={identifier}')
+        if remaining:
+            cleanup_errors.append('owned network remained after removal')
+            return False
+        return True
+    except Exception:
+        cleanup_errors.append('owned network cleanup failed')
+        return False
+
+
+def host_gate_is_exclusive_blocked(gate_path):
+    descriptor = os.open(gate_path, os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0) |
+                         getattr(os, 'O_NOFOLLOW', 0))
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            return False
+        except BlockingIOError:
+            return True
+    finally:
+        os.close(descriptor)
+
+
+def process_gate_evidence(pid):
+    script = ("import json,os,sys; p=sys.argv[1]; f='/proc/'+p+'/fd/9'; "
+              "s=os.stat(f); lines=open('/proc/'+p+'/fdinfo/9').read(4096).splitlines(); "
+              "locks=[x for x in lines if x.startswith('lock:')]; "
+              "print(json.dumps({'dev':s.st_dev,'ino':s.st_ino,'locks':locks}))")
+    return json.loads(cmd('docker', 'exec', proxy_id, '/usr/bin/python3', '-I', '-c', script, pid))
+
+
+def assert_proxy_lease(gate_path, pid, label):
+    evidence = process_gate_evidence(pid)
+    expected = os.stat(gate_path, follow_symlinks=False)
+    locks = evidence['locks']
+    check(label + ': serving Squid owns fd9 for the exact host gate inode with a shared lock',
+          evidence['dev'] == expected.st_dev and evidence['ino'] == expected.st_ino and
+          len(locks) == 1 and 'FLOCK' in locks[0] and 'ADVISORY READ' in locks[0] and
+          'WRITE' not in locks[0])
+    check(label + ': host cannot acquire the exclusive gate while Squid serves',
+          host_gate_is_exclusive_blocked(gate_path))
+
+
+def wait_for_proxy():
+    global result
+    for _attempt in range(30):
+        result = request(connect())
+        if result['status'] == 200 and result['greeting']:
+            return
+        item = inspect_container(proxy_id)
+        if not item.get('State', {}).get('Running'):
+            raise RuntimeError(action)
+        time.sleep(.5)
+    raise RuntimeError(action)
+
+
+def compose(*args):
+    return cmd('docker', 'compose', '--project-name', name, '--file', str(compose_file), *args)
+
+
+def rendered_compose_environment(subnet, proxy_address, identity, epoch):
+    source = pathlib.Path('services/box/compose.lares-keeper.yaml').resolve()
+    text = source.read_text()
+    variables = set(re.findall(r'\$\{([A-Z_]+)(?::[-?])', text))
+    env = os.environ.copy()
+    for variable in variables:
+        if variable.endswith('_IMAGE'):
+            env[variable] = client_image if variable == 'LARES_KEEPER_IMAGE' else image
+        elif variable == 'LARES_NETWORK':
+            env[variable] = network
+        elif variable == 'LARES_PROXY_ADDRESS':
+            env[variable] = proxy_address
+        elif variable == 'LARES_EGRESS_DIR':
+            env[variable] = str(config_root)
+        elif variable == 'LARES_MAINTENANCE_ADMISSION_DIR':
+            env[variable] = str(admission)
+        elif variable == 'LARES_MAINTENANCE_INSTALLATION_ID':
+            env[variable] = identity
+        elif variable == 'LARES_MAINTENANCE_EPOCH':
+            env[variable] = str(epoch)
+        elif variable == 'LARES_SUBNET':
+            env[variable] = str(subnet)
+        elif variable.endswith(('_DIR', '_ROOT', '_FILE', '_CONFIG', '_TARGET')):
+            env[variable] = str(root / 'compose-placeholder')
+        else:
+            env[variable] = 'fixture.invalid'
+    result = subprocess.run(['docker', 'compose', '--project-name', name, '-f', str(source),
+                             'config', '--format', 'json'], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    if result.returncode:
+        raise RuntimeError(action)
+    return json.loads(result.stdout)
+
+
+def assert_generated_service(service, identity, epoch, proxy_address):
+    check('Generated proxy keeps its fixed container name', service.get('container_name') == proxy_name)
+    check('Generated proxy uses the fixed isolated guard and unchanged Squid argv',
+          service.get('entrypoint') == ['/usr/bin/python3', '-I',
+                                       '/usr/local/lib/lares/maintenance-admission.py'] and
+          service.get('command') == ['squid', '-N', '-f', '/config/squid.conf'])
+    check('Generated proxy receives the validated receipt coordinates explicitly',
+          service.get('environment') == {
+              'LARES_MAINTENANCE_EPOCH': str(epoch),
+              'LARES_MAINTENANCE_INSTALLATION_ID': identity,
+          })
+    check('Generated proxy preserves init, restart and its reserved address',
+          service.get('init') is True and service.get('restart') == 'unless-stopped' and
+          service.get('networks') == {'lares-network': {'ipv4_address': proxy_address}})
+    volumes = service.get('volumes', [])
+    admission_mounts = [mount for mount in volumes if isinstance(mount, dict) and
+                        mount.get('target') == '/run/lares-maintenance/admission']
+    config_mounts = [mount for mount in volumes if isinstance(mount, dict) and mount.get('target') == '/config']
+    check('Generated proxy has one exact readonly no-create admission child and its config directory',
+          len(volumes) == 2 and all(isinstance(mount, dict) for mount in volumes) and
+          len(admission_mounts) == 1 and len(config_mounts) == 1 and
+          admission_mounts[0].get('type') == 'bind' and config_mounts[0].get('type') == 'bind' and
+          admission_mounts[0].get('source') == str(admission) and
+          admission_mounts[0].get('read_only') is True and
+          isinstance(admission_mounts[0].get('bind'), dict) and
+          admission_mounts[0]['bind'].get('create_host_path', False) is False and
+          config_mounts[0].get('source') == str(config_root) and
+          config_mounts[0].get('read_only') is True and
+          not any('custody' in mount.get('source', '') or 'preparation.json' in mount.get('source', '')
+                  for mount in volumes))
+    check('Generated proxy exposes no listener ports', not service.get('ports') and not service.get('expose'))
+
+
+def verify_created_proxy(identifier, identity, epoch, proxy_address):
+    item = inspect_container(identifier)
+    config = item.get('Config', {})
+    host = item.get('HostConfig', {})
+    mounts = item.get('Mounts', [])
+    labels = config.get('Labels') or {}
+    networks = item.get('NetworkSettings', {}).get('Networks') or {}
+    env = dict(value.split('=', 1) for value in config.get('Env', []) if '=' in value)
+    check('Created proxy is owned by this unique Compose project and fixed service',
+          labels.get('com.docker.compose.project') == name and
+          labels.get('com.docker.compose.service') == 'lares-egress-proxy' and
+          item.get('Name') == '/' + proxy_name)
+    check('Created proxy keeps actual guarded command, init and restart policy',
+          config.get('Entrypoint') == ['/usr/bin/python3', '-I',
+                                      '/usr/local/lib/lares/maintenance-admission.py'] and
+          config.get('Cmd') == ['squid', '-N', '-f', '/config/squid.conf'] and
+          host.get('Init') is True and host.get('RestartPolicy', {}).get('Name') == 'unless-stopped')
+    check('Created proxy carries validated receipt values and no other admission authority',
+          env.get('LARES_MAINTENANCE_INSTALLATION_ID') == identity and
+          env.get('LARES_MAINTENANCE_EPOCH') == str(epoch) and
+          not any(key.startswith('LARES_MAINTENANCE_') and key not in {
+              'LARES_MAINTENANCE_INSTALLATION_ID', 'LARES_MAINTENANCE_EPOCH'} for key in env))
+    actual_mounts = {(mount.get('Type'), mount.get('Source'), mount.get('Destination')) for mount in mounts}
+    check('Created proxy has only the config and exact readonly admission mounts',
+          actual_mounts == {
+              ('bind', str(config_root.resolve()), '/config'),
+              ('bind', str(admission.resolve()), '/run/lares-maintenance/admission'),
+          } and all(not mount.get('RW', True) for mount in mounts) and
+          not any('/custody' in mount.get('Destination', '') or 'preparation.json' in mount.get('Destination', '')
+                  for mount in mounts))
+    proxy_network = networks.get(network, {})
+    check('Created proxy uses the owned internal network and reserved fixture IP',
+          list(networks) == [network] and proxy_network.get('IPAddress') == proxy_address)
+
+
+def service_compose_config(env):
+    result = subprocess.run(['docker', 'compose', '--project-name', name, '--file', str(compose_file),
+                             'config', '--format', 'json'], env=env, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    if result.returncode:
+        raise RuntimeError(action)
+    return json.loads(result.stdout)
+
+
+def check_container_name_available():
+    if not container_name_is_free():
+        raise RuntimeError('fixed proxy container name is already in use')
 
 
 def generate(host, stage):
@@ -54,7 +317,7 @@ def generate(host, stage):
         'STAGE', json.dumps(stage))
     cmd('docker', 'run', '--rm', '--network', 'none', '--cap-drop', 'ALL',
         '--security-opt', 'no-new-privileges:true', '--user', f'{os.getuid()}:{os.getgid()}',
-        '--mount', f'type=bind,src={root},dst=/output', '--entrypoint',
+        '--mount', f'type=bind,src={config_root},dst=/output', '--entrypoint',
         '/app/services/keeper/node_modules/.bin/tsx', client_image, '-e', script)
 
 
@@ -128,7 +391,7 @@ def connect(host='allowed.example', port=443):
 
 
 def target_connections():
-    return cmd('docker', 'logs', target).count('DESTINATION_ACCEPTED')
+    return cmd('docker', 'logs', target_id).count('DESTINATION_ACCEPTED')
 
 
 def route_stage_acknowledged(response, expected_stage):
@@ -178,14 +441,26 @@ def check_raw_response_parser(client_image):
 
 
 def proxy_pid():
-    return cmd('docker', 'exec', proxy, 'sh', '-c',
+    return cmd('docker', 'exec', proxy_id, 'sh', '-c',
                'for p in /run/squid.pid /run/squid/squid.pid; do '
                'if [ -f "$p" ]; then cat "$p"; exit; fi; done; exit 1')
 
 
-try:
+def run_proof():
+    global action, network_id, network_probe_id, proxy_ip, allowed_ip, denied_ip, target_ip, proxy_project
+    global proxy_id, target_id, sentinel_id
+
+    action = 'refuse a pre-existing fixed proxy container name'
+    check('Fixed proxy name is unoccupied before fixture resources are created', container_name_is_free())
     report['image_id'] = cmd('docker', 'image', 'inspect', image, '--format', '{{.Id}}')
     report['client_image_id'] = cmd('docker', 'image', 'inspect', client_image, '--format', '{{.Id}}')
+    report['candidate_image_reference'] = image
+    image_config = json.loads(cmd('docker', 'image', 'inspect', image))[0]['Config']
+    check('Built image defaults to the isolated baked guard and retains the fixed Squid CMD',
+          image_config.get('Entrypoint') == ['/usr/bin/python3', '-I',
+                                             '/usr/local/lib/lares/maintenance-admission.py'] and
+          image_config.get('Cmd') == ['squid', '-N', '-f', '/config/squid.conf'])
+
     # The server-only storage CLI must resolve its workspace exports as the fixed runtime uid.
     storage_help = cmd('docker', 'run', '--rm', '--network', 'none', '--read-only',
                        '--user', '10001:10001', '--cap-drop', 'ALL',
@@ -199,15 +474,82 @@ try:
                                 '--entrypoint', 'squid', image, '-v')
     version = re.search(r'Version (\d+)\.(\d+)', report['squid_version'])
     check('Squid includes the 7.6 HTTP framing fix', version and tuple(map(int, version.groups())) >= (7, 6))
+    runtime = json.loads(cmd('docker', 'run', '--rm', '--network', 'none', '--entrypoint',
+                             '/usr/bin/python3', image, '-I', '-c',
+                             "import fcntl,os,stat; g=os.stat('/usr/local/lib/lares/maintenance-admission.py'); print(__import__('json').dumps({'uid':os.geteuid(),'flock':hasattr(fcntl,'flock'),'squid':os.access('/usr/sbin/squid',os.X_OK),'guard':stat.S_ISREG(g.st_mode) and g.st_uid == 0 and stat.S_IMODE(g.st_mode) == 0o555}))"))
+    check('Pinned image provides isolated Python, flock, root, fixed Squid executable and root-owned guard',
+          runtime == {'uid': 0, 'flock': True, 'squid': True, 'guard': True})
     check_raw_response_parser(client_image)
-    cmd('docker', 'network', 'create', '--internal', name)
-    config = json.loads(cmd('docker', 'network', 'inspect', name, '--format', '{{json .IPAM.Config}}'))
-    subnet = ipaddress.ip_network(config[0]['Subnet'])
-    # Docker permits fixed client addresses only on an explicitly configured
-    # subnet. Reuse its free selection rather than assuming a shared CI range.
-    cmd('docker', 'network', 'rm', name)
-    cmd('docker', 'network', 'create', '--internal', '--subnet', str(subnet), name)
+
+    action = 'run the complete refusal matrix against the baked startup guard'
+    guard_tests = pathlib.Path('services/keeper/tests/egress-admission.test.py').resolve()
+    matrix = subprocess.run(
+        ['docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
+         '--cap-add', 'CHOWN', '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,mode=1777',
+         '--security-opt', 'no-new-privileges:true',
+         '--mount', f'type=bind,src={guard_tests},dst=/egress-admission.test.py,readonly',
+         '--entrypoint', '/usr/bin/python3', image, '-I', '/egress-admission.test.py'],
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    matrix_output = matrix.stdout + matrix.stderr
+    count = re.search(r'Ran (\d+) tests?', matrix_output)
+    matrix_ok = (matrix.returncode == 0 and count is not None and count.group(1) == '7' and
+                 re.search(r'^OK$', matrix_output, re.M) is not None and
+                 re.search(r'\bskipped=', matrix_output) is None)
+    check('Baked guard passes seven root-owned cases with refusal exit 78 and no exec before Squid',
+          matrix_ok)
+    report['guard_refusal_matrix'] = {
+        'tests': int(count.group(1)) if count else 0,
+        'cases': [
+            'blocked/entering intent', 'identity and epoch mismatch', 'missing/oversized/noncanonical intent',
+            'unsafe owner/mode/link/ancestry', 'FIFO and replaced descriptors', 'exclusive gate lease',
+            'low-descriptor fd9 promotion retains the shared gate at fixed exec',
+        ],
+        'exit': matrix.returncode,
+        'skipped': False,
+        'network': 'none',
+        'config_mount': False,
+    }
+
+    action = 'create isolated internal fixture network'
+    probe_name = name + '-ipam-probe'
+    network_probe_id = cmd('docker', 'network', 'create', '--internal', '--label',
+                           f'{owner_label}={owner_token}', '--label',
+                           f'{owner_label}.role=ipam-probe', probe_name)
+    probe_info = inspect_network(network_probe_id)
+    check('Temporary Docker-assigned subnet comes from a uniquely owned internal network',
+          probe_info.get('Internal') is True and
+          (probe_info.get('Labels') or {}).get(owner_label) == owner_token)
+    ipam_config = probe_info.get('IPAM', {}).get('Config') or []
+    if not ipam_config or not ipam_config[0].get('Subnet'):
+        raise RuntimeError(action)
+    subnet = ipaddress.ip_network(ipam_config[0]['Subnet'])
+    if subnet.version != 4:
+        raise RuntimeError(action)
+    check('Docker-assigned subnet has room for the fixed isolated proof addresses', subnet.num_addresses > 32)
+    if not remove_owned_network(network_probe_id):
+        raise RuntimeError(action)
+    network_probe_id = None
+    network_id = cmd('docker', 'network', 'create', '--internal', '--subnet', str(subnet),
+                     '--label', f'{owner_label}={owner_token}', '--label',
+                     f'{owner_label}.role=network', name)
+    network_info = inspect_network(network_id)
+    check('Fixture network is internal and uniquely owned',
+          network_info.get('Internal') is True and
+          (network_info.get('Labels') or {}).get(owner_label) == owner_token and
+          ipaddress.ip_network(network_info['IPAM']['Config'][0]['Subnet']) == subnet)
     allowed_ip, denied_ip, target_ip, proxy_ip = [str(subnet.network_address + n) for n in (10, 11, 12, 13)]
+
+    action = 'prepare root-owned completed receipt and normal admission fixture'
+    custody_prefix.mkdir(mode=0o755)
+    config_root.mkdir(mode=0o755)
+    custody.prepare_fresh(custody_prefix, str(subnet))
+    receipt = custody.validate(custody_prefix, str(subnet))
+    identity, epoch = receipt['installationId'], receipt['epoch']
+    gate_path = admission / 'service-gate.lock'
+    check('Host fixture has a completed validated preparation receipt and normal intent',
+          identity and epoch == 1 and custody.read_intent(admission) == {
+              'version': 1, 'installationId': identity, 'epoch': epoch, 'state': 'normal'})
+
     initial_stage, desired_stage, restored_stage = (str(uuid.uuid4()) for _ in range(3))
     report['fixture_route_stages'] = {
         'initial': initial_stage, 'desired_before_reload': desired_stage, 'restored': restored_stage,
@@ -216,31 +558,108 @@ try:
       for(const port of [443,444])net.createServer(s=>{
         console.log('DESTINATION_ACCEPTED',port);s.end('CI_PROXY_DESTINATION_OK\\n');
       }).listen(port,'0.0.0.0',()=>console.log('DESTINATION_READY',port));"""
-    cmd('docker', 'run', '-d', '--name', target, '--network', name, '--ip', target_ip,
-        '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
-        '--entrypoint', 'node', client_image, '-e', endpoint)
+    action = 'start separately owned isolated destination fixture'
+    target_id = cmd('docker', 'run', '-d', '--name', target_name, '--network', name,
+                    '--ip', target_ip, '--network-alias', 'allowed.example',
+                    '--network-alias', 'blocked.example', '--label',
+                    f'{owner_label}={owner_token}', '--label', f'{owner_label}.role=target',
+                    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges:true',
+                    '--entrypoint', 'node', client_image, '-e', endpoint)
+    check('Destination fixture is separately owned and DNS aliases stay outside the production service',
+          verify_container_owner(target_id, role='target'))
+
+    action = 'generate normal Squid configuration with the real egress generator'
     generate('allowed.example', initial_stage)
-    conf = (root / 'squid.conf').read_text()
+    conf = (config_root / 'squid.conf').read_text()
     check('Generated config disables caching and enables no ICP or collapsed forwarding',
           'cache deny all' in conf and not re.search(r'^(icp_port|collapsed_forwarding|include)\b', conf, re.M))
     cmd('docker', 'run', '--rm', '--network', 'none', '--read-only', '--cap-drop', 'ALL',
         '--cap-add', 'SETUID', '--cap-add', 'SETGID', '--security-opt', 'no-new-privileges:true',
-        '--mount', f'type=bind,src={root},dst=/config,readonly',
+        '--mount', f'type=bind,src={config_root},dst=/config,readonly',
         '--entrypoint', 'squid', image, '-k', 'parse', '-f', '/config/squid.conf')
-    cmd('docker', 'run', '-d', '--init', '--name', proxy, '--network', name, '--ip', proxy_ip,
-        '--add-host', f'allowed.example:{target_ip}', '--add-host', f'blocked.example:{target_ip}',
-        '--mount', f'type=bind,src={root},dst=/config,readonly', image,
-        'squid', '-N', '-f', '/config/squid.conf')
-    for attempt in range(30):
-        result = request(connect())
-        if result['status'] == 200 and result['greeting']:
-            break
-        if cmd('docker', 'inspect', proxy, '--format', '{{.State.Running}}') != 'true':
-            raise RuntimeError(cmd('docker', 'logs', proxy))
-        time.sleep(.5)
-    check('Real allowed CONNECT reaches the isolated destination', result['status'] == 200 and result['greeting'])
+
+    action = 'resolve and compare the full generated production proxy service'
+    generated = rendered_compose_environment(subnet, proxy_ip, identity, epoch)
+    service = generated['services']['lares-egress-proxy']
+    assert_generated_service(service, identity, epoch, proxy_ip)
+    check('Generated production service selects only the candidate Squid image', service.get('image') == image)
+    generated_network = generated['networks']['lares-network']
+    check('Generated service binds to the unique internal external-network fixture',
+          generated_network.get('external') is True and generated_network.get('name') == network)
+    report['generated_service_sha256'] = hashlib.sha256(
+        json.dumps(service, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    isolated = {'services': {'lares-egress-proxy': service},
+                'networks': {'lares-network': generated_network}}
+    compose_file.write_text(json.dumps(isolated, sort_keys=True) + '\n')
+    canonical = service_compose_config(os.environ.copy())
+    canonical_service = canonical['services']['lares-egress-proxy']
+    check('Isolated Compose proof preserves the full generated service without contract edits',
+          canonical_service == service and canonical['networks']['lares-network'] == generated_network)
+
+    action = 'prove the read-only no-create bind refuses a missing host admission directory'
+    missing = copy.deepcopy(isolated)
+    missing_source = root / 'missing-admission'
+    missing_mount = next(item for item in missing['services']['lares-egress-proxy']['volumes']
+                         if item.get('target') == '/run/lares-maintenance/admission')
+    missing_mount['source'] = str(missing_source)
+    negative_compose = root / 'missing-bind-compose.json'
+    negative_compose.write_text(json.dumps(missing, sort_keys=True) + '\n')
+    missing_project = name + '-missing'
+    missing_result = subprocess.run(['docker', 'compose', '--project-name', missing_project,
+                                     '--file', str(negative_compose), 'create', 'lares-egress-proxy'],
+                                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+    missing_error = (missing_result.stdout + missing_result.stderr).lower()
+    missing_error_is_specific = str(missing_source).lower() in missing_error and any(
+        phrase in missing_error for phrase in ('does not exist', 'no such file', 'not found'))
+    if not container_name_is_free():
+        unexpected = inspect_container(proxy_name)
+        labels = unexpected.get('Config', {}).get('Labels') or {}
+        if labels.get('com.docker.compose.project') == missing_project:
+            proxy_id = unexpected['Id']
+            proxy_project = missing_project
+    check('Compose creation fails for missing no-create admission source without creating it',
+          missing_result.returncode != 0 and missing_error_is_specific and
+          not missing_source.exists() and container_name_is_free())
+
+    action = 'prove fixed-name collision is refused without adopting or changing the existing container'
+    sentinel_id = cmd('docker', 'create', '--name', proxy_name, '--network', name, '--label',
+                      f'{owner_label}={owner_token}', '--label', f'{owner_label}.role=sentinel',
+                      '--entrypoint', 'node', client_image, '-e', 'process.exit(0)')
+    before_sentinel = inspect_container(sentinel_id)
+    refused = False
+    try:
+        check_container_name_available()
+    except RuntimeError as error:
+        refused = str(error) == 'fixed proxy container name is already in use'
+    after_sentinel = inspect_container(sentinel_id)
+    check('Fixed-name collision is refused and the pre-existing owned sentinel is unchanged',
+          refused and before_sentinel['Id'] == after_sentinel['Id'] and
+          before_sentinel['State']['Status'] == after_sentinel['State']['Status'] == 'created' and
+          (after_sentinel.get('Config', {}).get('Labels') or {}).get(owner_label) == owner_token)
+    if remove_owned_container(sentinel_id, role='sentinel') and container_name_is_free():
+        sentinel_id = None
+    else:
+        cleanup_errors.append('collision sentinel remained after checked cleanup')
+
+    action = 'create and inspect the actual generated production service'
+    check_container_name_available()
+    compose('create', 'lares-egress-proxy')
+    proxy_id = compose('ps', '-aq', 'lares-egress-proxy')
+    proxy_project = name
+    if not proxy_id:
+        raise RuntimeError(action)
+    verify_created_proxy(proxy_id, identity, epoch, proxy_ip)
+
+    action = 'start guarded Squid through the generated production service'
+    compose('start', 'lares-egress-proxy')
+    wait_for_proxy()
     pid = proxy_pid()
     check('Squid PID is behind Docker init and reloadable', pid.isdigit() and int(pid) > 1)
+    assert_proxy_lease(gate_path, pid, 'Initial serve')
+    process_runtime = json.loads(cmd('docker', 'exec', proxy_id, '/usr/bin/python3', '-I', '-c',
+                                     "import fcntl,json,os; print(json.dumps({'uid':os.geteuid(),'flock':hasattr(fcntl,'flock'),'python':os.path.realpath('/proc/self/exe') == os.path.realpath('/usr/bin/python3')}))"))
+    check('Running guard image executes isolated stdlib Python as root',
+          process_runtime == {'uid': 0, 'flock': True, 'python': True})
     before = target_connections()
     denied = [('ungranted destination', connect('blocked.example'), allowed_ip, (403,)),
               ('ungranted source', connect(), denied_ip, (403,)),
@@ -254,6 +673,8 @@ try:
         result = request(payload, source)
         check('Proxy refuses ' + label, result['status'] in statuses and not result['greeting'])
     check('Refused and malformed requests never reach the dummy destination', target_connections() == before)
+
+    action = 'prove generation and reload behavior on the real service'
     generate('blocked.example', desired_stage)
     route_host = 'route-proof-' + uuid.uuid4().hex + '.invalid'
     before_stale_probe_target_count = target_connections()
@@ -275,13 +696,14 @@ try:
                                             route_stage_values=['not-a-generation']), initial_stage))
     check('Acknowledgement validation rejects a malformed stage header',
           not route_stage_acknowledged(dict(stale_route_response, route_stage_malformed=True), initial_stage))
-    cmd('docker', 'exec', proxy, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
+    cmd('docker', 'exec', proxy_id, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
     for attempt in range(30):
         result = request(connect('blocked.example'))
         if result['status'] == 200 and result['greeting']:
             break
         time.sleep(.5)
     check('Atomic config replacement is applied by real reload', result['status'] == 200 and result['greeting'])
+    assert_proxy_lease(gate_path, proxy_pid(), 'After reload')
     before_reloaded_probe_target_count = target_connections()
     reloaded_route_response = request(connect(route_host))
     after_reloaded_probe_target_count = target_connections()
@@ -290,14 +712,11 @@ try:
     check('Reloaded denied generation probe adds zero target connections',
           after_reloaded_probe_target_count == before_reloaded_probe_target_count)
     report['route_generation_proof'] = {
-        'host': route_host,
         'before_reload': stale_route_response,
         'expected_before_reload': initial_stage,
         'desired_before_reload': desired_stage,
         'after_reload': reloaded_route_response,
         'expected_after_reload': desired_stage,
-        'target_connections_before_reload_probe': before_stale_probe_target_count,
-        'target_connections_after_reload_probe': before_reloaded_probe_target_count,
         'target_connection_delta_before_reload': after_stale_probe_target_count - before_stale_probe_target_count,
         'target_connection_delta_after_reload': after_reloaded_probe_target_count - before_reloaded_probe_target_count,
         'marker_is_fixture_augmentation': True,
@@ -306,27 +725,95 @@ try:
     check('Reload revokes the previous destination', result['status'] == 403 and not result['greeting'])
     check('Reload preserves the running Squid process', proxy_pid() == pid)
     generate('allowed.example', restored_stage)
-    cmd('docker', 'exec', proxy, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
+    cmd('docker', 'exec', proxy_id, 'squid', '-k', 'reconfigure', '-f', '/config/squid.conf')
     for attempt in range(30):
         result = request(connect())
         if result['status'] == 200 and result['greeting']:
             break
         time.sleep(.5)
     check('Reload can restore the original grant', result['status'] == 200 and result['greeting'])
-    # Squid may listen on DNS UDP sockets; only the ICP/HTCP ports are excluded.
-    sockets = cmd('docker', 'exec', proxy, 'sh', '-c', 'cat /proc/net/udp /proc/net/udp6')
+    assert_proxy_lease(gate_path, proxy_pid(), 'After restore reload')
+    sockets = cmd('docker', 'exec', proxy_id, 'sh', '-c', 'cat /proc/net/udp /proc/net/udp6')
     check('ICP and HTCP have no UDP listener', not re.search(r':(?:0C3A|12DB)\s', sockets))
-    report['success'] = True
-except Exception as error:
-    report['error'] = str(error)
-    for container in (proxy, target):
-        subprocess.run(['docker', 'logs', '--tail', '50', container], check=False, timeout=10)
-    raise
+
+    action = 'prove the same Squid gate descriptor survives Docker restart'
+    container_before_restart = proxy_id
+    compose('restart', 'lares-egress-proxy')
+    wait_for_proxy()
+    check('Docker restart preserves the exact owned Compose container',
+          compose('ps', '-aq', 'lares-egress-proxy') == container_before_restart)
+    restarted_pid = proxy_pid()
+    check('Restarted Squid remains behind init as a reloadable child',
+          restarted_pid.isdigit() and int(restarted_pid) > 1)
+    assert_proxy_lease(gate_path, restarted_pid, 'After Docker restart')
+
+    action = 'prove non-normal intent refuses a restarted Squid before listener or destination effects'
+    connections_before_refusal = target_connections()
+    custody.transition(custody_prefix / 'var/lib/lares-maintenance/custody', admission,
+                       identity, epoch, 'entering')
+    check('Serving Squid still holds its shared lease after intent enters maintenance',
+          host_gate_is_exclusive_blocked(gate_path))
+    compose('restart', 'lares-egress-proxy')
+    refusal = request(connect())
+    check('Non-normal restart never serves or reaches the controlled destination',
+          refusal['status'] is None and not refusal['greeting'] and
+          target_connections() == connections_before_refusal)
+    cmd('docker', 'stop', '--time', '10', proxy_id)
+    item = inspect_container(proxy_id)
+    check('Guarded proxy is confirmed stopped before its host lease is tested',
+          not item.get('State', {}).get('Running') and item.get('State', {}).get('Status') == 'exited')
+    check('Host exclusive lease becomes available only after bounded Squid stop',
+          not host_gate_is_exclusive_blocked(gate_path))
+    if remove_owned_container(proxy_id, service='lares-egress-proxy', project=name):
+        proxy_id = None
+    check('Stopped production-service container is removed by exact owned ID', container_name_is_free())
+
+
+try:
+    run_proof()
+except Exception:
+    primary_error = action
 finally:
+    if proxy_id:
+        if remove_owned_container(proxy_id, service='lares-egress-proxy', project=proxy_project):
+            proxy_id = None
+    if sentinel_id:
+        if remove_owned_container(sentinel_id, role='sentinel'):
+            sentinel_id = None
+    if target_id:
+        if remove_owned_container(target_id, role='target'):
+            target_id = None
+    if network_id:
+        if remove_owned_network(network_id):
+            network_id = None
+    if network_probe_id:
+        if remove_owned_network(network_probe_id):
+            network_probe_id = None
+    if (not proxy_id and not sentinel_id and not target_id and not network_id and
+            not network_probe_id and not cleanup_errors):
+        try:
+            shutil.rmtree(root)
+            if root.exists():
+                cleanup_errors.append('fixture root remained after cleanup')
+        except Exception:
+            cleanup_errors.append('fixture root cleanup failed')
+    report['cleanup'] = {
+        'proxy_container_removed': proxy_id is None,
+        'sentinel_container_removed': sentinel_id is None,
+        'target_container_removed': target_id is None,
+        'network_removed': network_id is None,
+        'temporary_ipam_network_removed': network_probe_id is None,
+        'fixture_root_removed': not root.exists(),
+        'errors': cleanup_errors,
+    }
+    report['success'] = primary_error is None and not cleanup_errors and all(
+        report['cleanup'][key] for key in ('proxy_container_removed', 'sentinel_container_removed',
+                                           'target_container_removed', 'network_removed',
+                                           'temporary_ipam_network_removed',
+                                           'fixture_root_removed'))
+    if primary_error:
+        report['error'] = primary_error
     pathlib.Path(output).write_text(json.dumps(report, indent=2) + '\n')
-    for container in (proxy, target):
-        subprocess.run(['docker', 'rm', '-f', container], stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, check=False, timeout=30)
-    subprocess.run(['docker', 'network', 'rm', name], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, check=False, timeout=30)
-    shutil.rmtree(root)
+
+if not report['success']:
+    raise SystemExit('egress runtime proof failed; see fixed-output evidence artifact')
