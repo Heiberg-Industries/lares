@@ -29,6 +29,8 @@ const CASES = [
   "fixture-guard",
   "member-create-without-key",
   "client-existing-team-before-membership",
+  "client-empty-team-roster",
+  "client-first-member-roster",
   "client-user-policy-readback",
   "user-current-identity-global-cap-and-role",
   "user-info-no-auto-key",
@@ -54,6 +56,7 @@ const CASES = [
   "delete-by-hash-and-reconcile-lost-response",
   "already-deleted-remains-absent",
   "client-team-duration-and-membership-policy",
+  "client-full-team-roster",
   "fixture-cleanup",
 ] as const;
 type CaseName = typeof CASES[number];
@@ -399,6 +402,7 @@ const run = async () => {
   const suffix = randomUUID();
   const teamId = suffix;
   const userId = `probe-${randomUUID()}`;
+  const secondUserId = `probe-${randomUUID()}`;
   const alias = `probe-${randomUUID()}`;
   const normalKey = randomKey();
   const blockedKey = randomKey();
@@ -407,7 +411,7 @@ const run = async () => {
   const blockedHash = fingerprint(blockedKey);
   const lostHash = fingerprint(lostKey);
   const expected = { keyAlias: alias, teamId, userId, blocked: false, budget: 1 };
-  let teamAttempted = false, userAttempted = false;
+  let teamAttempted = false, userAttempted = false, secondUserAttempted = false;
   let lostUserDirectory: string | undefined, lostUserAttempted = false;
   let lostClientKeyDirectory: string | undefined;
   const createdHashes = new Set<string>();
@@ -430,7 +434,14 @@ const run = async () => {
     mark("client-user-policy-readback", createUser.kind === "acknowledged" && currentUserPolicy.kind === "match" && initialUserKeys.kind === "match" && initialUserKeys.value.length === 0 &&
       clientAbsentUser.kind === "absent" && clientRefusedUser.kind === "refused" ? "PASS" :
       [currentUserPolicy,initialUserKeys,clientAbsentUser,clientRefusedUser].some(result => result.kind === "mismatch" || result.kind === "malformed") ? "FAIL" : "UNKNOWN");
+    const emptyTeamRoster = await nativeClient.readTeamRoster({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!],members:[]});
+    mark("client-empty-team-roster", emptyTeamRoster.kind === "match" ? "PASS" : emptyTeamRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     const membership = await nativeClient.addMember({teamId,userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"});
+    const firstMemberRoster = await nativeClient.readTeamRoster({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!],members:[
+      {userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"},
+    ]});
+    mark("client-first-member-roster", membership.kind === "acknowledged" && firstMemberRoster.kind === "match" ? "PASS" :
+      firstMemberRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
     const noAutoKey = await call("GET", `/key/list?user_id=${encodeURIComponent(userId)}`);
     const noAutoKeyBody = noAutoKey?.body;
     mark("member-create-without-key", createUser.kind === "acknowledged" && noAutoKey?.status === 200 &&
@@ -523,6 +534,16 @@ const run = async () => {
       memberBudget?.max_budget === 2 && memberBudget.budget_duration === "1d" &&
       Array.isArray(memberBudget.allowed_models) && memberBudget.allowed_models.length === 1 && memberBudget.allowed_models[0] === model &&
       roleRecords?.length === 1 && roleRecords[0].role === "user" ? "PASS" : "FAIL");
+
+    secondUserAttempted = true;
+    const secondUserCreate = await nativeClient.createUser({userId:secondUserId,maxBudget:3,userRole:"internal_user"});
+    const secondMembership = await nativeClient.addMember({teamId,userId:secondUserId,maxBudget:3,budgetDuration:"1d",models:[model!],role:"user"});
+    const fullTeamRoster = await nativeClient.readTeamRoster({teamId,teamMaxBudget:4,teamBudgetDuration:"1d",teamModels:[model!],members:[
+      {userId,maxBudget:2,budgetDuration:"1d",models:[model!],role:"user"},
+      {userId:secondUserId,maxBudget:3,budgetDuration:"1d",models:[model!],role:"user"},
+    ]});
+    mark("client-full-team-roster", secondUserCreate.kind === "acknowledged" && secondMembership.kind === "acknowledged" && fullTeamRoster.kind === "match" ? "PASS" :
+      fullTeamRoster.kind === "mismatch" ? "FAIL" : "UNKNOWN");
 
     const absentHash = fingerprint(randomKey());
     mark("hash-lookup-absent-is-not-error", classifyLookup(await hashLookup(absentHash), absentHash).kind === "absent" ? "PASS" : "UNKNOWN");
@@ -681,6 +702,10 @@ const run = async () => {
     }
     if (userAttempted) {
       const reply = await call("POST", "/user/delete", { user_ids: [userId] });
+      if (!reply || reply.status < 200 || reply.status >= 300) cleanupOk = false;
+    }
+    if (secondUserAttempted) {
+      const reply = await call("POST", "/user/delete", { user_ids: [secondUserId] });
       if (!reply || reply.status < 200 || reply.status >= 300) cleanupOk = false;
     }
     if (lostClientKeyDirectory) {

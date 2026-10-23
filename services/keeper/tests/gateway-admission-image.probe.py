@@ -463,7 +463,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             if existing is None:report["diagnostics"].append({"name":name,"outcome":outcome})
             elif outcome=="false":existing["outcome"]="false"
         self.artifact["nativeCredentialContract"]=report
-        expected=("fixture-guard","member-create-without-key","client-existing-team-before-membership","client-user-policy-readback",
+        expected=("fixture-guard","member-create-without-key","client-existing-team-before-membership","client-empty-team-roster","client-first-member-roster","client-user-policy-readback",
             "user-current-identity-global-cap-and-role",
             "user-info-no-auto-key","user-info-absent-is-not-refusal","user-info-refused-is-not-absence",
             "lost-user-create-response-reconciles-original-id","team-membership-and-caps","client-empty-key-inventory",
@@ -472,7 +472,7 @@ exec litellm --config "$CONFIG_FILE_PATH"
             "blocked-key-readback-and-native-auth","client-blocked-key-policy-readback","client-unblock-and-exact-unblocked-readback","unblocked-key-readback-and-native-auth",
             "lost-create-response-reconciles-by-hash","lost-client-blocked-create-response-reconciles-original-key",
             "block-unblock-readback-only","delete-by-hash-and-reconcile-lost-response",
-            "already-deleted-remains-absent","client-team-duration-and-membership-policy","fixture-cleanup")
+            "already-deleted-remains-absent","client-team-duration-and-membership-policy","client-full-team-roster","fixture-cleanup")
         try:
             native_url=self.start_native_admin()
             self.native_barrier.write_text("idle")
