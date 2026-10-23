@@ -37,11 +37,14 @@ custody_dir = root / "custody"
 admission_dir = root / "admission"
 agents_dir = root / "agents"
 secrets_dir = root / "secrets"
+workflow_setup_secrets_dir = root / "workflow-setup-secrets"
 definition_dir = agents_dir / "matrix-agent"
 for directory, mode in ((custody_dir, 0o700), (admission_dir, 0o755),
                         (agents_dir, 0o755), (definition_dir, 0o755), (secrets_dir, 0o755)):
     directory.mkdir(mode=mode)
     directory.chmod(mode)
+workflow_setup_secrets_dir.mkdir(mode=0o700)
+workflow_setup_secrets_dir.chmod(0o700)
 installation_id = str(uuid.uuid4())
 epoch = 7
 custody.prepare(custody_dir, admission_dir, installation_id, epoch)
@@ -441,19 +444,116 @@ def start_database() -> None:
     proof["stages"]["databaseTcpReady"] = True
     password = (secrets_dir / "database-password").read_text(encoding="ascii").strip()
     workflow_password = (secrets_dir / "workflow-password").read_text(encoding="ascii").strip()
+    workflow_provisioner_password = secrets.token_hex(20)
+    provisioner_password_file = workflow_setup_secrets_dir / "provisioner-password"
+    provisioner_password_file.write_text(workflow_provisioner_password, encoding="ascii")
+    provisioner_password_file.chmod(0o400)
+    runtime_password_file = workflow_setup_secrets_dir / "runtime-password"
+    runtime_password_file.write_text(workflow_password, encoding="ascii")
+    runtime_password_file.chmod(0o400)
     stage = "database-role-creation"
     roles = ("CREATE ROLE lares_app LOGIN SUPERUSER PASSWORD '" + password + "';\n" +
-             "CREATE ROLE lares_workflow LOGIN SUPERUSER PASSWORD '" + workflow_password + "';\n")
+             "CREATE ROLE lares_workflow_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB "
+             "NOCREATEROLE NOREPLICATION NOBYPASSRLS;\n" +
+             "CREATE ROLE lares_workflow_provisioner LOGIN NOINHERIT CREATEDB NOSUPERUSER "
+             "NOCREATEROLE NOREPLICATION NOBYPASSRLS PASSWORD '" + workflow_provisioner_password + "';\n" +
+             "CREATE ROLE lares_workflow LOGIN NOINHERIT NOCREATEDB NOSUPERUSER NOCREATEROLE "
+             "NOREPLICATION NOBYPASSRLS PASSWORD '" + workflow_password + "';\n" +
+             "GRANT lares_workflow_owner TO lares_workflow_provisioner;\n")
     db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres", input_data=roles)
     proof["stages"]["databaseRolesCreated"] = True
     stage = "workflow-database-creation"
     db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "postgres",
-            input_data="CREATE DATABASE lares_workflow OWNER lares_workflow;\n")
+            input_data="CREATE DATABASE lares_workflow OWNER lares_workflow_owner;\n")
     proof["stages"]["workflowDatabaseCreated"] = True
     stage = "database-baseline"
     db_exec("psql", "-v", "ON_ERROR_STOP=1", "-U", "postgres", "-d", "lares_state",
             input_data=(REPO / "services/box/sql/001_baseline.sql").read_bytes(), timeout=120)
     proof["stages"]["databaseBaselineApplied"] = True
+
+    workflow_schema_setup = root / f"prepare-workflow-schema-{ROLE}.mts"
+    workflow_schema_setup.write_text(
+        "import { readFileSync } from 'node:fs';\n"
+        "import { Pool } from 'pg';\n"
+        "import { setupDatabase } from '@workflow/world-postgres/cli';\n"
+        "const connectionString='postgres://lares_workflow_provisioner@db:5432/lares_workflow';\n"
+        "process.env.PGPASSWORD=readFileSync('/offline-secrets/provisioner-password','utf8').trim();\n"
+        "process.env.PGOPTIONS='-c role=lares_workflow_owner';\n"
+        "process.env.WORKFLOW_POSTGRES_URL=connectionString;\n"
+        "const ownerPool=new Pool({connectionString,max:1});\n"
+        "try{const c=await ownerPool.connect();try{const r=await c.query('SELECT current_user,session_user,current_database()');"
+        "if(r.rows[0]?.current_user!=='lares_workflow_owner'||r.rows[0]?.session_user!=='lares_workflow_provisioner'||"
+        "r.rows[0]?.current_database!=='lares_workflow')throw Error();}finally{c.release();}}finally{await ownerPool.end();}\n"
+        "await setupDatabase();\n",
+        encoding="utf-8")
+    workflow_acl_setup = root / f"prepare-workflow-acls-{ROLE}.mts"
+    workflow_acl_setup.write_text(
+        "import { readFileSync } from 'node:fs';\n"
+        "import { Pool } from 'pg';\n"
+        "import { applyWorkflowRuntimePrivileges, verifyWorkflowRuntimePrivileges } "
+        "from '/app/services/box/lib/workflow-database-privileges.ts';\n"
+        "const connectionString='postgres://lares_workflow_provisioner@db:5432/lares_workflow';\n"
+        "process.env.PGPASSWORD=readFileSync('/offline-secrets/provisioner-password','utf8').trim();\n"
+        "process.env.PGOPTIONS='-c role=lares_workflow_owner';\n"
+        "process.env.WORKFLOW_POSTGRES_URL=connectionString;\n"
+        "const aclPool=new Pool({connectionString,max:1});\n"
+        "try{const c=await aclPool.connect();try{const r=await c.query('SELECT current_user,session_user,current_database()');"
+        "if(r.rows[0]?.current_user!=='lares_workflow_owner'||r.rows[0]?.session_user!=='lares_workflow_provisioner'||"
+        "r.rows[0]?.current_database!=='lares_workflow')throw Error();"
+        "await applyWorkflowRuntimePrivileges(c);}finally{c.release();}}finally{await aclPool.end();}\n"
+        "delete process.env.PGOPTIONS;delete process.env.PGPASSWORD;\n"
+        "const runtimePool=new Pool({host:'db',port:5432,database:'lares_workflow',user:'lares_workflow',"
+        "password:readFileSync('/offline-secrets/runtime-password','utf8').trim(),max:1});\n"
+        "try{const c=await runtimePool.connect();try{const r=await c.query('SELECT current_user,session_user,current_database()');"
+        "if(r.rows[0]?.current_user!=='lares_workflow'||r.rows[0]?.session_user!=='lares_workflow'||"
+        "r.rows[0]?.current_database!=='lares_workflow')throw Error();"
+        "await verifyWorkflowRuntimePrivileges(c);}finally{c.release();}}finally{await runtimePool.end();}\n"
+        "process.stdout.write('LARES_WORKFLOW_RUNTIME_ACL_READY\\n');\n",
+        encoding="utf-8")
+    workflow_secret_mount = (
+        "--mount", f"type=bind,src={workflow_setup_secrets_dir},dst=/offline-secrets,readonly",
+    )
+    workflow_acl_helper_mount = (
+        "--mount", f"type=bind,src={REPO / 'services/box/lib/workflow-database-privileges.ts'},dst=/app/services/box/lib/workflow-database-privileges.ts,readonly",
+    )
+    workflow_schema_container = project + "-workflow-schema"
+    known_containers.add(workflow_schema_container)
+    stage = "workflow-schema-initialization"
+    workflow_schema_result = docker(
+        "run", "--rm", "--name", workflow_schema_container, "--network", network,
+        "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--read-only",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m",
+        *workflow_secret_mount,
+        "--mount", f"type=bind,src={workflow_schema_setup},dst=/app/services/{ROLE}/prepare-workflow-schema.mts,readonly",
+        "--workdir", f"/app/services/{ROLE}",
+        "--entrypoint", f"/app/services/{ROLE}/node_modules/.bin/tsx",
+        IMAGE, f"/app/services/{ROLE}/prepare-workflow-schema.mts",
+        timeout=180, check=False)
+    if workflow_schema_result.returncode != 0:
+        raise ProbeFailure("workflow-database-preparation")
+    proof["stages"]["workflowSchemaPrepared"] = True
+
+    workflow_acl_container = project + "-workflow-acls"
+    known_containers.add(workflow_acl_container)
+    stage = "workflow-runtime-privilege-verification"
+    workflow_acl_result = docker(
+        "run", "--rm", "--name", workflow_acl_container, "--network", network,
+        "--user", "0:0", "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true", "--read-only",
+        "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,mode=1777,size=16m",
+        *workflow_secret_mount,
+        *workflow_acl_helper_mount,
+        "--mount", f"type=bind,src={workflow_acl_setup},dst=/app/services/{ROLE}/prepare-workflow-acls.mts,readonly",
+        "--workdir", f"/app/services/{ROLE}",
+        "--entrypoint", f"/app/services/{ROLE}/node_modules/.bin/tsx",
+        IMAGE, f"/app/services/{ROLE}/prepare-workflow-acls.mts",
+        timeout=180, check=False)
+    workflow_acl_markers = set(workflow_acl_result.stdout.splitlines())
+    if workflow_acl_result.returncode != 0:
+        raise ProbeFailure("workflow-runtime-privilege-verification")
+    if "LARES_WORKFLOW_RUNTIME_ACL_READY" not in workflow_acl_markers:
+        stage = "workflow-runtime-privilege-verification"
+        raise ProbeFailure("workflow-runtime-privilege-proof")
+    proof["stages"]["workflowRuntimeIdentityAndPrivilegesVerified"] = True
     proof["stages"]["disposableDatabase"] = True
 
 
