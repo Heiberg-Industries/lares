@@ -180,8 +180,16 @@ describe("staged gateway authority transaction", () => {
       socketDir: "/srv/lares/run/lares", hostSocketDir: "/srv/lares/run/lares-host",
       egressDir: "/srv/lares/srv/lares/egress", secretsDir: "/srv/lares/etc/lares/secrets",
       proxyAddress: "172.29.0.2", network: "lares",
+      maintenanceAdmission: {
+        directory: "/srv/lares/var/lib/lares-maintenance/admission",
+        installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,
+      },
     }, {} as Parameters<typeof renderKeeperComposeEnvironment>[2]);
-    expect(parseStageEnvironment(envText).LARES_ROOT).toBe("/srv/lares/srv/lares");
+    const env = parseStageEnvironment(envText);
+    expect(env.LARES_ROOT).toBe("/srv/lares/srv/lares");
+    expect(env.LARES_MAINTENANCE_ADMISSION_DIR).toBe("/srv/lares/var/lib/lares-maintenance/admission");
+    expect(env.LARES_MAINTENANCE_INSTALLATION_ID).toBe("11111111-1111-4111-8111-111111111111");
+    expect(env.LARES_MAINTENANCE_EPOCH).toBe("1");
   });
 
   it("refuses dotenv quoting, comments, whitespace, and escape or interpolation syntax", () => {
