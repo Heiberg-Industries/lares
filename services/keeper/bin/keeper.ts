@@ -22,7 +22,8 @@ import { GitBackup } from "../lib/git-backup.js";
 import { readSetting } from "../lib/settings.js";
 import { ownedDocker } from "../lib/docker.js";
 import { AgentLifecycle } from "../lib/lifecycle.js";
-import { keeperFinancialPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
+import { keeperFinancialPool, keeperOutsideCustodyPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
+import { loadBoundOutsideCustodyKey, OutsideCustodyStore } from "../lib/outside-custody.js";
 import { auditor } from "../lib/audit.js";
 import { serve } from "../lib/socket-server.js";
 import {serveGatewayBudget} from '../lib/gateway-budget-server.js';
@@ -52,9 +53,11 @@ async function main(): Promise<void> {
     let vaultPool:ReturnType<typeof keeperPool>|undefined;
     let modelPurposePool:ReturnType<typeof keeperPool>|undefined;
     let financialPool:ReturnType<typeof keeperPool>|undefined;
+    let outsidePool:ReturnType<typeof keeperPool>|undefined;
     let admin:ReturnType<typeof keeperPool>|undefined;
     const stops: Array<() => Promise<void>> = [];
     let financialJournal:HostFinancialJournal|undefined;
+    let outsideCustody:OutsideCustodyStore|undefined;
     let modelPurposeTransportReady=false;
     try {
     pool = keeperPool(config.db);
@@ -100,6 +103,17 @@ async function main(): Promise<void> {
     const lifecycle=config.lifecycle&&admin&&docker?new AgentLifecycle(pool,admin,config.lifecycle,{...config,vaultRuntimeDir,modelPurposeRuntimeDir},docker,
         undefined,undefined,undefined,undefined,undefined,nativeRuntimeReader):undefined;
     if(lifecycle)await lifecycle.storage.verifyReadyDatabases();
+    if(config.outsideCustody){
+        if(!lifecycle)throw new Error('keeper: outside custody unavailable');
+        // Validate the root-bound key before constructing the dedicated outside-role pool.
+        const outsideKey=loadBoundOutsideCustodyKey(config.outsideCustody.keyFile,config.outsideCustody.keyFingerprint);
+        try{
+            outsidePool=keeperOutsideCustodyPool(config,{max:4,connectionTimeoutMillis:500});
+            if(!outsidePool)throw new Error('keeper: outside custody unavailable');
+            outsidePool.on('error',()=>{});
+            outsideCustody=new OutsideCustodyStore(outsidePool,outsideKey,{mainPool:pool,lifecycle});
+        }finally{outsideKey.fill(0);}
+    }
     const credentialStore = new PgCredentialStore(pool);
     const credentialFiles = new CredentialFiles(config.secretsDir);
     const managed = config.credentials?.prepared === true;
@@ -214,9 +228,11 @@ async function main(): Promise<void> {
         // Cleanup is best-effort but keeps the ownership order: stop listeners, drain
         // native work, drain its journal work, then close pools and durable owners.
         await Promise.allSettled(stops.map(stop=>stop()));
+        try{await outsideCustody?.drainForShutdown();}catch{}
+        try{outsideCustody?.close();}catch{}
         try{await nativeCustody?.drainForShutdown();}catch{}
         try{await financialJournal?.drainForShutdown();}catch{}
-        await Promise.allSettled([pool?.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
+        await Promise.allSettled([pool?.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[]);
         try{nativeCustody?.close();}catch{}
         try{financialJournal?.close();}catch{}
         throw new Error("keeper: startup failed");
@@ -231,9 +247,11 @@ async function main(): Promise<void> {
         // action finishes any journal it already owns. Only then stop journal admission.
         const failures:unknown[]=[];
         for(const stop of stops)try{await stop();}catch(error){failures.push(error);}
+        try{await outsideCustody?.drainForShutdown();}catch(error){failures.push(error);}
+        try{outsideCustody?.close();}catch(error){failures.push(error);}
         try{await nativeCustody?.drainForShutdown();}catch(error){failures.push(error);}
         try{await financialJournal?.drainForShutdown();}catch(error){failures.push(error);}
-        const pools=[pool.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
+        const pools=[pool.end(),vaultPool?.end(),modelPurposePool?.end(),financialPool?.end(),outsidePool?.end(),admin?.end()].filter(Boolean) as Promise<void>[];
         for(const result of await Promise.allSettled(pools))if(result.status==='rejected')failures.push(result.reason);
         try{nativeCustody?.close();}catch(error){failures.push(error);}
         try{financialJournal?.close();}catch(error){failures.push(error);}

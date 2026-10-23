@@ -5,6 +5,8 @@ import {loadOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.
 
 const mocks=vi.hoisted(()=>({
   transaction:vi.fn(),
+  namespace:vi.fn(),
+  namespaceClient:{},
   query:vi.fn(),
   requireBinding:vi.fn(),
   captureUse:vi.fn(),
@@ -27,6 +29,10 @@ vi.mock('@lares/agent-kit/console-source-transaction',async importOriginal=>{
 });
 vi.mock('@lares/agent-kit/console-turn-authority',()=>({requireConsoleSessionBinding:mocks.requireBinding}));
 vi.mock('@lares/agent-kit/grant-store',()=>({PgGrantStore:class{captureUse(...args:unknown[]){return mocks.captureUse(...args);}captureUseWithExpiry(...args:unknown[]){return mocks.captureUseWithExpiry(...args);}}}));
+vi.mock('../lib/definition-namespace.js',()=>({
+  withDefinitionNamespace:async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>mocks.namespace(_pool,work),
+  requireDefinitionNamespace:()=>mocks.namespaceClient,
+}));
 
 const accountId='00000000-0000-4000-8000-000000000101';
 const operationId='00000000-0000-4000-8000-000000000102';
@@ -39,6 +45,34 @@ const binding={incarnation:'00000000-0000-4000-8000-000000000104',admissionNonce
 const key=Buffer.alloc(32,7),credential=Buffer.from('short-lived outside credential');
 const sourceClient={query:(...args:unknown[])=>mocks.query(...args)};
 const storeKey=(store:OutsideCustodyStore)=>(store as unknown as {key:Buffer}).key;
+type CapacityRow={accountId:string;ownerMemberId:string;requestId:string;kind:'discover'|'stage';phase:'operation'|'claim'|'result';outcome:string};
+function capacityHarness(rows:CapacityRow[],revisionCount=0){
+  const store=new OutsideCustodyStore({} as never,key);
+  mocks.query.mockImplementation(async(sql:string,params:unknown[]=[]):Promise<{rows:Array<Record<string,unknown>>;rowCount:number}>=>{
+    expect(params).toEqual([accountId]);
+    if(sql.includes('FROM outside_custody_operations WHERE account_id=$1'))return {rows:[{count:String(rows.length)}],rowCount:1};
+    if(sql.includes('FROM outside_custody_operations c')){
+      expect(sql).toContain("c.operation_kind='discover' AND c.event_phase='claim'");
+      expect(sql).toContain("r.event_phase='result'");
+      expect(sql).toContain("r.outcome IN ('completed','unknown')");
+      const outstanding=rows.filter(claim=>claim.kind==='discover'&&claim.phase==='claim'&&
+        !rows.some(result=>result.kind==='discover'&&result.phase==='result'&&
+          result.accountId===claim.accountId&&result.ownerMemberId===claim.ownerMemberId&&result.requestId===claim.requestId&&
+          (result.outcome==='completed'||result.outcome==='unknown')));
+      return {rows:[{count:String(outstanding.length)}],rowCount:1};
+    }
+    if(sql.includes('FROM outside_custody_revisions WHERE account_id=$1'))return {rows:[{count:String(revisionCount)}],rowCount:1};
+    throw new Error(`Unexpected capacity SQL: ${sql}`);
+  });
+  const capacity=(store as unknown as {capacity(db:unknown,id:string,kind:'discover'|'revoke',createsRevision:boolean,reserveResult?:boolean):Promise<void>}).capacity;
+  return {store,rows,discover:()=>capacity.call(store,sourceClient,accountId,'discover',true,true),revoke:()=>capacity.call(store,sourceClient,accountId,'revoke',false)};
+}
+const ordinaryCapacityRows=(count:number):CapacityRow[]=>Array.from({length:count},(_,index)=>({
+  accountId,ownerMemberId:'member-1',requestId:`ordinary-${index}`,kind:'stage',phase:'operation',outcome:'staged',
+}));
+const discoveryCapacityRow=(phase:'claim'|'result',requestId:string,outcome:string,ownerMemberId='member-1',rowAccountId=accountId):CapacityRow=>({
+  accountId:rowAccountId,ownerMemberId,requestId,kind:'discover',phase,outcome,
+});
 const keyPath='/srv/keeper/keys/decoder.key';
 const directoryStat=(uid=0,gid=0,mode=0o755,symbolic=false)=>({uid,gid,mode,isSymbolicLink:()=>symbolic,isDirectory:()=>!symbolic});
 const fileStat=(overrides:Partial<{uid:number;gid:number;mode:number;nlink:number;size:number;regular:boolean}>={})=>{
@@ -127,6 +161,7 @@ function candidateStore(){
 
 beforeEach(()=>{
   vi.clearAllMocks();
+  mocks.namespace.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>work(mocks.namespaceClient));
   mocks.transaction.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>work(sourceClient));
   mocks.query.mockResolvedValue({rows:[],rowCount:0});
   mocks.requireBinding.mockResolvedValue(binding);
@@ -136,6 +171,90 @@ beforeEach(()=>{
   mocks.deadlines.mockResolvedValue(undefined);
 });
 afterEach(()=>vi.restoreAllMocks());
+
+it('enters the bound main-pool namespace before borrowing the outside-role transaction',async()=>{
+  const events:string[]=[];
+  const mainPool={};
+  const runtime={mainPool:mainPool as never,lifecycle:{} as never};
+  const store=new OutsideCustodyStore({} as never,key,runtime);
+  mocks.namespace.mockImplementation(async(pool:unknown,work:(client:unknown)=>Promise<unknown>)=>{
+    expect(pool).toBe(mainPool);
+    events.push('main namespace');return work(mocks.namespaceClient);
+  });
+  mocks.transaction.mockImplementation(async(_pool:unknown,work:(client:unknown)=>Promise<unknown>)=>{
+    events.push('outside transaction');return work(sourceClient);
+  });
+  await expect(store.previewDiscovery('A'.repeat(43),{agentName:'worker',connectionName:'connection'},
+    {deadlineAtMs:Date.now()+5000})).rejects.toThrow();
+  expect(events).toEqual(['main namespace','outside transaction']);
+  store.close();
+});
+
+it('does not expose claim or namespace authority helpers as runtime methods',()=>{
+  const store=new OutsideCustodyStore({} as never,key);
+  const methods=Object.getOwnPropertyNames(Object.getPrototypeOf(store));
+  for(const name of ['mintClaimIdentity','consumeClaimIdentity','inMainNamespace','assertMainNamespace','claimDiscovery','phase2Authority'])
+    expect(methods).not.toContain(name);
+  store.close();
+});
+
+it('reserves two discovery rows within the 32-row cap and refuses at 31 persisted rows',async()=>{
+  const atThirty=capacityHarness(ordinaryCapacityRows(30));
+  await expect(atThirty.discover()).resolves.toBeUndefined();
+  atThirty.store.close();
+  const atThirtyOne=capacityHarness(ordinaryCapacityRows(31));
+  await expect(atThirtyOne.discover()).rejects.toThrow();
+  atThirtyOne.store.close();
+});
+
+it('counts each persisted unmatched discovery claim before admitting another pair',async()=>{
+  const capacity=capacityHarness(ordinaryCapacityRows(28));
+  await expect(capacity.discover()).resolves.toBeUndefined();
+  capacity.rows.push(discoveryCapacityRow('claim','request-one','claimed'));
+  await expect(capacity.discover()).resolves.toBeUndefined();
+  capacity.rows.push(discoveryCapacityRow('claim','request-two','claimed'));
+  await expect(capacity.discover()).rejects.toThrow();
+  capacity.store.close();
+});
+
+it('keeps an unmatched spent claim reserved and counts a matching acknowledged result only once',async()=>{
+  const pending=capacityHarness([...ordinaryCapacityRows(29),discoveryCapacityRow('claim','request-spent','claimed')]);
+  await expect(pending.discover()).rejects.toThrow();
+  pending.store.close();
+  for(const outcome of ['completed','unknown']){
+    const acknowledged=capacityHarness([...ordinaryCapacityRows(28),discoveryCapacityRow('claim','request-done','claimed'),
+      discoveryCapacityRow('result','request-done',outcome)]);
+    await expect(acknowledged.discover()).resolves.toBeUndefined();
+    acknowledged.store.close();
+  }
+  const mismatched=capacityHarness([...ordinaryCapacityRows(28),discoveryCapacityRow('claim','request-spent','claimed'),
+    discoveryCapacityRow('result','request-spent','unknown','other-member')]);
+  await expect(mismatched.discover()).rejects.toThrow();
+  mismatched.store.close();
+});
+
+it('preserves the 16-revision limit and emergency revoke allowance',async()=>{
+  const fullRevisions=capacityHarness(ordinaryCapacityRows(28),16);
+  await expect(fullRevisions.discover()).rejects.toThrow();
+  fullRevisions.store.close();
+  const emergency=capacityHarness(ordinaryCapacityRows(32));
+  await expect(emergency.revoke()).resolves.toBeUndefined();
+  emergency.rows.push({accountId,ownerMemberId:'member-1',requestId:'emergency-revoke',kind:'stage',phase:'operation',outcome:'staged'});
+  await expect(emergency.revoke()).rejects.toThrow();
+  emergency.store.close();
+});
+
+it('refuses before any claim or SQL while the concrete discovery exchange is unavailable and wipes the input buffer',async()=>{
+  const store=new OutsideCustodyStore({} as never,key),secret=Buffer.from('never-persist-without-an-exchange');
+  await expect(store.consentAndDiscover('A'.repeat(43),{requestId:operationId,operationId,accountId,agentName:'worker',
+    connectionName:'connection',expectedGeneration:0,expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:7,
+    expectedDestinationHash:'b'.repeat(64),expectedRoutePolicyHash:'c'.repeat(64),consentGeneration:1,credential:secret},
+    {deadlineAtMs:Date.now()+5000})).rejects.toThrow('Outside credential change could not be confirmed');
+  expect(secret).toEqual(Buffer.alloc(secret.length));
+  expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(mocks.query).not.toHaveBeenCalled();
+  store.close();
+});
 
 it('loads only a root-owned 0400 single-link key from a root-only Keeper directory and closes the descriptor',()=>{
   prepareKeyLoader();
@@ -347,6 +466,24 @@ it('refuses a successful runAndRecover result when close begins while run is pen
   await expect(pending).rejects.toThrow();
   expect(run).toHaveBeenCalledTimes(1);
   expect(inspect).not.toHaveBeenCalled();
+  expect(storeKey(store)).toEqual(Buffer.alloc(32));
+});
+
+it('awaits admitted work before wiping the key during shutdown drain',async()=>{
+  let entered!:()=>void,release!:()=>void;
+  const inRun=new Promise<void>(resolve=>{entered=resolve;}),runResult=new Promise<void>(resolve=>{release=resolve;});
+  const result={operationId,accountId,kind:'stage' as const,outcome:'staged' as const,generation:1,credentialRevision:1};
+  const store=new OutsideCustodyStore({} as never,key);
+  const pending=store.runAndRecover(operationId,async()=>{entered();await runResult;return result;},async()=>undefined);
+  await inRun;
+  let drained=false;
+  const draining=store.drainForShutdown().then(()=>{drained=true;});
+  expect(drained).toBe(false);
+  expect(storeKey(store)).toEqual(key);
+  release();
+  await expect(pending).rejects.toThrow();
+  await draining;
+  expect(drained).toBe(true);
   expect(storeKey(store)).toEqual(Buffer.alloc(32));
 });
 
