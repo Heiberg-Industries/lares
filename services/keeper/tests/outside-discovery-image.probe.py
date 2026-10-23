@@ -54,6 +54,13 @@ NETWORK_FAILURE_STAGES = frozenset({
     "network-inspect", "network-isolation-check", "network-ipam-check",
     "network-address-validation", "firewall-preflight",
 })
+ACKNOWLEDGEMENT_REASONS = frozenset({
+    "invalid-input", "deadline-before-connect", "connection-error", "dns-failure",
+    "connection-refused", "local-source-unavailable", "network-unreachable", "connection-reset",
+    "socket-timeout", "source-mismatch", "response-too-large", "deadline-no-response",
+    "response-not-ended", "incomplete-headers", "status-not-403", "stage-absent", "stage-multiple",
+    "stage-mismatch", "malformed-headers", "allow-marker", "response-invalid",
+})
 SAFE_FAILURE_PHASES = {"guards", "loaded-images", "network", "fixture-files", "database", "engine-roles",
                       "proxy-config", "compose-held-runtime", "https-peer", "configured-discovery",
                       "first-hop-evidence", "postconditions"}
@@ -1177,17 +1184,26 @@ def import_worker_evidence(root_path):
                                              not isinstance(route_boundary, str) or
                                              route_boundary not in route_boundaries):
             return None
+        acknowledgement_reason = failure.get("acknowledgementReason")
+        if "acknowledgementReason" in failure and (phase_value != "generated route admission" or
+                                                     route_boundary != "route-acknowledgement" or
+                                                     not isinstance(acknowledgement_reason, str) or
+                                                     acknowledgement_reason not in ACKNOWLEDGEMENT_REASONS):
+            return None
         evidence["failure"] = {
             "phase": phase_value if phase_value in phases else "worker",
             "reason": reason_value if reason_value == "configured outside discovery worker failed" else "worker failed",
         }
         if "routeBoundary" in failure:
             evidence["failure"]["routeBoundary"] = route_boundary
+        if "acknowledgementReason" in failure:
+            evidence["failure"]["acknowledgementReason"] = acknowledgement_reason
     return evidence
 
 
 def offline_cleanup_self_test():
     """Exercise partial starts, pinned names, stop recovery, timeout continuation and safe evidence."""
+    secret_like = "sentinel-secret-config-route-value"
     probe_owner = "a" * 32
     container_id = "b" * 64
     facts = {"id": container_id, "labels": {"lares.proof.owner": probe_owner},
@@ -1297,6 +1313,23 @@ def offline_cleanup_self_test():
         evidence = import_worker_evidence(pathlib.Path(directory))
         if not evidence or evidence.get("failure", {}).get("routeBoundary") != "firewall-check":
             raise RuntimeError("fixed route boundary label was not retained")
+        for reason in sorted(ACKNOWLEDGEMENT_REASONS):
+            worker_path.write_text(json.dumps({"success": False, "checks": [],
+                "failure": {"phase": "generated route admission", "reason": "worker failed",
+                            "routeBoundary": "route-acknowledgement", "acknowledgementReason": reason}}), encoding="utf-8")
+            evidence = import_worker_evidence(pathlib.Path(directory))
+            if not evidence or evidence.get("failure", {}).get("acknowledgementReason") != reason:
+                raise RuntimeError("fixed acknowledgement reason was not retained")
+        for phase, boundary, reason in (
+                ("worker", "route-acknowledgement", "stage-absent"),
+                ("generated route admission", "firewall-check", "stage-absent"),
+                ("generated route admission", "route-acknowledgement", secret_like),
+                ("generated route admission", "route-acknowledgement", {"reason": "connection-error"})):
+            worker_path.write_text(json.dumps({"success": False, "checks": [],
+                "failure": {"phase": phase, "reason": "worker failed", "routeBoundary": boundary,
+                            "acknowledgementReason": reason}}), encoding="utf-8")
+            if import_worker_evidence(pathlib.Path(directory)) is not None:
+                raise RuntimeError("unsafe acknowledgement reason was accepted")
         for untrusted in ("credential-secret-detail", "firewall-check /secret", "", ["firewall-check"],
                           {"label": "firewall-check"}):
             worker_path.write_text(json.dumps({"success": False, "checks": [],

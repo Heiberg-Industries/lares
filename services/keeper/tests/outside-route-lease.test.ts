@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Pool, PoolClient } from 'pg';
-import type { DockerBoundary } from '../lib/docker.js';
+import { OutsideRouteAcknowledgementError, type DockerBoundary } from '../lib/docker.js';
 import type { LifecycleConfig } from '../lib/lifecycle-config.js';
 import { AgentLifecycle } from '../lib/lifecycle.js';
 import { trackRouteBoundaryFailures } from './outside-discovery-image.probe.mjs';
@@ -24,15 +24,41 @@ it('tracks only fixed route-boundary failures while preserving the production de
     }};
   const firewallError=new Error('private firewall detail');
   const cleanupError=new Error('private cleanup detail');
+  const laterAcknowledgementError=new OutsideRouteAcknowledgementError('stage-absent');
+  boundary.acknowledgeOutsideStage=async()=>{throw laterAcknowledgementError;};
   const tracked=trackRouteBoundaryFailures(boundary as unknown as DockerBoundary&typeof boundary);
   expect(await tracked.docker.firewall('route',false)).toBe('delegated-result');
   expect(calls[0]).toBe('firewall:original-boundary:route:false');
   await expect(tracked.docker.firewall('route',true)).rejects.toBe(firewallError);
   await expect(tracked.docker.stop('fixture')).rejects.toBe(cleanupError);
+  await expect(tracked.docker.acknowledgeOutsideStage!('stage','192.0.2.4','http://proxy:8888/',Date.now()+1000))
+    .rejects.toBe(laterAcknowledgementError);
   expect(tracked.firstFailure()).toBe('firewall-check');
+  expect(tracked.firstAcknowledgementReason()).toBeUndefined();
   expect(calls).toContain('stop:original-boundary');
   expect(readFileSync(new URL('./outside-discovery-image.probe.mts',import.meta.url),'utf8'))
     .toContain('trackRouteBoundaryFailures(ownedDocker(');
+});
+
+it('captures only the fixed reason from the first real acknowledgement error and rethrows that same error',async()=>{
+  const acknowledgementError=new OutsideRouteAcknowledgementError('stage-absent');
+  const boundary={inventory:async()=>[],config:async()=>{},start:async()=>{},stop:async()=>{},remove:async()=>{},
+    validateSquid:async()=>{},reloadSquid:async()=>{},
+    acknowledgeOutsideStage:async()=>{throw acknowledgementError;},firewall:async()=>{}};
+  const tracked=trackRouteBoundaryFailures(boundary as unknown as DockerBoundary&typeof boundary);
+  await expect(tracked.docker.acknowledgeOutsideStage!('stage','192.0.2.4','http://proxy:8888/',Date.now()+1000))
+    .rejects.toBe(acknowledgementError);
+  expect(tracked.firstFailure()).toBe('route-acknowledgement');
+  expect(tracked.firstAcknowledgementReason()).toBe('stage-absent');
+  expect(acknowledgementError.message).toBe('keeper: outside route acknowledgement unavailable');
+  expect(JSON.stringify(acknowledgementError)).toBe('{}');
+
+  const plainError=new Error('sensitive arbitrary diagnostic');
+  const plain=trackRouteBoundaryFailures({...boundary,acknowledgeOutsideStage:async()=>{throw plainError;}} as unknown as DockerBoundary);
+  await expect(plain.docker.acknowledgeOutsideStage!('stage','192.0.2.4','http://proxy:8888/',Date.now()+1000))
+    .rejects.toBe(plainError);
+  expect(plain.firstFailure()).toBe('route-acknowledgement');
+  expect(plain.firstAcknowledgementReason()).toBeUndefined();
 });
 
 it('rejects a detached route check whose acknowledgement arrives after its namespace lease is revoked',async()=>{

@@ -51,6 +51,18 @@ export class NoOwnedContainerError extends Error {
 }
 const wait = (milliseconds: number) => new Promise<void>(resolve => setTimeout(resolve, milliseconds));
 const ROUTE_STAGE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+export type OutsideRouteAcknowledgementFailure = 'invalid-input'|'deadline-before-connect'|'connection-error'|
+    'dns-failure'|'connection-refused'|'local-source-unavailable'|'network-unreachable'|'connection-reset'|'socket-timeout'|
+    'source-mismatch'|'response-too-large'|'deadline-no-response'|'response-not-ended'|'incomplete-headers'|
+    'status-not-403'|'stage-absent'|'stage-multiple'|'stage-mismatch'|'malformed-headers'|'allow-marker'|'response-invalid';
+/** The message remains safe for existing callers; only trusted fixture code reads the fixed reason. */
+export class OutsideRouteAcknowledgementError extends Error {
+    readonly reason!: OutsideRouteAcknowledgementFailure;
+    constructor(reason: OutsideRouteAcknowledgementFailure) {
+        super('keeper: outside route acknowledgement unavailable');
+        Object.defineProperty(this, 'reason', { value: reason, enumerable: false });
+    }
+}
 /** Keep the production predicate byte-for-byte aligned in behavior with the pinned-Squid raw
  * response fixture: only SP/HTAB are optional whitespace, folded/control-bearing headers fail. */
 export function outsideRouteStageAcknowledged(data: Buffer, expectedStage: string): boolean {
@@ -82,36 +94,94 @@ export function outsideRouteStageAcknowledged(data: Buffer, expectedStage: strin
     return statusMatch?.[1] === '403' && !data.includes(Buffer.from('CI_PROXY_DESTINATION_OK')) && !malformed &&
         values.length === 1 && values[0] === expectedStage;
 }
+/** Diagnostic classification only; the strict success predicate above remains authoritative. */
+function outsideRouteAcknowledgementFailure(data: Buffer, expectedStage: string): OutsideRouteAcknowledgementFailure {
+    const headerEnd = data.indexOf(Buffer.from('\r\n\r\n'));
+    if (headerEnd < 0) return 'incomplete-headers';
+    if (data.includes(Buffer.from('CI_PROXY_DESTINATION_OK'))) return 'allow-marker';
+    const lines = data.subarray(0, headerEnd).toString('latin1').split('\r\n');
+    const status = (lines[0] ?? '').match(/^HTTP\/\d+\.\d+ ([0-9]{3})(?:[ \t]|$)/)?.[1];
+    if (!status) return 'malformed-headers';
+    if (status !== '403') return 'status-not-403';
+    const trimOws = (value: string) => value.replace(/^[ \t]+|[ \t]+$/g, '');
+    const control = /[\x00-\x08\x0a-\x1f\x7f]/;
+    const values: string[] = [];
+    for (const line of lines.slice(1)) {
+        if (control.test(line) || /^[ \t]/.test(line)) return 'malformed-headers';
+        const colon = line.indexOf(':');
+        if (colon < 0) {
+            if (/^x-lares-route-stage(?:[: \t]|$)/i.test(trimOws(line))) return 'malformed-headers';
+            continue;
+        }
+        const rawName = line.slice(0, colon), name = trimOws(rawName);
+        if (/^x-lares-route-stage$/i.test(name)) {
+            const value = line.slice(colon + 1);
+            if (rawName !== name || control.test(value)) return 'malformed-headers';
+            values.push(trimOws(value));
+        } else if (/^x-lares-route-stage(?:[ \t]|$)/i.test(name)) return 'malformed-headers';
+    }
+    if (values.length === 0) return 'stage-absent';
+    if (values.length > 1) return 'stage-multiple';
+    if (values[0] !== expectedStage) return 'stage-mismatch';
+    return 'response-invalid';
+}
+function outsideRouteSocketFailure(code: unknown): OutsideRouteAcknowledgementFailure {
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') return 'dns-failure';
+    if (code === 'ECONNREFUSED') return 'connection-refused';
+    if (code === 'EADDRNOTAVAIL' || code === 'EACCES') return 'local-source-unavailable';
+    if (code === 'ENETUNREACH' || code === 'EHOSTUNREACH') return 'network-unreachable';
+    if (code === 'ECONNRESET' || code === 'EPIPE') return 'connection-reset';
+    if (code === 'ETIMEDOUT') return 'socket-timeout';
+    return 'connection-error';
+}
 /** A bounded, deliberately denied CONNECT proves the configured proxy has loaded one stage.
  * The TCP socket is pinned to the root-selected local source before it can send a request. */
 export async function acknowledgeOutsideSquidStage(stage: string, sourceAddress: string, proxyUrl: string,
   deadlineAtMs: number, connect = createConnection): Promise<void> {
-    if (!ROUTE_STAGE.test(stage) || isIP(sourceAddress) !== 4 ||
-        !Number.isFinite(deadlineAtMs) || deadlineAtMs <= Date.now()) throw new Error('keeper: outside route acknowledgement unavailable');
-    const proxy = new URL(proxyUrl);
+    if (!ROUTE_STAGE.test(stage) || isIP(sourceAddress) !== 4 || !Number.isFinite(deadlineAtMs))
+        throw new OutsideRouteAcknowledgementError('invalid-input');
+    if (deadlineAtMs <= Date.now()) throw new OutsideRouteAcknowledgementError('deadline-before-connect');
+    let proxy: URL;
+    try { proxy = new URL(proxyUrl); }
+    catch { throw new OutsideRouteAcknowledgementError('invalid-input'); }
     if (proxy.protocol !== 'http:' || proxy.hostname !== 'lares-egress-proxy' || proxy.port !== '8888' || proxy.username || proxy.password || proxy.pathname !== '/' || proxy.search || proxy.hash)
-        throw new Error('keeper: outside route acknowledgement unavailable');
+        throw new OutsideRouteAcknowledgementError('invalid-input');
     const host = `lares-route-${stage}.invalid`;
-    const socket = connect({ host: proxy.hostname, port: Number(proxy.port), localAddress: sourceAddress, family: 4 });
+    let socket: Socket;
+    try { socket = connect({ host: proxy.hostname, port: Number(proxy.port), localAddress: sourceAddress, family: 4 }); }
+    catch { throw new OutsideRouteAcknowledgementError('connection-error'); }
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
         await new Promise<void>((resolve, reject) => {
             let buffer = Buffer.alloc(0), settled = false;
-            const finish = (error?: Error) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
-            timeout = setTimeout(() => { socket.destroy(); finish(new Error('timeout')); }, Math.max(1, deadlineAtMs - Date.now()));
-            socket.once('error', () => finish(new Error('unavailable')));
+            let connected = false;
+            const finish = (error?: OutsideRouteAcknowledgementError) => { if (settled) return; settled = true; error ? reject(error) : resolve(); };
+            timeout = setTimeout(() => {
+                const reason: OutsideRouteAcknowledgementFailure = !connected ? 'deadline-before-connect' :
+                    buffer.length === 0 ? 'deadline-no-response' : 'response-not-ended';
+                socket.destroy(); finish(new OutsideRouteAcknowledgementError(reason));
+            }, Math.max(1, deadlineAtMs - Date.now()));
+            socket.once('error', (error: NodeJS.ErrnoException) =>
+                finish(new OutsideRouteAcknowledgementError(outsideRouteSocketFailure(error.code))));
             socket.once('connect', () => {
-                if (socket.localAddress !== sourceAddress) { socket.destroy(); finish(new Error('source')); return; }
+                connected = true;
+                if (socket.localAddress !== sourceAddress) {
+                    socket.destroy(); finish(new OutsideRouteAcknowledgementError('source-mismatch')); return;
+                }
                 socket.write(`CONNECT ${host}:443 HTTP/1.1\r\nHost: ${host}:443\r\nProxy-Connection: close\r\n\r\n`);
             });
             socket.on('data', (chunk: Buffer) => {
                 buffer = Buffer.concat([buffer, chunk]);
-                if (buffer.length > 8192) { finish(new Error('oversized')); return; }
+                if (buffer.length > 8192) { finish(new OutsideRouteAcknowledgementError('response-too-large')); return; }
                 if (buffer.indexOf('\r\n\r\n') < 0) return;
             });
-            socket.once('end', () => finish(outsideRouteStageAcknowledged(buffer, stage) ? undefined : new Error('mismatch')));
+            socket.once('end', () => finish(outsideRouteStageAcknowledged(buffer, stage) ? undefined :
+                new OutsideRouteAcknowledgementError(outsideRouteAcknowledgementFailure(buffer, stage))));
         });
-    } catch { throw new Error('keeper: outside route acknowledgement unavailable'); }
+    } catch (error) {
+        if (error instanceof OutsideRouteAcknowledgementError) throw error;
+        throw new OutsideRouteAcknowledgementError('connection-error');
+    }
     finally { if (timeout) clearTimeout(timeout); if (!socket.destroyed) socket.destroy(); }
 }
 function privateIpv4(address: string): boolean {

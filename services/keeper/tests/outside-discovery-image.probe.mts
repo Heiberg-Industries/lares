@@ -10,11 +10,11 @@ import {Pool} from 'pg';
 import {definitionSchema,hashOf} from '../../../packages/agent-kit/src/definition.js';
 import {PgGrantStore} from '../../../packages/agent-kit/src/grant-store.js';
 import {AgentLifecycle} from '../lib/lifecycle.js';
-import {ownedDocker} from '../lib/docker.js';
+import {OutsideRouteAcknowledgementError,ownedDocker} from '../lib/docker.js';
 import {keeperOutsideCustodyPool,keeperPool,loadKeeperConfig} from '../lib/config.js';
 import {loadBoundOutsideCustodyKey,OutsideCustodyStore} from '../lib/outside-custody.js';
 import {withDefinitionNamespace} from '../lib/definition-namespace.js';
-import type {DockerBoundary} from '../lib/docker.js';
+import type {DockerBoundary,OutsideRouteAcknowledgementFailure} from '../lib/docker.js';
 
 const env=process.env;
 function need(name:string):string{const value=env[name];if(!value)throw new Error('fixture input missing');return value;}
@@ -33,8 +33,9 @@ export type RouteBoundaryFailure = 'runtime-stop'|'squid-validation'|'firewall-c
   'proxy-reload'|'route-acknowledgement';
 export function trackRouteBoundaryFailures<T extends DockerBoundary>(boundary:T):{
   docker:T; firstFailure():RouteBoundaryFailure|undefined;
+  firstAcknowledgementReason():OutsideRouteAcknowledgementFailure|undefined;
 }{
-  let failure:RouteBoundaryFailure|undefined;
+  let failure:RouteBoundaryFailure|undefined,acknowledgementReason:OutsideRouteAcknowledgementFailure|undefined;
   const labels:Partial<Record<keyof DockerBoundary,RouteBoundaryFailure>>={
     stop:'runtime-stop',validateSquid:'squid-validation',reloadSquid:'proxy-reload',
     acknowledgeOutsideStage:'route-acknowledgement',
@@ -47,15 +48,21 @@ export function trackRouteBoundaryFailures<T extends DockerBoundary>(boundary:T)
       const stage:RouteBoundaryFailure|undefined=property==='firewall'?
         (args[1]===true?'firewall-check':'firewall-apply'):fixed;
       if(!stage)return Reflect.apply(method,target,args);
+      const recordFailure=(error:unknown)=>{
+        if(failure!==undefined)return;
+        failure=stage;
+        if(stage==='route-acknowledgement'&&error instanceof OutsideRouteAcknowledgementError)
+          acknowledgementReason=error.reason;
+      };
       try{
         const result=Reflect.apply(method,target,args);
         if(result!==null&&typeof result==='object'&&typeof (result as {then?:unknown}).then==='function')
-          return (result as Promise<unknown>).catch(error=>{failure??=stage;throw error;});
+          return (result as Promise<unknown>).catch(error=>{recordFailure(error);throw error;});
         return result;
-      }catch(error){failure??=stage;throw error;}
+      }catch(error){recordFailure(error);throw error;}
     };
   }}) as T;
-  return {docker,firstFailure:()=>failure};
+  return {docker,firstFailure:()=>failure,firstAcknowledgementReason:()=>acknowledgementReason};
 }
 
 type PeerState={ready:boolean;methods:string[];requestCount:number;bearerMatches:boolean;tlsServername:boolean;pathMatches:boolean;
@@ -152,6 +159,7 @@ async function runConfigured():Promise<void>{
   let main:Pool|undefined,outside:Pool|undefined,admin:Pool|undefined,proof:Pool|undefined,store:OutsideCustodyStore|undefined,
     key:Buffer|undefined,proofKey:Buffer|undefined,credential:Buffer|undefined;
   let routeBoundaryFailure:(()=>RouteBoundaryFailure|undefined)|undefined;
+  let routeAcknowledgementReason:(()=>OutsideRouteAcknowledgementFailure|undefined)|undefined;
   let phase='configuration';
   try{
     const root=need('FIXTURE_ROOT'),agent=need('FIXTURE_AGENT'),owner='outside-proof-owner',org='outside-proof-org';
@@ -165,6 +173,7 @@ async function runConfigured():Promise<void>{
     key=loadBoundOutsideCustodyKey(config.outsideCustody.keyFile,config.outsideCustody.keyFingerprint);
     const routeDocker=trackRouteBoundaryFailures(ownedDocker({...config.lifecycle,project:config.project,dir:config.dir}));
     routeBoundaryFailure=routeDocker.firstFailure;
+    routeAcknowledgementReason=routeDocker.firstAcknowledgementReason;
     const lifecycle=new AgentLifecycle(main,admin,config.lifecycle,{mode:'rendered',agentsDir:config.agentsDir,
       secretsDir:config.secretsDir,outsideCustody:config.outsideCustody},routeDocker.docker);
     store=new OutsideCustodyStore(outside,key,{mainPool:main,lifecycle});
@@ -278,11 +287,16 @@ async function runConfigured():Promise<void>{
   }catch{
     const safePhases=new Set(['configuration','role identities','neutral authorization fixture','generated route admission',
       'direct-path firewall counter','database discovery','durable result verification']);
-    const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure}={
+    const failure:{phase:string;reason:string;routeBoundary?:RouteBoundaryFailure;
+      acknowledgementReason?:OutsideRouteAcknowledgementFailure}={
       phase:safePhases.has(phase)?phase:'worker',reason:'configured outside discovery worker failed'};
     if(phase==='generated route admission'){
       const boundary=routeBoundaryFailure?.();
-      if(boundary)failure.routeBoundary=boundary;
+      if(boundary){
+        failure.routeBoundary=boundary;
+        const acknowledgement=routeAcknowledgementReason?.();
+        if(boundary==='route-acknowledgement'&&acknowledgement)failure.acknowledgementReason=acknowledgement;
+      }
     }
     writeReport(output,{...partial,failure});
     throw new Error('configured outside discovery proof failed');

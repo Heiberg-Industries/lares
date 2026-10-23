@@ -1,7 +1,10 @@
 import { vi,it,expect } from 'vitest';
+import { EventEmitter } from 'node:events';
+import type { Socket } from 'node:net';
 const calls=vi.hoisted(()=>[] as string[][]);
 vi.mock('node:child_process',()=>({execFile:Object.assign((_bin:string,args:string[],_opts:unknown,cb:any)=>{calls.push(args);cb(null,{stdout:args[0]==='network'?'[{"Containers":{"other":{"IPv4Address":"172.18.0.7/16"}},"IPAM":{"Config":[{"Gateway":"172.18.0.1"}]}}]':'',stderr:''});},{})}));
-import { AgentNotHealthyError, NoOwnedContainerError, outsideRouteStageAcknowledged, ownedDocker } from '../lib/docker.js';
+import { AgentNotHealthyError, NoOwnedContainerError, OutsideRouteAcknowledgementError, acknowledgeOutsideSquidStage,
+  outsideRouteStageAcknowledged, ownedDocker } from '../lib/docker.js';
 const image='example/image@sha256:'+'a'.repeat(64);
 it('accepts only the strict bounded-Squid route acknowledgement grammar',()=>{
  const stage='11111111-1111-4111-8111-111111111111';
@@ -16,6 +19,72 @@ it('accepts only the strict bounded-Squid route acknowledgement grammar',()=>{
    response('HTTP/1.1 403 Forbidden',`X-Lares-Route-Stage : ${stage}`),
    Buffer.from(`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\n\r\nCI_PROXY_DESTINATION_OK`),
  ]) expect(outsideRouteStageAcknowledged(raw,stage)).toBe(false);
+});
+it('retains the one pinned acknowledgement request and exposes only fixed safe failure reasons',async()=>{
+ const stage='11111111-1111-4111-8111-111111111111',source='192.0.2.14';
+ const valid=Buffer.from(`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\n\r\n`);
+ class FakeSocket extends EventEmitter {
+  destroyed=false;
+  constructor(public localAddress:string,private readonly mode:'success'|'source'|'error'|'large'|'empty'|'partial'|'no-response'|'response',
+   private readonly response=valid,private readonly errorCode='ECONNREFUSED') {super();}
+  write=vi.fn((request:string)=>{
+   if(this.mode==='success'||this.mode==='response')queueMicrotask(()=>{this.emit('data',this.response);this.emit('end');});
+   if(this.mode==='error')queueMicrotask(()=>this.emit('error',Object.assign(new Error('private socket detail'),{code:this.errorCode})));
+   if(this.mode==='large')queueMicrotask(()=>this.emit('data',Buffer.alloc(8193,0x41)));
+   if(this.mode==='partial')queueMicrotask(()=>this.emit('data',Buffer.from('HTTP/1.1 403')));
+   void request;return true;
+  });
+  destroy=vi.fn(()=>{this.destroyed=true;return this as unknown as Socket;});
+ }
+ const open=(mode:'success'|'source'|'error'|'large'|'empty'|'partial'|'no-response'|'response',address=source,
+  deadline=Date.now()+1000,response=valid,errorCode='ECONNREFUSED')=>{
+  let socket:FakeSocket|undefined;
+  const connect=vi.fn((options:{host:string;port:number;localAddress:string;family:number})=>{
+   expect(options).toEqual({host:'lares-egress-proxy',port:8888,localAddress:source,family:4});
+   socket=new FakeSocket(address,mode,response,errorCode);if(mode!=='empty')queueMicrotask(()=>socket?.emit('connect'));
+   return socket as unknown as Socket;
+  });
+  const promise=acknowledgeOutsideSquidStage(stage,source,'http://lares-egress-proxy:8888/',deadline,connect as never);
+  return {promise,connect,get socket(){return socket;}};
+ };
+ const success=await open('success');
+ await expect(success.promise).resolves.toBeUndefined();
+ expect(success.connect).toHaveBeenCalledTimes(1);
+ expect(success.socket?.write).toHaveBeenCalledTimes(1);
+ expect(success.socket?.write.mock.calls[0]?.[0]).toBe(`CONNECT lares-route-${stage}.invalid:443 HTTP/1.1\r\nHost: lares-route-${stage}.invalid:443\r\nProxy-Connection: close\r\n\r\n`);
+ expect(success.socket?.destroyed).toBe(true);
+
+ const expectReason=async(promise:Promise<void>,reason:string)=>{
+  let caught:unknown;
+  try{await promise;}catch(error){caught=error;}
+  expect(caught).toBeInstanceOf(OutsideRouteAcknowledgementError);
+  expect((caught as OutsideRouteAcknowledgementError).reason).toBe(reason);
+  expect((caught as Error).message).toBe('keeper: outside route acknowledgement unavailable');
+  expect(JSON.stringify(caught)).toBe('{}');
+  expect((caught as Error).message).not.toContain('private');
+ };
+ await expectReason(open('source','192.0.2.15').promise,'source-mismatch');
+ for(const [code,reason] of [['ENOTFOUND','dns-failure'],['ECONNREFUSED','connection-refused'],
+  ['EADDRNOTAVAIL','local-source-unavailable'],['ENETUNREACH','network-unreachable'],
+  ['ECONNRESET','connection-reset'],['ETIMEDOUT','socket-timeout'],['SECRET_CODE','connection-error']])
+   await expectReason(open('error',source,Date.now()+1000,valid,code).promise,reason);
+ await expectReason(open('large').promise,'response-too-large');
+ await expectReason(open('empty',source,Date.now()+30).promise,'deadline-before-connect');
+ await expectReason(open('partial',source,Date.now()+30).promise,'response-not-ended');
+ const noResponse=await open('no-response',source,Date.now()+30);
+ await expectReason(noResponse.promise,'deadline-no-response');
+ const invalidResponse=(raw:string)=>Buffer.from(raw);
+ for(const [raw,reason] of [
+  [`HTTP/1.1 502 Bad Gateway\r\nX-Lares-Route-Stage: ${stage}\r\n\r\n`,'status-not-403'],
+  [`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}`,'incomplete-headers'],
+  ['HTTP/1.1 403 Forbidden\r\nOther: value\r\n\r\n','stage-absent'],
+  [`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\nx-lares-route-stage: ${stage}\r\n\r\n`,'stage-multiple'],
+  [`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${'2'.repeat(36)}\r\n\r\n`,'stage-mismatch'],
+  [`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage : ${stage}\r\n\r\n`,'malformed-headers'],
+  [`HTTP/1.1 403 Forbidden\r\nX-Lares-Route-Stage: ${stage}\r\n\r\nCI_PROXY_DESTINATION_OK`,'allow-marker'],
+ ] as const) await expectReason(open('response',source,Date.now()+1000,invalidResponse(raw)).promise,reason);
+ await expectReason(acknowledgeOutsideSquidStage('invalid',source,'http://lares-egress-proxy:8888/',Date.now()+1000),
+   'invalid-input');
 });
 it('uses fixed execFile arrays, only owned compose file, digest helpers, host nft namespace and no broad cleanup',async()=>{
  let healthAttempts=0;
