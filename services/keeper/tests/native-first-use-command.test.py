@@ -288,7 +288,7 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             "await pending.result()", "await client.fetch(path,{method:'POST',headers:sendHeaders,body})",
             "'x-lares-member-id':'first-use-member-b'", "response:result.message", "sessionId:session.state.sessionId",
             "fs.writeFileSync(temp,JSON.stringify({phase}),{mode:0o600})", "fs.renameSync(temp,phaseFile)",
-            "catch{process.exitCode=1}",
+            "catch(error){if(!resultObserved)recordThrownResult(error);process.exitCode=1}",
         ):
             self.assertIn(contract, client_source)
         self.assertNotIn("console.error", client_source)
@@ -326,6 +326,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASES" for target in node.targets))
         phase_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
             and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_PHASE_FILE" for target in node.targets))
+        result_file = next(node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "COMPILED_CLIENT_RESULT_FILE" for target in node.targets))
         initializer = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
             and node.name == "initialize_compiled_client_phase")
         reader = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
@@ -333,7 +335,7 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         safe = next(node for node in self.tree.body if isinstance(node, ast.FunctionDef)
             and node.name == "safe_compiled_client_phase_summary")
         namespace = {"json": json}
-        module = ast.fix_missing_locations(ast.Module(body=[phases, phase_file, initializer, reader, safe], type_ignores=[]))
+        module = ast.fix_missing_locations(ast.Module(body=[phases, phase_file, result_file, initializer, reader, safe], type_ignores=[]))
         exec(compile(module, str(PROBE), "exec"), namespace)
         observed = {}
         namespace["run"] = lambda *args, **kwargs: observed.update(args=args, kwargs=kwargs) or type(
@@ -359,7 +361,20 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         namespace = {
             "initialize_compiled_client_phase": lambda _name: True,
             "COMPILED_CLIENT_PHASE_FILE": "/tmp/first-use-phase-first",
+            "COMPILED_CLIENT_RESULT_FILE": "/tmp/first-use-result-diagnostic-first",
             "compiled_client_phase_summary": lambda _name: {"phase": "capsule-sign", "markerValid": True},
+            "compiled_client_result_summary": lambda _name: {
+                "markerValid": False, "outcome": "unknown", "resultStatus": "unknown", "expectedMessage": None,
+                "failureEventCount": 0, "failureEvents": {"step": False, "turn": False, "session": False},
+                "events": [], "categories": {"localDispatchUnavailable": False, "nativeAdmissionRefused": False,
+                    "timeoutAbort": False, "socketUnavailable": False, "requestPolicyRejected": False, "unknown": True},
+                "clientStatus": None},
+            "admission_bridge_summary": lambda: {"markerValid": True, "routes": {
+                "admit": {"requests": 1, "statuses": {"503": 1}},
+                "settle": {"requests": 0, "statuses": {"503": 0}}}},
+            "admission_bridge_delta": lambda _before, _after: {"markerValid": True, "routes": {
+                "admit": {"requests": 0, "statuses": {"503": 0}},
+                "settle": {"requests": 0, "statuses": {"503": 0}}}},
             "fixed_client_failure_observations": lambda: {
                 "upstreamDispatchCount": 2,
                 "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
@@ -375,6 +390,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         diagnostic = namespace["proof"]["firstUseClientDiagnostics"]
         self.assertEqual(diagnostic, {
             "phase": "capsule-sign", "markerValid": True, "timedOut": False, "exitCode": 17,
+            "firstResult": namespace["compiled_client_result_summary"]("fixture-chief"),
+            "admissionBridge": namespace["admission_bridge_delta"](None, None),
             "upstreamDispatchCount": 2,
             "financialDurableCounts": {"attempts": 3, "grants": 3, "settled": 3},
         })
@@ -384,6 +401,10 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Compiled signed request exceeded its time bound"):
             namespace["invoke_compiled_client"]()
         self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"]["timedOut"], True)
+        namespace["run"] = lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "safe result"})()
+        self.assertEqual(namespace["invoke_compiled_client"](), "safe result")
+        self.assertEqual(namespace["proof"]["firstUseClientDiagnostics"]["exitCode"], 0)
+        self.assertIn("firstResult", namespace["proof"]["firstUseClientDiagnostics"])
 
     def test_failure_observation_exports_only_bounded_counts(self) -> None:
         observe = next(node for node in ast.walk(self.tree) if isinstance(node, ast.FunctionDef)
@@ -391,6 +412,8 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         namespace = {
             "upstream_calls": lambda: 3,
             "native_snapshot": lambda: {"attempts": 7, "grants": 6, "settled": 4,
+                                         "attempt_states": {"prepared": 1, "retired": 1, "admitted": 1,
+                                             "unknown": 1, "conflict": 1, "settled": 2},
                                          "liability": "9000.01", "recovery_epoch": "PRIVATE", "endpoint_generation": 77},
         }
         module = ast.fix_missing_locations(ast.Module(body=[observe], type_ignores=[]))
@@ -398,10 +421,169 @@ class CompiledFirstUsePhaseDiagnosticTests(unittest.TestCase):
         result = namespace["fixed_client_failure_observations"]()
         self.assertEqual(result, {
             "upstreamDispatchCount": 3,
-            "financialDurableCounts": {"attempts": 7, "grants": 6, "settled": 4},
+            "financialDurableCounts": {"attempts": 7, "grants": 6, "settled": 4,
+                "attemptStates": {"prepared": 1, "retired": 1, "admitted": 1,
+                    "unknown": 1, "conflict": 1, "settled": 2}},
         })
         self.assertNotIn("PRIVATE", json.dumps(result))
         self.assertNotIn("9000.01", json.dumps(result))
+
+
+class CompiledFirstResultDiagnosticTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        cls.client_source = next(node.args[0].value for node in ast.walk(cls.tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "FIRST_USE_RESULT_FILE" in node.args[0].value)
+        names = {"COMPILED_CLIENT_RESULT_EVENTS", "COMPILED_CLIENT_RESULT_CODES", "COMPILED_CLIENT_RESULT_CATEGORIES",
+                 "COMPILED_CLIENT_RESULT_STATUSES"}
+        constants = [node for node in cls.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in names for target in node.targets)]
+        functions = [node for node in cls.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name in {"unknown_compiled_client_result_summary", "safe_compiled_client_result_summary"}]
+        module = ast.fix_missing_locations(ast.Module(body=[*constants, *functions], type_ignores=[]))
+        cls.reader = {"json": json}
+        exec(compile(module, str(PROBE), "exec"), cls.reader)
+
+    def generated_diagnostic(self, result_expression: str, call: str = "recordReturnedResult") -> str:
+        start = self.client_source.index("function validStatus")
+        end = self.client_source.index("mark('imports');")
+        helper_source = self.client_source[start:end]
+        with tempfile.TemporaryDirectory(prefix="lares-first-result-marker-") as directory:
+            marker = pathlib.Path(directory) / "result.json"
+            helper_source = helper_source.replace("/tmp/first-use-result-diagnostic-first", str(marker))
+            script = "const fs=require('node:fs');const Buffer=global.Buffer;const resultFile=" + json.dumps(str(marker)) + ";" \
+                + "const fixedCodes=" + json.dumps(sorted(self.reader["COMPILED_CLIENT_RESULT_CODES"])) + ";" \
+                + "const failureTypes=" + json.dumps(sorted(self.reader["COMPILED_CLIENT_RESULT_EVENTS"])) + ";\n" + helper_source
+            script += "\n" + call + "(" + result_expression + ");process.stdout.write(fs.readFileSync(resultFile,'utf8'));"
+            completed = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True, timeout=10)
+            return completed.stdout
+
+    def test_generated_client_preserves_returned_status_and_fixed_admission_category(self) -> None:
+        canary = "PRIVATE-CANARY-DO-NOT-EMIT"
+        event = {"type": "step.failed", "data": {"code": "budget_admission_refused", "message": canary,
+            "details": {"statusCode": 400, "upstreamStatusCode": 400, "apiErrorMessage": canary,
+                "responseBodySnippet": canary, "stack": canary, "headers": {"authorization": canary},
+                "ticket": canary, "requestId": canary}}}
+        raw = self.generated_diagnostic(json.dumps({"status": "failed", "message": "not FIRST_USE_OK", "events": [event]}))
+        summary = self.reader["safe_compiled_client_result_summary"](raw, 0)
+        self.assertEqual(summary["outcome"], "returned")
+        self.assertEqual(summary["resultStatus"], "failed")
+        self.assertFalse(summary["expectedMessage"])
+        self.assertEqual(summary["failureEventCount"], 1)
+        self.assertEqual(summary["events"], [{"event": "step.failed", "code": "budget_admission_refused",
+            "statusCode": 400, "upstreamStatusCode": 400}])
+        self.assertTrue(summary["categories"]["nativeAdmissionRefused"])
+        self.assertNotIn(canary, raw)
+        self.assertNotIn(canary, json.dumps(summary))
+
+    def test_generated_client_records_success_timeout_and_thrown_client_error_separately(self) -> None:
+        success = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{status:"completed",message:"FIRST_USE_OK",events:[]}'), 0)
+        self.assertEqual((success["outcome"], success["resultStatus"], success["expectedMessage"]),
+                         ("returned", "completed", True))
+        thrown = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{name:"ClientError",status:503,code:"ECONNREFUSED",message:"PRIVATE-THROWN-CANARY"}',
+                                      call="recordThrownResult"), 0)
+        self.assertEqual((thrown["outcome"], thrown["clientStatus"]), ("thrown", 503))
+        self.assertTrue(thrown["categories"]["socketUnavailable"])
+        self.assertNotIn("PRIVATE-THROWN-CANARY", json.dumps(thrown))
+        timeout = self.reader["safe_compiled_client_result_summary"](
+            self.generated_diagnostic('{name:"TimeoutError",message:"Request timed out"}', call="recordThrownResult"), 0)
+        self.assertTrue(timeout["categories"]["timeoutAbort"])
+
+    def test_result_marker_reader_rejects_malformed_extra_oversized_and_invalid_values(self) -> None:
+        parse = self.reader["safe_compiled_client_result_summary"]
+        valid = json.loads(self.generated_diagnostic('{status:"failed",message:"no",events:[]}'))
+        self.assertTrue(parse(json.dumps(valid), 0)["markerValid"])
+        secret = "PRIVATE-RESULT-MARKER-CANARY"
+        bad_cases = [
+            ("not-json", 0),
+            (json.dumps({**valid, "unexpected": secret}), 0),
+            (json.dumps({**valid, "failureEventCount": -1}), 0),
+            (json.dumps({**valid, "resultStatus": "private"}), 0),
+            (json.dumps({**valid, "clientStatus": 999}), 0),
+            (" " * 2049, 0),
+            (json.dumps(valid), 1),
+        ]
+        for raw, returncode in bad_cases:
+            with self.subTest(raw=raw[:30], returncode=returncode):
+                summary = parse(raw, returncode)
+                self.assertFalse(summary["markerValid"])
+                self.assertEqual(summary["outcome"], "unknown")
+                self.assertNotIn(secret, json.dumps(summary))
+
+    def test_generated_admission_bridge_counts_routes_without_changing_forwarded_bytes(self) -> None:
+        bridge_source = next(node.args[0].value for node in ast.walk(self.tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "write_text" and node.args and isinstance(node.args[0], ast.Constant)
+            and "const server=https.createServer" in node.args[0].value)
+        canary = "RPC-BODY-CANARY-MUST-NOT-REACH-SUMMARY"
+        with tempfile.TemporaryDirectory(prefix="lares-admission-bridge-test-") as directory:
+            root = pathlib.Path(directory)
+            bridge_source = bridge_source.replace(
+                "import https from'node:https';import{readFileSync}from'node:fs';",
+                "import{EventEmitter}from'node:events';const readFileSync=()=>Buffer.from('fixture');"
+                "const https={createServer:(_options,handler)=>({handler,on(){return this}})};")
+            bridge_source = bridge_source.replace(
+                "import{relayGatewayBudget}from'/app/services/keeper/lib/gateway-budget-relay.ts';",
+                "const captures=[];const relayGatewayBudget=async request=>{const body=Buffer.from(await request.arrayBuffer());"
+                "captures.push({path:new URL(request.url).pathname,signature:request.headers.get('x-lares-signature'),body:body.toString('base64')});"
+                "const failed=new URL(request.url).pathname.endsWith('/settle');return new Response(failed?'safe-failure':body,{status:failed?503:200,"
+                "headers:{'content-type':'application/json','x-lares-signature':request.headers.get('x-lares-signature')}})};")
+            bridge_source = bridge_source.replace(
+                "import{GATEWAY_RPC_BYTES,GATEWAY_RPC_MS,gatewayRpcPath}from'/app/packages/agent-kit/src/gateway-admission-protocol.ts';",
+                "const GATEWAY_RPC_BYTES=8192,GATEWAY_RPC_MS=3000;const gatewayRpcPath=path=>path==='/v1/gateway-budget/admit'||path==='/v1/gateway-budget/settle';")
+            listener = "server.listen(8443,'0.0.0.0');"
+            self.assertIn(listener, bridge_source)
+            exercise = """const send=async(method,url,headers={},body='')=>{const incoming=new EventEmitter();Object.assign(incoming,{method,url,headers,destroy(){this.destroyed=true}});const outgoing={headersSent:false,destroyed:false,status:null,responseHeaders:{},body:Buffer.alloc(0),done:null,finish:null,writeHead(status,value){this.status=status;this.responseHeaders=value;this.headersSent=true},end(value){this.body=Buffer.from(value??'');this.finish?.()},destroy(){this.destroyed=true;this.finish?.()}};outgoing.done=new Promise(resolve=>outgoing.finish=resolve);server.handler(incoming,outgoing);if(body){incoming.emit('data',Buffer.from(body));incoming.emit('end')}await outgoing.done;return{status:outgoing.status,signature:outgoing.responseHeaders['x-lares-signature']??null,body:outgoing.body.toString()}};
+const raw=JSON.stringify({probe:'RPC-BODY-CANARY-MUST-NOT-REACH-SUMMARY'}),signature='a'.repeat(64);
+const admit=await send('POST','/v1/gateway-budget/admit',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':signature},raw);
+const settle=await send('POST','/v1/gateway-budget/settle',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':signature},raw);
+const invalid=await send('POST','/v1/gateway-budget/admit',{'content-type':'application/json','content-length':String(Buffer.byteLength(raw)),'x-lares-signature':'bad'},raw);
+const diagnostic=await send('GET','/__diagnostics');console.log(JSON.stringify({admit,settle,invalid,diagnostic:JSON.parse(diagnostic.body),captures}));"""
+            bridge_source = bridge_source.replace(listener, exercise)
+            bridge_source = bridge_source.replace("const chunks:Buffer[]=[]", "const chunks=[]")
+            bridge_source = bridge_source.replace(" as RequestInit", "")
+            bridge_source = bridge_source.replace("const headers:Record<string,string>=", "const headers=")
+            source_path = root / "bridge-test.mjs"
+            source_path.write_text(bridge_source, encoding="utf-8")
+            completed = subprocess.run(["node", str(source_path)],
+                capture_output=True, text=True, check=False, timeout=20)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            observed = json.loads(completed.stdout)
+        self.assertEqual(observed["admit"]["status"], 200)
+        self.assertEqual(observed["admit"]["signature"], "a" * 64)
+        self.assertEqual(observed["settle"]["status"], 503)
+        self.assertEqual(observed["invalid"]["status"], 503)
+        self.assertEqual(len(observed["captures"]), 2)
+        self.assertEqual([item["path"] for item in observed["captures"]],
+            ["/v1/gateway-budget/admit", "/v1/gateway-budget/settle"])
+        self.assertTrue(all(item["signature"] == "a" * 64 for item in observed["captures"]))
+        self.assertTrue(all(__import__("base64").b64decode(item["body"]).decode() ==
+            json.dumps({"probe": canary}, separators=(",", ":")) for item in observed["captures"]))
+        routes = observed["diagnostic"]["routes"]
+        self.assertEqual((routes["admit"]["requests"], routes["admit"]["statuses"]["200"], routes["admit"]["statuses"]["503"]),
+                         (2, 1, 1))
+        self.assertEqual((routes["settle"]["requests"], routes["settle"]["statuses"]["503"]), (1, 1))
+        self.assertNotIn(canary, json.dumps(observed["diagnostic"]))
+        bridge_names = {"ADMISSION_BRIDGE_STATUS_BUCKETS", "ADMISSION_BRIDGE_ROUTES"}
+        bridge_constants = [node for node in self.tree.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id in bridge_names for target in node.targets)]
+        bridge_functions = [node for node in self.tree.body if isinstance(node, ast.FunctionDef)
+            and node.name in {"unknown_admission_bridge_summary", "safe_admission_bridge_summary", "admission_bridge_delta"}]
+        bridge_namespace = {"json": json}
+        bridge_module = ast.fix_missing_locations(ast.Module(body=[*bridge_constants, *bridge_functions], type_ignores=[]))
+        exec(compile(bridge_module, str(PROBE), "exec"), bridge_namespace)
+        safe = bridge_namespace["safe_admission_bridge_summary"](json.dumps(observed["diagnostic"]), 0)
+        self.assertTrue(safe["markerValid"])
+        self.assertEqual(safe["routes"], routes)
+        invalid = bridge_namespace["safe_admission_bridge_summary"](
+            json.dumps({**observed["diagnostic"], "extra": canary}), 0)
+        self.assertFalse(invalid["markerValid"])
+        self.assertNotIn(canary, json.dumps(invalid))
 
 
 class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
@@ -644,6 +826,8 @@ class FinancialObserverTests(unittest.TestCase):
         self.assertTrue(all(query.lstrip().upper().startswith("SELECT") for query in queries.values()))
         self.assertTrue(all(not any(word in query.upper() for word in ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "DROP"))
                             for query in queries.values()))
+        self.assertTrue(all(f"'{state}'" in queries["native"] for state in
+                            ("prepared", "retired", "admitted", "unknown", "conflict", "settled")))
         observer = next(
             node for node in tree.body
             if isinstance(node, ast.FunctionDef) and node.name == "financial_observer"
