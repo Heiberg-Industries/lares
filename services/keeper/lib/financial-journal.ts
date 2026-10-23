@@ -87,7 +87,7 @@ export interface FinancialJournalProposal {journalId:string;operationId:string;s
 export interface CommittedFinancialEvidence {readonly journalId:string;readonly operationId:string;readonly operation:BudgetFinancialOperation;readonly proposalSequence:number;readonly proposalDigest:string}
 declare const committedReceiptBrand:unique symbol;
 export interface CommittedFinancialReceipt extends CommittedFinancialEvidence {readonly [committedReceiptBrand]:true}
-interface CommittedReceiptProof {evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[];observedProjection?:readonly FinancialAtom[]}
+interface CommittedReceiptProof {evidence:CommittedFinancialEvidence;atoms:readonly FinancialAtom[];observedProjection?:readonly FinancialAtom[];priorProjection?:readonly FinancialAtom[]}
 const committedReceipts=new WeakMap<object,CommittedReceiptProof>();
 interface PublicationProof {journal:HostFinancialJournal;operationId:string;receipt:CommittedFinancialReceipt;used:boolean;active:boolean}
 const publicationProofs=new WeakMap<object,PublicationProof>();
@@ -141,6 +141,57 @@ function nativeActivationProjectionCovers(atoms:readonly FinancialAtom[],require
     installationWindow.startsAt===requirement.monthStartsAt&&installationWindow.endsAt===requirement.monthEndsAt&&
     !!memberWindow&&memberWindow.accountId===member.id&&memberWindow.openingCap===requirement.memberWindowCap&&memberWindow.startsAt===requirement.monthStartsAt&&memberWindow.endsAt===requirement.monthEndsAt;
 }
+function freezeFinancialAtoms(atoms:readonly FinancialAtom[]):readonly FinancialAtom[]{
+  const freeze=(value:unknown):unknown=>{
+    if(!value||typeof value!=='object')return value;
+    for(const child of Object.values(value))freeze(child);
+    return Object.freeze(value);
+  };
+  return Object.freeze(atoms.map(atom=>freeze(FINANCIAL_ATOM_SCHEMA.parse(structuredClone(atom))) as FinancialAtom));
+}
+function canonicalMonthStart(value:string):string|undefined{
+  const match=/^(\d{4})-(0[1-9]|1[0-2])-01T00:00:00\.000000Z$/.exec(value);if(!match)return undefined;
+  return value;
+}
+function isCurrentMonthWindow(window:Extract<FinancialAtom,{kind:'window'}>):boolean{
+  const starts=canonicalMonthStart(window.startsAt);if(!starts)return false;
+  const match=/^(\d{4})-(\d{2})-/.exec(starts);if(!match)return false;
+  let year=Number(match[1]),month=Number(match[2])+1;if(month===13){month=1;year++;}
+  const expectedEnd=`${String(year).padStart(4,'0')}-${String(month).padStart(2,'0')}-01T00:00:00.000000Z`;
+  return window.endsAt===expectedEnd;
+}
+function positiveMoney(value:string|null):boolean{
+  if(value===null)return false;try{return canonicalBudgetMoney(value)===value&&value!=='0';}catch{return false;}
+}
+function atomMap(atoms:readonly FinancialAtom[]):Map<string,FinancialAtom>|undefined{
+  const result=new Map<string,FinancialAtom>();
+  try{for(const value of atoms){const atom=FINANCIAL_ATOM_SCHEMA.parse(value),key=financialAtomKey(atom);if(result.has(key))return undefined;result.set(key,atom);}}
+  catch{return undefined;}
+  return result;
+}
+function activeProvisionProjectionCovers(beforeAtoms:readonly FinancialAtom[],afterAtoms:readonly FinancialAtom[],proposal:readonly FinancialAtom[],binding:BindingAtom):boolean{
+  if(binding.state!=='active')return false;
+  const before=atomMap(beforeAtoms),after=atomMap(afterAtoms),proposed=atomMap(proposal);if(!before||!after||!proposed||after.size!==before.size+1)return false;
+  const bindingKey=financialAtomKey(binding),proposedBinding=proposed.get(bindingKey),afterBinding=after.get(bindingKey);
+  if(before.has(bindingKey)||!proposedBinding||!afterBinding||!gatewayCanonical(proposedBinding).equals(gatewayCanonical(binding))||!gatewayCanonical(afterBinding).equals(gatewayCanonical(binding)))return false;
+  for(const [key,value] of before){const next=after.get(key);if(!next||!gatewayCanonical(value).equals(gatewayCanonical(next)))return false;}
+  const additions=[...after].filter(([key])=>!before.has(key));if(additions.length!==1||additions[0]?.[0]!==bindingKey)return false;
+  const installation=before.get(`account:${binding.installationAccountId}`),member=before.get(`account:${binding.memberAccountId}`);
+  if(!installation||installation.kind!=='account'||installation.accountKind!=='installation'||installation.id!==binding.installationAccountId||
+    installation.installationAccountId!==installation.id||installation.state!=='open'||installation.reason!=='approved'||installation.selectedEndpointHash!==binding.endpointHash||
+    !positiveMoney(installation.installationCap)||!installation.activeWindowId||installation.endpointGeneration==='0'||installation.recoveryEpochHash===null)return false;
+  if(!member||member.kind!=='account'||member.id===installation.id||member.accountKind!=='member'||member.installationAccountId!==installation.id||
+    member.state!=='closed'||member.reason!=='unreconciled'||member.selectedEndpointHash!==null||member.recoveryEpochHash!==null||!member.activeWindowId)return false;
+  const installationWindow=before.get(`window:${installation.activeWindowId}`),memberWindow=before.get(`window:${member.activeWindowId}`);
+  if(!installationWindow||installationWindow.kind!=='window'||installationWindow.id!==installation.activeWindowId||installationWindow.accountId!==installation.id||
+    !isCurrentMonthWindow(installationWindow)||installationWindow.openingCap!==installation.installationCap)return false;
+  if(!memberWindow||memberWindow.kind!=='window'||memberWindow.id!==member.activeWindowId||memberWindow.accountId!==member.id||
+    memberWindow.startsAt!==installationWindow.startsAt||memberWindow.endsAt!==installationWindow.endsAt||!isCurrentMonthWindow(memberWindow)||!positiveMoney(memberWindow.openingCap))return false;
+  // Every previous atom was compared byte-for-byte above, so these linked rows are also
+  // present and unchanged in the observed after-fold. Do not relate policy revisions to
+  // account generations: a newly provisioned window intentionally uses generation + 1.
+  return true;
+}
 export type FinancialReceiptRequirement=
   |{kind:'bound-closed';binding:BindingAtom}
   |{kind:'native-activation';binding:BindingAtom;installationWindowId:string;memberWindowId:string;endpointGeneration:string;recoveryEpochHash:string;monthStartsAt:string;monthEndsAt:string;installationCap:string;memberWindowCap:string}
@@ -165,7 +216,13 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
   else if(requirement.kind==='native-activation')covered=evidence.operation==='native-activation'&&!!observedProjection&&nativeActivationProjectionCovers(observedProjection,requirement);
   else {
     const binding=requirement.binding,exact=atoms.some(a=>a.kind==='binding'&&gatewayCanonical(a).equals(gatewayCanonical(binding)));
-    if(requirement.kind==='bound-closed')covered=evidence.operation==='provision'&&binding.state==='active'&&exact&&[binding.installationAccountId,binding.memberAccountId].every(accountId=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.installationAccountId===binding.installationAccountId&&a.accountKind===(accountId===binding.installationAccountId?'installation':'member')&&a.state==='closed'&&a.reason==='unreconciled'&&a.selectedEndpointHash===null&&a.recoveryEpochHash===null));
+    if(requirement.kind==='bound-closed'){
+      const initial=evidence.operation==='provision'&&binding.state==='active'&&exact&&[binding.installationAccountId,binding.memberAccountId].every(accountId=>atoms.some(a=>a.kind==='account'&&a.id===accountId&&a.installationAccountId===binding.installationAccountId&&a.accountKind===(accountId===binding.installationAccountId?'installation':'member')&&a.state==='closed'&&a.reason==='unreconciled'&&a.selectedEndpointHash===null&&a.recoveryEpochHash===null));
+      if(initial)covered=true;
+      else if(evidence.operation==='provision'&&binding.state==='active'&&exact&&proof.priorProjection&&observedProjection){
+        try{requireCurrentFinancialPublicationProof(receipt);covered=activeProvisionProjectionCovers(proof.priorProjection,observedProjection,atoms,binding);}catch{covered=false;}
+      }
+    }
     // Pending custody may never have reached INSERT. Erasure may omit already-revoked
     // historical rows; its irreversible member retirement plus matching erased tombstone
     // covers them. A present but mismatching binding never receives this fallback.
@@ -367,6 +424,7 @@ export class HostFinancialJournal {
     if(!pending?.proposal||pending.id!==operationId||!this.control||observation.operationId!==operationId||observation.checkpoint.operationId!==operationId||
       observation.checkpoint.journalId!==this.journalId||observation.checkpoint.sequence!==this.sequence-1||observation.checkpoint.digest!==pending.proposal||
       JSON.stringify(observation.database)!==JSON.stringify(this.control.database))throw new Error('Financial observation unavailable');
+    const priorProjection=pending.operation==='provision'?freezeFinancialAtoms(this.expectedProjection(false).atoms):undefined;
     const projection=this.expectedProjection(true),atoms=projection.atoms.filter(atom=>atom.kind!=='tombstone');
     const counts={accounts:atoms.filter(atom=>atom.kind==='account').length,windows:atoms.filter(atom=>atom.kind==='window').length,
       bindings:atoms.filter(atom=>atom.kind==='binding').length,attempts:atoms.filter(atom=>atom.kind==='attempt').length,
@@ -376,14 +434,8 @@ export class HostFinancialJournal {
     const receipt=this.committed(operationId);if(!receipt)return undefined;
     this.append({kind:'observation',observation},operationId);
     const saved=committedReceipts.get(receipt);
-    if(saved?.evidence.operation==='native-cleanup-recovery'||saved?.evidence.operation==='native-activation'){
-      const freeze=(value:unknown):unknown=>{
-        if(!value||typeof value!=='object'||Object.isFrozen(value))return value;
-        for(const child of Object.values(value))freeze(child);
-        return Object.freeze(value);
-      };
-      saved.observedProjection=Object.freeze(projection.atoms.map(atom=>freeze(FINANCIAL_ATOM_SCHEMA.parse(structuredClone(atom))) as FinancialAtom));
-    }
+    if(saved?.evidence.operation==='native-cleanup-recovery'||saved?.evidence.operation==='native-activation')saved.observedProjection=freezeFinancialAtoms(projection.atoms);
+    if(saved?.evidence.operation==='provision'){saved.priorProjection=priorProjection;saved.observedProjection=freezeFinancialAtoms(projection.atoms);}
     const proof:PublicationProof={journal:this,operationId,receipt,used:false,active:false};publicationProofs.set(receipt,proof);
     return receipt;
   }
