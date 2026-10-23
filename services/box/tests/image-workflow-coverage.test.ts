@@ -204,6 +204,42 @@ function publicDocsTrackedInputGaps(paths: string[] | null): string[] {
     .map((input) => `${input.kind}:${input.name}`);
 }
 
+const NATIVE_FIRST_USE_CONFIG_CHECK = "python3 -B services/keeper/tests/native-first-use-command.test.py";
+
+/** This source-level check imports Keeper's production config parser, so its dependency closure
+ * must be installed in both workflows before the check runs. The image workflow should run it
+ * before building either image, where the missing host dependency would otherwise waste a build. */
+function nativeFirstUseWorkflowErrors(testsWorkflow: any, imageWorkflow: any): string[] {
+  const errors: string[] = [];
+  const testSteps: any[] = testsWorkflow?.jobs?.test?.steps ?? [];
+  const installIndex = testSteps.findIndex((step) => step.name === "Install dependencies");
+  const testCheckIndex = testSteps.findIndex((step) => step.run === NATIVE_FIRST_USE_CONFIG_CHECK);
+  const keeperTestsIndex = testSteps.findIndex((step) => step.name === "Run tests");
+  const testCheck = testSteps[testCheckIndex];
+  if (installIndex < 0 || testSteps[installIndex]?.run !== "pnpm install --frozen-lockfile")
+    errors.push("ordinary CI must install the frozen full workspace dependency graph");
+  if (testCheckIndex < 0 || testCheck?.if !== "matrix.name == 'keeper'")
+    errors.push("ordinary CI must run the first-use config check in the Keeper matrix job");
+  if (installIndex < 0 || testCheckIndex <= installIndex || keeperTestsIndex < 0 || testCheckIndex >= keeperTestsIndex)
+    errors.push("ordinary CI must run the first-use config check after install and before Keeper tests");
+
+  const imageSteps: any[] = imageWorkflow?.jobs?.runtime?.steps ?? [];
+  const imageInstallIndex = imageSteps.findIndex((step) => step.name === "Install the exporter and role dependency closures");
+  const imageCheckIndex = imageSteps.findIndex((step) => step.run === NATIVE_FIRST_USE_CONFIG_CHECK);
+  const imageInstall = imageSteps[imageInstallIndex];
+  const imageCheck = imageSteps[imageCheckIndex];
+  const firstImageBuildIndex = imageSteps.findIndex((step) => typeof step.uses === "string" && step.uses.startsWith("docker/build-push-action"));
+  if (imageInstallIndex < 0 || typeof imageInstall?.run !== "string" ||
+      !/pnpm install --frozen-lockfile/.test(imageInstall.run) ||
+      !/--filter\s+"?@lares\/keeper\.\.\."?/.test(imageInstall.run))
+    errors.push("image CI must install the frozen @lares/keeper dependency closure");
+  if (imageCheckIndex < 0 || imageCheck?.if !== "matrix.role == 'chief-of-staff'")
+    errors.push("image CI must run the first-use config check in the chief-of-staff job");
+  if (imageInstallIndex < 0 || imageCheckIndex <= imageInstallIndex || firstImageBuildIndex < 0 || imageCheckIndex >= firstImageBuildIndex)
+    errors.push("image CI must run the first-use config check after install and before image builds");
+  return errors;
+}
+
 function publicDocsReleaseIdentityErrors(doc: any, job?: any): string[] {
   const input = doc?.on?.workflow_dispatch?.inputs?.docs_release;
   const errors: string[] = [];
@@ -317,5 +353,26 @@ describe("an image workflow's paths: filter covers what its Dockerfile COPIES", 
     const paths = pushPaths(parse(readFileSync(join(WORKFLOWS_DIR, "creative-builder.yml"), "utf8")))!;
     expect(publicDocsTrackedInputGaps(paths.filter((path) => path !== "docs/**"))).toContain("directory:docs");
     expect(publicDocsTrackedInputGaps(paths.filter((path) => path !== "scripts/public-docs.ts"))).toContain("file:scripts/public-docs.ts");
+  });
+
+  it("installs Keeper dependencies before the first-use config regression in both CI workflows", () => {
+    const testsWorkflow = parse(readFileSync(join(WORKFLOWS_DIR, "tests.yml"), "utf8"));
+    const imageWorkflow = parse(readFileSync(join(WORKFLOWS_DIR, "keeper-runtime-images.yml"), "utf8"));
+    expect(nativeFirstUseWorkflowErrors(testsWorkflow, imageWorkflow)).toEqual([]);
+
+    const imageJob = imageWorkflow.jobs.runtime;
+    const install = imageJob.steps.find((step: any) => step.name === "Install the exporter and role dependency closures");
+    const withoutKeeper = { ...imageJob, steps: imageJob.steps.map((step: any) => step === install
+      ? { ...step, run: step.run.replace(/\s+--filter\s+"@lares\/keeper\.\.\."/, "") }
+      : step) };
+    expect(nativeFirstUseWorkflowErrors(testsWorkflow, { ...imageWorkflow, jobs: { ...imageWorkflow.jobs, runtime: withoutKeeper } }))
+      .toContain("image CI must install the frozen @lares/keeper dependency closure");
+
+    const check = imageJob.steps.find((step: any) => step.run === NATIVE_FIRST_USE_CONFIG_CHECK);
+    const afterBuild = { ...imageJob, steps: imageJob.steps.filter((step: any) => step !== check) };
+    const buildIndex = afterBuild.steps.findIndex((step: any) => step.uses?.startsWith("docker/build-push-action"));
+    afterBuild.steps.splice(buildIndex + 1, 0, check);
+    expect(nativeFirstUseWorkflowErrors(testsWorkflow, { ...imageWorkflow, jobs: { ...imageWorkflow.jobs, runtime: afterBuild } }))
+      .toContain("image CI must run the first-use config check after install and before image builds");
   });
 });

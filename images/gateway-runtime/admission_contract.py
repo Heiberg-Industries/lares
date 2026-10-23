@@ -31,6 +31,7 @@ TERMINAL_TAIL_SECONDS = 2
 CLEANUP_SECONDS = 2
 NATIVE_POLICY_SECONDS = PHYSICAL_HEADER_SECONDS + 5
 MODEL_ROUTES = frozenset(("/v1/messages", "/v1/chat/completions"))
+NATIVE_MODEL_ROUTE_GROUP = "llm_api_routes"
 # Every forwarded route still executes LiteLLM's native authentication. /health is paid.
 CONTROL_ROUTES = frozenset((
     ("GET", "/health/liveliness"), ("GET", "/health/readiness"),
@@ -46,6 +47,14 @@ NATIVE_MASTER_ROUTES = NATIVE_LOOKUP_ROUTES | frozenset((("POST", "/key/unblock"
 NATIVE_LOOKUP_GET_QUERY = {"/team/info": "team_id", "/key/list": "user_id", "/user/info": "user_id"}
 MAX_NATIVE_LOOKUP_BODY = 1024
 OPAQUE_NATIVE_ID = re.compile(r"[A-Za-z0-9-]{1,80}\Z")
+
+
+def valid_anthropic_safety_metadata(value, path, provider):
+    """Accept only Eve's hashed user identifier on Anthropic's messages route."""
+    if type(value) is not dict or path != "/v1/messages" or provider != "anthropic" or set(value) != {"user_id"}:
+        return False
+    user_id = value["user_id"]
+    return type(user_id) is str and HASH.fullmatch(user_id) is not None
 
 
 class Refused(Exception):
@@ -105,6 +114,19 @@ def native_unblock_key_hash(raw):
     return key
 
 
+def native_route_allowed(allowed_routes, path):
+    """Match the native model-route group without widening gateway route access."""
+    if path not in MODEL_ROUTES or not isinstance(allowed_routes, list) or not allowed_routes:
+        return False
+    if any(type(route) is not str or route not in MODEL_ROUTES | {NATIVE_MODEL_ROUTE_GROUP} for route in allowed_routes):
+        return False
+    if len(set(allowed_routes)) != len(allowed_routes):
+        return False
+    if NATIVE_MODEL_ROUTE_GROUP in allowed_routes:
+        return allowed_routes == [NATIVE_MODEL_ROUTE_GROUP]
+    return path in allowed_routes
+
+
 def request_hash(method, path, raw):
     return hashlib.sha256(b"lares.gateway.raw-request.v1\0" + method.encode("ascii") + b"\0" + path.encode("ascii") + b"\0" + raw).hexdigest()
 
@@ -162,8 +184,10 @@ class Profile:
         p = self.document
         if path not in MODEL_ROUTES or len(raw) > p["maxBodyBytes"]: raise Refused()
         body = parse_json(raw)
-        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking"}
+        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
         if set(body) - allowed or body.get("model") not in p["aliases"]: raise Refused()
+        if "metadata" in body:
+            if not valid_anthropic_safety_metadata(body["metadata"], path, p["provider"]): raise Refused()
         if not isinstance(body.get("messages"), list) or not body["messages"]: raise Refused()
         if "max_tokens" in body and "max_completion_tokens" in body: raise Refused()
         maximum = body.get("max_tokens", body.get("max_completion_tokens"))
@@ -210,8 +234,9 @@ class Profile:
             kind = tool.get("type")
             if path == "/v1/chat/completions" and kind != "function": raise Refused()
             if path == "/v1/messages" and kind not in (None, "custom"): raise Refused()
-            allowed = {"type", "function"} if path == "/v1/chat/completions" else {"type", "name", "description", "input_schema", "cache_control"}
+            allowed = {"type", "function"} if path == "/v1/chat/completions" else {"type", "name", "description", "input_schema", "cache_control", "eager_input_streaming"}
             if set(tool) - allowed: raise Refused()
+            if "eager_input_streaming" in tool and (path != "/v1/messages" or type(tool["eager_input_streaming"]) is not bool): raise Refused()
             cache(tool.get("cache_control"))
         return body
 

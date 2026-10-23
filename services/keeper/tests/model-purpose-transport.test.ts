@@ -1,7 +1,7 @@
 import {afterEach,beforeEach,describe,expect,it,vi} from 'vitest';
 import {createHash,randomBytes} from 'node:crypto';
 import {request as httpRequest,IncomingMessage} from 'node:http';
-import {chmod,mkdtemp,rm,stat} from 'node:fs/promises';
+import {chmod,mkdtemp,readFile,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {gatewayRawRequestHash} from '@lares/agent-kit/gateway-admission-protocol';
@@ -22,9 +22,17 @@ const keyFingerprint=createHash('sha256').update(nativeKey).digest('hex');
 const profileHash='a'.repeat(64),endpointHash='b'.repeat(64),bindingId='123e4567-e89b-42d3-a456-426614174001';
 let root:string,socketPath:string,stop:(()=>Promise<void>)|undefined,gateBusy=false;
 let calls:Array<{url:string;headers:Headers;body:Buffer}>;
-let responseMode:'ok'|'credential-error'|'held-stream'|'compressed'|'backpressure'='ok';
+let responseMode:'ok'|'credential-error'|'bad-request'|'held-stream'|'compressed'|'backpressure'='ok';
 let heldStream:ReadableStreamDefaultController<Uint8Array>|undefined;
 let upstreamCancelled=false;
+async function readFirstRequestDiagnostic(path:string){
+  const deadline=Date.now()+1_000;
+  while(Date.now()<deadline){
+    try{const value=JSON.parse(await readFile(path,'utf8'));if(value.requestCount===1)return value;}catch{}
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  throw new Error('first-request diagnostic was not persisted');
+}
 const operation={kind:'operation',operationId:'123e4567-e89b-42d3-a456-426614174002',bindingId,credentialGeneration:'4',
   association:{agent,incarnation,definitionHash:'c'.repeat(64),purposeAlias:'fixture-brain'},phase:'active' as string,plaintext:'present',
   bindingReceipt:{operationId:'x',journalId:'j'},activationReceipt:{operation:'native-activation',journalId:'j'},keyFingerprint,reviewedPolicy:{pricing:{capabilityHash:profileHash,format:'anthropic'},
@@ -38,7 +46,8 @@ const custody={withGate:async<T>(work:(value:NativeCustodyGate)=>Promise<T>):Pro
   gateBusy=true;try{return await work(gate);}finally{gateBusy=false;}
 }} as BudgetNativeCustodyStore;
 
-function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),nonce=randomBytes(32).toString('base64url'),headersOnly=false){
+function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),nonce=randomBytes(32).toString('base64url'),headersOnly=false,
+  extraHeaders:Record<string,string>={},omitHeader?:string){
   const signedPath=path.split('?',1)[0]??path;
   const safePath=(signedPath==='/v1/messages'||signedPath==='/v1/chat/completions'?signedPath:'/v1/messages') as '/v1/messages'|'/v1/chat/completions';
   const deadline=Date.now()+10_000,requestHash=gatewayRawRequestHash('POST',safePath,body);
@@ -47,6 +56,7 @@ function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),
     'x-lares-budget-intent':ticket,'x-lares-purpose-agent':agent,'x-lares-purpose-incarnation':incarnation,
     'x-lares-purpose-request-hash':requestHash,'x-lares-purpose-nonce':nonce,'x-lares-purpose-deadline':String(deadline),
     'x-lares-purpose-mac':modelPurposeDispatchMac(fixture.key,fields).toString('base64url')};
+  Object.assign(headers,extraHeaders);if(omitHeader)delete headers[omitHeader];
   return new Promise<{status:number;headers:IncomingMessage['headers'];body:Buffer;incoming:IncomingMessage}>((resolve,reject)=>{
     const request=httpRequest({socketPath,method:'POST',path,headers},incoming=>{
       if(headersOnly){resolve({status:incoming.statusCode??0,headers:incoming.headers,body:Buffer.alloc(0),incoming});return;}
@@ -58,6 +68,7 @@ function send(path='/v1/messages',body=Buffer.from('{"model":"fixture-brain"}'),
 
 beforeEach(async()=>{
   root=await mkdtemp(join(tmpdir(),'lares-model-purpose-transport-'));await chmod(root,0o750);socketPath=join(root,'gateway.sock');
+  vi.stubEnv('CI','true');vi.stubEnv('LARES_GATEWAY_PROBE_DIAGNOSTICS','1');vi.stubEnv('TMPDIR',root);
   operation.phase='active';gateBusy=false;calls=[];responseMode='ok';heldStream=undefined;upstreamCancelled=false;
   fixture.runtimeKey.mockImplementation(async()=>Buffer.from(fixture.key));
   fixture.fetch.mockImplementation(async(input:URL,init:RequestInit)=>{
@@ -65,6 +76,7 @@ beforeEach(async()=>{
     calls.push({url:input.href,headers,body});
     if(gateBusy!==true)throw new Error('native gate was not held during response headers');
     if(responseMode==='credential-error')return new Response(`secret=${nativeKey}`,{status:401,headers:{'set-cookie':nativeKey,'x-api-key':nativeKey}});
+    if(responseMode==='bad-request')return new Response(`private=${nativeKey}`,{status:400,headers:{'x-api-key':nativeKey}});
     if(responseMode==='held-stream')return new Response(new ReadableStream<Uint8Array>({start(controller){heldStream=controller;}}),{status:200,headers:{'content-type':'text/event-stream'}});
     if(responseMode==='compressed')return new Response(`secret=${nativeKey}`,{status:200,headers:{'content-type':'application/json','content-encoding':'gzip','content-length':'64'}});
     if(responseMode==='backpressure')return new Response(new ReadableStream<Uint8Array>({
@@ -80,9 +92,87 @@ beforeEach(async()=>{
     maximum_liability:'3',pricing_profile:{format:'anthropic',capabilityHash:profileHash}}]}))} as unknown as Pool;
   stop=await serveModelPurposeTransport({socket:socketPath,runtimeSecretsDir:root,custody,ticketPool:pool,rootUid:uid,socketUid:uid,socketGid:gid});
 });
-afterEach(async()=>{if(stop)await stop();stop=undefined;vi.unstubAllGlobals();vi.restoreAllMocks();await rm(root,{recursive:true,force:true});});
+afterEach(async()=>{if(stop)await stop();stop=undefined;vi.unstubAllGlobals();vi.unstubAllEnvs();vi.restoreAllMocks();await rm(root,{recursive:true,force:true});});
 
 describe('Keeper model-purpose dispatch transport',()=>{
+  it('records only the first local-socket refusal stage and starts at zero requests',async()=>{
+    const marker=join(root,'lares-model-purpose-transport.json');
+    const before=JSON.parse(await readFile(marker,'utf8'));
+    expect(before).toEqual({schema:1,requestCount:0,stage:'idle',statusCode:0,
+      checks:{headersAccepted:false,fieldsAccepted:false,bodyLengthMatches:false,upstreamResponseSeen:false}});
+    const response=await send('/v1/messages?x=1');
+    expect(response.status).toBe(400);
+    const after=await readFirstRequestDiagnostic(marker);
+    expect(after.requestCount).toBe(1);expect(after.stage).toBe('headers');expect(after.statusCode).toBe(400);
+    expect(Object.keys(after).sort()).toEqual(['checks','requestCount','schema','stage','statusCode']);
+    expect(JSON.stringify(after)).not.toContain(nativeKey);
+  });
+
+  it('writes no marker when the existing diagnostic opt-in is absent',async()=>{
+    await stop!();stop=undefined;
+    const marker=join(root,'lares-model-purpose-transport.json');await rm(marker,{force:true});
+    vi.stubEnv('LARES_GATEWAY_PROBE_DIAGNOSTICS','0');
+    stop=await serveModelPurposeTransport({socket:socketPath,runtimeSecretsDir:root,custody,ticketPool:{} as Pool,
+      rootUid:uid,socketUid:uid,socketGid:gid});
+    expect((await send('/v1/messages?x=1')).status).toBe(400);
+    await expect(readFile(marker,'utf8')).rejects.toMatchObject({code:'ENOENT'});
+  });
+
+  it('does not let a later sequential request replace the first request record',async()=>{
+    expect((await send('/v1/messages?x=1')).status).toBe(400);
+    const marker=join(root,'lares-model-purpose-transport.json');
+    await readFirstRequestDiagnostic(marker);
+    const firstRaw=await readFile(marker,'utf8');
+    expect((await send()).status).toBe(200);
+    expect(await readFile(marker,'utf8')).toBe(firstRaw);
+  });
+
+  it('does not let an overlapping second request replace the first request record',async()=>{
+    responseMode='held-stream';
+    const first=await send('/v1/messages',undefined,randomBytes(32).toString('base64url'),true);
+    expect(first.status).toBe(200);
+    const finished=new Promise<void>(resolve=>{first.incoming.once('end',()=>resolve());first.incoming.resume();});
+    expect((await send('/v1/messages?x=1')).status).toBe(400);
+    const marker=join(root,'lares-model-purpose-transport.json');
+    expect(JSON.parse(await readFile(marker,'utf8')).requestCount).toBe(0);
+    heldStream!.enqueue(Buffer.from('stream-ok'));heldStream!.close();
+    await finished;
+    const record=await readFirstRequestDiagnostic(marker);
+    expect(record.stage).toBe('upstream');expect(record.statusCode).toBe(200);
+  });
+
+  it('keeps a first-request close record after a later refusal',async()=>{
+    responseMode='held-stream';
+    const first=await send('/v1/messages',undefined,randomBytes(32).toString('base64url'),true);
+    expect(first.status).toBe(200);
+    const marker=join(root,'lares-model-purpose-transport.json');
+    first.incoming.destroy();
+    const record=await readFirstRequestDiagnostic(marker);
+    expect(record.stage).toBe('upstream');expect(record.statusCode).toBe(200);
+    const raw=await readFile(marker,'utf8');
+    expect((await send('/v1/messages?x=1')).status).toBe(400);
+    expect(await readFile(marker,'utf8')).toBe(raw);
+  });
+
+  it('identifies a missing dispatch field without retaining request values',async()=>{
+    const response=await send('/v1/messages',undefined,randomBytes(32).toString('base64url'),false,{},'x-lares-purpose-mac');
+    expect(response.status).toBe(400);
+    const after=await readFirstRequestDiagnostic(join(root,'lares-model-purpose-transport.json'));
+    expect(after.stage).toBe('fields');expect(after.statusCode).toBe(400);
+    expect(after.checks.headersAccepted).toBe(true);expect(after.checks.fieldsAccepted).toBe(false);
+    expect(JSON.stringify(after)).not.toContain(ticket);
+  });
+
+  it('marks a sanitized upstream 400 after reaching the native dispatch path',async()=>{
+    responseMode='bad-request';
+    const response=await send();
+    expect(response.status).toBe(400);expect(response.body.toString()).not.toContain(nativeKey);
+    const after=await readFirstRequestDiagnostic(join(root,'lares-model-purpose-transport.json'));
+    expect(after.stage).toBe('upstream');expect(after.statusCode).toBe(400);
+    expect(after.checks).toEqual({headersAccepted:true,fieldsAccepted:true,bodyLengthMatches:true,upstreamResponseSeen:true});
+    expect(JSON.stringify(after)).not.toContain(nativeKey);
+  });
+
   it('authenticates exact body and identity, resolves only stored destination/key, and streams the response',async()=>{
     const response=await send();
     expect(response.status).toBe(200);expect(response.body.toString()).toBe('stream-ok');
