@@ -931,7 +931,7 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
                      and any(isinstance(target, ast.Name) and target.id == "UPDATE_CLIENT_FD9_INSPECT"
                              for target in node.targets))
         inspector = ast.literal_eval(value)
-        with tempfile.TemporaryDirectory(prefix="lares-fd9-inspector-", dir="/private/tmp") as temporary:
+        with tempfile.TemporaryDirectory(prefix="lares-fd9-inspector-") as temporary:
             root = Path(temporary)
             proc = root / "proc"
             process = proc / "1"
