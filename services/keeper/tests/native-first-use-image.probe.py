@@ -52,6 +52,12 @@ def write_raw_secret(name, value):
     path=secrets_dir/name;path.write_bytes(value if isinstance(value,bytes) else value.encode());path.chmod(0o600);return path
 def write_offline(name, value):
     path = offline_dir / name; path.write_text(value + '\n'); path.chmod(0o600); return path
+def neutral_first_use_definition(template_path, agent, alias):
+    definition = json.loads(pathlib.Path(template_path).read_text())
+    # The first-use fixture deliberately grants no capabilities. The role template's autonomy
+    # entries are meaningful only alongside matching grants, so remove them with the grants.
+    definition.update({'name':agent,'model':alias,'grants':[],'skills':[],'channels':[],'autonomy':{}})
+    return definition
 def sql(database, statement):
     return docker('exec', '-i', network + '-db', 'psql', '-X', '-v', 'ON_ERROR_STOP=1', '-U', 'proof', '-d', database, input=statement)
 def wait_sql():
@@ -465,8 +471,7 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
     for d in ('agents','retired','backup','egress','run','roles','templates'):(install_root/d).mkdir(parents=True,exist_ok=True)
     (install_root/'compose.yaml').write_text('services: {}\n')
     (install_root/'agents'/agent).mkdir()
-    definition=json.loads((repo/'packages/agent-kit/templates/chief-of-staff/definition.json').read_text())
-    definition.update({'name':agent,'model':alias,'grants':[],'skills':[],'channels':[]})
+    definition=neutral_first_use_definition(repo/'packages/agent-kit/templates/chief-of-staff/definition.json',agent,alias)
     (agent_dir/'agent.json').write_text(json.dumps(definition));(agent_dir/'duties.md').write_text('Neutral first-use proof.');(agent_dir/'voice.md').write_text('Be concise.')
     for filename in ('agent.json','duties.md','voice.md'):
         shutil.copy2(agent_dir/filename,install_root/'agents'/agent/filename)
