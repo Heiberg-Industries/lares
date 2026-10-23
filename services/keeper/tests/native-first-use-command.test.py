@@ -154,6 +154,58 @@ class NativeFirstUseConfigTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
 
 
+class NeutralFirstUseDefinitionTests(unittest.TestCase):
+    def test_probe_fixture_passes_actual_production_definition_validator(self) -> None:
+        tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
+        builder = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "neutral_first_use_definition"
+        )
+        namespace = {"json": json, "pathlib": pathlib}
+        module = ast.fix_missing_locations(ast.Module(body=[builder], type_ignores=[]))
+        exec(compile(module, str(PROBE), "exec"), namespace)
+
+        template_path = REPO / "packages" / "agent-kit" / "templates" / "chief-of-staff" / "definition.json"
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+        self.assertTrue(template["autonomy"], "the regression fixture must include inherited template autonomy")
+        fixture = namespace["neutral_first_use_definition"](template_path, "proof-agent", "lares-brain")
+        self.assertEqual(fixture["grants"], [])
+        self.assertEqual(fixture["skills"], [])
+        self.assertEqual(fixture["channels"], [])
+        self.assertEqual(fixture["autonomy"], {})
+        self.assertEqual(fixture["schedules"], template["schedules"])
+
+        with tempfile.TemporaryDirectory(prefix="lares-neutral-first-use-definition-") as directory:
+            fixture_path = pathlib.Path(directory) / "agent.json"
+            fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+            definition_module = json.dumps(str(REPO / "packages" / "agent-kit" / "src" / "definition.ts"))
+            validator_module = json.dumps(str(REPO / "packages" / "agent-kit" / "src" / "definition-validate.ts"))
+            persona_module = json.dumps(str(REPO / "packages" / "agent-kit" / "src" / "persona" / "deployed-tools.ts"))
+            role_path = json.dumps(str(REPO / "packages" / "agent-kit" / "templates" / "chief-of-staff" / "role.md"))
+            service_path = json.dumps(str(REPO / "services" / "chief-of-staff"))
+            fixture_file = json.dumps(str(fixture_path))
+            script = f'''import assert from "node:assert/strict";
+import {{ readFileSync }} from "node:fs";
+import {{ parseDefinition }} from {definition_module};
+import {{ assertDefinitionValid }} from {validator_module};
+import {{ deployedToolsFor }} from {persona_module};
+const validate = raw => assertDefinitionValid({{definition:parseDefinition(raw),
+  roleMd:readFileSync({role_path},"utf8"),deployedTools:deployedToolsFor({service_path})}});
+const inherited=JSON.parse(readFileSync({json.dumps(str(template_path))},"utf8"));
+Object.assign(inherited,{{name:"proof-agent",model:"lares-brain",grants:[],skills:[],channels:[]}});
+assert.throws(()=>validate(inherited),/autonomy is set for "vault", which has no matching grant/);
+validate(JSON.parse(readFileSync({fixture_file},"utf8")));
+console.log("neutral first-use fixture passes the production definition validator");
+'''
+            result = subprocess.run(
+                ["node", "--import", "tsx", "--input-type=module", "-e", script],
+                cwd=KEEPER, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=20, check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn("neutral first-use fixture passes the production definition validator", result.stdout)
+
+
 class CompiledChiefKeylessCommandTests(unittest.TestCase):
     def test_constructed_chief_args_use_managed_socket_and_only_named_secret_files(self) -> None:
         tree = ast.parse(PROBE.read_text(encoding="utf-8"), filename=str(PROBE))
