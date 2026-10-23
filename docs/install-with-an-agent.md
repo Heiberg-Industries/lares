@@ -200,9 +200,10 @@ bash get-lares.sh --release <release-name> --yes \
 ```
 
 It takes several minutes: it writes secrets, prepares and verifies the database offline, starts
-Console and Caddy, makes the person the first member and prepares the keeper. It does not start the
-gateway or test a model call. The owner signs in to confirm this host and finish explicit model
-budget setup before creating an agent. Running it again is always safe; nothing that already
+Console and Caddy, makes the person the first member and prepares the keeper. It does not start or
+stop the gateway and makes no model call. A fresh install leaves the gateway stopped; a repair
+leaves an existing gateway as it was. The owner signs in to confirm this host and finish explicit
+model budget setup before creating an agent. Running it again is always safe; nothing that already
 exists is overwritten.
 
 What the exit code means, and what to do:
@@ -225,8 +226,9 @@ rm -f /root/lares-model-key
 ## 6. Check it worked
 
 The installer's last lines print `https://example.com/sign-in`. Infrastructure and Console are
-ready, but the gateway has not been started and no model call or conversation was tested. The
-owner signs in to confirm this host and finish explicit model budget setup before creating an agent.
+ready. The installer does not start or stop the gateway: a fresh install leaves it stopped, and a
+repair leaves an existing gateway as it was. No model call or conversation was tested. The owner
+signs in to confirm this host and finish explicit model budget setup before creating an agent.
 
 Check the stack:
 
