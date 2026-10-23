@@ -2,6 +2,8 @@ import {createServer,type IncomingMessage,type ServerResponse} from 'node:http';
 import {createConnection,type Socket} from 'node:net';
 import {createHash,randomBytes,timingSafeEqual} from 'node:crypto';
 import {chmod,chown,lstat,unlink} from 'node:fs/promises';
+import {renameSync,unlinkSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
 import {dirname,isAbsolute,join} from 'node:path';
 import type {Pool} from 'pg';
 import {PgBudgetAdmissionStore,type BudgetGatewayTicket} from '@lares/agent-kit/budget-admission-store';
@@ -19,6 +21,8 @@ const ROUTES=new Set<string>([GATEWAY_ANTHROPIC_MODEL_PATH,GATEWAY_OPENAI_MODEL_
 const REQUEST_HEADERS=new Set(['host','connection','content-length','content-type','accept','accept-encoding','anthropic-version','anthropic-beta',
   'x-lares-budget-intent','x-lares-purpose-agent','x-lares-purpose-incarnation','x-lares-purpose-request-hash','x-lares-purpose-nonce','x-lares-purpose-deadline','x-lares-purpose-mac']);
 const RESPONSE_HEADERS=['content-type','content-length','content-encoding','cache-control','retry-after','anthropic-version','x-request-id'] as const;
+const MODEL_PURPOSE_DIAGNOSTIC_STAGES=['idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'] as const;
+type ModelPurposeDiagnosticStage=typeof MODEL_PURPOSE_DIAGNOSTIC_STAGES[number];
 
 type QueueEntry={resolve:()=>void;reject:(error:Error)=>void;timer:NodeJS.Timeout};
 class HeaderQueue {
@@ -147,43 +151,86 @@ export async function serveModelPurposeTransport(options:ModelPurposeTransportOp
     const live=await new Promise<boolean>(resolve=>{const socket=createConnection(options.socket);socket.setTimeout(250,()=>{socket.destroy();resolve(false);});socket.once('connect',()=>{socket.destroy();resolve(true);});socket.once('error',(error:NodeJS.ErrnoException)=>resolve(error.code!=='ECONNREFUSED'));});
     if(live)throw deny();await unlink(options.socket);
   }catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw deny();}
+  const diagnosticEnabled=process.env.CI==='true'&&process.env.LARES_GATEWAY_PROBE_DIAGNOSTICS==='1';
+  let firstModelRequestSeen=false;
+  const diagnostic={schema:1,requestCount:0,stage:'idle' as ModelPurposeDiagnosticStage,statusCode:0,
+    checks:{headersAccepted:false,fieldsAccepted:false,bodyLengthMatches:false,upstreamResponseSeen:false}};
+  const diagnosticOwners=new WeakSet<IncomingMessage>();
+  const beginDiagnosticRequest=(req:IncomingMessage)=>{
+    if(firstModelRequestSeen)return;
+    firstModelRequestSeen=true;
+    if(!diagnosticEnabled)return;
+    diagnosticOwners.add(req);diagnostic.requestCount=1;diagnostic.stage='headers';
+  };
+  const writeDiagnostic=()=>{if(!diagnosticEnabled)return;let temp:string|undefined;try{
+    const raw=JSON.stringify(diagnostic);if(Buffer.byteLength(raw,'utf8')>1024)return;
+    const path=join(tmpdir(),'lares-model-purpose-transport.json');temp=path+'.'+process.pid+'.'+randomBytes(8).toString('hex')+'.tmp';
+    writeFileSync(temp,raw,{mode:0o600,flag:'wx'});renameSync(temp,path);temp=undefined;
+  }catch{}finally{if(temp)try{unlinkSync(temp);}catch{}}};
+  writeDiagnostic();
   const tickets=new PgBudgetAdmissionStore(options.ticketPool),nonces=new NonceLedger(),dispatchTickets=new TicketLedger(),queue=new HeaderQueue();let clients=0;
   const sockets=new Set<Socket>();
+  function recordStage(req:IncomingMessage,stage:ModelPurposeDiagnosticStage):void{
+    if(!diagnosticOwners.has(req))return;
+    diagnostic.stage=stage;
+  }
+  function recordResponse(req:IncomingMessage,status:number):void{
+    if(!diagnosticOwners.has(req))return;
+    diagnostic.statusCode=status;
+  }
+  function recordAfterResponse(req:IncomingMessage,res:ServerResponse):void{
+    if(!diagnosticOwners.has(req))return;
+    let recorded=false;
+    const persist=()=>{if(recorded)return;recorded=true;res.off('finish',persist);res.off('close',persist);writeDiagnostic();};
+    res.once('finish',persist);res.once('close',persist);
+  }
+  function refuse(req:IncomingMessage,res:ServerResponse,status:number):void{recordResponse(req,status);recordAfterResponse(req,res);reply(res,status);}
   const server=createServer((req,res)=>{
-    clients++;if(clients>CLIENTS_MAX){clients--;reply(res,503);return;}
+    beginDiagnosticRequest(req);
+    clients++;if(clients>CLIENTS_MAX){clients--;refuse(req,res,503);return;}
     res.once('close',()=>{clients=Math.max(0,clients-1);});
-    void handle(req,res).catch(()=>reply(res,503));
+    void handle(req,res).catch(()=>refuse(req,res,503));
   });
   server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
   server.maxConnections=CLIENTS_MAX;server.headersTimeout=5_000;server.requestTimeout=15_000;server.keepAliveTimeout=1_000;
   async function handle(req:IncomingMessage,res:ServerResponse):Promise<void>{
+    beginDiagnosticRequest(req);
     if(!headersAreStrict(req)||header(req,'content-encoding')!==undefined||header(req,'transfer-encoding')!==undefined||
-      header(req,'content-type')?.split(';',1)[0]?.trim().toLowerCase()!=='application/json'||req.url?.includes('?')||req.url?.includes('#')){reply(res,400);return;}
+      header(req,'content-type')?.split(';',1)[0]?.trim().toLowerCase()!=='application/json'||req.url?.includes('?')||req.url?.includes('#')){refuse(req,res,400);return;}
+    if(diagnosticOwners.has(req))diagnostic.checks.headersAccepted=true;
+    recordStage(req,'fields');
     const fields=dispatchFields(req),mac=header(req,'x-lares-purpose-mac'),lengthRaw=header(req,'content-length');
-    if(!fields||!mac||!lengthRaw||!/^(0|[1-9][0-9]{0,8})$/.test(lengthRaw)){reply(res,400);return;}
-    const length=Number(lengthRaw);if(!Number.isSafeInteger(length)||length<1||length>MODEL_PURPOSE_TRANSPORT_BODY_MAX){reply(res,413);return;}
-    const timestamp=now();if(fields.deadline<=timestamp||fields.deadline>timestamp+30_000){reply(res,408);return;}
+    if(!fields||!mac||!lengthRaw||!/^(0|[1-9][0-9]{0,8})$/.test(lengthRaw)){refuse(req,res,400);return;}
+    if(diagnosticOwners.has(req))diagnostic.checks.fieldsAccepted=true;
+    const length=Number(lengthRaw);if(!Number.isSafeInteger(length)||length<1||length>MODEL_PURPOSE_TRANSPORT_BODY_MAX){refuse(req,res,413);return;}
+    const timestamp=now();if(fields.deadline<=timestamp||fields.deadline>timestamp+30_000){refuse(req,res,408);return;}
     const key=await readModelPurposeRuntimeControlKey(options.runtimeSecretsDir,fields.agent,{rootUid,runtimeKeyUid:options.runtimeKeyUid,runtimeKeyGid:options.runtimeKeyGid});
     let authenticated=false;
     try{authenticated=equalMac(mac,modelPurposeDispatchMac(key,fields));}finally{key.fill(0);}
     // Burn nonce immediately after authenticating the complete request metadata and before
     // body reads, SQL lookups, native custody or queue waits.
-    if(!authenticated||!nonces.burn(fields.nonce,fields.deadline,timestamp)){reply(res,401);return;}
+    if(!authenticated||!nonces.burn(fields.nonce,fields.deadline,timestamp)){refuse(req,res,401);return;}
+    recordStage(req,'ticket');
     const ticket=await tickets.discoverGatewayTicket(fields.ticket);
     if(!ticket||ticket.agent!==fields.agent||ticket.incarnation!==fields.incarnation||ticket.requestHash!==fields.requestHash||
-      ticket.expiresAt<=now()||fields.deadline>ticket.expiresAt||ticket.expiresAt-timestamp>30_000){reply(res,403);return;}
+      ticket.expiresAt<=now()||fields.deadline>ticket.expiresAt||ticket.expiresAt-timestamp>30_000){refuse(req,res,403);return;}
+    recordStage(req,'body-length');
     req.socket.setTimeout(IDLE_TIMEOUT_MS,()=>req.destroy());
     const chunks:Buffer[]=[];let bytes=0;
-    for await(const part of req){const chunk=Buffer.isBuffer(part)?part:Buffer.from(part);bytes+=chunk.length;if(bytes>MODEL_PURPOSE_TRANSPORT_BODY_MAX||bytes>length){req.destroy();reply(res,413);return;}chunks.push(chunk);}
+    for await(const part of req){const chunk=Buffer.isBuffer(part)?part:Buffer.from(part);bytes+=chunk.length;if(bytes>MODEL_PURPOSE_TRANSPORT_BODY_MAX||bytes>length){req.destroy();refuse(req,res,413);return;}chunks.push(chunk);}
     req.socket.setTimeout(0);
-    if(bytes!==length){reply(res,400);return;}
+    if(bytes!==length){refuse(req,res,400);return;}
+    if(diagnosticOwners.has(req))diagnostic.checks.bodyLengthMatches=true;
+    recordStage(req,'body-hash');
     const raw=Buffer.concat(chunks,bytes);
-    if(gatewayRawRequestHash(fields.method,fields.path,raw)!==ticket.requestHash||fields.requestHash!==ticket.requestHash){reply(res,403);return;}
+    if(gatewayRawRequestHash(fields.method,fields.path,raw)!==ticket.requestHash||fields.requestHash!==ticket.requestHash){refuse(req,res,403);return;}
+    recordStage(req,'profile');
     const format=fields.path===GATEWAY_ANTHROPIC_MODEL_PATH?'anthropic':'openai';
-    try{if((ticket.pricingProfile as {format?:unknown})?.format!==format||!validBodyModel(raw,ticket.purposeAlias)){reply(res,403);return;}}catch{reply(res,403);return;}
+    try{if((ticket.pricingProfile as {format?:unknown})?.format!==format||!validBodyModel(raw,ticket.purposeAlias)){refuse(req,res,403);return;}}catch{refuse(req,res,403);return;}
     // One host dispatch is reserved per ticket even if the same authenticated runtime
     // retries with a fresh nonce while gateway admission is in flight or uncertain.
-    if(!dispatchTickets.burn(fields.ticket,ticket.expiresAt,now())){reply(res,409);return;}
+    if(!dispatchTickets.burn(fields.ticket,ticket.expiresAt,now())){refuse(req,res,409);return;}
+    recordStage(req,'dispatch');
     const controller=new AbortController();
     const headerDeadline=setTimeout(()=>controller.abort(),Math.max(1,fields.deadline-now()));
     const disconnect=()=>{if(!res.writableEnded)controller.abort();};
@@ -204,12 +251,15 @@ export async function serveModelPurposeTransport(options:ModelPurposeTransportOp
         }catch{return undefined;}
       }));
     }finally{clearTimeout(headerDeadline);res.off('close',disconnect);}
-    if(!upstream){reply(res,503);return;}
+    if(!upstream){refuse(req,res,503);return;}
+    recordStage(req,'upstream');
+    if(diagnosticOwners.has(req)){diagnostic.checks.upstreamResponseSeen=true;diagnostic.statusCode=upstream.status;}
     if(upstream.status<200||upstream.status>=300){
       try{await upstream.body?.cancel();}catch{}
-      reply(res,upstream.status>=400&&upstream.status<=599?upstream.status:502);return;
+      refuse(req,res,upstream.status>=400&&upstream.status<=599?upstream.status:502);return;
     }
-    if(upstream.headers.has('content-encoding')){try{await upstream.body?.cancel();}catch{}reply(res,502);return;}
+    if(upstream.headers.has('content-encoding')){try{await upstream.body?.cancel();}catch{}refuse(req,res,502);return;}
+    recordAfterResponse(req,res);
     const out:Record<string,string>={'connection':'close'};
     for(const name of RESPONSE_HEADERS){if(name==='content-length'||name==='content-encoding')continue;const value=upstream.headers.get(name);if(value&&value.length<=2_048)out[name]=value;}
     res.writeHead(upstream.status,out);
