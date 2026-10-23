@@ -70,6 +70,32 @@ export class PgMemberStore {
     const r = await db.query('SELECT o.id FROM orgs o JOIN users u ON u.org_id=o.id WHERE u.id=$1 FOR UPDATE OF o', [memberId]);
     if (!r.rowCount) throw new MemberStoreError('denied');
   }
+  /** The one-time first-owner window is deliberately narrower than ordinary identity linking.
+   * Call only from the host preflight, discovery display, or the dedicated binder below. */
+  private async checkFirstOwnerBootstrapEligible(db: PoolClient, ownerId: string, expectedOrgId: string): Promise<boolean> {
+    const org = await db.query<{ id: string }>('SELECT id FROM orgs WHERE id=$1 FOR UPDATE', [expectedOrgId]);
+    if (!org.rows[0]) return false;
+    const owner = await db.query<MemberRow>(`SELECT ${columns} FROM users WHERE id=$1 FOR UPDATE`, [ownerId]);
+    const row = owner.rows[0];
+    if (!row || row.org_id !== expectedOrgId || row.org_role !== 'owner' || row.status !== 'active') return false;
+    const { rows } = await db.query<{ users: number; orgs: number; policies: number; invitations: number; identities: number; sessions: number }>(`
+      SELECT (SELECT count(*)::int FROM users) AS users,
+             (SELECT count(*)::int FROM orgs) AS orgs,
+             (SELECT count(*)::int FROM org_member_policy) AS policies,
+             (SELECT count(*)::int FROM member_invitations) AS invitations,
+             (SELECT count(*)::int FROM member_provider_identities) AS identities,
+             (SELECT count(*)::int FROM member_sessions) AS sessions`);
+    const counts = rows[0];
+    if (!counts || counts.users !== 1 || counts.orgs !== 1 || counts.policies !== 1 ||
+        counts.invitations !== 0 || counts.identities !== 0 || counts.sessions !== 0) return false;
+    const policy = await db.query<{ user_id: string }>('SELECT user_id FROM org_member_policy FOR UPDATE');
+    return policy.rows.length === 1 && policy.rows[0]?.user_id === ownerId;
+  }
+  /** Snapshot eligibility for the first-owner discovery display and root preflight. This is
+   * never authority to link: bootstrapFirstOwnerIdentity repeats the entire check under lock. */
+  async firstOwnerBootstrapEligible(ownerId: string, expectedOrgId: string): Promise<boolean> {
+    return this.transaction(db => this.checkFirstOwnerBootstrapEligible(db, ownerId, expectedOrgId));
+  }
   private async active(db: PoolClient, id: string): Promise<Member> {
     const { rows } = await db.query<MemberRow>(`SELECT ${columns} FROM users WHERE id=$1 AND status='active' AND org_id IS NOT NULL FOR UPDATE`, [id]);
     if (!rows[0]) throw new MemberStoreError('denied');
@@ -151,6 +177,18 @@ export class PgMemberStore {
       const target = await this.authorized(db,actorId,targetId);
       if (target.status !== 'active') throw new MemberStoreError('denied');
       await this.bind(db,targetId,identity);
+    });
+  }
+  /** Bind only the configured initial owner on a genuinely fresh admission register. This is
+   * separate from linkIdentity so ordinary self/owner linking keeps its established semantics. */
+  async bootstrapFirstOwnerIdentity(ownerId: string, expectedOrgId: string, proof: VerifiedProviderProof): Promise<void> {
+    await this.transaction(async db => {
+      const eligible = await this.checkFirstOwnerBootstrapEligible(db, ownerId, expectedOrgId);
+      if (!eligible) throw new MemberStoreError('denied');
+      // The proof may have aged while waiting for the organisation/owner lock. Validate only
+      // after acquiring both locks, immediately before binding.
+      const identity = proofIdentity(proof);
+      await this.bind(db, ownerId, identity);
     });
   }
   async memberForIdentity(identity: ProviderIdentity): Promise<Member | undefined> {

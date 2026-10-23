@@ -135,7 +135,7 @@ membership and sign-out page while shared resource access is being integrated.
 
 The installation and agent settings registry is
 `packages/vault-format/src/settings.ts`. Current console provider-admission settings and
-owner adoption are described in [member admission](member-authority.md#provider-setup-and-existing-owner-adoption).
+first-owner setup is described in [member admission](member-authority.md#first-owner-setup-on-fresh-installations).
 
 ## 5. Running the installer
 
@@ -219,40 +219,35 @@ You should see `db`, `console`, `lares-gateway` and `caddy` running. The keeper 
 proxy run from `/opt/lares/compose.lares-keeper.yaml`; list them with
 `env -u COMPOSE_FILE docker compose --env-file /etc/lares/keeper.env ps`.
 
-**Before the first owner sign-in**, complete the explicit
-[provider-identity adoption](member-authority.md#provider-setup-and-existing-owner-adoption).
-The installer creates the owner record, but does not collect or verify a provider subject. An
-email address and a working Google client are not enough to admit that owner.
+**Before the first owner sign-in on a fresh installation**, use the existing sign-in page to
+confirm the provider account. An email address and a working Google client are not enough to
+admit the owner. After a successful provider check, the page shows the exact provider account
+tuple and this installation's public origin; it does not show the owner's internal id or the
+organisation id, sign you in, or link the account.
 
-1. Verify that the running console's `AGENT_OWNER_USER_ID` names the intended existing member,
-   with an active status, owner role and organisation. Preserve that stable id and its data;
-   do not create a replacement owner or change an id to make sign-in work.
-2. Use the manual sign-in probe described in the adoption guide to obtain that person's verified
-   exact issuer and subject, plus tenant for Microsoft. On the server, add
-   `CONSOLE_BOOTSTRAP_IDENTITY` to the protected `/etc/lares/console-oauth.env`. For Google its
-   format is:
-
-   ```text
-   CONSOLE_BOOTSTRAP_IDENTITY={"issuer":"https://accounts.google.com","subject":"<verified subject>"}
-   ```
-
-   Copy the actual verified identity object; do not substitute an email address or guess the
-   subject. A Microsoft identity also includes `tenantId` and its exact tenant-specific issuer.
-   Fresh installation still requires the Google client from section 5; Microsoft-only fresh
-   setup remains deferred.
-3. Recreate only the console from the existing installed release stack so it reads the changed
-   environment file. This retains the image selected in that stack:
+1. Check that the public origin is your installation and that the provider account tuple is the
+   account you chose. Copy the complete JSON shown there. This five-minute browser display is
+   discovery only. Copied JSON is an untrusted, exact pin proposal: it has no freshness authority
+   and cannot sign anyone in.
+2. On the installing server, run `sudo lares owner-bootstrap`. Paste the JSON at the protected
+   prompt. The command checks protected installation settings and live database state to confirm
+   that first-owner admission is still unused, then saves the exact provider tuple in an
+   owner-and-organisation-bound envelope in the protected Console settings. It does not create a
+   sign-in or make the copied tuple fresh proof.
+3. Recreate only Console so it reads the changed settings. This keeps the installed image:
 
    ```bash
-   docker compose -f /opt/lares/compose.yaml up -d --force-recreate console
+   sudo docker compose -f /opt/lares/compose.yaml up -d --no-deps --force-recreate console
    ```
 
-Then open the console at your domain, press **Continue with Google**, and choose the same
-provider identity you verified. Only a successful callback matching the explicit mapping links
-that identity to the existing owner. After the first successful sign-in, remove the
-`CONSOLE_BOOTSTRAP_IDENTITY` line from `/etc/lares/console-oauth.env` and run the same console
-recreate command again to remove it from the running environment. Future sign-ins use the
-stored identity binding.
+Return to the sign-in page and sign in again with the same provider account. Only this new,
+successfully verified callback links the identity to the existing owner and creates the normal
+sign-in session. The setup display expires after five minutes; the copied JSON itself is not an
+expiring proof or credential. If the browser display expires before you copy it, sign in again
+to obtain another display. After successful binding, the setup path closes and future sign-ins
+use the stored identity binding. This bootstrap is only for the first owner on a fresh
+installation. Existing installations or a setup that is no longer fresh require separately
+reviewed recovery; do not set or edit the protected mapping by hand.
 
 Create your first agent on `/agents/new`. To end the session, use **Sign out** at the bottom of
 the sidebar. To admit another member, create an invitation from **Members**; changing the
