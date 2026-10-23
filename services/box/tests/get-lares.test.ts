@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, chmodSync, rmSync, existsSync,
+  realpathSync,
   copyFileSync, readlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,7 +38,7 @@ function script(path: string, body: string) {
 }
 
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "lares-getlares-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "lares-getlares-")));
   bin = join(dir, "bin"); mkdirSync(bin);
   prefix = join(dir, "root"); mkdirSync(prefix);
   served = join(dir, "served"); mkdirSync(served);
@@ -46,13 +47,13 @@ beforeEach(() => {
   writeFileSync(join(served, `${RC11}.json`), releaseJson(RC11, KEEPER));
   writeFileSync(join(served, `${RC12}.json`), releaseJson(RC12, KEEPER12));
   // the fake engine: stub scripts, plus the real ones under test
-  script(join(fake, "install.sh"), 'if [ -n "${FAIL_INSTALL:-}" ]; then exit 1; fi\ncase " $* " in *" --dry-run "*) exit 0;; esac\nbash "$(dirname "$0")/refresh-recovery.sh" --prefix "$LARES_PREFIX"');
+  script(join(fake, "install.sh"), 'if [ -n "${FAIL_INSTALL:-}" ]; then exit 1; fi\ncase " $* " in *" --dry-run "*) exit 0;; esac\ncustody="$(dirname "$0")/maintenance-custody.py"\n[ -r "$custody" ] || { echo "maintenance custody helper is missing" >&2; exit 1; }\nif [ -e "$LARES_PREFIX/var/lib/lares-maintenance" ]; then\n  python3 "$custody" validate "$LARES_PREFIX" "${LARES_SUBNET:-172.30.0.0/24}" --test-owner || exit $?\nelse\n  python3 "$custody" prepare-fresh "$LARES_PREFIX" "${LARES_SUBNET:-172.30.0.0/24}" --confirm-fresh --test-owner || exit $?\nfi\nbash "$(dirname "$0")/refresh-recovery.sh" --prefix "$LARES_PREFIX"');
   script(join(fake, "update.sh"), 'if [ -n "${FAIL_UPDATE:-}" ]; then exit 1; fi');
   script(join(fake, "rollback.sh"), 'if [ -n "${FAIL_ROLLBACK:-}" ]; then exit 3; fi');
   script(join(fake, "restore.sh"), "exit 0");
   script(join(fake, "setup-backups.sh"), "exit 0");
   writeFileSync(join(fake, "backup.sh"), "# new backup script\n");
-  for(const name of ["export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
+  for(const name of ["export.sh","backup-verify.sh","restore-drill.sh","vault-storage.sh","refresh-recovery.sh","maintenance-custody.py","lares-backup.service","lares-backup.timer","lares-backup-verify.service","lares-backup-verify.timer","lares-restore-drill.service","lares-restore-drill.timer"])copyFileSync(join(OPS,name),join(fake,name));
 
   copyFileSync(GET, join(fake, "get-lares.sh")); chmodSync(join(fake, "get-lares.sh"), 0o755);
   copyFileSync(join(OPS, "lares"), join(fake, "lares")); chmodSync(join(fake, "lares"), 0o755);
@@ -74,7 +75,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 const baseEnv = (extra: Record<string, string> = {}) => ({
   PATH: `${bin}:/usr/bin:/bin`, STUB_LOG: log, SERVED: served, FAKE_ENGINE: join(dir, "fake-engine"),
-  LARES_PREFIX: prefix, HOME: dir, TMPDIR: dir, ...extra,
+  LARES_PREFIX: prefix, LARES_MAINTENANCE_TESTING: "1", HOME: dir, TMPDIR: dir, ...extra,
 });
 function run(file: string, args: string[], extra: Record<string, string> = {}) {
   try {
@@ -252,6 +253,32 @@ describe("lares", () => {
     expect(r.code).not.toBe(0);
     expect(names()).toContain("update.sh");
     expect(current()).toBe(`releases/${RC11}`);
+  });
+
+  it("refuses a blocked maintenance intent without switching current", () => {
+    const transition = [
+      "import importlib.util, os, pathlib, sys",
+      "path = pathlib.Path(sys.argv[1])",
+      "spec = importlib.util.spec_from_file_location('maintenance_custody_fixture', path)",
+      "module = importlib.util.module_from_spec(spec)",
+      "spec.loader.exec_module(module)",
+      "prefix = pathlib.Path(sys.argv[2])",
+      "receipt = module.validate(prefix, '172.30.0.0/24')",
+      "custody = prefix / 'var/lib/lares-maintenance/custody'",
+      "admission = prefix / 'var/lib/lares-maintenance/admission'",
+      "module.transition(custody, admission, receipt['installationId'], receipt['epoch'], 'entering', expected_uid=os.geteuid())",
+      "module.transition(custody, admission, receipt['installationId'], receipt['epoch'], 'blocked', expected_uid=os.geteuid())",
+    ].join("; ");
+    execFileSync("python3", ["-c", transition, join(OPS, "maintenance-custody.py"), prefix], {
+      env: baseEnv(), stdio: "pipe",
+    });
+    const blockedIntent = readFileSync(join(prefix, "var/lib/lares-maintenance/admission/intent.json"), "utf8");
+
+    const r = lares(["update", "--release", RC12]);
+    expect(r.code).not.toBe(0);
+    expect(names()).toContain("install.sh");
+    expect(current()).toBe(`releases/${RC11}`);
+    expect(readFileSync(join(prefix, "var/lib/lares-maintenance/admission/intent.json"), "utf8")).toBe(blockedIntent);
   });
 
   it("does not touch the installation when the new release cannot be fetched", () => {
