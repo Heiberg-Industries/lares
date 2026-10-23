@@ -10,6 +10,7 @@ import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
 import {budgetAccountProvisionPlanSchema,provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
+import {listInitialMemberBudgetStatus,setInitialMemberBudgetLimit} from '../../console/lib/initial-member-budget.js';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange} from '@lares/agent-kit/console-source-transaction';
 
@@ -75,13 +76,29 @@ async function waitForLocks(selected:Pool,pids:number[]):Promise<void>{
   }
   throw new Error('Concurrent writer did not wait for source locks');
 }
+async function waitForInitialLimitGate(selected:Pool):Promise<void>{
+  const deadline=Date.now()+3000;
+  while(Date.now()<deadline){
+    const rows=(await selected.query(`SELECT pid,pg_blocking_pids(pid) AS blockers FROM pg_stat_activity
+      WHERE datname=current_database() AND wait_event_type='Lock' AND query ILIKE '%lares-console-source:%'`)).rows;
+    if(rows.some(row=>Array.isArray(row.blockers)&&row.blockers.length>0))return;
+    await new Promise(resolve=>setTimeout(resolve,20));
+  }
+  throw new Error('Initial limit did not wait for the provisioning source gate');
+}
+async function budgetFinancialRows(selected:Pool):Promise<Record<string,unknown[]>>{
+  const tables=['budget_accounts','budget_windows','budget_gateway_bindings','budget_attempts','budget_gateway_grants','budget_financial_checkpoints'] as const;
+  const result:Record<string,unknown[]>={};
+  for(const table of tables)result[table]=(await selected.query(`SELECT to_jsonb(row_data) AS row FROM ${table} row_data ORDER BY 1`)).rows.map(row=>row.row);
+  return result;
+}
 
 beforeAll(async()=>{
   container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();
   pool=dbPool(container.getDatabase(),1);admin=dbPool('postgres',4);
   await migrate(pool);const migrationPool=pool;await pool.end();pools.splice(pools.indexOf(migrationPool),1);
   const base=container.getDatabase();
-  for(const database of ['budget_proposal_failure','budget_control_failure','budget_commit_unknown','budget_identity','budget_concurrent'])
+  for(const database of ['budget_proposal_failure','budget_control_failure','budget_commit_unknown','budget_identity','budget_concurrent','budget_initial_limit'])
     await admin.query(`CREATE DATABASE ${database} TEMPLATE ${base}`);
   await admin.query(`CREATE DATABASE budget_proposal_size_failure TEMPLATE ${base}`);
   pool=dbPool(base,1);
@@ -174,6 +191,62 @@ it('validates plans and provisions only closed accounts with locked live identit
   const encoded=JSON.stringify(journalRecords(directory));
   for(const privateValue of [users.a,users.b,'subject-a','subject-b','https://identity.example.invalid'])expect(encoded).not.toContain(privateValue);
 });
+
+it('sets an explicit initial member limit, serializes with account provisioning, and leaves existing financial rows untouched',async()=>{
+  const selected=dbPool('budget_initial_limit',4),users=await seed(selected,'-initial-limit'),{journal}=await custody(selected);
+  const sessionToken=Buffer.from(randomUUID()+randomUUID()).toString('base64url').slice(0,43);
+  await selected.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
+    [id(),users.owner,createHash('sha256').update(sessionToken).digest('hex')]);
+  await selected.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('initial-unverified','Unverified',$1,'member','active')",[users.org]);
+  const owner={sessionToken,designatedOwnerId:users.owner};
+  const before=await budgetFinancialRows(selected);
+  await expect(listInitialMemberBudgetStatus(selected,sessionToken,users.owner)).resolves.toContainEqual({memberId:users.a,eligible:true,setupComplete:false});
+  await expect(listInitialMemberBudgetStatus(selected,sessionToken,users.owner)).resolves.toContainEqual({memberId:'initial-unverified',eligible:false,setupComplete:false});
+  await selected.query("UPDATE org_member_policy SET allowed_capabilities=ARRAY['directory.read'],may_create_agents=false WHERE user_id=$1",[users.a]);
+  await setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.a,monthlyLimit:'25.5'});
+  await setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.a,monthlyLimit:'25.5'});
+  expect((await selected.query('SELECT spend_cap_usd_month::text AS cap,allowed_capabilities,may_create_agents FROM org_member_policy WHERE user_id=$1',[users.a])).rows[0])
+    .toEqual({cap:'25.5',allowed_capabilities:['directory.read'],may_create_agents:false});
+  expect(await budgetFinancialRows(selected)).toEqual(before);
+
+  const hold=await paused();
+  let provisioning:ReturnType<typeof provisionBudgetAccounts>|undefined;
+  let racingLimit:Promise<void>|undefined;
+  try{
+    provisioning=provisionBudgetAccounts(selected,journal,{installationCap:'100',memberIds:[users.a]},hold.readMonth);
+    await hold.reached;
+    racingLimit=setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.a,monthlyLimit:'40'});
+    await waitForInitialLimitGate(selected);
+    hold.resume();
+    await expect(provisioning).resolves.toMatchObject({state:'closed',reason:'unreconciled',members:1});
+    await expect(racingLimit).rejects.toMatchObject({reason:'setup-complete'});
+  }finally{
+    hold.resume();
+    if(provisioning)await boundedClose(()=>Promise.allSettled([provisioning!]),'Budget provisioning race',5000);
+    if(racingLimit)await boundedClose(()=>Promise.allSettled([racingLimit!]),'Initial limit update',5000);
+  }
+  expect((await selected.query('SELECT spend_cap_usd_month::text AS cap FROM org_member_policy WHERE user_id=$1',[users.a])).rows[0].cap).toBe('25.5');
+  const afterProvision=await budgetFinancialRows(selected);
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.a,monthlyLimit:'25.5'})).rejects.toMatchObject({reason:'setup-complete'});
+  expect(await budgetFinancialRows(selected)).toEqual(afterProvision);
+  expect((await selected.query("SELECT state,reason,policy_generation::text AS generation FROM budget_accounts WHERE live_member_id=$1",[users.a])).rows[0])
+    .toEqual({state:'closed',reason:'unreconciled',generation:'1'});
+  await expect(listInitialMemberBudgetStatus(selected,sessionToken,users.owner)).resolves.toContainEqual({memberId:users.a,eligible:false,setupComplete:true});
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:'initial-unverified',monthlyLimit:'10'})).rejects.toMatchObject({reason:'denied'});
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.b,monthlyLimit:'25.50'})).rejects.toMatchObject({reason:'invalid'});
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.b,monthlyLimit:'1e2'})).rejects.toMatchObject({reason:'invalid'});
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.b,monthlyLimit:'0'})).rejects.toMatchObject({reason:'invalid'});
+  await selected.query("UPDATE users SET status='removed' WHERE id=$1",[users.b]);
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.b,monthlyLimit:'20'})).rejects.toMatchObject({reason:'denied'});
+  const memberToken=Buffer.from(randomUUID()+randomUUID()).toString('base64url').slice(0,43);
+  await selected.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
+    [id(),users.a,createHash('sha256').update(memberToken).digest('hex')]);
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,sessionToken:memberToken,targetMemberId:users.b,monthlyLimit:'20'})).rejects.toMatchObject({reason:'denied'});
+  await selected.query("INSERT INTO orgs(id,display_name) VALUES('initial-other-org','Other'); INSERT INTO users(id,display_name,org_id,org_role,status) VALUES('initial-other-member','Other','initial-other-org','member','active')");
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:'initial-other-member',monthlyLimit:'20'})).rejects.toMatchObject({reason:'denied'});
+  await selected.query("UPDATE member_sessions SET revoked_at=clock_timestamp() WHERE member_id=$1",[users.owner]);
+  await expect(setInitialMemberBudgetLimit(selected,{...owner,targetMemberId:users.b,monthlyLimit:'20'})).rejects.toMatchObject({reason:'denied'});
+},12_000);
 
 it('refuses changed identity sets, organisation drift, cross-organisation plans and provider tombstone collisions',async()=>{
   const selected=dbPool('budget_identity'),users=await seed(selected,'-identity'),{journal}=await custody(selected);
