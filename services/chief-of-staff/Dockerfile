@@ -119,7 +119,7 @@ COPY images/agent-runtime/start.sh /usr/local/bin/lares-start
 # Generated from SETTINGS — the startup guard lares-start runs. Same COPY layer as lares-start, so
 # it cannot be missing at runtime; the image has no TypeScript loader before `eve start`, so the
 # check that runs here is shell, generated from the same list `checkSettings` walks.
-COPY images/agent-runtime/required-settings.sh /usr/local/lib/lares/required-settings.sh
+COPY images/agent-runtime/required-settings-chief-of-staff.sh /usr/local/lib/lares/required-settings.sh
 RUN chmod 0755 /usr/local/bin/lares-start /usr/local/lib/lares/required-settings.sh && mkdir -p /app/services/chief-of-staff/.eve/.workflow-data \
     && chown -R 10001:10001 /app/services/chief-of-staff/.eve
 USER 10001:10001

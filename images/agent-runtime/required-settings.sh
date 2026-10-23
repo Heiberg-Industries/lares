@@ -12,7 +12,7 @@ lares_require WORKFLOW_POSTGRES_URL "The role image's own startup guard refuses 
 lares_require_file DATABASE_PASSWORD_FILE "The role image's own startup guard refuses to start; it is also what exports PGPASSWORD, so the database connection has no password."
 lares_require_file WORKFLOW_POSTGRES_PASSWORD_FILE "The role image's own startup guard refuses to start; workflow database credentials cannot be loaded from their protected file."
 lares_require GATEWAY_URL "The role image's own startup guard refuses to start; nothing can reach the model gateway to complete a turn."
-lares_require_file GATEWAY_KEY_FILE "The role image's own startup guard refuses to start; the gateway would refuse every request as unauthenticated."
+lares_require_file GATEWAY_KEY_FILE "The role image refuses to start without this file or the chief-only Keeper managed transport; without either, gateway requests would be unauthenticated."
 lares_require LARES_AGENT_NAME "The role image's own startup guard refuses to start; the agent has no identity to load a definition or a mailbox for."
 lares_require LARES_DEFINITION_DIR "The role image's own startup guard refuses to start; there is no definition directory to load agent.json or voice.md from."
 [ "$missing" -eq 0 ] || exit 1

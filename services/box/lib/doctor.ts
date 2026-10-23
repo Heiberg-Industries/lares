@@ -19,7 +19,7 @@
 // the caller. Each check below catches its own failure.
 //
 // NEVER A SECRET. `checkSettings` only ever sees a setting's NAME and, for a `*_FILE` setting,
-// three booleans about the file it names (exists / readable / empty) — never the file's bytes,
+// basic metadata about the file it names (exists / readable / empty / file or socket) — never its bytes,
 // and never an environment VALUE for a setting `SETTINGS` marks secret.
 //
 // THE LEFTOVER OWNER. Earlier engine versions seeded one installation's owner into the
@@ -84,22 +84,27 @@ function isBlank(value: string | undefined): boolean {
   return value === undefined || value.trim().length === 0;
 }
 
-/** The real filesystem probe used outside a test: reads no bytes, only three facts about a path. */
+/** The real filesystem probe used outside a test: reads no bytes, only basic file/socket metadata. */
 function realProbeFile(path: string): FileProbe {
   let exists = false;
   let readable = false;
   let empty = true;
+  let isSocket = false;
+  let isFile = false;
   try {
     exists = existsSync(path);
     if (exists) {
-      accessSync(path, constants.R_OK);
-      readable = true;
-      empty = statSync(path).size === 0;
+      const stat = statSync(path);
+      empty = stat.size === 0;
+      isSocket = stat.isSocket();
+      isFile = stat.isFile();
+      try { accessSync(path, constants.R_OK); readable = true; }
+      catch { /* Metadata is still useful when the path exists but is not readable. */ }
     }
   } catch {
     // exists but unreadable, or a race between the two checks — either way, not usable.
   }
-  return { exists, readable, empty };
+  return { exists, readable, empty, isSocket, isFile };
 }
 
 function unreachableDatabaseFix(): string {

@@ -41,7 +41,8 @@ export interface AgentContainer {
         gatewayUrl: string;
         proxyUrl: string;
         schedulesLive?: boolean;
-        gatewayKeyFile: string;
+        /** Omitted only for the guarded managed model-purpose transport on an owned chief. */
+        gatewayKeyFile?: string;
         passwordFile: string;
         workflowPasswordFile: string;
         endpoints?: Record<string, string>;
@@ -81,6 +82,9 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             throw new Error('Duplicate agent or invalid address');
         addresses.add(a.address);
         const r = a.runtime;
+        const managedModelPurpose = r.gatewayKeyFile === undefined;
+        if (managedModelPurpose && (a.role !== 'chief-of-staff' || !a.incarnation || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(a.incarnation) || !opts.modelPurposeRuntimeDir))
+            throw new Error('Managed model-purpose transport requires an owned chief incarnation and Keeper socket directory');
         const bindings = bindingsFor(a.role, a.bindings);
         for (const [value, username] of [[r.databaseUrl, 'lares_app'], [r.workflowUrl, 'lares_workflow']] as const) {
             const u = new URL(value);
@@ -89,7 +93,9 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         }
         if (!/^https?:$/.test(new URL(r.gatewayUrl).protocol) || !/^http:$/.test(new URL(r.proxyUrl).protocol))
             throw new Error('Invalid gateway/proxy URL');
-        const environment: Record<string, string> = { LARES_DEFINITION_DIR: '/definition', LARES_AGENT_NAME: a.name, DATABASE_URL: r.databaseUrl, WORKFLOW_POSTGRES_URL: r.workflowUrl, WORKFLOW_POSTGRES_PASSWORD_FILE: '/run/secrets/workflow-password', GATEWAY_URL: r.gatewayUrl, LARES_MODEL_PREFIX: opts.modelPrefix, GATEWAY_KEY_FILE: '/run/secrets/gateway-key', DATABASE_PASSWORD_FILE: '/run/secrets/database-password', HTTPS_PROXY: r.proxyUrl, HTTP_PROXY: r.proxyUrl, SLACK_PROXY_URL: r.proxyUrl, TELEGRAM_PROXY_URL: r.proxyUrl, EGRESS_PROXY_URL: r.proxyUrl, EVE_SCHEDULES_LIVE: r.schedulesLive === true ? '1' : '0' };
+        const environment: Record<string, string> = { LARES_DEFINITION_DIR: '/definition', LARES_AGENT_NAME: a.name, DATABASE_URL: r.databaseUrl, WORKFLOW_POSTGRES_URL: r.workflowUrl, WORKFLOW_POSTGRES_PASSWORD_FILE: '/run/secrets/workflow-password', GATEWAY_URL: r.gatewayUrl, LARES_MODEL_PREFIX: opts.modelPrefix, DATABASE_PASSWORD_FILE: '/run/secrets/database-password', HTTPS_PROXY: r.proxyUrl, HTTP_PROXY: r.proxyUrl, SLACK_PROXY_URL: r.proxyUrl, TELEGRAM_PROXY_URL: r.proxyUrl, EGRESS_PROXY_URL: r.proxyUrl, EVE_SCHEDULES_LIVE: r.schedulesLive === true ? '1' : '0' };
+        if (managedModelPurpose) environment.LARES_MODEL_PURPOSE_RUNTIME_SOCKET = '/run/lares/model-purpose/model-purpose.sock';
+        else environment.GATEWAY_KEY_FILE = '/run/secrets/gateway-key';
         Object.assign(environment, bindings?.environment);
         if (bindings?.secrets.LANGFUSE_KEY_FILE) environment.LANGFUSE_PROXY_URL = r.proxyUrl;
         for (const [key, value] of Object.entries(r.endpoints ?? {})) {
@@ -186,7 +192,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
                 secret(`${a.name}-${target}`,config[field],target);environment[variable]=`/run/secrets/${target}`;
             }
         }
-        secret(`${a.name}-gateway-key`, r.gatewayKeyFile, 'gateway-key');
+        if (!managedModelPurpose) secret(`${a.name}-gateway-key`, r.gatewayKeyFile!, 'gateway-key');
         if (bindings?.ownerId) {
             environment.AGENT_OWNER_USER_ID = bindings.ownerId;
             // The Slack sign-in is stored under the owner's register id (the identity register). An explicit
