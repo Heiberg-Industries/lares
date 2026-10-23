@@ -3,6 +3,7 @@
 import ast
 import json
 import pathlib
+import re
 import subprocess
 import tempfile
 import unittest
@@ -251,11 +252,92 @@ class CompiledChiefStartupDiagnosticTests(unittest.TestCase):
         self.assertFalse(clipped["readOnlyFilesystem"])
         self.assertTrue(clipped["permissionDenied"])
         self.assertEqual(set(clipped), {
-            "missingSettings", "invalidConfiguration", "moduleResolution", "permissionDenied",
+            "missingSettings", "unset_DATABASE_URL", "unset_WORKFLOW_POSTGRES_URL",
+            "unset_DATABASE_PASSWORD_FILE", "unreadable_DATABASE_PASSWORD_FILE", "empty_DATABASE_PASSWORD_FILE",
+            "unset_WORKFLOW_POSTGRES_PASSWORD_FILE", "unreadable_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "empty_WORKFLOW_POSTGRES_PASSWORD_FILE", "unset_GATEWAY_URL", "unset_LARES_AGENT_NAME",
+            "unset_LARES_DEFINITION_DIR", "unset_GATEWAY_KEY_FILE", "unreadable_GATEWAY_KEY_FILE",
+            "empty_GATEWAY_KEY_FILE",
+            "managedIncarnationInvalid", "managedSocketNotConfigured",
+            "runtimeControlFileUnavailable", "modelPurposeSocketUnavailable",
+            "gatewayRuntimeSocketUnavailable", "workflowCredentialsUnavailable",
+            "invalidConfiguration", "moduleResolution", "permissionDenied",
             "readOnlyFilesystem", "databaseUnavailable", "addressInUse", "memoryExhaustion",
         })
         self.assertNotIn(secret_canary, json.dumps(clipped))
         self.assertTrue(classify("Error [ERR_MODULE_NOT_FOUND]: Cannot find package")["moduleResolution"])
+
+    def test_generated_required_settings_failures_have_fixed_safe_categories(self) -> None:
+        classify = self.namespace["safe_startup_log_categories"]
+        cases = {
+            "lares: DATABASE_URL is not set. configured prose": "unset_DATABASE_URL",
+            "lares: WORKFLOW_POSTGRES_URL is not set. configured prose": "unset_WORKFLOW_POSTGRES_URL",
+            "lares: DATABASE_PASSWORD_FILE is not set. configured prose": "unset_DATABASE_PASSWORD_FILE",
+            "lares: DATABASE_PASSWORD_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_DATABASE_PASSWORD_FILE",
+            "lares: DATABASE_PASSWORD_FILE points to a file that exists but is empty (/secret/value)": "empty_DATABASE_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE is not set. configured prose": "unset_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: WORKFLOW_POSTGRES_PASSWORD_FILE points to a file that exists but is empty (/secret/value)": "empty_WORKFLOW_POSTGRES_PASSWORD_FILE",
+            "lares: GATEWAY_URL is not set. configured prose": "unset_GATEWAY_URL",
+            "lares: LARES_AGENT_NAME is not set. configured prose": "unset_LARES_AGENT_NAME",
+            "lares: LARES_DEFINITION_DIR is not set. configured prose": "unset_LARES_DEFINITION_DIR",
+            "lares: GATEWAY_KEY_FILE is not set. configured prose": "unset_GATEWAY_KEY_FILE",
+            "lares: GATEWAY_KEY_FILE points to a file that does not exist or cannot be read (/secret/value)": "unreadable_GATEWAY_KEY_FILE",
+            "lares: GATEWAY_KEY_FILE points to a file that exists but is empty (/secret/value)": "empty_GATEWAY_KEY_FILE",
+            "lares: managed incarnation is invalid": "managedIncarnationInvalid",
+            "lares: managed model-purpose socket is not configured": "managedSocketNotConfigured",
+            "lares: runtime-control file is missing, unreadable, or empty": "runtimeControlFileUnavailable",
+            "lares: model-purpose runtime socket is unavailable": "modelPurposeSocketUnavailable",
+            "lares: model-purpose gateway socket is unavailable": "gatewayRuntimeSocketUnavailable",
+            "lares: workflow database credentials are unavailable.": "workflowCredentialsUnavailable",
+        }
+        for source_message, expected in cases.items():
+            with self.subTest(category=expected):
+                summary = classify(source_message + "\nNEVER-EMIT-THIS-SESSION-TOKEN")
+                self.assertTrue(summary[expected])
+                self.assertNotIn("NEVER-EMIT-THIS-SESSION-TOKEN", json.dumps(summary))
+
+        # The optional gateway key's absence is the managed-keyless case, not a failure.
+        summary = classify("startup continues")
+        self.assertFalse(summary["unset_GATEWAY_KEY_FILE"])
+        guard = (REPO / "images/agent-runtime/required-settings-chief-of-staff.sh").read_text(encoding="utf-8")
+        actual_calls = {(kind, name) for kind, name in re.findall(
+            r"^[ \t]*lares_require(_file)? ([A-Z0-9_]+)", guard, re.MULTILINE)}
+        self.assertEqual(actual_calls, {
+            ("", "DATABASE_URL"), ("", "WORKFLOW_POSTGRES_URL"),
+            ("_file", "DATABASE_PASSWORD_FILE"), ("_file", "WORKFLOW_POSTGRES_PASSWORD_FILE"),
+            ("", "GATEWAY_URL"), ("", "LARES_AGENT_NAME"), ("", "LARES_DEFINITION_DIR"),
+            ("_file", "GATEWAY_KEY_FILE"),
+        })
+
+    def test_setting_categories_require_exact_lares_line_and_field_delimiter(self) -> None:
+        classify = self.namespace["safe_startup_log_categories"]
+        negatives = [
+            "lares: OTHER_DATABASE_URL is not set. prose",
+            "lares: DATABASE_URL_EXTRA is not set. prose",
+            'startup logged: "lares: DATABASE_URL is not set. prose"',
+            'lares: note says "DATABASE_URL is not set" but not a guard line',
+            "error: lares: managed incarnation is invalid",
+            "lares: workflow database credentials are unavailable: unrelated detail",
+            'startup logged: "lares: managed model-purpose socket is not configured"',
+            'startup logged: "lares: runtime-control file is missing, unreadable, or empty"',
+            'startup logged: "lares: model-purpose runtime socket is unavailable"',
+            'startup logged: "lares: model-purpose gateway socket is unavailable"',
+        ]
+        for text in negatives:
+            with self.subTest(text=text):
+                summary = classify(text)
+                self.assertFalse(summary["unset_DATABASE_URL"])
+                self.assertFalse(summary["missingSettings"])
+                self.assertFalse(summary["managedIncarnationInvalid"])
+                self.assertFalse(summary["managedSocketNotConfigured"])
+                self.assertFalse(summary["runtimeControlFileUnavailable"])
+                self.assertFalse(summary["modelPurposeSocketUnavailable"])
+                self.assertFalse(summary["gatewayRuntimeSocketUnavailable"])
+                self.assertFalse(summary["workflowCredentialsUnavailable"])
+        exact = classify("context line\nlares: DATABASE_URL is not set. fixed explanation")
+        self.assertTrue(exact["unset_DATABASE_URL"])
+        self.assertTrue(exact["missingSettings"])
 
     def test_continuously_readable_log_pipe_stops_at_deadline_and_reaps_process(self) -> None:
         class FakePipe:
