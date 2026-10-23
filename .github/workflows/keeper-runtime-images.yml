@@ -162,6 +162,20 @@ jobs:
         run: python3 services/keeper/tests/vault-files-image.probe.py lares-keeper:test
       - name: Prove root-only person erasure against the final Keeper image and Linux journal lock
         run: python3 services/keeper/tests/person-erasure-image.probe.py lares-keeper:test
+      - name: Prove disposable maintenance admission and external database HBA
+        run: |
+          proof="$RUNNER_TEMP/maintenance-fence-proof.json"
+          printf '{"format":1,"status":"not-started","cleanupOkay":false}\n' > "$proof"
+          status=0
+          sudo env CI=true python3 -B services/keeper/tests/maintenance-fence-image.probe.py lares-keeper:test "$GITHUB_SHA" "$proof" || status=$?
+          sudo chown "$(id -u):$(id -g)" "$proof" || status=1
+          exit "$status"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: keeper-maintenance-fence-proof
+          path: ${{ runner.temp }}/maintenance-fence-proof.json
+          if-no-files-found: error
 
       - name: Verify the box tooling loads and the engine unpacks
         run: |
