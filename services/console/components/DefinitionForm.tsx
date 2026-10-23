@@ -100,6 +100,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
   const [uncertain, setUncertain] = useState(false);
   const [creating, setCreating] = useState<"idle" | "working" | "done" | "failed">("idle");
   const [runtime, setRuntime] = useState(p.initial?.runtime);
+  const nativeHeld = runtime?.reason === "Native budget activation required";
   const [hash, setHash] = useState(p.initial?.hash ?? "");
   const [deleteConfirm, setDeleteConfirm] = useState(false);
   const [retireConfirm, setRetireConfirm] = useState(false);
@@ -833,7 +834,9 @@ export function DefinitionForm(p: DefinitionFormProps) {
           <p>
             {!active
               ? "Agent stopped."
-              : runtime?.pending
+              : nativeHeld
+                ? "Native budget activation is required before this agent can start."
+                : runtime?.pending
                 ? `Connection changes are pending. ${runtime.reason ?? ""}`
                 : runtime?.running === false
                   ? "Agent stopped."
@@ -845,7 +848,7 @@ export function DefinitionForm(p: DefinitionFormProps) {
                         ? "Saved connections are applied."
                         : "Runtime connection status is unavailable."}
           </p>
-          {(runtime?.pending ||
+          {!nativeHeld && (runtime?.pending ||
             (active &&
               runtime?.running === false &&
               p.initial?.status === "valid")) && (
