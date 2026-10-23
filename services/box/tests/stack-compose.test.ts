@@ -154,6 +154,25 @@ describe("the generated stack compose file", () => {
     expect(() => renderStackCompose(MANIFEST, { ...OPTS, consoleModelPurposeSigningKeyFile: `${OPTS.secretsDir}/other` })).toThrow("custody file");
   });
 
+  it("gives only the gateway the exact read-only staged admission key and authority references", () => {
+    const keyFile = `${OPTS.secretsDir}/gateway-budget-service-key`;
+    const authority = { origin: "https://example.invalid", endpointHash: "b".repeat(64), serviceKeyFile: keyFile };
+    const doc = parse(renderStackCompose(MANIFEST, { ...OPTS, gatewayAuthority: authority })) as any;
+    const gateway = doc.services["lares-gateway"];
+    expect(gateway.environment).toMatchObject({
+      LARES_GATEWAY_ADMISSION_URL: authority.origin,
+      LARES_GATEWAY_ENDPOINT_HASH: authority.endpointHash,
+      LARES_GATEWAY_SERVICE_KEY_FILE: "/run/secrets/gateway-budget-service-key",
+    });
+    expect(gateway.volumes).toContainEqual({
+      type: "bind", source: keyFile, target: "/run/secrets/gateway-budget-service-key",
+      read_only: true, bind: { create_host_path: false },
+    });
+    expect(doc.services.console.environment).not.toHaveProperty("LARES_GATEWAY_SERVICE_KEY_FILE");
+    expect(doc.services.console.volumes).not.toContain(keyFile);
+    expect(() => renderStackCompose(MANIFEST, { ...OPTS, gatewayAuthority: { ...authority, serviceKeyFile: `${OPTS.secretsDir}/elsewhere` } })).toThrow("authority");
+  });
+
   it("turns the gateway's local cost map on, so it loads costs without a network fetch at start", () => {
     const doc = parse(renderStackCompose(MANIFEST, OPTS)) as any;
     expect(doc.services["lares-gateway"].environment.LITELLM_LOCAL_MODEL_COST_MAP).toBe("True");

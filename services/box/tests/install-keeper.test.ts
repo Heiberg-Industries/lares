@@ -286,8 +286,8 @@ describe("the keeper the installer configures and starts", () => {
     // targets rather than sources also keeps this file's "mount keeper-owned roots at the SAME
     // absolute path" rule honest — a mount that renamed a directory on the way in would move
     // the path out from under the keeper and this would say so.
-    const mounted = (doc.services["lares-keeper"].volumes as string[])
-      .map((v) => expand(v).split(":")[1]!);
+    const mounted = (doc.services["lares-keeper"].volumes as Array<string | { target: string }>)
+      .map((v) => typeof v === "string" ? expand(v).split(":")[1]! : expand(v.target));
 
     /** Every absolute path the rendered configuration names, wherever it sits in the tree. */
     const paths: string[] = [];
@@ -335,6 +335,28 @@ describe("the keeper the installer configures and starts", () => {
           "lares-keeper service at the same absolute path, and give run_keeper the variable.",
       ).toBe(true);
     }
+  });
+
+  it("mounts staged gateway-budget sources as exact read-only Keeper files only", () => {
+    const keeper = parse(readFileSync(COMMITTED_KEEPER_COMPOSE, "utf8")) as any;
+    const volumes = keeper.services["lares-keeper"].volumes as Array<string | Record<string, unknown>>;
+    const key = volumes.find(value => typeof value !== "string" && String(value.source).includes("GATEWAY_BUDGET_SERVICE_KEY_FILE")) as Record<string, any>;
+    const policy = volumes.find(value => typeof value !== "string" && String(value.source).includes("NATIVE_POLICY_FILE")) as Record<string, any>;
+    expect(key).toMatchObject({
+      type: "bind",
+      source: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_FILE:-/dev/null}",
+      target: "${LARES_GATEWAY_BUDGET_SERVICE_KEY_TARGET:-/run/secrets/gateway-budget-unused-key}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(policy).toMatchObject({
+      type: "bind",
+      source: "${LARES_NATIVE_POLICY_FILE:-/dev/null}",
+      target: "${LARES_NATIVE_POLICY_TARGET:-/etc/lares/native-policy-unused.json}",
+      read_only: true,
+      bind: { create_host_path: false },
+    });
+    expect(Object.keys(keeper.services)).toEqual(["lares-keeper", "lares-egress-proxy"]);
   });
 
   it("installs the keeper's own compose file at the path it brings up, unchanged", () => {

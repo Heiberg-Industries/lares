@@ -55,6 +55,12 @@ export interface StackComposeOptions {
    *  `DEADLINE_CALENDAR_FILE` naming it; the setting alone would point at a file the container
    *  cannot see. Never a directory mount: Docker would invent a missing source. */
   readonly deadlineCalendarFile: string | null;
+  /** Supplied only by the explicit staged authority renderer after protected-source checks. */
+  readonly gatewayAuthority?: {
+    readonly origin: string;
+    readonly endpointHash: string;
+    readonly serviceKeyFile: string;
+  };
 }
 
 export interface DatabaseBootstrapComposeOptions {
@@ -83,6 +89,10 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
     throw new Error("Console model-purpose signing-key path must be absolute");
   if (consoleModelPurposeSigningKeyFile !== null && consoleModelPurposeSigningKeyFile !== join(opts.secretsDir, "console-model-purpose-signing-key"))
     throw new Error("Console model-purpose signing-key path must name its custody file");
+  const authority = opts.gatewayAuthority;
+  if (authority && (!/^https:\/\/[^/]+$/.test(authority.origin) || new URL(authority.origin).origin !== authority.origin ||
+      !/^[a-f0-9]{64}$/.test(authority.endpointHash) || authority.serviceKeyFile !== join(opts.secretsDir, "gateway-budget-service-key")))
+    throw new Error("Gateway admission authority is invalid");
   // Where the gateway's start script is executed inside the container. Named ONCE and used
   // twice below (the mount target and the entrypoint) so the two can never drift — a mismatch
   // between them is a container whose entrypoint does not exist, which Docker reports long
@@ -162,6 +172,7 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         `${opts.gatewayStartScript}.admission_contract.py:/opt/lares-gateway/admission_contract.py:ro`,
         `${opts.gatewayStartScript}.lares_gateway.py:/opt/lares-gateway/lares_gateway.py:ro`,
         `${opts.gatewayConfigFile}.profile.json:/etc/litellm/profile.json:ro`,
+        ...(authority ? [{ type: "bind", source: authority.serviceKeyFile, target: "/run/secrets/gateway-budget-service-key", read_only: true, bind: { create_host_path: false } }] : []),
       ],
       // THE ENGINE SHIPS NO GATEWAY IMAGE, AND MAY NOT. The obvious way to give LiteLLM our
       // start script is a thin image FROM the official one — and that is ruled out: the
@@ -203,6 +214,11 @@ export function renderStackCompose(manifest: ReleaseManifest, opts: StackCompose
         // bundled cost map instead of fetching one over the network at start.
         LITELLM_LOCAL_MODEL_COST_MAP: "True",
         LARES_GATEWAY_PROFILE_FILE: "/etc/litellm/profile.json",
+        ...(authority ? {
+          LARES_GATEWAY_ADMISSION_URL: authority.origin,
+          LARES_GATEWAY_ENDPOINT_HASH: authority.endpointHash,
+          LARES_GATEWAY_SERVICE_KEY_FILE: "/run/secrets/gateway-budget-service-key",
+        } : {}),
         // Admission URL/service key/endpoint identity are deliberately NOT provisioned.
         // Until an operator supplies the real authority, this runtime fails closed.
         // `images/gateway-runtime/start.sh` reads both files and exports their contents as the
