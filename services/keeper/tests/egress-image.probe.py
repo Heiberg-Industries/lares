@@ -14,6 +14,7 @@ import os
 import pathlib
 import platform
 import re
+import select
 import shutil
 import subprocess
 import sys
@@ -151,24 +152,300 @@ def host_gate_is_exclusive_blocked(gate_path):
         os.close(descriptor)
 
 
-def process_gate_evidence(pid):
-    script = ("import json,os,sys; p=sys.argv[1]; f='/proc/'+p+'/fd/9'; "
-              "s=os.stat(f); lines=open('/proc/'+p+'/fdinfo/9').read(4096).splitlines(); "
-              "locks=[x for x in lines if x.startswith('lock:')]; "
-              "print(json.dumps({'dev':s.st_dev,'ino':s.st_ino,'locks':locks}))")
-    return json.loads(cmd('docker', 'exec', proxy_id, '/usr/bin/python3', '-I', '-c', script, pid))
+def _safe_error(exc):
+    if isinstance(exc, PermissionError):
+        category = 'permission'
+    elif isinstance(exc, FileNotFoundError):
+        category = 'not_found'
+    elif isinstance(exc, ProcessLookupError):
+        category = 'process_lookup'
+    elif isinstance(exc, OSError):
+        category = 'os_error'
+    else:
+        category = 'other'
+    return {'category': category, 'errno': exc.errno if isinstance(exc, OSError) else None}
+
+
+def _read_bounded_process_output(process, limit=4096, timeout=30):
+    output = bytearray()
+    deadline = time.monotonic() + timeout
+    result = {'returncode': None, 'timed_out': False, 'oversized': False,
+              'read_error_category': None, 'read_error_errno': None,
+              'cleanup_ok': True, 'cleanup_failures': []}
+    cleanup_attempted = False
+
+    def fail_cleanup(kind):
+        result['cleanup_ok'] = False
+        if kind not in result['cleanup_failures']:
+            result['cleanup_failures'].append(kind)
+
+    def kill_and_reap():
+        nonlocal cleanup_attempted
+        cleanup_attempted = True
+        try:
+            running = process.poll() is None
+        except Exception:
+            running = True
+            fail_cleanup('poll')
+        if running:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                fail_cleanup('kill')
+        try:
+            result['returncode'] = process.wait(timeout=1)
+            if result['returncode'] is None:
+                raise subprocess.TimeoutExpired('diagnostic process', 1)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            except Exception:
+                fail_cleanup('kill')
+            try:
+                result['returncode'] = process.wait(timeout=1)
+                if result['returncode'] is None:
+                    fail_cleanup('reap')
+            except subprocess.TimeoutExpired:
+                fail_cleanup('reap')
+            except Exception:
+                fail_cleanup('reap')
+        except Exception:
+            fail_cleanup('reap')
+
+    read_failed = False
+    try:
+        try:
+            descriptor = process.stdout.fileno()
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    result['timed_out'] = True
+                    break
+                readable, _, _ = select.select([descriptor], [], [], remaining)
+                if not readable:
+                    result['timed_out'] = True
+                    break
+                chunk = os.read(descriptor, min(1024, limit + 1 - len(output)))
+                if not chunk:
+                    break
+                output.extend(chunk)
+                if len(output) > limit:
+                    result['oversized'] = True
+                    break
+        except OSError as exc:
+            read_failed = True
+            safe = _safe_error(exc)
+            result['read_error_category'] = safe['category']
+            result['read_error_errno'] = safe['errno']
+        except (ValueError, TypeError):
+            read_failed = True
+            result['read_error_category'] = 'invalid_descriptor'
+        except Exception:
+            read_failed = True
+            result['read_error_category'] = 'other'
+
+        if read_failed or result['timed_out'] or result['oversized']:
+            kill_and_reap()
+        else:
+            try:
+                result['returncode'] = process.wait(timeout=2)
+                if result['returncode'] is None:
+                    result['timed_out'] = True
+                    kill_and_reap()
+            except subprocess.TimeoutExpired:
+                result['timed_out'] = True
+                kill_and_reap()
+            except Exception:
+                fail_cleanup('reap')
+                kill_and_reap()
+    finally:
+        if not cleanup_attempted and result['returncode'] is None:
+            kill_and_reap()
+        try:
+            process.stdout.close()
+        except Exception:
+            fail_cleanup('stdout_close')
+
+    result['output'] = bytes(output[:limit])
+    return result
+
+
+def _sanitize_process_gate_json(value):
+    if not isinstance(value, dict) or value.get('version') != 1:
+        return None
+    status = value.get('pid_status')
+    descriptor = value.get('fd9')
+    info = value.get('fdinfo')
+    if not all(isinstance(item, dict) for item in (status, descriptor, info)):
+        return None
+
+    def boolean(source, key):
+        return source.get(key) if isinstance(source.get(key), bool) else False
+
+    def number(source, key):
+        result = source.get(key)
+        return result if isinstance(result, int) and not isinstance(result, bool) and result >= 0 else None
+
+    def safe_error_fields(source):
+        category = source.get('error_category')
+        if category not in ('permission', 'not_found', 'process_lookup', 'os_error', 'other'):
+            category = None
+        return {'error_category': category, 'errno': number(source, 'errno')}
+
+    return {
+        'pid_status': {
+            'readable': boolean(status, 'readable'),
+            'name_is_squid': boolean(status, 'name_is_squid'),
+            'state_present': boolean(status, 'state_present'),
+            'parent_pid': number(status, 'parent_pid'),
+            'effective_uid': number(status, 'effective_uid'),
+            **safe_error_fields(status),
+        },
+        'fd9': {
+            'stat_ok': boolean(descriptor, 'stat_ok'),
+            'same_inode': boolean(descriptor, 'same_inode'),
+            **safe_error_fields(descriptor),
+        },
+        'fdinfo': {
+            'readable': boolean(info, 'readable'),
+            'lock_count': number(info, 'lock_count'),
+            'single_flock': boolean(info, 'single_flock'),
+            'advisory_read': boolean(info, 'advisory_read'),
+            'write_absent': boolean(info, 'write_absent'),
+            **safe_error_fields(info),
+        },
+    }
+
+
+def process_gate_evidence(pid, gate_path):
+    expected = os.stat(gate_path, follow_symlinks=False)
+    script = r'''import json,os,sys
+p=sys.argv[1]
+expected_dev=int(sys.argv[2]); expected_ino=int(sys.argv[3])
+def fail(exc):
+    if isinstance(exc,PermissionError): category='permission'
+    elif isinstance(exc,FileNotFoundError): category='not_found'
+    elif isinstance(exc,ProcessLookupError): category='process_lookup'
+    elif isinstance(exc,OSError): category='os_error'
+    else: category='other'
+    return {'error_category':category,'errno':exc.errno if isinstance(exc,OSError) else None}
+result={'version':1,
+        'pid_status':{'readable':False},
+        'fd9':{'stat_ok':False},
+        'fdinfo':{'readable':False}}
+try:
+    fields={}
+    with open('/proc/'+p+'/status','rb') as status:
+        for raw in status.read(4096).splitlines():
+            key,sep,value=raw.partition(b':')
+            if sep and key in (b'Name',b'State',b'PPid',b'Uid'):
+                fields[key]=value.strip().split()
+    uid=fields.get(b'Uid',[])
+    parent=fields.get(b'PPid',[])
+    result['pid_status']={'readable':True,
+                          'name_is_squid':fields.get(b'Name',[b''])[0]==b'squid',
+                          'state_present':bool(fields.get(b'State')),
+                          'parent_pid':int(parent[0]) if parent else None,
+                          'effective_uid':int(uid[1]) if len(uid)>1 else None}
+except Exception as exc:
+    result['pid_status'].update(fail(exc))
+try:
+    stat=os.stat('/proc/'+p+'/fd/9')
+    result['fd9']={'stat_ok':True,
+                   'same_inode':stat.st_dev==expected_dev and stat.st_ino==expected_ino}
+except Exception as exc:
+    result['fd9'].update(fail(exc))
+try:
+    with open('/proc/'+p+'/fdinfo/9','rb') as info:
+        lines=info.read(4096).decode('ascii','replace').splitlines()
+    locks=[line for line in lines if line.startswith('lock:')]
+    lock=locks[0] if len(locks)==1 else ''
+    result['fdinfo']={'readable':True,'lock_count':len(locks),
+                      'single_flock':len(locks)==1 and 'FLOCK' in lock,
+                      'advisory_read':len(locks)==1 and 'ADVISORY READ' in lock,
+                      'write_absent':len(locks)==1 and 'WRITE' not in lock}
+except Exception as exc:
+    result['fdinfo'].update(fail(exc))
+print(json.dumps(result,separators=(',',':')))
+'''
+    process = None
+    try:
+        process = subprocess.Popen(
+            ['docker', 'exec', proxy_id, '/usr/bin/python3', '-I', '-c', script, pid,
+             str(expected.st_dev), str(expected.st_ino)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        capture = _read_bounded_process_output(process)
+        output = capture['output']
+        returncode = capture['returncode']
+        result = {'docker_exec_returncode': returncode,
+                  'docker_exec_timed_out': capture['timed_out'],
+                  'docker_exec_output_oversized': capture['oversized'],
+                  'diagnostic_read_error_category': capture['read_error_category'],
+                  'diagnostic_read_error_errno': capture['read_error_errno'],
+                  'diagnostic_process_cleanup_ok': capture['cleanup_ok'],
+                  'diagnostic_process_cleanup_failures': capture['cleanup_failures'],
+                  'diagnostic_valid': False}
+        if capture['cleanup_ok'] and returncode == 0 and not capture['timed_out'] and \
+                not capture['oversized'] and not capture['read_error_category']:
+            try:
+                parsed = json.loads(output.decode('ascii'))
+                safe = _sanitize_process_gate_json(parsed)
+                if safe is not None:
+                    result.update(safe)
+                    result['diagnostic_valid'] = True
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                pass
+        return result
+    except OSError as exc:
+        return {'docker_exec_returncode': None, 'docker_exec_timed_out': False,
+                'docker_exec_output_oversized': False, 'diagnostic_valid': False,
+                'docker_exec_error_category': _safe_error(exc)['category'],
+                'docker_exec_errno': _safe_error(exc)['errno']}
+
+
+def host_gate_exclusive_evidence(gate_path):
+    descriptor = None
+    try:
+        descriptor = os.open(gate_path, os.O_RDONLY | getattr(os, 'O_CLOEXEC', 0) |
+                             getattr(os, 'O_NOFOLLOW', 0))
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            return {'blocked': False, 'acquired': True, 'error_category': None, 'errno': None}
+        except BlockingIOError:
+            return {'blocked': True, 'acquired': False, 'error_category': None, 'errno': None}
+    except OSError as exc:
+        safe = _safe_error(exc)
+        return {'blocked': False, 'acquired': False,
+                'error_category': safe['category'], 'errno': safe['errno']}
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def assert_proxy_lease(gate_path, pid, label):
-    evidence = process_gate_evidence(pid)
-    expected = os.stat(gate_path, follow_symlinks=False)
-    locks = evidence['locks']
+    evidence = process_gate_evidence(pid, gate_path)
+    host_evidence = host_gate_exclusive_evidence(gate_path)
+    report.setdefault('lease_diagnostics', []).append({
+        'phase': label,
+        'pid': int(pid) if str(pid).isdigit() else None,
+        'process': evidence,
+        'host_exclusive': host_evidence,
+    })
+    process_ok = evidence.get('diagnostic_valid') is True and \
+        evidence['pid_status']['readable'] and evidence['pid_status']['name_is_squid'] and \
+        evidence['fd9']['stat_ok'] and evidence['fd9']['same_inode'] and \
+        evidence['fdinfo']['readable'] and evidence['fdinfo']['lock_count'] == 1 and \
+        evidence['fdinfo']['single_flock'] and evidence['fdinfo']['advisory_read'] and \
+        evidence['fdinfo']['write_absent']
     check(label + ': serving Squid owns fd9 for the exact host gate inode with a shared lock',
-          evidence['dev'] == expected.st_dev and evidence['ino'] == expected.st_ino and
-          len(locks) == 1 and 'FLOCK' in locks[0] and 'ADVISORY READ' in locks[0] and
-          'WRITE' not in locks[0])
+          process_ok)
     check(label + ': host cannot acquire the exclusive gate while Squid serves',
-          host_gate_is_exclusive_blocked(gate_path))
+          host_evidence['blocked'])
 
 
 def wait_for_proxy():
