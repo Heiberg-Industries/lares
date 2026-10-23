@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -123,6 +124,18 @@ def current_container_id() -> str:
 
 
 def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
+    version_result = None
+    try:
+        version_result = docker("compose", "version", "--short", timeout=8, check=False)
+        version_match = re.fullmatch(r"v?(\d{1,3})\.(\d{1,3})\.(\d{1,3})", version_result.stdout.strip())
+    except ProbeFailure:
+        version_match = None
+    if version_result is not None and version_result.returncode == 0 and version_match:
+        proof["stages"]["composeVersion"] = {
+            "major": int(version_match.group(1)),
+            "minor": int(version_match.group(2)),
+            "patch": int(version_match.group(3)),
+        }
     password = secrets.token_hex(20)
     workflow_password = secrets.token_hex(20)
     for name, value in (("database-password", password), ("workflow-password", workflow_password),
@@ -188,7 +201,21 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
     expected_copy["image"] = actual_copy["image"]
     if expected_copy != actual_copy:
         raise ProbeFailure("effective-service-drift")
+    proof["claims"]["effectiveGeneratedComposeMatchesExceptImage"] = True
     mounts = [item for item in actual_service.get("volumes", []) if item.get("target") == "/run/lares-maintenance/admission"]
+    contract = {
+        "entrypointMatches": actual_service.get("entrypoint") == ["/usr/local/lib/lares/maintenance-admission-v1",
+            "/run/lares-maintenance/admission", installation_id, str(epoch), "--"],
+        "commandMatches": actual_service.get("command") == ["/usr/local/bin/lares-start"],
+        "userMatches": actual_service.get("user") == "10001:10001",
+        "serviceReadOnly": actual_service.get("read_only") is True,
+        "admissionMountCountIsOne": len(mounts) == 1,
+        "admissionMountSourceMatches": len(mounts) == 1 and mounts[0].get("source") == str(admission_dir),
+        "admissionMountTargetMatches": len(mounts) == 1 and mounts[0].get("target") == "/run/lares-maintenance/admission",
+        "admissionMountReadOnly": len(mounts) == 1 and mounts[0].get("read_only") is True,
+        "admissionBindCreateHostPathFalse": len(mounts) == 1 and mounts[0].get("bind", {}).get("create_host_path") is False,
+    }
+    proof["stages"]["generatedServiceContract"] = contract
     if actual_service.get("entrypoint") != ["/usr/local/lib/lares/maintenance-admission-v1",
             "/run/lares-maintenance/admission", installation_id, str(epoch), "--"] or \
        actual_service.get("command") != ["/usr/local/bin/lares-start"] or \
@@ -200,7 +227,6 @@ def render_generated_compose() -> tuple[pathlib.Path, dict[str, object]]:
     if image_config.get("Entrypoint") != ["/usr/local/lib/lares/maintenance-admission-v1"] or \
        image_config.get("Cmd") != ["/usr/local/bin/lares-start"]:
         raise ProbeFailure("baked-image-default")
-    proof["claims"]["effectiveGeneratedComposeMatchesExceptImage"] = True
     proof["claims"]["bakedGuardAndExplicitDefaultCommand"] = True
     return override, actual_service
 
