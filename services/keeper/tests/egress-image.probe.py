@@ -1129,9 +1129,166 @@ def _record_proxy_wait_diagnostic(response, phase, attempt, container_item=None,
         response, proxy_id, container_item, network, proxy_ip, phase, attempt, inspect_outcome))
 
 
+_STARTUP_DIAGNOSTIC_CATEGORIES = {
+    'guard_refusal', 'squid_already_running', 'pid_file_conflict', 'permission_denied',
+    'config_parse_fatal', 'address_in_use', 'other_fatal', 'unknown', 'unavailable',
+}
+_STARTUP_READ_OUTCOMES = {
+    'not_attempted', 'completed', 'spawn_failed', 'command_failed', 'timeout',
+    'oversized', 'read_failed', 'cleanup_failed',
+}
+_STARTUP_CLEANUP_FAILURES = {
+    'poll', 'kill', 'reap', 'stdout_close', 'inspect_command_cleanup',
+    'inspect_cleanup_unconfirmed',
+}
+_STARTUP_READ_ERRORS = {'permission', 'not_found', 'process_lookup', 'os_error',
+                        'invalid_descriptor', 'other', 'command_encoding'}
+_STARTUP_LOG_LIMIT = 16384
+_STARTUP_LOG_TIMEOUT_SECONDS = 3
+
+
+def _classify_proxy_startup_log(data):
+    """Return one fixed category; never return any source log text."""
+    text = data.decode('utf-8', 'replace').lower()
+    # Keep the most specific signature: later shutdown/fatal lines must not
+    # overwrite an earlier cause from the startup attempt.
+    priorities = {
+        'unknown': 0, 'other_fatal': 1, 'address_in_use': 2,
+        'permission_denied': 3, 'config_parse_fatal': 4,
+        'pid_file_conflict': 5, 'squid_already_running': 6,
+        'guard_refusal': 7,
+    }
+    category = 'unknown'
+    for line in text.splitlines():
+        detected = None
+        if 'lares: egress maintenance admission refused' in line:
+            detected = 'guard_refusal'
+        elif 'squid is already running' in line:
+            detected = 'squid_already_running'
+        elif 'pid file' in line and any(marker in line for marker in
+                                        ('conflict', 'already exists', 'already in use', 'exists')):
+            detected = 'pid_file_conflict'
+        elif 'permission denied' in line or 'eacces' in line:
+            detected = 'permission_denied'
+        elif 'fatal:' in line and any(marker in line for marker in
+                                      ('bungled', 'parse', 'configuration')):
+            detected = 'config_parse_fatal'
+        elif 'address already in use' in line or 'address in use' in line or 'eaddrinuse' in line:
+            detected = 'address_in_use'
+        elif 'fatal:' in line or line.startswith('fatal '):
+            detected = 'other_fatal'
+        if detected is not None and priorities[detected] > priorities[category]:
+            category = detected
+    return category if category in _STARTUP_DIAGNOSTIC_CATEGORIES else 'unknown'
+
+
+def _startup_diagnostic_base(container_verification):
+    return {
+        'container_verification': container_verification,
+        'startup_category': 'unavailable',
+        'read_outcome': 'not_attempted',
+        'timed_out': False,
+        'oversized': False,
+        'cleanup_ok': True,
+        'cleanup_failures': [],
+        'read_error_category': None,
+    }
+
+
+def _capture_proxy_startup_diagnostic(since_marker):
+    """Read one capped log tail only after checking the pinned proxy identity."""
+    if (not isinstance(proxy_full_id, str) or not re.fullmatch(r'[0-9a-f]{64}', proxy_full_id) or
+            not isinstance(proxy_id, str) or not re.fullmatch(r'[0-9a-f]{12,64}', proxy_id) or
+            not proxy_full_id.startswith(proxy_id) or
+            not isinstance(proxy_project, str) or not proxy_project):
+        return _startup_diagnostic_base('not_pinned')
+    try:
+        rendered = _observer_command(
+            'docker', 'inspect', '--format',
+            '{{json .Id}}|{{json .Name}}|{{json (index .Config.Labels "com.docker.compose.project")}}|'
+            '{{json (index .Config.Labels "com.docker.compose.service")}}',
+            proxy_full_id, timeout=2, limit=2048)
+        values = [json.loads(value) for value in rendered.split('|')]
+    except ObserverRefusal as exc:
+        outcome = _startup_diagnostic_base('inspect_failed')
+        outcome['read_error_category'] = exc.category if exc.category in _STARTUP_READ_ERRORS else 'other'
+        if exc.category == 'timeout':
+            outcome['timed_out'] = True
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_cleanup_unconfirmed']
+        elif exc.category == 'oversized':
+            outcome['oversized'] = True
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_cleanup_unconfirmed']
+        elif exc.category == 'command_cleanup':
+            outcome['cleanup_ok'] = False
+            outcome['cleanup_failures'] = ['inspect_command_cleanup']
+        return outcome
+    except Exception:
+        return _startup_diagnostic_base('inspect_failed')
+    if len(values) != 4 or values[0] != proxy_full_id:
+        return _startup_diagnostic_base('id_mismatch')
+    if values[1] != '/' + proxy_name:
+        return _startup_diagnostic_base('name_mismatch')
+    if values[2] != proxy_project or values[3] != 'lares-egress-proxy':
+        return _startup_diagnostic_base('owner_mismatch')
+
+    outcome = _startup_diagnostic_base('matched')
+    try:
+        process = subprocess.Popen(
+            ['docker', 'logs', '--since', since_marker, '--tail', '64',
+             '--timestamps=false', proxy_full_id],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=0)
+    except OSError as exc:
+        outcome['read_outcome'] = 'spawn_failed'
+        outcome['read_error_category'] = _safe_error(exc)['category']
+        if outcome['read_error_category'] not in _STARTUP_READ_ERRORS:
+            outcome['read_error_category'] = 'other'
+        return outcome
+
+    capture = _read_bounded_process_output(
+        process, limit=_STARTUP_LOG_LIMIT, timeout=_STARTUP_LOG_TIMEOUT_SECONDS)
+    outcome['timed_out'] = capture['timed_out'] is True
+    outcome['oversized'] = capture['oversized'] is True
+    outcome['cleanup_ok'] = capture['cleanup_ok'] is True
+    outcome['cleanup_failures'] = [item for item in capture['cleanup_failures']
+                                   if isinstance(item, str) and item in _STARTUP_CLEANUP_FAILURES]
+    read_error = capture['read_error_category']
+    outcome['read_error_category'] = read_error if read_error in _STARTUP_READ_ERRORS else None
+    if outcome['timed_out']:
+        outcome['read_outcome'] = 'timeout'
+    elif outcome['oversized']:
+        outcome['read_outcome'] = 'oversized'
+    elif read_error is not None:
+        outcome['read_outcome'] = 'read_failed'
+    elif not outcome['cleanup_ok']:
+        outcome['read_outcome'] = 'cleanup_failed'
+    elif capture['returncode'] != 0:
+        outcome['read_outcome'] = 'command_failed'
+    else:
+        outcome['read_outcome'] = 'completed'
+        outcome['startup_category'] = _classify_proxy_startup_log(capture['output'])
+    if outcome['read_outcome'] not in _STARTUP_READ_OUTCOMES:
+        outcome['read_outcome'] = 'read_failed'
+    if outcome['startup_category'] not in _STARTUP_DIAGNOSTIC_CATEGORIES:
+        outcome['startup_category'] = 'unavailable'
+    return outcome
+
+
+def wait_for_proxy_after_restart(since_marker):
+    try:
+        wait_for_proxy(diagnostic_phase='docker_restart')
+    except Exception:
+        try:
+            report['proxy_startup_diagnostic'] = _capture_proxy_startup_diagnostic(since_marker)
+        except Exception:
+            report['proxy_startup_diagnostic'] = _startup_diagnostic_base('inspect_failed')
+        raise
+
+
 def run_proxy_wait_diagnostic_self_tests():
-    global action, network, proxy_id, proxy_ip, report, result
-    keys = ('action', 'network', 'proxy_id', 'proxy_ip', 'report', 'result')
+    global action, network, proxy_full_id, proxy_id, proxy_ip, proxy_project, report, result
+    keys = ('action', 'network', 'proxy_full_id', 'proxy_id', 'proxy_ip', 'proxy_project', 'report', 'result')
     saved = {key: (key in globals(), globals().get(key)) for key in keys}
     try:
         action = 'offline proxy wait self-test'
@@ -1244,6 +1401,96 @@ def run_proxy_wait_diagnostic_self_tests():
                 record['socket_category'] != 'host_unreachable'
                 for record in report['proxy_wait_diagnostics']):
             raise AssertionError('wait diagnostics did not stay within the existing 30-attempt bound')
+
+        proxy_full_id, proxy_id, proxy_project = 'b' * 64, 'b' * 12, 'fixture-project'
+        inspect_output = '|'.join(json.dumps(value) for value in (
+            proxy_full_id, '/' + proxy_name, proxy_project, 'lares-egress-proxy'))
+        process = object()
+        secret_log = b'FATAL: Bungled secret-path.conf line 7: sentinel-private-value\n'
+        since_marker = '1792860000.123456'
+        with patch(__name__ + '._observer_command', return_value=inspect_output) as inspect, \
+                patch(__name__ + '.subprocess.Popen', return_value=process) as popen, \
+                patch(__name__ + '._read_bounded_process_output', return_value={
+                    'returncode': 0, 'timed_out': False, 'oversized': False,
+                    'read_error_category': None, 'cleanup_ok': True,
+                    'cleanup_failures': [], 'output': secret_log}) as bounded_read:
+            diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+        if diagnostic != {
+                'container_verification': 'matched', 'startup_category': 'config_parse_fatal',
+                'read_outcome': 'completed', 'timed_out': False, 'oversized': False,
+                'cleanup_ok': True, 'cleanup_failures': [], 'read_error_category': None} or \
+                secret_log.decode() in json.dumps(diagnostic):
+            raise AssertionError('startup log category was not safely projected')
+        if inspect.call_args.args[-1] != proxy_full_id or popen.call_args.args[0][-1] != proxy_full_id or \
+                popen.call_args.args[0][2:4] != ['--since', since_marker] or \
+                popen.call_args.kwargs.get('stderr') != subprocess.STDOUT or \
+                bounded_read.call_args.kwargs != {'limit': _STARTUP_LOG_LIMIT,
+                                                  'timeout': _STARTUP_LOG_TIMEOUT_SECONDS}:
+            raise AssertionError('startup log read did not use bounded exact-ID inputs')
+
+        with patch(__name__ + '._observer_command', return_value='"' + proxy_full_id +
+                   '"|"/lares-egress-proxy"|"other-project"|"lares-egress-proxy"'), \
+                patch(__name__ + '.subprocess.Popen') as popen:
+            diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+        if diagnostic['container_verification'] != 'owner_mismatch' or \
+                diagnostic['read_outcome'] != 'not_attempted' or popen.called:
+            raise AssertionError('startup logs were read without matching owner labels')
+
+        for category, sample in (
+                ('guard_refusal', b'lares: egress maintenance admission refused'),
+                ('squid_already_running', b'Squid is already running'),
+                ('pid_file_conflict', b'PID file already exists'),
+                ('permission_denied', b'Permission denied'),
+                ('config_parse_fatal', b'FATAL: Bungled configuration line'),
+                ('address_in_use', b'Address already in use'),
+                ('other_fatal', b'FATAL: startup failure'),
+                ('unknown', b'sentinel-private-value')):
+            if _classify_proxy_startup_log(sample) != category:
+                raise AssertionError('startup log signature did not map to its fixed category')
+        if _classify_proxy_startup_log(
+                b'FATAL: Bungled configuration line\nFATAL: shutdown complete') != 'config_parse_fatal':
+            raise AssertionError('generic shutdown fatal overwrote the specific startup cause')
+
+        for flags, expected_outcome in (
+                ({'timed_out': True, 'oversized': False, 'cleanup_ok': True,
+                  'cleanup_failures': [], 'read_error_category': None}, 'timeout'),
+                ({'timed_out': False, 'oversized': True, 'cleanup_ok': False,
+                  'cleanup_failures': ['kill'], 'read_error_category': None}, 'oversized'),
+                ({'timed_out': False, 'oversized': False, 'cleanup_ok': False,
+                  'cleanup_failures': ['reap'], 'read_error_category': None}, 'cleanup_failed')):
+            capture = {'returncode': 0, 'output': b'FATAL: Bungled private path', **flags}
+            with patch(__name__ + '._observer_command', return_value=inspect_output), \
+                    patch(__name__ + '.subprocess.Popen', return_value=process), \
+                    patch(__name__ + '._read_bounded_process_output', return_value=capture):
+                diagnostic = _capture_proxy_startup_diagnostic(since_marker)
+            if diagnostic['read_outcome'] != expected_outcome or \
+                    diagnostic['startup_category'] != 'unavailable' or \
+                    diagnostic['timed_out'] != flags['timed_out'] or \
+                    diagnostic['oversized'] != flags['oversized'] or \
+                    diagnostic['cleanup_ok'] != flags['cleanup_ok']:
+                raise AssertionError('bounded startup log failure flags were not preserved')
+
+        for refusal_category, expected_flag in (('timeout', 'timed_out'), ('oversized', 'oversized')):
+            original_failure = RuntimeError('original restart wait failure')
+            report = {'checks': [], 'success': False}
+            with patch(__name__ + '.wait_for_proxy', side_effect=original_failure), \
+                    patch(__name__ + '._observer_command', side_effect=ObserverRefusal(refusal_category)), \
+                    patch(__name__ + '.subprocess.Popen') as popen:
+                try:
+                    wait_for_proxy_after_restart(since_marker)
+                except RuntimeError as exc:
+                    if exc is not original_failure:
+                        raise AssertionError('inspect refusal replaced the original wait failure') from exc
+                else:
+                    raise AssertionError('restart waiter failure was swallowed')
+            diagnostic = report.get('proxy_startup_diagnostic', {})
+            if diagnostic.get('read_outcome') != 'not_attempted' or \
+                    diagnostic.get(expected_flag) is not True or \
+                    diagnostic.get('cleanup_ok') is not False or \
+                    diagnostic.get('cleanup_failures') != ['inspect_cleanup_unconfirmed'] or \
+                    popen.called:
+                raise AssertionError(
+                    f'inspect refusal did not report unconfirmed cleanup without reading logs: {diagnostic!r}')
     finally:
         for key, (existed, value) in saved.items():
             if existed:
@@ -1836,8 +2083,9 @@ def run_proof():
 
     action = 'prove the same Squid gate descriptor survives Docker restart'
     container_before_restart = proxy_id
+    restart_log_since = f'{time.time():.6f}'
     compose('restart', 'lares-egress-proxy')
-    wait_for_proxy(diagnostic_phase='docker_restart')
+    wait_for_proxy_after_restart(restart_log_since)
     check('Docker restart preserves the exact owned Compose container',
           compose('ps', '-aq', 'lares-egress-proxy') == container_before_restart)
     restarted_pid = proxy_pid()
