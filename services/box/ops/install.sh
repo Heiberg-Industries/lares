@@ -750,6 +750,7 @@ lares_secret console-vault-signing-key 32 hex     # writes $SECRETS_DIR/console-
 lares_secret console-model-purpose-signing-key 32 hex # writes $SECRETS_DIR/console-model-purpose-signing-key (dedicated Console/Keeper model-purpose request capsule key)
 lares_secret database-password      32 base64url  # writes $SECRETS_DIR/database-password
 lares_secret financial-database-password 32 base64url
+lares_secret outside-custody-database-password 32 base64url
 lares_secret workflow-provisioner-password 32 base64url
 lares_secret workflow-password 32 base64url
 lares_secret gateway-database-password 32 base64url
@@ -1365,6 +1366,7 @@ run_database_bootstrap() {
 
   engine_run --ro "$OPERATOR_PASSWORD_FILE" \
     --ro "$SECRETS_DIR/database-password" --ro "$SECRETS_DIR/financial-database-password" \
+    --ro "$SECRETS_DIR/outside-custody-database-password" \
     --ro "$SECRETS_DIR/workflow-provisioner-password" --ro "$SECRETS_DIR/workflow-password" \
     --ro "$SECRETS_DIR/gateway-database-password" \
     --env "PGHOST=$db_host" --env "PGPORT=$db_port" \
@@ -1372,6 +1374,7 @@ run_database_bootstrap() {
     --operator-password-file "$OPERATOR_PASSWORD_FILE" \
     --app-password-file "$SECRETS_DIR/database-password" \
     --financial-password-file "$SECRETS_DIR/financial-database-password" \
+    --outside-custody-password-file "$SECRETS_DIR/outside-custody-database-password" \
     --workflow-provisioner-password-file "$SECRETS_DIR/workflow-provisioner-password" \
     --workflow-password-file "$SECRETS_DIR/workflow-password" \
     --gateway-password-file "$SECRETS_DIR/gateway-database-password" \

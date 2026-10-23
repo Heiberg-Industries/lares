@@ -73,12 +73,28 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         custody.prepare_fresh(fresh, "172.30.0.0/24", expected_uid=self.owner)
         receipt = custody.validate(fresh, "172.30.0.0/24")
         self.assertEqual(receipt["epoch"], 1)
+        self.assertEqual(receipt["version"], 1)
+        self.assertEqual(receipt["normalPolicyVersion"], 2)
         auth = fresh / "var/lib/lares-maintenance/postgres-auth/pg_hba.conf"
         policy = auth.read_text(encoding="ascii")
-        self.assertIn("host all lares_app 172.30.0.0/24 scram-sha-256", policy)
+        self.assertIn("# Lares normal authentication policy v2;", policy)
+        self.assertIn("local all lares_operator scram-sha-256", policy)
+        self.assertIn("host all lares_operator 127.0.0.1/32 scram-sha-256", policy)
+        self.assertIn("host all lares_operator ::1/128 scram-sha-256", policy)
+        self.assertIn("host all lares_operator 172.30.0.0/24 scram-sha-256", policy)
+        for role in ("lares_app", "lares_financial", "lares_workflow_provisioner", "lares_workflow", "lares_gateway"):
+            self.assertIn(f"host all {role} 172.30.0.0/24 scram-sha-256", policy)
         self.assertIn("host all lares_workflow_provisioner 127.0.0.1/32 scram-sha-256", policy)
         self.assertIn("host all lares_workflow 127.0.0.1/32 scram-sha-256", policy)
+        outside_rules = [line for line in policy.splitlines()
+                         if not line.lstrip().startswith("#") and line.split()[2:3] == ["lares_outside_custody"]]
+        self.assertEqual(outside_rules, [
+            "host all lares_outside_custody 127.0.0.1/32 scram-sha-256",
+            "host all lares_outside_custody 172.30.0.0/24 scram-sha-256",
+        ])
+        self.assertIn("host all all 0.0.0.0/0 reject", policy)
         self.assertIn("host all all ::/0 reject", policy)
+        self.assertIn("local all all reject", policy)
         self.assertNotIn("trust", policy)
         gate = fresh / "var/lib/lares-maintenance/admission/service-gate.lock"
         inode = gate.stat().st_ino
@@ -278,6 +294,32 @@ class MaintenanceAdmissionTests(unittest.TestCase):
             custody.prepare_fresh(fresh, "172.30.0.0/24", expected_uid=self.owner)
         self.assertFalse((custody_path / "preparation.pending").exists())
         self.assertEqual(custody.validate(fresh, "172.30.0.0/24")["epoch"], 1)
+
+    def test_old_normal_policy_receipt_is_refused_without_rewriting_custody(self) -> None:
+        fresh = self.root / "old-normal-policy"
+        fresh.mkdir()
+        custody.prepare_fresh(fresh, "172.30.0.0/24", expected_uid=self.owner)
+        receipt_path = fresh / "var/lib/lares-maintenance/custody/preparation.json"
+        auth_path = fresh / "var/lib/lares-maintenance/postgres-auth/pg_hba.conf"
+        gate_path = fresh / "var/lib/lares-maintenance/admission/service-gate.lock"
+        value = json.loads(receipt_path.read_text(encoding="ascii"))
+        value["normalPolicyVersion"] = 1
+        receipt_path.chmod(0o600)
+        receipt_path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n", encoding="ascii")
+        receipt_path.chmod(0o600)
+        before = {
+            path.relative_to(fresh).as_posix(): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode), path.stat().st_ino)
+            for path in fresh.rglob("*") if path.is_file()
+        }
+        with self.assertRaisesRegex(ValueError, "incomplete or unsupported"):
+            custody.validate(fresh, "172.30.0.0/24")
+        after = {
+            path.relative_to(fresh).as_posix(): (path.read_bytes(), stat.S_IMODE(path.stat().st_mode), path.stat().st_ino)
+            for path in fresh.rglob("*") if path.is_file()
+        }
+        self.assertEqual(after, before)
+        self.assertIn("lares_outside_custody", auth_path.read_text(encoding="ascii"))
+        self.assertTrue(gate_path.is_file())
 
     def test_receipt_requires_exact_types_and_no_unknown_or_duplicate_fields(self) -> None:
         fresh = self.root / "strict-receipt"

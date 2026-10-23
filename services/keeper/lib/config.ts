@@ -8,6 +8,7 @@ const absolute = z.string().refine(isAbsolute, "must be an absolute path");
 const databaseConnectionSchema = z.object({ host: z.string().min(1), port: z.number().int().min(1).max(65535), database: z.string().min(1), user: z.string().min(1), passwordFile: absolute }).strict();
 export type KeeperDatabaseConfig = z.infer<typeof databaseConnectionSchema>;
 export const financialCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-financial'),db:databaseConnectionSchema.extend({user:z.literal('lares_financial')})}).strict();
+export const outsideCustodyConfigSchema=z.object({db:databaseConnectionSchema.extend({user:z.literal('lares_outside_custody')}),keyFile:absolute}).strict();
 export const nativeCustodyConfigSchema=z.object({directory:z.literal('/var/lib/lares/budget-native'),reviewedPolicyFile:absolute.optional()}).strict();
 export const gatewayBudgetConfigSchema=z.object({serviceKeyFile:absolute}).strict();
 const configSchema = z.object({
@@ -16,6 +17,7 @@ const configSchema = z.object({
    * Older keeper configs may omit it; member removal then refuses closed. */
   designatedOwnerId: z.string().min(1).max(128).optional(),
   budgetFinancial: financialCustodyConfigSchema.optional(),
+  outsideCustody: outsideCustodyConfigSchema.optional(),
   budgetNative: nativeCustodyConfigSchema.optional(),
   credentials: credentialConfigSchema.optional(),
   publicDoorOrigin: z.string().url().optional(),
@@ -36,6 +38,8 @@ const configSchema = z.object({
 }).strict().superRefine((value,context)=>{
   if(value.budgetNative&&!value.budgetFinancial)context.addIssue({code:'custom',path:['budgetNative'],message:'requires prepared financial custody'});
   if(value.budgetFinancial&&(value.budgetFinancial.db.host!==value.db.host||value.budgetFinancial.db.port!==value.db.port||value.budgetFinancial.db.database!==value.db.database))context.addIssue({code:'custom',path:['budgetFinancial','db'],message:'must connect to the same engine database as db'});
+  if(value.outsideCustody&&(value.outsideCustody.db.host!==value.db.host||value.outsideCustody.db.port!==value.db.port||value.outsideCustody.db.database!==value.db.database))context.addIssue({code:'custom',path:['outsideCustody','db'],message:'must connect to the same engine database as db'});
+  if(value.outsideCustody&&(value.outsideCustody.db.passwordFile===value.db.passwordFile||value.outsideCustody.keyFile===value.db.passwordFile||value.outsideCustody.keyFile===value.outsideCustody.db.passwordFile||value.outsideCustody.keyFile===value.budgetFinancial?.db.passwordFile))context.addIssue({code:'custom',path:['outsideCustody'],message:'requires distinct protected credential and key files'});
   if(Boolean(value.modelPurposeConsoleSigningKeyFile)!==Boolean(value.modelPurposeRuntimeDir))context.addIssue({code:'custom',path:['modelPurposeRuntimeDir'],message:'requires the configured Console model-purpose signer'});
 });
 export type KeeperConfig = z.infer<typeof configSchema>;
@@ -86,4 +90,8 @@ export function keeperPool(db: KeeperDatabaseConfig,limits:Pick<PoolConfig,'max'
 }
 export function keeperFinancialPool(config: Pick<KeeperConfig, 'budgetFinancial'>, limits: Pick<PoolConfig,'max'|'connectionTimeoutMillis'|'query_timeout'|'options'> = {}): Pool | undefined {
   return config.budgetFinancial ? keeperPool(config.budgetFinancial.db, limits) : undefined;
+}
+/** Separate pool constructor for the deliberately unregistered outside-custody store. */
+export function keeperOutsideCustodyPool(config: Pick<KeeperConfig, 'outsideCustody'>, limits: Pick<PoolConfig,'max'|'connectionTimeoutMillis'|'query_timeout'|'options'> = {}): Pool | undefined {
+  return config.outsideCustody ? keeperPool(config.outsideCustody.db, limits) : undefined;
 }

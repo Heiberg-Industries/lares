@@ -85,6 +85,7 @@ export interface EraseReport {
 export type EraseHandling =
   | "retire-and-redact-budget-liability"
   | "delete-by-person-column"
+  | "delete-through-member-owner-cascade"
   | "replace-name-in-audit-row"
   | "register-goes-last"
   | "cleared-only-when-sole-member"
@@ -177,6 +178,7 @@ export const ERASE_OUTSTANDING: readonly string[] = [
  *  that is possible. Exported so the test can prove the inventory and this file agree. */
 export function eraseHandlingFor(entry: ScopedTable): EraseHandling | null {
   if (["budget_accounts", "budget_windows", "budget_gateway_bindings", "budget_attempts"].includes(entry.table)) return "retire-and-redact-budget-liability";
+  if (["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations"].includes(entry.table)) return "delete-through-member-owner-cascade";
   if (entry.scope === "member") {
     if ((REGISTER_TABLES as readonly string[]).includes(entry.table)) return "register-goes-last";
     if (entry.idKind === "actor") return "replace-name-in-audit-row";
@@ -225,6 +227,78 @@ export function tablesThatMustExist(includePathKeyed: boolean): ScopedTable[] {
 async function countWhere(q: Queryable, sql: string, params: unknown[] = []): Promise<number> {
   const { rows } = await q.query<{ n: number }>(sql, params);
   return Number(rows[0]?.n ?? 0);
+}
+
+const OUTSIDE_CUSTODY_TABLES = ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations"] as const;
+const OUTSIDE_CUSTODY_FK_SHAPE_SQL = `
+WITH expected(child, child_columns, parent, parent_columns) AS (
+  VALUES
+    ('outside_custody_accounts', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[]),
+    ('outside_custody_accounts', ARRAY['resource_id']::text[], 'agent_access', ARRAY['agent_name']::text[]),
+    ('outside_custody_revisions', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[]),
+    ('outside_custody_revisions', ARRAY['account_id','owner_member_id']::text[], 'outside_custody_accounts', ARRAY['account_id','owner_member_id']::text[]),
+    ('outside_custody_operations', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[]),
+    ('outside_custody_operations', ARRAY['account_id','owner_member_id']::text[], 'outside_custody_accounts', ARRAY['account_id','owner_member_id']::text[]),
+    ('agent_access', ARRAY['owner_member_id']::text[], 'users', ARRAY['id']::text[])
+)
+SELECT e.child, e.child_columns, e.parent, e.parent_columns, c.conname,
+       ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
+             JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.attnum ORDER BY k.ord) AS actual_child_columns,
+       ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY AS k(attnum, ord)
+             JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.attnum ORDER BY k.ord) AS actual_parent_columns,
+       c.confdeltype, c.confupdtype, c.confmatchtype, c.convalidated, c.condeferrable, c.condeferred,
+       (SELECT count(*)::int FROM pg_trigger t WHERE t.tgconstraint=c.oid AND t.tgisinternal) AS internal_ri_triggers,
+       (SELECT count(*)::int FROM pg_trigger t WHERE t.tgconstraint=c.oid AND t.tgisinternal AND t.tgenabled='O') AS enabled_ri_triggers
+  FROM expected e
+  LEFT JOIN pg_class child ON child.relname=e.child
+  LEFT JOIN pg_namespace child_ns ON child_ns.oid=child.relnamespace AND child_ns.nspname='public'
+  LEFT JOIN pg_class parent ON parent.relname=e.parent
+  LEFT JOIN pg_namespace parent_ns ON parent_ns.oid=parent.relnamespace AND parent_ns.nspname='public'
+  LEFT JOIN pg_constraint c ON c.conrelid=child.oid AND c.confrelid=parent.oid AND c.contype='f'
+ WHERE child_ns.oid IS NOT NULL AND parent_ns.oid IS NOT NULL
+ ORDER BY e.child, e.parent, e.child_columns`;
+
+type CustodyFkShape = {
+  child: string;
+  child_columns: string[];
+  parent: string;
+  parent_columns: string[];
+  conname: string | null;
+  actual_child_columns: string[] | null;
+  actual_parent_columns: string[] | null;
+  confdeltype: string | null;
+  confupdtype: string | null;
+  confmatchtype: string | null;
+  convalidated: boolean | null;
+  condeferrable: boolean | null;
+  condeferred: boolean | null;
+  internal_ri_triggers: number;
+  enabled_ri_triggers: number;
+};
+
+async function hasExpectedOutsideCustodyForeignKeys(q: Queryable): Promise<boolean> {
+  const { rows } = await q.query<CustodyFkShape>(OUTSIDE_CUSTODY_FK_SHAPE_SQL);
+  return rows.length === 7 && rows.every((row) => row.conname !== null &&
+    JSON.stringify(row.child_columns) === JSON.stringify(row.actual_child_columns) &&
+    JSON.stringify(row.parent_columns) === JSON.stringify(row.actual_parent_columns) &&
+    row.confdeltype === "c" && row.confupdtype === "a" && row.confmatchtype === "s" &&
+    row.convalidated === true && row.condeferrable === false && row.condeferred === false &&
+    row.internal_ri_triggers === 4 && row.enabled_ri_triggers === 4);
+}
+
+async function custodyRowsForOwner(q: Queryable, memberId: string): Promise<Record<(typeof OUTSIDE_CUSTODY_TABLES)[number], number>> {
+  const counts = {} as Record<(typeof OUTSIDE_CUSTODY_TABLES)[number], number>;
+  for (const table of OUTSIDE_CUSTODY_TABLES) {
+    counts[table] = await countWhere(q, `SELECT count(*)::int AS n FROM ${table} WHERE owner_member_id=$1`, [memberId]);
+  }
+  return counts;
+}
+
+async function hasForeignCustodyOnOwnedAgent(q: Queryable, memberId: string): Promise<boolean> {
+  return (await countWhere(q, `SELECT count(*)::int AS n
+    FROM outside_custody_accounts custody
+    JOIN agent_access access ON access.agent_name=custody.resource_id
+    WHERE access.owner_member_id=$1 AND custody.owner_member_id IS DISTINCT FROM $1`, [memberId])) > 0;
 }
 
 /** Rows whose person column is NULL: nobody's, as far as this database can tell. Counted and
@@ -321,6 +395,8 @@ function messageOf(err: unknown): string {
 // The organisation barrier spans preflight, files and the generated database sweep.
 const erasureOwners=new WeakMap<PoolClient,{failed:boolean;owner:object}>();
 async function lockErasureMember(client:PoolClient,memberId:string):Promise<void>{
+  const isolation=(await client.query<{transaction_isolation:string}>('SHOW transaction_isolation')).rows[0]?.transaction_isolation;
+  if(isolation!=='read committed')throw new Error('Person erasure requires a read committed financial transaction');
   const before=(await client.query('SELECT org_id FROM users WHERE id=$1',[memberId])).rows[0];
   if(!before)throw new Error('Membership changed during erasure');
   if(before.org_id){
@@ -336,6 +412,9 @@ async function lockErasureMember(client:PoolClient,memberId:string):Promise<void
     const another=(await client.query("SELECT 1 FROM users WHERE org_id=$1 AND id<>$2 AND status='active' AND org_role='owner' LIMIT 1",[current.org_id,memberId])).rows;
     if(!another.length)throw new Error('Cannot erase the last active organisation owner; designate another active owner first');
   }
+  // This row lock also blocks FK KEY SHARE from a new custody account, including one
+  // attempted by a stale cross-organisation caller. Keep it through file work and commit.
+  await client.query('SELECT agent_name FROM agent_access WHERE owner_member_id=$1 ORDER BY agent_name FOR UPDATE',[memberId]);
 }
 /** Marks the caller's already-open source transaction as the only owner allowed to run the
  * database erasure sweep. The caller owns COMMIT/ROLLBACK and may include vault work before it. */
@@ -411,6 +490,15 @@ export async function erasePerson(
   }
   if (report.refusals.length > 0) return report;
 
+  if (!(await hasExpectedOutsideCustodyForeignKeys(db))) {
+    report.refusals.push("Outside credential ownership links are not the expected enforced database shape. Nothing was changed; check the database migrations before erasing this person.");
+    return report;
+  }
+  if (await hasForeignCustodyOnOwnedAgent(db, person.id)) {
+    report.refusals.push("Another member still holds outside credentials attached to an agent this person owns. Nothing was changed. Remove or move that custody through its approved owner before erasing this person.");
+    return report;
+  }
+
   // Studio runs written before member ownership was introduced contain private briefs and
   // generated content whose owner cannot be inferred from a current channel claim or user list.
   // Refuse the whole export/erase while any such row remains unknown.
@@ -449,12 +537,27 @@ export async function erasePerson(
   if(!('release' in db))throw new Error('A journal-owned source transaction is required');
   const client=db;
   try {
+    if (!(await hasExpectedOutsideCustodyForeignKeys(client))) throw new Error('Outside credential ownership links changed during erasure');
+    if (await hasForeignCustodyOnOwnedAgent(client, person.id)) throw new Error('Another member still holds outside credentials attached to an agent this person owns');
     // Repeat under the barrier for standalone database erasure as well.
     if(await countWhere(client,"SELECT count(*)::int AS n FROM console_vault_source_captures WHERE member_id=$1",[person.id]))throw new Error('Retained conversation source dependencies prevent erasure');
+    const custodyCounts = await custodyRowsForOwner(client, person.id);
     const done: ErasePlan[] = [];
     for (const { plan, write } of plans) {
+      if (!write) continue;
       const { rowCount } = await client.query(write.sql, write.params);
       if ((rowCount ?? 0) > 0) done.push({ ...plan, rows: rowCount ?? 0 });
+    }
+    const custodyRemaining = await custodyRowsForOwner(client, person.id);
+    if (OUTSIDE_CUSTODY_TABLES.some((table) => custodyRemaining[table] !== 0)) {
+      throw new Error('Outside credential rows remain after their owner was erased');
+    }
+    for (const table of OUTSIDE_CUSTODY_TABLES) {
+      const rows = custodyCounts[table];
+      if (rows > 0) {
+        const step = plans.find((candidate) => candidate.plan.table === table)!;
+        done.push({ ...step.plan, rows });
+      }
     }
     report.deleted = done;
   } catch (err) {
@@ -477,7 +580,7 @@ export async function erasePerson(
 interface PlannedStep {
   plan: ErasePlan;
   rows: number;
-  write: { sql: string; params: unknown[] };
+  write?: { sql: string; params: unknown[] };
 }
 
 /**
@@ -637,6 +740,13 @@ async function memberStep(
       write:entry.table === "budget_accounts"
         ? {sql:"SELECT budget_retire_member($1,true)",params:[person.id]}
         : {sql:`UPDATE ${entry.table} SET live_member_id=NULL WHERE ${where}`,params:[spellings]}};
+  }
+
+  if (eraseHandlingFor(entry) === "delete-through-member-owner-cascade") {
+    return {
+      plan: { table: entry.table, scope: entry.scope, rows, how: "removed through the member's owner relationship" },
+      rows,
+    };
   }
 
   if (entry.idKind === "actor") {

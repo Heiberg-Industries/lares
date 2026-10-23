@@ -149,6 +149,9 @@ export const MEMBER_SCOPE: readonly ScopedTable[] = [
   { table: "connected_account_credentials", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/012_connected_account_credentials.sql` },
   { table: "connected_accounts", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/008_connected_accounts.sql` },
   { table: "connected_resource_bindings", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/008_connected_accounts.sql` },
+  { table: "outside_custody_accounts", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Encrypted third-party bearer credentials and their account authority are erased with the owning member." },
+  { table: "outside_custody_revisions", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Immutable encrypted credential revisions are private member data and are erased with their account." },
+  { table: "outside_custody_operations", scope: "member", column: "owner_member_id", idKind: "registry", createdBy: `${BOX}/029_outside_custody.sql`, reason: "Credential lifecycle operation evidence is scoped to the owning member and erased with the account." },
 
   { table: "member_invitations", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/007_member_identity_sessions.sql` },
   { table: "member_provider_identities", scope: "member", column: "member_id", idKind: "registry", createdBy: `${BOX}/007_member_identity_sessions.sql` },

@@ -88,6 +88,7 @@ function run(args: string[], opts: { env?: Record<string, string>; input?: strin
       RESTORE_APP_MODE: mode("etc/lares/secrets/database-password"),
       RESTORE_FINANCIAL_MODE: mode("etc/lares/secrets/financial-database-password"),
       LARES_MAINTENANCE_TESTING: "1",
+      RESTORE_OUTSIDE_CUSTODY_MODE: mode("etc/lares/secrets/outside-custody-database-password"),
       ...opts.env,
     },
   });
@@ -136,6 +137,7 @@ case "$file" in
   */etc/lares/operator/database-password) printf '%s:%s\\n' "\${RESTORE_OPERATOR_UID:-0}" "\${RESTORE_OPERATOR_MODE:-600}" ;;
   */etc/lares/secrets/database-password) printf '%s:%s:%s\\n' "\${RESTORE_APP_UID:-0}" "\${RESTORE_APP_GID:-10001}" "\${RESTORE_APP_MODE:-440}" ;;
   */etc/lares/secrets/financial-database-password) printf '%s:%s:%s\\n' "\${RESTORE_FINANCIAL_UID:-0}" "\${RESTORE_FINANCIAL_GID:-10001}" "\${RESTORE_FINANCIAL_MODE:-440}" ;;
+  */etc/lares/secrets/outside-custody-database-password) printf '%s:%s:%s\\n' "\${RESTORE_OUTSIDE_CUSTODY_UID:-0}" "\${RESTORE_OUTSIDE_CUSTODY_GID:-10001}" "\${RESTORE_OUTSIDE_CUSTODY_MODE:-440}" ;;
   *) exit 1 ;;
 esac
 `); chmodSync(stat, 0o755);
@@ -150,6 +152,7 @@ esac
   write("etc/lares/restic-password", "not-a-real-password\n");
   write("etc/lares/secrets/database-password", "not-a-real-db-password\n", 0o440);
   write("etc/lares/secrets/financial-database-password", "not-a-real-financial-db-password\n", 0o440);
+  write("etc/lares/secrets/outside-custody-database-password", "not-a-real-outside-custody-db-password\n", 0o440);
   write("etc/lares/secrets/workflow-database-password", "not-a-real-workflow-db-password\n");
   write("etc/lares/operator/database-password", "test-only-operator-password\n", 0o600);
   write("srv/lares/secrets/alpha-gateway-key", "not-a-real-key\n");
@@ -399,6 +402,7 @@ describe("restore.sh: every refusal changes nothing", () => {
   it("accepts the installed credential modes while keeping the operator file separate", () => {
     expect(statSync(join(prefix, "etc/lares/secrets/database-password")).mode & 0o777).toBe(0o440);
     expect(statSync(join(prefix, "etc/lares/secrets/financial-database-password")).mode & 0o777).toBe(0o440);
+    expect(statSync(join(prefix, "etc/lares/secrets/outside-custody-database-password")).mode & 0o777).toBe(0o440);
     expect(statSync(join(prefix, "etc/lares/operator/database-password")).mode & 0o777).toBe(0o600);
     const r = run(["--snapshot", "abc123", "--dry-run"]);
     expect(r.code, r.all).toBe(0);
@@ -409,6 +413,11 @@ describe("restore.sh: every refusal changes nothing", () => {
   });
   it("refuses a financial password file with the wrong group before destructive actions", () => {
     refused(run(base(), { env: { RESTORE_FINANCIAL_GID: "1000" } }), /credential file is missing or unsafe/);
+  });
+  it("refuses a missing outside-custody password before destructive actions", () => {
+    rmSync(join(prefix, "etc/lares/secrets/outside-custody-database-password"));
+    refused(run(base()), /engine role credential file is missing or unsafe/);
+    expect(existsSync(join(prefix, "etc/lares/secrets/outside-custody-database-password"))).toBe(false);
   });
   it("refuses an online password file whose mode differs from the installed mode", () => {
     chmodSync(join(prefix, "etc/lares/secrets/database-password"), 0o600);

@@ -274,7 +274,7 @@ def read_intent(admission_dir: str | Path, *, expected_uid: int = 0) -> dict[str
         os.close(admission_fd)
 
 
-_NORMAL_POLICY_VERSION = 1
+_NORMAL_POLICY_VERSION = 2
 
 
 def _normal_hba(subnet: str) -> bytes:
@@ -282,17 +282,18 @@ def _normal_hba(subnet: str) -> bytes:
     if network.version != 4:
         raise ValueError("installation database subnet must be IPv4")
     roles = ("lares_app", "lares_financial", "lares_workflow_provisioner",
-             "lares_workflow", "lares_gateway")
+             "lares_workflow", "lares_gateway", "lares_outside_custody")
     lines = [
-        "# Lares normal authentication policy v1; generated during explicit fresh preparation.",
+        "# Lares normal authentication policy v2; generated during explicit fresh preparation.",
         "local all lares_operator scram-sha-256",
         "host all lares_operator 127.0.0.1/32 scram-sha-256",
         "host all lares_operator ::1/128 scram-sha-256",
         f"host all lares_operator {network.with_prefixlen} scram-sha-256",
-        # These two named roles run the installer's workflow bootstrap from a host-network
-        # container, so their checked production route is loopback as well as the bridge.
+        # These named roles have checked production loopback routes: workflow setup uses the
+        # host-network container, and database-setup verifies the outside-custody login there.
         "host all lares_workflow_provisioner 127.0.0.1/32 scram-sha-256",
         "host all lares_workflow 127.0.0.1/32 scram-sha-256",
+        "host all lares_outside_custody 127.0.0.1/32 scram-sha-256",
     ]
     lines.extend(f"host all {role} {network.with_prefixlen} scram-sha-256" for role in roles)
     lines.extend((

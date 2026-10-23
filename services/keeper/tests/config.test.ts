@@ -2,7 +2,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { keeperFinancialPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
+import { keeperFinancialPool, keeperOutsideCustodyPool, keeperPool, loadKeeperConfig } from "../lib/config.js";
 const dirs: string[] = [];
 const fixture = () => {
   const dir = mkdtempSync(join(tmpdir(), "keeper-config-"));
@@ -159,6 +159,26 @@ it('never creates a financial connection from the ordinary app login',async()=>{
   expect(financial?.options.user).toBe('lares_financial');
   expect(financial?.options.database).toBe('lares_state');
   await financial?.end();
+});
+it('keeps outside custody disabled unless its exact role, same database, and distinct protected files are configured',async()=>{
+  const f=fixture(),outsideCustody={db:{...f.config.db,user:'lares_outside_custody' as const,passwordFile:join(f.dir,'outside-password')},keyFile:join(f.dir,'outside-key')};
+  expect(keeperOutsideCustodyPool({})).toBeUndefined();
+  writeFileSync(f.file,JSON.stringify({...f.config,outsideCustody}));
+  expect(loadKeeperConfig(f.file).outsideCustody).toEqual(outsideCustody);
+  writeFileSync(outsideCustody.db.passwordFile,'outside-secret');
+  const pool=keeperOutsideCustodyPool({outsideCustody});
+  expect(pool?.options.user).toBe('lares_outside_custody');
+  expect(pool?.options.database).toBe(f.config.db.database);
+  await pool?.end();
+  for(const invalid of [
+    {db:{...outsideCustody.db,database:'another'},keyFile:outsideCustody.keyFile},
+    {db:{...outsideCustody.db,passwordFile:f.config.db.passwordFile},keyFile:outsideCustody.keyFile},
+    {db:outsideCustody.db,keyFile:outsideCustody.db.passwordFile},
+    {db:{...outsideCustody.db,user:'lares_app'},keyFile:outsideCustody.keyFile},
+  ]){
+    writeFileSync(f.file,JSON.stringify({...f.config,outsideCustody:invalid}));
+    expect(()=>loadKeeperConfig(f.file)).toThrow('outsideCustody');
+  }
 });
 it('requires prepared financial custody for the fixed native custody path',()=>{
   const f=fixture(),budgetNative={directory:'/var/lib/lares/budget-native'};

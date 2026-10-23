@@ -6,11 +6,13 @@ const ROLE_MARKERS = {
   owner: "lares-engine-database-role:v1:owner",
   application: "lares-engine-database-role:v1:application",
   financial: "lares-engine-database-role:v1:financial",
+  outsideCustody: "lares-engine-database-role:v1:outside-custody",
 } as const;
 
 const OWNER = "lares_schema_owner";
 const APPLICATION = "lares_app";
 const FINANCIAL = "lares_financial";
+const OUTSIDE_CUSTODY = "lares_outside_custody";
 const SCHEMA = "public";
 
 const FINANCIAL_TABLES = [
@@ -48,11 +50,12 @@ export const ENGINE_TABLE_PRIVILEGES = {
     "vault_backing_stores", "voice_exemplar", "voice_profile", "web_inbox", "workflow_jobs",
   ],
   financial: FINANCIAL_TABLES,
+  outsideCustody: ["outside_custody_accounts", "outside_custody_revisions", "outside_custody_operations"],
   ledger: LEDGER_TABLES,
 } as const;
 
 /** Fixed role names shared by offline setup and other engine proof tooling. */
-export const ENGINE_DATABASE_ROLES = { owner: OWNER, application: APPLICATION, financial: FINANCIAL } as const;
+export const ENGINE_DATABASE_ROLES = { owner: OWNER, application: APPLICATION, financial: FINANCIAL, outsideCustody: OUTSIDE_CUSTODY } as const;
 
 /** Exact engine-owned callable inventory; signatures use PostgreSQL identity argument types. */
 export const ENGINE_FUNCTIONS = [
@@ -154,6 +157,26 @@ const APP_FINANCIAL_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   budget_attempts: ["state", "admitted_at", "actual_amount", "settlement_hash", "conflict_reason", "conflict_hash", "highest_observed_liability", "live_member_id", "authority_reference"],
   budget_gateway_grants: ["attempt_id"],
 };
+const FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  outside_custody_accounts: ["owner_member_id", "resource_id"],
+  outside_custody_revisions: ["owner_member_id"],
+  outside_custody_operations: ["owner_member_id"],
+};
+const OUTSIDE_CUSTODY_UPDATE_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  orgs: ["created_at"],
+  users: ["created_at"],
+  org_member_policy: ["outside_custody_lock"],
+  agent_definitions: ["checked_at"],
+  agent_access: ["agent_name"],
+  resource_grants: ["created_at"],
+  agent_resources: ["updated_at"],
+  console_session_bindings: ["created_at", "revoked_at"],
+  outside_custody_accounts: ["generation", "active_revision", "candidate_revision", "consent_generation", "state", "updated_at"],
+};
+const OUTSIDE_CUSTODY_AUTHORITY_TABLES = [
+  "orgs", "users", "org_member_policy", "agent_definitions", "agent_access", "resource_grants",
+  "agent_resources", "console_session_bindings", "console_vault_source_captures",
+] as const;
 
 const FUNCTION_CALL_GRANTS = {
   application: ["update_history_images_are_digests(jsonb)"],
@@ -163,6 +186,10 @@ const FUNCTION_CALL_GRANTS = {
 const safeFailure = (): Error => new Error("Database privilege setup could not be confirmed; inspect the database before retrying.");
 const qid = (value: string): string => `"${value.replaceAll('"', '""')}"`;
 const qname = (name: string): string => `${qid(SCHEMA)}.${qid(name)}`;
+const engineTables = (includeCustody = true): string[] => [
+  ...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial,
+  ...(includeCustody ? ENGINE_TABLE_PRIVILEGES.outsideCustody : []), ...ENGINE_TABLE_PRIVILEGES.ledger,
+];
 
 function passwordText(value: Buffer): string {
   if (!Buffer.isBuffer(value) || value.length < 32 || value.length > 96) throw safeFailure();
@@ -180,7 +207,7 @@ function sorted(values: readonly string[]): string[] {
 }
 
 async function requireInventory(client: PoolClient): Promise<void> {
-  const expectedTables = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.ledger];
+  const expectedTables = [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.outsideCustody, ...ENGINE_TABLE_PRIVILEGES.ledger];
   if (new Set(expectedTables).size !== expectedTables.length || expectedTables.some((name) => !/^[a-z][a-z0-9_]*$/.test(name))) throw safeFailure();
 
   const relations = await queryRows<{ name: string; kind: string }>(client, `
@@ -256,23 +283,25 @@ async function requireInventory(client: PoolClient): Promise<void> {
   if (unknownTypes.length) throw safeFailure();
 }
 
-async function requireRoleState(client: PoolClient): Promise<"fresh" | "managed"> {
+async function requireRoleState(client: PoolClient): Promise<"fresh" | "managed-three" | "managed"> {
   const rows = await queryRows<{ rolname: string; rolsuper: boolean; rolinherit: boolean; rolcreaterole: boolean; rolcreatedb: boolean; rolcanlogin: boolean; rolreplication: boolean; rolbypassrls: boolean; rolconfig: string[] | null; rolvaliduntil: Date | null; comment: string | null }>(client, `
     SELECT r.rolname, r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolcanlogin,
            r.rolreplication, r.rolbypassrls, r.rolconfig, r.rolvaliduntil, d.description AS comment
       FROM pg_roles r LEFT JOIN pg_shdescription d ON d.objoid=r.oid AND d.classoid='pg_authid'::regclass
      WHERE r.rolname = ANY($1::text[])
-  `, [[OWNER, APPLICATION, FINANCIAL]]);
+  `, [[OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
   if (rows.length === 0) return "fresh";
-  if (rows.length !== 3) throw safeFailure();
+  if (rows.length !== 3 && rows.length !== 4) throw safeFailure();
+  const names = sorted(rows.map((row) => row.rolname));
+  if (names.join("\0") !== sorted(rows.length === 3 ? [OWNER, APPLICATION, FINANCIAL] : [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]).join("\0")) throw safeFailure();
   for (const row of rows) {
-    const expectedMarker = row.rolname === OWNER ? ROLE_MARKERS.owner : row.rolname === APPLICATION ? ROLE_MARKERS.application : ROLE_MARKERS.financial;
+    const expectedMarker = row.rolname === OWNER ? ROLE_MARKERS.owner : row.rolname === APPLICATION ? ROLE_MARKERS.application : row.rolname === FINANCIAL ? ROLE_MARKERS.financial : ROLE_MARKERS.outsideCustody;
     const owner = row.rolname === OWNER;
     if (row.comment !== expectedMarker || row.rolsuper || row.rolcreaterole || row.rolcreatedb || row.rolreplication || row.rolbypassrls || row.rolcanlogin !== !owner || row.rolinherit || row.rolconfig !== null || row.rolvaliduntil !== null) throw safeFailure();
   }
-  const memberships = await queryRows(client, `SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles g ON g.oid=m.member WHERE r.rolname=ANY($1::text[]) OR g.rolname=ANY($1::text[]) LIMIT 1`, [[OWNER, APPLICATION, FINANCIAL]]);
+  const memberships = await queryRows(client, `SELECT 1 FROM pg_auth_members m JOIN pg_roles r ON r.oid=m.roleid JOIN pg_roles g ON g.oid=m.member WHERE r.rolname=ANY($1::text[]) OR g.rolname=ANY($1::text[]) LIMIT 1`, [[OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
   if (memberships.length !== 0) throw safeFailure();
-  return "managed";
+  return rows.length === 3 ? "managed-three" : "managed";
 }
 
 async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
@@ -284,9 +313,9 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
      WHERE n.nspname=$1 AND c.relkind IN ('r','p','S')
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
        AND a.grantee <> c.relowner
-       AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[]))
+      AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[]))
      LIMIT 1
-  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL]]);
+  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
   if (badTableAcl.length !== 0) throw safeFailure();
 
   const foreignRoutineAcl = await queryRows(client, `
@@ -296,7 +325,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_proc'::regclass AND d.objid=p.oid AND d.deptype='e')
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[]))
      LIMIT 1
-  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL]]);
+  `, [SCHEMA, [OWNER, APPLICATION, FINANCIAL, OUTSIDE_CUSTODY]]);
   if (foreignRoutineAcl.length !== 0) throw safeFailure();
 
   const unexpectedGrantOptions = await queryRows(client, `
@@ -317,7 +346,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
      WHERE n.nspname=$1 AND a.grantee<>t.typowner AND a.grantee<>0
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_type'::regclass AND d.objid=t.oid AND d.deptype='e')
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=a.grantee AND g.rolname=ANY($2::text[])) LIMIT 1
-  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL]]);
+  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY]]);
   if (foreignTypeAcl.length) throw safeFailure();
 
   const publicTableAcl = await queryRows(client, `
@@ -336,7 +365,7 @@ async function requireOnlyExpectedGrants(client: PoolClient): Promise<void> {
      WHERE n.nspname=$1 AND a.attnum>0 AND NOT a.attisdropped AND x.grantee<>0
        AND NOT EXISTS (SELECT 1 FROM pg_roles g WHERE g.oid=x.grantee AND g.rolname=ANY($2::text[]))
        AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e') LIMIT 1
-  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL]]);
+  `,[SCHEMA,[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY]]);
   if (publicTableAcl.length || publicColumnAcl.length || foreignColumnAcl.length) throw safeFailure();
 }
 
@@ -393,7 +422,7 @@ async function requireAcl(
   if (actual.join("\n") !== sorted(expected).join("\n")) throw safeFailure();
 }
 
-async function requireManagedState(client: PoolClient, database: string): Promise<void> {
+async function requireManagedState(client: PoolClient, database: string, custody = true): Promise<void> {
   const badOwners = await queryRows(client, `
     SELECT 1 FROM (
       SELECT r.rolname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_roles r ON r.oid=c.relowner WHERE n.nspname=$1 AND c.relkind IN ('r','p','S') AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid='pg_class'::regclass AND d.objid=c.oid AND d.deptype='e')
@@ -408,7 +437,7 @@ async function requireManagedState(client: PoolClient, database: string): Promis
     SELECT 1 FROM pg_shdepend s JOIN pg_roles r ON r.oid=s.refobjid
      WHERE s.refclassid='pg_authid'::regclass AND r.rolname=ANY($1::text[])
        AND s.deptype='o' AND r.rolname<>$2 LIMIT 1
-  `,[[APPLICATION,FINANCIAL],OWNER]);
+  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],OWNER]);
   if (managedRoleOwnership.length) throw safeFailure();
   const unexpectedAclAuthority = await queryRows(client, `
     SELECT 1 FROM pg_shdepend s JOIN pg_roles grantee ON grantee.oid=s.refobjid
@@ -432,26 +461,32 @@ async function requireManagedState(client: PoolClient, database: string): Promis
            ))
          )
        ) LIMIT 1
-  `,[[APPLICATION,FINANCIAL],[APPLICATION,FINANCIAL],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS]);
+  `,[[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],[APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],database,SCHEMA,[...ENGINE_TABLE_PRIVILEGES.ordinary,...ENGINE_TABLE_PRIVILEGES.financial,...ENGINE_TABLE_PRIVILEGES.outsideCustody,...ENGINE_TABLE_PRIVILEGES.ledger,...ENGINE_SEQUENCES],ENGINE_FUNCTIONS]);
   if (unexpectedAclAuthority.length) throw safeFailure();
-  await requireManagedAcls(client,database);
+  await requireManagedAcls(client,database,custody);
 }
 
-async function requireManagedAcls(client: PoolClient, database: string): Promise<void> {
+async function requireManagedAcls(client: PoolClient, database: string, custody = true): Promise<void> {
   const dbAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, a.privilege_type AS privilege, a.is_grantable AS grantable
     FROM pg_database d CROSS JOIN LATERAL aclexplode(COALESCE(d.datacl,acldefault('d'::"char",d.datdba))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE d.datname=$1 AND a.grantee<>d.datdba`;
-  await requireAcl(client, dbAcl, [database], [expectedAclKey(APPLICATION,"CONNECT"),expectedAclKey(FINANCIAL,"CONNECT")]);
+  const custodyDb = custody ? [expectedAclKey(OUTSIDE_CUSTODY,"CONNECT")] : [];
+  await requireAcl(client, dbAcl, [database], [expectedAclKey(APPLICATION,"CONNECT"),expectedAclKey(FINANCIAL,"CONNECT"),...custodyDb]);
   const schemaAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, a.privilege_type AS privilege, a.is_grantable AS grantable
     FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n'::"char",n.nspowner))) a
     LEFT JOIN pg_roles r ON r.oid=a.grantee WHERE n.nspname=$1 AND a.grantee<>n.nspowner`;
-  await requireAcl(client, schemaAcl, [SCHEMA], [expectedAclKey(APPLICATION,"USAGE"),expectedAclKey(FINANCIAL,"USAGE")]);
+  await requireAcl(client, schemaAcl, [SCHEMA], [expectedAclKey(APPLICATION,"USAGE"),expectedAclKey(FINANCIAL,"USAGE"),...(custody?[expectedAclKey(OUTSIDE_CUSTODY,"USAGE")]:[])]);
 
-  for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.ledger]) {
+  for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...(custody?ENGINE_TABLE_PRIVILEGES.outsideCustody:[]), ...ENGINE_TABLE_PRIVILEGES.ledger]) {
     const ordinary = (ENGINE_TABLE_PRIVILEGES.ordinary as readonly string[]).includes(table);
     const expected: string[] = [];
     if (ordinary) for (const role of [APPLICATION, FINANCIAL]) for (const privilege of ["SELECT","INSERT","UPDATE","DELETE"]) expected.push(expectedAclKey(role,privilege));
     else if ((FINANCIAL_TABLES as readonly string[]).includes(table)) for (const privilege of ["SELECT","INSERT"]) expected.push(expectedAclKey(FINANCIAL,privilege));
+    if (custody && (OUTSIDE_CUSTODY_AUTHORITY_TABLES as readonly string[]).includes(table)) expected.push(expectedAclKey(OUTSIDE_CUSTODY,"SELECT"));
+    if (custody && (ENGINE_TABLE_PRIVILEGES.outsideCustody as readonly string[]).includes(table)) {
+      const privileges = table === "outside_custody_accounts" ? ["SELECT","INSERT"] : ["SELECT","INSERT"];
+      for (const privilege of privileges) expected.push(expectedAclKey(OUTSIDE_CUSTODY,privilege));
+    }
     const tableAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, a.privilege_type AS privilege, a.is_grantable AS grantable
       FROM pg_class c CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl,acldefault('r'::"char",c.relowner))) a
       LEFT JOIN pg_roles r ON r.oid=a.grantee JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2 AND a.grantee<>c.relowner`;
@@ -459,11 +494,13 @@ async function requireManagedAcls(client: PoolClient, database: string): Promise
     const columnNames = await queryRows<{ name: string }>(client, `SELECT a.attname AS name FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND c.relname=$2 AND a.attnum>0 AND NOT a.attisdropped`, [SCHEMA,table]);
     for (const column of columnNames) {
       const allowed = (APP_FINANCIAL_COLUMNS[table] ?? []).includes(column.name);
+      const financialCustodySelect = custody && (FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS[table] ?? []).includes(column.name);
+      const custodyUpdate = custody && (OUTSIDE_CUSTODY_UPDATE_COLUMNS[table] ?? []).includes(column.name);
       const columnAcl = `SELECT COALESCE(r.rolname,'PUBLIC') AS grantee, x.privilege_type AS privilege, x.is_grantable AS grantable
         FROM pg_attribute a CROSS JOIN LATERAL aclexplode(NULLIF(a.attacl,'{}'::aclitem[])) x
         LEFT JOIN pg_roles r ON r.oid=x.grantee JOIN pg_class c ON c.oid=a.attrelid JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname=$1 AND c.relname=$2 AND a.attname=$3`;
-      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]);
+      await requireAcl(client,columnAcl,[SCHEMA,table,column.name],[...(allowed?[expectedAclKey(FINANCIAL,"UPDATE")]:[]),...(financialCustodySelect?[expectedAclKey(FINANCIAL,"SELECT")]:[]),...(custodyUpdate?[expectedAclKey(OUTSIDE_CUSTODY,"UPDATE")]:[])]);
     }
   }
 
@@ -502,20 +539,23 @@ async function requireManagedAcls(client: PoolClient, database: string): Promise
     SELECT 1 FROM pg_db_role_setting s LEFT JOIN pg_database d ON d.oid=s.setdatabase
      WHERE (s.setdatabase=0 OR d.datname=$2) AND (s.setrole=0 OR s.setrole IN (SELECT oid FROM pg_roles WHERE rolname=ANY($1::text[])))
      LIMIT 1
-  `,[[OWNER,APPLICATION,FINANCIAL],database]);
+  `,[[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY],database]);
   if (unsafeSettings.length) throw safeFailure();
   const parameterAcl = await queryRows(client, `
-    SELECT 1 FROM pg_parameter_acl p CROSS JOIN LATERAL aclexplode(NULLIF(p.paracl,'{}'::aclitem[])) a
-     WHERE p.parname='session_replication_role' AND a.grantee=ANY(ARRAY[0::oid,(SELECT oid FROM pg_roles WHERE rolname=$1),(SELECT oid FROM pg_roles WHERE rolname=$2),(SELECT oid FROM pg_roles WHERE rolname=$3)]) LIMIT 1
-  `,[OWNER,APPLICATION,FINANCIAL]);
+    SELECT COALESCE(r.rolname,'PUBLIC') AS grantee,a.privilege_type AS privilege,a.is_grantable AS grantable
+      FROM pg_parameter_acl p CROSS JOIN LATERAL aclexplode(NULLIF(p.paracl,'{}'::aclitem[])) a
+      LEFT JOIN pg_roles r ON r.oid=a.grantee
+     WHERE p.parname='session_replication_role'
+       AND (a.grantee=0 OR r.rolname=ANY($1::text[]))
+  `,[[OWNER,APPLICATION,FINANCIAL,OUTSIDE_CUSTODY]]);
   if (parameterAcl.length) throw safeFailure();
 }
 
 async function applyGrants(client: PoolClient): Promise<void> {
   const database = (await queryRows<{ name: string }>(client, "SELECT current_database() AS name"))[0]!.name;
-  await client.query(`GRANT CONNECT ON DATABASE ${qid(database)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
+  await client.query(`GRANT CONNECT ON DATABASE ${qid(database)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}, ${qid(OUTSIDE_CUSTODY)}`);
   await client.query(`REVOKE ALL ON SCHEMA ${qid(SCHEMA)} FROM PUBLIC`);
-  await client.query(`GRANT USAGE ON SCHEMA ${qid(SCHEMA)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
+  await client.query(`GRANT USAGE ON SCHEMA ${qid(SCHEMA)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}, ${qid(OUTSIDE_CUSTODY)}`);
 
   for (const table of ENGINE_TABLE_PRIVILEGES.ordinary) {
     await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE ${qname(table)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
@@ -524,6 +564,18 @@ async function applyGrants(client: PoolClient): Promise<void> {
     await client.query(`GRANT SELECT, INSERT ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
     const columns = APP_FINANCIAL_COLUMNS[table];
     if (columns?.length) await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
+  }
+  for (const table of ENGINE_TABLE_PRIVILEGES.outsideCustody) {
+    await client.query(`GRANT SELECT, INSERT ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
+  }
+  for (const [table, columns] of Object.entries(FINANCIAL_OUTSIDE_CUSTODY_SELECT_COLUMNS)) {
+    await client.query(`GRANT SELECT (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(FINANCIAL)}`);
+  }
+  for (const table of OUTSIDE_CUSTODY_AUTHORITY_TABLES) {
+    await client.query(`GRANT SELECT ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
+  }
+  for (const [table, columns] of Object.entries(OUTSIDE_CUSTODY_UPDATE_COLUMNS)) {
+    await client.query(`GRANT UPDATE (${columns.map(qid).join(", ")}) ON TABLE ${qname(table)} TO ${qid(OUTSIDE_CUSTODY)}`);
   }
   for (const sequence of ONLINE_SEQUENCE_USAGE) {
     await client.query(`GRANT USAGE ON SEQUENCE ${qname(sequence)} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
@@ -549,12 +601,14 @@ async function applyGrants(client: PoolClient): Promise<void> {
  */
 export async function provisionEngineDatabasePrivileges(
   operator: PoolClient,
-  input: { expectedDatabase: string; passwords: { application: Buffer; financial: Buffer } },
+  input: { expectedDatabase: string; passwords: { application: Buffer; financial: Buffer; outsideCustody: Buffer }; prepareOutsideCustodyRole?: boolean },
 ): Promise<{ status: "applied" | "verified" }> {
   let inTransaction = false;
   try {
     const appPassword = passwordText(input.passwords.application);
     const financialPassword = passwordText(input.passwords.financial);
+    const outsideCustodyPassword = passwordText(input.passwords.outsideCustody);
+    if (appPassword === financialPassword || appPassword === outsideCustodyPassword || financialPassword === outsideCustodyPassword) throw safeFailure();
     await operator.query("BEGIN");
     inTransaction = true;
     const identity = (await queryRows<{ database: string; superuser: boolean }>(operator, `SELECT current_database() AS database, r.rolsuper AS superuser FROM pg_roles r WHERE r.rolname=current_user`))[0];
@@ -565,10 +619,14 @@ export async function provisionEngineDatabasePrivileges(
 
     if (roleState === "fresh") await requireBootstrapState(operator, identity.database);
     if (roleState === "managed") {
-      await requireManagedState(operator, identity.database);
+      await requireManagedState(operator, identity.database, true);
       await operator.query("COMMIT");
       inTransaction = false;
       return { status: "verified" };
+    }
+    if (roleState === "managed-three") {
+      if (input.prepareOutsideCustodyRole !== true) throw safeFailure();
+      await requireManagedState(operator, identity.database, false);
     }
 
     if (roleState === "fresh") {
@@ -576,19 +634,23 @@ export async function provisionEngineDatabasePrivileges(
         [OWNER, ROLE_MARKERS.owner, false, null],
         [APPLICATION, ROLE_MARKERS.application, true, appPassword],
         [FINANCIAL, ROLE_MARKERS.financial, true, financialPassword],
+        [OUTSIDE_CUSTODY, ROLE_MARKERS.outsideCustody, true, outsideCustodyPassword],
       ] as const) {
         const passwordClause = password === null ? "" : ` PASSWORD '${password}'`;
         await operator.query(`CREATE ROLE ${qid(name)} ${login ? "LOGIN" : "NOLOGIN"} NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS${passwordClause}`);
         await operator.query("COMMENT ON ROLE " + qid(name) + " IS '" + marker + "'");
       }
+    } else if (roleState === "managed-three") {
+      await operator.query(`CREATE ROLE ${qid(OUTSIDE_CUSTODY)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS PASSWORD '${outsideCustodyPassword}'`);
+      await operator.query(`COMMENT ON ROLE ${qid(OUTSIDE_CUSTODY)} IS '${ROLE_MARKERS.outsideCustody}'`);
     }
 
     const database = qid(identity.database);
     await operator.query(`REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`);
-    await operator.query(`GRANT CONNECT ON DATABASE ${database} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}`);
+    await operator.query(`GRANT CONNECT ON DATABASE ${database} TO ${qid(APPLICATION)}, ${qid(FINANCIAL)}, ${qid(OUTSIDE_CUSTODY)}`);
     await operator.query(`ALTER DATABASE ${database} OWNER TO ${qid(OWNER)}`);
     await operator.query(`ALTER SCHEMA ${qid(SCHEMA)} OWNER TO ${qid(OWNER)}`);
-    for (const table of [...ENGINE_TABLE_PRIVILEGES.ordinary, ...ENGINE_TABLE_PRIVILEGES.financial, ...ENGINE_TABLE_PRIVILEGES.ledger]) {
+    for (const table of engineTables()) {
       await operator.query(`ALTER TABLE ${qname(table)} OWNER TO ${qid(OWNER)}`);
     }
     for (const sequence of ENGINE_SEQUENCES) await operator.query(`ALTER SEQUENCE ${qname(sequence)} OWNER TO ${qid(OWNER)}`);
@@ -603,10 +665,10 @@ export async function provisionEngineDatabasePrivileges(
     `, [SCHEMA, OWNER]);
     const databaseOwner = await queryRows<{ name: string }>(operator, `SELECT r.rolname AS name FROM pg_database d JOIN pg_roles r ON r.oid=d.datdba WHERE d.datname=current_database()`);
     if (nonOwnerRelations.length !== 0 || databaseOwner[0]?.name !== OWNER) throw safeFailure();
-    await requireManagedState(operator, identity.database);
+    await requireManagedState(operator, identity.database, true);
     await operator.query("COMMIT");
     inTransaction = false;
-    return { status: roleState === "fresh" ? "applied" : "verified" };
+    return { status: "applied" };
   } catch {
     if (inTransaction) {
       try { await operator.query("ROLLBACK"); } catch { /* Preserve the fixed safe failure. */ }

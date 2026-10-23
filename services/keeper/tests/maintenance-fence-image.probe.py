@@ -95,6 +95,11 @@ proof = {
         "actualOperatorDbRunUsed": False,
         "externalHbaIsSelected": False,
         "normalPolicyAllowsOnlyIntendedRoles": False,
+        "outsideCustodyProductionSetupPathPassed": False,
+        "outsideCustodyBridgeIdentityAndSourceVerified": False,
+        "outsideCustodyDatabaseLoopbackIdentityVerified": False,
+        "outsideCustodyDatabaseLoopbackDeniedAfterMaintenanceReload": False,
+        "outsideCustodyDatabaseLoopbackDeniedAfterMaintenanceRestart": False,
         "maintenanceHbaDeniesNewAppAndUnknownLogins": False,
         "existingAppSessionTerminatedExplicitly": False,
         "externalHbaSurvivesMaintenanceRestart": False,
@@ -363,14 +368,42 @@ def scram_verifier(password: str) -> str:
 
 def app_client(role: str, *, check: bool) -> subprocess.CompletedProcess:
     js = """const {Client}=require('pg');const fs=require('node:fs');
-const c=new Client({host:'db',port:5432,database:'postgres',user:process.argv[1],password:fs.readFileSync('/run/app-password','utf8').trim(),connectionTimeoutMillis:4000});
-c.connect().then(()=>c.query('SELECT 1')).then(r=>{if(r.rows[0]?.['?column?']!==1)process.exitCode=2;else process.stdout.write('connected');}).catch(()=>{process.exitCode=1;}).finally(()=>c.end().catch(()=>{}));"""
+const role=process.argv[1],database=role==='lares_outside_custody'?'lares_state':'postgres';
+const c=new Client({host:'db',port:5432,database,user:role,password:fs.readFileSync('/run/app-password','utf8').trim(),connectionTimeoutMillis:4000});
+c.connect().then(()=>c.query('SELECT current_user,session_user,current_database(),host(inet_client_addr()) AS source_address')).then(r=>{const x=r.rows[0];process.stdout.write([x.current_user,x.session_user,x.current_database,x.source_address].join('|'));}).catch(()=>{process.exitCode=1;}).finally(()=>c.end().catch(()=>{}));"""
     password_path = role_password_paths.get(role, app_password_path)
     result = docker("run", "--rm", "--network", network, "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,mode=1777",
         "--user", "10001:10001", "--workdir", "/app/services/keeper",
         "--mount", f"type=bind,src={password_path},dst=/run/app-password,readonly",
         "--entrypoint", "node", IMAGE, "-e", js, role, check=check, timeout=20)
     return result
+
+
+def assert_bridge_login(role: str) -> None:
+    result = app_client(role, check=True)
+    fields = result.stdout.strip().split("|")
+    expected_database = "lares_state" if role == "lares_outside_custody" else "postgres"
+    try:
+        source_address = ipaddress.ip_address(fields[3])
+    except (IndexError, ValueError):
+        raise ProbeFailure("normal-role-source") from None
+    if fields[:3] != [role, role, expected_database] or source_address not in ipaddress.ip_network(subnet, strict=True):
+        raise ProbeFailure("normal-role-identity-or-source")
+
+
+def outside_database_loopback_login(database_container: str, password: str, *, expected: bool) -> None:
+    script = """IFS= read -r PGPASSWORD
+export PGPASSWORD
+exec psql -X -w -A -t -v ON_ERROR_STOP=1 -h 127.0.0.1 -p 5432 -U lares_outside_custody -d lares_state -c "SELECT current_user || '|' || session_user || '|' || current_database() || '|' || host(inet_client_addr())"
+"""
+    result = run("docker", "exec", "-i", database_container, "sh", "-ec", script,
+        input_data=password + "\n", check=False, timeout=20)
+    expected_result = "lares_outside_custody|lares_outside_custody|lares_state|127.0.0.1"
+    if expected:
+        if result.returncode != 0 or result.stdout.strip() != expected_result:
+            raise ProbeFailure("outside-custody-loopback-login")
+    elif result.returncode == 0 or "pg_hba.conf rejects connection" not in result.stdout.lower():
+        raise ProbeFailure("outside-custody-loopback-not-refused-by-hba")
 
 
 def wait_file(path: pathlib.Path, timeout: int = 20) -> str:
@@ -493,6 +526,7 @@ def run_database_proof() -> None:
         raise ProbeFailure("workflow-image")
     credentials = {"operator-password": operator_password, "database-password": app_password,
         "financial-database-password": secrets.token_urlsafe(40),
+        "outside-custody-database-password": secrets.token_urlsafe(40),
         "workflow-provisioner-password": secrets.token_urlsafe(40),
         "workflow-password": secrets.token_urlsafe(40), "gateway-database-password": secrets.token_urlsafe(40)}
     credential_files: dict[str, pathlib.Path] = {}
@@ -504,6 +538,7 @@ def run_database_proof() -> None:
     role_password_paths = {
         "lares_app": write_role_login_fixture("lares_app", credentials["database-password"]),
         "lares_financial": write_role_login_fixture("lares_financial", credentials["financial-database-password"]),
+        "lares_outside_custody": write_role_login_fixture("lares_outside_custody", credentials["outside-custody-database-password"]),
         "lares_workflow_provisioner": write_role_login_fixture("lares_workflow_provisioner", credentials["workflow-provisioner-password"]),
         "lares_workflow": write_role_login_fixture("lares_workflow", credentials["workflow-password"]),
         "lares_gateway": write_role_login_fixture("lares_gateway", credentials["gateway-database-password"]),
@@ -540,6 +575,7 @@ def run_database_proof() -> None:
         "--operator-password-file", "/run/operator-password",
         "--app-password-file", "/run/database-password",
         "--financial-password-file", "/run/financial-database-password",
+        "--outside-custody-password-file", "/run/outside-custody-database-password",
         "--workflow-provisioner-password-file", "/run/workflow-provisioner-password",
         "--workflow-password-file", "/run/workflow-password",
         "--gateway-password-file", "/run/gateway-database-password",
@@ -548,7 +584,9 @@ def run_database_proof() -> None:
     if setup.returncode != 0:
         raise ProbeFailure("database-setup")
     proof["claims"]["productionDatabaseSetupUsed"] = True
+    proof["claims"]["outsideCustodyProductionSetupPathPassed"] = True
     proof["stages"]["productionDatabaseSetup"] = True
+    proof["stages"]["outsideCustodyProductionSetupPath"] = True
     stage = "replace-bootstrap-with-normal-stack"
     compose("down", bootstrap=True, timeout=90)
     compose("up", "-d", "db", timeout=180)
@@ -607,6 +645,10 @@ def run_database_proof() -> None:
     if selected != "/run/lares-auth/pg_hba.conf|0":
         raise ProbeFailure("database")
     proof["claims"]["externalHbaIsSelected"] = True
+    stage = "outside-custody-database-loopback-route"
+    outside_database_loopback_login(database_container, credentials["outside-custody-database-password"], expected=True)
+    proof["claims"]["outsideCustodyDatabaseLoopbackIdentityVerified"] = True
+    proof["stages"]["outsideCustodyDatabaseLoopbackRoute"] = True
     stage = "operator-host-route"
     source_address = operator_query(compose_files, "SELECT host(inet_client_addr())")
     try:
@@ -618,14 +660,16 @@ def run_database_proof() -> None:
         raise ProbeFailure("operator-client")
     proof["claims"]["operatorHostRouteMatchesApprovedRule"] = True
     stage = "normal-role-controls"
-    intended = ("lares_app", "lares_financial", "lares_workflow_provisioner", "lares_workflow", "lares_gateway")
+    intended = ("lares_app", "lares_financial", "lares_workflow_provisioner", "lares_workflow", "lares_gateway", "lares_outside_custody")
     operator_script(compose_files, "CREATE ROLE proof_unknown LOGIN PASSWORD '" + scram_verifier(app_password) + "';\n")
-    if any(app_client(role, check=True).stdout.strip() != "connected" for role in intended):
-        raise ProbeFailure("database")
+    for role in intended:
+        assert_bridge_login(role)
     if app_client("proof_unknown", check=False).returncode == 0:
         raise ProbeFailure("database")
     proof["claims"]["normalPolicyAllowsOnlyIntendedRoles"] = True
+    proof["claims"]["outsideCustodyBridgeIdentityAndSourceVerified"] = True
     proof["stages"]["normalLoginControl"] = True
+    proof["stages"]["outsideCustodyBridgeRoute"] = True
 
     stage = "existing-app-session"
     session_name, session_control = start_holder_session()
@@ -643,6 +687,9 @@ def run_database_proof() -> None:
        operator_query(compose_files, "SELECT count(*)::text FROM pg_hba_file_rules WHERE error IS NOT NULL") != "0":
         raise ProbeFailure("database")
     proof["stages"]["maintenanceReloadParsed"] = True
+    outside_database_loopback_login(database_container, credentials["outside-custody-database-password"], expected=False)
+    proof["claims"]["outsideCustodyDatabaseLoopbackDeniedAfterMaintenanceReload"] = True
+    proof["stages"]["outsideCustodyLoopbackDeniedAfterReload"] = True
     stage = "maintenance-reload-preserves-session"
     (session_control / "query").write_text("go\n", encoding="ascii")
     if wait_file(session_control / "still-works") != "ok":
@@ -680,6 +727,9 @@ def run_database_proof() -> None:
     if operator_query(compose_files, "SELECT current_setting('hba_file')") != "/run/lares-auth/pg_hba.conf" or \
        any(app_client(role, check=False).returncode == 0 for role in (*intended, "proof_unknown")):
         raise ProbeFailure("database")
+    outside_database_loopback_login(database_container, credentials["outside-custody-database-password"], expected=False)
+    proof["claims"]["outsideCustodyDatabaseLoopbackDeniedAfterMaintenanceRestart"] = True
+    proof["stages"]["outsideCustodyLoopbackDeniedAfterRestart"] = True
     proof["claims"]["maintenanceHbaDeniesNewAppAndUnknownLogins"] = True
     proof["claims"]["externalHbaSurvivesMaintenanceRestart"] = True
     proof["stages"]["maintenanceHbaRestart"] = True
@@ -769,8 +819,9 @@ def run_database_proof() -> None:
     wait_operator_ready(compose_files, budget_seconds=60)
     if operator_query(compose_files, "SELECT current_setting('hba_file')") != "/run/lares-auth/pg_hba.conf":
         raise ProbeFailure("database")
-    if any(app_client(role, check=True).returncode != 0 for role in intended) or \
-       app_client("proof_unknown", check=False).returncode == 0:
+    for role in intended:
+        assert_bridge_login(role)
+    if app_client("proof_unknown", check=False).returncode == 0:
         raise ProbeFailure("database")
     proof["claims"]["externalHbaSurvivesPermissivePgdataRestore"] = True
     proof["stages"]["restartPreservesExternalPolicy"] = True
