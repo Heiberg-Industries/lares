@@ -525,7 +525,7 @@ print('ok')
 
     def gateway_service(self, folder, secret_dir):
         """Render the real ordinary Compose service in the pinned client image."""
-        script = "import{readFileSync}from'node:fs';import{createRequire}from'node:module';const require=createRequire('/app/services/chief-of-staff/package.json');const{parse}=require('yaml');const{renderStackCompose}=await import('/app/services/box/lib/stack-compose.ts');const input=JSON.parse(readFileSync(0,'utf8'));const source=renderStackCompose(input.manifest,input.options);const compose=parse(source);const fixture={...compose,networks:{[input.options.network]:{name:input.options.network,external:true}}};console.log(JSON.stringify({source,fixture,service:compose.services['lares-gateway'],secrets:compose.secrets}));"
+        script = "import{readFileSync}from'node:fs';import{createRequire}from'node:module';const require=createRequire('/app/services/box/package.json');const{parse}=require('yaml');const{renderStackCompose}=await import('/app/services/box/lib/stack-compose.ts');const input=JSON.parse(readFileSync(0,'utf8'));const source=renderStackCompose(input.manifest,input.options);const compose=parse(source);const fixture={...compose,networks:{[input.options.network]:{name:input.options.network,external:true}}};console.log(JSON.stringify({source,fixture,service:compose.services['lares-gateway'],secrets:compose.secrets}));"
         options = {
             "secretsDir": str(secret_dir),
             "socketDir": str(self.root / "socket"),
