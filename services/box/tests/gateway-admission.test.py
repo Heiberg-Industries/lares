@@ -38,6 +38,7 @@ class ContractTests(unittest.TestCase):
         exec(compile(ast.Module(body=[builder], type_ignores=[]), str(probe_path), "exec"), namespace)
         config = namespace["build_native_admin_config"]()
         self.assertIs(config["general_settings"]["disable_auto_add_proxy_admin_to_teams"], True)
+
     def test_actual_typescript_gateway_configs_match_the_python_profile_exactly(self):
         # Exercise the production renderer and profile builder without contacting either provider.
         script = """
@@ -181,7 +182,6 @@ console.log(JSON.stringify(targets.map((options) => ({
         with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(body).encode())
         openai_profile = Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
         with self.assertRaises(Refused): openai_profile.check_body("/v1/messages", json.dumps(body).encode())
-
     def test_native_model_route_group_is_confined_to_model_routes(self):
         for path in MODEL_ROUTES:
             with self.subTest(path=path): self.assertTrue(native_route_allowed(["llm_api_routes"], path))

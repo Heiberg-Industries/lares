@@ -7,12 +7,27 @@ import { z } from 'zod';
 import { currentMember,currentSession } from './member-store.js';
 import type { Member } from './authority-contract.js';
 import { currentVaultArea, vaultAreaAllows } from './vault-area-store.js';
+import { definitionSchema, OUTSIDE_TOOL_NAME_RE, type AgentDefinition } from './definition.js';
+import { autonomyOf } from './manifest.js';
+import { checkOutsideUrl } from './outside-tools.js';
 
 export type GrantDatabase = Pick<PoolClient,'query'>;
 type Db = GrantDatabase;
 type Permission = 'use' | 'edit';
 export interface VisibleResource { resource: {kind:'agent'|'vault-area';id:string}; accessRevision:number; permissions:Permission[] }
 export interface AgentAccessView { agentName:string; ownerMemberId:string; accessRevision:number; definitionHash:string; grants:{ principal:{kind:'member'|'organisation';id:string};permission:Permission;expiresAt:string|null }[] }
+export type OutsideUseCapture = {
+  version: 1;
+  actor: { memberId: string; organisationId: string; role: Member['role'] };
+  agent: { name: string; ownerMemberId: string; accessRevision: number; definitionHash: string };
+  ownerPolicy: { kind: 'unrestricted' } | { kind: 'ceiling'; requiredCapabilities: readonly string[] };
+  outside: {
+    scope: Exclude<AgentDefinition['grants'][number]['scope'], 'none'>;
+    autonomy: 'gated' | 'autonomous';
+    connection: { name: string; url: string; auth: 'bearer'; allow: readonly string[]; read: readonly string[]; trusted: boolean; runsAt?: string };
+  };
+  grant: { kind: 'owner'; validUntil: null } | { kind: 'grant'; id: string; principal: { kind: 'member' | 'organisation'; id: string }; permission: 'use'; validUntil: string | null };
+};
 export class GrantStoreError extends Error {
   constructor(public readonly code:'denied'|'invalid'|'stale') { super(`Agent access refused: ${code}`); this.name='GrantStoreError'; }
 }
@@ -26,10 +41,45 @@ export const agentAccessUpdateSchema=z.strictObject({agentName:id,expectedRevisi
   .refine(v=>new Set(v.grants.map(g=>`${g.principal.kind}:${g.principal.id}:${g.permission}`)).size===v.grants.length,'Duplicate grants');
 type AccessRow={agent_name:string;owner_member_id:string;organisation_id:string;revision:string;hash:string;definition:unknown;status:string};
 type GrantRow={principal_member_id:string|null;principal_organisation_id:string|null;permission:Permission;expires_at:Date|null};
+type OutsideOwnerPolicy = OutsideUseCapture['ownerPolicy'];
+type OutsideGrant = Extract<OutsideUseCapture['grant'],{kind:'grant'}>;
+type OutsideEvaluation = { ownerPolicy?:OutsideOwnerPolicy; grant?:OutsideUseCapture['grant']; definition?:AgentDefinition };
 const accessColumns='a.agent_name,a.owner_member_id,a.organisation_id,a.revision,d.hash,d.definition,d.status';
+const outsideHash=z.string().regex(/^[a-f0-9]{64}$/);
+const positiveIntegerText=z.string().regex(/^[1-9]\d*$/);
 function capabilities(definition:unknown): string[]|undefined {
   const parsed=z.object({grants:z.array(z.object({capability:z.string(),scope:z.string()}))}).safeParse(definition);
   return parsed.success ? parsed.data.grants.filter(g=>g.scope!=='none').map(g=>g.capability) : undefined;
+}
+function canonical(value:unknown):string {
+  if(Array.isArray(value))return `[${value.map(canonical).join(',')}]`;
+  if(value!==null&&typeof value==='object'){
+    const record=value as Record<string,unknown>;
+    return `{${Object.keys(record).sort().filter(key=>record[key]!==undefined).map(key=>`${JSON.stringify(key)}:${canonical(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value)??'null';
+}
+function outsideDefinition(value:unknown,agentName:string,connectionName:string):{definition:AgentDefinition;connection:NonNullable<AgentDefinition['outsideTools']>[number];scope:Exclude<AgentDefinition['grants'][number]['scope'],'none'>;autonomy:'gated'|'autonomous'}|undefined {
+  const parsed=definitionSchema.safeParse(value);
+  if(!parsed.success||parsed.data.name!==agentName)return undefined;
+  const outside=parsed.data.grants.filter(grant=>grant.capability==='outside');
+  if(outside.length!==1||outside[0]!.scope==='none')return undefined;
+  if(outside[0]!.scope!=='read'&&outside[0]!.scope!=='write-with-confirm')return undefined;
+  const autonomy=autonomyOf(parsed.data,'outside');
+  if(autonomy==='never')return undefined;
+  const selected=(parsed.data.outsideTools??[]).filter(entry=>entry.name===connectionName);
+  if(selected.length!==1)return undefined;
+  const connection=selected[0]!;
+  if(connection.token!==true||!checkOutsideUrl(connection.url).ok)return undefined;
+  const names=[...connection.tools.allow,...connection.tools.read];
+  if(names.length>256||names.some(name=>name.trim().length===0||name.length>200))return undefined;
+  const allow=new Set(connection.tools.allow);
+  if(connection.tools.read.some(name=>!allow.has(name)))return undefined;
+  if(outside[0]!.scope==='read'){
+    const reads=new Set(connection.tools.read);
+    if(connection.tools.allow.some(name=>!reads.has(name)))return undefined;
+  }
+  return {definition:parsed.data,connection,scope:outside[0]!.scope as Exclude<AgentDefinition['grants'][number]['scope'],'none'>,autonomy};
 }
 
 export class PgGrantStore {
@@ -50,26 +100,64 @@ export class PgGrantStore {
     if(!member||member.organisationId!==before.organisationId) throw new GrantStoreError('denied');
     return member;
   }
-  private async policyAllows(db:Db,member:Member,definition:unknown):Promise<boolean> {
+  private async policyAllows(db:Db,member:Member,definition:unknown,captureOutsidePolicy?:(policy:OutsideOwnerPolicy)=>void):Promise<boolean> {
     const caps=capabilities(definition); if(!caps)return false;
     const {rows}=await db.query<{allowed_capabilities:string[]|null}>('SELECT allowed_capabilities FROM org_member_policy WHERE user_id=$1 FOR SHARE',[member.id]);
     // Missing policy has no established permissive runtime meaning. Refuse explicitly.
-    return !!rows[0]&&(rows[0].allowed_capabilities===null||caps.every(c=>rows[0].allowed_capabilities!.includes(c)));
+    if(!rows[0])return false;
+    const allowed=rows[0].allowed_capabilities;
+    if(captureOutsidePolicy&&allowed!==null&&(!Array.isArray(allowed)||allowed.some(capability=>typeof capability!=='string')))return false;
+    if(allowed!==null&&!caps.every(c=>allowed.includes(c)))return false;
+    captureOutsidePolicy?.(allowed===null?{kind:'unrestricted'}:{kind:'ceiling',requiredCapabilities:[...new Set(caps)].sort()});
+    return true;
   }
   private async access(db:Db,name:string,lock=false):Promise<AccessRow|undefined> {
     const {rows}=await db.query<AccessRow>(`SELECT ${accessColumns} FROM agent_access a JOIN agent_definitions d ON d.name=a.agent_name WHERE a.agent_name=$1${lock?' FOR UPDATE OF a,d':''}`,[name]);return rows[0];
   }
-  private async evaluate(db:Db,member:Member,row:AccessRow,permission:Permission,captureExpiry?:(validUntil:string|null)=>void):Promise<boolean> {
+  private async evaluate(db:Db,member:Member,row:AccessRow,permission:Permission,captureExpiry?:(validUntil:string|null)=>void,outside?:OutsideEvaluation):Promise<boolean> {
     if(row.organisation_id!==member.organisationId||row.status!=='valid')return false;
     const owner=await currentMember(db,row.owner_member_id,{lock:'share'});
-    if(!owner||owner.organisationId!==row.organisation_id||!await this.policyAllows(db,owner,row.definition))return false;
+    if(!owner||owner.organisationId!==row.organisation_id||!await this.policyAllows(db,owner,row.definition, outside ? proof=>{outside.ownerPolicy=proof;} : undefined))return false;
     // Recheck snapshots after acquiring the policy lock; a concurrent policy/definition
     // write may have advanced the resource revision while this reader was waiting.
-    const definition=await db.query("SELECT 1 FROM agent_definitions WHERE name=$1 AND hash=$2 AND status='valid' FOR SHARE",[row.agent_name,row.hash]);
-    if(!definition.rowCount)return false;
+    if(outside){
+      const locked=await db.query<{hash:string;definition:unknown;status:string}>("SELECT hash,definition,status FROM agent_definitions WHERE name=$1 FOR SHARE",[row.agent_name]);
+      const snapshot=locked.rows[0];
+      if(!snapshot||snapshot.hash!==row.hash||snapshot.status!=='valid')return false;
+      const initial=definitionSchema.safeParse(row.definition),current=definitionSchema.safeParse(snapshot.definition);
+      if(!initial.success||!current.success||canonical(initial.data)!==canonical(current.data))return false;
+      outside.definition=current.data;
+    }else{
+      const definition=await db.query("SELECT 1 FROM agent_definitions WHERE name=$1 AND hash=$2 AND status='valid' FOR SHARE",[row.agent_name,row.hash]);
+      if(!definition.rowCount)return false;
+    }
     const current=await db.query('SELECT 1 FROM agent_access WHERE agent_name=$1 AND revision=$2 FOR SHARE',[row.agent_name,row.revision]);
     if(!current.rowCount)return false;
-    if(row.owner_member_id===member.id){captureExpiry?.(null);return true;}
+    if(row.owner_member_id===member.id){captureExpiry?.(null);if(outside)outside.grant={kind:'owner',validUntil:null};return true;}
+    if(outside){
+      const {rows}=await db.query<{id:string;principal_member_id:string|null;principal_organisation_id:string|null;permission:Permission;no_expiry:boolean;finite_expiry:boolean|null;valid_until:string|null}>(`SELECT id,principal_member_id,principal_organisation_id,permission,
+          expires_at IS NULL AS no_expiry,isfinite(expires_at) AS finite_expiry,
+          CASE WHEN expires_at IS NULL THEN NULL ELSE to_char(expires_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END AS valid_until
+        FROM resource_grants WHERE resource_kind='agent' AND resource_id=$1 AND permission=$2 AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at>clock_timestamp()) AND (principal_member_id=$3 OR ($4::boolean AND principal_organisation_id=$5))
+        ORDER BY CASE WHEN principal_member_id=$3 THEN 0 ELSE 1 END,id LIMIT 1 FOR SHARE`,
+      [row.agent_name,permission,member.id,member.role!=='restricted',member.organisationId]);
+      const grant=rows[0];
+      if(!grant||grant.permission!=='use'||!z.string().uuid().safeParse(grant.id).success)return false;
+      let principal:OutsideGrant['principal'];
+      if(grant.principal_member_id===member.id&&grant.principal_organisation_id===null)principal={kind:'member',id:member.id};
+      else if(grant.principal_member_id===null&&grant.principal_organisation_id===member.organisationId&&member.role!=='restricted')principal={kind:'organisation',id:member.organisationId};
+      else return false;
+      if(grant.no_expiry===true){
+        if(grant.finite_expiry!==null||grant.valid_until!==null)return false;
+      }else if(grant.no_expiry===false&&grant.finite_expiry===true){
+        if(typeof grant.valid_until!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/.test(grant.valid_until))return false;
+        const stillValid=await db.query<{valid:boolean}>("SELECT $1::timestamptz>clock_timestamp() AS valid",[grant.valid_until]);
+        if(stillValid.rows[0]?.valid!==true)return false;
+      }else return false;
+      outside.grant={kind:'grant',id:grant.id,principal,permission:'use',validUntil:grant.valid_until};
+      return true;
+    }
     const {rows}=await db.query<{valid_until:string|null}>(`SELECT expires_at::text AS valid_until FROM resource_grants WHERE resource_kind='agent' AND resource_id=$1
       AND permission=$2 AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at>clock_timestamp())
       AND (principal_member_id=$3 OR ($4::boolean AND principal_organisation_id=$5)) LIMIT 1 FOR SHARE`,
@@ -103,6 +191,41 @@ export class PgGrantStore {
       const row=await this.access(db,agentName);let validUntil:string|null=null;
       if(!row||(options.expectedRevision!==undefined&&Number(row.revision)!==options.expectedRevision)||!await this.evaluate(db,member,row,'use',expiry=>{validUntil=expiry;}))return undefined;
       return {accessRevision:Number(row.revision),validUntil};
+    });
+  }
+  /** Trusted internal capture for one saved bearer connection. The supplied transaction must
+   * remain open through any later use; this method neither authenticates memberId nor retains a deadline. */
+  async captureOutsideUse(memberId:string,agentName:string,options:{db:Db;connectionName:string;expected?:{definitionHash:string;accessRevision:number}}):Promise<OutsideUseCapture|undefined> {
+    const input=z.strictObject({memberId:id,agentName:id,connectionName:z.string().regex(OUTSIDE_TOOL_NAME_RE),
+      expected:z.strictObject({definitionHash:outsideHash,accessRevision:revision}).optional(),
+      db:z.custom<Db>(value=>value!==null&&typeof value==='object'&&typeof (value as Db).query==='function')});
+    const valid=input.safeParse({memberId,agentName,...(options as unknown as Record<string,unknown>)});
+    if(!valid.success)throw new GrantStoreError('invalid');
+    return this.transaction(options.db,async db=>{
+      let member:Member;try{member=await this.actor(db,memberId);}catch(error){if(error instanceof GrantStoreError)return undefined;throw error;}
+      const row=await this.access(db,agentName);
+      if(!row||row.agent_name!==agentName||row.status!=='valid'||!outsideHash.safeParse(row.hash).success)return undefined;
+      if(!positiveIntegerText.safeParse(row.revision).success)return undefined;
+      const accessRevision=Number(row.revision);
+      if(!Number.isSafeInteger(accessRevision)||accessRevision<1||!id.safeParse(row.owner_member_id).success)return undefined;
+      const initial=outsideDefinition(row.definition,agentName,options.connectionName);
+      if(!initial)return undefined;
+      const proof:OutsideEvaluation={};
+      if(!await this.evaluate(db,member,row,'use',undefined,proof)||!proof.ownerPolicy||!proof.grant||!proof.definition)return undefined;
+      const locked=outsideDefinition(proof.definition,agentName,options.connectionName);
+      if(!locked)return undefined;
+      if(options.expected&&(options.expected.definitionHash!==row.hash||options.expected.accessRevision!==accessRevision))return undefined;
+      const connection=locked.connection;
+      const allow=[...new Set(connection.tools.allow)].sort();
+      const read=[...new Set(connection.tools.read)].sort();
+      return {
+        version:1,
+        actor:{memberId:member.id,organisationId:member.organisationId,role:member.role},
+        agent:{name:agentName,ownerMemberId:row.owner_member_id,accessRevision,definitionHash:row.hash},
+        ownerPolicy:proof.ownerPolicy,
+        outside:{scope:locked.scope,autonomy:locked.autonomy,connection:{name:connection.name,url:connection.url,auth:'bearer',allow,read,trusted:connection.trusted,...(connection.runsAt===undefined?{}:{runsAt:connection.runsAt})}},
+        grant:proof.grant,
+      };
     });
   }
   async listVisible(memberId:string,kind:string,options:{db?:Db}={}):Promise<VisibleResource[]> {
