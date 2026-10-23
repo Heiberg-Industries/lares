@@ -97,4 +97,9 @@ NODE
 # this descriptor are covered; arbitrary descendants are not certified by this primitive.
 cd "$caller_directory" 2>/dev/null || refuse
 [ "$(pwd -P 2>/dev/null)" = "$caller_directory" ] || refuse
+# Downstream Eve CLI and its compiled server verify the same receipt-bound gate descriptor.
+# Replace caller-provided copies only after the host receipt, lock and intent all validate.
+export LARES_MAINTENANCE_ADMISSION_DIR="$directory"
+export LARES_MAINTENANCE_INSTALLATION_ID="$installation_id"
+export LARES_MAINTENANCE_EPOCH="$epoch"
 exec "$@"

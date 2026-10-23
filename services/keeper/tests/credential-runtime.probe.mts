@@ -38,8 +38,8 @@ try {
   await run(['network', 'create', '--internal', network]); networkCreated = true;
   const net = JSON.parse(await run(['network', 'inspect', network]))[0];
   const subnet = net.IPAM.Config[0].Subnet, address = nextAddress([net.IPAM.Config[0].Gateway], subnet);
-  const agentsDir = join(root, 'agents'), secretsDir = join(root, 'secrets'), egressDir = join(root, 'egress'), dir = join(agentsDir, 'example');
-  mkdirSync(dir, { recursive: true }); mkdirSync(secretsDir, { mode: 0o700 }); chmodSync(secretsDir, 0o700); mkdirSync(egressDir);
+  const agentsDir = join(root, 'agents'), secretsDir = join(root, 'secrets'), egressDir = join(root, 'egress'), admissionDir = join(root, 'admission'), dir = join(agentsDir, 'example');
+  mkdirSync(dir, { recursive: true }); mkdirSync(secretsDir, { mode: 0o700 }); chmodSync(secretsDir, 0o700); mkdirSync(egressDir); mkdirSync(admissionDir, { mode: 0o755 });
   const definition = parseDefinition({ ...JSON.parse(readFileSync(new URL('../../../packages/agent-kit/templates/creative/agent.json', import.meta.url), 'utf8')), name: 'example', role: 'creative', doors: [], grants: [], autonomy: {} });
   writeFileSync(join(dir, 'agent.json'), JSON.stringify(definition)); writeFileSync(join(dir, 'duties.md'), ''); writeFileSync(join(dir, 'voice.md'), '');
   writeFileSync(join(dir, 'probe.mjs'), `import{openSync,readFileSync,fstatSync}from'node:fs';import{createServer}from'node:http';
@@ -59,7 +59,8 @@ createServer((req,res)=>{res.setHeader('content-type','application/json');res.en
     network, subnet, reservedAddresses: [], composeFile, egressDir, imageByRole: { creative: image, 'chief-of-staff': image }, proxyContainer: 'lares-egress-proxy', squidImage: image, firewallImage: image,
     workflowTemplate: 'probe_template', workflowOwner: 'lares_workflow_owner', runtime: { schedulesLive: false, databaseUrl: 'postgres://lares_app@db/test', workflowServer: 'postgres://lares_workflow@db/', gatewayUrl: 'https://gateway.example.invalid', proxyUrl: 'http://proxy:8888', passwordFile: join(secretsDir, 'db'), workflowPasswordFile: join(secretsDir,'workflow-db'), gatewayKeys: { example: join(secretsDir, 'gateway') } },
     bindings: { example: { role: 'creative', mounts: [], environment: {}, secrets: { NOTION_TOKEN_FILE: files.activePath, EVE_ROUTE_PASSWORD_FILE: join(secretsDir, 'unrelated') } } },
-    egress: { endpoints: {}, legacyConsumers: [], internalNetworks: [subnet], directDestinations: [], infrastructureHosts: [] }, installationPrepared: true,
+    egress: { endpoints: {}, legacyConsumers: [], internalNetworks: [subnet], directDestinations: [], infrastructureHosts: [] },
+    maintenanceAdmission: { hostDirectory: admissionDir, installationId: '11111111-1111-4111-8111-111111111111', epoch: 1 }, installationPrepared: true,
   } } as unknown as KeeperConfig;
   const request = async (url: string | URL | Request) => {
     const path = new URL(String(url)).pathname;

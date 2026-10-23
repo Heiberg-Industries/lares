@@ -6,7 +6,7 @@ import { parse } from 'yaml';
 import { renderAgentsCompose, type AgentContainer } from '../lib/compose-agents.js';
 import { personalGoogleSchema, personalGoogleConfig, personalGoogleEnabled, googleSecretFiles, verifyGoogleSecretSources } from '../lib/personal-google.js';
 const image='example/runtime@sha256:'+'a'.repeat(64);
-const opts={network:'fixture_default',imageByRole:{'chief-of-staff':image,creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',modelPrefix:'lares'};
+const opts={network:'fixture_default',imageByRole:{'chief-of-staff':image,creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',maintenanceAdmission:{hostDirectory:'/var/lib/lares-maintenance/admission',installationId:'11111111-1111-4111-8111-111111111111',epoch:7},modelPrefix:'lares'};
 const google={tokenKeyFile:'/srv/secrets/key',clients:{second:{clientIdFile:'/srv/secrets/second-id',clientSecretFile:'/srv/secrets/second-secret'},acme:{clientIdFile:'/srv/secrets/acme-id',clientSecretFile:'/srv/secrets/acme-secret'}}};
 const agent:AgentContainer={name:'helper',role:'chief-of-staff',address:'172.18.0.25',incarnation:'11111111-1111-4111-8111-111111111111',doors:[],personalGoogle:google,runtime:{databaseUrl:'postgres://lares_app@db/domain',workflowUrl:'postgres://lares_workflow@db/workflow',gatewayUrl:'https://gateway.example',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/srv/secrets/gateway',passwordFile:'/srv/secrets/db',workflowPasswordFile:'/srv/secrets/workflow-db'}};
 const document=()=>parse(renderAgentsCompose([agent],opts));
