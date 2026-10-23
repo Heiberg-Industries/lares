@@ -55,15 +55,90 @@ class MaintenanceAdmissionTests(unittest.TestCase):
         for source in OPS.iterdir():
             if source.is_file():
                 shutil.copy2(source, installed / source.name)
+        (installed / "compose.yaml").write_text("services: {}\n", encoding="ascii")
+        secrets = prefix / "etc/lares/secrets"
+        operator = prefix / "etc/lares/operator"
+        secrets.mkdir(parents=True)
+        operator.mkdir(parents=True)
+        app_password = secrets / "database-password"
+        app_password.write_text("fixture-only\n", encoding="ascii")
+        os.chown(app_password, -1, os.getegid())
+        app_password.chmod(0o440)
+        operator_password = operator / "database-password"
+        operator_password.write_text("fixture-only\n", encoding="ascii")
+        os.chown(operator_password, -1, os.getegid())
+        operator_password.chmod(0o600)
         return prefix, installed
 
     def _test_env(self, prefix: Path, **values: str) -> dict[str, str]:
         env = os.environ.copy()
         env.update({"LARES_MAINTENANCE_TESTING": "1",
+                    "LARES_PREFIX": str(prefix),
+                    "DB_COMPOSE_DIR": str(prefix / "opt/lares"),
+                    "UPDATE_COMPOSE_FILES": "compose.yaml",
                     "LARES_MAINTENANCE_TEST_PREFIX": str(prefix),
                     "PATH": "/usr/bin:/bin"})
         env.update(values)
         return env
+
+    def test_update_target_requires_installer_credential_modes_and_single_links(self) -> None:
+        prefix, installed = self._installed_bundle()
+        app = prefix / "etc/lares/secrets/database-password"
+        operator = prefix / "etc/lares/operator/database-password"
+        args = (str(prefix), str(installed), "compose.yaml", str(app), str(operator),
+                "127.0.0.1", "5432", "lares_state")
+        custody.validate_update_target(*args, test_owner=True)
+
+        for path, mode in ((app, 0o600), (app, 0o400), (operator, 0o440)):
+            original_mode = stat.S_IMODE(path.stat().st_mode)
+            path.chmod(mode)
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+            path.chmod(original_mode)
+
+        linked = self.root / "app-password-link"
+        linked.hardlink_to(app)
+        with self.assertRaisesRegex(ValueError, "credential"):
+            custody.validate_update_target(*args, test_owner=True)
+        linked.unlink()
+
+        with patch.object(custody.os, "getegid", return_value=os.getegid() + 1):
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+        with patch.object(custody.os, "geteuid", return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(ValueError, "credential"):
+                custody.validate_update_target(*args, test_owner=True)
+
+        with self.assertRaisesRegex(ValueError, "credential"):
+            custody.validate_update_target(*args, test_owner=False)
+
+    def test_update_target_cli_has_exact_root_and_test_owner_arities(self) -> None:
+        args = ["maintenance-custody.py", "validate-update-target", *("fixture" for _ in range(8))]
+        with patch.object(custody.os, "geteuid", return_value=0), \
+             patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main(args), 0)
+            validate.assert_called_once_with(*args[2:], test_owner=False)
+
+        for suffix in ("--test-owner", "unexpected"):
+            with self.subTest(root_suffix=suffix), \
+                 patch.object(custody.os, "geteuid", return_value=0), \
+                 patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+                 patch.object(custody, "validate_update_target") as validate:
+                self.assertEqual(custody.main([*args, suffix]), 78)
+                validate.assert_not_called()
+
+        with patch.object(custody.os, "geteuid", return_value=1000), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main([*args, "--test-owner"]), 78)
+            validate.assert_not_called()
+
+        with patch.object(custody.os, "geteuid", return_value=1000), \
+             patch.dict(os.environ, {"LARES_MAINTENANCE_TESTING": "1"}), \
+             patch.object(custody, "validate_update_target") as validate:
+            self.assertEqual(custody.main([*args, "--test-owner"]), 0)
+            validate.assert_called_once_with(*args[2:], test_owner=True)
 
     def _run_installed(self, prefix: Path, installed: Path, script: str,
                        *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -101,7 +176,10 @@ class MaintenanceAdmissionTests(unittest.TestCase):
             ("restore-drill.sh", ()),
             ("setup-backups.sh", ("--prefix", str(prefix), "--dry-run")),
             ("refresh-recovery.sh", ("--prefix", str(prefix))),
+            ("update.sh", ("--release", str(self.root / "release.json"), "--dry-run")),
+            ("rollback.sh", ("--dry-run",)),
         ]
+        (self.root / "release.json").write_text("{}\n", encoding="ascii")
         for script, args in cases:
             with self.subTest(script=script):
                 result = self._run_installed(prefix, installed, script, *args,
@@ -823,10 +901,170 @@ while [ ! -e '{release}' ]; do sleep 0.01; done
 
 
 class MaintenanceImageProbePublicationTests(unittest.TestCase):
-    def run_extracted_publication(self, *, fail_private_cleanup: bool) -> tuple[int, dict[str, object], bool, tuple[bool, bool]]:
+    def test_keeper_candidate_tag_is_resolved_to_local_config_id_for_the_fixture_only(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                      and node.name == "candidate_image_config_id")
+        class ProbeFailure(Exception):
+            pass
+        calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
+        def docker(*args: str, **kwargs: object) -> SimpleNamespace:
+            calls.append((args, kwargs))
+            return SimpleNamespace(stdout="sha256:" + "a" * 64 + "\n", returncode=0)
+        namespace: dict[str, object] = {"docker": docker, "re": __import__("re"),
+                                        "ProbeFailure": ProbeFailure}
+        exec(compile(ast.Module(body=[helper], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        self.assertEqual(namespace["candidate_image_config_id"]("lares-keeper:test"),
+                         "sha256:" + "a" * 64)
+        self.assertEqual(calls[0][0], ("image", "inspect", "--format", "{{.Id}}", "lares-keeper:test"))
+        self.assertEqual(calls[0][1], {"check": False, "timeout": 20})
+        proof_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == "prove_update_history_client_lease")
+        proof_source = ast.get_source_segment(IMAGE_PROBE.read_text(encoding="utf-8"), proof_function)
+        self.assertIn('"ENGINE_IMAGE=" + shlex.quote(candidate_id)', proof_source)
+        self.assertIn('info.get("Image") != candidate_id', proof_source)
+        self.assertNotIn("engine_resolve_image", proof_source)
+
+    def test_actual_embedded_fd9_inspector_accepts_linux_lock_format_and_rejects_bad_records(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        value = next(node.value for node in tree.body if isinstance(node, ast.Assign)
+                     and any(isinstance(target, ast.Name) and target.id == "UPDATE_CLIENT_FD9_INSPECT"
+                             for target in node.targets))
+        inspector = ast.literal_eval(value)
+        with tempfile.TemporaryDirectory(prefix="lares-fd9-inspector-", dir="/private/tmp") as temporary:
+            root = Path(temporary)
+            proc = root / "proc"
+            process = proc / "1"
+            (process / "fd").mkdir(parents=True)
+            (process / "fdinfo").mkdir()
+            target = root / "gate"
+            target.write_text("gate", encoding="ascii")
+            (process / "fd/9").symlink_to(target)
+            (process / "exe").symlink_to(Path(sys.executable).with_name("node"))
+            script = "/app/services/box/bin/update-record.ts"
+            (process / "cmdline").write_bytes(b"node\0--import\0tsx/esm\0" + script.encode() + b"\0")
+            info = target.stat()
+            dev = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}"
+            inode = info.st_ino
+            def run(record: str) -> subprocess.CompletedProcess[str]:
+                (process / "fdinfo/9").write_text(record, encoding="ascii")
+                return subprocess.run([sys.executable, "-c", inspector, str(info.st_dev), str(inode),
+                                       script, str(proc)], capture_output=True, text=True, timeout=3)
+            records = [
+                f"pos:\t0\nflags:\t0100000\nino:\t{inode}\nlock:   1:  FLOCK  ADVISORY  READ  1234 {dev}:{inode} 0 EOF\n",
+                f"pos: 0\nflags: 0100000\nino: {inode}\nlock: 1: FLOCK ADVISORY READ 1234 {dev}:{inode} 0 EOF\n",
+                f"pos: 0\nflags: 0100000\nino: {inode}\nlock: 1:\tFLOCK\tADVISORY\tREAD\t1234\t{dev}:{inode}\t0\tEOF\n",
+            ]
+            for record in records:
+                with self.subTest(record=record):
+                    self.assertEqual(run(record).returncode, 0)
+            bad_base = records[1]
+            bad_records = [
+                bad_base.replace("READ 1234", "WRITE 1234"),
+                bad_base.replace("FLOCK ADVISORY", "POSIX ADVISORY"),
+                bad_base.replace("READ 1234", "READ not-a-pid"),
+                bad_base.replace(" 0 EOF", " 1 EOF"),
+                bad_base.replace(f"{dev}:{inode}", f"{dev}:{inode + 1}"),
+                bad_base.replace(f"ino: {inode}", f"ino: {inode + 1}"),
+                bad_base + f"ino: {inode}\n",
+                bad_base.replace("READ 1234", "READ\v1234"),
+                bad_base.replace("flags: 0100000", "flags: 0100001"),
+                bad_base + "lock:" + bad_base.split("lock:", 1)[1],
+            ]
+            for record in bad_records:
+                with self.subTest(record=record):
+                    self.assertNotEqual(run(record).returncode, 0)
+
+    def test_update_client_probe_recovers_only_exact_intent_and_isolates_cleanup(self) -> None:
+        tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
+        helpers = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
+                   and node.name in {"parse_update_client_intent", "update_client_info_matches",
+                                     "run_cleanup_actions", "stop_and_reap_process",
+                                     "finish_update_client_cleanup"}}
+        self.assertEqual(set(helpers), {"parse_update_client_intent", "update_client_info_matches",
+                                        "run_cleanup_actions", "stop_and_reap_process",
+                                        "finish_update_client_cleanup"})
+        signal_import = next((node for node in tree.body if isinstance(node, ast.Import)
+                              and any(alias.name == "signal" for alias in node.names)), None)
+        self.assertIsNotNone(signal_import, "probe must import signal in module scope")
+        namespace: dict[str, object] = {"re": __import__("re"), "os": os,
+                                        "subprocess": subprocess}
+        exec(compile(ast.Module(body=[signal_import], type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        self.assertIs(namespace["signal"], __import__("signal"))
+        exec(compile(ast.Module(body=list(helpers.values()), type_ignores=[]), str(IMAGE_PROBE), "exec"), namespace)
+        parse_intent = namespace["parse_update_client_intent"]
+        matches = namespace["update_client_info_matches"]
+        run_actions = namespace["run_cleanup_actions"]
+        token = "a" * 32
+        name = "lares-update-client-" + token
+        self.assertEqual(parse_intent(f"{name}\n{token}\nupdate\n"), (name, token))
+        self.assertIsNone(parse_intent(f"{name}\n{token}\nrollback\n"))
+        self.assertIsNone(parse_intent(f"lares-update-client-{'b' * 32}\n{token}\nupdate\n"))
+        self.assertIsNone(parse_intent("x" * 129))
+
+        container_id = "c" * 64
+        info = {"Id": container_id, "Name": "/" + name,
+                "Config": {"Labels": {"com.lares.maintenance.owner": token,
+                                        "com.lares.maintenance.operation": "update"}}}
+        self.assertTrue(matches(info, container_id, name, token, "update"))
+        self.assertFalse(matches(info, "c" * 12, name, token, "update"))
+        self.assertFalse(matches({**info, "Name": "/replacement"}, container_id, name, token, "update"))
+        self.assertFalse(matches(info, container_id, name, "d" * 32, "update"))
+
+        calls: list[str] = []
+        def fail() -> bool:
+            calls.append("first")
+            raise RuntimeError("injected cleanup failure")
+        def continue_cleanup() -> bool:
+            calls.append("second")
+            return True
+        self.assertFalse(run_actions([fail, continue_cleanup]))
+        self.assertEqual(calls, ["first", "second"])
+
+        class FakeProcess:
+            pid = 4242
+            def poll(self) -> None:
+                return None
+            def wait(self, *, timeout: int) -> None:
+                self.assert_timeout = timeout
+        import signal
+        observed: list[tuple[int, int]] = []
+        fake_process = FakeProcess()
+        with patch.object(os, "killpg", side_effect=lambda pid, sig: observed.append((pid, sig))):
+            stopped = namespace["stop_and_reap_process"](fake_process)
+        self.assertTrue(stopped)
+        self.assertEqual(observed, [(4242, signal.SIGKILL)])
+        self.assertEqual(fake_process.assert_timeout, 5)
+
+        class FailingProcess(FakeProcess):
+            def wait(self, *, timeout: int) -> None:
+                self.assert_timeout = timeout
+                raise TimeoutError("injected wait failure")
+        actions_called: list[str] = []
+        proof = {"stages": {}}
+        with patch.object(os, "killpg", side_effect=PermissionError("injected kill failure")):
+            finished = namespace["finish_update_client_cleanup"](
+                [lambda: actions_called.append("owned-cleanup") is None], FailingProcess(), proof)
+        self.assertFalse(finished)
+        self.assertEqual(actions_called, ["owned-cleanup"])
+        self.assertEqual(proof["stages"]["updateClientCleanupVerified"], False)
+
+        proof_function = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                              and node.name == "prove_update_history_client_lease")
+        calls_in_proof = [node.func.id for node in ast.walk(proof_function)
+                          if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)]
+        self.assertIn("parse_update_client_intent", calls_in_proof)
+        self.assertIn("update_client_info_matches", calls_in_proof)
+        self.assertIn("finish_update_client_cleanup", calls_in_proof)
+        self.assertIn("post_exit_evidence", {node.id for node in ast.walk(proof_function)
+                                             if isinstance(node, ast.Name)})
+
+    def run_extracted_publication(self, *, fail_private_cleanup: bool,
+                                  client_cleanup_failed: bool = False) -> tuple[int, dict[str, object], bool, tuple[bool, bool]]:
         with tempfile.TemporaryDirectory(prefix="lares-probe-publication-") as temporary:
             base = Path(temporary)
             fixture_root = base / "fixture-root"
+            fixture_root.mkdir()
             private_root = base / "fixture-private"
             (private_root / "role-login-fixtures").mkdir(parents=True)
             output = base / "proof.json"
@@ -848,15 +1086,43 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
                 "shutil": SimpleNamespace(rmtree=rmtree),
                 "pathlib": __import__("pathlib"),
                 "json": json,
+                "os": os,
+                "subprocess": subprocess,
                 "PROOF_PATH": str(output),
-                "proof": {"status": "passed", "failedStage": None, "failureKind": None, "cleanupOkay": False},
+                "proof": {"status": "passed", "failedStage": None, "failureKind": None,
+                          "cleanupOkay": False, "stages": {}},
             }
             tree = ast.parse(IMAGE_PROBE.read_text(encoding="utf-8"), filename=str(IMAGE_PROBE))
             needed = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)
-                      and node.name in {"cleanup", "publish_result"}}
-            self.assertEqual(set(needed), {"cleanup", "publish_result"})
-            module = ast.Module(body=[needed["cleanup"], needed["publish_result"]], type_ignores=[])
+                      and node.name in {"run_cleanup_actions", "stop_and_reap_process",
+                                        "finish_update_client_cleanup", "cleanup", "publish_result"}}
+            self.assertEqual(set(needed), {"run_cleanup_actions", "stop_and_reap_process",
+                                           "finish_update_client_cleanup", "cleanup", "publish_result"})
+            signal_import = next(node for node in tree.body if isinstance(node, ast.Import)
+                                 and any(alias.name == "signal" for alias in node.names))
+            module = ast.Module(body=[signal_import, needed["run_cleanup_actions"],
+                                      needed["stop_and_reap_process"],
+                                      needed["finish_update_client_cleanup"],
+                                      needed["cleanup"], needed["publish_result"]], type_ignores=[])
             exec(compile(module, str(IMAGE_PROBE), "exec"), namespace)
+            if client_cleanup_failed:
+                class ExitedProcess:
+                    pid = 4242
+                    def poll(self) -> None:
+                        return None
+                    def wait(self, *, timeout: int) -> None:
+                        self.assert_timeout = timeout
+                observed: list[tuple[int, int]] = []
+                final_actions: list[str] = []
+                blocker = ExitedProcess()
+                with patch.object(os, "killpg", side_effect=lambda pid, sig: observed.append((pid, sig))):
+                    aggregate = namespace["finish_update_client_cleanup"](
+                        [lambda: final_actions.append("last-action") is None], blocker,
+                        namespace["proof"], False)
+                self.assertFalse(aggregate)
+                self.assertEqual(final_actions, ["last-action"])
+                self.assertEqual(observed, [(4242, __import__("signal").SIGKILL)])
+                self.assertEqual(blocker.assert_timeout, 5)
             code = namespace["publish_result"](0)
             result = json.loads(output.read_text(encoding="utf-8"))
             roots_exist = fixture_root.exists(), private_root.exists()
@@ -883,6 +1149,15 @@ class MaintenanceImageProbePublicationTests(unittest.TestCase):
         self.assertEqual(result["failureKind"], "cleanup")
         self.assertTrue(output_published)
         self.assertEqual(roots_exist, (False, True))
+
+    def test_late_client_cleanup_failure_retains_probe_roots_and_publishes_failure(self) -> None:
+        code, result, output_published, roots_exist = self.run_extracted_publication(
+            fail_private_cleanup=False, client_cleanup_failed=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(result["failureKind"], "cleanup")
+        self.assertFalse(result["cleanupOkay"])
+        self.assertTrue(output_published)
+        self.assertEqual(roots_exist, (True, True))
 
 
 if __name__ == "__main__":

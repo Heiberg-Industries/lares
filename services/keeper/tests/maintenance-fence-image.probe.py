@@ -14,6 +14,7 @@ import re
 import secrets
 import shlex
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -104,6 +105,12 @@ proof = {
         "externalHbaSurvivesPermissivePgdataRestore": False,
         "keeperGeneratedComposeUsesBakedAdmissionEntryPoint": False,
         "keeperMainProcessRetainsSharedLeaseAfterComposeReturns": False,
+        "updateHistoryClientRetainsIndependentAdmissionLease": False,
+        "updateHistoryClientLeaseSurvivesCallerExit": False,
+        "updateHistoryClientOwnedContainerCleanupVerified": False,
+        "migrationClientRetainsIndependentAdmissionLease": False,
+        "migrationClientLeaseSurvivesCallerExit": False,
+        "migrationClientOwnedContainerCleanupVerified": False,
         "keeperCommandOverrideReceivesRestoredWorkingDirectory": False,
         "twoCooperatingReadOnlyHoldersBlockExclusive": False,
         "durableEnteringDeniesNewAdmissionBeforeExclusive": False,
@@ -115,6 +122,7 @@ proof = {
     "failedStage": None,
     "failureKind": None,
     "cleanupOkay": False,
+    "candidateKeeperImageConfigId": None,
 }
 stage = "fixture-setup"
 
@@ -122,6 +130,93 @@ stage = "fixture-setup"
 class ProbeFailure(Exception):
     def __init__(self, kind: str = "assertion") -> None:
         self.kind = kind
+
+
+def parse_update_client_intent(contents: str) -> tuple[str, str] | None:
+    """Accept only the fixed name/token/operation record written before docker create."""
+    if len(contents) > 128:
+        return None
+    lines = contents.splitlines()
+    if (len(lines) != 3 or lines[2] != "update" or
+            not re.fullmatch(r"[a-f0-9]{32}", lines[1]) or
+            lines[0] != "lares-update-client-" + lines[1]):
+        return None
+    return lines[0], lines[1]
+
+
+def update_client_info_matches(info: dict[str, object], container_id: str,
+                               name: str, owner: str, operation: str) -> bool:
+    labels = info.get("Config", {}).get("Labels", {})  # type: ignore[union-attr]
+    return (re.fullmatch(r"[a-f0-9]{64}", container_id) is not None and
+            info.get("Id") == container_id and info.get("Name") == "/" + name and
+            labels.get("com.lares.maintenance.owner") == owner and
+            labels.get("com.lares.maintenance.operation") == operation)
+
+
+def run_cleanup_actions(actions: list[object]) -> bool:
+    """Run every bounded cleanup action, even if an earlier action raises or fails."""
+    okay = True
+    for action in actions:
+        try:
+            if not action():  # type: ignore[operator]
+                okay = False
+        except Exception:
+            okay = False
+    return okay
+
+
+UPDATE_CLIENT_FD9_INSPECT = r"""import os,re,stat,sys
+proc=sys.argv[4] if len(sys.argv)>4 else '/proc'
+expected_dev,expected_ino=int(sys.argv[1]),int(sys.argv[2])
+info=os.stat(proc+'/1/fd/9')
+assert stat.S_ISREG(info.st_mode) and (info.st_dev,info.st_ino)==(expected_dev,expected_ino)
+assert os.path.basename(os.readlink(proc+'/1/exe'))=='node'
+expected_script=sys.argv[3].encode('ascii')
+lines=open(proc+'/1/fdinfo/9',encoding='ascii').read().splitlines()
+flags=[line.split(':',1)[1].strip() for line in lines if line.startswith('flags:')]
+inos=[line.split(':',1)[1].strip() for line in lines if line.startswith('ino:')]
+locks=[line for line in lines if line.startswith('lock:')]
+assert len(flags)==1 and re.fullmatch(r'[0-7]+',flags[0],re.ASCII)
+assert int(flags[0],8)&os.O_ACCMODE==os.O_RDONLY
+assert len(inos)==1 and re.fullmatch(r'[0-9]+',inos[0],re.ASCII) and int(inos[0])==expected_ino
+pattern=r'lock:[ \t]+[0-9]+:[ \t]+FLOCK[ \t]+ADVISORY[ \t]+READ[ \t]+[0-9]+[ \t]+([0-9a-f]+):([0-9a-f]+):([0-9]+)[ \t]+0[ \t]+EOF'
+match=re.fullmatch(pattern,locks[0],re.ASCII) if len(locks)==1 else None
+assert match and match.groups()==(format(os.major(expected_dev),'02x'),format(os.minor(expected_dev),'02x'),str(expected_ino))
+assert expected_script in open(proc+'/1/cmdline','rb').read().split(b'\0')
+print('ok')"""
+
+
+def stop_and_reap_process(process: subprocess.Popen | None) -> bool:
+    """Kill a remaining fixture process and always wait with a finite bound."""
+    if process is None:
+        return True
+    okay = True
+    try:
+        if process.poll() is not None:
+            return True
+    except Exception:
+        okay = False
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        okay = False
+    try:
+        process.wait(timeout=5)
+    except Exception:
+        okay = False
+    return okay
+
+
+def finish_update_client_cleanup(actions: list[object], blocker_cli: subprocess.Popen | None,
+                                 proof_record: dict[str, object], prior_ok: bool = True) -> bool:
+    """Publish the client cleanup marker only after all cleanup actions finish."""
+    actions.append(lambda: stop_and_reap_process(blocker_cli))
+    actions_ok = run_cleanup_actions(actions)
+    okay = prior_ok and actions_ok
+    proof_record["stages"]["updateClientCleanupVerified"] = okay  # type: ignore[index]
+    return okay
 
 
 def write_role_login_fixture(role: str, password: str) -> pathlib.Path:
@@ -154,6 +249,16 @@ def run(*args: str, check: bool = True, timeout: int = 60,
 def docker(*args: str, check: bool = True, timeout: int = 60,
            input_data: str | bytes | None = None) -> subprocess.CompletedProcess:
     return run("docker", *args, check=check, timeout=timeout, input_data=input_data)
+
+
+def candidate_image_config_id(image_ref: str) -> str:
+    """Resolve this CI-loaded candidate tag to its immutable local config ID."""
+    result = docker("image", "inspect", "--format", "{{.Id}}", image_ref,
+                    check=False, timeout=20)
+    image_id = result.stdout.strip()
+    if result.returncode != 0 or not re.fullmatch(r"sha256:[a-f0-9]{64}", image_id):
+        raise ProbeFailure("keeper-candidate-image")
+    return image_id
 
 
 def compose(*args: str, bootstrap: bool = False, check: bool = True,
@@ -705,6 +810,336 @@ def prove_keeper_default_admission() -> None:
 
 
 
+def prove_update_history_client_lease() -> None:
+    """Exercise both fixed consumers through engine_normal_client and prove real fd 9 leases."""
+    import signal
+
+    identity = custody.validate(fixture_prefix, subnet)
+    lock_path = fixture_prefix / "var/lib/lares-maintenance/admission/service-gate.lock"
+    lock_stat = lock_path.stat()
+
+    def owned_info(container_id: str, owner: str, operation: str) -> dict[str, object]:
+        if not re.fullmatch(r"[a-f0-9]{64}", container_id):
+            raise ProbeFailure("update-client-identity")
+        result = docker("inspect", container_id, check=False, timeout=10)
+        if result.returncode != 0:
+            raise ProbeFailure("update-client-identity")
+        try:
+            info = json.loads(result.stdout)[0]
+        except (json.JSONDecodeError, IndexError, TypeError):
+            raise ProbeFailure("update-client-identity") from None
+        labels = info.get("Config", {}).get("Labels", {})
+        if info.get("Id") != container_id or labels.get("com.lares.maintenance.owner") != owner or \
+           labels.get("com.lares.maintenance.operation") != operation:
+            raise ProbeFailure("update-client-identity")
+        return info
+
+    def cleanup_owned(container_id: str, owner: str, operation: str) -> bool:
+        try:
+            info = owned_info(container_id, owner, operation)
+        except ProbeFailure:
+            return False
+        if info.get("State", {}).get("Running") is True:
+            if docker("stop", "--time", "5", container_id, check=False, timeout=12).returncode != 0:
+                return False
+            try:
+                info = owned_info(container_id, owner, operation)
+            except ProbeFailure:
+                return False
+            if info.get("State", {}).get("Running") is not False:
+                return False
+        docker("rm", container_id, check=False, timeout=12)
+        id_absence = docker("ps", "-aq", "--no-trunc", "--filter", "id=" + container_id,
+                            check=False, timeout=8)
+        name = str(info.get("Name", "")).lstrip("/")
+        name_absence = docker("ps", "-aq", "--filter", "name=^/" + name + "$",
+                              check=False, timeout=8)
+        if id_absence.returncode != 0 or id_absence.stdout.strip() or \
+           name_absence.returncode != 0 or name_absence.stdout.strip():
+            return False
+        if container_id in known_containers:
+            known_containers.remove(container_id)
+        return True
+
+    def prove_one(script: str, program_args: list[str], credential: pathlib.Path,
+                  pguser: str, table: str, query_needle: str) -> None:
+        token = uuid.uuid4().hex
+        blocker_name = project + "-client-lock-" + token[:12]
+        blocker_cidfile = root / ("client-lock-" + token + ".cid")
+        work_dir = root / ("client-work-" + token)
+        work_dir.mkdir(mode=0o700)
+        blocker_id = client_id = client_owner = ""
+        client_name = ""
+        blocker_cli: subprocess.Popen | None = None
+        launcher: subprocess.Popen | None = None
+        containers: list[tuple[str, str, str]] = []
+        primary: BaseException | None = None
+        cleanup_ok = True
+
+        try:
+            blocker = docker("create", "--name", blocker_name, "--cidfile", str(blocker_cidfile),
+                "--label", "com.lares.maintenance.owner=" + token,
+                "--label", "com.lares.maintenance.operation=probe-lock", "--network", "host",
+                "--read-only", "--tmpfs", "/tmp", "--cap-drop", "ALL",
+                "--security-opt", "no-new-privileges",
+                "--mount", f"type=bind,src={operator_path},dst=/run/operator-password,readonly",
+                "--env", "PGHOST=127.0.0.1", "--env", "PGPORT=5432",
+                "--env", "PGDATABASE=lares_state", "--env", "PGUSER=lares_operator",
+                "--entrypoint", "/bin/sh", PINNED_DB_IMAGE,
+                "-ec", 'export PGPASSWORD="$(cat /run/operator-password)"; exec psql -X -v ON_ERROR_STOP=1 '
+                '-U lares_operator -d lares_state -c "BEGIN; LOCK TABLE ' + table +
+                ' IN ACCESS EXCLUSIVE MODE; SELECT pg_sleep(120); COMMIT;"',
+                check=False, timeout=45)
+            blocker_id = blocker_cidfile.read_text(encoding="ascii").strip() if blocker_cidfile.is_file() else ""
+            if blocker.returncode != 0 or not re.fullmatch(r"[a-f0-9]{64}", blocker_id):
+                raise ProbeFailure("update-client-lock-fixture")
+            known_containers.append(blocker_id)
+            containers.append((blocker_id, token, "probe-lock"))
+            owned_info(blocker_id, token, "probe-lock")
+            blocker_cli = subprocess.Popen(["docker", "start", "--attach", blocker_id],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                locks = operator_query(compose_files,
+                    "SELECT count(*)::text FROM pg_locks WHERE relation='" + table +
+                    "'::regclass AND mode='AccessExclusiveLock' AND granted AND pid<>pg_backend_pid()",
+                    check=False)
+                if locks == "1":
+                    break
+                if blocker_cli.poll() is not None:
+                    raise ProbeFailure("update-client-lock-fixture")
+                time.sleep(0.25)
+            else:
+                raise ProbeFailure("update-client-lock-fixture")
+
+            if script == "bin/update-record.ts":
+                client_args = ["--ro", str(credential), "--env", "DATABASE_PASSWORD_FILE=" + str(credential),
+                    "--env", "PGHOST=127.0.0.1", "--env", "PGPORT=5432",
+                    "--env", "PGDATABASE=lares_state", "--env", "PGUSER=" + pguser,
+                    "bin/update-record.ts", *program_args]
+            else:
+                client_args = ["--ro", str(credential), "--env", "DATABASE_PASSWORD_FILE=" + str(credential),
+                    "--env", "LARES_OPERATOR_PASSWORD_FILE=" + str(credential),
+                    "--env", "PGHOST=127.0.0.1", "--env", "PGPORT=5432",
+                    "--env", "PGDATABASE=lares_state", "--env", "PGUSER=" + pguser,
+                    "migrate.ts", *program_args]
+            candidate_id = candidate_image_config_id(IMAGE)
+            proof["candidateKeeperImageConfigId"] = candidate_id
+            launch = "\n".join([
+                "set -euo pipefail",
+                "HERE=" + shlex.quote(str(REPO / "services/box/ops")),
+                "BOX_DIR=" + shlex.quote(str(REPO / "services/box")),
+                "ADMISSION_PREFIX=" + shlex.quote(str(fixture_prefix)),
+                "LARES_SUBNET=" + shlex.quote(subnet),
+                "WORK=" + shlex.quote(str(work_dir)),
+                "MAINTENANCE_TEST_OWNER=0",
+                ". \"$HERE/engine-run.sh\"",
+                "ENGINE_IMAGE=" + shlex.quote(candidate_id),
+                shlex.join(["engine_normal_client", "update", *client_args]),
+            ])
+
+            try:
+                os.fstat(custody._LEASE_FD)
+            except OSError:
+                pass
+            else:
+                raise ProbeFailure("update-client-host-lease-fixture")
+            custody._acquire_normal_lease(fixture_prefix, os.geteuid())
+            try:
+                launcher = subprocess.Popen(["bash", "-ec", launch],
+                    env=os.environ.copy(),
+                    pass_fds=(custody._LEASE_FD,), stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL, start_new_session=True)
+            finally:
+                os.close(custody._LEASE_FD)
+
+            deadline = time.monotonic() + 45
+            cidfiles: list[pathlib.Path] = []
+            while time.monotonic() < deadline:
+                intents = list(work_dir.glob("engine-client-*.intent"))
+                if len(intents) == 1 and intents[0].is_file():
+                    intent = parse_update_client_intent(intents[0].read_text(encoding="ascii"))
+                    if intent is not None:
+                        client_name, client_owner = intent
+                cidfiles = list(work_dir.glob("engine-client-*.cid"))
+                if len(cidfiles) == 1 and cidfiles[0].is_file():
+                    client_id = cidfiles[0].read_text(encoding="ascii").strip()
+                    if re.fullmatch(r"[a-f0-9]{64}", client_id):
+                        break
+                if launcher.poll() is not None:
+                    raise ProbeFailure("update-client-launch")
+                time.sleep(0.1)
+            if not re.fullmatch(r"[a-f0-9]{64}", client_id) or not client_name:
+                raise ProbeFailure("update-client-launch")
+            try:
+                info_result = docker("inspect", client_id, check=False, timeout=10)
+                info = json.loads(info_result.stdout)[0] if info_result.returncode == 0 else {}
+            except (json.JSONDecodeError, IndexError, TypeError):
+                info = {}
+            if not update_client_info_matches(info, client_id, client_name, client_owner, "update"):
+                raise ProbeFailure("update-client-identity")
+            if info.get("Image") != candidate_id:
+                raise ProbeFailure("update-client-image")
+            containers.append((client_id, client_owner, "update"))
+            known_containers.append(client_id)
+            if info.get("Id") != client_id:
+                raise ProbeFailure("update-client-identity")
+            expected_script = "/app/services/box/" + script
+            expected_args = ["/run/lares-maintenance/admission", identity["installationId"],
+                str(identity["epoch"]), "--", "node", "--import", "tsx/esm",
+                expected_script, *program_args]
+            if info.get("Path") != "/usr/local/lib/lares/maintenance-admission-v1" or \
+               info.get("Args") != expected_args or \
+               info.get("Config", {}).get("Entrypoint") != ["/usr/local/lib/lares/maintenance-admission-v1"]:
+                raise ProbeFailure("update-client-command")
+            mounts = info.get("Mounts", [])
+            admission = fixture_prefix / "var/lib/lares-maintenance/admission"
+            admission_mount = [m for m in mounts if m.get("Destination") == "/run/lares-maintenance/admission"]
+            credential_mount = [m for m in mounts if m.get("Destination") == str(credential)]
+            if len(admission_mount) != 1 or admission_mount[0].get("Source") != str(admission) or \
+               admission_mount[0].get("RW") is not False or len(credential_mount) != 1 or \
+               credential_mount[0].get("Source") != str(credential) or credential_mount[0].get("RW") is not False:
+                raise ProbeFailure("update-client-mount")
+
+            inspect_script = UPDATE_CLIENT_FD9_INSPECT
+
+            query_user = pguser
+            query_pattern = query_needle.replace("'", "''")
+            deadline = time.monotonic() + 45
+            retained = False
+            while time.monotonic() < deadline:
+                state = owned_info(client_id, client_owner, "update").get("State", {})
+                if state.get("Running") is not True:
+                    break
+                evidence = docker("exec", client_id, "python3", "-c", inspect_script,
+                    str(lock_stat.st_dev), str(lock_stat.st_ino),
+                    "/app/services/box/" + script, check=False, timeout=8)
+                waiting = operator_query(compose_files,
+                    "SELECT count(*)::text FROM pg_stat_activity WHERE datname='lares_state' " +
+                    "AND usename='" + query_user + "' AND wait_event_type='Lock' AND query LIKE '%" +
+                    query_pattern + "%'", check=False)
+                if evidence.returncode == 0 and evidence.stdout.strip() == "ok" and waiting == "1":
+                    retained = True
+                    break
+                if launcher.poll() is not None:
+                    break
+                time.sleep(0.25)
+            if not retained or run("flock", "--nonblock", "--exclusive", str(lock_path),
+                                   "-c", "true", check=False).returncode != 1:
+                raise ProbeFailure("update-client-lease")
+
+            os.killpg(launcher.pid, signal.SIGKILL)
+            try:
+                launcher.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                raise ProbeFailure("update-client-caller-cleanup") from None
+            info = owned_info(client_id, client_owner, "update")
+            post_exit_evidence = docker("exec", client_id, "python3", "-c", inspect_script,
+                str(lock_stat.st_dev), str(lock_stat.st_ino),
+                "/app/services/box/" + script, check=False, timeout=8)
+            if info.get("State", {}).get("Running") is not True or \
+               post_exit_evidence.returncode != 0 or post_exit_evidence.stdout.strip() != "ok" or \
+               run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False).returncode != 1:
+                raise ProbeFailure("update-client-caller-cleanup")
+            if not cleanup_owned(client_id, client_owner, "update"):
+                raise ProbeFailure("update-client-cleanup")
+            containers.remove((client_id, client_owner, "update"))
+            if run("flock", "--nonblock", "--exclusive", str(lock_path), "-c", "true", check=False).returncode != 0:
+                raise ProbeFailure("update-client-release")
+
+            stem = "updateHistoryClient" if script == "bin/update-record.ts" else "migrationClient"
+            proof["claims"][stem + "RetainsIndependentAdmissionLease"] = True
+            proof["claims"][stem + "LeaseSurvivesCallerExit"] = True
+            proof["claims"][stem + "OwnedContainerCleanupVerified"] = True
+            proof["stages"][stem + "SameProcessFd9"] = True
+            proof["stages"][stem + "CallerLostLeaseHeld"] = True
+            proof["stages"][stem + "StopAbsenceAndRelease"] = True
+        except BaseException as error:
+            primary = error
+        finally:
+            if launcher is not None and launcher.poll() is None:
+                try:
+                    os.killpg(launcher.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except Exception:
+                    cleanup_ok = False
+                try:
+                    launcher.wait(timeout=5)
+                except Exception:
+                    cleanup_ok = False
+            if not any(item[2] == "update" for item in containers):
+                # Recover a create that completed before the host received a cidfile or
+                # completed the identity check. The fixed intent is written before create.
+                try:
+                    intents = list(work_dir.glob("engine-client-*.intent"))
+                    if len(intents) == 1 and intents[0].is_file():
+                        intent = parse_update_client_intent(intents[0].read_text(encoding="ascii"))
+                        if intent is not None:
+                            client_name, client_owner = intent
+                            recovered = docker("inspect", "--format", "{{json .}}", client_name,
+                                               check=False, timeout=8)
+                            if recovered.returncode == 0:
+                                item = json.loads(recovered.stdout)
+                                recovered_id = item.get("Id", "")
+                                if update_client_info_matches(item, recovered_id, client_name,
+                                                              client_owner, "update"):
+                                    client_id = recovered_id
+                                    containers.append((client_id, client_owner, "update"))
+                                    known_containers.append(client_id)
+                                else:
+                                    cleanup_ok = False
+                            else:
+                                absence = docker("ps", "-aq", "--filter", "name=^/" + client_name + "$",
+                                                 check=False, timeout=8)
+                                if absence.returncode != 0 or absence.stdout.strip():
+                                    cleanup_ok = False
+                        else:
+                            cleanup_ok = False
+                except Exception:
+                    cleanup_ok = False
+            if not blocker_id:
+                try:
+                    partial = docker("inspect", "--format",
+                        '{{.Id}}|{{.Name}}|{{index .Config.Labels "com.lares.maintenance.owner"}}|{{index .Config.Labels "com.lares.maintenance.operation"}}',
+                        blocker_name, check=False, timeout=8)
+                    if partial.returncode == 0:
+                        fields = partial.stdout.strip().split("|")
+                        if (len(fields) == 4 and re.fullmatch(r"[a-f0-9]{64}", fields[0])
+                                and fields[1] == "/" + blocker_name and fields[2] == token
+                                and fields[3] == "probe-lock"):
+                            blocker_id = fields[0]
+                            known_containers.append(blocker_id)
+                            containers.append((blocker_id, token, "probe-lock"))
+                        else:
+                            cleanup_ok = False
+                    else:
+                        absence = docker("ps", "-aq", "--filter", "name=^/" + blocker_name + "$",
+                                         check=False, timeout=8)
+                        if absence.returncode != 0 or absence.stdout.strip():
+                            cleanup_ok = False
+                except Exception:
+                    cleanup_ok = False
+            cleanup_ok = finish_update_client_cleanup([
+                lambda container_id=container_id, owner=owner, operation=operation:
+                    cleanup_owned(container_id, owner, operation)
+                for container_id, owner, operation in reversed(containers)
+            ], blocker_cli, proof, cleanup_ok)
+            if primary is not None and not cleanup_ok:
+                proof["failureKind"] = "cleanup"
+        if primary is not None:
+            if not cleanup_ok:
+                raise ProbeFailure("update-client-cleanup")
+            raise primary
+        if not cleanup_ok:
+            raise ProbeFailure("update-client-cleanup")
+
+    prove_one("bin/update-record.ts", ["previous-release"],
+              secrets_dir / "database-password", "lares_app", "update_history", "FROM update_history")
+    prove_one("migrate.ts", ["--schema-owner"], operator_path,
+              "lares_operator", "schema_migrations", "schema_migrations")
+
+
 def operator_call(compose_args: list[str], program: list[str], *, input_data: str | None = None,
                   check: bool = True, timeout: int = 60,
                   operator_timeout: int = 30) -> subprocess.CompletedProcess:
@@ -1004,6 +1439,8 @@ def run_database_proof() -> None:
     proof["stages"]["productionInstallationSettings"] = True
     stage = "keeper-default-entrypoint-admission"
     prove_keeper_default_admission()
+    stage = "update-history-client-admission"
+    prove_update_history_client_lease()
     stage = "normal-container-secret-boundary"
     database_container = compose("ps", "-q", "db").stdout.strip()
     if not re.fullmatch(r"[a-f0-9]{12,64}", database_container):
@@ -1197,11 +1634,16 @@ def run_database_proof() -> None:
 
 
 def cleanup() -> bool:
-    okay = True
+    okay = proof.get("stages", {}).get("updateClientCleanupVerified") is not False
     for name in list(reversed(known_containers)):
         try:
             if docker("rm", "--force", name, check=False, timeout=20).returncode != 0:
                 okay = False
+            elif re.fullmatch(r"[a-f0-9]{64}", name):
+                absence = docker("ps", "-aq", "--no-trunc", "--filter", "id=" + name,
+                                 check=False, timeout=8)
+                if absence.returncode != 0 or absence.stdout.strip():
+                    okay = False
         except Exception:
             okay = False
     if bootstrap_file.exists() or normal_file.exists():
@@ -1212,13 +1654,14 @@ def cleanup() -> bool:
             okay = okay and result.returncode == 0
         except Exception:
             okay = False
-    for directory in (root, private_root):
-        try:
-            shutil.rmtree(directory)
-        except FileNotFoundError:
-            pass
-        except Exception:
-            okay = False
+    if okay:
+        for directory in (root, private_root):
+            try:
+                shutil.rmtree(directory)
+            except FileNotFoundError:
+                pass
+            except Exception:
+                okay = False
     return okay
 
 

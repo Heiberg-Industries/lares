@@ -49,6 +49,8 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+ORIGINAL_ARGS=("$@")
+ORIGINAL_ARGS_COUNT=$#
 # Where update.sh and backup.sh live. Defaults to this script's own directory, which is true
 # both in the repository and on a box where the ops scripts are copied together.
 OPS_DIR="${LARES_OPS_DIR:-$HERE}"
@@ -56,8 +58,20 @@ OPS_DIR="${LARES_OPS_DIR:-$HERE}"
 BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same names ops/update.sh uses, so a rollback reads exactly the files the update wrote —
 # the installer's own path (F1: $PREFIX/opt/lares/compose.yaml — one file, no override).
-COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/lares}"
-COMPOSE_FILES="${UPDATE_COMPOSE_FILES:-compose.yaml}"
+if [ "${LARES_PREFIX+x}" = x ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
+if [ "${DB_COMPOSE_DIR+x}" = x ]; then COMPOSE_DIR="$DB_COMPOSE_DIR"
+elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""
+else COMPOSE_DIR="${ADMISSION_PREFIX%/}/opt/lares"; fi
+if [ "${UPDATE_COMPOSE_FILES+x}" = x ]; then COMPOSE_FILES="$UPDATE_COMPOSE_FILES"; else COMPOSE_FILES=compose.yaml; fi
+ENGINE_MODE=host
+if [ "${PGHOST+x}" = x ]; then ROLLBACK_PGHOST="$PGHOST"; else ROLLBACK_PGHOST=127.0.0.1; fi
+if [ "${PGPORT+x}" = x ]; then ROLLBACK_PGPORT="$PGPORT"; else ROLLBACK_PGPORT=5432; fi
+if [ "${PGDATABASE+x}" = x ]; then ROLLBACK_PGDATABASE="$PGDATABASE"; else ROLLBACK_PGDATABASE=lares_state; fi
+if [ "${LARES_OPERATOR_PASSWORD_FILE+x}" = x ]; then OPERATOR_PASSWORD_FILE="$LARES_OPERATOR_PASSWORD_FILE"; else OPERATOR_PASSWORD_FILE="${ADMISSION_PREFIX%/}/etc/lares/operator/database-password"; fi
+MAINTENANCE_TEST_OWNER=0
+if [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ "$(id -u)" -ne 0 ]; then
+  MAINTENANCE_TEST_OWNER=1
+fi
 
 # 64 usage · 78 refused, nothing changed · 70 the rollback itself failed.
 EX_USAGE=64
@@ -92,8 +106,53 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Bind every path and database connection to this exact installation before scratch or I/O.
+if [ -r "$HERE/engine-run.sh" ]; then
+  # shellcheck source=engine-run.sh
+  . "$HERE/engine-run.sh"
+  if engine_image_mode; then ENGINE_MODE=image; fi
+fi
+DATABASE_PASSWORD_FILE="${ADMISSION_PREFIX%/}/etc/lares/secrets/database-password"
+PG_DATABASE="$ROLLBACK_PGDATABASE"
+validate_target() {
+  if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+    python3 "$HERE/maintenance-custody.py" validate-update-target "$ADMISSION_PREFIX" "$COMPOSE_DIR" \
+      "$COMPOSE_FILES" "$DATABASE_PASSWORD_FILE" "$OPERATOR_PASSWORD_FILE" \
+      "$ROLLBACK_PGHOST" "$ROLLBACK_PGPORT" "$ROLLBACK_PGDATABASE" --test-owner
+  else
+    python3 "$HERE/maintenance-custody.py" validate-update-target "$ADMISSION_PREFIX" "$COMPOSE_DIR" \
+      "$COMPOSE_FILES" "$DATABASE_PASSWORD_FILE" "$OPERATOR_PASSWORD_FILE" \
+      "$ROLLBACK_PGHOST" "$ROLLBACK_PGPORT" "$ROLLBACK_PGDATABASE"
+  fi
+}
+if ! validate_target; then
+  echo "rollback: the requested Compose, credentials, or database do not match one installed Lares target." >&2
+  exit "$EX_REFUSED"
+fi
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" != 1 ]; then
+  if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+    if [ "$ORIGINAL_ARGS_COUNT" -gt 0 ]; then
+      exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" rollback --test-owner -- "${ORIGINAL_ARGS[@]}"
+    fi
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" rollback --test-owner --
+  fi
+  if [ "$ORIGINAL_ARGS_COUNT" -gt 0 ]; then
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" rollback -- "${ORIGINAL_ARGS[@]}"
+  fi
+  exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" rollback --
+fi
+if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+  python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" rollback --test-owner >/dev/null 2>&1
+else
+  python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" rollback >/dev/null 2>&1
+fi
+if [ "$?" -ne 0 ]; then
+  echo "rollback: normal maintenance admission is not valid; nothing has been changed." >&2
+  exit "$EX_REFUSED"
+fi
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/lares-rollback-XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+trap 'client_status=$?; trap - EXIT; if engine_normal_client_cleanup; then rm -rf "$WORK"; else client_status=78; echo "rollback: client cleanup is uncertain; evidence retained at $WORK" >&2; fi; exit "$client_status"' EXIT
 
 TAB=$(printf '\t')
 
@@ -107,18 +166,11 @@ TAB=$(printf '\t')
 # file in the box folder, or LARES_ENGINE_IMAGE) the record program runs in a throwaway
 # container of that image — this box's own engine, since a rollback moves no database and
 # applies no migration. On a checkout it runs on the host with node, exactly as it always has.
-ENGINE_MODE=host
-if [ -r "$HERE/engine-run.sh" ]; then
-  # shellcheck source=engine-run.sh
-  . "$HERE/engine-run.sh"
-  if engine_image_mode; then ENGINE_MODE=image; fi
-fi
 PG_USER=lares_app
-PG_DATABASE="${PGDATABASE:-lares_state}"
+PG_DATABASE="$ROLLBACK_PGDATABASE"
 # The database password is a FILE handed to the container, never a value in argv or the environment.
-DATABASE_PASSWORD_FILE="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets/database-password"
 DB_ENV=(--ro "$DATABASE_PASSWORD_FILE" --env "DATABASE_PASSWORD_FILE=$DATABASE_PASSWORD_FILE"
-  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGHOST=$ROLLBACK_PGHOST" --env "PGPORT=$ROLLBACK_PGPORT"
   --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
 
 if [ "$ENGINE_MODE" = image ]; then
@@ -133,10 +185,10 @@ if [ "$ENGINE_MODE" = image ]; then
 fi
 
 recorder() {
-  if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
+  if [ -n "${LARES_UPDATE_RECORDER:-}" ] && [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ "$(id -u)" -ne 0 ]; then
     "$LARES_UPDATE_RECORDER" "$@"
   elif [ "$ENGINE_MODE" = image ]; then
-    engine_run "${DB_ENV[@]}" bin/update-record.ts "$@"
+    engine_normal_client rollback "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
     DATABASE_PASSWORD_FILE="$DATABASE_PASSWORD_FILE" \
       PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" \

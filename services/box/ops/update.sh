@@ -51,6 +51,7 @@
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$0")" && pwd)
+ORIGINAL_ARGS=("$@")
 # Where backup.sh and rollback.sh live. Defaults to this script's own directory, which is
 # true both in the repository and on a box where the ops scripts are copied together.
 OPS_DIR="${LARES_OPS_DIR:-$HERE}"
@@ -61,14 +62,26 @@ BOX_DIR="${LARES_BOX_DIR:-$(cd "$HERE/.." && pwd)}"
 # The same variable name ops/backup-verify.sh and ops/restore-drill.sh already use, but
 # defaulting to the installer's own path (F1: $PREFIX/opt/lares/compose.yaml — one file, no
 # override, since this engine now renders exactly one).
-COMPOSE_DIR="${DB_COMPOSE_DIR:-/opt/lares}"
-COMPOSE_FILES="${UPDATE_COMPOSE_FILES:-compose.yaml}"
+if [ "${LARES_PREFIX+x}" = x ]; then ADMISSION_PREFIX="$LARES_PREFIX"; else ADMISSION_PREFIX=/; fi
+if [ "${DB_COMPOSE_DIR+x}" = x ]; then COMPOSE_DIR="$DB_COMPOSE_DIR"
+elif [ "$ADMISSION_PREFIX" != / ]; then COMPOSE_DIR=""
+else COMPOSE_DIR="${ADMISSION_PREFIX%/}/opt/lares"; fi
+if [ "${UPDATE_COMPOSE_FILES+x}" = x ]; then COMPOSE_FILES="$UPDATE_COMPOSE_FILES"; else COMPOSE_FILES=compose.yaml; fi
+ENGINE_MODE=host
 # backup-verify.sh runs at 05:00 against a 03:00 backup, so a passing check is normally under
 # 26h old. Older than this and the proof is last night's at best.
 MAX_AGE_HOURS="${UPDATE_BACKUP_MAX_AGE_HOURS:-26}"
 PG_USER="${PGUSER:-lares_app}"
-PG_DATABASE="${PGDATABASE:-lares_state}"
-OPERATOR_PASSWORD_FILE="${LARES_OPERATOR_PASSWORD_FILE:-${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/operator/database-password}"
+if [ "${LARES_OPERATOR_PASSWORD_FILE+x}" = x ]; then OPERATOR_PASSWORD_FILE="$LARES_OPERATOR_PASSWORD_FILE"; else OPERATOR_PASSWORD_FILE="${ADMISSION_PREFIX%/}/etc/lares/operator/database-password"; fi
+SECRETS_DIR="${ADMISSION_PREFIX%/}/etc/lares/secrets"
+if [ "${PGHOST+x}" = x ]; then UPDATE_PGHOST="$PGHOST"; else UPDATE_PGHOST=127.0.0.1; fi
+if [ "${PGPORT+x}" = x ]; then UPDATE_PGPORT="$PGPORT"; else UPDATE_PGPORT=5432; fi
+if [ "${PGDATABASE+x}" = x ]; then UPDATE_PGDATABASE="$PGDATABASE"; else UPDATE_PGDATABASE=lares_state; fi
+PG_DATABASE="$UPDATE_PGDATABASE"
+MAINTENANCE_TEST_OWNER=0
+if [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ "$(id -u)" -ne 0 ]; then
+  MAINTENANCE_TEST_OWNER=1
+fi
 
 # 64 usage · 75 the backup failed · 78 refused before anything changed · 70 failed afterwards.
 EX_USAGE=64
@@ -130,8 +143,47 @@ if [ ! -f "$RELEASE_FILE" ]; then
   exit "$EX_USAGE"
 fi
 
+# Validate the complete target before creating scratch files or contacting Docker/Postgres.
+if [ -r "$HERE/engine-run.sh" ]; then
+  # shellcheck source=engine-run.sh
+  . "$HERE/engine-run.sh"
+  if engine_image_mode; then ENGINE_MODE=image; fi
+fi
+validate_target() {
+  if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+    python3 "$HERE/maintenance-custody.py" validate-update-target "$ADMISSION_PREFIX" "$COMPOSE_DIR" \
+      "$COMPOSE_FILES" "$SECRETS_DIR/database-password" "$OPERATOR_PASSWORD_FILE" \
+      "$UPDATE_PGHOST" "$UPDATE_PGPORT" "$UPDATE_PGDATABASE" --test-owner
+  else
+    python3 "$HERE/maintenance-custody.py" validate-update-target "$ADMISSION_PREFIX" "$COMPOSE_DIR" \
+      "$COMPOSE_FILES" "$SECRETS_DIR/database-password" "$OPERATOR_PASSWORD_FILE" \
+      "$UPDATE_PGHOST" "$UPDATE_PGPORT" "$UPDATE_PGDATABASE"
+  fi
+}
+if ! validate_target; then
+  echo "update: the requested Compose, credentials, or database do not match one installed Lares target." >&2
+  exit "$EX_REFUSED"
+fi
+
+if [ "${LARES_MAINTENANCE_ADMITTED:-}" != 1 ]; then
+  if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+    exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" update --test-owner -- "${ORIGINAL_ARGS[@]}"
+  fi
+  exec python3 "$HERE/maintenance-custody.py" run-normal "$ADMISSION_PREFIX" update \
+    -- "${ORIGINAL_ARGS[@]}"
+fi
+if [ "$MAINTENANCE_TEST_OWNER" = 1 ]; then
+  python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" update --test-owner >/dev/null 2>&1
+else
+  python3 "$HERE/maintenance-custody.py" assert-normal-held "$ADMISSION_PREFIX" update >/dev/null 2>&1
+fi
+if [ "$?" -ne 0 ]; then
+  echo "update: normal maintenance admission is not valid; nothing has been changed." >&2
+  exit "$EX_REFUSED"
+fi
+
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/lares-update-XXXXXX")
-trap 'rm -rf "$WORK"' EXIT
+trap 'client_status=$?; trap - EXIT; if engine_normal_client_cleanup; then rm -rf "$WORK"; else client_status=78; echo "update: client cleanup is uncertain; evidence retained at $WORK" >&2; fi; exit "$client_status"' EXIT
 
 TAB=$(printf '\t')
 
@@ -146,21 +198,14 @@ TAB=$(printf '\t')
 # a throwaway container of the engine image, and for an update that image is the TARGET
 # release's keeper image, so the new release's own parser and migrations are the ones that run.
 # On a checkout (no such file) everything runs on the host exactly as it always has.
-ENGINE_MODE=host
-if [ -r "$HERE/engine-run.sh" ]; then
-  # shellcheck source=engine-run.sh
-  . "$HERE/engine-run.sh"
-  if engine_image_mode; then ENGINE_MODE=image; fi
-fi
 # Where the database password FILE is, for a container that reaches the database (never a value
 # in argv or in the environment — see engine-run.sh).
-SECRETS_DIR="${LARES_PREFIX:+${LARES_PREFIX%/}}/etc/lares/secrets"
 DB_ENV=(--env "DATABASE_PASSWORD_FILE=$SECRETS_DIR/database-password"
-  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGHOST=$UPDATE_PGHOST" --env "PGPORT=$UPDATE_PGPORT"
   --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=$PG_USER")
 MIGRATION_ENV=(--env "DATABASE_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE"
   --env "LARES_OPERATOR_PASSWORD_FILE=$OPERATOR_PASSWORD_FILE"
-  --env "PGHOST=${PGHOST:-127.0.0.1}" --env "PGPORT=${PGPORT:-5432}"
+  --env "PGHOST=$UPDATE_PGHOST" --env "PGPORT=$UPDATE_PGPORT"
   --env "PGDATABASE=$PG_DATABASE" --env "PGUSER=lares_operator")
 
 # Reading a release file needs no database, only the file.
@@ -168,7 +213,7 @@ release_program() {
   if [ "$ENGINE_MODE" = image ]; then
     local file="$RELEASE_FILE"
     case "$file" in /*) ;; *) file="$PWD/$file" ;; esac
-    engine_run --ro "$file" bin/update-record.ts release "$file"
+    engine_normal_client update --ro "$file" bin/update-record.ts release "$file"
   else
     node "$BOX_DIR/bin/update-record.ts" release "$RELEASE_FILE"
   fi
@@ -177,10 +222,10 @@ release_program() {
 # The database half of the seam. A non-zero exit here is never swallowed: a lost update
 # record is exactly the failure the table exists to prevent.
 recorder() {
-  if [ -n "${LARES_UPDATE_RECORDER:-}" ]; then
+  if [ -n "${LARES_UPDATE_RECORDER:-}" ] && [ "${LARES_MAINTENANCE_TESTING:-}" = 1 ] && [ "$(id -u)" -ne 0 ]; then
     "$LARES_UPDATE_RECORDER" "$@"
   elif [ "$ENGINE_MODE" = image ]; then
-    engine_run --ro "$SECRETS_DIR/database-password" "${DB_ENV[@]}" bin/update-record.ts "$@"
+    engine_normal_client update --ro "$SECRETS_DIR/database-password" "${DB_ENV[@]}" bin/update-record.ts "$@"
   else
     node "$BOX_DIR/bin/update-record.ts" "$@"
   fi
@@ -192,10 +237,10 @@ run_migrations() {
     && [ "$(stat -c '%u:%a' "$OPERATOR_PASSWORD_FILE" 2>/dev/null || true)" = 0:600 ] \
     || { echo "update: the explicit offline operator credential is missing or unsafe; migrations were not run." >&2; return 78; }
   if [ "$ENGINE_MODE" = image ]; then
-    engine_run --ro "$OPERATOR_PASSWORD_FILE" "${MIGRATION_ENV[@]}" migrate.ts --schema-owner
+    engine_normal_client update --ro "$OPERATOR_PASSWORD_FILE" "${MIGRATION_ENV[@]}" migrate.ts --schema-owner
   else
     LARES_OPERATOR_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" DATABASE_PASSWORD_FILE="$OPERATOR_PASSWORD_FILE" \
-      PGHOST="${PGHOST:-127.0.0.1}" PGPORT="${PGPORT:-5432}" PGDATABASE="$PG_DATABASE" PGUSER=lares_operator \
+      PGHOST="$UPDATE_PGHOST" PGPORT="$UPDATE_PGPORT" PGDATABASE="$PG_DATABASE" PGUSER=lares_operator \
       pnpm -C "$BOX_DIR" migrate -- --schema-owner
   fi
 }
