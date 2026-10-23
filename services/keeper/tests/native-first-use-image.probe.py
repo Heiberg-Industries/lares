@@ -768,10 +768,12 @@ try:
     # Its one model route is the actual Anthropic route used by the production adapter.
     tls_dir=root/'tls';tls_dir.mkdir(mode=0o700)
     ca_key=tls_dir/'ca-key.pem';ca=tls_dir/'ca.pem';server_key=tls_dir/'server-key.pem';csr=tls_dir/'server.csr';cert=tls_dir/'server.pem';ext=tls_dir/'server.ext'
-    ext.write_text('subjectAltName=DNS:synthetic-provider,DNS:admission-bridge\nextendedKeyUsage=serverAuth\n')
-    run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(ca_key),'-out',str(ca),'-days','1','-subj','/CN=Lares disposable first-use CA',timeout=30)
+    ext.write_text('basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid,issuer\nsubjectAltName=DNS:synthetic-provider,DNS:admission-bridge\nextendedKeyUsage=serverAuth\n')
+    run('openssl','req','-x509','-newkey','rsa:2048','-nodes','-keyout',str(ca_key),'-out',str(ca),'-days','1','-subj','/CN=Lares disposable first-use CA',
+      '-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,keyCertSign,cRLSign','-addext','subjectKeyIdentifier=hash',timeout=30)
     run('openssl','req','-newkey','rsa:2048','-nodes','-keyout',str(server_key),'-out',str(csr),'-subj','/CN=synthetic-provider',timeout=30)
     run('openssl','x509','-req','-in',str(csr),'-CA',str(ca),'-CAkey',str(ca_key),'-CAcreateserial','-out',str(cert),'-days','1','-extfile',str(ext),timeout=30)
+    run('openssl','verify','-x509_strict','-CAfile',str(ca),'-verify_hostname','admission-bridge',str(cert),timeout=30)
     for path in (ca_key,server_key):path.chmod(0o440)
     for path in (ca,cert,csr,ext):path.chmod(0o444)
     tls_runtime=root/'tls-runtime';tls_runtime.mkdir(mode=0o755)
@@ -867,6 +869,34 @@ console.log(JSON.stringify({profile,config,pricing,maximumLiability:gatewayMaxim
     stage = 'pinned-production-gateway-readiness'
     gateway_ready="const fs=await import('node:fs/promises');const key=(await fs.readFile('/etc/lares/secrets/gateway-master','utf8')).trim();let ok=false;for(let i=0;i<240;i++){try{const r=await fetch('http://native-gateway:4000/health/readiness',{headers:{authorization:'Bearer '+key},signal:AbortSignal.timeout(1000)});if(r.status===200){ok=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!ok)process.exit(2);"
     tsx_keeper(gateway_ready,timeout=90);cases['productionGuardedGatewayAndTrustedInternalProvider']=True
+    stage = 'pinned-gateway-python-bridge-tls'
+    gateway_tls_check="""import json,os,re,socket,ssl,sys
+passed=False
+connection=None
+try:
+ context=ssl.create_default_context(cafile=os.environ['SSL_CERT_FILE'])
+ connection=socket.create_connection(('admission-bridge',8443),timeout=3)
+ secured=context.wrap_socket(connection,server_hostname='admission-bridge')
+ connection=None
+ with secured:passed=True
+except Exception:pass
+finally:
+ if connection is not None:connection.close()
+python_version='.'.join(str(value) for value in sys.version_info[:3])
+openssl_parts=ssl.OPENSSL_VERSION.split()
+openssl_version=' '.join(openssl_parts[:2]) if len(openssl_parts)>=2 and re.fullmatch(r'(?:OpenSSL|LibreSSL) [0-9]+(?:\\.[0-9]+){1,3}',' '.join(openssl_parts[:2])) else 'unknown'
+print(json.dumps({'passed':passed,'pythonVersion':python_version,'opensslVersion':openssl_version},separators=(',',':')))
+"""
+    gateway_tls_summary=json.loads(output('docker','exec',network+'-gateway','python','-c',gateway_tls_check,timeout=10))
+    if (type(gateway_tls_summary) is not dict or set(gateway_tls_summary)!={'passed','pythonVersion','opensslVersion'} or
+        type(gateway_tls_summary.get('passed')) is not bool or
+        not isinstance(gateway_tls_summary.get('pythonVersion'),str) or not re.fullmatch(r'[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{1,3}',gateway_tls_summary['pythonVersion']) or
+        not isinstance(gateway_tls_summary.get('opensslVersion'),str) or
+        not re.fullmatch(r'(?:OpenSSL|LibreSSL) [0-9]+(?:\.[0-9]+){1,3}|unknown',gateway_tls_summary['opensslVersion'])):
+        raise RuntimeError('Pinned gateway TLS preflight returned an invalid fixed summary')
+    proof['gatewayPythonBridgeTls']=gateway_tls_summary
+    if not gateway_tls_summary['passed']:
+        raise RuntimeError('Pinned gateway Python could not verify the admission bridge TLS endpoint')
     stage = 'pinned-production-relay-refusal'
     relay_refusal="const https=await import('node:https');const fs=await import('node:fs/promises');const ca=await fs.readFile('/fixture/tls/ca.pem');let refused=false;for(let i=0;i<40;i++){try{const status=await new Promise((resolve,reject)=>{const q=https.request({hostname:'admission-bridge',port:8443,path:'/v1/gateway-budget/admit',method:'POST',ca,timeout:1000,headers:{'content-type':'application/json','content-length':'2','x-lares-signature':'0'.repeat(64)}},r=>{r.resume();r.on('end',()=>resolve(r.statusCode))});q.on('timeout',()=>q.destroy(new Error('timeout')));q.on('error',reject);q.end('{}')});if(status===503){refused=true;break}}catch{}await new Promise(r=>setTimeout(r,250))}if(!refused)process.exit(2);"
     tsx_keeper(relay_refusal,mounts=['--mount',f'type=bind,src={tls_runtime},dst=/fixture/tls,readonly'],timeout=20)
