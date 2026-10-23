@@ -49,6 +49,14 @@ MAX_NATIVE_LOOKUP_BODY = 1024
 OPAQUE_NATIVE_ID = re.compile(r"[A-Za-z0-9-]{1,80}\Z")
 
 
+def valid_anthropic_safety_metadata(value, path, provider):
+    """Accept only Eve's hashed user identifier on Anthropic's messages route."""
+    if type(value) is not dict or path != "/v1/messages" or provider != "anthropic" or set(value) != {"user_id"}:
+        return False
+    user_id = value["user_id"]
+    return type(user_id) is str and HASH.fullmatch(user_id) is not None
+
+
 class Refused(Exception):
     """Deliberately carries no request, key, ticket, provider or response text."""
     def __init__(self): super().__init__("Gateway admission unavailable or refused")
@@ -176,8 +184,10 @@ class Profile:
         p = self.document
         if path not in MODEL_ROUTES or len(raw) > p["maxBodyBytes"]: raise Refused()
         body = parse_json(raw)
-        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking"}
+        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
         if set(body) - allowed or body.get("model") not in p["aliases"]: raise Refused()
+        if "metadata" in body:
+            if not valid_anthropic_safety_metadata(body["metadata"], path, p["provider"]): raise Refused()
         if not isinstance(body.get("messages"), list) or not body["messages"]: raise Refused()
         if "max_tokens" in body and "max_completion_tokens" in body: raise Refused()
         maximum = body.get("max_tokens", body.get("max_completion_tokens"))
