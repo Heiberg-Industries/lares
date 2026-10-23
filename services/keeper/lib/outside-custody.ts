@@ -436,30 +436,32 @@ export class OutsideCustodyStore {
       captureOutsideHumanUse(db,memberId,input.agentName,input.connectionName),options));
   }
 
-  /** No claim or bearer storage is permitted until the concrete private exchange exists. */
+  /** Starts only when the configured Keeper runtime has the owned exchange prerequisites. */
   async consentAndDiscover(sessionToken:string,input:{requestId:string;operationId:string;accountId:string;agentName:string;connectionName:string;
     expectedGeneration:number;expectedCandidateRevision:number|null;expectedDefinitionHash:string;expectedAccessRevision:number;
     expectedDestinationHash:string;expectedRoutePolicyHash:string;consentGeneration:number;credential:Buffer},
-    options:{deadlineAtMs:number}):Promise<never>{
+    options:{deadlineAtMs:number}):Promise<OutsideDiscoveryDocument>{
     const admittedAtMs=Date.now();
     try{
-      await this.#requireConcreteExchange();
+      this.#requireConcreteExchange();
+      if(!Number.isFinite(options.deadlineAtMs))return requestDenied();
       const deadlineAtMs=Math.min(options.deadlineAtMs,admittedAtMs+DISCOVERY_PROFILE.operationTimeoutMs);
       if(!Number.isFinite(deadlineAtMs)||deadlineAtMs<=Date.now())return requestDenied();
       const boundedOptions={deadlineAtMs};
-      await this.#inMainNamespace(boundedOptions,async()=>{
+      return await this.#inMainNamespace(boundedOptions,async()=>{
         const identity=await this.#claimDiscovery(sessionToken,input,boundedOptions);
         return this.#phase2Authority(identity,sessionToken);
       });
-      return requestDenied();
     }finally{if(Buffer.isBuffer(input.credential))input.credential.fill(0);}
   }
 
-  /** Terminal until the source-bound first-hop exchange is implemented and independently proven. */
-  async #requireConcreteExchange():Promise<never>{return requestDenied();}
+  /** Structural availability only; normal consent, route, claim and result checks still authorize use. */
+  #requireConcreteExchange():void{
+    this.#assertOpen(requestDenied);
+    if(!this.mainPool||typeof this.pool?.connect!=="function"||!this.routeLifecycle)return requestDenied();
+  }
 
-  /** Private phase-one writer. No action reaches this method while the concrete exchange is
-   * absent; the only return is an opaque identity minted after a known new COMMIT. */
+  /** Private phase-one writer. It returns only an opaque identity minted after a known new COMMIT. */
   async #claimDiscovery(sessionToken:string,input:{requestId:string;operationId:string;accountId:string;agentName:string;connectionName:string;
     expectedGeneration:number;expectedCandidateRevision:number|null;expectedDefinitionHash:string;expectedAccessRevision:number;
     expectedDestinationHash:string;expectedRoutePolicyHash:string;consentGeneration:number;credential:Buffer},

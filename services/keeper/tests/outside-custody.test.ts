@@ -256,6 +256,57 @@ it('refuses before any claim or SQL while the concrete discovery exchange is una
   store.close();
 });
 
+it.each(['main pool','route lifecycle','outside pool connect'] as const)('refuses before namespace or SQL when the configured %s is missing',async missing=>{
+  const pool={connect:vi.fn()},mainPool={} as never,lifecycle={} as never;
+  const runtime={mainPool,lifecycle};
+  const store=missing==='main pool'
+    ?new OutsideCustodyStore(pool as never,key,{...runtime,mainPool:undefined as never} as never)
+    :missing==='route lifecycle'
+      ?new OutsideCustodyStore(pool as never,key,{...runtime,lifecycle:undefined as never} as never)
+      :new OutsideCustodyStore({} as never,key,runtime);
+  const secret=Buffer.from(`missing-${missing}`);
+  await expect(store.consentAndDiscover('A'.repeat(43),{requestId:operationId,operationId,accountId,agentName:'worker',
+    connectionName:'connection',expectedGeneration:0,expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:7,
+    expectedDestinationHash:'b'.repeat(64),expectedRoutePolicyHash:'c'.repeat(64),consentGeneration:1,credential:secret},
+    {deadlineAtMs:Date.now()+5000})).rejects.toThrow('Outside credential change could not be confirmed');
+  expect(secret).toEqual(Buffer.alloc(secret.length));
+  expect(mocks.namespace).not.toHaveBeenCalled();
+  expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(mocks.query).not.toHaveBeenCalled();
+  if(missing==='main pool')expect(pool.connect).not.toHaveBeenCalled();
+  store.close();
+});
+
+it('refuses before namespace or SQL after the configured store is closed and wipes the input buffer',async()=>{
+  const store=new OutsideCustodyStore({connect:vi.fn()} as never,key,{mainPool:{} as never,lifecycle:{} as never});
+  store.close();
+  const secret=Buffer.from('closed-store-credential');
+  await expect(store.consentAndDiscover('A'.repeat(43),{requestId:operationId,operationId,accountId,agentName:'worker',
+    connectionName:'connection',expectedGeneration:0,expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:7,
+    expectedDestinationHash:'b'.repeat(64),expectedRoutePolicyHash:'c'.repeat(64),consentGeneration:1,credential:secret},
+    {deadlineAtMs:Date.now()+5000})).rejects.toThrow('Outside credential change could not be confirmed');
+  expect(secret).toEqual(Buffer.alloc(secret.length));
+  expect(mocks.namespace).not.toHaveBeenCalled();
+  expect(mocks.transaction).not.toHaveBeenCalled();
+  expect(mocks.query).not.toHaveBeenCalled();
+});
+
+it.each([{label:'expired',deadline:()=>Date.now()-1},{label:'NaN',deadline:()=>Number.NaN},
+  {label:'positive infinity',deadline:()=>Number.POSITIVE_INFINITY},{label:'negative infinity',deadline:()=>Number.NEGATIVE_INFINITY}])(
+  'refuses before namespace or SQL for an $label operation deadline and wipes the input buffer',async({deadline})=>{
+    const store=new OutsideCustodyStore({connect:vi.fn()} as never,key,{mainPool:{} as never,lifecycle:{} as never});
+    const secret=Buffer.from('invalid-deadline-credential');
+    await expect(store.consentAndDiscover('A'.repeat(43),{requestId:operationId,operationId,accountId,agentName:'worker',
+      connectionName:'connection',expectedGeneration:0,expectedCandidateRevision:null,expectedDefinitionHash:'a'.repeat(64),expectedAccessRevision:7,
+      expectedDestinationHash:'b'.repeat(64),expectedRoutePolicyHash:'c'.repeat(64),consentGeneration:1,credential:secret},
+      {deadlineAtMs:deadline()})).rejects.toThrow('Outside credential change could not be confirmed');
+    expect(secret).toEqual(Buffer.alloc(secret.length));
+    expect(mocks.namespace).not.toHaveBeenCalled();
+    expect(mocks.transaction).not.toHaveBeenCalled();
+    expect(mocks.query).not.toHaveBeenCalled();
+    store.close();
+  });
+
 it('loads only a root-owned 0400 single-link key from a root-only Keeper directory and closes the descriptor',()=>{
   prepareKeyLoader();
   const loaded=loadOutsideCustodyKey(keyPath);
