@@ -519,7 +519,8 @@ def parse_gate_fdinfo(data):
     if len(lock_lines) != 1:
         raise ObserverRefusal('lock_count')
     match = re.fullmatch(
-        r'lock:\s+\d+: FLOCK ADVISORY READ -?\d+ ([0-9a-fA-F]+):([0-9a-fA-F]+):(\d+) 0 EOF',
+        r'lock:[ \t]+\d+:[ \t]+FLOCK[ \t]+ADVISORY[ \t]+READ[ \t]+-?\d+[ \t]+'
+        r'([0-9a-fA-F]+):([0-9a-fA-F]+):(\d+)[ \t]+0[ \t]+EOF',
         lock_lines[0])
     if not match:
         raise ObserverRefusal('lock_shape')
@@ -896,6 +897,28 @@ def run_observer_self_tests():
     _expect_refusal(lambda: parse_proc_stat(b'101 (truncated) S 1'), 'malformed_stat')
     assert parse_gate_fdinfo(b'pos:\t0\nino:\t1234\n'
                              b'lock:\t1: FLOCK ADVISORY READ 101 08:01:1234 0 EOF\n')['fdinfo_inode'] == 1234
+    padded_lock = b'lock:  1:   FLOCK  ADVISORY   READ  101  08:01:1234  0 EOF'
+    legacy_lock_pattern = re.compile(
+        r'lock:\s+\d+: FLOCK ADVISORY READ -?\d+ ([0-9a-fA-F]+):([0-9a-fA-F]+):(\d+) 0 EOF')
+    if legacy_lock_pattern.fullmatch(padded_lock.decode('ascii')) is not None:
+        raise AssertionError('documented padded lock format did not reproduce the prior parser refusal')
+    padded_result = parse_gate_fdinfo(b'ino: 1234\n' + padded_lock + b'\n')
+    if padded_result != {'fdinfo_inode': 1234, 'dev_major': 8, 'dev_minor': 1, 'inode': 1234,
+                         'single_flock': True, 'advisory_read': True, 'write_absent': True,
+                         'lock_count': 1}:
+        raise AssertionError('padded kernel lock record was not accepted')
+    tabbed_lock = b'lock:\t1:\tFLOCK\tADVISORY\tREAD\t101\t08:01:1234\t0\tEOF'
+    tabbed_result = parse_gate_fdinfo(b'ino: 1234\n' + tabbed_lock + b'\n')
+    if tabbed_result != padded_result:
+        raise AssertionError('tab-separated kernel lock record was not accepted')
+    for lock_record in (b'lock: 1: FLOCK\vADVISORY READ 101 08:01:1234 0 EOF',
+                        b'lock: 1: FLOCK\nADVISORY READ 101 08:01:1234 0 EOF',
+                        b'lock: 1: FLOCK ADVISORY READ 101 08:01:1234 0 EOF extra'):
+        _expect_refusal(lambda data=b'ino: 1234\n' + lock_record + b'\n':
+                        parse_gate_fdinfo(data), 'lock_shape')
+    _expect_refusal(lambda: parse_gate_fdinfo(
+        b'ino: 1234\nlock: 1: FLOCK\xc2\xa0ADVISORY READ 101 08:01:1234 0 EOF\n'),
+        'malformed_fdinfo')
     _expect_refusal(lambda: parse_gate_fdinfo(b'lock: 1: FLOCK ADVISORY READ 1 08:01:1234 0 EOF\n'),
                     'fdinfo_ino_count')
     _expect_refusal(lambda: parse_gate_fdinfo(b'ino: 1234\nino: 1234\n'
