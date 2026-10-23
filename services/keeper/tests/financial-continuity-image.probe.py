@@ -118,6 +118,16 @@ const store=BudgetNativeCustodyStore.createNew('/var/lib/lares/budget-native');s
         bounded_native_command('docker', 'rm', '--force', initializer, timeout=30)
 
 
+def build_native_admin_config():
+    return {
+        'model_list': [],
+        'litellm_settings': {'telemetry': False, 'disable_aiohttp_transport': True},
+        'general_settings': {'master_key': 'os.environ/LARES_GATEWAY_MASTER_KEY',
+                             'background_health_checks': False,
+                             'disable_auto_add_proxy_admin_to_teams': True},
+    }
+
+
 def start_native_admin():
     master = 'sk-' + secrets.token_urlsafe(32)
     # Match the isolated disposable PostgreSQL fixture role created by this probe.
@@ -126,12 +136,7 @@ def start_native_admin():
     (native_fixture / 'password').write_text(password)
     for filename in ('master', 'password'):
         (native_fixture / filename).chmod(0o600)
-    config = {
-        'model_list': [],
-        'litellm_settings': {'telemetry': False, 'disable_aiohttp_transport': True},
-        'general_settings': {'master_key': 'os.environ/LARES_GATEWAY_MASTER_KEY',
-                             'background_health_checks': False},
-    }
+    config = build_native_admin_config()
     (native_fixture / 'native-config.yaml').write_text(json.dumps(config))
     (native_fixture / 'native-admin-start.sh').write_text("""#!/bin/sh
 set -eu

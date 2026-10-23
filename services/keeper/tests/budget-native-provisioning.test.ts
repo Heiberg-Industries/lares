@@ -1,7 +1,8 @@
 import {chmodSync,fsyncSync,lstatSync,mkdtempSync,readdirSync,readFileSync,realpathSync,rmSync} from 'node:fs';
 import {basename,dirname,join,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
-import {createHash,randomUUID} from 'node:crypto';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
+import {performance} from 'node:perf_hooks';
 import {PostgreSqlContainer,type StartedPostgreSqlContainer} from '@testcontainers/postgresql';
 import {Pool} from 'pg';
 import {afterAll,beforeAll,expect,it,vi} from 'vitest';
@@ -9,12 +10,17 @@ import {quiet} from './helpers/quiet-pool.js';
 import {HostFinancialJournal} from '../lib/financial-journal.js';
 import {prepareFinancialCustody} from '../lib/financial-continuity.js';
 import {provisionBudgetAccounts} from '../lib/budget-account-provisioning.js';
+import {registerInitialMemberBudgetActions} from '../lib/initial-member-budget.js';
+import {resetActions,runAction} from '../lib/actions.js';
+import {provisionEngineDatabasePrivileges} from '../../box/lib/database-privileges.js';
+import {verifyFinancialContinuity} from '../lib/financial-continuity.js';
 import {BudgetNativeProvisioner} from '../lib/budget-native-provisioning.js';
 import {BudgetNativeActivator} from '../lib/budget-native-activation.js';
 import {createNativeRuntimeAuthority} from '../lib/budget-native-runtime-authority.js';
 import {BudgetNativeCredentialClient} from '../lib/budget-native-client.js';
 import {BudgetNativeCustodyStore,type NativeCustodyGate,type NativeOperation} from '../lib/budget-native-custody.js';
 import {gatewayCanonical} from '@lares/agent-kit/gateway-admission-protocol';
+import {PgGrantStore} from '@lares/agent-kit/grant-store';
 import {definitionSchema,hashOf,parseDefinition} from '@lares/agent-kit/definition';
 import {platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import {createNativeTestCustody,nativeTestPolicy,nativeTestTarget} from './helpers/native-cleanup.js';
@@ -22,14 +28,20 @@ import {createNativeTestCustody,nativeTestPolicy,nativeTestTarget} from './helpe
 let container:StartedPostgreSqlContainer|undefined;
 let pool:Pool;
 const journals:HostFinancialJournal[]=[],roots:string[]=[];
+const restrictedPools:Pool[]=[];
+const fixtureCustodies:BudgetNativeCustodyStore[]=[];
 const policy=nativeTestPolicy();
 const lock=platformTestJournalLock;
 const journalOptions={ownershipUid:testJournalUid,lock};
 const id=()=>randomUUID();
 let addressCounter=1;
+const financialPassword=Buffer.from('native-later-financial-role-test-password');
+const applicationPassword=Buffer.from('native-later-application-role-test-password');
 
-function nativeFake(options:{extraListFingerprint?:boolean;afterCreateTeam?:()=>Promise<void>;afterUnblock?:()=>Promise<void>|void;loseUnblockAck?:boolean;rejectUnblockedReadback?:boolean}={}){
+function nativeFake(options:{extraListFingerprint?:boolean;afterCreateTeam?:()=>Promise<void>;afterCreateUser?:()=>Promise<void>;afterAddMember?:()=>Promise<void>|void;
+  afterUnblock?:()=>Promise<void>|void;loseUnblockAck?:boolean;rejectUnblockedReadback?:boolean}={}){
   let team:Record<string,unknown>|undefined;const users=new Map<string,Record<string,unknown>>();
+  let afterCreateUser=options.afterCreateUser,afterAddMember=options.afterAddMember;
   let rejectUnblockedReadback=options.rejectUnblockedReadback===true;
   let mismatchTeamPolicy=false,mismatchNextUnblock=false;
   const memberships=new Map<string,{maxBudget:number;budgetDuration:string;models:readonly string[];role:'user'}>();
@@ -39,17 +51,28 @@ function nativeFake(options:{extraListFingerprint?:boolean;afterCreateTeam?:()=>
   const native={gatewayOrigin:nativeTestTarget.origin,
     async createTeam(input:{teamId:string;maxBudget:number;budgetDuration:string;models:readonly string[]}){calls.team++;team={teamId:input.teamId,teamMaxBudget:input.maxBudget,teamBudgetDuration:input.budgetDuration,teamModels:input.models};await options.afterCreateTeam?.();return {kind:'acknowledged'};},
     async readTeamPolicy(expected:{teamId:string;teamMaxBudget:number;teamBudgetDuration:string;teamModels:readonly string[]}){calls.teamRead++;return !mismatchTeamPolicy&&team&&gatewayCanonical(team).equals(gatewayCanonical(expected))?{kind:'match',value:true}:{kind:'mismatch'};},
-    async createUser(input:{userId:string;maxBudget:number;userRole:'internal_user'}){calls.user++;users.set(input.userId,{...input});return {kind:'acknowledged'};},
+    async createUser(input:{userId:string;maxBudget:number;userRole:'internal_user'}){calls.user++;users.set(input.userId,{...input});await afterCreateUser?.();return {kind:'acknowledged'};},
     async readUser(expected:{userId:string;maxBudget:number;userRole:'internal_user'}){calls.userRead++;const user=users.get(expected.userId);return user&&gatewayCanonical(user).equals(gatewayCanonical(expected))?{kind:'match',value:true}:{kind:'mismatch'};},
-    async addMember(input:{teamId:string;userId:string;maxBudget:number;budgetDuration:string;models:readonly string[];role:'user'}){calls.membership++;memberships.set(input.userId,{maxBudget:input.maxBudget,budgetDuration:input.budgetDuration,models:input.models,role:input.role});return {kind:'acknowledged'};},
+    async addMember(input:{teamId:string;userId:string;maxBudget:number;budgetDuration:string;models:readonly string[];role:'user'}){calls.membership++;memberships.set(input.userId,{maxBudget:input.maxBudget,budgetDuration:input.budgetDuration,models:input.models,role:input.role});await afterAddMember?.();return {kind:'acknowledged'};},
     async readTeam(expected:{teamId:string;memberUserId:string;teamMaxBudget:number;teamBudgetDuration:string;teamModels:readonly string[];memberMaxBudget:number;memberBudgetDuration:string;memberModels:readonly string[];memberRole:'user'}){calls.membershipRead++;const member=memberships.get(expected.memberUserId);return team&&member&&expected.teamId===team.teamId&&expected.teamMaxBudget===team.teamMaxBudget&&expected.teamBudgetDuration===team.teamBudgetDuration&&gatewayCanonical(expected.teamModels).equals(gatewayCanonical(team.teamModels))&&member.maxBudget===expected.memberMaxBudget&&member.budgetDuration===expected.memberBudgetDuration&&member.role===expected.memberRole&&gatewayCanonical(member.models).equals(gatewayCanonical(expected.memberModels))?{kind:'match',value:true}:{kind:'mismatch'};},
+    async readTeamRoster(expected:{teamId:string;teamMaxBudget:number;teamBudgetDuration:string;teamModels:readonly string[];members:readonly {userId:string;maxBudget:number;budgetDuration:string;models:readonly string[];role:'user'}[]}){
+      calls.membershipRead++;
+      if(!team||!gatewayCanonical({teamId:expected.teamId,teamMaxBudget:expected.teamMaxBudget,teamBudgetDuration:expected.teamBudgetDuration,teamModels:expected.teamModels}).equals(gatewayCanonical(team)))return {kind:'mismatch'};
+      const actual=[...memberships].map(([userId,value])=>({userId,maxBudget:value.maxBudget,budgetDuration:value.budgetDuration,models:value.models,role:value.role})).sort((a,b)=>a.userId.localeCompare(b.userId));
+      const wanted=[...expected.members].sort((a,b)=>a.userId.localeCompare(b.userId));
+      return gatewayCanonical(actual).equals(gatewayCanonical(wanted))?{kind:'match',value:true}:{kind:'mismatch'};
+    },
     async listOwnedKeys(userId:string){const hashes=[...keys].filter(([,value])=>value.userId===userId).map(([fingerprint])=>fingerprint).sort();if(options.extraListFingerprint)hashes.push('f'.repeat(64));return {kind:'match',value:hashes};},
     async createBlockedKey(input:{key:string;keyAlias:string;teamId:string;userId:string;maxBudget:number;budgetDuration:string;models:readonly string[]}){calls.key++;const fingerprint=createHash('sha256').update(input.key).digest('hex');keys.set(fingerprint,{userId:input.userId,alias:input.keyAlias,teamId:input.teamId,maxBudget:input.maxBudget,budgetDuration:input.budgetDuration,models:input.models,blocked:true});return {kind:'uncertain'};},
     async lookupKey(fingerprint:string,expected:{keyAlias:string;teamId:string;userId:string;maxBudget:number;budgetDuration:string;models:readonly string[]}){calls.keyRead++;const actual=keys.get(fingerprint);return actual?.blocked===true&&actual.alias===expected.keyAlias&&actual.teamId===expected.teamId&&actual.userId===expected.userId&&actual.maxBudget===expected.maxBudget&&actual.budgetDuration===expected.budgetDuration&&gatewayCanonical(actual.models).equals(gatewayCanonical(expected.models))?{kind:'match',value:true}:{kind:'mismatch'};},
     async unblockKey(fingerprint:string){activationCalls.unblock++;const actual=keys.get(fingerprint);if(!actual)return {kind:'refused'};actual.blocked=false;if(mismatchNextUnblock){mismatchNextUnblock=false;mismatchTeamPolicy=true;}await options.afterUnblock?.();return options.loseUnblockAck?{kind:'uncertain'}:{kind:'acknowledged'};},
     async lookupUnblockedKey(fingerprint:string,expected:{keyAlias:string;teamId:string;userId:string;maxBudget:number;budgetDuration:string;models:readonly string[]}){activationCalls.unblockedRead++;if(rejectUnblockedReadback)return {kind:'mismatch'};const actual=keys.get(fingerprint);return actual?.blocked===false&&actual.alias===expected.keyAlias&&actual.teamId===expected.teamId&&actual.userId===expected.userId&&actual.maxBudget===expected.maxBudget&&actual.budgetDuration===expected.budgetDuration&&gatewayCanonical(actual.models).equals(gatewayCanonical(expected.models))?{kind:'match',value:true}:{kind:'mismatch'};},
   };
-  return {native:native as unknown as BudgetNativeCredentialClient,calls,activationCalls,setRejectUnblockedReadback(value:boolean){rejectUnblockedReadback=value;},mismatchTeamPolicyOnNextUnblock(){mismatchNextUnblock=true;}};
+  return {native:native as unknown as BudgetNativeCredentialClient,calls,activationCalls,
+    rosterSnapshot(){return [...memberships].map(([userId,value])=>({userId,...value})).sort((a,b)=>a.userId.localeCompare(b.userId));},
+    changeMembership(userId:string,change:Partial<{maxBudget:number;budgetDuration:string;models:readonly string[];role:'user'}>){const membership=memberships.get(userId);if(!membership)throw new Error('Native fixture membership is missing');memberships.set(userId,{...membership,...change});},
+    setAfterCreateUser(callback:()=>Promise<void>){afterCreateUser=callback;},setAfterAddMember(callback:()=>Promise<void>|void){afterAddMember=callback;},
+    setRejectUnblockedReadback(value:boolean){rejectUnblockedReadback=value;},mismatchTeamPolicyOnNextUnblock(){mismatchNextUnblock=true;}};
 }
 
 async function migrate():Promise<void>{
@@ -77,35 +100,119 @@ async function resetPrivateTestSchema(resetPool:Pool):Promise<void>{
     try{await verifyPrivateTestDatabase(client);await client.query('DROP SCHEMA public CASCADE');await client.query('CREATE SCHEMA public');}finally{client.release();}
   }finally{await resetPool.end();}
 }
+async function requireFreshPrivateTestDatabase(freshPool:Pool):Promise<void>{
+  await verifyPrivateTestDatabase(freshPool);
+  const state=(await freshPool.query(`SELECT
+    NOT EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','v','m','f','S')) AS empty,
+    EXISTS(SELECT 1 FROM pg_namespace n CROSS JOIN LATERAL aclexplode(COALESCE(n.nspacl,acldefault('n'::"char",n.nspowner))) a
+      WHERE n.nspname='public' AND a.grantee=0 AND a.privilege_type='USAGE' AND NOT a.is_grantable) AS public_usage
+  `)).rows[0];
+  if(state?.empty!==true||state.public_usage!==true)throw new Error('Private PostgreSQL case requires a fresh database');
+}
 async function resetDatabase():Promise<void>{
   const socket=process.env.LARES_TEST_PG_SOCKET,config=socket?privateTestSocket():undefined;
+  for(const auxiliary of restrictedPools.splice(0))await auxiliary.end();
   for(const journal of journals.splice(0)){try{journal.close();}catch{}}
   await pool.end();
   if(config){
     const resetPool=new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,options:'-c timezone=UTC'});
-    await resetPrivateTestSchema(resetPool);
+    await requireFreshPrivateTestDatabase(resetPool);await resetPool.end();
     pool=quiet(new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));
   }else{
     await container!.stop();container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));
   }
   await migrate();
 }
-async function seed(memberId:string,agents:string[],incarnation:string,existingOrg?:string,roles:Record<string,string|null|undefined>={}):Promise<{org:string;member:string}> {
+async function seed(memberId:string,agents:string[],incarnation:string,existingOrg?:string,roles:Record<string,string|null|undefined>={},database:Pool=pool,memberRole:'owner'|'member'='owner',agentOwnerId=memberId):Promise<{org:string;member:string}> {
   const org=existingOrg??id(),member=memberId;
-  if(!existingOrg)await pool.query('INSERT INTO orgs(id,display_name) VALUES($1,$2)',[org,'Provisioning test']);
-  await pool.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,'owner','active')",[member,org]);
-  await pool.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[member,`subject-${member}`]);
-  await pool.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,25)',[member]);
+  if(!existingOrg)await database.query('INSERT INTO orgs(id,display_name) VALUES($1,$2)',[org,'Provisioning test']);
+  await database.query("INSERT INTO users(id,display_name,org_id,org_role,status) VALUES($1,'Owner',$2,$3,'active')",[member,org,memberRole]);
+  await database.query("INSERT INTO member_provider_identities(member_id,issuer,subject,tenant_id) VALUES($1,'https://identity.example.invalid',$2,'tenant')",[member,`subject-${member}`]);
+  await database.query('INSERT INTO org_member_policy(user_id,spend_cap_usd_month) VALUES($1,25)',[member]);
   for(const name of agents){
     const resourceNumber=addressCounter++;
     const raw=JSON.parse(readFileSync(new URL('../../../packages/agent-kit/templates/chief-of-staff/agent.json',import.meta.url),'utf8')) as Record<string,unknown>;
     raw.name=name;raw.model='lares-brain';raw.role='chief-of-staff';if(Object.hasOwn(roles,name)){if(roles[name]===null)delete raw.role;else raw.role=roles[name];}
     const definition=parseDefinition(definitionSchema.parse(raw)),duties='',voice='',definitionHash=hashOf({definition,dutiesMd:duties,voiceMd:voice});
-    await pool.query('INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2,$3,$4,$5,\'valid\')',[name,JSON.stringify(definition),duties,voice,definitionHash]);
-    await pool.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,$2,$3,'owned',$4,$4,'ready',$5::jsonb,false)",[name,`127.0.1.${resourceNumber}`,`neutral_test_${resourceNumber}`,incarnation,JSON.stringify(definition)]);
-    await pool.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,$2,$3)',[name,member,org]);
+    await database.query('INSERT INTO agent_definitions(name,definition,duties,voice,hash,status) VALUES($1,$2,$3,$4,$5,\'valid\')',[name,JSON.stringify(definition),duties,voice,definitionHash]);
+    await database.query("INSERT INTO agent_resources(name,address,workflow_database,ownership,ownership_token,runtime_control_token,state,applied_definition,pending) VALUES($1,$2,$3,'owned',$4,$4,'ready',$5::jsonb,false)",[name,`127.0.1.${resourceNumber}`,`neutral_test_${resourceNumber}`,incarnation,JSON.stringify(definition)]);
+    await database.query('INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES($1,$2,$3)',[name,agentOwnerId,org]);
   }
   return {org,member};
+}
+
+async function useFinancialRole():Promise<Pool>{
+  const operator=pool,socket=process.env.LARES_TEST_PG_SOCKET,config=socket?privateTestSocket():undefined;
+  const database=config?.database??container?.getDatabase();if(!database)throw new Error('Private Keeper role fixture has no database');
+  const client=await operator.connect();
+  try{await provisionEngineDatabasePrivileges(client,{expectedDatabase:database,passwords:{application:applicationPassword,financial:financialPassword}});}
+  finally{client.release();}
+  const financial=quiet(config?new Pool({host:config.socket,port:config.port,user:'lares_financial',password:financialPassword.toString('ascii'),database:config.database,max:8,options:'-c timezone=UTC'}):(()=>{
+    const uri=new URL(container!.getConnectionUri());uri.pathname=`/${database}`;uri.username='lares_financial';uri.password=financialPassword.toString('ascii');
+    return new Pool({connectionString:uri.toString(),max:8,options:'-c timezone=UTC'});
+  })());
+  restrictedPools.push(operator);
+  const identity=(await financial.query('SELECT current_user,session_user')).rows[0];
+  expect(identity).toEqual({current_user:'lares_financial',session_user:'lares_financial'});
+  pool=financial;
+  return financial;
+}
+
+async function setCapThroughRegisteredAction(ownerId:string,targetMemberId:string,sessionToken:string,monthlyLimit:string):Promise<void>{
+  resetActions();registerInitialMemberBudgetActions({pool,designatedOwnerId:ownerId});
+  await runAction('member.set-initial-budget',{sessionToken,targetMemberId,monthlyLimit},{actor:'native test owner',audit:async()=>{}});
+}
+
+async function startActiveOwnerFixture():Promise<{operator:Pool;financial:Pool;owner:string;org:string;incarnation:string;ownerAgent:string;ownerBinding:string;
+  ownerAccountId:string;installationId:string;ownerNativeUserId:string;sessionToken:string;root:string;journal:HostFinancialJournal;
+  custody:BudgetNativeCustodyStore;fake:ReturnType<typeof nativeFake>;provisioner:BudgetNativeProvisioner}>{
+  await resetDatabase();
+  const operator=pool,owner=id(),incarnation=id(),ownerAgent='neutral-native-owner';
+  const selected=await seed(owner,[ownerAgent],incarnation);
+  const sessionToken=Buffer.from(randomUUID()+randomUUID()).toString('base64url').slice(0,43);
+  await operator.query('INSERT INTO member_sessions(id,member_id,token_hash,expires_at) VALUES($1,$2,$3,clock_timestamp()+interval \'1 hour\')',
+    [id(),owner,createHash('sha256').update(sessionToken).digest('hex')]);
+  const root=mkdtempSync(join(realpathSync(tmpdir()),'lares-native-restricted-owner-'));chmodSync(root,0o700);roots.push(root);
+  const directory=join(root,'financial'),db=await operator.connect();
+  try{await prepareFinancialCustody(directory,db,journalOptions);}finally{db.release();}
+  const journal=HostFinancialJournal.openExisting(directory,{...journalOptions,requirePrepared:true});journals.push(journal);
+  const financial=await useFinancialRole();
+  await setCapThroughRegisteredAction(owner,owner,sessionToken,'45');
+  await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[owner]})).resolves.toMatchObject({state:'closed',reason:'unreconciled',members:1});
+  const ownerAccountId=(await financial.query("SELECT id FROM budget_accounts WHERE kind='member' AND live_member_id=$1",[owner])).rows[0]?.id;
+  const installationId=(await financial.query("SELECT id FROM budget_accounts WHERE kind='installation'")).rows[0]?.id;
+  if(typeof ownerAccountId!=='string'||typeof installationId!=='string')throw new Error('Active owner fixture accounts are missing');
+  const custody=createNativeTestCustody(join(root,'native')),fake=nativeFake(),provisioner=new BudgetNativeProvisioner(financial,journal,custody,fake.native,nativeTestTarget,policy),ownerBinding=id();
+  fixtureCustodies.push(custody);
+  await expect(provisioner.provision({bindingId:ownerBinding,credentialGeneration:'0',memberId:owner,agent:ownerAgent,incarnation,purposeAlias:'lares-brain'})).resolves.toMatchObject({state:'bound-closed'});
+  await expect(new BudgetNativeActivator(financial,journal,custody,fake.native).activate({bindingId:ownerBinding,credentialGeneration:'0'})).resolves.toMatchObject({state:'active'});
+  const ownerNativeUserId=(await custody.withGate(gate=>Promise.resolve(gate.inventory().users.find((row):row is Extract<typeof row,{kind:'user'}>=>row.kind==='user'&&row.accountId===ownerAccountId)?.nativeUserId)))!;
+  if(typeof ownerNativeUserId!=='string')throw new Error('Verified owner native user is missing');
+  expect((await financial.query('SELECT current_user,session_user')).rows[0]).toEqual({current_user:'lares_financial',session_user:'lares_financial'});
+  await verifyFinancialContinuity(journal,financial as never);
+  return{operator,financial,owner,org:selected.org,incarnation,ownerAgent,ownerBinding,ownerAccountId,installationId,ownerNativeUserId,sessionToken,root,journal,custody,fake,provisioner};
+}
+
+async function addLaterAccount(fixture:Awaited<ReturnType<typeof startActiveOwnerFixture>>,agent='neutral-native-later'):Promise<{member:string;agent:string;accountId:string}>{
+  const member=id();await seed(member,[agent],fixture.incarnation,fixture.org,{},fixture.operator,'member',fixture.owner);
+  await setCapThroughRegisteredAction(fixture.owner,member,fixture.sessionToken,'40');
+  await expect(provisionBudgetAccounts(fixture.financial,fixture.journal,{installationCap:'100',memberIds:[member]})).resolves.toMatchObject({state:'closed',reason:'unreconciled',members:1});
+  const accountId=(await fixture.financial.query("SELECT id FROM budget_accounts WHERE kind='member' AND live_member_id=$1",[member])).rows[0]?.id;
+  if(typeof accountId!=='string')throw new Error('Later member account is missing');
+  return{member,agent,accountId};
+}
+
+async function grantLaterAgentUse(fixture:Awaited<ReturnType<typeof startActiveOwnerFixture>>,later:{member:string;agent:string},lifetimeMs?:number){
+  const revision=(await fixture.operator.query('SELECT revision FROM agent_access WHERE agent_name=$1',[later.agent])).rows[0]?.revision;
+  if(revision===undefined)throw new Error('Later agent access row is missing');
+  const expiresAt=lifetimeMs===undefined?null:new Date(Date.now()+lifetimeMs).toISOString();
+  await new PgGrantStore(fixture.operator).updateAgentAccess(fixture.owner,{agentName:later.agent,expectedRevision:Number(revision),grants:[{
+    principal:{kind:'member',id:later.member},permission:'use',expiresAt,
+  }]});
+  const captured=await new PgGrantStore(fixture.operator).captureUseWithExpiry(later.member,later.agent,{db:fixture.financial});
+  if(!captured)throw new Error('Later member grant was not readable through the production grant store');
+  if(lifetimeMs!==undefined&&captured.validUntil===null)throw new Error('Later member grant fixture must retain a finite expiry');
+  return captured;
 }
 
 beforeAll(async()=>{
@@ -113,10 +220,12 @@ beforeAll(async()=>{
   if(socket){const config=privateTestSocket();pool=quiet(new Pool({host:config.socket,port:config.port,user:config.user,database:config.database,max:8,options:'-c timezone=UTC',application_name:'lares-native-runtime-authority-test'}));}
   else{container=await new PostgreSqlContainer('pgvector/pgvector:pg16').start();pool=quiet(new Pool({connectionString:container.getConnectionUri(),max:4}));}
   if(socket)await verifyPrivateTestDatabase(pool);
-  await migrate();
+  else await migrate();
 },120_000);
 afterAll(async()=>{
   for(const journal of journals.splice(0)){try{journal.close();}catch{}}
+  for(const custody of fixtureCustodies.splice(0)){try{custody.close();}catch{}}
+  for(const auxiliary of restrictedPools.splice(0))await auxiliary.end();
   await pool?.end();if(container)await container.stop();
   for(const root of roots.splice(0))rmSync(root,{recursive:true,force:true});
 });
@@ -161,7 +270,7 @@ it('reuses verified team and membership, reconciles exact reads, and freezes amb
     await expect(service.provision({bindingId:firstBinding,credentialGeneration:'0',memberId:member,agent:agentA,incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
     expect(fake.calls).toEqual(beforeReplay);
     await expect(service.provision({bindingId:secondBinding,credentialGeneration:'0',memberId:member,agent:agentB,incarnation,purposeAlias:'lares-brain'})).resolves.toEqual({state:'bound-closed',bindingId:secondBinding,credentialGeneration:'0'});
-    expect(fake.calls).toEqual({team:1,user:1,membership:1,key:2,teamRead:2,userRead:2,membershipRead:2,keyRead:2});
+    expect(fake.calls).toEqual({team:1,user:1,membership:1,key:2,teamRead:2,userRead:2,membershipRead:6,keyRead:2});
     const bindings=(await pool.query('SELECT id,state,key_fingerprint FROM budget_gateway_bindings ORDER BY id')).rows;
     expect(bindings).toHaveLength(2);expect(bindings.every(row=>row.state==='active'&&/^[a-f0-9]{64}$/.test(row.key_fingerprint))).toBe(true);
     const snapshot=custody.withGate(gate=>Promise.resolve(gate.inventory()));
@@ -244,7 +353,7 @@ it('reuses verified team and membership, reconciles exact reads, and freezes amb
     const request={bindingId,credentialGeneration:'0',memberId,agent,incarnation,purposeAlias:'lares-brain'};
     try{
       await expect(deadlineService.provision(request)).rejects.toThrow();expect(crossed,phase).toBe(true);
-      const expectedCalls={team:index>=1?1:0,user:index>=2?1:0,membership:index>=3?1:0,key:0,teamRead:index>=1?1:0,userRead:index>=2?1:0,membershipRead:index>=3?1:0,keyRead:0};
+      const expectedCalls={team:index>=1?1:0,user:index>=2?1:0,membership:index>=3?1:0,key:0,teamRead:index>=1?1:0,userRead:index>=2?1:0,membershipRead:index===3?2:index===2?1:0,keyRead:0};
       expect(fake.calls).toEqual(expectedCalls);
       const control=JSON.parse(readFileSync(join(storePath,'control.json'),'utf8'));
       const inventory=JSON.parse(readFileSync(join(storePath,'snapshot.json'),'utf8'));
@@ -276,7 +385,7 @@ it('reuses verified team and membership, reconciles exact reads, and freezes amb
   const expiryService=new BudgetNativeProvisioner(pool,journal,expiryStore,expiryFake.native,nativeTestTarget,policy),expiryBinding=id();
   try{
     await expect(expiryService.provision({bindingId:expiryBinding,credentialGeneration:'0',memberId:secondMember,agent:agentI,incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
-    expect(expiryFake.calls.key).toBe(1);
+    expect(expiryFake.calls.key).toBe(0);
     expect((await pool.query('SELECT count(*)::int AS count FROM budget_gateway_bindings')).rows[0]!.count).toBe(2);
   }finally{expiryStore.close();}
 
@@ -371,6 +480,157 @@ it('activates only verified native keys and preserves the installation epoch for
     expect(rejectedMember).toEqual({state:'closed',reason:'unreconciled'});
   }finally{custody.close();}
 },120_000);
+
+it('adds a genuinely later capped member to an active installation under the financial role without changing owner authority',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture),laterBinding=id();
+  await grantLaterAgentUse(fixture,later);
+  const before=(await fixture.financial.query(`SELECT id,installation_id,installation_account_id,live_member_id,state,reason,installation_cap,
+    active_window_id,endpoint_generation,recovery_epoch,selected_endpoint FROM budget_accounts WHERE kind IN ('installation','member') ORDER BY kind,id`)).rows;
+  const ownerWindow=(await fixture.financial.query(`SELECT w.* FROM budget_windows w WHERE w.account_id=$1`,[fixture.ownerAccountId])).rows;
+  const bindingsBefore=(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows;
+  const ownerRoster=fixture.fake.rosterSnapshot();expect(ownerRoster).toHaveLength(1);
+  expect((await fixture.financial.query('SELECT current_user,session_user')).rows[0]).toEqual({current_user:'lares_financial',session_user:'lares_financial'});
+  await expect(fixture.provisioner.provision({bindingId:laterBinding,credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'}))
+    .resolves.toMatchObject({state:'bound-closed'});
+  const after=(await fixture.financial.query(`SELECT id,installation_id,installation_account_id,live_member_id,state,reason,installation_cap,
+    active_window_id,endpoint_generation,recovery_epoch,selected_endpoint FROM budget_accounts WHERE kind IN ('installation','member') ORDER BY kind,id`)).rows;
+  expect(after).toEqual(before);
+  expect((await fixture.financial.query('SELECT * FROM budget_windows WHERE account_id=$1',[fixture.ownerAccountId])).rows).toEqual(ownerWindow);
+  expect((await fixture.financial.query('SELECT state,reason FROM budget_accounts WHERE id=$1',[later.accountId])).rows[0]).toEqual({state:'closed',reason:'unreconciled'});
+  const bindingsAfter=(await fixture.financial.query('SELECT * FROM budget_gateway_bindings ORDER BY id')).rows;
+  expect(bindingsAfter.filter((row:any)=>row.id!==laterBinding)).toEqual(bindingsBefore);
+  expect(bindingsAfter.find((row:any)=>row.id===laterBinding)).toMatchObject({id:laterBinding,live_member_id:later.member,state:'active'});
+  expect(fixture.fake.rosterSnapshot()).toHaveLength(2);
+  expect(fixture.fake.rosterSnapshot().find(row=>row.userId===ownerRoster[0]!.userId)).toEqual(ownerRoster[0]);
+  await expect(fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().operations.filter(row=>row.kind==='operation').map(row=>row.phase))))
+    .resolves.toEqual(['active','bound-closed']);
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},30_000);
+
+it('completes a reopened prepared native retry using the current verified target state and retained owner roster',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-prepared-retry'),binding=id();
+  await grantLaterAgentUse(fixture,later);
+  const team=(await fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().teams[0])))!;
+  const definitionHash=(await fixture.financial.query('SELECT hash FROM agent_definitions WHERE name=$1',[later.agent])).rows[0]!.hash;
+  await fixture.custody.withGate(async gate=>{
+    const user=gate.reserveUser(later.accountId,team.ownershipId,policy);
+    gate.prepareOperation({bindingId:binding,credentialGeneration:'0',userOwnershipId:user.ownershipId,
+      association:{agent:later.agent,incarnation:fixture.incarnation,definitionHash,purposeAlias:'lares-brain'},reviewedPolicy:policy},`sk-${randomBytes(32).toString('base64url')}`);
+  });
+  const ownerBefore=fixture.fake.rosterSnapshot().find(row=>row.userId===fixture.ownerNativeUserId);
+  fixture.custody.close();
+  const custody=BudgetNativeCustodyStore.openExisting(join(fixture.root,'native'),{ownershipUid:testJournalUid,ownershipGid:process.getgid!(),lock});
+  fixtureCustodies.push(custody);
+  fixture.custody=custody;
+  const provisioner=new BudgetNativeProvisioner(fixture.financial,fixture.journal,custody,fixture.fake.native,nativeTestTarget,policy);
+  await expect(provisioner.provision({bindingId:binding,credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'}))
+    .resolves.toMatchObject({state:'bound-closed'});
+  expect(fixture.fake.rosterSnapshot().find(row=>row.userId===fixture.ownerNativeUserId)).toEqual(ownerBefore);
+  await expect(custody.withGate(gate=>Promise.resolve(gate.inventory().users.find((row):row is Extract<typeof row,{kind:'user'}>=>row.kind==='user'&&row.accountId===later.accountId))))
+    .resolves.toMatchObject({userCreateAttempt:'verified',membershipCreateAttempt:'verified'});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},30_000);
+
+it('does not dispatch another native mutation after delayed SQL deadline replies cross the original grant expiry',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-delayed-deadline');
+  const ownerCalls={...fixture.fake.calls};
+  const grant=await grantLaterAgentUse(fixture,later,1_700);expect(grant.validUntil).toEqual(expect.any(String));
+  const delayed:{latencyMs:number;remainingMs:number}[]=[];
+  const source={query:fixture.financial.query.bind(fixture.financial),connect:async()=>{
+    const client=await fixture.financial.connect();
+    return{...client,query:async(sql:string|{text:string},values?:unknown[])=>{
+      const text=typeof sql==='string'?sql:sql.text,started=performance.now();
+      const result=await client.query(sql as never,values as never) as {rows:any[]};
+      if(text.includes('AS remaining_ms')){
+        const remainingMs=Number(result.rows[0]?.remaining_ms);await new Promise(resolve=>setTimeout(resolve,600));
+        delayed.push({latencyMs:performance.now()-started,remainingMs});
+      }
+      return result;
+    },release:client.release.bind(client)};
+  }} as unknown as Pool;
+  fixture.fake.setAfterCreateUser(async()=>new Promise(resolve=>setTimeout(resolve,600)));
+  try{
+    const provisioner=new BudgetNativeProvisioner(source,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy);
+    await expect(provisioner.provision({bindingId:id(),credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
+    expect(delayed).toHaveLength(2);expect(delayed.every(row=>row.latencyMs>250&&row.remainingMs>250)).toBe(true);
+    expect(delayed.every(row=>row.latencyMs-250>0)).toBe(true);
+    expect(fixture.fake.calls).toMatchObject({team:ownerCalls.team,user:ownerCalls.user+1,membership:ownerCalls.membership,key:ownerCalls.key});
+    expect((await fixture.financial.query('SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE live_member_id=$1',[later.member])).rows[0]!.n).toBe(0);
+    expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+    await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+  }finally{fixture.fake.setAfterCreateUser(async()=>undefined);}
+},30_000);
+
+it('withholds success after custody completion expires without rewriting the published closed receipt',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-postgate-expiry'),binding=id();
+  const grant=await grantLaterAgentUse(fixture,later,3_000);expect(grant.validUntil).toEqual(expect.any(String));
+  const originalWithGate=fixture.custody.withGate.bind(fixture.custody);let delayReturn=false,publishedReceipt:unknown,uncertainWrites=0;
+  fixture.custody.withGate=async <T>(work:(gate:NativeCustodyGate)=>Promise<T>)=>{
+    const result=await originalWithGate(gate=>work({...gate,
+      recordBoundClosed:(operationId,receipt)=>{publishedReceipt=receipt;return gate.recordBoundClosed(operationId,receipt);},
+      recordUncertain:(operationId)=>{uncertainWrites++;return gate.recordUncertain(operationId);},
+    }));
+    if(delayReturn){delayReturn=false;await new Promise(resolve=>setTimeout(resolve,3300));}
+    return result;
+  };
+  delayReturn=true;
+  await expect(fixture.provisioner.provision({bindingId:binding,credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
+  expect(uncertainWrites).toBe(0);
+  expect((await fixture.financial.query('SELECT state FROM budget_gateway_bindings WHERE live_member_id=$1',[later.member])).rows[0]).toEqual({state:'active'});
+  const operation=await fixture.custody.withGate(gate=>Promise.resolve(gate.inventory().operations.find((row):row is NativeOperation=>row.kind==='operation'&&row.bindingId===binding)));
+  expect(operation).toMatchObject({phase:'bound-closed',bindingReceipt:publishedReceipt});
+  await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+},30_000);
+
+it.each(['grant-expiry','resource-revision'] as const)('revalidates source authority changed during a released-lock native call (%s)',async mutation=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,`neutral-native-${mutation==='grant-expiry'?'grant':'resource'}`);
+  const grant=await grantLaterAgentUse(fixture,later,10*60_000);expect(grant.validUntil).toEqual(expect.any(String));
+  let mutationCommitted=false,mutationError='';
+  const update=async()=>{
+    const client=await fixture.operator.connect();
+    try{await client.query("SET statement_timeout='2s'");
+      if(mutation==='grant-expiry'){
+        const revision=(await client.query('SELECT revision FROM agent_access WHERE agent_name=$1',[later.agent])).rows[0]?.revision;
+        if(revision===undefined)throw new Error('Held grant mutation lost its access row');
+        await new PgGrantStore(fixture.operator).updateAgentAccess(fixture.owner,{agentName:later.agent,expectedRevision:Number(revision),grants:[{
+          principal:{kind:'member',id:later.member},permission:'use',expiresAt:new Date(Date.now()+20*60_000).toISOString(),
+        }]});
+      }
+      else await client.query("UPDATE agent_resources SET applied_definition=applied_definition || '{\"model\":\"changed\"}'::jsonb WHERE name=$1",[later.agent]);
+      mutationCommitted=true;
+    }catch(error){mutationError=error instanceof Error?error.message:String(error);throw error;
+    }finally{try{await client.query('RESET statement_timeout');}catch{}client.release();}
+  };
+  fixture.fake.setAfterCreateUser(update);
+  try{
+    const service=new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy);
+    const outcome=await service.provision({bindingId:id(),credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'}).then(value=>({value}),error=>({error}));
+    expect(mutationCommitted,`held native callback must commit its source mutation; error=${mutationError}; outcome=${'error' in outcome?String(outcome.error):'success'}; calls=${JSON.stringify(fixture.fake.calls)}`).toBe(true);
+    const sourceChange=(await fixture.operator.query(mutation==='grant-expiry'?'SELECT revision<>$2 AS changed FROM agent_access WHERE agent_name=$1':"SELECT applied_definition->>'model'='changed' AS changed,applied_definition->>'model' AS model FROM agent_resources WHERE name=$1",
+      mutation==='grant-expiry'?[later.agent,grant.accessRevision]:[later.agent])).rows[0];
+    expect(sourceChange?.changed,`source mutation did not persist: ${JSON.stringify({sourceChange,mutationCommitted,mutationError,calls:fixture.fake.calls})}`).toBe(true);
+    expect('error' in outcome,'provisioning must refuse after the changed authority readback').toBe(true);
+    expect((await fixture.financial.query('SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE live_member_id=$1',[later.member])).rows[0]!.n).toBe(0);
+    expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+    await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+  }finally{fixture.fake.setAfterCreateUser(async()=>undefined);}
+},30_000);
+
+it('refuses a full-roster readback when the retained owner membership changes during member addition',async()=>{
+  const fixture=await startActiveOwnerFixture(),later=await addLaterAccount(fixture,'neutral-native-roster-change');
+  await grantLaterAgentUse(fixture,later);
+  fixture.fake.setAfterAddMember(()=>fixture.fake.changeMembership(fixture.ownerNativeUserId,{maxBudget:1}));
+  try{
+    const service=new BudgetNativeProvisioner(fixture.financial,fixture.journal,fixture.custody,fixture.fake.native,nativeTestTarget,policy);
+    const callsBefore={...fixture.fake.calls};
+    await expect(service.provision({bindingId:id(),credentialGeneration:'0',memberId:later.member,agent:later.agent,incarnation:fixture.incarnation,purposeAlias:'lares-brain'})).rejects.toThrow();
+    expect(fixture.fake.calls.membership).toBe(callsBefore.membership+1);expect(fixture.fake.calls.key).toBe(callsBefore.key);
+    expect(fixture.fake.rosterSnapshot().find(row=>row.userId===fixture.ownerNativeUserId)?.maxBudget).toBe(1);
+    expect((await fixture.financial.query('SELECT count(*)::int AS n FROM budget_gateway_bindings WHERE live_member_id=$1',[later.member])).rows[0]!.n).toBe(0);
+    expect(JSON.parse(readFileSync(join(fixture.root,'native','control.json'),'utf8')).state).toBe('uncertain');
+    await verifyFinancialContinuity(fixture.journal,fixture.financial as never);
+  }finally{fixture.fake.setAfterAddMember(()=>undefined);}
+},30_000);
 
 it('keeps an activation with an unknown SQL COMMIT non-dispatchable and never unblocks twice',async()=>{
   await resetDatabase();

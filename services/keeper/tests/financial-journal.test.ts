@@ -2,13 +2,13 @@ import {afterEach,expect,it,vi} from 'vitest';
 import {chmodSync,fsyncSync,readFileSync,rmSync,unlinkSync,writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
+import {HostFinancialJournal,FINANCIAL_ATOM_SCHEMA,financialJournalFrame,JOURNAL_MAX_RECORDS,committedFinancialEvidence,financialAtomKey,requireCurrentFinancialPublicationProof,markJournaledAbort,isJournaledAbort,type CommittedFinancialReceipt,type DurableFinancialAbortReceipt,type FinancialAbortOutcome,type FinancialAtom} from '../lib/financial-journal.js';
 import {journalFixture,platformTestJournalLock,testJournalUid} from './helpers/financial-journal.js';
 import * as sourceTransactions from '@lares/agent-kit/console-source-transaction';
 import {consoleSourceTransaction,sourceTransactionBoundary} from '@lares/agent-kit/console-source-transaction';
 import {observeCommittedFinancialProjection,type FinancialObservationHandle} from '../lib/financial-continuity.js';
 import {JournalBudgetFinancialWriter} from '../lib/budget-financial-writer.js';
-const fixtures:ReturnType<typeof journalFixture>[]=[],journals:HostFinancialJournal[]=[];
+const fixtures:ReturnType<typeof journalFixture>[]=[],journals:HostFinancialJournal[]=[],rawEpochs=new Map<string,string>();
 const fixture=(options:Parameters<typeof journalFixture>[0]={})=>{const f=journalFixture(options);fixtures.push(f);return f;};
 const open=(f:ReturnType<typeof fixture>)=>{const j=f.open();journals.push(j);return j;};
 function preparedJournal(sync?:(fd:number)=>void){
@@ -87,8 +87,11 @@ async function observation(journal:HostFinancialJournal,operationId:string){
     else if(sql.includes('FROM budget_accounts) AS accounts'))rows=[{accounts:String(atoms.filter(a=>a.kind==='account').length),windows:String(atoms.filter(a=>a.kind==='window').length),bindings:String(atoms.filter(a=>a.kind==='binding').length),attempts:String(atoms.filter(a=>a.kind==='attempt').length),grants:String(atoms.filter(a=>a.kind==='grant').length),checkpoints:String(projection.checkpoints.length)}];
     else if(sql.includes('FROM budget_financial_checkpoints WHERE proposal_sequence'))rows=projection.checkpoints.map(c=>({...c,sequence:String(c.sequence)}));
     else if(sql.includes('FROM budget_financial_checkpoints ORDER BY'))rows=projection.checkpoints.slice(-1).map(c=>({...c,sequence:String(c.sequence)}));
-    else if(sql.includes('FROM budget_accounts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account').map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:a.recoveryEpochHash,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
+    else if(sql.includes('FROM budget_accounts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'account'}>=>a.kind==='account').map(a=>({id:a.id,installation_account_id:a.installationAccountId,kind:a.accountKind,state:a.state,reason:a.reason,active_window_id:a.activeWindowId,installation_cap:a.installationCap,policy_generation:a.policyGeneration,selected_endpoint:a.selectedEndpointHash,endpoint_generation:a.endpointGeneration,recovery_epoch:a.recoveryEpochHash===null?null:[...rawEpochs].find(([,hash])=>hash===a.recoveryEpochHash)?.[0]??a.recoveryEpochHash,canonical_suppression_hash:a.canonicalSuppressionHash,provider_suppression_hashes:a.providerSuppressionHashes}));
+    else if(sql.includes('FROM budget_windows WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'window'}>=>a.kind==='window').map(a=>({id:a.id,account_id:a.accountId,starts_utc:a.startsAt,ends_utc:a.endsAt,opening_liability:a.openingLiability,opening_cap:a.openingCap,policy_revision:a.policyRevision}));
     else if(sql.includes('FROM budget_gateway_bindings WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'binding'}>=>a.kind==='binding').map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,profile_hash:a.profileHash,maximum_liability:a.maximumLiability,pricing_profile:a.pricingProfile,state:a.state}));
+    else if(sql.includes('FROM budget_attempts WHERE id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'attempt'}>=>a.kind==='attempt').map(a=>({id:a.id,installation_account_id:a.installationAccountId,member_account_id:a.memberAccountId,binding_id:a.bindingId,installation_window_id:a.installationWindowId,member_window_id:a.memberWindowId,endpoint_hash:a.endpointHash,credential_generation:a.credentialGeneration,installation_policy_generation:a.installationPolicyGeneration,member_policy_generation:a.memberPolicyGeneration,endpoint_generation:a.endpointGeneration,recovery_epoch:[...rawEpochs].find(([,hash])=>hash===a.recoveryEpochHash)?.[0]??a.recoveryEpochHash,request_hash:a.requestHash,profile_hash:a.profileHash,invocation_hash:a.invocationHash,reserved_amount:a.reservedAmount,installation_cap_snapshot:a.installationCapSnapshot,member_cap_snapshot:a.memberCapSnapshot,created_utc:a.createdAt,expires_utc:a.expiresAt,admitted_utc:a.admittedAt,state:a.state,actual_amount:a.actualAmount,settlement_hash:a.settlementHash,conflict_reason:a.conflictReason,conflict_hash:a.conflictHash,highest_observed_liability:a.highestObservedLiability}));
+    else if(sql.includes('FROM budget_gateway_grants WHERE attempt_id='))rows=atoms.filter((a):a is Extract<FinancialAtom,{kind:'grant'}>=>a.kind==='grant').map(a=>({attempt_id:a.attemptId,grant_hash:a.grantHash}));
     else if(sql.startsWith('SELECT')&&sql.includes('FROM budget_'))rows=[];
     return {rows,command};
   },release(){}};
@@ -96,6 +99,91 @@ async function observation(journal:HostFinancialJournal,operationId:string){
   let handle:FinancialObservationHandle|undefined;const observingBoundary=sourceTransactionBoundary({beforeCommit:async()=>{},afterCommitObservation:async db=>{handle=await observeCommittedFinancialProjection(journal,db,operationId);return handle;},settled:async()=>{}},operationId);
   await consoleSourceTransaction(pool,async()=>undefined,observingBoundary);if(!handle)throw new Error('Owned financial observer fixture failed');return handle;
 }
+const activeMonthStarts='2026-10-01T00:00:00.000000Z',activeMonthEnds='2026-11-01T00:00:00.000000Z',endpointHash='a'.repeat(64),otherHash='b'.repeat(64);
+function activeProvisionProjection(overrides:{installation?:Partial<InstallationAtom>;member?:Partial<InstallationAtom>;memberWindow?:Partial<WindowAtom>}={}){
+  const installationId=randomUUID(),ownerId=randomUUID(),memberId=randomUUID(),retiredId=randomUUID(),installationWindowId=randomUUID(),ownerWindowId=randomUUID(),memberWindowId=randomUUID(),attemptId=randomUUID(),ownerBindingId=randomUUID();
+  const installationBase=recoveryAccount(installationId,{installationCap:'100',policyGeneration:'5',endpointGeneration:'6',activeWindowId:installationWindowId,selectedEndpointHash:endpointHash,...overrides.installation});
+  const owner:InstallationAtom={kind:'account',id:ownerId,installationAccountId:installationId,accountKind:'member',state:'open',reason:'approved',activeWindowId:ownerWindowId,installationCap:null,policyGeneration:'2',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:null,providerSuppressionHashes:[]};
+  const memberBase:InstallationAtom={kind:'account',id:memberId,installationAccountId:installationId,accountKind:'member',state:'closed',reason:'unreconciled',activeWindowId:memberWindowId,installationCap:null,policyGeneration:'3',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:null,providerSuppressionHashes:[],...overrides.member};
+  const window=(id:string,accountId:string,cap:string,policyRevision:string,overrides:Partial<WindowAtom>={}):WindowAtom=>({kind:'window',id,accountId,startsAt:activeMonthStarts,endsAt:activeMonthEnds,openingLiability:'0',openingCap:cap,policyRevision,...overrides});
+  const installationWindow=window(installationWindowId,installationId,'100','8');
+  const ownerWindow=window(ownerWindowId,ownerId,'20','9');
+  const memberWindow=window(memberWindowId,memberId,'10','10',overrides.memberWindow);
+  const installation={...installationBase,activeWindowId:installationWindowId};
+  const member={...memberBase,activeWindowId:memberWindowId};
+  const ownerBinding:FinancialAtom={kind:'binding',id:ownerBindingId,installationAccountId:installationId,memberAccountId:ownerId,endpointHash,credentialGeneration:'2',profileHash:otherHash,maximumLiability:'20',pricingProfile:null,state:'active'};
+  const attempt:FinancialAtom={kind:'attempt',id:attemptId,installationAccountId:installationId,memberAccountId:ownerId,bindingId:ownerBindingId,installationWindowId,memberWindowId:ownerWindowId,endpointHash,credentialGeneration:'2',installationPolicyGeneration:'5',memberPolicyGeneration:'2',endpointGeneration:'6',recoveryEpochHash:createHash('sha256').update(recoveryEpoch).digest('hex'),requestHash:'c'.repeat(64),profileHash:otherHash,invocationHash:null,reservedAmount:'1',installationCapSnapshot:'100',memberCapSnapshot:'20',createdAt:'2026-10-22T12:00:00.000000Z',expiresAt:'2026-10-22T12:01:00.000000Z',admittedAt:'2026-10-22T12:00:01.000000Z',state:'settled',actualAmount:'1',settlementHash:'d'.repeat(64),conflictReason:null,conflictHash:null,highestObservedLiability:'1'};
+  const grant:FinancialAtom={kind:'grant',attemptId,grantHash:'e'.repeat(64)};
+  const retired:FinancialAtom={kind:'account',id:retiredId,installationAccountId:installationId,accountKind:'member',state:'retired',reason:'member_erased',activeWindowId:null,installationCap:null,policyGeneration:'1',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:'f'.repeat(64),providerSuppressionHashes:['1'.repeat(64)]};
+  const tombstone:FinancialAtom={kind:'tombstone',accountId:retiredId,canonicalSuppressionHash:'f'.repeat(64),providerSuppressionHashes:['1'.repeat(64)],state:'erased'};
+  const before:FinancialAtom[]=[installation,installationWindow,owner,ownerWindow,member,memberWindow,ownerBinding,attempt,grant,retired,tombstone];
+  const binding:FinancialAtom={kind:'binding',id:randomUUID(),installationAccountId:installationId,memberAccountId:memberId,endpointHash,credentialGeneration:'0',profileHash:'2'.repeat(64),maximumLiability:'10',pricingProfile:null,state:'active'};
+  return {before,binding,proposal:[...before,binding],installation,member,memberWindow,attempt,grant,tombstone};
+}
+async function observeProvisionReceipt(journal:HostFinancialJournal,proposal:readonly FinancialAtom[],binding:Extract<FinancialAtom,{kind:'binding'}>,operation:'provision'|'member-remove'='provision'){
+  let receipt:CommittedFinancialReceipt|undefined,accepted:ReturnType<typeof committedFinancialEvidence>|undefined;
+  await journal.operation(operation,async operationId=>{
+    journal.propose(operationId,proposal);
+    receipt=journal.committedObserved(operationId,await observation(journal,operationId));
+    if(receipt)journal.withPublicationProof(receipt,()=>{accepted=committedFinancialEvidence(receipt!,{kind:'bound-closed',binding});return undefined;});
+  });
+  return {receipt,accepted};
+}
+it('accepts only an observed current active-installation provision that adds one binding and preserves the complete prior fold',async()=>{
+  const j=preparedJournal(),rawEpoch=recoveryEpoch;rawEpochs.set(rawEpoch,createHash('sha256').update(rawEpoch).digest('hex'));
+  const projection=activeProvisionProjection();await commitRecoveryProjection(j,projection.before);
+  const result=await observeProvisionReceipt(j,projection.proposal,projection.binding);
+  expect(result.receipt).toBeDefined();expect(result.accepted?.operation).toBe('provision');
+  expect(j.expectedProjection(false).atoms).toEqual([...projection.proposal].sort((a,b)=>financialAtomKey(a).localeCompare(financialAtomKey(b))));
+  expect(projection.member.state).toBe('closed');expect(projection.installation.state).toBe('open');
+  expect(result.receipt&&committedFinancialEvidence(result.receipt,{kind:'bound-closed',binding:projection.binding})).toBeUndefined();
+  expect(committedFinancialEvidence({...result.receipt!},{kind:'bound-closed',binding:projection.binding})).toBeUndefined();
+});
+it('keeps the original closed-installation provision evidence path intact',async()=>{
+  const j=preparedJournal(),installationId=randomUUID(),memberId=randomUUID(),bindingId=randomUUID(),binding:FinancialAtom={kind:'binding',id:bindingId,installationAccountId:installationId,memberAccountId:memberId,endpointHash,credentialGeneration:'0',profileHash:otherHash,maximumLiability:'10',pricingProfile:null,state:'active'};
+  const closed=(id:string,accountKind:'installation'|'member'):FinancialAtom=>({kind:'account',id,installationAccountId:installationId,accountKind,state:'closed',reason:'unreconciled',activeWindowId:null,installationCap:null,policyGeneration:'0',selectedEndpointHash:null,endpointGeneration:'0',recoveryEpochHash:null,canonicalSuppressionHash:null,providerSuppressionHashes:[]});
+  let receipt:CommittedFinancialReceipt|undefined;await j.operation('provision',async id=>{j.propose(id,[closed(installationId,'installation'),closed(memberId,'member'),binding]);receipt=j.committed(id);});
+  expect(committedFinancialEvidence(receipt!,{kind:'bound-closed',binding})).toMatchObject({operation:'provision'});
+});
+it.each([
+  ['member already open',{member:{state:'open' as const,reason:'approved' as const}}],
+  ['installation frozen',{installation:{state:'frozen' as const}}],
+  ['installation endpoint differs',{installation:{selectedEndpointHash:otherHash}}],
+  ['installation epoch missing',{installation:{recoveryEpochHash:null}}],
+  ['installation generation zero',{installation:{endpointGeneration:'0'}}],
+  ['installation cap zero',{installation:{installationCap:'0'}}],
+  ['member window starts one microsecond later',{memberWindow:{startsAt:'2026-10-01T00:00:00.000001Z'}}],
+  ['window policy revision differs from generation',{}],
+] as const)('checks active provision source facts: %s',async(_label,overrides)=>{
+  const j=preparedJournal(),rawEpoch=recoveryEpoch;rawEpochs.set(rawEpoch,createHash('sha256').update(rawEpoch).digest('hex'));
+  const projection=activeProvisionProjection(overrides);await commitRecoveryProjection(j,projection.before);
+  const result=await observeProvisionReceipt(j,projection.proposal,projection.binding);
+  if(_label==='window policy revision differs from generation')expect(result.accepted?.operation).toBe('provision');
+  else expect(result.accepted).toBeUndefined();
+});
+it.each(['owner-account','old-window','old-binding','attempt','grant','erased-tombstone'] as const)('refuses active provision when the observed fold changes an old %s atom',async target=>{
+  const j=preparedJournal(),rawEpoch=recoveryEpoch;rawEpochs.set(rawEpoch,createHash('sha256').update(rawEpoch).digest('hex'));
+  const projection=activeProvisionProjection();await commitRecoveryProjection(j,projection.before);
+  const proposal=projection.proposal.map(atom=>{
+    if(target==='owner-account'&&atom.kind==='account'&&atom.id===projection.installation.id)return {...atom,installationCap:'101'};
+    if(target==='old-window'&&atom.kind==='window'&&atom.accountId===projection.installation.id)return {...atom,openingLiability:'1'};
+    if(target==='old-binding'&&atom.kind==='binding'&&atom.id!==projection.binding.id)return {...atom,maximumLiability:'19'};
+    if(target==='attempt'&&atom.kind==='attempt')return {...atom,state:'unknown' as const,actualAmount:null,settlementHash:null,admittedAt:null};
+    if(target==='grant'&&atom.kind==='grant')return {...atom,grantHash:'9'.repeat(64)};
+    if(target==='erased-tombstone'&&atom.kind==='tombstone')return {...atom,providerSuppressionHashes:['8'.repeat(64)]};
+    return atom;
+  });
+  expect((await observeProvisionReceipt(j,proposal,projection.binding)).accepted).toBeUndefined();
+});
+it('does not authorize active binding evidence from plain commits or another operation',async()=>{
+  const j=preparedJournal(),rawEpoch=recoveryEpoch;rawEpochs.set(rawEpoch,createHash('sha256').update(rawEpoch).digest('hex'));
+  const projection=activeProvisionProjection();await commitRecoveryProjection(j,projection.before);
+  let plain:CommittedFinancialReceipt|undefined;await j.operation('provision',async id=>{j.propose(id,projection.proposal);plain=j.committed(id);});
+  expect(committedFinancialEvidence(plain!,{kind:'bound-closed',binding:projection.binding})).toBeUndefined();
+  const second=preparedJournal(),secondProjection=activeProvisionProjection();await commitRecoveryProjection(second,secondProjection.before);
+  const wrong=await observeProvisionReceipt(second,secondProjection.proposal,secondProjection.binding,'member-remove');
+  expect(wrong.accepted).toBeUndefined();
+});
 type ObservationFault='begin'|'read'|'commit-reject'|'commit-unacknowledged'|'deadline'|'guard';
 async function runObservedWriter(journal:HostFinancialJournal,options:{fault?:ObservationFault;onObserverCommit?:()=>void}={}){
   const writer=new JournalBudgetFinancialWriter(journal),queries:{text:string;command?:string;query_timeout?:number}[]=[],released:boolean[]=[],outcomes:string[]=[];
