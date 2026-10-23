@@ -120,6 +120,8 @@ describe("fresh install settings", () => {
     const first = JSON.parse(readFileSync(out, "utf8"));
     expect(first.publicDoorOrigin).toBe("https://lares.example.com");
     expect(first.lifecycle.runtime.schedulesLive).toBe(true);
+    expect(first.budgetNative).toBeUndefined();
+    expect(first.gatewayBudget).toBeUndefined();
     first.lifecycle.runtime.schedulesLive = false;
     writeFileSync(live, JSON.stringify(first));
     expect(renderConfigCommand(args, () => {})).toBe(0);
@@ -282,6 +284,8 @@ it("renderer rejects ambiguous or malformed administrator emails before writing 
 
 describe('optional prepared financial custody',()=>{
   const binding={directory:'/var/lib/lares/budget-financial',db:{host:'db',port:5432,database:'lares_state',user:'lares_financial',passwordFile:'/etc/lares/secrets/financial-database-password'}} as const;
+  const native={directory:'/var/lib/lares/budget-native',reviewedPolicyFile:'/etc/lares/native-policy.json'} as const;
+  const gateway={serviceKeyFile:'/etc/lares/secrets/gateway-budget-service-key'} as const;
   it('starts unbound and preserves only an explicitly supplied prior binding',()=>{
     expect(renderKeeperConfig(MANIFEST,OPTS).budgetFinancial).toBeUndefined();
     const config=renderKeeperConfig(MANIFEST,{...OPTS,previousBudgetFinancial:binding});
@@ -298,6 +302,45 @@ describe('optional prepared financial custody',()=>{
     for(const budgetFinancial of [null,{directory:'/etc/lares/budget-financial'},{...binding,reset:true},{directory:binding.directory}]){
       writeFileSync(live,JSON.stringify({...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial}));
       expect(()=>renderConfigCommand(args,()=>{})).toThrow();expect(readFileSync(out)).toEqual(before);expect(readFileSync(env)).toEqual(beforeEnv);
+    }
+  });
+  it('preserves exact native and gateway bindings in the pure renderer and keeper schema',()=>{
+    const config=renderKeeperConfig(MANIFEST,{...OPTS,previousBudgetFinancial:binding,previousBudgetNative:native,previousGatewayBudget:gateway});
+    expect(config.budgetFinancial).toEqual(binding);
+    expect(config.budgetNative).toEqual(native);
+    expect(config.gatewayBudget).toEqual(gateway);
+    expect(loadAsKeeperWould(config)).toMatchObject({budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway});
+    expect(JSON.stringify(config.lifecycle!.runtime)).not.toContain(gateway.serviceKeyFile);
+    const fresh=renderKeeperConfig(MANIFEST,OPTS);
+    expect(fresh.budgetNative).toBeUndefined();
+    expect(fresh.gatewayBudget).toBeUndefined();
+    expect(()=>renderKeeperConfig(MANIFEST,{...OPTS,previousBudgetNative:native})).toThrow('no prepared financial custody binding');
+  });
+  it('preserves both bindings across CLI reruns and refuses malformed or inconsistent fields before either write',()=>{
+    const f=mkdtempSync(join(tmpdir(),'keeper-custody-rerun-'));dirs.push(f);
+    const release=join(f,'release.json'),out=join(f,'keeper.partial'),env=join(f,'keeper.env'),live=join(f,'keeper.json');
+    writeFileSync(release,JSON.stringify(MANIFEST));
+    const args=[release,out,env,live,'lares','/srv/lares','/srv/lares/agents','/srv/lares/retired','/srv/lares/backup','/srv/lares/egress','/etc/lares/secrets','/run/lares','/run/lares-host','lares-network','172.30.0.0/24','172.30.0.2','http://lares-gateway:4000','lares_state','fixture-owner','owner@example.invalid','lares.example.com',''];
+    const first={...renderKeeperConfig(MANIFEST,OPTS),budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway};
+    writeFileSync(live,JSON.stringify(first));
+    expect(renderConfigCommand(args,()=>{})).toBe(0);
+    expect(JSON.parse(readFileSync(out,'utf8'))).toMatchObject({budgetFinancial:binding,budgetNative:native,gatewayBudget:gateway});
+    expect(readFileSync(env,'utf8')).not.toContain(gateway.serviceKeyFile);
+    const beforeOut=readFileSync(out),beforeEnv=readFileSync(env);
+    const invalids=[
+      {...first,budgetNative:null},
+      {...first,budgetNative:{...native,extra:true}},
+      {...first,budgetNative:{directory:'/etc/lares/budget-native'}},
+      {...first,gatewayBudget:null},
+      {...first,gatewayBudget:{serviceKeyFile:gateway.serviceKeyFile,extra:true}},
+      {...first,gatewayBudget:{serviceKeyFile:'relative/key'}},
+      {...first,budgetFinancial:undefined},
+    ];
+    for(const prior of invalids){
+      writeFileSync(live,JSON.stringify(prior));
+      expect(()=>renderConfigCommand(args,()=>{})).toThrow();
+      expect(readFileSync(out)).toEqual(beforeOut);
+      expect(readFileSync(env)).toEqual(beforeEnv);
     }
   });
 });

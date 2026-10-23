@@ -18,7 +18,7 @@
 //      `--env-file` carries the whole set and `docker compose` has nothing left to guess.
 //
 // NOTHING HERE TOUCHES A NETWORK, A REGISTRY OR A CONTAINER.
-import {financialCustodyConfigSchema} from "../../keeper/lib/config.js";
+import {financialCustodyConfigSchema,gatewayBudgetConfigSchema,nativeCustodyConfigSchema} from "../../keeper/lib/config.js";
 import { credentialConfigSchema } from "../../keeper/lib/credential-state.js";
 import { readFileSync, writeFileSync, chmodSync, lstatSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -116,6 +116,8 @@ export function main(argv: readonly string[], out: (s: string) => void): number 
   const modelPurposeKeyFile = optionalModelPurposeKey(join(at("secretsDir"), "console-model-purpose-signing-key"));
   const config = renderKeeperConfig(manifest, {
     ...(previous.budgetFinancial?{previousBudgetFinancial:previous.budgetFinancial}:{}),
+    ...(previous.budgetNative?{previousBudgetNative:previous.budgetNative}:{}),
+    ...(previous.gatewayBudget?{previousGatewayBudget:previous.gatewayBudget}:{}),
     modelPurposeConsoleSigningKeyFile: modelPurposeKeyFile,
     modelPurposeRuntimeDir: modelPurposeKeyFile ? join(at("socketDir"), "model-purpose") : null,
     project: at("project"),
@@ -210,7 +212,7 @@ function optionalModelPurposeKey(path: string): string | null {
 
 /** What the keeper.json already on this host holds that the installer does not decide: the
  *  provider blocks (configured separately) and the schedules switch (the owner may have chosen). */
-function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean;budgetFinancial?:KeeperConfig["budgetFinancial"] } {
+function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: boolean; budgetFinancial?:KeeperConfig["budgetFinancial"]; budgetNative?:KeeperConfig["budgetNative"]; gatewayBudget?:KeeperConfig["gatewayBudget"] } {
   let text: string;
   try {
     text = readFileSync(path, "utf8");
@@ -228,10 +230,18 @@ function readPrevious(path: string): { google?: KeeperGoogle; microsoft?: Keeper
   }
   const financial=(parsed as {budgetFinancial?:unknown}|null)?.budgetFinancial;
   const budgetFinancial=financial===undefined?undefined:financialCustodyConfigSchema.parse(financial);
+  const native=(parsed as {budgetNative?:unknown}|null)?.budgetNative;
+  const budgetNative=native===undefined?undefined:nativeCustodyConfigSchema.parse(native);
+  const gateway=(parsed as {gatewayBudget?:unknown}|null)?.gatewayBudget;
+  const gatewayBudget=gateway===undefined?undefined:gatewayBudgetConfigSchema.parse(gateway);
+  if (budgetNative && !budgetFinancial)
+    throw new Error(`${path} has native custody without a financial custody binding. Nothing was written; restore the matching binding or use operator recovery before running the installer again.`);
   const runtime = (parsed as { lifecycle?: { runtime?: { google?: KeeperGoogle; microsoft?: KeeperMicrosoft; schedulesLive?: unknown } } } | null)
     ?.lifecycle?.runtime;
   return {
     ...(budgetFinancial?{budgetFinancial}:{}),
+    ...(budgetNative?{budgetNative}:{}),
+    ...(gatewayBudget?{gatewayBudget}:{}),
     ...(runtime?.microsoft ? { microsoft: runtime.microsoft } : {}),
     ...(runtime?.google ? { google: runtime.google } : {}),
     ...(typeof runtime?.schedulesLive === "boolean" ? { schedulesLive: runtime.schedulesLive } : {}),
