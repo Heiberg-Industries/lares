@@ -1598,7 +1598,7 @@ prefix=sys.argv[1];inv=json.loads(sys.argv[2])
 for a in inv['areas']:print(prefix+'/srv/'+a['relativePath']);print(prefix+a['origin'])
 PYVAULT
   )
-  for path in backup.sh export.sh restore.sh backup-verify.sh restore-drill.sh setup-backups.sh vault-storage.sh engine-run.sh refresh-recovery.sh vault-recovery.json vault-recovery-engine-image;do apply_mounts+=(--ro "$PREFIX/opt/lares/$path");done
+  for path in backup.sh export.sh restore.sh backup-verify.sh restore-drill.sh setup-backups.sh maintenance-custody.py vault-storage.sh engine-run.sh refresh-recovery.sh vault-recovery.json vault-recovery-engine-image;do apply_mounts+=(--ro "$PREFIX/opt/lares/$path");done
   for path in lares-backup.service lares-backup.timer lares-backup-verify.service lares-backup-verify.timer lares-restore-drill.service lares-restore-drill.timer;do apply_mounts+=(--ro "$PREFIX/etc/systemd/system/$path");done
   engine_run "${apply_mounts[@]}" "${envs[@]}" bin/vault-storage.ts apply --prefix "$prefix" --owner "$OWNER_ID" >/dev/null || die 'Vault initialization did not complete; its exact pending plan is retained and the keeper was not started.' "$EX_REFUSED"
   verified=$(engine_run "${apply_mounts[@]}" "${envs[@]}" bin/vault-storage.ts verify-plan --prefix "$prefix") || die 'Vault verification failed; the pending plan remains incomplete and the keeper was not started.' "$EX_REFUSED"

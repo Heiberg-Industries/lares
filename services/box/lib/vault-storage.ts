@@ -13,7 +13,7 @@ export const VAULT_STORAGE_INVENTORY = '/srv/lares/installation/vault-storage.js
 export const VAULT_STORAGE_PENDING = '/srv/lares/installation/vault-storage.pending.json';
 export const VAULT_WORKING_ROOT = '/srv/vault';
 export const VAULT_BARE_ROOT = '/var/lib/lares-vault-git';
-export const VAULT_RECOVERY_SCRIPTS = ['backup.sh', 'export.sh', 'restore.sh', 'backup-verify.sh', 'restore-drill.sh', 'setup-backups.sh', 'vault-storage.sh', 'engine-run.sh', 'refresh-recovery.sh'] as const;
+export const VAULT_RECOVERY_SCRIPTS = ['backup.sh', 'export.sh', 'restore.sh', 'backup-verify.sh', 'restore-drill.sh', 'setup-backups.sh', 'maintenance-custody.py', 'vault-storage.sh', 'engine-run.sh', 'refresh-recovery.sh'] as const;
 export const VAULT_RECOVERY_UNITS = ['lares-backup.service', 'lares-backup.timer', 'lares-backup-verify.service', 'lares-backup-verify.timer', 'lares-restore-drill.service', 'lares-restore-drill.timer'] as const;
 export interface ManagedVaultArea {
     areaId: string;

@@ -17,7 +17,7 @@
     "./tests/helpers/pg.js": "./tests/helpers/pg.ts"
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "python3 -B tests/maintenance-admission.test.py && vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "migrate": "tsx migrate.ts",

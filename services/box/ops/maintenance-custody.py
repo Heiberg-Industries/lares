@@ -1,8 +1,7 @@
-"""Root-only custody primitives for the CI maintenance-admission proof.
+"""Root-only custody primitives for fixed maintenance operations.
 
-This module is deliberately not wired into installation or startup.  It owns a
-root-only command mutex separately from the read-only directory mounted into
-participating runtimes.
+It owns a root-only command mutex separately from the read-only admission
+directory mounted into participating runtimes.
 """
 from __future__ import annotations
 
@@ -16,11 +15,21 @@ import sys
 import secrets
 import stat
 import uuid
+import time
 from pathlib import Path
 
 _STATES = ("normal", "entering", "blocked")
 _MAX_INTENT_BYTES = 256
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+_LEASE_FD = 197
+_LOCK_WAIT_SECONDS = 1.0
+_NORMAL_OPERATIONS = {
+    "backup": "backup.sh",
+    "backup-verify": "backup-verify.sh",
+    "restore-drill": "restore-drill.sh",
+    "setup-backups": "setup-backups.sh",
+    "refresh-recovery": "refresh-recovery.sh",
+}
 
 
 def _safe_parent(info: os.stat_result, path: Path, uid: int) -> None:
@@ -146,11 +155,12 @@ def _read_fd(admission_fd: int, admission_path: Path,
     _file_at(admission_fd, "service-gate.lock", 0o444, uid)
     intent_info = _file_at(admission_fd, "intent.json", 0o444, uid,
                            maximum_size=_MAX_INTENT_BYTES)
-    intent_fd = os.open("intent.json", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+    intent_fd = os.open("intent.json", os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0),
                         dir_fd=admission_fd)
     try:
         opened_info = os.fstat(intent_fd)
-        if not _same_file(intent_info, opened_info) or opened_info.st_size > _MAX_INTENT_BYTES:
+        if (not stat.S_ISREG(opened_info.st_mode) or not _same_file(intent_info, opened_info)
+                or opened_info.st_size > _MAX_INTENT_BYTES):
             raise ValueError("intent changed while opening")
         raw = os.read(intent_fd, _MAX_INTENT_BYTES + 1)
         if len(raw) > _MAX_INTENT_BYTES or len(raw) != opened_info.st_size:
@@ -243,12 +253,9 @@ def transition(custody_dir: str | Path, admission_dir: str | Path,
     try:
         custody_fd, custody_info = _open_directory(custody, 0o700, expected_uid)
         admission_fd, admission_info = _open_directory(admission, 0o755, expected_uid)
-        command_info = _file_at(custody_fd, "command.lock", 0o600, expected_uid)
-        command_fd = os.open("command.lock", os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
-                             dir_fd=custody_fd)
-        if not _same_file(command_info, os.fstat(command_fd)):
-            raise ValueError("command lock changed while opening")
-        fcntl.flock(command_fd, fcntl.LOCK_EX)
+        command_fd, _ = _open_fixed_file(custody_fd, "command.lock", 0o600, expected_uid,
+                                         writable=True)
+        _lock_with_deadline(command_fd, fcntl.LOCK_EX, "maintenance transition")
         current = _read_fd(admission_fd, admission, admission_info, expected_uid)
         if current["installationId"] != installation_id or current["epoch"] != epoch:
             raise ValueError("custody generation changed")
@@ -532,6 +539,246 @@ def prepare_outside_custody_key(prefix: str | Path, *, expected_uid: int | None 
                 os.close(fd)
 
 
+def _open_fixed_file(directory_fd: int, name: str, mode: int, uid: int,
+                    *, writable: bool = False) -> tuple[int, os.stat_result]:
+    before = _file_at(directory_fd, name, mode, uid)
+    flags = (os.O_RDWR if writable else os.O_RDONLY) | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(name, flags, dir_fd=directory_fd)
+    try:
+        opened = os.fstat(fd)
+        if not _same_file(before, opened) or not stat.S_ISREG(opened.st_mode):
+            raise ValueError("maintenance lock changed while opening")
+        return fd, opened
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _lock_with_deadline(fd: int, kind: int, description: str) -> None:
+    deadline = time.monotonic() + _LOCK_WAIT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, kind | fcntl.LOCK_NB)
+            return
+        except BlockingIOError as error:
+            if time.monotonic() >= deadline:
+                raise ValueError(f"{description} is busy") from error
+            time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+
+
+def _linux_lock_mode_for_fd(fd: int, expected: os.stat_result) -> str | None:
+    """Return this descriptor's kernel-reported flock mode for its exact inode."""
+    if not Path("/proc/self/fdinfo").is_dir():
+        return None
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or not _same_file(opened, expected):
+            return None
+        with open(f"/proc/self/fdinfo/{fd}", "r", encoding="ascii") as source:
+            lines = source.read(4097).splitlines()
+    except OSError:
+        return None
+    if len(lines) > 32 or not any(line == f"ino:\t{expected.st_ino}" for line in lines):
+        return None
+    major, minor = os.major(expected.st_dev), os.minor(expected.st_dev)
+    modes: list[str] = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 7 or fields[0] != "lock:" or fields[2:4] != ["FLOCK", "ADVISORY"]:
+            continue
+        try:
+            device = fields[6].split(":")
+            if len(device) != 3:
+                continue
+            record_major, record_minor = int(device[0], 16), int(device[1], 16)
+            record_inode = int(device[2], 10)
+        except ValueError:
+            continue
+        if (record_major, record_minor, record_inode) == (major, minor, expected.st_ino):
+            modes.append(fields[4])
+    return modes[0] if len(modes) == 1 else None
+
+
+def _other_shared_lock_present(admission_fd: int, info: os.stat_result, uid: int) -> bool:
+    """Non-Linux test-owner fallback; never changes fd 197."""
+    fd, opened = _open_fixed_file(admission_fd, "service-gate.lock", 0o444, uid)
+    try:
+        if not _same_file(info, opened):
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        else:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            return False
+    finally:
+        os.close(fd)
+
+
+def _open_namespace(prefix: Path, uid: int) -> tuple[list[int], dict[str, int], dict[str, os.stat_result]]:
+    """Pin the complete custody ancestry used by admission and its lock files."""
+    if not prefix.is_absolute() or ".." in prefix.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    fds: list[int] = []
+    try:
+        prefix_fd, prefix_info = _open_safe_chain(prefix, uid)
+        fds.append(prefix_fd)
+        var_fd = _open_child_dir(prefix_fd, "var", 0o755, uid)
+        fds.append(var_fd)
+        lib_fd = _open_child_dir(var_fd, "lib", 0o755, uid)
+        fds.append(lib_fd)
+        root_fd = _open_child_dir(lib_fd, "lares-maintenance", 0o755, uid)
+        fds.append(root_fd)
+        custody_fd = _open_child_dir(root_fd, "custody", 0o700, uid)
+        fds.append(custody_fd)
+        admission_fd = _open_child_dir(root_fd, "admission", 0o755, uid)
+        fds.append(admission_fd)
+        auth_fd = _open_child_dir(root_fd, "postgres-auth", 0o755, uid)
+        fds.append(auth_fd)
+        by_name = {"prefix": prefix_fd, "var": var_fd, "lib": lib_fd, "root": root_fd,
+                   "custody": custody_fd, "admission": admission_fd, "auth": auth_fd}
+        infos = {name: os.fstat(fd) for name, fd in by_name.items()}
+        return fds, by_name, infos
+    except BaseException:
+        for fd in reversed(fds):
+            os.close(fd)
+        raise
+
+
+def _assert_namespace_paths(prefix: Path, by_name: dict[str, int], infos: dict[str, os.stat_result], uid: int) -> None:
+    paths = {
+        "prefix": prefix,
+        "var": prefix / "var",
+        "lib": prefix / "var/lib",
+        "root": prefix / "var/lib/lares-maintenance",
+        "custody": prefix / "var/lib/lares-maintenance/custody",
+        "admission": prefix / "var/lib/lares-maintenance/admission",
+        "auth": prefix / "var/lib/lares-maintenance/postgres-auth",
+    }
+    for name, path in paths.items():
+        _assert_path_matches(path, infos[name], uid)
+
+
+def _assert_inherited_lease(prefix: Path, by_name: dict[str, int], uid: int,
+                            *, test_owner: bool) -> None:
+    try:
+        lease_info = os.fstat(_LEASE_FD)
+    except OSError as error:
+        raise ValueError("inherited maintenance lease is absent") from error
+    gate_info = _file_at(by_name["admission"], "service-gate.lock", 0o444, uid)
+    if not _same_file(lease_info, gate_info):
+        raise ValueError("inherited maintenance lease is for another file")
+    shared = _linux_lock_mode_for_fd(_LEASE_FD, gate_info) == "READ"
+    if (not shared and test_owner and os.geteuid() != 0 and
+            not Path("/proc/self/fdinfo").is_dir()):
+        shared = _other_shared_lock_present(by_name["admission"], lease_info, uid)
+    if not shared:
+        raise ValueError("inherited maintenance lease is not a proven shared lock")
+    _assert_namespace_paths(prefix, by_name, {name: os.fstat(fd) for name, fd in by_name.items()}, uid)
+
+
+def _acquire_normal_lease(prefix: Path, uid: int) -> None:
+    fds, by_name, infos = _open_namespace(prefix, uid)
+    command_fd = gate_fd = -1
+    locked_command = False
+    try:
+        command_fd, command_info = _open_fixed_file(by_name["custody"], "command.lock", 0o600, uid,
+                                                    writable=True)
+        _lock_with_deadline(command_fd, fcntl.LOCK_EX, "maintenance admission")
+        locked_command = True
+        gate_fd, gate_info = _open_fixed_file(by_name["admission"], "service-gate.lock", 0o444, uid)
+        try:
+            fcntl.flock(gate_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError("maintenance service gate is busy") from error
+        if not _same_file(gate_info, os.fstat(gate_fd)) or not _same_file(
+                gate_info, _file_at(by_name["admission"], "service-gate.lock", 0o444, uid)):
+            raise ValueError("maintenance service gate changed while locking")
+        receipt = validate(str(prefix))
+        if receipt["installationId"] != _read_fd(
+                by_name["admission"], prefix / "var/lib/lares-maintenance/admission", infos["admission"], uid
+        )["installationId"]:
+            raise ValueError("maintenance receipt changed during admission")
+        _assert_namespace_paths(prefix, by_name, infos, uid)
+        if _LEASE_FD in (command_fd, gate_fd):
+            raise ValueError("reserved maintenance descriptor collided")
+        os.dup2(gate_fd, _LEASE_FD, inheritable=True)
+        if not _same_file(os.fstat(_LEASE_FD), gate_info):
+            raise ValueError("maintenance lease descriptor changed")
+    finally:
+        if locked_command:
+            fcntl.flock(command_fd, fcntl.LOCK_UN)
+        for fd in (command_fd, gate_fd):
+            if fd >= 0:
+                os.close(fd)
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+def _validate_inherited_normal(prefix: Path, uid: int, *, test_owner: bool) -> None:
+    fds, by_name, infos = _open_namespace(prefix, uid)
+    command_fd = -1
+    locked_command = False
+    try:
+        command_fd, _ = _open_fixed_file(by_name["custody"], "command.lock", 0o600, uid,
+                                         writable=True)
+        _lock_with_deadline(command_fd, fcntl.LOCK_EX, "maintenance admission")
+        locked_command = True
+        validate(str(prefix))
+        _assert_inherited_lease(prefix, by_name, uid, test_owner=test_owner)
+        _assert_namespace_paths(prefix, by_name, infos, uid)
+    finally:
+        if locked_command:
+            fcntl.flock(command_fd, fcntl.LOCK_UN)
+        if command_fd >= 0:
+            os.close(command_fd)
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+def _normal_uid(test_owner: bool) -> int:
+    if test_owner:
+        if os.geteuid() == 0 or os.environ.get("LARES_MAINTENANCE_TESTING") != "1":
+            raise PermissionError("test-owner admission is available only to an explicit non-root test")
+        return os.geteuid()
+    if os.geteuid() != 0:
+        raise PermissionError("maintenance operation admission requires root")
+    return 0
+
+
+def _run_normal(prefix: str, operation: str, args: list[str], *, test_owner: bool) -> None:
+    if operation not in _NORMAL_OPERATIONS:
+        raise ValueError("maintenance operation is not supported")
+    uid = _normal_uid(test_owner)
+    target = Path(prefix)
+    if not target.is_absolute() or ".." in target.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    try:
+        os.fstat(_LEASE_FD)
+    except OSError:
+        _acquire_normal_lease(target, uid)
+    else:
+        _validate_inherited_normal(target, uid, test_owner=test_owner)
+    script = Path(__file__).resolve().with_name(_NORMAL_OPERATIONS[operation])
+    script_info = os.lstat(script)
+    if not stat.S_ISREG(script_info.st_mode) or script_info.st_uid != uid or stat.S_IMODE(script_info.st_mode) & 0o022:
+        raise ValueError("maintenance operation script is unsafe")
+    env = os.environ.copy()
+    env["LARES_MAINTENANCE_ADMITTED"] = "1"
+    os.execve("/bin/bash", ["bash", str(script), *args], env)
+
+
+def _assert_normal_held(prefix: str, operation: str, *, test_owner: bool) -> None:
+    if operation not in _NORMAL_OPERATIONS:
+        raise ValueError("maintenance operation is not supported")
+    uid = _normal_uid(test_owner)
+    target = Path(prefix)
+    if not target.is_absolute() or ".." in target.parts:
+        raise ValueError("installation prefix must be absolute and normalized")
+    _validate_inherited_normal(target, uid, test_owner=test_owner)
+
+
 def validate(prefix: str | Path, subnet: str | None = None) -> dict[str, object]:
     requested = Path(prefix)
     if not requested.is_absolute() or ".." in requested.parts:
@@ -555,7 +802,7 @@ def validate(prefix: str | Path, subnet: str | None = None) -> dict[str, object]
 
         def read(name: str, directory_fd: int, mode: int, maximum_size: int = 4096) -> bytes:
             info = _file_at(directory_fd, name, mode, uid, maximum_size=maximum_size)
-            fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory_fd)
             try:
                 opened = os.fstat(fd)
                 if not _same_file(info, opened):
@@ -645,10 +892,24 @@ def main(argv: list[str]) -> int:
             receipt = validate(argv[2], argv[3])
             print(json.dumps({"installationId": receipt["installationId"], "epoch": receipt["epoch"]},
                              separators=(",", ":")))
+        elif len(argv) >= 5 and argv[1] == "run-normal":
+            test_owner = len(argv) > 4 and argv[4] == "--test-owner"
+            separator = 5 if test_owner else 4
+            if separator >= len(argv) or argv[separator] != "--":
+                raise ValueError("usage: run-normal <prefix> <operation-id> [--test-owner] -- [arguments]")
+            _run_normal(argv[2], argv[3], argv[separator + 1:], test_owner=test_owner)
+        elif len(argv) in (4, 5) and argv[1] == "assert-normal-held":
+            test_owner = len(argv) == 5 and argv[4] == "--test-owner"
+            if len(argv) == 5 and not test_owner:
+                raise ValueError("usage: assert-normal-held <prefix> <operation-id> [--test-owner]")
+            _assert_normal_held(argv[2], argv[3], test_owner=test_owner)
         else:
-            raise ValueError("usage: maintenance-custody.py prepare-fresh <prefix> <subnet> --confirm-fresh | prepare-outside-custody-key <prefix> --confirm-fresh | validate <prefix> <subnet> | validate-identity <prefix> <subnet>")
+            raise ValueError("unsupported maintenance custody command")
         return 0
     except (OSError, ValueError) as error:
+        if len(argv) > 1 and argv[1] in ("run-normal", "assert-normal-held"):
+            print("maintenance admission: refused", file=sys.stderr)
+            return 78
         print(f"maintenance custody: {error}", file=sys.stderr)
         return 1
 
