@@ -200,6 +200,86 @@ def offline_network_diagnostics_self_test():
         namespace["command"] = selector_command
         failure_for(namespace, [selector_call], expected_stage)
 
+    def selected_from_networks(networks, draws=(0, 0), route_rows=()):
+        namespace = base_namespace()
+        ids = ["network-" + str(index) for index in range(len(networks))]
+        draw_values = iter(draws)
+        namespace["secrets"] = type("DeterministicSubnetDraws", (), {
+            "randbelow": staticmethod(lambda limit: next(draw_values))})
+        calls = []
+
+        def inventory_command(*args, **kwargs):
+            calls.append(args)
+            if args[:3] == ("docker", "network", "ls"):
+                return "\n".join(ids)
+            if args[:3] == ("docker", "network", "inspect"):
+                return json.dumps(networks)
+            if args == ("ip", "-j", "-4", "route", "show"):
+                return json.dumps(route_rows)
+            raise RuntimeError("unexpected selector inventory command")
+
+        namespace["command"] = inventory_command
+        return namespace["choose_unused_subnet"](), namespace, calls
+
+    def network_record(driver, config, *, include_config=True):
+        ipam = {"Driver": "default", "Options": None}
+        if include_config:
+            ipam["Config"] = config
+        return {"Name": "fixture", "Driver": driver, "IPAM": ipam}
+
+    builtin_networks = [
+        network_record("bridge", [{"Subnet": "172.17.0.0/16"}]),
+        network_record("host", None),
+        network_record("null", None),
+    ]
+    selected, namespace, calls = selected_from_networks(builtin_networks)
+    if str(selected) != "10.32.0.0/24" or namespace["network_stage"] != "subnet-selection" or \
+            calls[-1] != ("ip", "-j", "-4", "route", "show"):
+        raise RuntimeError("builtin null-IPAM networks did not preserve normal subnet selection")
+    selected, namespace, _ = selected_from_networks([network_record("overlay", [])])
+    if str(selected) != "10.32.0.0/24" or namespace["network_stage"] != "subnet-selection":
+        raise RuntimeError("empty Docker IPAM config list was not treated as a valid inventory")
+
+    malformed_networks = [
+        ("inspect response is not a list", {"Driver": "bridge", "IPAM": {"Config": []}}),
+        ("network entry is not an object", [None]),
+        ("driver is missing", [{"IPAM": {"Config": []}}]),
+        ("driver is not a string", [{"Driver": None, "IPAM": {"Config": []}}]),
+        ("IPAM is missing", [{"Driver": "bridge"}]),
+        ("IPAM is not an object", [{"Driver": "bridge", "IPAM": None}]),
+        ("Config is missing", [network_record("bridge", None, include_config=False)]),
+        ("bridge Config is null", [network_record("bridge", None)]),
+        ("unknown-driver Config is null", [network_record("custom", None)]),
+        ("Config is not a list", [network_record("bridge", {"Subnet": "10.32.0.0/24"})]),
+        ("Config entry is null", [network_record("bridge", [None])]),
+        ("Config entry is not an object", [network_record("bridge", ["10.32.0.0/24"])]),
+        ("Subnet is missing", [network_record("bridge", [{}])]),
+        ("Subnet is empty", [network_record("bridge", [{"Subnet": ""}])]),
+        ("Subnet is not a string", [network_record("bridge", [{"Subnet": 7}])]),
+        ("Subnet is invalid", [network_record("bridge", [{"Subnet": secret_like}])]),
+    ]
+    for label, inspect_value in malformed_networks:
+        namespace = base_namespace()
+        namespace["command"] = lambda *args, value=inspect_value, **kwargs: (
+            "network-id" if args[:3] == ("docker", "network", "ls") else
+            json.dumps(value) if args[:3] == ("docker", "network", "inspect") else
+            "[]" if args == ("ip", "-j", "-4", "route", "show") else
+            (_ for _ in ()).throw(RuntimeError("unexpected malformed network stub")))
+        try:
+            namespace["choose_unused_subnet"]()
+        except Exception as error:
+            if namespace["network_stage"] != "docker-network-inspect" or \
+                    label in str(error) or secret_like in str(error) or \
+                    "10.32.0.0/24" in str(error):
+                raise RuntimeError("malformed network metadata was not safely refused") from None
+        else:
+            raise RuntimeError("malformed network metadata was accepted: " + label)
+
+    selected, namespace, _ = selected_from_networks(
+        [network_record("bridge", [{"Subnet": "10.32.0.0/16"}])], draws=(0, 0, 1, 0))
+    if str(selected) != "10.33.0.0/24" or namespace["network_stage"] != "subnet-selection":
+        raise RuntimeError("overlapping Docker subnet was not skipped before selecting the next range")
+
     setup_faults = {
         "container-name-preflight", "network-name-preflight", "network-create",
         "network-inspect", "network-isolation-check", "network-ipam-check",
@@ -1087,14 +1167,30 @@ def choose_unused_subnet():
     if ids:
         set_network_stage("docker-network-inspect")
         networks = json.loads(command("docker", "network", "inspect", *ids))
+        if not isinstance(networks, list):
+            raise RuntimeError("existing Docker network inventory is invalid")
         for network_info in networks:
-            for entry in network_info.get("IPAM", {}).get("Config", []):
+            if not isinstance(network_info, dict):
+                raise RuntimeError("existing Docker network metadata is invalid")
+            driver = network_info.get("Driver")
+            ipam = network_info.get("IPAM")
+            if not isinstance(driver, str) or not isinstance(ipam, dict) or "Config" not in ipam:
+                raise RuntimeError("existing Docker network address metadata is invalid")
+            config = ipam["Config"]
+            if config is None and driver in {"host", "null"}:
+                continue
+            if not isinstance(config, list):
+                raise RuntimeError("existing Docker network address metadata is invalid")
+            for entry in config:
+                if not isinstance(entry, dict):
+                    raise RuntimeError("existing Docker network address metadata is invalid")
                 value = entry.get("Subnet")
-                if value:
-                    try:
-                        occupied.append(ipaddress.ip_network(value, strict=False))
-                    except ValueError:
-                        raise RuntimeError("existing Docker network has invalid address metadata") from None
+                if not isinstance(value, str) or not value:
+                    raise RuntimeError("existing Docker network address metadata is invalid")
+                try:
+                    occupied.append(ipaddress.ip_network(value, strict=False))
+                except ValueError:
+                    raise RuntimeError("existing Docker network has invalid address metadata") from None
     set_network_stage("route-inventory")
     routes = json.loads(command("ip", "-j", "-4", "route", "show"))
     for route in routes:
