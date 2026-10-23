@@ -121,7 +121,7 @@ def financial_observer(summary, financial_db):
       '--mount',f'type=bind,src={script},dst=/app/services/keeper/financial-observer.mts,readonly',
       '--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/financial-observer.mts')
 
-def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsule_source,
+def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, admission_dir, admission_identity, capsule_source,
                               client_script, chief_image, secrets_dir, agent, incarnation, owner,
                               definition_hash, workflow_database):
     runtime_environment={
@@ -147,6 +147,7 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
       '--tmpfs','/app/services/chief-of-staff/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m',
       '--mount',f'type=bind,src={agent_dir},dst=/definition,readonly',
       '--mount',f'type=bind,src={run_dir},dst=/run/lares,readonly',
+      '--mount',f'type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly',
       '--mount',f'type=bind,src={secrets_dir}/app-password,dst=/run/secrets/app-password,readonly',
       '--mount',f'type=bind,src={secrets_dir}/workflow-password,dst=/run/secrets/workflow-password,readonly',
       '--mount',f'type=bind,src={secrets_dir}/route-password,dst=/run/secrets/route-password,readonly',
@@ -155,7 +156,9 @@ def compiled_chief_start_args(*, chief_name, network, agent_dir, run_dir, capsul
       '--mount',f'type=bind,src={capsule_source},dst=/app/services/chief-of-staff/model-purpose-capsule.ts,readonly',
       '--mount',f'type=bind,src={client_script},dst=/app/services/chief-of-staff/first-use-client.mts,readonly']
     for key,value in runtime_environment.items():args.extend(['-e',key+'='+value])
-    args.append(chief_image)
+    args.extend([chief_image, '/run/lares-maintenance/admission',
+      admission_identity['installationId'],str(admission_identity['epoch']),'--',
+      '/usr/local/bin/lares-start'])
     return args
 
 def safe_startup_container_state(*, found, status='', running=False, exit_code=None, oom_killed=False):
@@ -518,12 +521,25 @@ const server=https.createServer({key:readFileSync('/fixture/tls/server-key.pem')
         'proxyContainer':'lares-egress-proxy','squidImage':'fixture@'+proof['images']['keeper'],'firewallImage':'fixture@'+proof['images']['keeper'],
         'adminDb':{'host':'proof-db','port':5432,'database':'postgres','user':'lares_workflow_provisioner','passwordFile':'/etc/lares/secrets/workflow-provisioner-password'},
         'workflowTemplate':'empty_workflow','workflowOwner':'lares_workflow_owner','installationPrepared':True,
+        'maintenanceAdmission':{'hostDirectory':'/fixture-install/var/lib/lares-maintenance/admission',
+          'installationId':'11111111-1111-4111-8111-111111111111','epoch':1},
         'egress':{'endpoints':{},'legacyConsumers':[],'internalNetworks':['172.16.0.0/12'],'directDestinations':[],'infrastructureHosts':[]},
         'runtime':{'databaseUrl':'postgres://lares_app@proof-db:5432/proof','workflowServer':'postgres://lares_workflow@proof-db:5432',
           'gatewayUrl':'http://native-gateway:4000','proxyUrl':'http://egress-proxy:8888','passwordFile':'/etc/lares/secrets/app-password',
           'workflowPasswordFile':'/etc/lares/secrets/workflow-password','gatewayKeys':{},'gatewayMasterKeyFile':'/etc/lares/secrets/gateway-master'}},
       'gatewayBudget':{'serviceKeyFile':'/etc/lares/secrets/gateway-budget-service-key'},
       'modelPurposeConsoleSigningKeyFile':'/etc/lares/secrets/console-model-purpose-signing-key','modelPurposeRuntimeDir':'/fixture-install/run/model-purpose'}
+    admission_prefix=root/'admission-installation'
+    admission_prefix.mkdir(mode=0o755)
+    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
+    custody.prepare_fresh(admission_prefix, admission_subnet)
+    admission_identity=custody.validate(admission_prefix, admission_subnet)
+    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
+    base_config['lifecycle']['maintenanceAdmission']={
+      'hostDirectory':str(admission_dir),
+      'installationId':admission_identity['installationId'],
+      'epoch':admission_identity['epoch'],
+    }
     config_dir_path=config_dir/'keeper.json';config_dir_path.write_text(json.dumps(base_config));config_dir_path.chmod(0o600)
     stage = 'production-financial-and-native-preparation'
     # The production operator-file check requires root ownership. Keep this credential in
@@ -589,12 +605,6 @@ const definition=definitionSchema.parse({...JSON.parse(readFileSync('/definition
     # installation. Keeper's baked image entrypoint receives only its validated identity and
     # exact read-only directory mount; keep the image's actual configured CMD after its guard
     # prefix so the production `serve` command and working directory remain under test.
-    admission_prefix=root/'admission-installation'
-    admission_prefix.mkdir(mode=0o755)
-    admission_subnet=f"172.30.{int(uuid.uuid4().hex[:2],16)}.0/24"
-    custody.prepare_fresh(admission_prefix, admission_subnet)
-    admission_identity=custody.validate(admission_prefix, admission_subnet)
-    admission_dir=admission_prefix/'var/lib/lares-maintenance/admission'
     keeper_image_cmd=json.loads(docker('image','inspect','--format','{{json .Config.Cmd}}',keeper_image))
     expected_keeper_cmd=['/app/services/keeper/node_modules/.bin/tsx','/app/services/keeper/bin/keeper.ts','serve']
     if keeper_image_cmd != expected_keeper_cmd:
@@ -818,6 +828,7 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
 
     before_request_state=native_snapshot()
     args=compiled_chief_start_args(chief_name=chief_name,network=network,agent_dir=agent_dir,run_dir=run_dir,
+      admission_dir=admission_dir,admission_identity=admission_identity,
       capsule_source=capsule_source,client_script=client_script,chief_image=chief_image,secrets_dir=secrets_dir,agent=agent,
       incarnation=incarnation,owner=owner,definition_hash=definition_hash,workflow_database=workflow_database)
     try:launch_result=run('docker',*args,check=False,timeout=120)

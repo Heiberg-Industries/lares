@@ -20,7 +20,7 @@ overrides:
 
 patchedDependencies:
   eve@0.60.1:
-    hash: mc3mw6xpz6jdjt2pmolpdiiuju
+    hash: 26454xhgmjmd3n4pytnl636p5i
     path: patches/eve.patch
 
 importers:
@@ -87,7 +87,7 @@ importers:
         version: 8.23.1
       eve:
         specifier: 0.60.1
-        version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
+        version: 0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -102,7 +102,7 @@ importers:
         version: link:../agent-kit
       eve:
         specifier: 0.60.1
-        version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
+        version: 0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
       zod:
         specifier: 4.5.4
         version: 4.5.4
@@ -311,7 +311,7 @@ importers:
         version: 7.0.128(zod@4.5.4)
       eve:
         specifier: 0.60.1
-        version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
+        version: 0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
       googleapis:
         specifier: ^183.0.0
         version: 183.0.0
@@ -387,7 +387,7 @@ importers:
         version: 3.0.7
       eve:
         specifier: 0.60.1
-        version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
+        version: 0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
       googleapis:
         specifier: ^183.0.0
         version: 183.0.0
@@ -484,7 +484,7 @@ importers:
         version: 7.0.128(zod@4.5.4)
       eve:
         specifier: 0.60.1
-        version: 0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
+        version: 0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0)
       https-proxy-agent:
         specifier: 9.1.0
         version: 9.1.0
@@ -7320,7 +7320,7 @@ snapshots:
     dependencies:
       '@types/estree': 1.0.9
 
-  eve@0.60.1(patch_hash=mc3mw6xpz6jdjt2pmolpdiiuju)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0):
+  eve@0.60.1(patch_hash=26454xhgmjmd3n4pytnl636p5i)(@opentelemetry/api@1.9.1)(ai@7.0.128(zod@4.5.4))(just-bash@3.6.0):
     dependencies:
       ai: 7.0.128(zod@4.5.4)
       nitro: 3.0.260903-beta

@@ -10,7 +10,7 @@ import { credentialConsumers, type CredentialConsumerConfig } from '../lib/crede
 const image = 'example/image@sha256:' + 'a'.repeat(64);
 const binding = (role: string) => ({ role, environment: {}, mounts: [], secrets: {} });
 const base = {
-  network: 'n', subnet: '172.18.0.0/24', reservedAddresses: [], composeFile: '/srv/c.yaml', egressDir: '/srv/e',
+  network: 'n', subnet: '172.18.0.0/24', reservedAddresses: [], maintenanceAdmission: { hostDirectory: '/var/lib/lares-maintenance/admission', installationId: '11111111-1111-4111-8111-111111111111', epoch: 7 }, composeFile: '/srv/c.yaml', egressDir: '/srv/e',
   imageByRole: { 'chief-of-staff': image, creative: image },
   proxyContainer: 'lares-egress-proxy', squidImage: image, firewallImage: image,
   adminDb: { host: 'db', port: 5432, user: 'lares_workflow_provisioner', database: 'postgres', passwordFile: '/secret' },
@@ -36,6 +36,15 @@ it('loads an older keeper.json that still names the travel role, and drops those
 });
 it('still refuses an unknown role in imageByRole', () => {
   expect(() => lifecycleSchema.parse({ ...base, imageByRole: { ...base.imageByRole, other: image } })).toThrow();
+});
+it('requires validated receipt identity and a normalized host admission source', () => {
+  expect(() => lifecycleSchema.parse(({ ...base, maintenanceAdmission: undefined } as any))).toThrow();
+  for (const maintenanceAdmission of [
+    { hostDirectory: 'relative/path', installationId: '11111111-1111-4111-8111-111111111111', epoch: 7 },
+    { hostDirectory: '/var/lib/../admission', installationId: '11111111-1111-4111-8111-111111111111', epoch: 7 },
+    { hostDirectory: '/var/lib/lares-maintenance/admission', installationId: 'bad-id', epoch: 7 },
+    { hostDirectory: '/var/lib/lares-maintenance/admission', installationId: '11111111-1111-4111-8111-111111111111', epoch: 0 },
+  ]) expect(() => lifecycleSchema.parse({ ...base, maintenanceAdmission })).toThrow();
 });
 it('drops the environment settings only the travel role read, and keeps refusing unknown ones', () => {
   const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});

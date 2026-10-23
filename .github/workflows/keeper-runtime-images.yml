@@ -81,6 +81,16 @@ jobs:
       - name: Verify compiled executable and unprivileged runtime
         run: |
           docker run --rm --network none --entrypoint sh lares-runtime:test -c 'test "$(id -u)" = 10001 && test -f .output/server/index.mjs && test -x ./node_modules/.bin/eve && ! command -v npm && ! command -v corepack && ./node_modules/.bin/eve --version'
+      - name: Exercise the pinned Eve production handoff cases
+        run: sudo env CI=true node services/keeper/tests/eve-startup-admission.test.mjs "${{ matrix.role }}"
+      - name: Prove generated role startup admission in the actual Linux image
+        run: sudo env CI=true python3 -B services/keeper/tests/role-start-admission-image.probe.py "${{ matrix.role }}" lares-runtime:test "$GITHUB_SHA" "$RUNNER_TEMP/role-start-admission-proof.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: role-start-admission-${{ matrix.role }}-proof
+          path: ${{ runner.temp }}/role-start-admission-proof.json
+          if-no-files-found: error
       - name: Verify the baked public docs corpus in the final role image
         run: python3 -B services/keeper/tests/public-docs-image.probe.py "${{ matrix.role }}" lares-runtime:test "$GITHUB_SHA" "$PUBLIC_DOCS_RELEASE" "$RUNNER_TEMP/public-docs-proof.json"
       - uses: actions/upload-artifact@v4
@@ -91,7 +101,7 @@ jobs:
           if-no-files-found: error
       - name: Exercise compiled runtime, mounted persona and gateway selection across restart
         if: matrix.role == 'chief-of-staff'
-        run: python3 services/keeper/tests/runtime-image.probe.py lares-runtime:test
+        run: sudo env CI=true python3 -B services/keeper/tests/runtime-image.probe.py lares-runtime:test
       - name: Prove guarded gateway ingress and physical dispatch in pinned upstream image
         if: matrix.role == 'chief-of-staff'
         run: python3 -B services/keeper/tests/gateway-admission-image.probe.py lares-runtime:test "$RUNNER_TEMP/gateway-admission-proof.json"

@@ -1,6 +1,6 @@
 // Keeper-owned compose only. No services from an installation's own compose files, no builds, orphan removal or mutable tags.
 import { isIP } from 'node:net';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute, join, normalize } from 'node:path';
 import { stringify } from 'yaml';
 import { gatewayModels } from './gateway-keys.js';
 import { DOOR_SECRET_FILES } from '@lares/agent-kit/platform-secrets';
@@ -53,6 +53,7 @@ export interface ComposeOptions {
     imageByRole: Record<string, string>;
     agentsDir: string;
     secretsDir: string;
+    maintenanceAdmission: { hostDirectory: string; installationId: string; epoch: number };
     /** Keeper-prepared Vault socket directory. Omitted when its dedicated mount path is unsafe
      *  or unavailable; this only disables Vault calls for the chief runtime. */
     vaultRuntimeDir?: string | null;
@@ -72,6 +73,11 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
         throw new Error('Invalid network');
     absolute(opts.agentsDir);
     absolute(opts.secretsDir);
+    const admission = opts.maintenanceAdmission;
+    if (!admission || !isAbsolute(admission.hostDirectory) || normalize(admission.hostDirectory) !== admission.hostDirectory || /[\r\n\0$]/.test(admission.hostDirectory) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(admission.installationId) ||
+        !Number.isSafeInteger(admission.epoch) || admission.epoch < 1 || admission.epoch > 2147483647)
+        throw new Error('Invalid maintenance admission identity');
     if (typeof opts.modelPrefix !== 'string') throw new Error('keeper: models.alias_prefix is missing or invalid');
     gatewayModels(opts.modelPrefix);
     const services: Record<string, unknown> = {}, secrets: Record<string, unknown> = {}, volumes: Record<string, unknown> = {};
@@ -224,7 +230,10 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             const key = outsideSecretName(a.name, tool);
             secret(key, `${opts.secretsDir}/${key}`, outsideSecretTarget(tool));
         }
-        const dataMounts: unknown[] = [`${opts.agentsDir}/${a.name}:/definition:ro`];
+        const dataMounts: unknown[] = [
+            `${opts.agentsDir}/${a.name}:/definition:ro`,
+            { type: 'bind', source: admission.hostDirectory, target: '/run/lares-maintenance/admission', read_only: true, bind: { create_host_path: false } },
+        ];
         // Only the chief runtime receives the read-only Vault broker socket. The Keeper owns
         // the listener and managed-root mounts; role containers receive no Vault roots.
         if (a.role === 'chief-of-staff' && opts.vaultRuntimeDir) dataMounts.push({type:'bind',source:absolute(opts.vaultRuntimeDir),target:'/run/lares-vault',read_only:true,bind:{create_host_path:false}});
@@ -243,7 +252,7 @@ export function renderAgentsCompose(agents: readonly AgentContainer[], opts: Com
             `/app/services/${a.role}/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=384m`,
             '/app/packages/agent-kit/node_modules/.cache:uid=10001,gid=10001,mode=0700,size=64m',
             ...(bindings?.legacySandboxRoots ?? []).map(path => `${path}:uid=10001,gid=10001,mode=0700,size=256m`)];
-        services[`lares-${a.name}`] = { image: pinnedImage(opts.imageByRole[a.role]), ...(a.incarnation ? { labels: { 'lares.incarnation': a.incarnation, ...(a.notionRevision !== undefined ? { 'lares.notion-revision': a.notionRevision ?? 'disconnected' } : {}) } } : {}), read_only: true, user: '10001:10001', restart: 'unless-stopped', cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'], environment, volumes: dataMounts, tmpfs, secrets: mounts, networks: { [opts.network]: { ipv4_address: a.address } } };
+        services[`lares-${a.name}`] = { image: pinnedImage(opts.imageByRole[a.role]), entrypoint: ['/usr/local/lib/lares/maintenance-admission-v1', '/run/lares-maintenance/admission', admission.installationId, String(admission.epoch), '--'], command: ['/usr/local/bin/lares-start'], ...(a.incarnation ? { labels: { 'lares.incarnation': a.incarnation, ...(a.notionRevision !== undefined ? { 'lares.notion-revision': a.notionRevision ?? 'disconnected' } : {}) } } : {}), read_only: true, user: '10001:10001', restart: 'unless-stopped', cap_drop: ['ALL'], security_opt: ['no-new-privileges:true'], environment, volumes: dataMounts, tmpfs, secrets: mounts, networks: { [opts.network]: { ipv4_address: a.address } } };
     }
     return stringify({ services, secrets, ...(Object.keys(volumes).length ? {volumes} : {}), networks: { [opts.network]: { external: true } } });
 }

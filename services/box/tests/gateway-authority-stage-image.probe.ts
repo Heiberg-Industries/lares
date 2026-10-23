@@ -132,12 +132,18 @@ const run = () => {
     ownerHomeTz: "Europe/Oslo", modelAlias: alias, pgDatabase: request.pgDatabase, deadlineCalendarFile: null,
   });
   const profileText = `${JSON.stringify(profile)}\n`;
+  const maintenanceAdmission = validateMaintenanceAdmissionIdentity(prefix, request.subnet);
+  const environmentKeeper = { ...previousKeeper, lifecycle: { maintenanceAdmission: {
+    hostDirectory: maintenanceAdmission.directory,
+    installationId: maintenanceAdmission.installationId,
+    epoch: maintenanceAdmission.epoch,
+  } } };
   const activeKeeperEnv = renderKeeperComposeEnvironment(manifest, {
     root: join(prefix, "srv", "lares"), keeperConfig, socketDir: join(prefix, "run", "lares"),
     hostSocketDir: join(prefix, "run", "lares-host"), egressDir: join(prefix, "srv", "lares", "egress"),
     secretsDir: secrets, proxyAddress: request.proxyAddress, network: request.network,
-    maintenanceAdmission: validateMaintenanceAdmissionIdentity(prefix, request.subnet),
-  }, previousKeeper as any);
+    maintenanceAdmission,
+  }, environmentKeeper as any);
   writeProtected(activePaths.profile, profileText, 0o600);
   writeProtected(activePaths.stack, stack, 0o640);
   writeProtected(activePaths.keeperCompose, readFileSync(join(repo, "services", "box", "compose.lares-keeper.yaml")), 0o640);

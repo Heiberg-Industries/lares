@@ -82,6 +82,10 @@ export function validateMaintenanceAdmissionIdentity(prefix: string, subnet: str
 }
 
 export function renderKeeperComposeEnvironment(manifest: ReleaseManifest, input: KeeperComposeEnvironmentInput, config: KeeperConfig): string {
+  const admission = config.lifecycle?.maintenanceAdmission;
+  if (!admission || admission.hostDirectory !== input.maintenanceAdmission.directory ||
+      admission.installationId !== input.maintenanceAdmission.installationId || admission.epoch !== input.maintenanceAdmission.epoch)
+    throw new Error("Validated maintenance admission does not match keeper.json");
   if (input.gatewayAuthority && (config.gatewayBudget?.serviceKeyFile !== input.gatewayAuthority.serviceKeyFile ||
       config.budgetNative?.reviewedPolicyFile !== input.gatewayAuthority.policyFile))
     throw new Error("Prepared gateway authority does not match keeper.json");
@@ -220,6 +224,11 @@ export function main(argv: readonly string[], out: (s: string) => void, gatewayA
     project: at("project"),
     network: at("network"),
     subnet: at("subnet"),
+    maintenanceAdmission: {
+      hostDirectory: maintenanceAdmission.directory,
+      installationId: maintenanceAdmission.installationId,
+      epoch: maintenanceAdmission.epoch,
+    },
     proxyAddress: at("proxyAddress"),
     dir: at("root"),
     agentsDir: at("agentsDir"),

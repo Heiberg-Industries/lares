@@ -8,7 +8,7 @@ import {personalMicrosoftSchema,personalMicrosoftEnabled,personalReadSecretFiles
 import {personalGoogleEnabled} from '../lib/personal-google.js';
 const microsoft={tenantIdFile:'/srv/secrets/tenant',clientIdFile:'/srv/secrets/id',clientSecretFile:'/srv/secrets/client-secret',tokenKeyFile:'/srv/secrets/key'};
 const image='example/runtime@sha256:'+'a'.repeat(64);
-const opts={network:'fixture_default',imageByRole:{'chief-of-staff':image,creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',modelPrefix:'lares'};
+const opts={network:'fixture_default',imageByRole:{'chief-of-staff':image,creative:image},agentsDir:'/srv/agents',secretsDir:'/srv/secrets',maintenanceAdmission:{hostDirectory:'/var/lib/lares-maintenance/admission',installationId:'11111111-1111-4111-8111-111111111111',epoch:7},modelPrefix:'lares'};
 const agent:AgentContainer={name:'helper',role:'chief-of-staff',address:'172.18.0.25',doors:[],personalMicrosoft:microsoft,runtime:{databaseUrl:'postgres://lares_app@db/domain',workflowUrl:'postgres://lares_workflow@db/workflow',gatewayUrl:'https://gateway.example',proxyUrl:'http://proxy:8888',gatewayKeyFile:'/srv/secrets/gateway',passwordFile:'/srv/secrets/db',workflowPasswordFile:'/srv/secrets/workflow-db'}};
 it('Microsoft-only mounts are fixed, path-only and never overwrite the Google key variable',()=>{
  const doc=parse(renderAgentsCompose([agent],opts)),runtime=doc.services['lares-helper'];
