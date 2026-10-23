@@ -107,14 +107,30 @@ describe("what install.sh asks the engine image to run", () => {
   });
 
 
-  it("runs owner enrollment, storage provisioning and keeper rendering in order", () => {
-    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
+  it("finishes owner and keeper setup without starting the gateway or calling a model", () => {
+    stub("lares-doctor", 'echo "installer must not call doctor" >&2; exit 81');
+    const result = ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
     const runs = engineRuns();
     expect(runs.map(programOf)).toEqual([
       "render-database-bootstrap.ts", "database-setup.ts", "workflow-template.ts", "database-setup.ts",
       "render-stack.ts", "migrate.ts", "installation-settings.ts", "first-owner.ts",
       "first-organisation.ts", "vault-storage.ts", "vault-storage.ts", "vault-storage.ts", "render-keeper-config.ts",
     ]);
+    const logText = calls();
+    expect(logText).not.toMatch(/--test-model|lares-doctor/);
+    expect(logText).not.toMatch(/curl .*127\.0\.0\.1:4000/);
+    expect(logText).toMatch(/docker compose -f \S+compose\.yaml up -d console caddy/);
+    expect(logText).not.toMatch(/compose\.yaml up -d .*lares-gateway/);
+    expect(logText.indexOf("compose.bootstrap.yaml down")).toBeLessThan(logText.indexOf("migrate.ts"));
+    expect(logText.indexOf("migrate.ts")).toBeLessThan(logText.indexOf("compose.yaml up -d console caddy"));
+    expect(runs.findIndex((line) => programOf(line) === "first-owner.ts"))
+      .toBeLessThan(runs.findIndex((line) => programOf(line) === "first-organisation.ts"));
+    expect(runs.findIndex((line) => programOf(line) === "first-organisation.ts"))
+      .toBeLessThan(runs.findIndex((line) => programOf(line) === "render-keeper-config.ts"));
+    expect(result.stdout).toMatch(/infrastructure and Console are ready/);
+    expect(result.stdout).toMatch(/sign-in/);
+    expect(result.stdout).toMatch(/explicit model budget setup/);
+    expect(result.stdout).toMatch(/no conversation has been tested/);
     for (const line of runs) {
       expect(line).toContain(ENGINE_IMAGE);
       // The sandbox: host network, root inside, read-only filesystem, no capabilities, no Docker socket.
@@ -184,22 +200,6 @@ describe("what install.sh asks the engine image to run", () => {
     }
   });
 
-  it("falls back to doctor in the engine image only when no lares-doctor is on PATH", () => {
-    rmSync(join(binDir, "lares-doctor"));
-    // Not a stub on PATH: the model check must reach the engine image.
-    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
-    const doctor = engineRuns().find((l) => programOf(l) === "doctor.ts");
-    expect(doctor, "the model check never reached the engine image").toBeDefined();
-    expect(doctor).toContain("--test-model --model-only");
-    expect(doctor).toContain(`--key-file ${join(prefix, "etc", "lares", "secrets", "gateway-master-key")}`);
-    expect(doctor).toContain(`-v ${join(prefix, "etc", "lares", "secrets")}:${join(prefix, "etc", "lares", "secrets")}:ro`);
-  });
-
-  it("keeps a lares-doctor on PATH ahead of the engine image", () => {
-    ok(run(["--release", releaseFile], { LARES_ENGINE_IMAGE: ENGINE_IMAGE }));
-    expect(engineRuns().map(programOf)).not.toContain("doctor.ts");
-    expect(calls()).toMatch(/^lares-doctor --test-model/m);
-  });
 });
 
 describe("which engine image is used", () => {

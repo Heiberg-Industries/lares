@@ -229,19 +229,6 @@ do_or_say() {
   fi
 }
 
-# The box's doctor (`--test-model` is its live model check). A `lares-doctor` on PATH wins — that is how an
-# installation that ships the command uses it, and how a test puts a stub ahead of it; with none,
-# this falls back to doctor inside the engine image. Without the fallback every real install
-# would refuse at the model check with "command not found". Doctor reads the key FILE it is
-# given (--key-file), so that file's directory is mounted read-only.
-lares_doctor() {
-  if command -v lares-doctor >/dev/null 2>&1; then
-    lares-doctor "$@"
-  else
-    engine_run --ro "$SECRETS_DIR" bin/doctor.ts "$@"
-  fi
-}
-
 # --- 0. root, before anything else is read or checked ---------------------------------
 ROOT_ID=$(id -u 2>/dev/null) || ROOT_ID=""
 if [ "$ROOT_ID" != "0" ]; then
@@ -757,8 +744,7 @@ lares_secret gateway-key            32 base64url "sk-"  # writes $SECRETS_DIR/ga
 # gateway-master-key. The engine renders the gateway service itself (lib/stack-compose.ts) and its
 # LiteLLM configuration (lib/gateway-config.ts), and images/gateway-runtime/start.sh reads THIS
 # file back as GATEWAY_MASTER_KEY_FILE and exports its contents as the value LiteLLM's
-# general_settings.master_key resolves. It is also the credential run_model_check presents
-# below — see that function for why it, and not the model provider's own key.
+# general_settings.master_key resolves. The gateway is not started during installer setup.
 lares_secret gateway-master-key     32 base64url "sk-"  # writes $SECRETS_DIR/gateway-master-key
 lares_secret token-enc-key          32 hex  # writes $SECRETS_DIR/token-enc-key
 
@@ -1155,7 +1141,7 @@ run_wizard() {
   if wizard_already_done; then
     say "the domain, e-mail address and name are already written down in $INSTALL_ENV — nothing was asked again."
   else
-    say "four questions, asked once. Everything else moves into the console, after the first conversation."
+    say "four questions, asked once. Sign in to the console to confirm this host and finish explicit model budget setup before creating an agent."
 
     ask_and_validate "$DOMAIN_FLAG" "--domain" "what domain will people use to reach Lares (example: example.com)?" validate_domain "that does not look like a domain: no http://, no path, no port, no spaces, no leading dot (example: example.com). Try again." lower
     LARES_DOMAIN="$ANSWER"
@@ -1185,11 +1171,11 @@ run_wizard() {
   capture_model_key
 }
 
-# --- 9. the stack comes up, rendered from the release this run was given ----------
+# --- 9. render the stack from the release this run was given ----------------------
 # THE FOUR QUESTIONS ARE ANSWERED AND NOTHING IS RUNNING YET. This is the step that turns a
-# release file into the installation's own compose file and starts it. It has to happen before
-# the model check below, because that check calls the gateway by its COMPOSE SERVICE NAME — a
-# container that does not exist until this function has run.
+# release file into the installation's own compose file. The database starts for the offline
+# bootstrap; Console and Caddy start only after database verification. Gateway startup belongs
+# to explicit model-budget setup, after the owner has confirmed the installation.
 #
 # THE RENDER IS ENGINE CODE, NOT SHELL. The release rules (lib/release-manifest.ts) and the
 # stack file's shape (lib/stack-compose.ts) are TypeScript, and restating either in awk would
@@ -1325,10 +1311,10 @@ run_stack() {
 
 run_online_stack() {
   local compose_file="$PREFIX/opt/lares/compose.yaml"
-  if ! docker compose -f "$compose_file" up -d console lares-gateway caddy; then
-    die "the online services did not start after the operator-only database steps completed." "$EX_REFUSED"
+  if ! docker compose -f "$compose_file" up -d console caddy; then
+    die "Console and Caddy did not start after the offline database steps completed." "$EX_REFUSED"
   fi
-  say "the console, gateway and public listener are running; the database remains operator-secret-free."
+  say "Console and Caddy are running; the database remains operator-secret-free. This installer did not start the gateway."
 }
 
 # The first database container exists only for initialization. Its password is a host file under
@@ -1418,56 +1404,6 @@ PYIMAGE
   mkdir -p "$(dirname "$marker")"
   touch "$marker"
   say "database roles, engine baseline, workflow template and gateway database are prepared; the bootstrap container has been removed."
-}
-
-# --- 9b. prove the key works, now that the gateway it calls is running ------------------
-# WHY THIS IS A FUNCTION OF ITS OWN. It used to be step 9 INSIDE run_wizard, which put it
-# before anything had started the gateway it calls: `GATEWAY_URL` is http://lares-gateway:4000,
-# a compose service name, so on a fresh box the call could only fail, and the installer then
-# died saying "the model key did not work" — naming the one thing that was not wrong. A fresh
-# install could not finish. It now runs after run_stack, and tests/install-stack.test.ts pins
-# that order by reading the two calls out of one log rather than trusting this comment.
-#
-# THE ONE LIVE CALL IN THE WHOLE INSTALLER, and it happens on the owner's server at install
-# time — never in a builder's test (CLAUDE.md: a fixture is what we believe an API does; only
-# a live call is what it does; `bin/doctor.ts` makes and probes the call itself, this only wires it).
-# `lares_doctor` (above) prefers a `lares-doctor` on PATH, exactly like docker/chown/ufw, so a
-# test can stub it. The key travels only as a PATH to its file — never read into this script,
-# never on this or any other command's argument list, so it cannot appear in a log or a process
-# listing. A non-zero exit refuses (everything generated so far — every secret, $INSTALL_ENV,
-# the stack file, the containers already started — is left exactly as it is, so a re-run
-# resumes instead of starting over); the child's own stderr, never captured or rewritten here,
-# is what tells the owner what to change (doctor guarantees it carries no key and no gateway
-# response body).
-#
-# WHICH CREDENTIAL IT PRESENTS, settled here rather than left to be rediscovered. This check
-# used to hand over $SECRETS_DIR/model-provider-key, and doctor.ts sends whatever it is given
-# as the `x-api-key` header. But the thing answering is now OUR gateway, and its configuration
-# (lib/gateway-config.ts) sets general_settings.master_key — so LiteLLM authenticates the
-# CALLER against its own master key, or against a virtual key minted through /key/generate and
-# held in its database. The model provider's key is neither: to LiteLLM it is simply a key it
-# does not know, and the 2026-09-21 live probe measured exactly that case as a 401. No
-# per-agent virtual key has been minted at this point in a fresh install, so the master key is
-# the only credential LiteLLM will accept, and it is what this presents. The provider key is
-# still proven by this call, one layer further in: the gateway uses it to reach the model, and
-# a bad one comes back as the gateway's own upstream failure.
-run_model_check() {
-  local model_alias tries=0
-  model_alias=$(read_setting LARES_MODEL_ALIAS "$INSTALL_ENV")
-  # The doctor runs on the host. The Compose service name in GATEWAY_URL is only
-  # resolvable inside Docker, while the gateway's diagnostic port is loopback-only.
-  # At this stage migrations and owner creation have not happened, so ask for the
-  # model result alone rather than the full installation report.
-  until curl -fsS --max-time 2 "http://127.0.0.1:4000/health/liveliness" >/dev/null 2>&1; do
-    tries=$((tries + 1))
-    if [ "$tries" -ge 60 ]; then
-      die "the gateway did not become ready within two minutes. Check its container logs, then run this again." "$EX_TEMPFAIL"
-    fi
-    sleep 2
-  done
-  if ! do_or_say lares_doctor --test-model --model-only --gateway "http://127.0.0.1:4000" --alias "$model_alias" --key-file "$SECRETS_DIR/gateway-master-key"; then
-    die "the gateway did not answer with a working model. Everything generated so far is left exactly as it is — fix what the line above names (the model provider key, or the gateway), then run this again." "$EX_REFUSED"
-  fi
 }
 
 # --- 10. the database is verified under the offline operator, or the install stops ---------
@@ -1871,9 +1807,9 @@ run_finish() {
     say "Open the console:"
     say "https://$domain/"
   else
-    say "the installer is finished. No agent is running and no conversation is ready yet."
-    say "Open this to create your first agent:"
-    say "https://$domain/agents/new"
+    say "infrastructure and Console are ready. No agent is running, and no conversation has been tested."
+    say "Sign in to Console to confirm this host and finish the explicit model budget setup before creating an agent:"
+    say "https://$domain/sign-in"
     say 'Backups are not switched on yet. Do not rely on this installation for data you need to keep: run lares backups to switch them on and prove them once.'
     say "No chat app is connected yet; after the first agent is running, web chat is the first door and Slack or Telegram can be connected later."
   fi
@@ -1881,23 +1817,15 @@ run_finish() {
 
 if [ "$DRY_RUN" -eq 1 ]; then
   say "the four questions (domain, e-mail, name, model key) would be asked next, and the answers written to $INSTALL_ENV and $SECRETS_DIR/model-provider-key."
-  say "then the release given with --release would be rendered into $PREFIX/opt/lares/compose.yaml, the stack brought up from it, the model proved through the gateway, the database created and migrated, the owner made a real member, and the keeper configured from the same release with first-agent role defaults bound to that owner. A real run needs --release <file>; a dry run asks nothing and writes nothing."
+  say "then the release given with --release would be rendered, the database prepared and verified offline, and Console and Caddy started. The owner would sign in to confirm this host and finish explicit model budget setup before creating an agent. No model call or conversation would be tested. A real run needs --release <file>; a dry run asks nothing and writes nothing."
 else
-  # THE ORDER IS THE POINT, not a sequence of independent steps. run_stack must come
-  # before run_model_check: that check calls the gateway by its compose service name, so until
-  # the stack is up there is nothing there to answer it — which is how a fresh install used to
-  # end, with "the model key did not work" against a key that was fine. run_database follows
-  # the model check so nothing is built on a model that cannot answer, and run_first_owner
-  # follows the database it writes a row into, and run_keeper follows the owner whose id the one
-  # agent it defines is bound to. tests/install-stack.test.ts and
-  # tests/install-keeper.test.ts pin those orderings against the stub log rather than against
-  # this comment.
+  # Preserve the offline database boundary before starting the owner-facing services. Owner,
+  # organisation and keeper setup complete before the truthful infrastructure-ready handoff.
   run_wizard        # the four questions ONLY — no outside call
   run_database_bootstrap
   run_stack
   run_database
   run_online_stack
-  run_model_check
   run_installation_settings
   run_first_owner
   run_first_organisation
