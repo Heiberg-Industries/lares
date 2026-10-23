@@ -95,6 +95,14 @@ class GatewayDockerCommandTests(unittest.TestCase):
             argv = calls.pop()
             self.assertEqual(argv[0:2], ("docker", "run"), argument_name)
             self.assertEqual(argv.count("docker"), 1, argument_name)
+            if argument_name == "keeper_cmd":
+                self.assertNotIn("--entrypoint", argv, "the fixture must use the image's baked admission entrypoint")
+                image_index = argv.index("registry.invalid/fixture/keeper:synthetic")
+                self.assertIn("--mount,type=bind,src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", ",".join(argv))
+                self.assertEqual(argv[image_index + 1:image_index + 5], (
+                    "/run/lares-maintenance/admission", "22222222-2222-4222-8222-222222222222", "7", "--"))
+                self.assertEqual(argv[image_index + 5:], tuple(namespace["keeper_image_cmd"]),
+                                 "guard must wrap the actual configured Keeper CMD")
 
             # The previous duplicate-prefix shape is rejected without executing Docker.
             duplicated = ("docker",) + argv
