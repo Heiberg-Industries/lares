@@ -20,6 +20,7 @@ import base64
 import tarfile
 import types
 import stat
+import fcntl
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
@@ -1604,6 +1605,115 @@ raise SystemExit(92)
                 else:
                     os.close(9)
                 os.close(opened)
+
+    def test_guard_preserves_shared_gate_when_low_descriptors_place_directory_on_fd9(self):
+        path = ROOT / "images/gateway-runtime/gateway_admission.py"
+        spec = importlib.util.spec_from_file_location("gateway_descriptor_collision", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        installation_id = "11111111-1111-4111-8111-111111111111"
+        epoch = "7"
+        with tempfile.TemporaryDirectory(prefix="gateway-fd9-collision-") as temporary:
+            directory = pathlib.Path(temporary)
+            lock = directory / "service-gate.lock"
+            intent = directory / "intent.json"
+            lock.write_bytes(b"")
+            lock.chmod(0o444)
+            intent.write_bytes(
+                (f'{{"epoch":{epoch},"installationId":"{installation_id}","state":"normal","version":1}}\n').encode()
+            )
+            intent.chmod(0o444)
+
+            targets = (*range(3, 8), 9)
+            original = {}
+            for descriptor in targets:
+                try:
+                    original[descriptor] = (
+                        fcntl.fcntl(descriptor, fcntl.F_DUPFD_CLOEXEC, 20),
+                        os.get_inheritable(descriptor),
+                    )
+                except OSError:
+                    original[descriptor] = (-1, False)
+            filler = source = -1
+            try:
+                for descriptor in targets:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                filler = os.open("/dev/null", os.O_RDONLY)
+                source = fcntl.fcntl(filler, fcntl.F_DUPFD_CLOEXEC, 20)
+                os.close(filler)
+                filler = -1
+                for descriptor in range(3, 8):
+                    os.dup2(source, descriptor, inheritable=True)
+
+                def open_directory_on_reserved_fd(_path):
+                    descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                    if descriptor != 9:
+                        os.dup2(descriptor, 9, inheritable=True)
+                        os.close(descriptor)
+                    self.assertEqual(os.fstat(9).st_ino, os.stat(directory).st_ino)
+                    return 9
+
+                def named_file(directory_fd, name, descriptor=None):
+                    info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+                    self.assertTrue(stat.S_ISREG(info.st_mode))
+                    self.assertEqual(stat.S_IMODE(info.st_mode), 0o444)
+                    self.assertEqual(info.st_nlink, 1)
+                    if descriptor is not None:
+                        opened = os.fstat(descriptor)
+                        if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                            raise module.Refused()
+                    return info
+
+                class ExecReached(BaseException):
+                    pass
+
+                def inspect_fixed_exec(executable, argv):
+                    self.assertEqual(executable, module.START_SCRIPT)
+                    self.assertEqual(argv, [module.START_SCRIPT])
+                    opened = os.fstat(9)
+                    named = os.stat(lock, follow_symlinks=False)
+                    self.assertEqual((opened.st_dev, opened.st_ino), (named.st_dev, named.st_ino))
+                    contender = os.open(lock, os.O_RDONLY)
+                    try:
+                        with self.assertRaises(BlockingIOError):
+                            module.fcntl.flock(contender, module.fcntl.LOCK_EX | module.fcntl.LOCK_NB)
+                    finally:
+                        os.close(contender)
+                    raise ExecReached()
+
+                arguments = ["guard", str(directory), installation_id, epoch, "--", module.START_SCRIPT]
+                with mock.patch.object(module, "ADMISSION_DIR", str(directory)), \
+                     mock.patch.object(module.os, "geteuid", return_value=0), \
+                     mock.patch.object(module, "_open_directory", side_effect=open_directory_on_reserved_fd), \
+                     mock.patch.object(module, "_recheck_directory"), \
+                     mock.patch.object(module, "_check_ancestry"), \
+                     mock.patch.object(module, "_named_file", side_effect=named_file), \
+                     mock.patch.object(module.os, "execv", side_effect=inspect_fixed_exec):
+                    with self.assertRaises(ExecReached):
+                        module._guard(arguments)
+            finally:
+                for descriptor in targets:
+                    try:
+                        os.close(descriptor)
+                    except OSError:
+                        pass
+                for descriptor in range(3, 8):
+                    backup, inheritable = original[descriptor]
+                    if backup >= 0:
+                        os.dup2(backup, descriptor, inheritable=inheritable)
+                backup, inheritable = original[9]
+                if backup >= 0:
+                    os.dup2(backup, 9, inheritable=inheritable)
+                for backup, _inheritable in original.values():
+                    if backup >= 0:
+                        os.close(backup)
+                if filler >= 0:
+                    os.close(filler)
+                if source >= 0:
+                    os.close(source)
 
 
 if __name__ == "__main__": unittest.main()

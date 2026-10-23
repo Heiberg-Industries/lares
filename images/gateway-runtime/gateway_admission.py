@@ -207,6 +207,10 @@ def _guard(argv):
         _recheck_directory(argv[1], dir_fd)
         _recheck_lock(dir_fd, lock_fd)
         _check_ancestry(argv[1])
+        # The pathname walk can itself have consumed fd9. Close it before
+        # promoting the gate so a later directory close cannot release the lease.
+        os.close(dir_fd)
+        dir_fd = -1
         if lock_fd != 9:
             os.dup2(lock_fd, 9, inheritable=True)
             os.close(lock_fd)
@@ -216,7 +220,6 @@ def _guard(argv):
         os.environ["LARES_MAINTENANCE_ADMISSION_DIR"] = argv[1]
         os.environ["LARES_MAINTENANCE_INSTALLATION_ID"] = installation_id
         os.environ["LARES_MAINTENANCE_EPOCH"] = epoch
-        os.close(dir_fd)
         os.execv(START_SCRIPT, [START_SCRIPT])
     finally:
         if lock_fd >= 0:
@@ -224,10 +227,11 @@ def _guard(argv):
                 os.close(lock_fd)
             except OSError:
                 pass
-        try:
-            os.close(dir_fd)
-        except OSError:
-            pass
+        if dir_fd >= 0:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
 
 
 def main(argv):
