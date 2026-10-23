@@ -200,13 +200,16 @@ const run = () => {
   const first = runCli();
   assert.equal(first.status, 0, "default staging CLI must complete from protected neutral fixtures");
   const stagedNames = readdirSync(stage).sort();
-  assert.deepEqual(stagedNames, [".complete.json", "Caddyfile", "compose.lares-keeper.yaml", "compose.yaml", "gateway-start.sh", "gateway-start.sh.admission_contract.py", "gateway-start.sh.lares_gateway.py", "keeper.env", "keeper.json", "litellm-config.yaml", "litellm-config.yaml.profile.json"].sort());
+  assert.deepEqual(stagedNames, [".complete.json", "Caddyfile", "compose.lares-keeper.yaml", "compose.yaml", "gateway-start.sh", "gateway-start.sh.gateway_admission.py", "gateway-start.sh.admission_contract.py", "gateway-start.sh.lares_gateway.py", "keeper.env", "keeper.json", "litellm-config.yaml", "litellm-config.yaml.profile.json"].sort());
   const completion = JSON.parse(readFileSync(join(stage, ".complete.json"), "utf8"));
   assert.equal(completion.version, 2);
   assert.match(completion.sourceCommitment, /^[a-f0-9]{64}$/);
   assert(!Object.values(completion).includes(key.toString("hex")));
   const stageSnapshot = () => readdirSync(stage).sort().map(name => [name, readFileSync(join(stage, name)).toString("hex"), statSync(join(stage, name)).mode & 0o777]);
   const exactStage = stageSnapshot();
+  const stagedHelper = join(stage, "gateway-start.sh.gateway_admission.py");
+  assert.deepEqual(readFileSync(stagedHelper), readFileSync(join(repo, "images", "gateway-runtime", "gateway_admission.py")));
+  assert.equal(statSync(stagedHelper).mode & 0o777, 0o644, "staged guard must keep its reviewed readonly-asset mode");
 
   const configText = execFileSync("docker", ["compose", "--project-name", "lares-authority-probe", "--project-directory", opt,
     "--env-file", join(stage, "keeper.env"), "-f", join(stage, "compose.yaml"), "-f", join(stage, "compose.lares-keeper.yaml"), "config", "--format", "json"], { encoding: "utf8" });
@@ -217,6 +220,25 @@ const run = () => {
   const databaseAuthMounts = mounts("db").filter((entry: any) => covers(entry.source, databaseAuthDir) || entry.target === "/run/lares-auth");
   assert.deepEqual(databaseAuthMounts.map((entry: any) => [entry.source, entry.target, entry.read_only]), [[databaseAuthDir, "/run/lares-auth", true]]);
   const rawStack = parseYaml(readFileSync(join(stage, "compose.yaml"), "utf8")) as any;
+  const gatewayRaw = rawStack.services["lares-gateway"];
+  const stagedKeeper = JSON.parse(readFileSync(join(stage, "keeper.json"), "utf8"));
+  const admission = stagedKeeper.lifecycle.maintenanceAdmission;
+  assert.deepEqual(gatewayRaw.entrypoint, ["python", "-I", "/opt/lares-gateway/gateway_admission.py", "guard",
+    "/run/lares-maintenance/admission", admission.installationId, String(admission.epoch), "--"]);
+  assert.deepEqual(gatewayRaw.command, ["/usr/local/bin/lares-gateway-start"]);
+  for (const [target, source] of [["/opt/lares-gateway/gateway_admission.py", join(prefix, "etc", "lares", "gateway-start.sh.gateway_admission.py")],
+    ["/run/lares-maintenance/admission", admission.hostDirectory]] as const) {
+    const raw = gatewayRaw.volumes.filter((entry: any) => entry && typeof entry === "object" && entry.target === target);
+    assert.equal(raw.length, 1, `generated Gateway service must mount ${target} exactly once`);
+    assert.deepEqual(raw[0], { type: "bind", source, target, read_only: true, bind: { create_host_path: false } });
+    const effective = mounts("lares-gateway").filter((entry: any) => entry && typeof entry === "object" && entry.target === target);
+    assert.equal(effective.length, 1, `resolved Gateway service must mount ${target} exactly once`);
+    assert.equal(effective[0].source, source);
+    assert.equal(effective[0].type, "bind");
+    assert.equal(effective[0].read_only, true);
+    assert(effective[0].bind && (effective[0].bind.create_host_path === false || !("create_host_path" in effective[0].bind)),
+      `resolved Gateway bind ${target} must not create its host source`);
+  }
   const rawAuthMount = rawStack.services.db.volumes.find((entry: any) => entry.target === "/run/lares-auth");
   assert.equal(rawAuthMount?.type, "bind");
   assert.equal(rawAuthMount?.bind?.create_host_path, false, "the committed renderer must explicitly disable host-path creation");

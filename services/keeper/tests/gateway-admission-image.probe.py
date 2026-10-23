@@ -8,6 +8,7 @@ import concurrent.futures
 import base64
 import hashlib
 import io
+import importlib.util
 import json
 import os
 import pathlib
@@ -21,12 +22,17 @@ import tarfile
 import tempfile
 import time
 import uuid
+import fcntl
 from urllib.parse import quote
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 ASSETS = REPO / "images/gateway-runtime"
 sys.path.insert(0, str(ASSETS))
 from admission_contract import MAX_NATIVE_LOOKUP_BODY, Profile, canonical
+_custody_spec = importlib.util.spec_from_file_location("maintenance_custody", REPO / "services/box/ops/maintenance-custody.py")
+custody = importlib.util.module_from_spec(_custody_spec)
+assert _custody_spec and _custody_spec.loader
+_custody_spec.loader.exec_module(custody)
 
 STARTUP_PHASES = frozenset(("process-starting", "preflight-passed", "preflight-failed", "native-app-import", "native-app-import-failed", "asgi-server", "asgi-server-failed", "native-lifespan-starting", "native-lifespan-complete", "native-lifespan-failed", "native-lifespan-error", "runtime-validation-failed", "ready"))
 STARTUP_STAGES = frozenset(("not-started", "runtime-imports", "runtime-flags", "callback-registry", "callback-types", "callback-native-identity", "callback-native-types", "callback-proxy-hook-types", "callback-native-membership", "callback-native-coverage", "callback-native-cost", "callback-secondary", "callback-identity", "router-aliases", "router-deployment-count", "router-target", "router-retries", "native-auth", "complete"))
@@ -314,11 +320,14 @@ def fixed_startup_log_markers(raw):
 class Proof:
     def __init__(self, role_image, output):
         require(os.environ.get("CI") == "true", "Image proof runs only in disposable CI")
+        require(os.geteuid() == 0, "Image proof needs root-owned disposable admission custody")
         self.image, self.output = role_image, pathlib.Path(output)
         self.manifest = json.loads((REPO / "releases/2026-10-21-rc.12.json").read_text())
         self.root = pathlib.Path(tempfile.mkdtemp(prefix="lares-admission-proof-")); self.root.chmod(0o755)
         self.name = "lares-admission-" + uuid.uuid4().hex[:10]
         self.containers = []
+        self.compose_stacks = []
+        self.gateway_containers = {}
         self.artifact = {"scope":"pinned-image adapter compatibility; no production authority or price/recovery acceptance", "cases":[]}
         self.current_case = None
         self.cooldown_idle_seconds = None
@@ -331,8 +340,8 @@ class Proof:
         command("docker", "run", "-d", "--name", name, "--network", self.name, *arguments, image, *command_args)
         return name
 
-    def sql(self, statement):
-        return command("docker", "exec", "-i", self.name+"-db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "proof", "-d", "litellm", "-At", input=statement)
+    def sql(self, statement, database="litellm"):
+        return command("docker", "exec", "-i", self.name+"-db", "psql", "-X", "-v", "ON_ERROR_STOP=1", "-U", "proof", "-d", database, "-At", input=statement)
 
     def client(self, document):
         # The source modules use .js imports that tsx resolves to their .ts sources.
@@ -349,10 +358,257 @@ class Proof:
             time.sleep(.25)
         raise RuntimeError(reason)
 
+    def _guard_container(self, name, admission_dir, installation_id, epoch):
+        self.containers.append(name)
+        args=["docker","run","--rm","--name",name,"--network",self.name,
+          "--mount",f"type=bind,src={ASSETS},dst=/opt/lares-gateway,readonly",
+          "--mount",f"type=bind,src={ASSETS}/start.sh,dst=/usr/local/bin/lares-gateway-start,readonly",
+          "--mount",f"type=bind,src={admission_dir},dst=/run/lares-maintenance/admission,readonly",
+          "--mount",f"type=bind,src={self.root},dst=/fixture,readonly",
+          "-e","MODEL_PROVIDER_KEY_FILE=/fixture/guard-secret-sentinel",
+          "-e","GATEWAY_MASTER_KEY_FILE=/fixture/master",
+          "-e","DATABASE_PASSWORD_FILE=/fixture/password",
+          "-e","PGHOST=db","-e","PGPORT=5432","-e","PGDATABASE=litellm","-e","PGUSER=proof",
+          "-e","LARES_GATEWAY_ADMISSION_URL=https://fixture:8443",
+          "-e","LARES_GATEWAY_SERVICE_KEY_FILE=/fixture/service-key",
+          "-e","LARES_GATEWAY_ENDPOINT_HASH="+"a"*64,
+          "-e","LARES_GATEWAY_PROFILE_FILE=/fixture/profile.json",
+          "--entrypoint","python",self.manifest["images"]["lares-gateway"],
+          "-I","/opt/lares-gateway/gateway_admission.py","guard","/run/lares-maintenance/admission",
+          installation_id,str(epoch),"--","/usr/local/bin/lares-gateway-start"]
+        result=subprocess.run(args,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=8)
+        return result.returncode,(result.stdout+result.stderr).strip()
+
+    def guard_refusal_matrix(self):
+        """Use the pinned image to verify bad current receipts fail before the shell starts."""
+        fifo=self.root/"guard-secret-sentinel"
+        os.mkfifo(fifo,0o600)
+        cases=[]
+        def fixture(label, mutation=None, id_delta=0, epoch_delta=0, hold_exclusive=False):
+            prefix=self.root/("guard-"+label)
+            prefix.mkdir(mode=0o755)
+            subnet="172.30."+str(40+len(cases))+".0/24"
+            custody.prepare_fresh(prefix,subnet)
+            identity=custody.validate(prefix,subnet)
+            directory=prefix/"var/lib/lares-maintenance/admission"
+            intent=directory/"intent.json"
+            if mutation:
+                original=intent.read_bytes()
+                if mutation=="malformed": replacement=b"{bad\n"
+                elif mutation=="duplicate": replacement=original.replace(b'"version":1',b'"version":1,"version":1')
+                elif mutation=="extra": replacement=original.replace(b'"state":"normal"',b'"state":"normal","extra":true')
+                elif mutation=="oversized": replacement=b"x"*257
+                elif mutation=="non-normal": replacement=original.replace(b'"state":"normal"',b'"state":"maintenance"')
+                elif mutation=="wrong-mode":
+                    intent.chmod(0o440)
+                    replacement=None
+                elif mutation=="non-regular":
+                    intent.unlink();os.mkfifo(intent,0o444)
+                    replacement=None
+                elif mutation=="replaced-intent":
+                    replacement_path=directory/"intent-replacement"
+                    replacement_path.write_bytes(original);replacement_path.chmod(0o444)
+                    intent.unlink();intent.symlink_to(replacement_path.name)
+                    replacement=None
+                else:raise RuntimeError("Unknown Gateway guard fixture mutation")
+                if replacement is not None:
+                    intent.chmod(0o644);intent.write_bytes(replacement);intent.chmod(0o444)
+            lock_fd=os.open(directory/"service-gate.lock",os.O_RDONLY|os.O_NOFOLLOW)
+            try:
+                if hold_exclusive:fcntl.flock(lock_fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                installation_id=identity["installationId"]
+                if id_delta:installation_id=("1" if installation_id[0]!="1" else "2")+installation_id[1:]
+                epoch=identity["epoch"]+epoch_delta
+                return_code,output=self._guard_container(self.name+"-guard-"+label,directory,installation_id,epoch)
+                require(return_code==78 and output=="lares: gateway maintenance admission refused",
+                    "Pinned Gateway guard did not issue the fixed refusal for "+label)
+                cases.append(label)
+            finally:
+                if hold_exclusive:
+                    fcntl.flock(lock_fd,fcntl.LOCK_UN)
+                os.close(lock_fd)
+        for label,mutation,id_delta,epoch_delta,exclusive in (
+            ("malformed","malformed",0,0,False),("duplicate-field","duplicate",0,0,False),
+            ("extra-field","extra",0,0,False),("oversized-intent","oversized",0,0,False),
+            ("non-normal-intent","non-normal",0,0,False),("wrong-mode","wrong-mode",0,0,False),
+            ("non-regular-intent","non-regular",0,0,False),("replaced-intent-path","replaced-intent",0,0,False),
+            ("stale-installation-id",None,1,0,False),
+            ("stale-epoch",None,0,1,False),("exclusive-maintenance-lock",None,0,0,True)):
+            fixture(label,mutation,id_delta,epoch_delta,exclusive)
+        direct_prefix=self.root/"guard-direct-script"
+        direct_prefix.mkdir(mode=0o755)
+        custody.prepare_fresh(direct_prefix,"172.30.55.0/24")
+        direct_identity=custody.validate(direct_prefix,"172.30.55.0/24")
+        direct_dir=direct_prefix/"var/lib/lares-maintenance/admission"
+        direct_name=self.name+"-guard-direct-script"
+        self.containers.append(direct_name)
+        direct_args=["docker","run","--rm","--name",direct_name,"--network",self.name,
+            "--mount",f"type=bind,src={ASSETS},dst=/opt/lares-gateway,readonly",
+            "--mount",f"type=bind,src={ASSETS}/start.sh,dst=/usr/local/bin/lares-gateway-start,readonly",
+            "--mount",f"type=bind,src={direct_dir},dst=/run/lares-maintenance/admission,readonly",
+            "--mount",f"type=bind,src={self.root},dst=/fixture,readonly",
+            "-e","MODEL_PROVIDER_KEY_FILE=/fixture/guard-secret-sentinel",
+            "-e","GATEWAY_MASTER_KEY_FILE=/fixture/master","-e","DATABASE_PASSWORD_FILE=/fixture/password",
+            "-e","LARES_MAINTENANCE_ADMISSION_DIR=/run/lares-maintenance/admission",
+            "-e","LARES_MAINTENANCE_INSTALLATION_ID="+direct_identity["installationId"],
+            "-e","LARES_MAINTENANCE_EPOCH="+str(direct_identity["epoch"]),
+            "--entrypoint","/bin/sh",self.manifest["images"]["lares-gateway"],"/usr/local/bin/lares-gateway-start"]
+        direct_result=subprocess.run(direct_args,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=8)
+        direct_output=(direct_result.stdout+direct_result.stderr).strip()
+        require(direct_result.returncode==78 and direct_output=="lares: gateway maintenance admission refused",
+            "Pinned Gateway start script accepted identity environment without inherited fd 9")
+        self.artifact["guardRefusals"]={"fixedRefusalCases":cases,"secretReadSentinel":"fifo-not-opened-by-failed-cases",
+            "directScriptEnvOnlyRejected":True}
+
+        controls={}
+        for mode in ("fake-descriptor","inherited-write","inherited-shared","current-unlocked"):
+            controls[mode]=self._verify_descriptor_control(mode)
+        require(controls["fake-descriptor"]["refused"] is True and
+            controls["inherited-write"]["refused"] is True and controls["inherited-write"]["exclusiveStillHeld"] is True and
+            controls["inherited-shared"]["admitted"] is True and controls["inherited-shared"]["sharedStillHeld"] is True and
+            controls["current-unlocked"]["admitted"] is True and controls["current-unlocked"]["sharedStillHeld"] is True,
+            "Pinned verifier did not preserve the inherited lease or enforce current lock admission")
+        self.artifact["descriptorControls"]=controls
+
+    def _verify_descriptor_control(self, mode):
+        script="""import fcntl,os,subprocess,sys
+mode=sys.argv[1]
+directory='/run/lares-maintenance/admission'
+lock_path=directory+'/service-gate.lock'
+fd=os.open('/dev/null' if mode=='fake-descriptor' else lock_path,os.O_RDONLY)
+if mode=='inherited-write': fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+if mode=='inherited-shared': fcntl.flock(fd,fcntl.LOCK_SH|fcntl.LOCK_NB)
+if fd!=9: os.dup2(fd,9,inheritable=True)
+else: os.set_inheritable(9,True)
+env=os.environ.copy()
+result=subprocess.run(['python','-I','/opt/lares-gateway/gateway_admission.py','verify'],
+  env=env,pass_fds=(9,),text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
+expected=78 if mode in ('fake-descriptor','inherited-write') else 0
+if result.returncode!=expected or (expected==78 and (result.stdout+result.stderr).strip()!='lares: gateway maintenance admission refused'):
+  raise SystemExit(31)
+other=os.open(lock_path,os.O_RDONLY)
+blocked=False
+try:
+  try: fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except BlockingIOError: blocked=True
+  if mode in ('fake-descriptor','inherited-write'):
+    exclusive_still_held=blocked
+    shared_still_held=False
+    if not blocked: fcntl.flock(other,fcntl.LOCK_UN)
+  else:
+    shared_still_held=blocked
+    exclusive_still_held=False
+    if not blocked: fcntl.flock(other,fcntl.LOCK_UN)
+finally: os.close(other)
+if mode=='inherited-write' and not exclusive_still_held: raise SystemExit(32)
+if mode in ('inherited-shared','current-unlocked') and not shared_still_held: raise SystemExit(33)
+print('ok')
+"""
+        args=["docker","run","--rm","--network",self.name,
+            "--mount",f"type=bind,src={ASSETS},dst=/opt/lares-gateway,readonly",
+            "--mount",f"type=bind,src={self.admission_dir},dst=/run/lares-maintenance/admission,readonly",
+            "-e","LARES_MAINTENANCE_ADMISSION_DIR=/run/lares-maintenance/admission",
+            "-e","LARES_MAINTENANCE_INSTALLATION_ID="+self.admission_identity["installationId"],
+            "-e","LARES_MAINTENANCE_EPOCH="+str(self.admission_identity["epoch"]),
+            "--entrypoint","python",self.manifest["images"]["lares-gateway"],"-I","-c",script,mode]
+        result=subprocess.run(args,text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=12)
+        require(result.returncode==0 and result.stdout.strip()=="ok",
+            "Pinned Gateway inherited-descriptor control failed: "+mode)
+        return {"admitted":mode in ("inherited-shared","current-unlocked"),
+            "refused":mode in ("fake-descriptor","inherited-write"),
+            "exclusiveStillHeld":mode=="inherited-write","sharedStillHeld":mode in ("inherited-shared","current-unlocked")}
+
     def config(self, provider):
         # Render with actual committed TypeScript, using the built role's dependencies.
         script = "import{renderGatewayConfig,gatewayAdmissionProfile}from'/app/services/box/lib/gateway-config.ts';import{createRequire}from'node:module';const{parse}=createRequire('/app/services/box/package.json')('yaml');const o="+json.dumps({"alias":"lares-brain","providerModel":provider+"/"+("gpt-4o-mini" if provider=="openai" else "claude-sonnet-4-5"),"providerBaseUrl":"https://fixture:8443"+("/v1" if provider=="openai" else "")})+";console.log(JSON.stringify({config:parse(renderGatewayConfig(o)),profile:gatewayAdmissionProfile(o)}));"
         return json.loads(command("docker", "exec", self.name+"-client", "/app/services/chief-of-staff/node_modules/.bin/tsx", "-e", script))
+
+    def gateway_service(self, folder, secret_dir):
+        """Render the real ordinary Compose service in the pinned client image."""
+        script = "import{readFileSync}from'node:fs';import{createRequire}from'node:module';const require=createRequire('/app/services/chief-of-staff/package.json');const{parse}=require('yaml');const{renderStackCompose}=await import('/app/services/box/lib/stack-compose.ts');const input=JSON.parse(readFileSync(0,'utf8'));const source=renderStackCompose(input.manifest,input.options);const compose=parse(source);const fixture={...compose,networks:{[input.options.network]:{name:input.options.network,external:true}}};console.log(JSON.stringify({source,fixture,service:compose.services['lares-gateway'],secrets:compose.secrets}));"
+        options = {
+            "secretsDir": str(secret_dir),
+            "socketDir": str(self.root / "socket"),
+            "tasteDir": str(self.root / "taste"),
+            "gatewayConfigFile": str(folder / "config.yaml"),
+            "gatewayStartScript": str(folder / "gateway-start.sh"),
+            "caddyfile": str(self.root / "Caddyfile"),
+            "caddyDataDir": str(self.root / "caddy-data"),
+            "dbDataDir": str(self.root / "db-data"),
+            "databaseAuthDir": str(self.root / "database-auth"),
+            "maintenanceAdmission": {
+                "directory": str(self.admission_dir),
+                "installationId": self.admission_identity["installationId"],
+                "epoch": self.admission_identity["epoch"],
+            },
+            "network": self.name,
+            "subnet": "172.30.42.0/24",
+            "domain": "fixture.invalid",
+            "consoleAllowedEmails": "fixture.invalid",
+            "ownerId": "fixture-owner",
+            "ownerHomeTz": "UTC",
+            "modelAlias": "lares-brain",
+            "pgDatabase": "litellm",
+            "gatewayAuthority": {
+                "origin": "https://fixture:8443",
+                "endpointHash": "a" * 64,
+                "serviceKeyFile": str(secret_dir / "gateway-budget-service-key"),
+            },
+        }
+        rendered = command("docker", "exec", "-i", self.name + "-client", "node",
+            "--import", "/app/services/chief-of-staff/node_modules/tsx/dist/loader.mjs",
+            "--input-type=module", "-e", script,
+            input=json.dumps({"manifest": self.manifest, "options": options}))
+        rendered_document = json.loads(rendered)
+        service = rendered_document.get("service") if type(rendered_document) is dict else None
+        require(type(service) is dict and service.get("image") == self.manifest["images"]["lares-gateway"],
+            "Ordinary renderer did not produce the pinned Gateway service")
+        require(service.get("entrypoint") == ["python", "-I", "/opt/lares-gateway/gateway_admission.py",
+            "guard", "/run/lares-maintenance/admission", self.admission_identity["installationId"],
+            str(self.admission_identity["epoch"]), "--"] and
+            service.get("command") == ["/usr/local/bin/lares-gateway-start"],
+            "Ordinary renderer Gateway command differs from the reviewed fixed guard contract")
+        volumes = service.get("volumes")
+        require(type(volumes) is list, "Ordinary renderer Gateway bind list is missing")
+        helper = [volume for volume in volumes if type(volume) is dict and
+            volume.get("target") == "/opt/lares-gateway/gateway_admission.py"]
+        admission = [volume for volume in volumes if type(volume) is dict and
+            volume.get("target") == "/run/lares-maintenance/admission"]
+        for target, rows in (("helper", helper), ("admission", admission)):
+            require(len(rows) == 1 and rows[0].get("type") == "bind" and rows[0].get("read_only") is True and
+                rows[0].get("bind") == {"create_host_path": False},
+                "Ordinary renderer Gateway " + target + " bind is not readonly/no-create")
+        require(helper[0].get("source") == str(folder / "gateway-start.sh.gateway_admission.py") and
+            admission[0].get("source") == str(self.admission_dir),
+            "Ordinary renderer Gateway bind sources do not match the installed assets and receipt")
+        secret_definitions = rendered_document.get("secrets")
+        require(type(secret_definitions) is dict, "Ordinary renderer did not produce the named Gateway secrets")
+        source = rendered_document.get("source")
+        fixture_compose = rendered_document.get("fixture")
+        require(type(source) is str and type(fixture_compose) is dict and
+            fixture_compose.get("services", {}).get("lares-gateway") == service,
+            "Generated proof Compose changed the ordinary Gateway service")
+        for name, secret in secret_definitions.items():
+            path = pathlib.Path(secret.get("file", "")) if type(secret) is dict else None
+            if path is not None and not path.exists():
+                path.write_text(secrets.token_urlsafe(32), encoding="ascii")
+                path.chmod(0o600)
+        return service, secret_definitions, source, fixture_compose
+
+    @staticmethod
+    def _volume_mount(volume):
+        if type(volume) is str:
+            parts = volume.split(":")
+            require(len(parts) in (2, 3) and all(parts[:2]), "Rendered Gateway volume string is not a bind")
+            source, target = parts[:2]
+            readonly = len(parts) == 3 and parts[2] == "ro"
+        else:
+            require(type(volume) is dict and volume.get("type") == "bind", "Rendered Gateway volume is not a bind")
+            source, target = volume.get("source"), volume.get("target")
+            readonly = volume.get("read_only") is True
+        require(type(source) is str and source.startswith("/") and type(target) is str and target.startswith("/"),
+            "Rendered Gateway bind path is invalid")
+        return ["--mount", "type=bind,src=" + source + ",dst=" + target + (",readonly" if readonly else "")]
 
     def setup(self):
         command("docker","network","create","--internal",self.name)
@@ -365,20 +621,39 @@ class Proof:
             self.disposable_secrets.append(value.encode())
         (self.root/"service-key").write_bytes(secrets.token_bytes(32));(self.root/"service-key").chmod(0o600)
         self.disposable_secrets.append((self.root/"service-key").read_bytes())
+        for source,target in (("master","gateway-master-key"),("provider","model-provider-key"),
+          ("password","gateway-database-password"),("service-key","gateway-budget-service-key")):
+            (self.root/target).write_bytes((self.root/source).read_bytes());(self.root/target).chmod(0o600)
+        (self.root/"gateway-key").write_text("disposable-gateway-key");(self.root/"gateway-key").chmod(0o600)
+        self.secret_dir=self.root/"secrets"
+        self.secret_dir.mkdir(mode=0o700)
+        for name in ("gateway-key","gateway-master-key","model-provider-key","gateway-database-password","gateway-budget-service-key"):
+            (self.secret_dir/name).write_bytes((self.root/name).read_bytes());(self.secret_dir/name).chmod(0o600)
         self.native_barrier=self.root/"native-probe-barrier"
         self.native_barrier.write_text("idle");self.native_barrier.chmod(0o600)
         self.native_expected=self.root/"native-probe-expected"
         self.native_expected.write_text("");self.native_expected.chmod(0o600)
+        self.admission_prefix = self.root / "admission-installation"
+        self.admission_prefix.mkdir(mode=0o755)
+        custody.prepare_fresh(self.admission_prefix, "172.30.42.0/24")
+        self.admission_identity = custody.validate(self.admission_prefix, "172.30.42.0/24")
+        self.admission_dir = self.admission_prefix / "var/lib/lares-maintenance/admission"
         command("openssl","req","-x509","-newkey","rsa:2048","-nodes","-keyout",str(self.root/"tls-key.pem"),"-out",str(self.root/"ca.pem"),"-days","1","-subj","/CN=fixture","-addext","subjectAltName=DNS:fixture")
         (self.root/"fixture.py").write_text(FIXTURE)
         mount=["--mount",f"type=bind,src={self.root},dst=/fixture,readonly"]
         assets=["--mount",f"type=bind,src={ASSETS},dst=/adapter,readonly"]
         self.run("db",self.manifest["images"]["db"],[*mount,"--network-alias","db","-e","POSTGRES_USER=proof","-e","POSTGRES_DB=litellm","-e","POSTGRES_PASSWORD_FILE=/fixture/password"],[])
         self.wait(lambda:command("docker","exec",self.name+"-db","pg_isready","-U","proof","-d","litellm").endswith("accepting connections"),"Fixture database failed")
+        gateway_password=(self.root/"password").read_text(encoding="ascii")
+        require(re.fullmatch(r"[A-Za-z0-9_-]+",gateway_password) is not None,
+            "Disposable Gateway database password is not safe for the bounded SQL fixture")
+        self.sql("CREATE ROLE lares_gateway LOGIN PASSWORD '"+gateway_password+"'; ALTER DATABASE litellm OWNER TO lares_gateway; GRANT CONNECT, CREATE ON DATABASE litellm TO lares_gateway; GRANT ALL ON SCHEMA public TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON TABLES TO lares_gateway; ALTER DEFAULT PRIVILEGES FOR ROLE proof IN SCHEMA public GRANT ALL ON SEQUENCES TO lares_gateway;")
         self.run("fixture",self.manifest["images"]["lares-gateway"],[*mount,*assets,"--network-alias","fixture","--entrypoint","python","-e","PYTHONDONTWRITEBYTECODE=1"],["/fixture/fixture.py"])
         # The client receives only the probe source, protected master-key file, and fixed phase barrier.
         client_mounts=[
             "--mount",f"type=bind,src={REPO}/services/box/lib/gateway-config.ts,dst=/app/services/box/lib/gateway-config.ts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/box/lib/stack-compose.ts,dst=/app/services/box/lib/stack-compose.ts,readonly",
+            "--mount",f"type=bind,src={REPO}/services/box/lib/release-manifest.ts,dst=/app/services/box/lib/release-manifest.ts,readonly",
             "--mount",f"type=bind,src={REPO}/services/keeper/tests/live/litellm-member-credential.live.mts,dst=/app/services/keeper/tests/live/litellm-member-credential.live.mts,readonly",
             "--mount",f"type=bind,src={REPO}/services/keeper/lib/budget-native-client.ts,dst=/app/services/keeper/lib/budget-native-client.ts,readonly",
             "--mount",f"type=bind,src={self.root/'master'},dst=/tmp/gateway-master-key,readonly",
@@ -396,14 +671,39 @@ class Proof:
         if broken=="hook":document["config"]["litellm_settings"]["callbacks"]=[]
         if broken=="callback":document["config"]["litellm_settings"]["callbacks"].append("prometheus")
         if broken=="duplicate":document["config"]["litellm_settings"]["callbacks"].append("lares_gateway.gateway_hook")
-        (folder/"config.yaml").write_bytes(canonical(document["config"]));(folder/"profile.json").write_bytes(canonical(document["profile"]))
-        arguments=["--network-alias",suffix,"--mount",f"type=bind,src={self.root},dst=/fixture,readonly","--mount",f"type=bind,src={folder}/config.yaml,dst=/etc/litellm/config.yaml,readonly","--mount",f"type=bind,src={ASSETS},dst=/opt/lares-gateway,readonly","--entrypoint","/bin/sh"]
-        env={"MODEL_PROVIDER_KEY_FILE":"/fixture/provider","GATEWAY_MASTER_KEY_FILE":"/fixture/master","DATABASE_PASSWORD_FILE":"/fixture/password","PGHOST":"db","PGPORT":"5432","PGDATABASE":"litellm","PGUSER":"proof","LARES_GATEWAY_PROFILE_FILE":"/fixture/"+suffix+"/profile.json","LARES_GATEWAY_ADMISSION_URL":"https://fixture:8443","LARES_GATEWAY_ENDPOINT_HASH":"a"*64,"LARES_GATEWAY_SERVICE_KEY_FILE":"/fixture/service-key","SSL_CERT_FILE":"/fixture/ca.pem","LITELLM_LOCAL_MODEL_COST_MAP":"True","LITELLM_TELEMETRY":"False","PYTHONDONTWRITEBYTECODE":"1","CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"}
+        config_path=folder/"config.yaml"
+        config_path.write_bytes(canonical(document["config"]))
+        config_path.with_name(config_path.name+".profile.json").write_bytes(canonical(document["profile"]))
+        for name, source in (("gateway-start.sh",ASSETS/"start.sh"),
+            ("gateway-start.sh.gateway_admission.py",ASSETS/"gateway_admission.py"),
+            ("gateway-start.sh.admission_contract.py",ASSETS/"admission_contract.py"),
+            ("gateway-start.sh.lares_gateway.py",ASSETS/"lares_gateway.py")):
+            target=folder/name;target.write_bytes(source.read_bytes());target.chmod(0o755 if name=="gateway-start.sh" else 0o644)
+        service, top_level_secrets, _, _ = self.gateway_service(folder,self.secret_dir)
+        self.artifact["generatedGatewayService"]=service
+        require(service.get("networks") == [self.name], "Ordinary renderer Gateway network differs from the internal proof network")
+        arguments=["--network-alias",suffix,"--network-alias","lares-gateway"]
+        for volume in service["volumes"]:arguments.extend(self._volume_mount(volume))
+        for secret_name in service["secrets"]:
+            secret=top_level_secrets.get(secret_name)
+            require(type(secret) is dict and type(secret.get("file")) is str,
+                "Rendered Gateway secret has no file source")
+            arguments.extend(["--mount","type=bind,src="+secret["file"]+",dst=/run/secrets/"+secret_name+",readonly"])
+        arguments.extend(["--mount",f"type=bind,src={self.root},dst=/fixture,readonly"])
+        env=dict(service["environment"])
+        env.update({"SSL_CERT_FILE":"/fixture/ca.pem","LITELLM_TELEMETRY":"False","PYTHONDONTWRITEBYTECODE":"1",
+            "CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"})
         if broken=="authority":env.pop("LARES_GATEWAY_ADMISSION_URL")
         if broken=="profile":env["LARES_GATEWAY_PROFILE_FILE"]="/fixture/no-profile.json"
         if broken=="service-key":env["LARES_GATEWAY_SERVICE_KEY_FILE"]="/fixture/no-service-key"
         for k,v in env.items():arguments += ["-e",k+"="+v]
-        name=self.run(suffix,self.manifest["images"]["lares-gateway"],arguments,["/opt/lares-gateway/start.sh"])
+        for port in service["ports"]:arguments.extend(["--publish",port])
+        if not broken and service.get("restart") == "unless-stopped":arguments.extend(["--restart","unless-stopped"])
+        image=service["image"]
+        entrypoint=service["entrypoint"]
+        arguments.extend(["--entrypoint",entrypoint[0]])
+        command_args=entrypoint[1:]+service["command"]
+        name=self.run(suffix,image,arguments,command_args)
         url="http://"+suffix+":4000"
         try:
             if broken:
@@ -418,12 +718,194 @@ class Proof:
         except Exception:
             self.startup_diagnostic(name,suffix)
             raise
+        self.prove_guarded_server(name, provider)
         meta=json.loads(command("docker","exec",name,"python","-c","import importlib.metadata,json,hashlib,pathlib;from litellm.constants import DEFAULT_COOLDOWN_TIME_SECONDS;print(json.dumps({'versions':{p:importlib.metadata.version(p) for p in ['litellm','openai','httpx','prisma']},'adapterSha256':hashlib.sha256(pathlib.Path('/opt/lares-gateway/lares_gateway.py').read_bytes()).hexdigest(),'cooldownSeconds':DEFAULT_COOLDOWN_TIME_SECONDS}))"))
         self.artifact.setdefault("images",{})[provider]={"upstreamDigest":self.manifest["images"]["lares-gateway"],**meta}
         require(meta["versions"]["litellm"]=="1.101.6","Wrong LiteLLM version")
         require(type(meta["cooldownSeconds"]) is int and meta["cooldownSeconds"]==5,"Unexpected pinned gateway cooldown default")
         self.cooldown_idle_seconds=meta["cooldownSeconds"]+1
         return url
+
+    def start_generated_gateway(self):
+        """Run the exact ordinary rendered Gateway service through Compose."""
+        provider="openai"
+        suffix="gateway-generated-service"
+        folder=self.root/suffix;folder.mkdir()
+        document=self.config(provider)
+        config_path=folder/"config.yaml"
+        config_path.write_bytes(canonical(document["config"]))
+        config_path.with_name(config_path.name+".profile.json").write_bytes(canonical(document["profile"]))
+        for name,source in (("gateway-start.sh",ASSETS/"start.sh"),
+            ("gateway-start.sh.gateway_admission.py",ASSETS/"gateway_admission.py"),
+            ("gateway-start.sh.admission_contract.py",ASSETS/"admission_contract.py"),
+            ("gateway-start.sh.lares_gateway.py",ASSETS/"lares_gateway.py")):
+            target=folder/name;target.write_bytes(source.read_bytes());target.chmod(0o755 if name=="gateway-start.sh" else 0o644)
+        service,secrets_document,_,fixture_compose=self.gateway_service(folder,self.secret_dir)
+        require(service.get("image")==self.manifest["images"]["lares-gateway"] and
+            service.get("entrypoint")==["python","-I","/opt/lares-gateway/gateway_admission.py","guard",
+                "/run/lares-maintenance/admission",self.admission_identity["installationId"],
+                str(self.admission_identity["epoch"]),"--"] and
+            service.get("command")==["/usr/local/bin/lares-gateway-start"],
+            "Generated Gateway service differs from the fixed guarded startup contract")
+        project=self.name+"-generated"
+        compose_path=folder/"compose.json"
+        compose_path.write_text(json.dumps(fixture_compose,separators=(",",":")),encoding="utf-8")
+        self.compose_stacks.append((project,compose_path))
+        compose=["docker","compose","-p",project,"-f",str(compose_path)]
+        canonical_document=json.loads(command(*compose,"config","--format","json"))
+        canonical_service=canonical_document.get("services",{}).get("lares-gateway")
+        require(type(canonical_service) is dict and canonical_service.get("image")==service["image"] and
+            canonical_service.get("entrypoint")==service["entrypoint"] and canonical_service.get("command")==service["command"] and
+            canonical_service.get("environment")==service["environment"] and
+            canonical_service.get("restart")==service["restart"],
+            "Canonical Compose changed the generated Gateway image, command, environment, or restart policy")
+        canonical_ports=canonical_service.get("ports")
+        require(type(canonical_ports) is list and len(canonical_ports)==1 and
+            canonical_ports[0].get("target")==4000 and str(canonical_ports[0].get("published"))=="4000" and
+            canonical_ports[0].get("host_ip")=="127.0.0.1" and canonical_ports[0].get("protocol")=="tcp",
+            "Canonical Compose changed the Gateway host-only port contract")
+        canonical_secrets=canonical_service.get("secrets")
+        require(type(canonical_secrets) is list and
+            {item.get("source") for item in canonical_secrets if type(item) is dict}==set(service.get("secrets",[])) and
+            all(item.get("target")==item.get("source") for item in canonical_secrets if type(item) is dict),
+            "Canonical Compose changed the Gateway secret source/target contract")
+        dependencies=canonical_service.get("depends_on",{})
+        networks=canonical_service.get("networks",{})
+        require(set(dependencies)=={"db"} and dependencies["db"].get("condition")=="service_started" and
+            dependencies["db"].get("required",True) is True and set(networks)=={self.name},
+            "Canonical Compose changed the generated Gateway dependency or internal network")
+        expected_targets={"/etc/litellm/config.yaml","/usr/local/bin/lares-gateway-start",
+            "/opt/lares-gateway/gateway_admission.py","/opt/lares-gateway/admission_contract.py",
+            "/opt/lares-gateway/lares_gateway.py","/etc/litellm/profile.json",
+            "/run/lares-maintenance/admission","/run/secrets/gateway-budget-service-key"}
+        expected_secret_targets={"/run/secrets/"+name for name in service.get("secrets",[])}
+        volumes=canonical_service.get("volumes")
+        require(type(volumes) is list and {v.get("target") for v in volumes if type(v) is dict}==expected_targets,
+            "Canonical Compose Gateway bind target set changed")
+        raw_sources={}
+        for raw in service.get("volumes",[]):
+            if type(raw) is dict:
+                raw_sources[raw.get("target")]=raw.get("source")
+            elif type(raw) is str:
+                pieces=raw.split(":")
+                require(len(pieces)>=2,"Generated Gateway bind string is malformed")
+                raw_sources[pieces[1]]=pieces[0]
+        require({volume.get("target"):volume.get("source") for volume in volumes if type(volume) is dict}==raw_sources,
+            "Canonical Compose changed a generated Gateway bind source or target")
+        for volume in volumes:
+            if type(volume) is dict and volume.get("type")=="bind":
+                require(volume.get("read_only") is True,
+                    "Canonical Compose Gateway bind is not readonly")
+                if volume.get("target") in ("/opt/lares-gateway/gateway_admission.py","/run/lares-maintenance/admission"):
+                    bind=volume.get("bind")
+                    require(type(bind) is dict and
+                        ("create_host_path" not in bind or bind.get("create_host_path") is False),
+                        "Canonical helper or admission bind permits host path creation")
+        raw_volumes=service.get("volumes",[])
+        for target in ("/opt/lares-gateway/gateway_admission.py","/run/lares-maintenance/admission"):
+            matching=[v for v in raw_volumes if type(v) is dict and v.get("target")==target]
+            require(len(matching)==1 and matching[0].get("read_only") is True and
+                matching[0].get("bind")=={"create_host_path":False},
+                "Raw generated Gateway bind lacks explicit readonly/no-create contract")
+
+        missing=self.root/"missing-admission-source"
+        self.admission_dir.rename(missing)
+        try:
+            missing_start=subprocess.run([*compose,"up","-d","--no-deps","lares-gateway"],
+                text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30)
+            require(missing_start.returncode!=0 and not self.admission_dir.exists() and missing.exists(),
+                "Generated service accepted or created a missing admission source")
+        finally:
+            if self.admission_dir.exists():
+                require(not any(self.admission_dir.iterdir()),
+                    "Compose wrote contents into a missing admission source")
+                self.admission_dir.rmdir()
+            missing.rename(self.admission_dir)
+
+        started=subprocess.run([*compose,"up","-d","--no-deps","lares-gateway"],
+            text=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=120)
+        require(started.returncode==0,"Generated Gateway Compose service did not start")
+        container_id=command(*compose,"ps","-q","lares-gateway").strip()
+        require(re.fullmatch(r"[0-9a-f]{12,64}",container_id) is not None,
+            "Generated Gateway Compose service has no running container")
+        self.gateway_containers[provider]=container_id
+        name=command("docker","inspect","--format","{{.Name}}",container_id).strip().lstrip("/")
+        self.containers.append(name)
+        inspected=json.loads(command("docker","inspect",container_id))[0]
+        config=inspected.get("Config",{});host=inspected.get("HostConfig",{})
+        observed_environment={entry.split("=",1)[0]:entry.split("=",1)[1]
+            for entry in config.get("Env",[]) if "=" in entry}
+        require(config.get("Image")==service["image"] and config.get("Entrypoint")==service["entrypoint"] and
+            config.get("Cmd")==service["command"] and
+            all(observed_environment.get(key)==str(value) for key,value in service["environment"].items()),
+            "Running Gateway container differs from its generated image, command, or environment")
+        mounts={mount.get("Destination"):mount for mount in inspected.get("Mounts",[])}
+        all_targets=expected_targets|expected_secret_targets
+        require(all_targets.issubset(mounts) and all(mounts[target].get("RW") is False for target in all_targets),
+            "Running Gateway container does not have the complete readonly generated bind set")
+        require(host.get("RestartPolicy",{}).get("Name")==service["restart"] and
+            inspected.get("NetworkSettings",{}).get("Networks",{}).get(self.name) is not None,
+            "Running Gateway container differs from the generated restart or internal network contract")
+        url="http://lares-gateway:4000"
+        try:
+            self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,
+                "Generated Gateway service did not become ready",180)
+            proof=self.prove_guarded_server(container_id,"generated-service")
+            require(proof["containerImageId"]==command("docker","image","inspect","--format","{{.Id}}",service["image"]),
+                "Generated Gateway did not use the loaded pinned image")
+            command(*compose,"stop","lares-gateway",timeout=30)
+            require(self.exclusive_gate_available(),"Generated Gateway stop did not release its maintenance lock")
+        except Exception:
+            self.startup_diagnostic(container_id,suffix)
+            raise
+        self.artifact["generatedServiceProof"]={"canonicalServiceMatchesRendererContract":True,
+            "runningContainerMatchesCommandEnvironmentAndReadonlyMounts":True,
+            "missingAdmissionSourceRejected":True,"missingAdmissionSourceCreated":False,
+            "restoredAdmissionSourceStarted":True,"finalServerGuard":proof}
+
+    def exclusive_gate_available(self):
+        fd=os.open(self.admission_dir/"service-gate.lock",os.O_RDONLY|os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(fd,fcntl.LOCK_UN)
+            return True
+        finally:
+            os.close(fd)
+
+    def prove_guarded_server(self, name, provider):
+        image=self.manifest["images"]["lares-gateway"]
+        loaded_id=command("docker","image","inspect","--format","{{.Id}}",image)
+        image_user=command("docker","image","inspect","--format","{{.Config.User}}",image)
+        actual_id=command("docker","inspect","--format","{{.Image}}",name)
+        script=("import fcntl,json,os,stat; "
+          "s=open('/proc/1/status','rt').read(); uid=int(next(x for x in s.splitlines() if x.startswith('Uid:')).split()[1]); "
+          "exe=os.path.basename(os.path.realpath('/proc/1/exe')); args=open('/proc/1/cmdline','rb').read(4097).rstrip(b'\\0').split(b'\\0'); "
+          "fd=os.stat('/proc/1/fd/9'); info=open('/proc/1/fdinfo/9','rt').read(4097); "
+          "print(json.dumps({'uid':uid,'pythonExe':exe.startswith('python'),'gatewayCommand':b'/opt/lares-gateway/lares_gateway.py' in args,"
+          "'fdRegular':stat.S_ISREG(fd.st_mode),'fdDevice':fd.st_dev,'fdInode':fd.st_ino,"
+          "'fdReadLock':any(x.startswith('lock:') and 'READ' in x and 'WRITE' not in x for x in info.splitlines()),"
+          "'fcntlAvailable':hasattr(fcntl,'flock')}))")
+        observed=json.loads(command("docker","exec",name,"python","-I","-c",script))
+        host_lock=os.stat(self.admission_dir/"service-gate.lock")
+        require(image_user=="root","Pinned Gateway image configuration is not the reviewed root variant")
+        require(actual_id==loaded_id,"Gateway container is not using the exact loaded pinned image")
+        require(observed.get("uid")==0 and observed.get("pythonExe") is True and observed.get("gatewayCommand") is True,
+          "Final Gateway process is not the expected root Python server")
+        require(observed.get("fdRegular") is True and observed.get("fdReadLock") is True and observed.get("fcntlAvailable") is True,
+          "Final Gateway process does not retain an actual shared flock descriptor")
+        require((observed.get("fdDevice"),observed.get("fdInode"))==(host_lock.st_dev,host_lock.st_ino),
+          "Final Gateway descriptor does not name the mounted custody lock")
+        require(not self.exclusive_gate_available(),"Gateway did not exclude maintenance while serving")
+        proof={"pinnedReference":image,"loadedImageId":loaded_id,"containerImageId":actual_id,
+          "configuredUser":image_user,"finalPid":1,"finalUid":observed["uid"],"pythonExecutable":observed["pythonExe"],
+          "gatewayServerCommand":observed["gatewayCommand"],"fcntlAvailable":observed["fcntlAvailable"],
+          "fd9Device":observed["fdDevice"],"fd9Inode":observed["fdInode"],"fd9SharedLock":observed["fdReadLock"],
+          "maintenanceExclusiveBlocked":True}
+        self.artifact.setdefault("guardedGateway",{})[provider]=proof
+        return proof
 
     def start_native_admin(self, provider="openai"):
         """Start LiteLLM itself on the same disposable digest/database/internal network.
@@ -1090,9 +1572,12 @@ exec litellm --config "$CONFIG_FILE_PATH"
         self.case(provider+"-guarded-native-user-policy-is-current",fresh_user_policy)
 
     def execute(self):
+        primary_failure=None
         try:
             self.setup()
+            self.guard_refusal_matrix()
             self.native_contract()
+            self.start_generated_gateway()
             # A working native bootstrap must be established before negative cases;
             # a universal import/permission failure cannot count as six good refusals.
             openai_url=self.start_gateway("openai")
@@ -1102,21 +1587,72 @@ exec litellm --config "$CONFIG_FILE_PATH"
                 url=openai_url if provider=="openai" else self.start_gateway(provider);key,team,member=self.provision(url)
                 self.exercise(provider,url,key,team,member)
                 self.guarded_native_lookups(provider,url)
-                name=self.name+"-gateway-"+provider;command("docker","restart",name)
+                name=self.name+"-gateway-"+provider
+                before=self.artifact["guardedGateway"][provider]
+                command("docker","restart",name)
                 self.wait(lambda:self.client({"url":url,"path":"/health/readiness","method":"GET","key":self.master})["status"]==200,"Restart did not restore native runtime",120)
+                after=self.prove_guarded_server(name,provider)
+                require(after["fd9Device"]==before["fd9Device"] and after["fd9Inode"]==before["fd9Inode"],
+                  "Restart did not reacquire the same mounted custody lock inode")
                 self.case(provider+"-restart-persisted-key",lambda:require(self.sdk(url,key,"anthropic")["ok"],"Native key did not survive restart"))
                 command("docker","stop",name)
+                require(self.exclusive_gate_available(),"Gateway stop did not release its maintenance lock")
+                self.artifact["guardedGateway"][provider]["maintenanceAvailableAfterStop"]=True
             self.artifact["passed"]=self.artifact["nativeCredentialContract"].get("passed") is True and all(case.get("passed") is True for case in self.artifact["cases"])
             if not self.artifact["passed"]:raise RuntimeError("Pinned image proof did not pass")
         except Exception as error:
             self.artifact["passed"]=False
             self.artifact["failure"]=str(error) # fixed harness messages only, never raw responses/logs
-            raise
+            primary_failure=error
         finally:
-            self.output.parent.mkdir(parents=True,exist_ok=True);self.output.write_text(json.dumps(self.artifact,indent=2)+"\n")
-            for name in reversed(self.containers):subprocess.run(["docker","rm","-f",name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            subprocess.run(["docker","network","rm",self.name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-            shutil.rmtree(self.root)
+            removal_commands_ok=True
+            compose_removals_ok=True
+            for project,compose_path in reversed(self.compose_stacks):
+                try:
+                    removed=subprocess.run(["docker","compose","-p",project,"-f",str(compose_path),
+                        "down","--remove-orphans"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+                    compose_removals_ok=compose_removals_ok and removed.returncode==0
+                except Exception:
+                    compose_removals_ok=False
+            for name in reversed(self.containers):
+                try:
+                    removed=subprocess.run(["docker","rm","-f",name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)
+                    removal_commands_ok=removal_commands_ok and removed.returncode in (0,1)
+                except Exception:
+                    removal_commands_ok=False
+            try:
+                removed_network=subprocess.run(["docker","network","rm",self.name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=20)
+                removal_commands_ok=removal_commands_ok and removed_network.returncode in (0,1)
+            except Exception:
+                removal_commands_ok=False
+            try:
+                containers=subprocess.run(["docker","ps","-a","--format","{{.Names}}"],text=True,
+                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+                network=subprocess.run(["docker","network","ls","--format","{{.Name}}"],text=True,
+                    stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=20)
+                containers_absent=containers.returncode==0 and all(name not in containers.stdout.splitlines() for name in self.containers)
+                network_absent=network.returncode==0 and self.name not in network.stdout.splitlines()
+            except Exception:
+                containers_absent=False;network_absent=False
+            try:
+                shutil.rmtree(self.root)
+            except Exception:
+                pass
+            fixture_absent=not self.root.exists()
+            cleanup_ok=removal_commands_ok and compose_removals_ok and containers_absent and network_absent and fixture_absent
+            self.artifact["cleanup"]={"verified":cleanup_ok,"removalCommandsAccepted":removal_commands_ok,
+                "composeProjectsRemoved":compose_removals_ok,
+                "allContainersAbsent":containers_absent,
+                "internalNetworkAbsent":network_absent,"fixtureDirectoryAbsent":fixture_absent}
+            if not cleanup_ok:
+                self.artifact["passed"]=False
+                self.artifact["cleanupFailure"]="required disposable resources remain or could not be verified absent"
+            self.output.parent.mkdir(parents=True,exist_ok=True)
+            self.output.write_text(json.dumps(self.artifact,indent=2)+"\n")
+        if primary_failure is not None:
+            raise primary_failure
+        if not cleanup_ok:
+            raise RuntimeError("Pinned image proof cleanup did not verify all disposable resources absent")
 
 
 if __name__=="__main__": Proof(sys.argv[1],sys.argv[2]).execute()

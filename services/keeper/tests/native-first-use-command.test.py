@@ -95,7 +95,19 @@ class GatewayDockerCommandTests(unittest.TestCase):
             argv = calls.pop()
             self.assertEqual(argv[0:2], ("docker", "run"), argument_name)
             self.assertEqual(argv.count("docker"), 1, argument_name)
-            if argument_name == "keeper_cmd":
+            if argument_name == "gateway_args":
+                self.assertEqual(argv[argv.index("--entrypoint") + 1], "python")
+                self.assertNotIn("/bin/sh", argv, "Gateway proof must use the receipt-bound guard")
+                joined = ",".join(argv)
+                self.assertIn("src=/synthetic/repo/images/gateway-runtime/start.sh,dst=/usr/local/bin/lares-gateway-start,readonly", joined)
+                self.assertIn("src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", joined)
+                self.assertIn("--restart,unless-stopped", joined)
+                image_index = argv.index("registry.invalid/fixture/gateway@sha256:" + "b" * 64)
+                self.assertEqual(argv[image_index + 1:], (
+                    "-I", "/opt/lares-gateway/gateway_admission.py", "guard", "/run/lares-maintenance/admission",
+                    "22222222-2222-4222-8222-222222222222", "7", "--", "/usr/local/bin/lares-gateway-start",
+                ), "Gateway guard must wrap the actual mounted start script and current receipt")
+            elif argument_name == "keeper_cmd":
                 self.assertNotIn("--entrypoint", argv, "the fixture must use the image's baked admission entrypoint")
                 image_index = argv.index("registry.invalid/fixture/keeper:synthetic")
                 self.assertIn("--mount,type=bind,src=/synthetic/admission_dir,dst=/run/lares-maintenance/admission,readonly", ",".join(argv))

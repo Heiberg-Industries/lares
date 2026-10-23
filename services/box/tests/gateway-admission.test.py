@@ -19,6 +19,7 @@ import os
 import base64
 import tarfile
 import types
+import stat
 
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
@@ -1417,6 +1418,141 @@ class FirstUseProbeTests(unittest.TestCase):
             any(isinstance(target,ast.Name) and target.id=="client_result" for target in node.targets))
         self.assertEqual(ast.unparse(client_call.value),
             "invoke_first_use_and_capture(invoke_compiled_client, lambda: first_use_model_diagnostics(network + '-gateway', keeper_name), proof)")
+
+
+class GatewayRuntimeAdmissionTests(unittest.TestCase):
+    def test_gateway_probe_consumes_renderer_result_before_docker_launch(self):
+        path=ROOT/"services/keeper/tests/gateway-admission-image.probe.py"
+        spec=importlib.util.spec_from_file_location("gateway_admission_image_probe_offline",path)
+        probe=importlib.util.module_from_spec(spec);spec.loader.exec_module(probe)
+        with tempfile.TemporaryDirectory(prefix="gateway-renderer-wiring-") as temporary:
+            root=pathlib.Path(temporary)
+            admission_dir=root/"admission";admission_dir.mkdir()
+            secret_dir=root/"secrets";secret_dir.mkdir()
+            secret_path=secret_dir/"gateway-budget-service-key"
+            installation_id="11111111-1111-4111-8111-111111111111"
+            epoch=7
+            identity={"installationId":installation_id,"epoch":epoch}
+            image="example.invalid/lares-gateway@sha256:"+"a"*64
+            proof=probe.Proof.__new__(probe.Proof)
+            proof.root=root
+            proof.admission_dir=admission_dir
+            proof.admission_identity=identity
+            proof.name="gateway-offline-network"
+            proof.manifest={"images":{"lares-gateway":image}}
+            proof.secret_dir=secret_dir
+            proof.artifact={}
+            proof.config=mock.Mock(return_value={
+                "config":{"litellm_settings":{"callbacks":["lares_gateway.gateway_hook"]}},
+                "profile":{},
+            })
+            service={
+                "image":image,
+                "entrypoint":["python","-I","/opt/lares-gateway/gateway_admission.py","guard",
+                    "/run/lares-maintenance/admission",installation_id,str(epoch),"--"],
+                "command":["/usr/local/bin/lares-gateway-start"],
+                "volumes":[
+                    {"type":"bind","source":"__FOLDER__/gateway-start.sh.gateway_admission.py",
+                        "target":"/opt/lares-gateway/gateway_admission.py","read_only":True,
+                        "bind":{"create_host_path":False}},
+                    {"type":"bind","source":str(admission_dir),
+                        "target":"/run/lares-maintenance/admission","read_only":True,
+                        "bind":{"create_host_path":False}},
+                ],
+                "secrets":["gateway-budget-service-key"],
+                "environment":{"LARES_MAINTENANCE_EPOCH":str(epoch)},
+                "networks":[proof.name],
+                "ports":["127.0.0.1:4000:4000"],
+                "restart":"unless-stopped",
+            }
+            captured=[]
+            class StopBeforeDocker(Exception): pass
+            def stop_before_docker(suffix, rendered_image, arguments, command_args):
+                captured.append((suffix,rendered_image,arguments,command_args))
+                raise StopBeforeDocker()
+            proof.run=stop_before_docker
+
+            def renderer_boundary(*args,**kwargs):
+                options=json.loads(kwargs["input"])["options"]
+                folder=pathlib.Path(options["gatewayConfigFile"]).parent
+                rendered_service=json.loads(json.dumps(service).replace(
+                    "__FOLDER__",str(folder)))
+                return json.dumps({
+                    "service":rendered_service,
+                    "secrets":{"gateway-budget-service-key":{"file":str(secret_path)}},
+                    "source":"services: lares-gateway",
+                    "fixture":{"services":{"lares-gateway":rendered_service}},
+                })
+
+            with mock.patch.object(probe,"command",side_effect=renderer_boundary):
+                with self.assertRaises(StopBeforeDocker):
+                    proof.start_gateway("openai")
+
+            self.assertEqual(len(captured),1)
+            _,captured_image,arguments,command_args=captured[0]
+            self.assertEqual(captured_image,image)
+            self.assertTrue(secret_path.is_file())
+            self.assertEqual(stat.S_IMODE(secret_path.stat().st_mode),0o600)
+            self.assertRegex(secret_path.read_text(encoding="ascii"),r"^[A-Za-z0-9_-]{43}$")
+            self.assertEqual(arguments[arguments.index("--entrypoint"):arguments.index("--entrypoint")+2],
+                ["--entrypoint","python"])
+            self.assertEqual(command_args,["-I","/opt/lares-gateway/gateway_admission.py","guard",
+                "/run/lares-maintenance/admission",installation_id,str(epoch),"--",
+                "/usr/local/bin/lares-gateway-start"])
+
+    def test_inherited_verifier_rejects_lock_inode_replaced_during_flock(self):
+        path=ROOT/"images/gateway-runtime/gateway_admission.py"
+        spec=importlib.util.spec_from_file_location("gateway_runtime_admission",path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        installation_id="11111111-1111-4111-8111-111111111111";epoch="7"
+        with tempfile.TemporaryDirectory(prefix="gateway-lock-race-") as temporary:
+            directory=pathlib.Path(temporary);lock=directory/"service-gate.lock";intent=directory/"intent.json"
+            lock.write_bytes(b"");lock.chmod(0o444)
+            intent.write_bytes((f'{{"epoch":{epoch},"installationId":"{installation_id}","state":"normal","version":1}}\n').encode());intent.chmod(0o444)
+            opened=os.open(lock,os.O_RDONLY)
+            prior_fd=None
+            try:
+                try:prior_fd=os.dup(9)
+                except OSError:pass
+                os.dup2(opened,9,inheritable=True)
+                original_flock=module.fcntl.flock
+                replaced=False
+
+                def replace_after_lock(descriptor,operation):
+                    nonlocal replaced
+                    original_flock(descriptor,operation)
+                    if not replaced:
+                        os.rename(lock,directory/"old-service-gate.lock")
+                        lock.write_bytes(b"");lock.chmod(0o444)
+                        replaced=True
+
+                def named_file(directory_fd,name,descriptor=None):
+                    info=os.stat(name,dir_fd=directory_fd,follow_symlinks=False)
+                    self.assertTrue(stat.S_ISREG(info.st_mode))
+                    self.assertEqual(stat.S_IMODE(info.st_mode),0o444)
+                    self.assertEqual(info.st_nlink,1)
+                    if descriptor is not None:
+                        opened_info=os.fstat(descriptor)
+                        if (opened_info.st_dev,opened_info.st_ino)!=(info.st_dev,info.st_ino):
+                            raise module.Refused()
+                    return info
+
+                with mock.patch.object(module,"ADMISSION_DIR",str(directory)), \
+                     mock.patch.object(module.os,"geteuid",return_value=0), \
+                     mock.patch.object(module,"_open_directory",side_effect=lambda _:os.open(directory,os.O_RDONLY|os.O_DIRECTORY)), \
+                     mock.patch.object(module,"_check_ancestry"), \
+                     mock.patch.object(module,"_named_file",side_effect=named_file), \
+                     mock.patch.object(module,"_lock_fdinfo"), \
+                     mock.patch.object(module.fcntl,"flock",side_effect=replace_after_lock):
+                    with self.assertRaises(module.Refused):
+                        module._verify_held(str(directory),installation_id,epoch)
+                self.assertTrue(replaced)
+            finally:
+                if prior_fd is not None:
+                    os.dup2(prior_fd,9,inheritable=True);os.close(prior_fd)
+                else:
+                    os.close(9)
+                os.close(opened)
 
 
 if __name__ == "__main__": unittest.main()
