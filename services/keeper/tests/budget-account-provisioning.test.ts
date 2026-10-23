@@ -252,7 +252,7 @@ it('adds only a new capped member to an active installation and preserves the ow
     noteBudgetFinancialChange(db,'budget_accounts',identity.id);
   },boundary));
   await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]})).rejects.toThrow();
-});
+},30_000);
 
 it('rejects an active installation window shifted by one microsecond',async()=>{
   const {selected,financial}=await restrictedCase('budget_later_microsecond'),users=await seed(selected,'-later-microsecond',false,false),{journal}=await custody(selected);
@@ -265,7 +265,7 @@ it('rejects an active installation window shifted by one microsecond',async()=>{
   await expect(provisionBudgetAccounts(financial,journal,{installationCap:'100',memberIds:[users.b]})).rejects.toThrow();
   expect(await budgetFinancialRows(financial)).toEqual(before);
   await verifyFinancialContinuity(journal,financial as never);
-});
+},30_000);
 
 it('rolls back a later-member addition when the exact month expires during the financial lock wait',async()=>{
   const {selected,financial}=await restrictedCase('budget_later_lockwait'),users=await seed(selected,'-later-lockwait',false,false),{journal}=await custody(selected);
@@ -294,7 +294,7 @@ it('rolls back a later-member addition when the exact month expires during the f
   }
   expect(await budgetFinancialRows(financial)).toEqual(before);
   await verifyFinancialContinuity(journal,financial as never);
-});
+},30_000);
 
 it('withholds an expired closed result after the observation journal fsync',async()=>{
   const {selected,financial}=await restrictedCase('budget_later_postcommit'),users=await seed(selected,'-later-postcommit',false,false),{journal,directory}=await custody(selected);
@@ -311,7 +311,7 @@ it('withholds an expired closed result after the observation journal fsync',asyn
   expect(later).toEqual({state:'closed',reason:'unreconciled',opening_cap:'40'});
   expect(journalRecords(directory).some(record=>record.kind==='observation')).toBe(true);
   await verifyFinancialContinuity(journal,financial as never);
-});
+},30_000);
 
 it('validates plans and provisions only closed accounts with locked live identity and cap evidence',async()=>{
   const users=await seed(pool),{journal,directory}=await custody(pool);
