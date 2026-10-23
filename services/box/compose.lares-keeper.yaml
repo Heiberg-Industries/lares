@@ -86,12 +86,22 @@ services:
   lares-egress-proxy:
     image: ${LARES_SQUID_IMAGE:?full digest required}
     container_name: lares-egress-proxy
+    entrypoint: [/usr/bin/python3, -I, /usr/local/lib/lares/maintenance-admission.py]
+    environment:
+      LARES_MAINTENANCE_INSTALLATION_ID: ${LARES_MAINTENANCE_INSTALLATION_ID:?validated installation id required}
+      LARES_MAINTENANCE_EPOCH: ${LARES_MAINTENANCE_EPOCH:?validated maintenance epoch required}
     # Squid refuses reload when its PID file names PID 1; keep it behind Docker init.
     init: true
     restart: unless-stopped
     # Directory mount is mandatory: atomic config replacement must change the inode seen by Squid.
     volumes:
       - ${LARES_EGRESS_DIR:?absolute egress directory}:/config:ro
+      - type: bind
+        source: ${LARES_MAINTENANCE_ADMISSION_DIR:?validated admission directory required}
+        target: /run/lares-maintenance/admission
+        read_only: true
+        bind:
+          create_host_path: false
     command: [squid, -N, -f, /config/squid.conf]
     networks:
       lares-network:

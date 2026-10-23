@@ -3,6 +3,7 @@ import ast
 import hashlib
 import ipaddress
 import copy
+import importlib.util
 import json
 import os
 import pathlib
@@ -74,10 +75,145 @@ def command(*args, input=None, timeout=90):
     return run(*args, input=input, timeout=timeout).stdout.strip()
 
 
+def load_maintenance_custody():
+    helper_path = repo / "services/box/ops/maintenance-custody.py"
+    spec = importlib.util.spec_from_file_location("outside_maintenance_custody", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("maintenance custody helper is unavailable")
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def prepare_normal_admission_fixture(root_path, subnet, custody):
+    prefix = root_path / "fixture-prefix"
+    prefix.mkdir(mode=0o755)
+    prefix.chmod(0o755)
+    prefix_info = prefix.stat()
+    if prefix_info.st_uid != os.geteuid() or stat.S_IMODE(prefix_info.st_mode) != 0o755:
+        raise RuntimeError("fixture prefix ownership or mode is unsafe")
+    custody.prepare_fresh(prefix, str(subnet))
+    receipt = custody.validate(prefix, str(subnet))
+    identity, epoch = receipt.get("installationId"), receipt.get("epoch")
+    try:
+        valid_identity = isinstance(identity, str) and str(uuid.UUID(identity)) == identity
+    except (ValueError, TypeError, AttributeError):
+        valid_identity = False
+    if (not valid_identity or type(epoch) is not int or epoch != 1 or
+            receipt.get("complete") is not True or receipt.get("databaseSubnet") != str(subnet)):
+        raise RuntimeError("fixture preparation receipt is incomplete")
+    admission = prefix / "var/lib/lares-maintenance/admission"
+    admission_info = admission.stat()
+    if admission_info.st_uid != os.geteuid() or stat.S_IMODE(admission_info.st_mode) != 0o755:
+        raise RuntimeError("fixture admission directory ownership or mode is unsafe")
+    if custody.read_intent(admission) != {
+            "version": 1, "installationId": identity, "epoch": epoch, "state": "normal"}:
+        raise RuntimeError("fixture admission intent is not normal for its receipt")
+    return {"hostDirectory": str(admission), "installationId": identity, "epoch": epoch}
+
+
+def create_squid_config_directory(root_path):
+    egress = root_path / "egress"
+    egress.mkdir(mode=0o755)
+    egress.chmod(0o755)
+    return egress
+
+
+def write_initial_squid_config(egress):
+    config = egress / "squid.conf"
+    config.write_text("", encoding="ascii")
+    config.chmod(0o644)
+    return config
+
+
+def outside_proxy_start_args(proxy_container, owner_token, network_name, proxy_ip,
+                             squid_image, egress, lifecycle):
+    admission = lifecycle["maintenanceAdmission"]
+    identity, epoch = admission["installationId"], admission["epoch"]
+    admission_path = pathlib.Path(admission["hostDirectory"])
+    if (not identity or type(epoch) is not int or
+            admission_path.name != "admission" or not admission_path.is_absolute()):
+        raise RuntimeError("validated proxy admission coordinates are unavailable")
+    return (
+        "docker", "run", "-d", "--init", "--name", proxy_container,
+        "--label", "lares.proof.owner=" + owner_token,
+        "--network", network_name, "--network-alias", "lares-egress-proxy", "--ip", proxy_ip,
+        "--env", "LARES_MAINTENANCE_INSTALLATION_ID=" + identity,
+        "--env", "LARES_MAINTENANCE_EPOCH=" + str(epoch),
+        "--mount", f"type=bind,src={egress},dst=/config,readonly",
+        "--mount", f"type=bind,src={admission_path},dst=/run/lares-maintenance/admission,readonly",
+        squid_image,
+    )
+
+
 def record(label, ok):
     if not ok:
         raise RuntimeError("proof assertion failed: " + label)
     report["checks"].append(label)
+
+
+def offline_proxy_admission_self_test():
+    """Exercise the real preparation/launch helpers with a stubbed custody boundary."""
+    custody = load_maintenance_custody()
+    identity = "123e4567-e89b-12d3-a456-426614174000"
+    subnet = ipaddress.ip_network("192.0.2.0/24")
+    receipt = {"installationId": identity, "epoch": 1, "complete": True,
+               "databaseSubnet": str(subnet)}
+    calls = []
+
+    def prepare_stub(prefix, requested_subnet):
+        calls.append(("prepare", pathlib.Path(prefix), requested_subnet))
+        admission = pathlib.Path(prefix) / "var/lib/lares-maintenance/admission"
+        admission.mkdir(parents=True, mode=0o755)
+        admission.chmod(0o755)
+
+    def validate_stub(prefix, requested_subnet):
+        calls.append(("validate", pathlib.Path(prefix), requested_subnet))
+        return dict(receipt)
+
+    def intent_stub(admission):
+        calls.append(("intent", pathlib.Path(admission)))
+        return {"version": 1, "installationId": identity, "epoch": 1, "state": "normal"}
+
+    with tempfile.TemporaryDirectory(prefix="lares-outside-proxy-selftest-") as directory:
+        root_path = pathlib.Path(directory)
+        root_path.chmod(0o700)
+        egress = create_squid_config_directory(root_path)
+        config = write_initial_squid_config(egress)
+        lifecycle = {"maintenanceAdmission": None}
+        with patch.object(custody, "prepare_fresh", side_effect=prepare_stub), \
+                patch.object(custody, "validate", side_effect=validate_stub), \
+                patch.object(custody, "read_intent", side_effect=intent_stub):
+            lifecycle["maintenanceAdmission"] = prepare_normal_admission_fixture(
+                root_path, subnet, custody)
+        prefix = root_path / "fixture-prefix"
+        admission = prefix / "var/lib/lares-maintenance/admission"
+        if calls != [
+                ("prepare", prefix, str(subnet)), ("validate", prefix, str(subnet)),
+                ("intent", admission)]:
+            raise RuntimeError("fixture did not prepare and validate normal admission in order")
+        if (stat.S_IMODE(prefix.stat().st_mode) != 0o755 or
+                stat.S_IMODE(admission.stat().st_mode) != 0o755 or
+                stat.S_IMODE(egress.stat().st_mode) != 0o755 or
+                stat.S_IMODE(config.stat().st_mode) != 0o644):
+            raise RuntimeError("proxy fixture directory or config permissions changed")
+        if lifecycle["maintenanceAdmission"] != {
+                "hostDirectory": str(admission), "installationId": identity, "epoch": 1}:
+            raise RuntimeError("proxy lifecycle admission did not use the validated receipt")
+        args = outside_proxy_start_args("proof-proxy", "a" * 32, "proof-network", "192.0.2.11",
+                                        "lares-squid:test@sha256:" + "b" * 64, egress, lifecycle)
+        expected_mounts = [
+            f"type=bind,src={egress},dst=/config,readonly",
+            f"type=bind,src={admission},dst=/run/lares-maintenance/admission,readonly",
+        ]
+        actual_mounts = [args[index + 1] for index, value in enumerate(args[:-1]) if value == "--mount"]
+        if (args[:4] != ("docker", "run", "-d", "--init") or "--entrypoint" in args or
+                "--env-file" in args or args[-1] != "lares-squid:test@sha256:" + "b" * 64 or
+                actual_mounts != expected_mounts or
+                "LARES_MAINTENANCE_INSTALLATION_ID=" + identity not in args or
+                "LARES_MAINTENANCE_EPOCH=1" not in args or
+                any("custody" in mount for mount in actual_mounts)):
+            raise RuntimeError("proxy launch did not preserve the exact guarded admission contract")
 
 
 def set_network_stage(stage):
@@ -1466,6 +1602,7 @@ def offline_image_store_self_test():
 
 
 if self_test_mode:
+    offline_proxy_admission_self_test()
     offline_image_store_self_test()
     offline_cleanup_self_test()
     offline_network_diagnostics_self_test()
@@ -1555,7 +1692,7 @@ try:
     phase = "fixture-files"
     root = pathlib.Path(tempfile.mkdtemp(prefix="lares-outside-discovery-proof-"))
     root.chmod(0o700)
-    (root / "egress").mkdir(mode=0o700)
+    egress = create_squid_config_directory(root)
     (root / "certs").mkdir(mode=0o700)
     (root / "config").mkdir(mode=0o700)
     key_dir = root / "outside-custody"
@@ -1620,10 +1757,12 @@ try:
                             ("admin-password", admin_password)):
         write_secret(root / "config" / filename, value)
 
+    maintenance_admission = prepare_normal_admission_fixture(
+        root, subnet, load_maintenance_custody())
+    record("root-owned fixture prefix has a validated normal admission receipt", True)
     lifecycle = {
         "network": network, "subnet": str(subnet), "reservedAddresses": [],
-        "maintenanceAdmission": {"hostDirectory": str(root / "admission"),
-            "installationId": str(uuid.uuid4()), "epoch": 1},
+        "maintenanceAdmission": maintenance_admission,
         "composeFile": str(root / "compose.yaml"), "egressDir": str(root / "egress"),
         "imageByRole": {"chief-of-staff": keeper_ref, "creative": keeper_ref},
         "proxyContainer": proxy_container, "squidImage": squid_ref, "firewallImage": firewall_ref,
@@ -1647,14 +1786,13 @@ try:
             "database": "proof", "user": "lares_outside_custody", "passwordFile": str(root / "config/outside-password")},
             "keyFile": "/var/lib/lares/outside-custody/key", "keyFingerprint": key_fingerprint,
             "routeConsumerName": "outside-proof-source"}}
-    (root / "admission").mkdir(mode=0o700)
     (root / "agents").mkdir(mode=0o700)
     (root / "retired").mkdir(mode=0o700)
     (root / "secrets").mkdir(mode=0o700)
     (root / "backup").mkdir(mode=0o700)
     (root / "config/keeper.json").write_text(json.dumps(config), encoding="utf-8")
     (root / "config/keeper.json").chmod(0o600)
-    (root / "egress/squid.conf").write_text("", encoding="ascii")
+    write_initial_squid_config(egress)
 
     phase = "database"
     db_env = root / "postgres.env"
@@ -1695,10 +1833,8 @@ void(async()=>{try{const c=await p.connect();try{const r=await provisionEngineDa
             "--cap-add", "SETUID", "--cap-add", "SETGID", "--mount",
             f"type=bind,src={root / 'egress'},dst=/config,readonly", "--entrypoint", "squid",
             squid_ref, "-k", "parse", "-f", "/config/squid.conf")
-    command("docker", "run", "-d", "--init", "--name", proxy_container, "--label", "lares.proof.owner=" + owner,
-            "--network", network,
-            "--network-alias", "lares-egress-proxy", "--ip", ips["proxy"], "--mount",
-            f"type=bind,src={root / 'egress'},dst=/config,readonly", squid_ref)
+    command(*outside_proxy_start_args(proxy_container, owner, network, ips["proxy"],
+                                      squid_ref, egress, lifecycle))
 
     phase = "compose-held-runtime"
     compose = f"""services:
