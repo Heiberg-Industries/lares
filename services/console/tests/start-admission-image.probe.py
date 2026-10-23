@@ -196,7 +196,10 @@ try:
         path.mkdir(parents=True, mode=0o755)
     for name in ("console-session-secret", "eve-route-password", "database-password", "token-enc-key",
                  "gateway-key", "gateway-master-key", "model-provider-key", "gateway-database-password"):
-        write(secrets / name, "neutral-ci-fixture-value\n")
+        secret_file = secrets / name
+        write(secret_file, "neutral-ci-fixture-value\n")
+        os.chown(secret_file, 0, 10001)
+        secret_file.chmod(0o440)
     release = root / "release.json"
     digest = "example.invalid/lares-fixture@sha256:" + "a" * 64
     write(release, json.dumps({"release": "2026-10-01", "images": {
@@ -206,11 +209,15 @@ try:
     args = [str(release), str(stack_path), str(secrets), str(etc / "litellm-config.yaml"),
             str(caddyfile), str(prefix / "var/lib/lares/caddy"), str(prefix / "var/lib/lares/postgres"),
             network_name, subnet, "example.invalid", "lares_state", "lares-brain",
-            "neutral-model", str(etc / "gateway-start.sh"), "owner@example.invalid", str(socket_dir),
+            "openai/neutral-fixture-model", str(etc / "gateway-start.sh"), "owner@example.invalid", str(socket_dir),
             "neutral-owner", "Europe/Oslo", str(taste_dir), str(installation), str(auth), str(prefix)]
-    run("pnpm", "-C", str(REPO / "services/box"), "render-stack", "--", *args, timeout=90)
+    if len(args) != 22 or args[11] != "lares-brain" or args[12] != "openai/neutral-fixture-model":
+        raise ProbeFailure("ordinary-renderer-fixture-contract")
+    stage = "ordinary-renderer"
+    run("pnpm", "-C", str(REPO / "services/box"), "render-stack", *args, timeout=90)
     proof["claims"]["actualOrdinaryRendererUsed"] = True
     write(override_path, "services:\n  console:\n    image: " + IMAGE + "\nnetworks:\n  " + network_name + ":\n    internal: true\n")
+    stage = "compose-config"
     resolved = json.loads(compose("config", "--format", "json").stdout)
     generated = json.loads(docker("compose", "-p", project, "-f", str(stack_path), "config", "--format", "json").stdout)
     raw_text = stack_path.read_text(encoding="utf-8")
@@ -240,7 +247,7 @@ try:
     proof["claims"]["imageDefaultsGuardAndSecretLoadingCommand"] = True
     proof["claims"]["oldComposeWithoutIdentityRefusedBeforeSecretRead"] = True
 
-    stage = "positive-runtime"
+    stage = "console-launch"
     compose("up", "-d", "--no-deps", "console", timeout=90)
     ids = compose("ps", "-q", "console").stdout.splitlines()
     if len(ids) != 1 or not ids[0].strip():
@@ -251,7 +258,9 @@ try:
         raise ProbeFailure("container-image-id-mismatch")
     proof["containerImageId"] = container_image_id
     proof["claims"]["runtimeMatchesCandidateImage"] = True
+    stage = "console-readiness"
     ready = wait_ready(known_container)
+    stage = "pid1-admission"
     lock_file = admission / "service-gate.lock"
     host_identity = f"{lock_file.stat().st_dev}:{lock_file.stat().st_ino}"
     uid, cmdline, container_identity = admission_fd_identity(known_container)
@@ -316,7 +325,7 @@ try:
         raise ProbeFailure("restored-admission-source-control")
     proof["claims"]["restoredBindSourceAccepted"] = True
 
-    stage = "restart-and-stop"
+    stage = "console-restart"
     compose("restart", "console", timeout=45)
     restart_image_id = docker("inspect", "-f", "{{.Image}}", known_container).stdout.strip()
     if restart_image_id != candidate_image_id:
@@ -327,6 +336,7 @@ try:
     if uid != "10001" or "server.js" not in cmdline or container_identity != host_identity:
         raise ProbeFailure("restart-lost-admission")
     proof["claims"]["restartRetainedAdmission"] = True
+    stage = "console-stop-and-release"
     compose("stop", "-t", "10", "console", timeout=20)
     with lock_file.open("rb") as released:
         fcntl.flock(released.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
