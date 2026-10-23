@@ -23,9 +23,11 @@ role does not open the existing shared console screens or inherit private data.
 **Sign out** revokes the current server session before returning to the sign-in page. **Sign
 out everywhere** on the membership page revokes all your sessions. An unavailable membership
 store refuses access and reports an unavailable state; it does not pretend you are signed out.
-Existing installations need explicit provider-identity adoption of their stable owner id; the
-old email allow-list is no longer admission authority. See
-[member admission and setup](../member-authority.md#provider-setup-and-existing-owner-adoption).
+First sign-in on a fresh installation uses the discovery and fresh-callback steps in the
+[install guide](../install.md#6-first-start-and-checking-it-worked). Existing installations do
+not use this first-owner bootstrap; recovery needs separate review. The old email allow-list is
+not admission authority. See
+[member admission](../member-authority.md#first-owner-setup-on-fresh-installations).
 
 ## Home
 

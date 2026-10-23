@@ -175,11 +175,19 @@ export function committedFinancialEvidence(receipt:CommittedFinancialReceipt,req
 }
 export class HostFinancialJournal {
   #key:Buffer;
-  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
+  private sequence=0;private head=zero;private size=0;private journalId='';private writerId=randomUUID();private writerLease=false;private startupLeasePending=false;private startupContinuityVerified=false;private pending?:{id:string;proposal?:string;operation?:BudgetFinancialOperation;atoms?:FinancialAtom[]};private activeOperationId?:string;private busy=false;private frozen=false;private closed=false;private stopping=false;private control?:FinancialControl;private lastCheckpoint:FinancialCheckpoint|null=null;private checkpoints:FinancialCheckpoint[]=[];private projection=new Map<string,FinancialAtom>();private idle=new Set<()=>void>();private preparationComplete=false;
   private pendingAbortReceipt?:DurableFinancialAbortReceipt;
   private constructor(private directory:string,private journalFd:number,private lockFd:number,private directoryFd:number,private keyFd:number,key:Buffer,private uid:number,private sync:(fd:number)=>void){this.#key=key;}
   /** No mkdir, key creation, restore adoption, tail repair or automatic initialization. */
   static openExisting(directory:string,options:JournalOptions={}):HostFinancialJournal {
+    return this.openExistingWithLease(directory,options,true);
+  }
+  /** Keeper startup holds/replays custody while checking the database, but records writer
+   * ownership only after that check succeeds. Other callers keep the ordinary eager lease. */
+  static openExistingForStartupVerification(directory:string,options:JournalOptions={}):HostFinancialJournal {
+    return this.openExistingWithLease(directory,options,false);
+  }
+  private static openExistingWithLease(directory:string,options:JournalOptions={},acquireLease:boolean):HostFinancialJournal {
     const uid=options.ownershipUid??0;let lockFd:number|undefined,journalFd:number|undefined,directoryFd:number|undefined,keyFd:number|undefined,key:Buffer|undefined;
     try{
       verifyDirectory(directory,uid);directoryFd=openSync(directory,constants.O_RDONLY|constants.O_NOFOLLOW);
@@ -188,12 +196,22 @@ export class HostFinancialJournal {
       if(fstatSync(keyFd).size!==32)throw new Error('Financial custody unavailable');key=readFileSync(keyFd);if(key.length!==32)throw new Error('Financial custody unavailable');
       journalFd=protectedFile(join(directory,'journal.jsonl'),uid,constants.O_RDWR|constants.O_APPEND);
       const journal=new HostFinancialJournal(directory,journalFd,lockFd,directoryFd,keyFd,key,uid,options.sync??fsyncSync);
+      journal.startupLeasePending=!acquireLease;
       journal.load(options.requirePrepared===true);
-      journal.requireCapacity(journal.control?3:2,(journal.control?3:2)*CONTROL_RECORD_BYTES);journal.busy=true;try{if(!journal.frozen)journal.append({kind:'writer-open'},journal.writerId);}finally{journal.busy=false;}return journal;
+      if(acquireLease&&!journal.frozen)journal.acquireWriterLease();
+      return journal;
     }catch{
       key?.fill(0);for(const fd of [journalFd,lockFd,directoryFd,keyFd])if(fd!==undefined)closeSync(fd);
       throw new Error('Financial journal unavailable; explicit recovery is required');
     }
+  }
+  /** A startup-open journal must have completed a successful full continuity check
+   * while this same object still owns the protected lock before it can become a writer. */
+  acquireWriterLease():void {
+    if(this.closed||this.frozen||this.stopping||this.busy||this.writerLease||this.startupLeasePending&&!this.startupContinuityVerified)throw new Error('Financial writer lease unavailable');
+    this.requireCapacity(this.control?3:2,(this.control?3:2)*CONTROL_RECORD_BYTES);this.busy=true;
+    try{this.append({kind:'writer-open'},this.writerId);this.writerLease=true;this.startupLeasePending=false;}
+    finally{this.busy=false;}
   }
   /** Explicit one-shot host ceremony. Caller MUST hold every budget table lock and prove
    * this is a fresh installation; empty database contents alone are never permission. */
@@ -292,7 +310,7 @@ export class HostFinancialJournal {
   /** The in-process barrier precedes pool checkout. Kernel ownership spans this object's
    * entire life; contention refuses rather than queueing another spending operation. */
   async operation<T>(kind:BudgetFinancialOperation,work:(operationId:string)=>Promise<T>):Promise<T> {
-    if(this.closed||this.frozen||this.stopping||this.busy)throw new Error('Financial journal is closed or busy');
+    if(this.closed||this.frozen||this.stopping||this.busy||!this.writerLease)throw new Error('Financial journal is closed or busy');
     // Reserve begin, maximum proposal, terminal and writer-close BEFORE any database
     // work. Capacity exhaustion leaves this writer able to close cleanly.
     this.requireCapacity(this.control?6:4,JOURNAL_MAX_RECORD_BYTES+5*CONTROL_RECORD_BYTES);
@@ -446,14 +464,17 @@ export class HostFinancialJournal {
     if(this.closed||this.frozen||!this.control||JSON.stringify(FINANCIAL_DATABASE_SCHEMA.parse(database))!==JSON.stringify(this.control.database)||!gatewayCanonical(actualCheckpoints).equals(gatewayCanonical(expected.checkpoints))||!gatewayCanonical(actualAtoms).equals(gatewayCanonical(expectedSqlAtoms))){
       this.persistFreeze('continuity');throw new Error('Financial continuity requires recovery');
     }
+    if(this.startupLeasePending)this.startupContinuityVerified=true;
   }
   get prepared():boolean{return this.control!==undefined;}
+  get isFrozen():boolean{return this.frozen;}
   get id():string{return this.journalId;}
   async drainForShutdown():Promise<void>{
     this.stopping=true;
     if(this.busy)await new Promise<void>(resolve=>{this.idle.add(resolve);});
   }
   async freezeForRestore(timeoutMs=2000):Promise<void>{
+    if(this.startupLeasePending)throw new Error('Financial writer lease unavailable');
     if(!Number.isInteger(timeoutMs)||timeoutMs<1||timeoutMs>5000)throw new Error('Invalid freeze deadline');
     this.stopping=true; // synchronous: no new operation can cross the barrier
     if(this.busy){let timer:ReturnType<typeof setTimeout>|undefined;
@@ -473,7 +494,7 @@ export class HostFinancialJournal {
   }
   close():void {
     if(this.closed)return;if(this.busy)throw new Error('Financial operation still owns the barrier');
-    try{if(!this.frozen){this.busy=true;this.append({kind:'writer-close'},this.writerId);}}
+    try{if(this.writerLease&&!this.frozen){this.busy=true;this.append({kind:'writer-close'},this.writerId);}}
     finally{this.busy=false;this.closed=true;this.#key.fill(0);closeSync(this.journalFd);closeSync(this.lockFd);closeSync(this.directoryFd);closeSync(this.keyFd);}
   }
   private requireCapacity(records:number,bytes:number):void {

@@ -142,6 +142,15 @@ liability/checkpoint and returns no permit or ticket.
 
 ## Closed account and monthly-window provisioning
 
+### Initial monthly limit in Console
+
+The designated Console owner may choose a positive monthly USD limit for an active member
+with a verified sign-in, while that member has no budget account. The owner enters the
+amount explicitly; there is no default. Saving the limit records policy only. It does not
+create an account or monthly window, open an account, or enable spending. Once a member
+budget account exists, the initial-limit control is read-only and this setup path refuses
+further changes. Any later cap change needs a separate reviewed path.
+
 The root-only `budget-financial.ts provision-accounts --host` command accepts a
 bounded JSON plan on standard input: one canonical positive `installationCap` and
 one to sixteen unique `memberIds`. The host socket passes it to Keeper's

@@ -84,7 +84,7 @@ audit contracts; it is never used to look up, link or authorise console membersh
 those contracts is a separate integration step. `/api/doors/<agent>/<platform>/events` is an
 explicit platform-authenticated webhook relay and does not use member browser sessions.
 
-## Provider setup and existing-owner adoption
+## First-owner setup on fresh installations
 
 The installation loads console sign-in settings from its existing protected
 `console-oauth.env`. Keep the existing Google client settings:
@@ -102,17 +102,22 @@ web application with the same callback. Only `openid email` is requested. This s
 in; it grants no Microsoft Graph, mailbox or calendar access. The installer still requires the
 Google client for fresh installations; Microsoft-only installation is not implemented here.
 
-An existing owner's `users.id` and all owned data stay intact. Before switching sign-in,
-explicitly verify that the configured `AGENT_OWNER_USER_ID` names the intended active owner
-with an organisation and a usable primary address for the existing transport contracts.
-Obtain that person's exact provider issuer/subject (plus tenant for Microsoft) using the
-manual probe below, then set `CONSOLE_BOOTSTRAP_IDENTITY` to that identity's JSON object in the
-protected environment. The callback binds only a fresh verified proof matching that exact
-object to the existing active designated owner. It creates no replacement user and never
-matches email. A known identity cannot be reassigned. Remove the bootstrap setting once the
-owner signs in successfully. An unset or mismatched mapping refuses unknown identities.
-`CONSOLE_ALLOWED_EMAILS` is no longer admission authority; existing installer settings may
-still retain it until their separate configuration update.
+First sign-in bootstrap is limited to a genuinely fresh installation whose sole configured
+owner has no linked identity, sessions, invitations or prior member history. Follow
+[`install.md`, section 6](install.md#6-first-start-and-checking-it-worked): the Console page
+shows the verified provider tuple and public installation origin, then the protected
+`lares owner-bootstrap` command checks persisted owner/domain settings and current database
+eligibility before writing the exact provider tuple in an owner-and-organisation-bound envelope
+to `console-oauth.env`. The five-minute browser display is discovery only. Copied JSON is an
+untrusted pin proposal, not an expiring proof or credential. Only a new verified provider
+callback after Console is recreated can bind the identity and issue a session. It never matches
+email or creates a replacement user.
+
+This path does not adopt an identity for an existing or already-used installation. If the
+database is no longer fresh, the command and callback refuse; do not hand-edit
+`CONSOLE_BOOTSTRAP_IDENTITY` or use the manual probe output as its value. That case needs a
+separately reviewed recovery procedure. `CONSOLE_ALLOWED_EMAILS` is not admission authority;
+existing installer settings may retain it until their separate configuration update.
 
 New members use owner-created invitations. `/members` returns the bearer link once; deliver
 it privately to the intended person. Anyone holding the link can bind their verified identity
@@ -125,10 +130,11 @@ members begin draft-and-ask, and sign-in alone does not expand automation or dat
 The manual probe is `services/console/tests/live/console-oidc.live.mts`, run explicitly for
 `google` or `microsoft` with an owner-supplied client and registered local callback. It verifies
 a real provider sign-in through the same maintained client without writing members, sessions
-or mailbox credentials. It prints no token or provider payload. For explicit bootstrap
-preparation only, `OIDC_PROBE_SHOW_IDENTITY=1` prints the secret-free exact identity object;
-keep that output private. Microsoft live execution remains deferred until the owner requests
-it. Neither the existence of the probe nor local simulated-provider tests proves live success.
+or mailbox credentials. It prints no token or provider payload. The optional
+`OIDC_PROBE_SHOW_IDENTITY=1` output is diagnostic identity metadata only; it is not the
+discovery receipt accepted by `lares owner-bootstrap` and cannot authorize an existing owner.
+Keep it private. Microsoft live execution remains deferred until the owner requests it. Neither
+the existence of the probe nor local simulated-provider tests proves live success.
 
 
 ## Private console turn authority

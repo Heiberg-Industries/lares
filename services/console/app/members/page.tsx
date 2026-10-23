@@ -3,15 +3,29 @@ import { PageHeader } from "@lares/ui/patterns";
 import { requireConsolePage, members } from "../../lib/auth";
 import { InviteMember } from "../../components/InviteMember";
 import { removeMember, revokeInvitation, signOutMember } from "../actions/members";
+import { listInitialMemberBudgetStatus } from "../../lib/initial-member-budget";
+import { pool } from "../../lib/db";
+import { cookies } from "next/headers";
+import { InitialMemberBudgetSetup } from "../../components/InitialMemberBudgetSetup";
 export const dynamic = "force-dynamic";
 export default async function MembersPage() {
   const actor = await requireConsolePage();
-  const [directory, invitations] = await Promise.all([members.listMembers(actor.id), members.listInvitations(actor.id)]);
+  const sessionToken=(await cookies()).get("lares_session")?.value??"";
+  const designatedOwnerId=process.env.AGENT_OWNER_USER_ID?.trim()??"";
+  const [directory, invitations, budgetStatus] = await Promise.all([
+    members.listMembers(actor.id),members.listInvitations(actor.id),
+    listInitialMemberBudgetStatus(pool,sessionToken,designatedOwnerId),
+  ]);
+  const budgetByMember=new Map(budgetStatus.map(status=>[status.memberId,status]));
   return <div className="lares-page lares-stack">
     <PageHeader title="Members" description="Manage sign-in invitations and current membership." />
     <p>Invited members can view their own membership and sign out. Shared console screens remain limited to the designated existing owner while resource access is being integrated. An owner role does not grant access to another person's private data.</p>
     <Link href="/membership">Your membership →</Link>
     <InviteMember />
+    <InitialMemberBudgetSetup members={directory.map(({member,displayName})=>({
+      id:member.id,displayName,eligible:budgetByMember.get(member.id)?.eligible===true,
+      setupComplete:budgetByMember.get(member.id)?.setupComplete===true,
+    }))}/>
     <section className="lares-surface"><h2 className="lares-section-title">Member records</h2>
       <ul className="lares-data-list">{directory.map(({ member, displayName, email }) => <li key={member.id}>
         <strong>{displayName}</strong> · {email} · {member.role} · {member.status}
