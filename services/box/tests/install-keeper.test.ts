@@ -33,6 +33,7 @@ const SCRIPT = join(here, "..", "ops", "install.sh");
 const KEEPER_VAULT_ROOTS = join(here, "..", "ops", "keeper-vault-roots.py");
 const COMMITTED_KEEPER_COMPOSE = join(here, "..", "compose.lares-keeper.yaml");
 const COMMITTED_KEEPER_VAULT_COMPOSE = join(here, "..", "compose.lares-keeper-vault.yaml");
+const MAINTENANCE_CUSTODY = join(here, "..", "ops", "maintenance-custody.py");
 
 const REAL_PNPM = execFileSync("/bin/sh", ["-c", "command -v pnpm"], { encoding: "utf8" }).trim();
 
@@ -59,6 +60,13 @@ const release = (images: Record<string, string> = IMAGES) =>
     breaking: [],
   });
 
+/** Prepare disposable, test-owned custody before a fixture creates existing-install evidence. */
+function prepareFreshCustody() {
+  execFileSync("python3", [MAINTENANCE_CUSTODY, "prepare-fresh", prefix, "172.30.0.0/24", "--confirm-fresh"], {
+    env: { ...process.env, LARES_MAINTENANCE_TESTING: "1", LARES_SUBNET: "172.30.0.0/24" },
+  });
+}
+
 let dir: string, binDir: string, prefix: string, log: string, releaseFile: string;
 
 function stub(name: string, body = "exit 0") {
@@ -82,7 +90,7 @@ function run(args: string[] = ["--release", ""], input = answers, extraEnv: Reco
       encoding: "utf8",
       env: {
         LARES_ENGINE_IMAGE: ENGINE_IMAGE, PATH: `${binDir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
-        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir,
+        STUB_LOG: log, LARES_PREFIX: prefix, HOME: process.env.HOME ?? dir, LARES_MAINTENANCE_TESTING: "1",
         ...extraEnv,
       },
     });
@@ -200,6 +208,7 @@ describe("the keeper the installer configures and starts", () => {
   }, 20_000);
 
   it("refuses a linked keeper-managed secret root", () => {
+    prepareFreshCustody();
     const root = join(prefix, "srv", "lares");
     const outside = join(dir, "outside");
     mkdirSync(root, { recursive: true });
@@ -445,6 +454,7 @@ describe("the keeper the installer configures and starts", () => {
     };
 
     it("binds the calendar for the chief of staff only when the file is there", () => {
+      prepareFreshCustody();
       putCalendar();
       expect(install().code).toBe(0);
       const { defaultBindings } = readKeeperConfig().lifecycle;
@@ -461,6 +471,7 @@ describe("the keeper the installer configures and starts", () => {
     });
 
     it("warns and binds nothing when the calendar is a link", () => {
+      prepareFreshCustody();
       mkdirSync(dirname(calendar()), { recursive: true });
       writeFileSync(join(dir, "elsewhere.json"), "[]");
       symlinkSync(join(dir, "elsewhere.json"), calendar());

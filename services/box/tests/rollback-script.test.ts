@@ -187,6 +187,7 @@ function runScript(script: string, args: string[], env: Record<string, string> =
         LARES_OPERATOR_PASSWORD_FILE: operatorPasswordFile,
         TEST_RECORD: join(binDir, "record"),
         TEST_REAL_NODE: process.execPath,
+        LARES_MAINTENANCE_TESTING: "1",
         ...env,
       },
       encoding: "utf8",
@@ -217,10 +218,14 @@ function expectNormalAuthCompose() {
   expect(mount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } });
   if (process.env.CI === "true") {
     const effective = JSON.parse(execFileSync("docker", ["compose", "-f", composeFile, "config", "--format", "json"], { encoding: "utf8" })) as {
-      services: { db?: { command?: string[]; volumes?: Array<{ source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
+      services: { db?: { command?: string[]; volumes?: Array<{ type?: string; source?: string; target?: string; read_only?: boolean; bind?: { create_host_path?: boolean } }> } };
     };
     expect(effective.services.db?.command).toEqual(["postgres", "-c", "hba_file=/run/lares-auth/pg_hba.conf"]);
-    expect(effective.services.db?.volumes).toContainEqual(expect.objectContaining({ source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true, bind: { create_host_path: false } }));
+    const effectiveAuthMount = effective.services.db?.volumes?.find((volume) => volume.source === "/var/lib/lares-maintenance/postgres-auth" && volume.target === "/run/lares-auth");
+    expect(effectiveAuthMount).toMatchObject({ type: "bind", source: "/var/lib/lares-maintenance/postgres-auth", target: "/run/lares-auth", read_only: true });
+    const bind = effectiveAuthMount?.bind;
+    expect(bind !== undefined && bind !== null && typeof bind === "object" && !Array.isArray(bind) &&
+      (!("create_host_path" in bind) || bind.create_host_path === false)).toBe(true);
   }
 }
 
