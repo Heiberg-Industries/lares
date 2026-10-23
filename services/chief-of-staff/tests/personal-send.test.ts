@@ -280,7 +280,7 @@ describe('real Eve model selection for an approved private resume',()=>{
    const {ref}=await ready();
    const purposeReceipt='p'.repeat(43);
    purposeRequestMock.mockImplementation(async(op:string)=>{
-     if(op==='request.admit')return {pendingReceipt:purposeReceipt} as never;
+     if(op==='request.admit')return {pendingReceipt:purposeReceipt,expiresAt:Date.now()+30_000} as never;
      if(op==='turn.open')return {capability:'c'.repeat(43),expiresAt:Date.now()+30_000} as never;
      if(op==='step.claim')return {claim:'k'.repeat(43),expiresAt:Date.now()+30_000} as never;
      return {closed:true} as never;
