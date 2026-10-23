@@ -37,6 +37,8 @@ describe("the generated LiteLLM config", () => {
   it("carries the master key by reference only, never a literal", () => {
     const doc = parse(renderGatewayConfig({ alias: "lares-brain", providerModel: "anthropic/claude-sonnet-4-5" })) as any;
     expect(doc.general_settings.master_key).toBe("os.environ/LARES_GATEWAY_MASTER_KEY");
+    expect(doc.general_settings.disable_auto_add_proxy_admin_to_teams).toBe(true);
+    expect(doc.general_settings.background_health_checks).toBe(false);
   });
 
   it("switches telemetry off and turns the local cost map on", () => {
