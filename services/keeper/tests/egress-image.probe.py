@@ -1024,6 +1024,7 @@ def run_observer_self_tests():
         finally:
             proxy_full_id = previous_id
     print('egress host observer self-test passed')
+    run_proxy_wait_diagnostic_self_tests()
 
 
 def _raise_observer(details):
@@ -1035,13 +1036,246 @@ def _expect_observer_result(gate, ops, category, expected_identity=None):
     assert result['observed'] is False and result['refusal_category'] == category, result
 
 
-def wait_for_proxy():
+_PROXY_WAIT_STATES = {'created', 'running', 'restarting', 'paused', 'exited', 'dead'}
+_PROXY_WAIT_ERRORS = {
+    'EHOSTUNREACH': 'host_unreachable',
+    'ENETUNREACH': 'network_unreachable',
+    'ECONNREFUSED': 'connection_refused',
+    'ECONNRESET': 'connection_reset',
+    'ETIMEDOUT': 'timeout',
+    'absolute-timeout': 'timeout',
+    'inactivity-timeout': 'timeout',
+    'oversized': 'oversized_response',
+}
+
+
+def _bounded_int(value, maximum):
+    return value if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= maximum else None
+
+
+def project_proxy_wait_diagnostic(response, expected_id, container_item, expected_network, expected_ip,
+                                  phase, attempt, inspect_outcome='observed'):
+    """Keep restart-wait evidence bounded to fixed fields and allowlisted values."""
+    response = response if isinstance(response, dict) else {}
+    status = _bounded_int(response.get('status'), 599)
+    if status is not None and status < 100:
+        status = None
+    raw_error = response.get('error')
+    if isinstance(raw_error, str) and raw_error in _PROXY_WAIT_ERRORS:
+        socket_category = _PROXY_WAIT_ERRORS[raw_error]
+    elif raw_error is None and status is not None:
+        socket_category = 'http_response'
+    elif raw_error is None and not response:
+        socket_category = 'request_failed'
+    else:
+        socket_category = 'other_socket_error'
+
+    item = container_item if isinstance(container_item, dict) else {}
+    observed_id = item.get('Id')
+    if not isinstance(observed_id, str) or not observed_id:
+        identity_category = 'missing'
+    elif not isinstance(expected_id, str) or not expected_id:
+        identity_category = 'expected_id_missing'
+    elif observed_id == expected_id:
+        identity_category = 'matched'
+    else:
+        identity_category = 'mismatched'
+
+    state = item.get('State')
+    if not isinstance(state, dict):
+        state = {}
+        state_category = 'missing' if 'State' not in item else 'malformed'
+    else:
+        raw_state = state.get('Status')
+        state_category = raw_state if isinstance(raw_state, str) and raw_state in _PROXY_WAIT_STATES else (
+            'missing' if raw_state is None else 'other')
+
+    settings = item.get('NetworkSettings')
+    networks = settings.get('Networks') if isinstance(settings, dict) else None
+    if not isinstance(networks, dict):
+        network_attached = False
+        ip_matches = False
+    else:
+        endpoint = networks.get(expected_network)
+        network_attached = isinstance(endpoint, dict)
+        ip_matches = network_attached and endpoint.get('IPAddress') == expected_ip
+
+    bounded_attempt = _bounded_int(attempt, 30)
+    return {
+        'phase': phase if phase == 'docker_restart' else 'other',
+        'attempt': bounded_attempt if bounded_attempt and bounded_attempt >= 1 else None,
+        'socket_category': socket_category,
+        'status': status,
+        'greeting': response.get('greeting') is True,
+        'container_id_match': identity_category == 'matched',
+        'container_identity': identity_category,
+        'inspect_outcome': inspect_outcome if inspect_outcome in (
+            'observed', 'failed', 'not_attempted') else 'other',
+        'state': state_category,
+        'running': state.get('Running') if type(state.get('Running')) is bool else None,
+        'exit_code': _bounded_int(state.get('ExitCode'), 255),
+        'pid': _bounded_int(state.get('Pid'), 2147483647),
+        'expected_network_attached': network_attached,
+        'expected_proxy_ip_matches': ip_matches,
+    }
+
+
+def _record_proxy_wait_diagnostic(response, phase, attempt, container_item=None,
+                                  inspect_outcome='observed'):
+    records = report.setdefault('proxy_wait_diagnostics', [])
+    if len(records) >= 30:
+        return
+    records.append(project_proxy_wait_diagnostic(
+        response, proxy_id, container_item, network, proxy_ip, phase, attempt, inspect_outcome))
+
+
+def run_proxy_wait_diagnostic_self_tests():
+    global action, network, proxy_id, proxy_ip, report, result
+    keys = ('action', 'network', 'proxy_id', 'proxy_ip', 'report', 'result')
+    saved = {key: (key in globals(), globals().get(key)) for key in keys}
+    try:
+        action = 'offline proxy wait self-test'
+        network, proxy_id, proxy_ip = 'fixture-network', 'a' * 64, '10.0.0.13'
+        report = {'checks': [], 'success': False}
+        failed_response = {'status': None, 'greeting': False, 'error': 'EHOSTUNREACH'}
+        ready_response = {'status': 200, 'greeting': True, 'error': None}
+        ready_container = {
+            'Id': proxy_id,
+            'State': {'Status': 'running', 'Running': True, 'ExitCode': 0, 'Pid': 2},
+            'NetworkSettings': {'Networks': {network: {'IPAddress': proxy_ip}}},
+        }
+        with patch(__name__ + '.request', side_effect=[failed_response, ready_response]), \
+                patch(__name__ + '.inspect_container', return_value=ready_container), \
+                patch(__name__ + '.time.sleep') as sleep:
+            wait_for_proxy(diagnostic_phase='docker_restart')
+        if sleep.call_count != 1:
+            raise AssertionError('failed response did not preserve the existing one-poll sleep')
+        positive = report['proxy_wait_diagnostics']
+        if len(positive) != 1 or positive[0] != {
+                'phase': 'docker_restart', 'attempt': 1,
+                'socket_category': 'host_unreachable', 'status': None, 'greeting': False,
+                'container_id_match': True, 'container_identity': 'matched',
+                'inspect_outcome': 'observed', 'state': 'running', 'running': True,
+                'exit_code': 0, 'pid': 2, 'expected_network_attached': True,
+                'expected_proxy_ip_matches': True}:
+            raise AssertionError('positive failed-attempt diagnostic was not projected as expected')
+
+        report = {'checks': [], 'success': False}
+        missing_identity = {'State': {'Status': 'created', 'Running': False,
+                                      'ExitCode': 256, 'Pid': 'unbounded'},
+                            'NetworkSettings': {'Networks': {'other-secret-network': {}}}}
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', return_value=missing_identity), \
+                patch(__name__ + '.time.sleep') as sleep:
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != action:
+                    raise AssertionError('non-running refusal changed') from exc
+            else:
+                raise AssertionError('non-running proxy was accepted')
+        missing = report['proxy_wait_diagnostics'][0]
+        if missing['container_identity'] != 'missing' or missing['container_id_match'] or \
+                missing['running'] is not False or missing['state'] != 'created' or \
+                missing['exit_code'] is not None or missing['pid'] is not None or \
+                missing['expected_network_attached'] or missing['expected_proxy_ip_matches'] or \
+                sleep.called:
+            raise AssertionError('missing/malformed identity evidence was not safely bounded')
+
+        malformed = project_proxy_wait_diagnostic(
+            {'status': '200', 'greeting': 'yes', 'error': 'private raw diagnostic'},
+            proxy_id, {'Id': 'secret-id', 'State': {'Status': 'secret-state', 'Running': 'yes',
+                                                     'ExitCode': 999999, 'Pid': -1},
+                       'NetworkSettings': {'Networks': {'fixture-network': 'secret'}}},
+            network, proxy_ip, 'docker_restart', 1)
+        encoded = json.dumps(malformed, sort_keys=True)
+        if malformed != {
+                'phase': 'docker_restart', 'attempt': 1,
+                'socket_category': 'other_socket_error', 'status': None, 'greeting': False,
+                'container_id_match': False, 'container_identity': 'mismatched',
+                'inspect_outcome': 'observed', 'state': 'other', 'running': None,
+                'exit_code': None, 'pid': None, 'expected_network_attached': False,
+                'expected_proxy_ip_matches': False} or any(
+                    value in encoded for value in ('private raw diagnostic', 'secret-id', 'secret-state')):
+            raise AssertionError('diagnostic projection retained malformed or private source values')
+
+        report = {'checks': [], 'success': False}
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', side_effect=RuntimeError('private inspect text')):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != 'private inspect text':
+                    raise
+            else:
+                raise AssertionError('inspect failure did not preserve the original refusal')
+        if report['proxy_wait_diagnostics'][0]['inspect_outcome'] != 'failed' or \
+                'private inspect text' in json.dumps(report['proxy_wait_diagnostics']):
+            raise AssertionError('inspect error was not recorded with fixed redacted evidence')
+
+        report = {'checks': [], 'success': False}
+        with patch(__name__ + '.request', side_effect=RuntimeError('private request text')):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != 'private request text':
+                    raise
+            else:
+                raise AssertionError('request failure did not preserve the original refusal')
+        if report['proxy_wait_diagnostics'][0]['socket_category'] != 'request_failed' or \
+                report['proxy_wait_diagnostics'][0]['inspect_outcome'] != 'not_attempted':
+            raise AssertionError('request exception was not recorded as a fixed category')
+
+        report = {'checks': [], 'success': False}
+        running_container = dict(ready_container, State={'Status': 'running', 'Running': True})
+        with patch(__name__ + '.request', return_value=failed_response), \
+                patch(__name__ + '.inspect_container', return_value=running_container), \
+                patch(__name__ + '.time.sleep'):
+            try:
+                wait_for_proxy(diagnostic_phase='docker_restart')
+            except RuntimeError as exc:
+                if str(exc) != action:
+                    raise AssertionError('wait timeout refusal changed') from exc
+            else:
+                raise AssertionError('bounded waiter accepted a proxy without a successful response')
+        if len(report['proxy_wait_diagnostics']) != 30 or [
+                record['attempt'] for record in report['proxy_wait_diagnostics']] != list(range(1, 31)) or any(
+                record['phase'] != 'docker_restart' or
+                record['socket_category'] != 'host_unreachable'
+                for record in report['proxy_wait_diagnostics']):
+            raise AssertionError('wait diagnostics did not stay within the existing 30-attempt bound')
+    finally:
+        for key, (existed, value) in saved.items():
+            if existed:
+                globals()[key] = value
+            else:
+                globals().pop(key, None)
+    print('egress proxy restart-wait diagnostic self-test passed')
+
+
+def wait_for_proxy(diagnostic_phase=None):
     global result
+    if diagnostic_phase not in (None, 'docker_restart'):
+        raise ValueError('unsupported proxy wait diagnostic phase')
     for _attempt in range(30):
-        result = request(connect())
+        try:
+            result = request(connect())
+        except Exception:
+            if diagnostic_phase is not None:
+                _record_proxy_wait_diagnostic(None, diagnostic_phase, _attempt + 1,
+                                              inspect_outcome='not_attempted')
+            raise
         if result['status'] == 200 and result['greeting']:
             return
-        item = inspect_container(proxy_id)
+        try:
+            item = inspect_container(proxy_id)
+        except Exception:
+            if diagnostic_phase is not None:
+                _record_proxy_wait_diagnostic(result, diagnostic_phase, _attempt + 1,
+                                              inspect_outcome='failed')
+            raise
+        if diagnostic_phase is not None:
+            _record_proxy_wait_diagnostic(result, diagnostic_phase, _attempt + 1, item)
         if not item.get('State', {}).get('Running'):
             raise RuntimeError(action)
         time.sleep(.5)
@@ -1603,7 +1837,7 @@ def run_proof():
     action = 'prove the same Squid gate descriptor survives Docker restart'
     container_before_restart = proxy_id
     compose('restart', 'lares-egress-proxy')
-    wait_for_proxy()
+    wait_for_proxy(diagnostic_phase='docker_restart')
     check('Docker restart preserves the exact owned Compose container',
           compose('ps', '-aq', 'lares-egress-proxy') == container_before_restart)
     restarted_pid = proxy_pid()
