@@ -211,7 +211,7 @@ COMPILED_CLIENT_RESULT_CATEGORIES={'localDispatchUnavailable','nativeAdmissionRe
 COMPILED_CLIENT_RESULT_STATUSES={'completed','failed','waiting','unknown'}
 MODEL_REQUEST_DIAGNOSTIC_STAGES={'runtime-check','headers','body','profile','native-dispatch','native-response'}
 MODEL_REQUEST_DIAGNOSTIC_CHECKS={'anthropicBetaPresent','authorizationPresent','apiKeyPresent','ticketPresent','contentTypeJson',
-    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved'}
+    'modelAliasAllowed','messagesIsList','maxTokensAllowed','physicalDispatchObserved','anthropicSafetyMetadataValid'}
 MODEL_PURPOSE_DIAGNOSTIC_STAGES={'idle','headers','fields','body-length','ticket','body-hash','profile','dispatch','upstream'}
 MODEL_PURPOSE_DIAGNOSTIC_CHECKS={'headersAccepted','fieldsAccepted','bodyLengthMatches','upstreamResponseSeen'}
 
@@ -1168,6 +1168,12 @@ console.log(JSON.stringify({sessionId:session.state.sessionId,response:result.me
     client_result=invoke_first_use_and_capture(invoke_compiled_client,
       lambda:first_use_model_diagnostics(network+'-gateway',keeper_name),proof)
     request_result=json.loads(client_result)
+    gateway_request=proof.get('gatewayModelRequestDiagnostic',{})
+    gateway_record=gateway_request.get('record',{})
+    if (gateway_request.get('state')!='present' or gateway_record.get('unknownBodyFieldCount')!=0 or
+        gateway_record.get('checks',{}).get('anthropicSafetyMetadataValid') is not True or
+        gateway_record.get('checks',{}).get('physicalDispatchObserved') is not True):
+        raise RuntimeError('The compiled Anthropic first-use request did not pass the strict metadata profile and dispatch')
     if request_result.get('response')!='FIRST_USE_OK' or request_result.get('replayStatus',200)<400 or request_result.get('staleStatus',200)<400 or request_result.get('wrongMemberStatus',200)<400:
         raise RuntimeError('Signed first-use or refusal checks did not match the expected result')
     if upstream_calls()!=1:raise RuntimeError('Native upstream dispatch count was not exactly one')

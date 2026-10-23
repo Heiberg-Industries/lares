@@ -32,7 +32,7 @@ from admission_contract import (
     ADMIT_PATH, SETTLE_PATH, ADMISSION_REFUSED_TYPE, ADMISSION_REFUSED_TEXT, CONTROL_ROUTES, HASH, MAX_RPC_BYTES, MODEL_ROUTES,
     NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash,
     RPC_TIMEOUT, TICKET, VERSION, Profile, Refused, RequestState, TerminalEvidence, WireEvidence, canonical,
-    https_url, native_route_allowed, parse_json, protected_key, sign, verify,
+    https_url, native_route_allowed, parse_json, protected_key, sign, valid_anthropic_safety_metadata, verify,
     PHYSICAL_HEADER_SECONDS, PHYSICAL_BODY_SECONDS, TERMINAL_TAIL_SECONDS, CLEANUP_SECONDS, NATIVE_POLICY_SECONDS,
 )
 
@@ -64,7 +64,7 @@ def _write_model_request_diagnostic(marker):
         }
         checks = marker.get("checks", {})
         for name in ("anthropicBetaPresent", "authorizationPresent", "apiKeyPresent", "ticketPresent", "contentTypeJson",
-                     "modelAliasAllowed", "messagesIsList", "maxTokensAllowed", "physicalDispatchObserved"):
+                     "modelAliasAllowed", "messagesIsList", "maxTokensAllowed", "physicalDispatchObserved", "anthropicSafetyMetadataValid"):
             normalized["checks"][name] = checks.get(name) is True if type(checks) is dict else False
         raw = canonical(normalized)
         if len(raw) > 2048: return
@@ -115,11 +115,11 @@ def update_model_request_diagnostic(marker, stage, *, status_code=None, checks=N
     except Exception: pass  # Diagnostics cannot change gateway enforcement or responses.
 
 
-def model_request_shape_checks(raw, profile, headers):
+def model_request_shape_checks(raw, profile, headers, path):
     """Return fixed request-shape metadata; malformed input never affects enforcement."""
     try:
         parsed = parse_json(raw)
-        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking"}
+        allowed = {"model", "messages", "max_tokens", "max_completion_tokens", "stream", "stream_options", "temperature", "top_p", "stop", "stop_sequences", "system", "tools", "tool_choice", "parallel_tool_calls", "thinking", "metadata"}
         unknown_fields = min(31, sum(name not in allowed for name in parsed) if type(parsed) is dict else 0)
         maximum = parsed.get("max_tokens", parsed.get("max_completion_tokens")) if type(parsed) is dict else None
         checks = {"anthropicBetaPresent": b"anthropic-beta" in headers,
@@ -128,7 +128,8 @@ def model_request_shape_checks(raw, profile, headers):
             "contentTypeJson": headers.get(b"content-type", "").split(";")[0] == "application/json",
             "modelAliasAllowed": type(parsed) is dict and parsed.get("model") in profile.document["aliases"],
             "messagesIsList": type(parsed) is dict and type(parsed.get("messages")) is list,
-            "maxTokensAllowed": type(maximum) is int and 1 <= maximum <= profile.document["maxOutputTokens"]}
+            "maxTokensAllowed": type(maximum) is int and 1 <= maximum <= profile.document["maxOutputTokens"],
+            "anthropicSafetyMetadataValid": "metadata" in parsed and valid_anthropic_safety_metadata(parsed["metadata"], path, profile.document["provider"])}
         return checks, unknown_fields
     except Exception:
         return {}, 0
@@ -839,7 +840,7 @@ class GatewayApp:
             diagnostic_checks = {}
             unknown_body_field_count = 0
             if diagnostic is not None:
-                diagnostic_checks, unknown_body_field_count = model_request_shape_checks(bytes(raw), runtime.profile, headers)
+                diagnostic_checks, unknown_body_field_count = model_request_shape_checks(bytes(raw), runtime.profile, headers, route[1])
                 update_model_request_diagnostic(diagnostic, "profile", checks=diagnostic_checks, unknown_body_field_count=unknown_body_field_count)
             runtime.profile.check_body(route[1], bytes(raw))
             update_model_request_diagnostic(diagnostic, "native-dispatch", checks=diagnostic_checks,

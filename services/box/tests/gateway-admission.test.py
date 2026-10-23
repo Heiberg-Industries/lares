@@ -23,7 +23,7 @@ import types
 ROOT = pathlib.Path(__file__).resolve().parents[3]
 import sys
 sys.path.insert(0, str(ROOT / "images/gateway-runtime"))
-from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, canonical, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed
+from admission_contract import RequestState, Refused, request_hash, sign, verify, parse_json, canonical, Profile, TerminalEvidence, WireEvidence, MAX_RESPONSE_BYTES, native_lookup_query, native_lookup_key_hash, native_unblock_key_hash, NATIVE_LOOKUP_ROUTES, NATIVE_MASTER_ROUTES, MAX_NATIVE_LOOKUP_BODY, MODEL_ROUTES, native_route_allowed, valid_anthropic_safety_metadata
 
 
 class ContractTests(unittest.TestCase):
@@ -113,6 +113,17 @@ class ContractTests(unittest.TestCase):
             with self.subTest(tool=tool), self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps(invalid).encode())
         openai_body = {"model":"lares-brain","max_tokens":10,"messages":[{"role":"user","content":"hello"}],"tools":[{"type":"function","eager_input_streaming":True}]}
         with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(openai_body).encode())
+
+    def test_profile_accepts_only_hashed_anthropic_safety_metadata(self):
+        profile = Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
+        body = {"model":"lares-brain","max_tokens":32,"messages":[{"role":"user","content":"Local serialization check"}],"metadata":{"user_id":"a" * 64}}
+        self.assertEqual(profile.check_body("/v1/messages", json.dumps(body).encode()), body)
+        for metadata in ({"user_id":"spoof"},{"user_id":"a" * 64 + "a"},{"user_id":"a" * 64,"other":"value"},{"other":"value"},None,"value"):
+            invalid = {**body,"metadata":metadata}
+            with self.subTest(metadata=metadata), self.assertRaises(Refused): profile.check_body("/v1/messages", json.dumps(invalid).encode())
+        with self.assertRaises(Refused): profile.check_body("/v1/chat/completions", json.dumps(body).encode())
+        openai_profile = Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
+        with self.assertRaises(Refused): openai_profile.check_body("/v1/messages", json.dumps(body).encode())
 
     def test_native_model_route_group_is_confined_to_model_routes(self):
         for path in MODEL_ROUTES:
@@ -641,6 +652,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
              (isinstance(node,ast.FunctionDef) and node.name in diagnostic_names))]
         self.diag_dir=tempfile.TemporaryDirectory(prefix="lares-model-asgi-diagnostic-")
         diagnostic_namespace={"os":os,"tempfile":tempfile,"canonical":self.namespace["canonical"],"parse_json":parse_json,
+            "valid_anthropic_safety_metadata":valid_anthropic_safety_metadata,
             "MODEL_REQUEST_DIAGNOSTIC_FILE":str(pathlib.Path(self.diag_dir.name)/"record.json")}
         exec(compile(ast.Module(body=diagnostic_nodes,type_ignores=[]),"gateway-asgi-diagnostic","exec"),diagnostic_namespace)
         diagnostic_namespace["MODEL_REQUEST_DIAGNOSTIC_FILE"]=str(pathlib.Path(self.diag_dir.name)/"record.json")
@@ -667,7 +679,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
             await send({"type":"http.response.body","body":b'{"native":true}'})
             return
         self.model_native_calls += 1
-        await receive()
+        self.native_body = await receive()
         request = self.request_context.get()
         if self.mode in ("marked","after-replacement-refused"): request._authored_refusal = True
         elif self.mode == "after-dispatch": request._authored_refusal = True; request.dispatched = True
@@ -681,8 +693,7 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         if self.mode in ("after-replacement-refused","after-headers-refused"): raise Refused()
         if self.mode == "after-headers-timeout-dispatched": request.dispatched=True; raise TimeoutError()
 
-    async def call_app(self, extra_headers=()):
-        raw=b'{}'
+    async def call_app(self, extra_headers=(), raw=b'{}'):
         scope={"type":"http","method":"POST","path":"/v1/messages","raw_path":b"/v1/messages","query_string":b"",
             "headers":[(b"host",b"gateway.invalid"),(b"content-type",b"application/json"),(b"authorization",b"Bearer fixture"),(b"x-lares-budget-intent",b"a"*43),*extra_headers]}
         incoming=[{"type":"http.request","body":raw,"more_body":False}]
@@ -703,6 +714,34 @@ class RefusalProvenanceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.model_native_calls,1)
         record=json.loads(self.diagnostic_path.read_bytes())
         self.assertEqual((record["stage"],record["statusCode"]),("native-response",400))
+
+    async def test_real_profile_delegates_valid_anthropic_safety_metadata_unchanged(self):
+        profile=Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
+        self.runtime.profile=profile
+        raw=json.dumps({"model":"lares-brain","max_tokens":32,"messages":[{"role":"user","content":"offline fixture"}],"metadata":{"user_id":"a"*64}},separators=(",",":")).encode()
+        self.mode="normal"
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            sent=await self.call_app(raw=raw)
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(self.model_native_calls,1)
+        self.assertEqual(self.native_body["body"],raw)
+        record=json.loads(self.diagnostic_path.read_bytes())
+        self.assertEqual(record["stage"],"native-response")
+        self.assertEqual(record["unknownBodyFieldCount"],0)
+        self.assertTrue(record["checks"]["anthropicSafetyMetadataValid"])
+
+    async def test_real_profile_refuses_invalid_anthropic_safety_metadata_before_native_delegation(self):
+        profile=Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":16384})
+        self.runtime.profile=profile
+        raw=json.dumps({"model":"lares-brain","max_tokens":32,"messages":[{"role":"user","content":"offline fixture"}],"metadata":{"user_id":"invalid"}},separators=(",",":")).encode()
+        self.mode="normal"
+        with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
+            sent=await self.call_app(raw=raw)
+        self.assertEqual(sent[0]["status"],400)
+        self.assertEqual(self.model_native_calls,0)
+        record=json.loads(self.diagnostic_path.read_bytes())
+        self.assertEqual((record["stage"],record["statusCode"],record["unknownBodyFieldCount"]),("profile",400,0))
+        self.assertFalse(record["checks"]["anthropicSafetyMetadataValid"])
 
     async def test_real_diagnostic_helpers_preserve_ingress_refusal_and_hide_header_text(self):
         with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
@@ -961,6 +1000,7 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
             ((isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in names for target in node.targets)) or
              (isinstance(node,ast.FunctionDef) and node.name in names))]
         self.namespace={"os":os,"tempfile":tempfile,"canonical":canonical,"parse_json":parse_json,
+            "valid_anthropic_safety_metadata":valid_anthropic_safety_metadata,
             "MODEL_REQUEST_DIAGNOSTIC_FILE":"/private/tmp/lares-gateway-model-request-test.json"}
         exec(compile(ast.Module(body=nodes,type_ignores=[]),"gateway-request-diagnostic","exec"),self.namespace)
         self.directory=tempfile.TemporaryDirectory(prefix="lares-model-diagnostic-test-")
@@ -993,13 +1033,20 @@ class ModelRequestDiagnosticTests(unittest.TestCase):
         profile=Profile({"version":1,"provider":"openai","model":"gpt-4o-mini","providerBaseUrl":"https://provider.example.invalid/v1","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123})
         checks,count=self.namespace["model_request_shape_checks"](
             b'{"model":"lares-brain","messages":[],"max_tokens":10,"private-secret":"never retain"}',profile,
-            {b"content-type":"application/json"})
+            {b"content-type":"application/json"},"/v1/chat/completions")
         self.assertTrue(checks["modelAliasAllowed"])
         self.assertTrue(checks["messagesIsList"])
         self.assertEqual(count,1)
         self.assertEqual(set(checks),{"anthropicBetaPresent","authorizationPresent","apiKeyPresent","ticketPresent",
-            "contentTypeJson","modelAliasAllowed","messagesIsList","maxTokensAllowed"})
+            "contentTypeJson","modelAliasAllowed","messagesIsList","maxTokensAllowed","anthropicSafetyMetadataValid"})
         self.assertNotIn("private-secret",json.dumps(checks))
+        metadata_body=b'{"model":"lares-brain","messages":[],"max_tokens":10,"metadata":{"user_id":"'+b"a"*64+b'"}}'
+        _,count=self.namespace["model_request_shape_checks"](metadata_body,profile,{b"content-type":"application/json"},"/v1/messages")
+        self.assertEqual(count,0)
+        self.assertFalse(self.namespace["model_request_shape_checks"](metadata_body,profile,{b"content-type":"application/json"},"/v1/messages")[0]["anthropicSafetyMetadataValid"])
+        anthropic_profile=Profile({"version":1,"provider":"anthropic","model":"claude-sonnet-4-5","providerBaseUrl":"https://provider.example.invalid","aliases":["lares-brain","lares-writer","lares-utility","lares-gate"],"maxBodyBytes":4096,"maxOutputTokens":123})
+        self.assertTrue(self.namespace["model_request_shape_checks"](metadata_body,anthropic_profile,{b"content-type":"application/json"},"/v1/messages")[0]["anthropicSafetyMetadataValid"])
+        self.assertFalse(self.namespace["model_request_shape_checks"](metadata_body,anthropic_profile,{b"content-type":"application/json"},"/v1/chat/completions")[0]["anthropicSafetyMetadataValid"])
 
     def test_diagnostic_io_failures_are_swallowed(self):
         with mock.patch.dict(os.environ,{"CI":"true","LARES_GATEWAY_PROBE_DIAGNOSTICS":"1"},clear=True):
