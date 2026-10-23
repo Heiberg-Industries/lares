@@ -16,7 +16,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {Pool} from 'pg';
 
-import { startThreeSpellingsDb, seedThreeSpellingsFinancial, FIXTURE_OWNER, FIXTURE_SECOND, type TestDb } from "./helpers/three-spellings.js";
+import { startThreeSpellingsDb, seedThreeSpellingsFinancial, FIXTURE_OWNER, FIXTURE_SECOND,
+  OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH, OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON, type TestDb } from "./helpers/three-spellings.js";
 import { runErase, renderRunEraseReport } from "../lib/run-erase.js";
 import {erasePerson,withPersonErasureClient} from '../lib/erase-person.js';
 import {HostFinancialJournal} from '../../keeper/lib/financial-journal.js';
@@ -380,10 +381,10 @@ describe("runErase — the order of operations", () => {
     await db.pool.query("UPDATE users SET org_id='r5-unknown-org',org_role='member',status='active' WHERE id=$1",[FIXTURE_OWNER]);
     await db.pool.query("INSERT INTO agent_definitions(name,definition,hash) VALUES('r5-unknown-agent','{\"grants\":[]}'::jsonb,repeat('a',64))");
     await db.pool.query("INSERT INTO agent_access(agent_name,owner_member_id,organisation_id) VALUES('r5-unknown-agent',$1,'r5-unknown-org')",[FIXTURE_OWNER]);
-    await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,candidate_revision,consent_generation,state)
-      VALUES('70000000-0000-4000-8000-000000000001',$1,'r5-unknown-agent',1,1,NULL,1,'active')`,[FIXTURE_OWNER]);
-    await db.pool.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-      VALUES('70000000-0000-4000-8000-000000000001',$1,1,1,1,'70000000-1111-4111-8111-000000000001',decode(repeat('07',12),'hex'),decode(repeat('09',24),'hex'))`,[FIXTURE_OWNER]);
+    await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,candidate_revision,consent_generation,state)
+      VALUES('70000000-0000-4000-8000-000000000001',$1,'r5-unknown-agent','unknown-erase',1,1,NULL,1,'active')`,[FIXTURE_OWNER]);
+    await db.pool.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+      VALUES('70000000-0000-4000-8000-000000000001',$1,1,1,1,'discovery',$2::jsonb,$3,'70000000-1111-4111-8111-000000000001',decode(repeat('07',12),'hex'),decode(repeat('09',24),'hex'))`,[FIXTURE_OWNER,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON,OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH]);
     await db.pool.query(`INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
       VALUES('70000000-1111-4111-8111-000000000001','70000000-0000-4000-8000-000000000001',$1,'stage',decode(repeat('01',32),'hex'),0,1,1,'staged')`,[FIXTURE_OWNER]);
     let lost=false;

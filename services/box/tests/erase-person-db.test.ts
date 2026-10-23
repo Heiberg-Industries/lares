@@ -32,6 +32,9 @@ import {
   FIXTURE_OWNER,
   FIXTURE_SECOND,
   FIXTURE_ROWS,
+  OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,
+  OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON,
+  outsideCustodyFixtureConnectionName,
   type TestDb,
 } from "./helpers/three-spellings.js";
 import { MEMBER_SCOPE } from "../lib/member-scope.js";
@@ -132,12 +135,12 @@ async function seedR5Agent(agent:string,owner:string,org:string):Promise<void>{
 
 async function seedR5Custody(input:{owner:string;resource:string;id:string;state?:'active'|'revoked';withRevision?:boolean}):Promise<void>{
   const state=input.state??'active',withRevision=input.withRevision??true;
-  await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,candidate_revision,consent_generation,state)
-    VALUES($1,$2,$3,1,$4,NULL,1,$5)`,[input.id,input.owner,input.resource,state==='active'&&withRevision?1:null,state]);
+  await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,candidate_revision,consent_generation,state)
+    VALUES($1,$2,$3,$4,1,$5,NULL,1,$6)`,[input.id,input.owner,input.resource,outsideCustodyFixtureConnectionName(input.id),state==='active'&&withRevision?1:null,state]);
   if(!withRevision)return;
   const operationId=`${input.id.slice(0,8)}-1111-4111-8111-${input.id.slice(-12)}`;
-  await db.pool.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-    VALUES($1,$2,1,1,1,$3,$4,$5)`,[input.id,input.owner,operationId,Buffer.alloc(12,7),Buffer.alloc(24,9)]);
+  await db.pool.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+    VALUES($1,$2,1,1,1,'discovery',$3::jsonb,$4,$5,$6,$7)`,[input.id,input.owner,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON,OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,operationId,Buffer.alloc(12,7),Buffer.alloc(24,9)]);
   await db.pool.query(`INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
     VALUES($1,$2,$3,'stage',$4,0,1,1,'staged')`,[operationId,input.id,input.owner,Buffer.alloc(32,5)]);
 }
@@ -620,8 +623,8 @@ describe("erase-person — outside custody owner cascades", () => {
     await seedR5Agent('r5-agent-a','r5-a','r5-org-a');
     const finance=await financialLogin();
     await db.pool.query('ALTER TABLE outside_custody_accounts ALTER COLUMN owner_member_id DROP NOT NULL');
-    await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,candidate_revision,consent_generation,state)
-      VALUES('60000000-0000-4000-8000-000000000001',NULL,'r5-agent-a',1,NULL,NULL,1,'revoked')`);
+    await db.pool.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,candidate_revision,consent_generation,state)
+      VALUES('60000000-0000-4000-8000-000000000001',NULL,'r5-agent-a','null-owner',1,NULL,NULL,1,'revoked')`);
     const note=await addVaultNote('r5-a','r5-null-owner.md');
     const before=readFileSync(note,'utf8');
 
@@ -642,8 +645,8 @@ describe("erase-person — outside custody owner cascades", () => {
     try{
       const insert=await outside.connect();clients.insert=insert;
       await insert.query('BEGIN');
-      await insert.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,candidate_revision,consent_generation,state)
-        VALUES('50000000-0000-4000-8000-000000000001','r5-b','r5-agent-a',1,NULL,NULL,1,'revoked')`);
+      await insert.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,candidate_revision,consent_generation,state)
+        VALUES('50000000-0000-4000-8000-000000000001','r5-b','r5-agent-a','foreign-race',1,NULL,NULL,1,'revoked')`);
       const note=await addVaultNote('r5-a','r5-insert-race.md');
       const before=readFileSync(note,'utf8');
       erasing=runErase({db:finance,person:'r5-a',vaults:[vaultRoot],apply:true,journal});
@@ -679,8 +682,8 @@ describe("erase-person — outside custody owner cascades", () => {
       erasing=runErase({db:finance,person:'r5-a',vaults:[vaultRoot],apply:true,journal});
       const eraserPid=await waitForLockWait('SELECT agent_name FROM agent_access');
       const insertPid=(await insert.query<{pid:number}>('SELECT pg_backend_pid() AS pid')).rows[0]!.pid;
-      pending=insert.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,candidate_revision,consent_generation,state)
-        VALUES('50000000-0000-4000-8000-000000000002','r5-b','r5-agent-a',1,NULL,NULL,1,'revoked')`)
+      pending=insert.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,candidate_revision,consent_generation,state)
+        VALUES('50000000-0000-4000-8000-000000000002','r5-b','r5-agent-a','foreign-race-two',1,NULL,NULL,1,'revoked')`)
         .then(()=>({code:null as string|null}),(error:unknown)=>({code:(error as {code?:string}).code??'unknown'}));
       let queued=false;
       for(let attempt=0;attempt<100;attempt++){

@@ -271,7 +271,7 @@ describe("the generated keeper configuration", () => {
   it("loads outside custody settings while preserving the installer's intentional app/runtime password path",()=>{
     const outside={db:{host:'db',port:5432,database:'lares_state',user:'lares_outside_custody',passwordFile:'/etc/lares/secrets/outside-custody-database-password'},
       keyFile:'/var/lib/lares/outside-custody/key',keyFingerprint:'a'.repeat(64),routeConsumerName:'outside-bridge'} as const;
-    const consumer={name:'outside-bridge',address:'172.30.0.10',hosts:['api.example.invalid']} as const;
+    const consumer={name:'outside-bridge',address:'172.30.0.10',hosts:['api.example.invalid']};
     const config=renderKeeperConfig(MANIFEST,{...OPTS,previousOutsideCustody:outside,previousOutsideRouteConsumer:consumer});
     expect(config.db.passwordFile).toBe(config.lifecycle!.runtime.passwordFile);
     expect(loadAsKeeperWould(config).outsideCustody).toEqual(outside);

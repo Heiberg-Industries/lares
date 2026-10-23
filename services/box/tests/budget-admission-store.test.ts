@@ -25,6 +25,7 @@ import {erasePerson,eraseHandlingFor} from '../lib/erase-person.js';
 import {runErase} from '../lib/run-erase.js';
 import {scopeOf} from '../lib/member-scope.js';
 import {quiet} from './helpers/quiet-pool.js';
+import {OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON} from './helpers/three-spellings.js';
 import {GatewayBudgetAuthority,productionGatewayBudgetAuthority,type GatewayRecoveryWitness} from '../../keeper/lib/gateway-budget.js';
 import {GATEWAY_ADMIT_PATH,GATEWAY_SETTLE_PATH,gatewayCanonical,gatewaySignature,gatewayHash,gatewayGrantHash,gatewayRawRequestHash,verifyGatewaySignature} from '../../../packages/agent-kit/src/gateway-admission-protocol.js';
 import {consoleSourceTransaction,noteBudgetFinancialChange,retainConsoleSourceDeadline,sourceTransactionBoundary,type SourceDatabase,type SourcePool} from '../../../packages/agent-kit/src/console-source-transaction.js';
@@ -700,10 +701,10 @@ describe('signed keeper gateway admission on the one-connection PostgreSQL pool'
     const a=await allowed(),before=(await db.query('SELECT * FROM budget_gateway_grants')).rows;
     for(const [index,owner] of ['member-a','member-b'].entries()){
       const accountId=randomUUID(),operationId=randomUUID(),encrypted=Buffer.from(encryptSecret(`outside custody reapply ${owner}`,'4'.repeat(64)),'base64');
-      await db.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,consent_generation,state)
-        VALUES($1,$2,$3,1,1,1,'active')`,[accountId,owner,index===0?'helper':'helper-two']);
-      await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-        VALUES($1,$2,1,1,1,$3,$4,$5)`,[accountId,owner,operationId,encrypted.subarray(0,12),encrypted.subarray(12)]);
+      await db.query(`INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,consent_generation,state)
+        VALUES($1,$2,$3,$4,1,1,1,'active')`,[accountId,owner,index===0?'helper':'helper-two',`reapply-${index}`]);
+      await db.query(`INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+        VALUES($1,$2,1,1,1,'discovery',$3::jsonb,$4,$5,$6,$7)`,[accountId,owner,OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON,OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH,operationId,encrypted.subarray(0,12),encrypted.subarray(12)]);
       await db.query(`INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
         VALUES($1,$2,$3,'stage',$4,0,1,1,'staged')`,[operationId,accountId,owner,createHash('sha256').update(`outside custody reapply ${index}`).digest()]);
     }

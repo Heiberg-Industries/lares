@@ -704,7 +704,7 @@ def image_identity(image):
 try:
     stage = 'image-identity'
     proof['images']={'chief':image_identity(chief_image),'keeper':image_identity(keeper_image)}
-    application_password=secrets.token_urlsafe(32);financial_password=secrets.token_urlsafe(32)
+    application_password=secrets.token_urlsafe(32);financial_password=secrets.token_urlsafe(32);outside_custody_password=secrets.token_urlsafe(32)
     operator_password=secrets.token_urlsafe(32);workflow_provisioner_password=secrets.token_urlsafe(32)
     workflow_password=secrets.token_urlsafe(32);route_password=secrets.token_urlsafe(32)
     gateway_master='sk-'+secrets.token_urlsafe(32)
@@ -718,6 +718,7 @@ try:
     owner_session_token_hash=hashlib.sha256(owner_session_token.encode()).hexdigest()
     del owner_session_token
     write_raw_secret('app-password',application_password);write_raw_secret('financial-database-password',financial_password)
+    write_raw_secret('outside-custody-database-password',outside_custody_password)
     write_secret('workflow-password',workflow_password);write_secret('route-password',route_password)
     (secrets_dir/'workflow-provisioner-password').write_text(workflow_provisioner_password+'\n')
     (secrets_dir/'workflow-provisioner-password').chmod(0o600)
@@ -748,7 +749,7 @@ try:
     sql('proof',f"CREATE ROLE lares_operator LOGIN SUPERUSER PASSWORD '{operator_password}'")
     privilege=root/'engine-privileges.mts'
     stage = 'isolated-engine-privilege-script'
-    privilege.write_text("import{Pool}from'pg';import{readFileSync}from'node:fs';import{provisionEngineDatabasePrivileges}from'/app/services/box/lib/database-privileges.ts';const p=new Pool({host:'proof-db',database:'proof',user:'lares_operator',password:readFileSync('/offline/operator-password','utf8').trim(),max:1});try{const c=await p.connect();try{const r=await provisionEngineDatabasePrivileges(c,{expectedDatabase:'proof',passwords:{application:readFileSync('/etc/lares/secrets/app-password'),financial:readFileSync('/etc/lares/secrets/financial-database-password')}});if(!['applied','verified'].includes(r.status))throw Error();}finally{c.release()}console.log('ready')}finally{await p.end()}\n")
+    privilege.write_text("import{Pool}from'pg';import{readFileSync}from'node:fs';import{provisionEngineDatabasePrivileges}from'/app/services/box/lib/database-privileges.ts';const p=new Pool({host:'proof-db',database:'proof',user:'lares_operator',password:readFileSync('/offline/operator-password','utf8').trim(),max:1});try{const c=await p.connect();try{const r=await provisionEngineDatabasePrivileges(c,{expectedDatabase:'proof',passwords:{application:readFileSync('/etc/lares/secrets/app-password'),financial:readFileSync('/etc/lares/secrets/financial-database-password'),outsideCustody:readFileSync('/etc/lares/secrets/outside-custody-database-password')}});if(!['applied','verified'].includes(r.status))throw Error();}finally{c.release()}console.log('ready')}finally{await p.end()}\n")
     stage = 'isolated-engine-privilege-helper'
     result=run('docker','run','--rm','--network',network,'--user','0:0','--mount',f'type=bind,src={secrets_dir},dst=/etc/lares/secrets,readonly','--mount',f'type=bind,src={offline_dir},dst=/offline,readonly','--mount',f'type=bind,src={privilege},dst=/app/services/keeper/engine-privileges.mts,readonly','--entrypoint','/app/services/keeper/node_modules/.bin/tsx',keeper_image,'/app/services/keeper/engine-privileges.mts')
     stage = 'isolated-engine-privilege-result'

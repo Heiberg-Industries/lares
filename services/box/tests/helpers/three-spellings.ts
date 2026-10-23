@@ -33,6 +33,20 @@ import { consoleSourceTransaction, noteBudgetFinancialChange, type SourcePool } 
 import { JournalBudgetFinancialWriter } from "../../../keeper/lib/budget-financial-writer.js";
 import type { HostFinancialJournal } from "../../../keeper/lib/financial-journal.js";
 
+// Opaque migration/erasure fixture metadata. Its digest covers this exact compact JSON; these
+// rows are discovery-labelled test data, not valid executable-policy acceptance fixtures.
+export const OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON = JSON.stringify({
+  fixture: "opaque-retention-fixture-not-authoritative",
+  purpose: "discovery",
+  version: 1,
+});
+export const OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH = createHash("sha256")
+  .update(OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON)
+  .digest();
+export function outsideCustodyFixtureConnectionName(accountId: string): string {
+  return `fixture-${accountId.toLowerCase().replace(/[^a-z0-9]/g, "").slice(-23)}`;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const boxSqlDir = join(here, "..", "..", "sql");
 
@@ -434,11 +448,12 @@ const SEED_ROWS: SeedRow[] = [
     const requestHash = createHash("sha256").update(`fixture outside custody stage ${index}`).digest();
     return [
       row("outside_custody_accounts", "owner_member_id", member,
-        `INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,generation,active_revision,consent_generation,state)
-         VALUES($1,$2,$3,1,1,1,'active')`, [accountId, member, `fixture-shared-${index}`]),
+        `INSERT INTO outside_custody_accounts(account_id,owner_member_id,resource_id,connection_name,generation,active_revision,consent_generation,state)
+         VALUES($1,$2,$3,$4,1,1,1,'active')`, [accountId, member, `fixture-shared-${index}`, outsideCustodyFixtureConnectionName(accountId)]),
       row("outside_custody_revisions", "owner_member_id", member,
-        `INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,operation_id,nonce,ciphertext)
-         VALUES($1,$2,1,1,1,$3,$4,$5)`, [accountId, member, operationId, nonce, ciphertext]),
+        `INSERT INTO outside_custody_revisions(account_id,owner_member_id,credential_revision,generation,consent_generation,revision_purpose,policy_json,policy_hash,operation_id,nonce,ciphertext)
+         VALUES($1,$2,1,1,1,'discovery',$3::jsonb,$4,$5,$6,$7)`,
+        [accountId, member, OUTSIDE_CUSTODY_FIXTURE_POLICY_JSON, OUTSIDE_CUSTODY_FIXTURE_POLICY_HASH, operationId, nonce, ciphertext]),
       row("outside_custody_operations", "owner_member_id", member,
         `INSERT INTO outside_custody_operations(operation_id,account_id,owner_member_id,operation_kind,request_hash,expected_generation,result_generation,credential_revision,outcome)
          VALUES($1,$2,$3,'stage',$4,0,1,1,'staged')`, [operationId, accountId, member, requestHash]),
