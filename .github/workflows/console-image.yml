@@ -106,7 +106,9 @@ jobs:
       - name: Verify final console runtime without credentials
         run: docker run --rm --network none --entrypoint sh lares-console:test -c 'test "$(id -u)" = 10001 && test -f services/console/server.js && ! command -v npm && ! command -v corepack'
       - name: Prove generated Console startup admission in the actual image
-        run: sudo env CI=true HOME="$HOME" PATH="$PATH" python3 services/console/tests/start-admission-image.probe.py lares-console:test "$GITHUB_SHA" "$RUNNER_TEMP/image-scans/console/start-admission.json"
+        run: |
+          mkdir -p "$RUNNER_TEMP/image-scans/console"
+          sudo env CI=true HOME="$HOME" PATH="$PATH" python3 services/console/tests/start-admission-image.probe.py lares-console:test "$GITHUB_SHA" "$RUNNER_TEMP/image-scans/console/start-admission.json"
       - name: Scan final image
         run: scripts/scan-image.sh lares-console:test "$RUNNER_TEMP/image-scans/console"
       - uses: actions/upload-artifact@v4
