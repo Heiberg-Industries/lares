@@ -143,6 +143,24 @@ LOG_CLASSES = (
     (b"uncaughtexception", "node-uncaught-error"),
     (b"unhandledrejection", "node-uncaught-error"),
     (b"fatal error", "node-fatal-error"),
+    (b"managed incarnation is invalid", "managed-incarnation-invalid"),
+    (b"managed model-purpose socket is not configured", "managed-socket-not-configured"),
+    (b"runtime-control file is missing, unreadable, or empty", "runtime-control-unavailable"),
+    (b"model-purpose runtime socket is unavailable", "model-purpose-socket-unavailable"),
+    (b"model-purpose gateway socket is unavailable", "gateway-runtime-socket-unavailable"),
+    (b"invalid config", "invalid-configuration"),
+    (b"configuration error", "invalid-configuration"),
+    (b"failed to load config", "invalid-configuration"),
+    (b"cannot find package", "module-load-failure"),
+    (b"eacces", "filesystem-access-denied"),
+    (b"permission denied", "filesystem-access-denied"),
+    (b"erofs", "read-only-filesystem-write"),
+    (b"read-only file system", "read-only-filesystem-write"),
+    (b"eaddrinuse", "address-in-use"),
+    (b"address already in use", "address-in-use"),
+    (b"heap out of memory", "memory-exhaustion"),
+    (b"out of memory", "memory-exhaustion"),
+    (b"oomkilled", "memory-exhaustion"),
 )
 MAX_STARTUP_LOG_BYTES = 32 * 1024
 
@@ -255,8 +273,12 @@ def startup_diagnostic_record(diagnostics: dict[str, object], health_result: str
     return {
         "containerStatusesObserved": sorted(diagnostics["containerStatusesObserved"]),
         "healthResultsObserved": sorted(diagnostics["healthResultsObserved"]),
+        "containerExitCodesObservedWhileStopped": sorted(diagnostics["containerExitCodesObservedWhileStopped"]),
+        "maxRestartCountObserved": diagnostics["maxRestartCountObserved"],
         "startupLogClasses": sorted(diagnostics["startupLogClasses"]),
         "logReadStatusesObserved": sorted(diagnostics["logReadStatusesObserved"]),
+        "lastStartupLogBytesRead": diagnostics["lastStartupLogBytesRead"],
+        "maxStartupLogBytesRead": diagnostics["maxStartupLogBytesRead"],
         "lastContainer": diagnostics["lastContainer"],
         "lastHealthResult": health_result,
     }
@@ -440,6 +462,8 @@ def wait_ready() -> None:
     diagnostics = {
         "containerStatusesObserved": set(), "healthResultsObserved": set(),
         "startupLogClasses": set(), "logReadStatusesObserved": set(),
+        "containerExitCodesObservedWhileStopped": set(), "maxRestartCountObserved": None,
+        "lastStartupLogBytesRead": None, "maxStartupLogBytesRead": 0,
         "lastContainer": None, "lastHealthResult": "unavailable",
     }
     last_log_state: tuple[object, object] | None = None
@@ -453,6 +477,12 @@ def wait_ready() -> None:
             container = parse_container_state("", 1)
         diagnostics["lastContainer"] = container
         diagnostics["containerStatusesObserved"].add(container["status"])
+        if (container["running"] is not True or container["status"] == "restarting") and isinstance(container["exitCode"], int):
+            diagnostics["containerExitCodesObservedWhileStopped"].add(container["exitCode"])
+        restart_count = container["restartCount"]
+        if isinstance(restart_count, int):
+            previous_max = diagnostics["maxRestartCountObserved"]
+            diagnostics["maxRestartCountObserved"] = restart_count if previous_max is None else max(previous_max, restart_count)
 
         health_result = "not-running"
         if container["status"] == "running" and container["running"] is True:
@@ -483,6 +513,8 @@ def wait_ready() -> None:
             log_classes = classify_startup_logs(log_bytes)
             diagnostics["startupLogClasses"].update(log_classes)
             diagnostics["logReadStatusesObserved"].add(read_status)
+            diagnostics["lastStartupLogBytesRead"] = len(log_bytes)
+            diagnostics["maxStartupLogBytesRead"] = max(diagnostics["maxStartupLogBytesRead"], len(log_bytes))
             last_log_state, last_log_read = log_state, now
             if "admission-refused" in diagnostics["startupLogClasses"]:
                 proof["startupDiagnostics"] = startup_diagnostic_record(diagnostics, health_result)
