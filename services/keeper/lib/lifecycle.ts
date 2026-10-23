@@ -416,7 +416,7 @@ export class AgentLifecycle {
                 agents[i] = this.container(row, row.applied_definition, agents[i]!.notionRevision, granted);
         }
         for (let i=0;i<agents.length;i++) agents[i]=await this.connections(agents[i],agents[i].name===override?.name);
-        atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, agentsDir: this.paths.agentsDir, secretsDir: this.paths.secretsDir, vaultRuntimeDir: this.paths.vaultRuntimeDir, modelPurposeRuntimeDir: this.paths.modelPurposeRuntimeDir, modelPrefix, consoleAdministrator: this.paths.credentials?.administrator }));
+        atomic(this.config.composeFile, renderAgentsCompose(agents, { network: this.config.network, imageByRole: this.config.imageByRole, agentsDir: this.paths.agentsDir, secretsDir: this.paths.secretsDir, maintenanceAdmission: this.config.maintenanceAdmission, vaultRuntimeDir: this.paths.vaultRuntimeDir, modelPurposeRuntimeDir: this.paths.modelPurposeRuntimeDir, modelPrefix, consoleAdministrator: this.paths.credentials?.administrator }));
         await this.docker.config();
     }
     async prepare(name: string, d: AgentDefinition, create: boolean) {

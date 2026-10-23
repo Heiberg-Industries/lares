@@ -56,6 +56,7 @@ const OPTS: KeeperConfigOptions = {
   project: "lares",
   network: "lares-network",
   subnet: "172.30.0.0/24",
+  maintenanceAdmission: { hostDirectory: "/var/lib/lares-maintenance/admission", installationId: "11111111-1111-4111-8111-111111111111", epoch: 7 },
   proxyAddress: "172.30.0.2",
   dir: "/srv/lares",
   agentsDir: "/srv/lares/agents",
@@ -100,6 +101,7 @@ function loadAsKeeperWould(config: unknown) {
 describe("fresh install settings", () => {
   it("writes the public door origin the keeper reads", () => {
     const config = renderKeeperConfig(MANIFEST, OPTS);
+    expect(config.lifecycle!.maintenanceAdmission).toEqual(OPTS.maintenanceAdmission);
     expect(config.publicDoorOrigin).toBe("https://lares.example.com");
     expect(config.designatedOwnerId).toBe(OPTS.ownerId);
     expect(config.vaultConsoleSigningKeyFile).toBe("/etc/lares/secrets/console-vault-signing-key");

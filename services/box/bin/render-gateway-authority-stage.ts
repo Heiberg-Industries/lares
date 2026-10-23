@@ -431,6 +431,11 @@ function stageOutput(request: GatewayAuthorityStageRequest): StageBuild {
     project: request.project,
     network: request.network,
     subnet: request.subnet,
+    maintenanceAdmission: {
+      hostDirectory: maintenanceAdmission.directory,
+      installationId: maintenanceAdmission.installationId,
+      epoch: maintenanceAdmission.epoch,
+    },
     proxyAddress: request.proxyAddress,
     dir: root,
     agentsDir,

@@ -130,6 +130,7 @@ it('loads digit-leading canonical Google orgs while preserving exact legacy keys
     composeFile:join(f.dir,'compose.yaml'),egressDir:f.dir,imageByRole:{'chief-of-staff':image,creative:image},
     proxyContainer:'lares-proxy',squidImage:image,firewallImage:image,adminDb:{...f.config.db,database:'postgres',user:'lares_workflow_provisioner'},
     workflowTemplate:'template',workflowOwner:'lares_workflow_owner',installationPrepared:true,
+    maintenanceAdmission:{hostDirectory:join(f.dir,'maintenance-admission'),installationId:'11111111-1111-4111-8111-111111111111',epoch:7},
     runtime:{databaseUrl:'postgres://lares_app@db/lares',workflowServer:'postgres://lares_workflow@db/',gatewayUrl:'https://gateway.example',
       proxyUrl:'http://proxy:8888',passwordFile:join(f.dir,'password'),workflowPasswordFile:join(f.dir,'workflow-password'),gatewayKeys:{},
       google:{tokenKeyFile:join(f.dir,'token-key'),clients:{'123':client,'1acme':client,ac_me:client,'old-client':client,['legacy'+'a'.repeat(40)]:client}}},

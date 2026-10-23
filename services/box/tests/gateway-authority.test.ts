@@ -187,7 +187,10 @@ describe("staged gateway authority transaction", () => {
         directory: "/srv/lares/var/lib/lares-maintenance/admission",
         installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,
       },
-    }, {} as Parameters<typeof renderKeeperComposeEnvironment>[2]);
+    }, { lifecycle: { maintenanceAdmission: {
+      hostDirectory: "/srv/lares/var/lib/lares-maintenance/admission",
+      installationId: "11111111-1111-4111-8111-111111111111", epoch: 1,
+    } } } as Parameters<typeof renderKeeperComposeEnvironment>[2]);
     const env = parseStageEnvironment(envText);
     expect(env.LARES_ROOT).toBe("/srv/lares/srv/lares");
     expect(env.LARES_MAINTENANCE_ADMISSION_DIR).toBe("/srv/lares/var/lib/lares-maintenance/admission");
